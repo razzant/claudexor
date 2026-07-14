@@ -25,12 +25,16 @@ import { Attachment } from "./attachment.js";
  * state — it is a live projection of whether the head turn's run needs a human. */
 export const ThreadState = z
   .enum(["active", "closed"])
-  .describe("Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.");
+  .describe(
+    "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
+  );
 export type ThreadState = z.infer<typeof ThreadState>;
 
 export const SessionState = z
   .enum(["live", "stale", "rebound"])
-  .describe("Vendor session cache state: live (resumable), stale, or rebound (re-hosted elsewhere).");
+  .describe(
+    "Vendor session cache state: live (resumable), stale, or rebound (re-hosted elsewhere).",
+  );
 export type SessionState = z.infer<typeof SessionState>;
 
 /** How a session can be continued on its native CLI. Staged-field rule:
@@ -38,7 +42,9 @@ export type SessionState = z.infer<typeof SessionState>;
  * session id exists, `none` otherwise). */
 export const SessionResumeKind = z
   .enum(["resume_by_id", "none"])
-  .describe("How the session can be continued on its native CLI: resume_by_id when a native session id exists, none otherwise.");
+  .describe(
+    "How the session can be continued on its native CLI: resume_by_id when a native session id exists, none otherwise.",
+  );
 export type SessionResumeKind = z.infer<typeof SessionResumeKind>;
 
 export const ThreadTurnKind = z
@@ -68,9 +74,15 @@ export const ThreadWorkspace = z
       .string()
       .nullable()
       .default(null)
-      .describe("Persistent worktree path; set lazily on the first write turn of an isolated thread."),
+      .describe(
+        "Persistent worktree path; set lazily on the first write turn of an isolated thread.",
+      ),
     /** Snapshot SHA the isolated worktree (or last apply) is based on. */
-    base_sha: z.string().nullable().default(null).describe("Snapshot SHA the isolated worktree (or last apply) is based on."),
+    base_sha: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Snapshot SHA the isolated worktree (or last apply) is based on."),
   })
   .describe("How the thread's turns touch files (in-place live tree vs isolated worktree).");
 export type ThreadWorkspace = z.infer<typeof ThreadWorkspace>;
@@ -93,7 +105,9 @@ export const Thread = z
       .describe("Project the thread is anchored to; null for a no-project Ask thread."),
     title: z.string().nullable().default(null).describe("Thread title; null until set."),
     /** Default mode for new turns; individual turns may override. */
-    mode: ModeKind.default("agent").describe("Default mode for new turns; individual turns may override."),
+    mode: ModeKind.default("agent").describe(
+      "Default mode for new turns; individual turns may override.",
+    ),
     /** Per-thread auth preference override (subscription/api_key/auto). */
     auth_preference: AuthPreference.default("auto"),
     /** Sticky orchestrate/primary harness for the thread (re-routable). A bias /
@@ -102,7 +116,9 @@ export const Thread = z
       .string()
       .nullable()
       .default(null)
-      .describe("Sticky primary harness for the thread (re-routable); an ordering bias, not a privileged role."),
+      .describe(
+        "Sticky primary harness for the thread (re-routable); an ordering bias, not a privileged role.",
+      ),
     /** Sticky eligible harness pool for the thread (Best-of runs this pool, one
      * candidate per harness). Empty => the engine auto-pools doctor-ok harnesses.
      * primary_harness, when set, must be a member of this pool when non-empty. */
@@ -116,10 +132,14 @@ export const Thread = z
     workspace: ThreadWorkspace.default({}),
     /** Ordered run lineage (each run is a turn move). */
     run_ids: z.array(Id).default([]).describe("Ordered run lineage (each run is a turn move)."),
-    head_run_id: Id.nullable().default(null).describe("Most recent run of the thread; null before the first turn runs."),
+    head_run_id: Id.nullable()
+      .default(null)
+      .describe("Most recent run of the thread; null before the first turn runs."),
     state: ThreadState.default("active"),
   })
-  .describe("The Claudexor-owned conversation about a project; runs are turns inside it. SSOT for lineage; vendor sessions are caches.");
+  .describe(
+    "The Claudexor-owned conversation about a project; runs are turns inside it. SSOT for lineage; vendor sessions are caches.",
+  );
 export type Thread = z.infer<typeof Thread>;
 
 /** A re-hostable pointer to one harness's native CLI session for a thread. */
@@ -133,14 +153,22 @@ export const Session = z
       .string()
       .nullable()
       .default(null)
-      .describe("The vendor CLI session id (codex thread id / claude session uuid / ...); null when none exists."),
+      .describe(
+        "The vendor CLI session id (codex thread id / claude session uuid / ...); null when none exists.",
+      ),
     resume_kind: SessionResumeKind.default("none"),
-    last_observed_model: z.string().nullable().default(null).describe("Model last observed on the session's stream."),
+    last_observed_model: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Model last observed on the session's stream."),
     state: SessionState.default("live"),
     created_at: IsoTimestamp.describe("When the session was created."),
     updated_at: IsoTimestamp.describe("When the session was last updated."),
   })
-  .describe("A re-hostable pointer to one harness's native CLI session for a thread — a cache, not the source of truth.");
+  .describe(
+    "A re-hostable pointer to one harness's native CLI session for a thread — a cache, not the source of truth.",
+  );
 export type Session = z.infer<typeof Session>;
 
 /**
@@ -168,7 +196,9 @@ export const TurnEnqueueError = z
       .string()
       .nullable()
       .default(null)
-      .describe("Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code."),
+      .describe(
+        "Machine-readable refusal code carried from the throwing gate; null when the failure had no typed code.",
+      ),
     /** Whether retry can REPLAY this turn: true when a job was recorded before
      * the failure (the registry holds the params to replay); false when the
      * enqueue itself threw and no job exists — surfaces then offer "send a new
@@ -176,7 +206,9 @@ export const TurnEnqueueError = z
     retryable: z
       .boolean()
       .default(true)
-      .describe("True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay."),
+      .describe(
+        "True when retry can replay this turn (a job was recorded before the failure); false when no job exists to replay.",
+      ),
     failed_at: IsoTimestamp.describe("When the enqueue failed."),
   })
   .describe(
@@ -192,11 +224,16 @@ export const ThreadTurn = z
     run_id: Id.nullable().default(null).describe("Run backing this turn; null while unbound."),
     parent_run_id: Id.nullable().default(null).describe("Run this turn follows up on, when any."),
     /** Set when this turn implements an approved plan from an earlier plan run. */
-    plan_run_id: Id.nullable().default(null).describe("Set when this turn implements an approved plan from an earlier plan run."),
+    plan_run_id: Id.nullable()
+      .default(null)
+      .describe("Set when this turn implements an approved plan from an earlier plan run."),
     kind: ThreadTurnKind.default("followup"),
     prompt: z.string().default("").describe("The user's message for this turn."),
     /** Files/images the user attached to this turn (resolved scoped paths). */
-    attachments: z.array(Attachment).default([]).describe("Files/images the user attached to this turn (resolved scoped paths)."),
+    attachments: z
+      .array(Attachment)
+      .default([])
+      .describe("Files/images the user attached to this turn (resolved scoped paths)."),
     /** Why this turn has no run (enqueue/preflight refusal); null once a run binds. */
     enqueue_error: TurnEnqueueError.nullable()
       .default(null)
@@ -221,9 +258,16 @@ export const SessionReboundLineage = z
       .string()
       .nullable()
       .default(null)
-      .describe("The vendor native session id being left behind (not a Claudexor id); null when none existed."),
-    to_session_id: Id.nullable().default(null).describe("New Claudexor session id; null when no new session was created."),
-    summary: z.string().default("").describe("Carried-over conversation summary injected into the new session."),
+      .describe(
+        "The vendor native session id being left behind (not a Claudexor id); null when none existed.",
+      ),
+    to_session_id: Id.nullable()
+      .default(null)
+      .describe("New Claudexor session id; null when no new session was created."),
+    summary: z
+      .string()
+      .default("")
+      .describe("Carried-over conversation summary injected into the new session."),
     reason: FallbackReason.default("not_portable"),
   })
   .describe(

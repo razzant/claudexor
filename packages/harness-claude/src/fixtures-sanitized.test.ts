@@ -25,7 +25,8 @@ function allFixtureFiles(): string[] {
       if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(join(dir, entry.name));
       if (entry.isDirectory()) {
         for (const sub of readdirSync(join(dir, entry.name), { withFileTypes: true })) {
-          if (sub.isFile() && sub.name.endsWith(".jsonl")) files.push(join(dir, entry.name, sub.name));
+          if (sub.isFile() && sub.name.endsWith(".jsonl"))
+            files.push(join(dir, entry.name, sub.name));
         }
       }
     }

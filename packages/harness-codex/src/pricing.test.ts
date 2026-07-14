@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { estimateCodexCostUsd, priceForModel } from "./pricing.js";
 
-const ENV_KEYS = ["CLAUDEXOR_CODEX_PRICE_INPUT", "CLAUDEXOR_CODEX_PRICE_OUTPUT", "CLAUDEXOR_CODEX_PRICE_CACHED"] as const;
+const ENV_KEYS = [
+  "CLAUDEXOR_CODEX_PRICE_INPUT",
+  "CLAUDEXOR_CODEX_PRICE_OUTPUT",
+  "CLAUDEXOR_CODEX_PRICE_CACHED",
+] as const;
 
 describe("codex pricing", () => {
   afterEach(() => {
@@ -9,14 +13,19 @@ describe("codex pricing", () => {
   });
 
   it("estimates cost from token usage for a gpt-5-codex model", () => {
-    const usd = estimateCodexCostUsd("gpt-5-codex", { input_tokens: 1_000_000, output_tokens: 1_000_000 });
+    const usd = estimateCodexCostUsd("gpt-5-codex", {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    });
     // 1M input * $1.25/M + 1M output * $10/M = 11.25
     expect(usd).toBeCloseTo(11.25, 5);
   });
 
   it("returns undefined when there are no token counts (never fabricate cost)", () => {
     expect(estimateCodexCostUsd("gpt-5-codex", {})).toBeUndefined();
-    expect(estimateCodexCostUsd("gpt-5-codex", { input_tokens: 0, output_tokens: 0 })).toBeUndefined();
+    expect(
+      estimateCodexCostUsd("gpt-5-codex", { input_tokens: 0, output_tokens: 0 }),
+    ).toBeUndefined();
   });
 
   it("does not double-count cached tokens (cached is a subset of input)", () => {
@@ -44,7 +53,10 @@ describe("codex pricing", () => {
   it("honors env price overrides", () => {
     process.env.CLAUDEXOR_CODEX_PRICE_INPUT = "2";
     process.env.CLAUDEXOR_CODEX_PRICE_OUTPUT = "20";
-    const usd = estimateCodexCostUsd("gpt-5-codex", { input_tokens: 1_000_000, output_tokens: 1_000_000 });
+    const usd = estimateCodexCostUsd("gpt-5-codex", {
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+    });
     expect(usd).toBeCloseTo(22, 5);
   });
 

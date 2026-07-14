@@ -26,7 +26,8 @@ export function parseProtectedPathApprovalFlags(
   for (const value of strings) {
     for (const part of value.split(",")) {
       const path = part.trim();
-      if (!path) throw new Error("invalid --allow-protected-path value (empty comma-separated entry)");
+      if (!path)
+        throw new Error("invalid --allow-protected-path value (empty comma-separated entry)");
       paths.push(path);
     }
   }

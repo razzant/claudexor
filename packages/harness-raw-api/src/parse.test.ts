@@ -42,7 +42,9 @@ describe("parseModelsList", () => {
   });
 
   it("drops entries without a string id and tolerates a missing/empty data array", () => {
-    expect(parseModelsList({ data: [{ object: "model" }, { id: 42 }, { id: "ok" }] }).map((m) => m.id)).toEqual(["ok"]);
+    expect(
+      parseModelsList({ data: [{ object: "model" }, { id: 42 }, { id: "ok" }] }).map((m) => m.id),
+    ).toEqual(["ok"]);
     expect(parseModelsList({})).toEqual([]);
     expect(parseModelsList(null)).toEqual([]);
   });

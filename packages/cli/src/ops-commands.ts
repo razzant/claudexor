@@ -50,13 +50,21 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
         const existingReady = await waitForDaemonReady(5_000);
         if (existingReady) {
           if (json)
-            printJson({ pid: null, socket: defaultSocketPath(), ready: true, alreadyRunning: true });
+            printJson({
+              pid: null,
+              socket: defaultSocketPath(),
+              ready: true,
+              alreadyRunning: true,
+            });
           else print(`claudexord already running; socket ${defaultSocketPath()}`);
           return 0;
         }
         if (json)
           printJson({ pid: null, socket: defaultSocketPath(), ready: false, alreadyRunning: true });
-        else print("claudexord socket is alive but its control API is not ready; inspect `claudexor daemon logs`");
+        else
+          print(
+            "claudexord socket is alive but its control API is not ready; inspect `claudexor daemon logs`",
+          );
         return 1;
       } catch {
         /* not reachable — start a fresh daemon below */

@@ -23,20 +23,26 @@ describe("AuthReadinessService", () => {
     const seen: DoctorSpec[] = [];
     const target = {
       id: "real-exact-auth-target",
-      discover: async () => { throw new Error("exact refresh must not discover"); },
+      discover: async () => {
+        throw new Error("exact refresh must not discover");
+      },
       doctor: async (spec) => {
         seen.push(spec);
         return ConformanceReport.parse({
           harness_id: "real-exact-auth-target",
           status: "ok",
-          auth_sources: [{
-            source: "native_session",
-            availability: "available",
-            verification: "passed",
-          }],
+          auth_sources: [
+            {
+              source: "native_session",
+              availability: "available",
+              verification: "passed",
+            },
+          ],
         });
       },
-      run: async function* () { /* not used */ },
+      run: async function* () {
+        /* not used */
+      },
     } satisfies HarnessAdapter;
     let unrelatedDiscoverCalls = 0;
     let unrelatedDoctorCalls = 0;
@@ -50,21 +56,27 @@ describe("AuthReadinessService", () => {
         unrelatedDoctorCalls += 1;
         return ConformanceReport.parse({ harness_id: "real-exact-auth-unrelated", status: "ok" });
       },
-      run: async function* () { /* not used */ },
+      run: async function* () {
+        /* not used */
+      },
     } satisfies HarnessAdapter;
-    const gateway = new HarnessGateway(new Map<string, HarnessAdapter>([
-      [target.id, target],
-      [unrelated.id, unrelated],
-    ]));
+    const gateway = new HarnessGateway(
+      new Map<string, HarnessAdapter>([
+        [target.id, target],
+        [unrelated.id, unrelated],
+      ]),
+    );
     const service = new AuthReadinessService(gateway, {
       cwd: CWD,
       now: () => new Date("2026-07-14T12:00:00.000Z"),
     });
 
-    await expect(service.refresh(target.id, {
-      authRequest: "subscription",
-      source: "native_session",
-    })).resolves.toEqual({
+    await expect(
+      service.refresh(target.id, {
+        authRequest: "subscription",
+        source: "native_session",
+      }),
+    ).resolves.toEqual({
       harnessId: target.id,
       authRequest: "subscription",
       requestedSource: "native_session",
@@ -102,42 +114,53 @@ describe("AuthReadinessService", () => {
             : [],
         });
       },
-      run: async function* () { /* not used */ },
+      run: async function* () {
+        /* not used */
+      },
     });
     const target = adapter("real-refresh-cache-target");
     const unrelated = adapter("real-refresh-cache-unrelated");
-    const gateway = new HarnessGateway(new Map([
-      [target.id, target],
-      [unrelated.id, unrelated],
-    ]));
+    const gateway = new HarnessGateway(
+      new Map([
+        [target.id, target],
+        [unrelated.id, unrelated],
+      ]),
+    );
     const service = new AuthReadinessService(gateway, { cwd: CWD });
 
     await gateway.statusAll({ cwd: projectCwd });
     await service.refresh(target.id, { authRequest: "subscription", source: "native_session" });
     await gateway.statusAll({ cwd: projectCwd });
 
-    expect(calls).toEqual(new Map([
-      [target.id, 3], // aggregate before, exact refresh, aggregate after invalidation
-      [unrelated.id, 1], // second aggregate read remains cached
-    ]));
+    expect(calls).toEqual(
+      new Map([
+        [target.id, 3], // aggregate before, exact refresh, aggregate after invalidation
+        [unrelated.id, 1], // second aggregate read remains cached
+      ]),
+    );
   });
 
   it("preserves an exact adapter failure as typed unknown source evidence", async () => {
     const adapter = {
       id: "real-exact-auth-failure",
       discover: async () => manifest("real-exact-auth-failure"),
-      doctor: async () => { throw new Error("vendor status transport failed"); },
-      run: async function* () { /* not used */ },
+      doctor: async () => {
+        throw new Error("vendor status transport failed");
+      },
+      run: async function* () {
+        /* not used */
+      },
     } satisfies HarnessAdapter;
-    const service = new AuthReadinessService(
-      new HarnessGateway(new Map([[adapter.id, adapter]])),
-      { cwd: CWD },
-    );
+    const service = new AuthReadinessService(new HarnessGateway(new Map([[adapter.id, adapter]])), {
+      cwd: CWD,
+    });
 
-    await expect(service.refresh(adapter.id, {
-      authRequest: "subscription",
-      source: "native_session",
-    })).resolves.toMatchObject({
+    await expect(
+      service.refresh(adapter.id, {
+        authRequest: "subscription",
+        source: "native_session",
+      }),
+    ).resolves.toMatchObject({
       harnessId: adapter.id,
       requestedSource: "native_session",
       readiness: {
@@ -153,22 +176,28 @@ describe("AuthReadinessService", () => {
     const adapter = {
       id: "real-missing-auth-source",
       discover: async () => manifest("real-missing-auth-source"),
-      doctor: async () => ConformanceReport.parse({
-        harness_id: "real-missing-auth-source",
-        status: "degraded",
-        auth_sources: [{ source: "api_key_env", availability: "available", verification: "passed" }],
-      }),
-      run: async function* () { /* not used */ },
+      doctor: async () =>
+        ConformanceReport.parse({
+          harness_id: "real-missing-auth-source",
+          status: "degraded",
+          auth_sources: [
+            { source: "api_key_env", availability: "available", verification: "passed" },
+          ],
+        }),
+      run: async function* () {
+        /* not used */
+      },
     } satisfies HarnessAdapter;
-    const service = new AuthReadinessService(
-      new HarnessGateway(new Map([[adapter.id, adapter]])),
-      { cwd: CWD },
-    );
+    const service = new AuthReadinessService(new HarnessGateway(new Map([[adapter.id, adapter]])), {
+      cwd: CWD,
+    });
 
-    await expect(service.refresh(adapter.id, {
-      authRequest: "subscription",
-      source: "native_session",
-    })).rejects.toMatchObject({
+    await expect(
+      service.refresh(adapter.id, {
+        authRequest: "subscription",
+        source: "native_session",
+      }),
+    ).rejects.toMatchObject({
       name: "AuthReadinessServiceError",
       code: "auth_source_evidence_missing",
       status: 502,
@@ -180,10 +209,12 @@ describe("AuthReadinessService", () => {
   it("rejects an unknown harness before probing", async () => {
     const service = new AuthReadinessService(new HarnessGateway(new Map()), { cwd: CWD });
 
-    await expect(service.refresh("missing-harness", {
-      authRequest: "subscription",
-      source: "native_session",
-    })).rejects.toMatchObject({
+    await expect(
+      service.refresh("missing-harness", {
+        authRequest: "subscription",
+        source: "native_session",
+      }),
+    ).rejects.toMatchObject({
       name: "AuthReadinessServiceError",
       code: "unknown_harness",
       status: 404,
@@ -193,7 +224,8 @@ describe("AuthReadinessService", () => {
   });
 
   it("requires a stable absolute no-project root", () => {
-    expect(() => new AuthReadinessService(new HarnessGateway(new Map()), { cwd: "relative" }))
-      .toThrow(/cwd must be absolute/);
+    expect(
+      () => new AuthReadinessService(new HarnessGateway(new Map()), { cwd: "relative" }),
+    ).toThrow(/cwd must be absolute/);
   });
 });

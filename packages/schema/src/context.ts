@@ -25,7 +25,12 @@ export const ScopeAtlasEntry = z
     path: z.string().describe("Repo-relative path."),
     disposition: PathDisposition,
     hash: ContentHash.optional().describe("Content hash of the path, when read."),
-    bytes: z.number().int().nonnegative().optional().describe("Size of the path in bytes, when known."),
+    bytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Size of the path in bytes, when known."),
     reason: z.string().optional().describe("Why the path got this disposition."),
   })
   .describe("Accounting entry for one tracked path in the Scope Atlas.");
@@ -62,17 +67,36 @@ export const ContextPack = z
     hash: ContentHash.describe("Content hash of the pack itself."),
     files: z
       .object({
-        mandatory: z.array(ContextFileRef).default([]).describe("Files every harness must receive."),
-        included: z.array(ContextFileRef).default([]).describe("Additional files included in the pack."),
-        omitted: z.array(OmissionEntry).default([]).describe("Files explicitly omitted, with reasons."),
+        mandatory: z
+          .array(ContextFileRef)
+          .default([])
+          .describe("Files every harness must receive."),
+        included: z
+          .array(ContextFileRef)
+          .default([])
+          .describe("Additional files included in the pack."),
+        omitted: z
+          .array(OmissionEntry)
+          .default([])
+          .describe("Files explicitly omitted, with reasons."),
       })
       .describe("Files included in or explicitly omitted from the pack."),
-    atlas: z.array(ScopeAtlasEntry).default([]).describe("Scope Atlas: per-path accounting of the whole tracked tree."),
-    instructions: z.array(z.string()).default([]).describe("Instruction strings passed alongside the files."),
+    atlas: z
+      .array(ScopeAtlasEntry)
+      .default([])
+      .describe("Scope Atlas: per-path accounting of the whole tracked tree."),
+    instructions: z
+      .array(z.string())
+      .default([])
+      .describe("Instruction strings passed alongside the files."),
     token_budget: z
       .object({
         limit: z.number().int().positive().describe("Token budget limit for the pack."),
-        estimated_used: z.number().int().nonnegative().describe("Estimated tokens consumed by the pack."),
+        estimated_used: z
+          .number()
+          .int()
+          .nonnegative()
+          .describe("Estimated tokens consumed by the pack."),
       })
       .optional()
       .describe("Token budget accounting for the pack, when computed."),

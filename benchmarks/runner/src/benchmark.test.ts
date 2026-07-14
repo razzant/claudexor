@@ -11,7 +11,10 @@ function tmp(): string {
 describe("swebench predictions", () => {
   it("writes a .json prediction list with instance_id (official harness shape)", () => {
     const path = join(tmp(), "preds.json");
-    writePredictions([{ instance_id: "a__b-1", model_name_or_path: "claudexor", model_patch: "diff --git" }], path);
+    writePredictions(
+      [{ instance_id: "a__b-1", model_name_or_path: "claudexor", model_patch: "diff --git" }],
+      path,
+    );
     const j = JSON.parse(readFileSync(path, "utf8"));
     expect(Array.isArray(j)).toBe(true);
     expect(j[0].instance_id).toBe("a__b-1");
@@ -37,7 +40,10 @@ describe("swebench predictions", () => {
 
   it("loads tasks from JSONL", () => {
     const f = join(tmp(), "t.jsonl");
-    writeFileSync(f, JSON.stringify({ instance_id: "x__y-1", problem_statement: "fix it", repo: "x/y" }) + "\n");
+    writeFileSync(
+      f,
+      JSON.stringify({ instance_id: "x__y-1", problem_statement: "fix it", repo: "x/y" }) + "\n",
+    );
     const tasks = loadTasksFromJsonl(f);
     expect(tasks).toHaveLength(1);
     expect(tasks[0]?.instance_id).toBe("x__y-1");

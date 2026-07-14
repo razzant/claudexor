@@ -57,7 +57,11 @@ export interface FakeOptions {
   observedModel?: string;
 }
 
-function ev(sessionId: string, type: HarnessEvent["type"], extra: Partial<HarnessEvent> = {}): HarnessEvent {
+function ev(
+  sessionId: string,
+  type: HarnessEvent["type"],
+  extra: Partial<HarnessEvent> = {},
+): HarnessEvent {
   return { type, session_id: sessionId, ts: nowIso(), ...extra };
 }
 
@@ -107,7 +111,11 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
   };
 }
 
-async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: string): AsyncIterable<HarnessEvent> {
+async function* runFake(
+  kind: FakeKind,
+  spec: HarnessRunSpec,
+  observedModel: string,
+): AsyncIterable<HarnessEvent> {
   const s = spec.session_id;
   yield ev(s, "started", { observed_model: observedModel });
   switch (kind) {
@@ -148,7 +156,8 @@ async function* runFake(kind: FakeKind, spec: HarnessRunSpec, observedModel: str
         }
         // Only CLAIM a file_change once the file actually exists (no typed
         // file_change event without on-disk evidence).
-        if (wrote) yield ev(s, "file_change", { payload: { path: "FAKE_CHANGE.txt", action: "create" } });
+        if (wrote)
+          yield ev(s, "file_change", { payload: { path: "FAKE_CHANGE.txt", action: "create" } });
       }
       yield ev(s, "usage", { usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } });
       yield ev(s, "completed", { observed_model: observedModel });
@@ -226,7 +235,18 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
       const enabledIntents: Intent[] = degraded
         ? ["implement"]
         : kind === "fake-implement"
-          ? ["plan", "implement", "create_from_scratch", "repair", "review", "verify", "synthesize", "explain", "audit", "orchestrate"]
+          ? [
+              "plan",
+              "implement",
+              "create_from_scratch",
+              "repair",
+              "review",
+              "verify",
+              "synthesize",
+              "explain",
+              "audit",
+              "orchestrate",
+            ]
           : ["plan", "implement", "review", "verify", "explain", "audit"];
       return {
         harness_id: kind,

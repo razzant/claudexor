@@ -13,7 +13,6 @@ import {
 import { harnessRuntimeEnv } from "@claudexor/core";
 import { controlApiAddress, type ControlApiAddress } from "./live.js";
 
-
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Is something accepting on the daemon socket right now? (cheap reachability probe). */
@@ -45,7 +44,9 @@ async function controlApiReachable(): Promise<ControlApiAddress | null> {
  * cannot be started — never silently falls back to an in-process run (the apply
  * gate refuses a run no daemon tracks, so an in-process run is un-unblockable).
  */
-export async function ensureDaemon(timeoutMs = 30_000): Promise<{ client: DaemonClientType; addr: ControlApiAddress }> {
+export async function ensureDaemon(
+  timeoutMs = 30_000,
+): Promise<{ client: DaemonClientType; addr: ControlApiAddress }> {
   const token = ensureToken();
   const socketPath = defaultSocketPath();
   let client = new DaemonClient(socketPath, token);
@@ -55,9 +56,15 @@ export async function ensureDaemon(timeoutMs = 30_000): Promise<{ client: Daemon
     // Auto-start the daemon entry (the same one `claudexor daemon start` spawns).
     const daemonScript = fileURLToPath(new URL("./claudexord.js", import.meta.url));
     if (!existsSync(daemonScript)) {
-      throw new Error(`cannot auto-start the daemon: entry not found at ${daemonScript} (run \`pnpm build\`)`);
+      throw new Error(
+        `cannot auto-start the daemon: entry not found at ${daemonScript} (run \`pnpm build\`)`,
+      );
     }
-    const child = spawn(process.execPath, [daemonScript], { detached: true, stdio: "ignore", env: harnessRuntimeEnv() });
+    const child = spawn(process.execPath, [daemonScript], {
+      detached: true,
+      stdio: "ignore",
+      env: harnessRuntimeEnv(),
+    });
     child.unref();
     // Wait for the socket to accept connections (health round-trip).
     const deadline = Date.now() + timeoutMs;
@@ -105,7 +112,10 @@ export async function ensureDaemon(timeoutMs = 30_000): Promise<{ client: Daemon
  * (`ensureDaemon`, by contrast, auto-starts and is reserved for paths that act —
  * enqueue/decision).
  */
-export async function connectDaemonIfRunning(): Promise<{ client: DaemonClientType; addr: ControlApiAddress } | null> {
+export async function connectDaemonIfRunning(): Promise<{
+  client: DaemonClientType;
+  addr: ControlApiAddress;
+} | null> {
   const token = readToken();
   if (!token) return null;
   const client = new DaemonClient(defaultSocketPath(), token);
@@ -120,7 +130,9 @@ export async function connectDaemonIfRunning(): Promise<{ client: DaemonClientTy
  * elapses. Lets `claudexor daemon start` return only once a subsequent `status`
  * is guaranteed to succeed (no start/status race).
  */
-export async function waitForDaemonReady(timeoutMs = 15_000): Promise<{ client: DaemonClientType; addr: ControlApiAddress } | null> {
+export async function waitForDaemonReady(
+  timeoutMs = 15_000,
+): Promise<{ client: DaemonClientType; addr: ControlApiAddress } | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const conn = await connectDaemonIfRunning();
@@ -181,7 +193,11 @@ export async function enqueueAndAwait(
   const startText = await startRes.text();
   const start = startText ? (JSON.parse(startText) as Record<string, unknown>) : {};
   if (!startRes.ok) {
-    throw new Error(typeof start["error"] === "string" ? (start["error"] as string) : `run enqueue failed (HTTP ${startRes.status})`);
+    throw new Error(
+      typeof start["error"] === "string"
+        ? (start["error"] as string)
+        : `run enqueue failed (HTTP ${startRes.status})`,
+    );
   }
   const jobId = String(start["jobId"] ?? "");
   let runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
@@ -201,13 +217,19 @@ export async function enqueueAndAwait(
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
       body: JSON.stringify({ control: { kind: "cancel", reason: "ctrl-c on the waiting CLI" } }),
-    }).then(async (res) => {
-      if (!res.ok) {
-        process.stderr.write(`cancel request failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}\n`);
-      }
-    }).catch((err: unknown) => {
-      process.stderr.write(`cancel request failed: ${err instanceof Error ? err.message : String(err)}\n`);
-    });
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          process.stderr.write(
+            `cancel request failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}\n`,
+          );
+        }
+      })
+      .catch((err: unknown) => {
+        process.stderr.write(
+          `cancel request failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
@@ -250,7 +272,13 @@ export async function enqueueAndAwait(
     for (;;) {
       const rec = await client.status(jobId);
       if (TERMINAL_STATES.has(rec.state)) {
-        return { runId: rec.runId ?? runId, runDir: rec.runDir ?? runDir, status: rec.state, jobId, error: rec.error };
+        return {
+          runId: rec.runId ?? runId,
+          runDir: rec.runDir ?? runDir,
+          status: rec.state,
+          jobId,
+          error: rec.error,
+        };
       }
       if (opts.onPollTick) await opts.onPollTick({ runId: rec.runId ?? runId });
       await sleep(250);
@@ -262,7 +290,12 @@ export async function enqueueAndAwait(
 
 /** Daemon job state -> CLI exit code (success terminals are 0; everything else 1). */
 export function exitCodeForState(state: string): number {
-  return state === "succeeded" || state === "no_op" || state === "ungated" || state === "review_not_run" ? 0 : 1;
+  return state === "succeeded" ||
+    state === "no_op" ||
+    state === "ungated" ||
+    state === "review_not_run"
+    ? 0
+    : 1;
 }
 
 /**
@@ -274,7 +307,12 @@ export function exitCodeForState(state: string): number {
 export async function fetchApplyEligibility(
   addr: ControlApiAddress,
   runId: string,
-): Promise<{ eligible: boolean; state: string | null; reason: string | null; requiredAction: string | null } | null> {
+): Promise<{
+  eligible: boolean;
+  state: string | null;
+  reason: string | null;
+  requiredAction: string | null;
+} | null> {
   if (!runId) return null;
   try {
     const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
@@ -283,7 +321,14 @@ export async function fetchApplyEligibility(
     if (!res.ok) return null;
     const detail = (await res.json()) as Record<string, unknown>;
     const v = detail["applyEligibility"];
-    return v && typeof v === "object" ? (v as { eligible: boolean; state: string | null; reason: string | null; requiredAction: string | null }) : null;
+    return v && typeof v === "object"
+      ? (v as {
+          eligible: boolean;
+          state: string | null;
+          reason: string | null;
+          requiredAction: string | null;
+        })
+      : null;
   } catch {
     return null;
   }
@@ -295,7 +340,11 @@ export async function fetchApplyEligibility(
  * hint (mirrors text mode); other non-success terminals use the error or a state
  * label. Success terminals return undefined (no `summary` key emitted).
  */
-export function daemonOutcomeSummary(out: { runId: string; status: string; error?: string }): string | undefined {
+export function daemonOutcomeSummary(out: {
+  runId: string;
+  status: string;
+  error?: string;
+}): string | undefined {
   if (out.error) return out.error;
   if (exitCodeForState(out.status) === 0) return undefined;
   if (out.status === "blocked") {

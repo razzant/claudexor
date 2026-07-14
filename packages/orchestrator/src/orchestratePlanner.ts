@@ -3,7 +3,10 @@
  * from the typed OrchestrateContract — the prompt never invents actions the
  * executor will not honor.
  */
-import type { OrchestrateContract as OrchestrateContractT, OrchestratePlan as OrchestratePlanT } from "@claudexor/schema";
+import type {
+  OrchestrateContract as OrchestrateContractT,
+  OrchestratePlan as OrchestratePlanT,
+} from "@claudexor/schema";
 import { OrchestratePlan as OrchestratePlanSchema } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 
@@ -67,7 +70,10 @@ function stripNulls(value: unknown): unknown {
   return out;
 }
 
-export function extractOrchestratePlan(report: string): { plan: OrchestratePlanT | null; error: string } {
+export function extractOrchestratePlan(report: string): {
+  plan: OrchestratePlanT | null;
+  error: string;
+} {
   // STRUCTURED-FIRST: a schema-constrained route emits the plan as the
   // bare final message — try the whole report as JSON before fence-hunting.
   const bare = report.trim();

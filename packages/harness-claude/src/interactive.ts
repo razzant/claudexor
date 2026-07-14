@@ -1,5 +1,10 @@
 import type { ChildStdin, InteractionChannel } from "@claudexor/core";
-import type { HarnessEvent, InteractionAnswerSet, InteractionQuestion, InteractionRequest } from "@claudexor/schema";
+import type {
+  HarnessEvent,
+  InteractionAnswerSet,
+  InteractionQuestion,
+  InteractionRequest,
+} from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type Json = any;
@@ -74,7 +79,8 @@ export function interactionRequestFromNative(requestId: string, input: Json): In
     header: typeof q?.header === "string" ? redactSecrets(q.header).slice(0, 100) : null,
     options: (Array.isArray(q?.options) ? q.options : []).map((o: Json) => ({
       label: redactSecrets(String(o?.label ?? "")).slice(0, 500),
-      description: typeof o?.description === "string" ? redactSecrets(o.description).slice(0, 1000) : null,
+      description:
+        typeof o?.description === "string" ? redactSecrets(o.description).slice(0, 1000) : null,
     })),
     multi_select: q?.multiSelect === true,
   }));
@@ -87,14 +93,20 @@ export function interactionRequestFromNative(requestId: string, input: Json): In
  * selected label, multi-select labels joined with ", ", free text passed
  * through verbatim.
  */
-export function allowResponseFrame(requestId: string, nativeInput: Json, request: InteractionRequest, answers: InteractionAnswerSet): string {
+export function allowResponseFrame(
+  requestId: string,
+  nativeInput: Json,
+  request: InteractionRequest,
+  answers: InteractionAnswerSet,
+): string {
   const byId = new Map(answers.answers.map((a) => [a.question_id, a]));
   const answerMap: Record<string, string> = {};
   for (const q of request.questions) {
     const a = byId.get(q.id);
     if (!a) continue;
     const labels = a.selected_labels.filter((l) => l.trim().length > 0);
-    const value = a.free_text && a.free_text.trim().length > 0 ? a.free_text.trim() : labels.join(", ");
+    const value =
+      a.free_text && a.free_text.trim().length > 0 ? a.free_text.trim() : labels.join(", ");
     if (value) answerMap[q.question] = value;
   }
   return (
@@ -157,13 +169,22 @@ export async function* handleControlRequestFrame(
   const subtype = String(request?.subtype ?? "");
 
   if (subtype !== "can_use_tool") {
-    io.write(errorResponseFrame(requestId, `unsupported control request subtype: ${subtype || "(none)"}`));
+    io.write(
+      errorResponseFrame(requestId, `unsupported control request subtype: ${subtype || "(none)"}`),
+    );
     return;
   }
 
   const toolName = String(request?.tool_name ?? "");
   if (toolName !== "AskUserQuestion" || !channel) {
-    io.write(denyResponseFrame(requestId, toolName === "AskUserQuestion" ? DECLINE_MESSAGE : "Not permitted by Claudexor policy for this run."));
+    io.write(
+      denyResponseFrame(
+        requestId,
+        toolName === "AskUserQuestion"
+          ? DECLINE_MESSAGE
+          : "Not permitted by Claudexor policy for this run.",
+      ),
+    );
     return;
   }
 
@@ -172,7 +193,10 @@ export async function* handleControlRequestFrame(
     type: "interaction_requested",
     session_id: sessionId,
     ts: nowIso(),
-    text: interaction.questions.map((q) => q.question).join(" | ").slice(0, 500),
+    text: interaction.questions
+      .map((q) => q.question)
+      .join(" | ")
+      .slice(0, 500),
     interaction,
   };
 

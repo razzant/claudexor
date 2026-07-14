@@ -51,7 +51,10 @@ describe("native login specs", () => {
     process.env.CLAUDEXOR_CODEX_BIN = "/custom/codex";
     try {
       const requested: string[] = [];
-      const spec = nativeLoginSpec("codex", (binary) => { requested.push(binary); return binary; });
+      const spec = nativeLoginSpec("codex", (binary) => {
+        requested.push(binary);
+        return binary;
+      });
       expect(requested).toEqual(["/custom/codex"]);
       expect(spec?.binary).toBe("/custom/codex");
     } finally {

@@ -20,17 +20,35 @@ export type ProcessGroupHandle = Readonly<{
 export type ProcessGroupCapture =
   | { status: "known"; handle: ProcessGroupHandle }
   | { status: "missing"; pid: number }
-  | { status: "unknown"; pid: number; reason: ProcessIdentityUnknownReason | "identity_pid_mismatch" | "not_process_group_leader" };
+  | {
+      status: "unknown";
+      pid: number;
+      reason: ProcessIdentityUnknownReason | "identity_pid_mismatch" | "not_process_group_leader";
+    };
 
 export type ProcessGroupEmptyProbe =
   | { status: "empty"; pgid: number }
   | { status: "nonempty"; pgid: number }
-  | { status: "unknown"; pgid: number; reason: "unsupported_platform" | "permission_denied" | "probe_failed" };
+  | {
+      status: "unknown";
+      pgid: number;
+      reason: "unsupported_platform" | "permission_denied" | "probe_failed";
+    };
 
 export type ProcessGroupSignalResult =
   | { status: "sent"; pgid: number; signal: NodeJS.Signals }
   | { status: "empty"; pgid: number; signal: NodeJS.Signals }
-  | { status: "unknown"; pgid: number; signal: NodeJS.Signals; reason: "stale_leader" | "missing_leader" | "identity_unknown" | "permission_denied" | "signal_failed" };
+  | {
+      status: "unknown";
+      pgid: number;
+      signal: NodeJS.Signals;
+      reason:
+        | "stale_leader"
+        | "missing_leader"
+        | "identity_unknown"
+        | "permission_denied"
+        | "signal_failed";
+    };
 
 export interface ProcessGroupServiceOptions {
   platform?: string;
@@ -54,13 +72,22 @@ function handleFromKnownLeader(identity: KnownProcessIdentity): ProcessGroupCapt
 }
 
 export function parseProcessGroupHandle(value: unknown): ProcessGroupHandle {
-  if (!value || typeof value !== "object") throw new Error("process group handle must be an object");
+  if (!value || typeof value !== "object")
+    throw new Error("process group handle must be an object");
   const candidate = value as { schemaVersion?: unknown; pgid?: unknown; leader?: unknown };
-  if (candidate.schemaVersion !== 1 || !Number.isSafeInteger(candidate.pgid) || Number(candidate.pgid) <= 0) {
+  if (
+    candidate.schemaVersion !== 1 ||
+    !Number.isSafeInteger(candidate.pgid) ||
+    Number(candidate.pgid) <= 0
+  ) {
     throw new Error("process group handle has an invalid schema version or pgid");
   }
-  if (!isKnownProcessIdentity(candidate.leader)) throw new Error("process group handle requires a known leader identity");
-  if (candidate.leader.pid !== candidate.pgid || candidate.leader.processGroupId !== candidate.pgid) {
+  if (!isKnownProcessIdentity(candidate.leader))
+    throw new Error("process group handle requires a known leader identity");
+  if (
+    candidate.leader.pid !== candidate.pgid ||
+    candidate.leader.processGroupId !== candidate.pgid
+  ) {
     throw new Error("process group leader pid and observed pgid must equal the handle pgid");
   }
   return Object.freeze({
@@ -79,8 +106,10 @@ export class ProcessGroupService {
   constructor(options: ProcessGroupServiceOptions = {}) {
     this.platform = options.platform ?? process.platform;
     this.identity = options.identity ?? defaultProcessIdentityService;
-    this.probeProcessGroup = options.probeProcessGroup ?? ((negativePgid) => process.kill(negativePgid, 0));
-    this.signalProcessGroup = options.signalProcessGroup ?? ((negativePgid, signal) => process.kill(negativePgid, signal));
+    this.probeProcessGroup =
+      options.probeProcessGroup ?? ((negativePgid) => process.kill(negativePgid, 0));
+    this.signalProcessGroup =
+      options.signalProcessGroup ?? ((negativePgid, signal) => process.kill(negativePgid, signal));
   }
 
   captureLeader(pid: number): ProcessGroupCapture {
@@ -106,7 +135,8 @@ export class ProcessGroupService {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code === "ESRCH") return { status: "empty", pgid: handle.pgid };
-      if (code === "EPERM" || code === "EACCES") return { status: "unknown", pgid: handle.pgid, reason: "permission_denied" };
+      if (code === "EPERM" || code === "EACCES")
+        return { status: "unknown", pgid: handle.pgid, reason: "permission_denied" };
       return { status: "unknown", pgid: handle.pgid, reason: "probe_failed" };
     }
   }
@@ -115,9 +145,12 @@ export class ProcessGroupService {
   signal(handle: ProcessGroupHandle, signal: NodeJS.Signals): ProcessGroupSignalResult {
     const comparison = this.compareLeader(handle);
     if (comparison !== "same") {
-      const reason = comparison === "different" ? "stale_leader"
-        : comparison === "missing" ? "missing_leader"
-          : "identity_unknown";
+      const reason =
+        comparison === "different"
+          ? "stale_leader"
+          : comparison === "missing"
+            ? "missing_leader"
+            : "identity_unknown";
       return { status: "unknown", pgid: handle.pgid, signal, reason };
     }
     try {

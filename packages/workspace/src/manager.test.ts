@@ -102,7 +102,10 @@ describe("WorkspaceManager", () => {
 
     writeFileSync(join(env.worktree_path, "NEW.txt"), "hello world\n");
     // Simulate a harness writing secrets/state into its scoped HOME (e.g. codex auth.json).
-    writeFileSync(join(env.harness_config_dirs["codex_home"] as string, "auth.json"), '{"OPENAI_API_KEY":"sk-secret"}\n');
+    writeFileSync(
+      join(env.harness_config_dirs["codex_home"] as string, "auth.json"),
+      '{"OPENAI_API_KEY":"sk-secret"}\n',
+    );
     const diff = await mgr.diff(env);
     expect(diff).toContain("NEW.txt");
     expect(diff).toContain("hello world");
@@ -124,7 +127,15 @@ describe("WorkspaceManager", () => {
     writeFileSync(ignorePath, ignoreBytes);
     chmodSync(ignorePath, 0o640);
     await git(repo, ["add", "--", ".claudexor/.gitignore"]);
-    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "user config"]);
+    await git(repo, [
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-m",
+      "user config",
+    ]);
 
     // Preserve a pre-existing staged change, an unstaged edit, and a legal
     // newline-bearing untracked filename through every capture path.
@@ -136,18 +147,26 @@ describe("WorkspaceManager", () => {
     const indexRel = (await git(repo, ["rev-parse", "--git-path", "index"])).stdout.trim();
     const indexPath = isAbsolute(indexRel) ? indexRel : resolve(repo, indexRel);
     const indexBefore = readFileSync(indexPath);
-    const statusBefore = (await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout;
+    const statusBefore = (
+      await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    ).stdout;
     const ignoreModeBefore = statSync(ignorePath).mode & 0o777;
 
     const manager = new WorkspaceManager(repo);
-    const env = await manager.create({ taskId: "safe-state", attemptId: "a01", dirtyPolicy: "snapshot" });
+    const env = await manager.create({
+      taskId: "safe-state",
+      attemptId: "a01",
+      dirtyPolicy: "snapshot",
+    });
     writeFileSync(join(env.worktree_path, "candidate.txt"), "candidate\n");
     const diff = await manager.diff(env);
     expect(diff).toContain("candidate.txt");
     await manager.dispose(env);
 
     expect(readFileSync(indexPath).equals(indexBefore)).toBe(true);
-    expect((await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout).toBe(statusBefore);
+    expect(
+      (await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).stdout,
+    ).toBe(statusBefore);
     expect(readFileSync(ignorePath).equals(ignoreBytes)).toBe(true);
     expect(statSync(ignorePath).mode & 0o777).toBe(ignoreModeBefore);
     expect(existsSync(join(repo, ".claudexor", "workspaces"))).toBe(false);
@@ -160,7 +179,15 @@ describe("WorkspaceManager", () => {
     // user hit on an in-place agent turn ("paths are ignored ... use -f").
     writeFileSync(join(repo, ".gitignore"), ".claudexor\n.claudexor-review-evidence\n");
     await git(repo, ["add", "-A"]);
-    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "gitignore .claudexor"]);
+    await git(repo, [
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-m",
+      "gitignore .claudexor",
+    ]);
     // Materialize the self-ignored run dir (mirrors a concurrent in-place turn).
     mkdirSync(join(repo, ".claudexor", "runs", "run-x"), { recursive: true });
     writeFileSync(join(repo, ".claudexor", ".gitignore"), "*\n");
@@ -275,7 +302,9 @@ describe("WorkspaceManager", () => {
       "",
     ].join("\n");
     type Relativize = (text: string, baselineRoot: string, liveRoot: string) => string;
-    const relativize = (WorkspaceManager as unknown as Record<string, Relativize>)["relativizePlainDiffHeadersFor"] as Relativize;
+    const relativize = (WorkspaceManager as unknown as Record<string, Relativize>)[
+      "relativizePlainDiffHeadersFor"
+    ] as Relativize;
     const out = relativize(doc, base, live);
     // Real header (witnessed by timestamps) relativized.
     expect(out).toContain("--- a/notes.txt\t2026-01-01 00:00:00");
@@ -341,13 +370,20 @@ describe("WorkspaceManager", () => {
     writeFileSync(join(wt.path, "wt-change.txt"), "edited in worktree\n");
     const snap = await snapshotTree(wt.path);
     expect(snap).not.toBe(wt.baseSha); // a real snapshot sha, not a crash
-    const diff = await (new WorkspaceManager(wt.path)).diff(
+    const diff = await new WorkspaceManager(wt.path).diff(
       // craft an in-place envelope pointing at the worktree
-      { worktree_path: wt.path, repo_root: wt.path, base_sha: wt.baseSha, task_id: "t", attempt_id: "a" } as never,
+      {
+        worktree_path: wt.path,
+        repo_root: wt.path,
+        base_sha: wt.baseSha,
+        task_id: "t",
+        attempt_id: "a",
+      } as never,
     );
     expect(diff).toContain("wt-change.txt");
     // Adopt a patch into the worktree (race-winner path) — must not throw.
-    const patch = "diff --git a/adopted.txt b/adopted.txt\nnew file mode 100644\nindex 0000000..0905ab8\n--- /dev/null\n+++ b/adopted.txt\n@@ -0,0 +1 @@\n+adopted\n";
+    const patch =
+      "diff --git a/adopted.txt b/adopted.txt\nnew file mode 100644\nindex 0000000..0905ab8\n--- /dev/null\n+++ b/adopted.txt\n@@ -0,0 +1 @@\n+adopted\n";
     expect((await applyPatchProtected(wt.path, patch)).ok).toBe(true);
     expect(existsSync(join(wt.path, "adopted.txt"))).toBe(true);
   });
@@ -370,7 +406,15 @@ describe("WorkspaceManager", () => {
     // diffing vs base_sha must still surface it, or the candidate's output is silently lost.
     writeFileSync(join(env.worktree_path, "feature.ts"), "export const x = 1;\n");
     await git(env.worktree_path, ["add", "-A"]);
-    await git(env.worktree_path, ["-c", "user.email=h@h.dev", "-c", "user.name=Harness", "commit", "-m", "harness work"]);
+    await git(env.worktree_path, [
+      "-c",
+      "user.email=h@h.dev",
+      "-c",
+      "user.name=Harness",
+      "commit",
+      "-m",
+      "harness work",
+    ]);
     const diff = await mgr.diff(env);
     expect(diff).toContain("feature.ts");
     expect(diff).toContain("export const x = 1;");
@@ -401,7 +445,11 @@ describe("WorkspaceManager", () => {
     // snapshot must carry it through.
     writeFileSync(join(repo, "untracked.txt"), "fresh\n");
     const mgr = new WorkspaceManager(repo);
-    const env = await mgr.create({ taskId: "task-snap", attemptId: "a01", dirtyPolicy: "snapshot" });
+    const env = await mgr.create({
+      taskId: "task-snap",
+      attemptId: "a01",
+      dirtyPolicy: "snapshot",
+    });
     expect(existsSync(join(env.worktree_path, "untracked.txt"))).toBe(true);
     await mgr.dispose(env);
   });
@@ -474,7 +522,9 @@ describe("disposeOrphan (crash GC)", () => {
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "a.txt"), "x\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
-    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], {
+      cwd: repo,
+    });
     const wsm = new WorkspaceManager(repo);
     const env = await wsm.create({ taskId: "task-orph", attemptId: "a01" });
     // Simulate the crash: the envelope is on disk with no live owner.
@@ -482,7 +532,10 @@ describe("disposeOrphan (crash GC)", () => {
     const wsm2 = new WorkspaceManager(repo);
     await wsm2.disposeOrphan("task-orph", "a01");
     expect(existsSync(join(projectRuntimeDir(repo), "workspaces", "task-orph"))).toBe(false);
-    const branches = execFileSync("git", ["branch", "--list", "claudexor/*"], { cwd: repo, encoding: "utf8" });
+    const branches = execFileSync("git", ["branch", "--list", "claudexor/*"], {
+      cwd: repo,
+      encoding: "utf8",
+    });
     expect(branches.trim()).toBe("");
     rmSync(repo, { recursive: true, force: true });
   });
@@ -494,7 +547,9 @@ describe("diff fidelity", () => {
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "win.txt"), "line one\r\nline two\r\nline three\r\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
-    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], {
+      cwd: repo,
+    });
     const wsm = new WorkspaceManager(repo);
     const env = await wsm.create({ taskId: "task-crlf", attemptId: "a01" });
     // Harness edit inside the worktree keeps CRLF endings.
@@ -515,10 +570,15 @@ describe("diff fidelity", () => {
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "a.txt"), "x\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
-    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], {
+      cwd: repo,
+    });
     const wsm = new WorkspaceManager(repo);
     const env = await wsm.create({ taskId: "task-bin", attemptId: "a01" });
-    writeFileSync(join(env.worktree_path, "img.bin"), Buffer.from([0, 1, 2, 3, 255, 254, 0, 10, 13, 7]));
+    writeFileSync(
+      join(env.worktree_path, "img.bin"),
+      Buffer.from([0, 1, 2, 3, 255, 254, 0, 10, 13, 7]),
+    );
     const diff = await wsm.diff(env);
     expect(diff).toContain("GIT binary patch");
     expect(diff).not.toContain("img.bin differ");
@@ -537,7 +597,9 @@ describe("revert with quoted/special filenames", () => {
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "base.txt"), "base\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
-    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], { cwd: repo });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], {
+      cwd: repo,
+    });
     const pre = await snapshotTree(repo);
     // The turn adds a file whose name git quotes under core.quotePath=true.
     const special = "файл с пробелом.txt";
@@ -597,10 +659,14 @@ describe("snapshot keeps every repo .claudexor change", () => {
     mkdirSync(join(repo, ".claudexor", "runs", "run-y"), { recursive: true });
     writeFileSync(join(repo, ".claudexor", "runs", "run-y", "events.jsonl"), "{}\n");
     const sha = await snapshotTree(repo);
-    const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], { encoding: "utf8" });
+    const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], {
+      encoding: "utf8",
+    });
     expect(files).toContain(".claudexor/config.yaml");
     expect(files).toContain(".claudexor/runs/run-y/events.jsonl");
-    const content = execFileSync("git", ["-C", repo, "show", `${sha}:.claudexor/config.yaml`], { encoding: "utf8" });
+    const content = execFileSync("git", ["-C", repo, "show", `${sha}:.claudexor/config.yaml`], {
+      encoding: "utf8",
+    });
     expect(content).toContain("node --test"); // the EDIT, not the base version
   });
 });
@@ -626,7 +692,9 @@ describe("pre-STAGED deletion of a versioned artifact-dir file (R33 cycle-3)", (
     const dirty = await statusPorcelainMeaningful(repo);
     expect(dirty.some((l) => l.includes(".claudexor/config.yaml"))).toBe(true);
     const sha = await snapshotTree(repo);
-    const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], { encoding: "utf8" });
+    const files = execFileSync("git", ["-C", repo, "ls-tree", "-r", "--name-only", sha], {
+      encoding: "utf8",
+    });
     // The snapshot tree reflects the DELETION (file absent), not HEAD's copy.
     expect(files).not.toContain(".claudexor/config.yaml");
     expect(files).toContain("src.txt");

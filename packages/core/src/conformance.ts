@@ -44,9 +44,15 @@ export function validateTypedStream(events: unknown[]): StreamConformanceStats {
     const ev = HarnessEvent.parse(raw); // throws loudly on contract violations
     stats.total += 1;
     switch (ev.type) {
-      case "started": stats.started += 1; break;
-      case "message": stats.messages += 1; break;
-      case "tool_call": stats.toolCalls += 1; break;
+      case "started":
+        stats.started += 1;
+        break;
+      case "message":
+        stats.messages += 1;
+        break;
+      case "tool_call":
+        stats.toolCalls += 1;
+        break;
       case "tool_result":
         stats.toolResults += 1;
         if (!ev.tool?.status) stats.statuslessToolResults += 1;
@@ -54,11 +60,20 @@ export function validateTypedStream(events: unknown[]): StreamConformanceStats {
         if (ev.tool?.status === "denied") stats.deniedToolResults += 1;
         if (ev.tool?.status === "cancelled") stats.cancelledToolResults += 1;
         break;
-      case "file_change": stats.fileChanges += 1; break;
-      case "usage": stats.usageEvents += 1; break;
-      case "error": stats.errors += 1; break;
-      case "completed": stats.completed += 1; break;
-      default: break;
+      case "file_change":
+        stats.fileChanges += 1;
+        break;
+      case "usage":
+        stats.usageEvents += 1;
+        break;
+      case "error":
+        stats.errors += 1;
+        break;
+      case "completed":
+        stats.completed += 1;
+        break;
+      default:
+        break;
     }
   }
   return stats;

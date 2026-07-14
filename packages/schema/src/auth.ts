@@ -7,13 +7,17 @@ const Sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 /** What credential behavior the caller asked Claudexor to enforce. */
 export const AuthRequest = z
   .enum(["subscription", "api_key", "auto"])
-  .describe("Requested credential behavior: exact subscription, exact managed API key, or policy-governed auto selection.");
+  .describe(
+    "Requested credential behavior: exact subscription, exact managed API key, or policy-governed auto selection.",
+  );
 export type AuthRequest = z.infer<typeof AuthRequest>;
 
 /** The concrete credential transport selected for one real harness execution. */
 export const CredentialRoute = z
   .enum(["vendor_native", "managed_api_key", "local"])
-  .describe("Effective credential route: vendor-owned native session, Claudexor-managed API key, or credential-free local execution.");
+  .describe(
+    "Effective credential route: vendor-owned native session, Claudexor-managed API key, or credential-free local execution.",
+  );
 export type CredentialRoute = z.infer<typeof CredentialRoute>;
 
 export const AuthAvailability = z.enum(["available", "unavailable", "unknown"]);
@@ -23,7 +27,14 @@ export const AuthVerification = z.enum(["passed", "failed", "not_run"]);
 export type AuthVerification = z.infer<typeof AuthVerification>;
 
 export const AuthSourceKind = z
-  .enum(["native_session", "oauth_token_env", "api_key_env", "api_key_flag", "provider_auth_file", "none"])
+  .enum([
+    "native_session",
+    "oauth_token_env",
+    "api_key_env",
+    "api_key_flag",
+    "provider_auth_file",
+    "none",
+  ])
   .describe("Concrete credential source used or probed by a harness.");
 export type AuthSourceKind = z.infer<typeof AuthSourceKind>;
 
@@ -50,7 +61,9 @@ export const ControlAuthReadinessRefreshRequest = z
     source: AuthSourceKind,
   })
   .strict()
-  .describe("Request to refresh one exact harness authentication source without probing unrelated routes.");
+  .describe(
+    "Request to refresh one exact harness authentication source without probing unrelated routes.",
+  );
 export type ControlAuthReadinessRefreshRequest = z.infer<typeof ControlAuthReadinessRefreshRequest>;
 
 /**
@@ -77,12 +90,16 @@ export const ControlAuthReadinessRefreshResponse = z
     }
   })
   .describe("Point-in-time readiness evidence for one exact harness credential source.");
-export type ControlAuthReadinessRefreshResponse = z.infer<typeof ControlAuthReadinessRefreshResponse>;
+export type ControlAuthReadinessRefreshResponse = z.infer<
+  typeof ControlAuthReadinessRefreshResponse
+>;
 
 /** Billing truth is deliberately independent from credential transport. */
 export const BillingKnowledge = z
   .enum(["proven_zero", "subscription_entitlement", "metered", "unknown"])
-  .describe("What is actually known about incremental billing; a native credential route alone never proves entitlement or zero cost.");
+  .describe(
+    "What is actually known about incremental billing; a native credential route alone never proves entitlement or zero cost.",
+  );
 export type BillingKnowledge = z.infer<typeof BillingKnowledge>;
 
 export const CostKnowledge = z
@@ -127,15 +144,22 @@ export const AuthSmokeDisclosure = z
   .strict()
   .superRefine((value, context) => {
     if (value.requiredRoute === "vendor_native") {
-      if (value.billingKnowledge !== "unknown" || value.incrementalCostKnowledge !== "unknown" || !value.mayConsumeQuota) {
+      if (
+        value.billingKnowledge !== "unknown" ||
+        value.incrementalCostKnowledge !== "unknown" ||
+        !value.mayConsumeQuota
+      ) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "a vendor-native smoke must disclose unknown billing/cost and possible quota consumption",
+          message:
+            "a vendor-native smoke must disclose unknown billing/cost and possible quota consumption",
         });
       }
     }
   })
-  .describe("Pre-execution disclosure for the exact same-harness capability smoke required by auth setup.");
+  .describe(
+    "Pre-execution disclosure for the exact same-harness capability smoke required by auth setup.",
+  );
 export type AuthSmokeDisclosure = z.infer<typeof AuthSmokeDisclosure>;
 
 /**
@@ -188,40 +212,93 @@ export const AuthCapabilityReceipt = z
   .superRefine((value, context) => {
     if (value.verification === "passed") {
       if (value.availability !== "available") {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["availability"], message: "passed verification requires available credentials" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["availability"],
+          message: "passed verification requires available credentials",
+        });
       }
       if (value.effective !== value.requiredRoute) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["effective"], message: "passed verification requires the exact requested credential route" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["effective"],
+          message: "passed verification requires the exact requested credential route",
+        });
       }
       if (value.effectiveSource !== value.requiredSource) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["effectiveSource"], message: "passed verification requires the exact requested credential source" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["effectiveSource"],
+          message: "passed verification requires the exact requested credential source",
+        });
       }
       if (value.selectionReason !== "exact_requested_route") {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["selectionReason"], message: "passed verification requires exact_requested_route evidence" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["selectionReason"],
+          message: "passed verification requires exact_requested_route evidence",
+        });
       }
       if (value.responseDigest !== value.challengeDigest) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["responseDigest"], message: "passed verification response must match the persisted challenge digest" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["responseDigest"],
+          message: "passed verification response must match the persisted challenge digest",
+        });
       }
-      if (value.stream.startedEvents !== 1 || value.stream.completedEvents !== 1 || value.stream.errorEvents !== 0
-        || value.stream.unexpectedToolEvents !== 0 || value.stream.sessionMismatchEvents !== 0
-        || value.stream.interactionEvents !== 0 || value.stream.eventsAfterCompleted !== 0 || value.stream.aborted) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["stream"], message: "passed verification requires one clean started/completed stream" });
+      if (
+        value.stream.startedEvents !== 1 ||
+        value.stream.completedEvents !== 1 ||
+        value.stream.errorEvents !== 0 ||
+        value.stream.unexpectedToolEvents !== 0 ||
+        value.stream.sessionMismatchEvents !== 0 ||
+        value.stream.interactionEvents !== 0 ||
+        value.stream.eventsAfterCompleted !== 0 ||
+        value.stream.aborted
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stream"],
+          message: "passed verification requires one clean started/completed stream",
+        });
       }
       if (value.scratchBeforeDigest !== value.scratchAfterDigest) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["scratchAfterDigest"], message: "passed verification requires an unchanged external scratch tree" });
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["scratchAfterDigest"],
+          message: "passed verification requires an unchanged external scratch tree",
+        });
       }
     }
     if (Date.parse(value.completedAt) < Date.parse(value.startedAt)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["completedAt"], message: "receipt completion cannot precede its start" });
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["completedAt"],
+        message: "receipt completion cannot precede its start",
+      });
     }
-    if (value.requiredRoute === "vendor_native" && (value.billingKnowledge !== "unknown" || value.costKnowledge !== "unknown")) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "vendor-native route evidence alone cannot prove billing or incremental cash cost" });
+    if (
+      value.requiredRoute === "vendor_native" &&
+      (value.billingKnowledge !== "unknown" || value.costKnowledge !== "unknown")
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "vendor-native route evidence alone cannot prove billing or incremental cash cost",
+      });
     }
     if (value.costKnowledge === "unknown" && value.costUsd !== undefined) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["costUsd"], message: "unknown cost must not fabricate a USD value" });
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["costUsd"],
+        message: "unknown cost must not fabricate a USD value",
+      });
     }
     if (value.costKnowledge !== "unknown" && value.costUsd === undefined) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["costUsd"], message: "known or estimated cost requires a USD value" });
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["costUsd"],
+        message: "known or estimated cost requires a USD value",
+      });
     }
   })
   .describe("Immutable result of one exact-route same-harness capability smoke.");
@@ -240,34 +317,59 @@ export type AuthCapabilityBinding = z.infer<typeof AuthCapabilityBinding>;
 export const AuthCapabilityLifecycle = z
   .discriminatedUnion("state", [
     z.object({ ...AuthCapabilityBindingShape, state: z.literal("disclosed") }).strict(),
-    z.object({ ...AuthCapabilityBindingShape, state: z.literal("running"), startedAt: AuthTimestamp }).strict(),
-    z.object({
-      ...AuthCapabilityBindingShape,
-      state: z.literal("completed"),
-      startedAt: AuthTimestamp,
-      completedAt: AuthTimestamp,
-      receipt: AuthCapabilityReceipt,
-    }).strict(),
-    z.object({
-      ...AuthCapabilityBindingShape,
-      state: z.literal("interrupted_unknown"),
-      startedAt: AuthTimestamp,
-      interruptedAt: AuthTimestamp,
-    }).strict(),
+    z
+      .object({
+        ...AuthCapabilityBindingShape,
+        state: z.literal("running"),
+        startedAt: AuthTimestamp,
+      })
+      .strict(),
+    z
+      .object({
+        ...AuthCapabilityBindingShape,
+        state: z.literal("completed"),
+        startedAt: AuthTimestamp,
+        completedAt: AuthTimestamp,
+        receipt: AuthCapabilityReceipt,
+      })
+      .strict(),
+    z
+      .object({
+        ...AuthCapabilityBindingShape,
+        state: z.literal("interrupted_unknown"),
+        startedAt: AuthTimestamp,
+        interruptedAt: AuthTimestamp,
+      })
+      .strict(),
   ])
   .superRefine((value, context) => {
-    if ("startedAt" in value && Date.parse(value.startedAt) < Date.parse(value.disclosure.generatedAt)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["startedAt"], message: "capability smoke cannot start before its disclosure" });
+    if (
+      "startedAt" in value &&
+      Date.parse(value.startedAt) < Date.parse(value.disclosure.generatedAt)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["startedAt"],
+        message: "capability smoke cannot start before its disclosure",
+      });
     }
     if (value.state === "completed") {
-      if (value.receipt.attemptId !== value.attemptId
-        || value.receipt.challengeDigest !== value.challengeDigest
-        || value.receipt.requestDigest !== value.requestDigest
-        || value.receipt.startedAt !== value.startedAt
-        || value.receipt.completedAt !== value.completedAt) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["receipt"], message: "completed lifecycle receipt must match its durable binding and timestamps" });
+      if (
+        value.receipt.attemptId !== value.attemptId ||
+        value.receipt.challengeDigest !== value.challengeDigest ||
+        value.receipt.requestDigest !== value.requestDigest ||
+        value.receipt.startedAt !== value.startedAt ||
+        value.receipt.completedAt !== value.completedAt
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["receipt"],
+          message: "completed lifecycle receipt must match its durable binding and timestamps",
+        });
       }
     }
   })
-  .describe("Single durable auth-smoke lifecycle: disclosed, running, completed, or interrupted_unknown.");
+  .describe(
+    "Single durable auth-smoke lifecycle: disclosed, running, completed, or interrupted_unknown.",
+  );
 export type AuthCapabilityLifecycle = z.infer<typeof AuthCapabilityLifecycle>;

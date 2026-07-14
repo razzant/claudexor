@@ -15,7 +15,13 @@ const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 export function codexApiKey(): string | undefined {
   // The hermetic kill switch is honored inside resolveSecret (single owner).
   const stored = resolveSecret("openai");
-  return process.env.CLAUDEXOR_CODEX_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_API_KEY || stored || undefined;
+  return (
+    process.env.CLAUDEXOR_CODEX_API_KEY ||
+    process.env.CODEX_API_KEY ||
+    process.env.OPENAI_API_KEY ||
+    stored ||
+    undefined
+  );
 }
 
 /**
@@ -38,7 +44,9 @@ export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = t
   const authPath = join(home, "auth.json");
   if (existsSync(authPath)) return;
   mkdirSync(home, { recursive: true });
-  writeFileSync(authPath, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey }) + "\n", { mode: 0o600 });
+  writeFileSync(authPath, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey }) + "\n", {
+    mode: 0o600,
+  });
 }
 
 /** The user's real codex home (native ChatGPT/subscription session lives here). */
@@ -89,7 +97,11 @@ export async function probeLogin(
       cancelKillDelayMs: 0,
     });
     const text = `${r.stdout}\n${r.stderr}`;
-    const statusLines = text.replaceAll("\r", "").split("\n").map((line) => line.trim()).filter(Boolean);
+    const statusLines = text
+      .replaceAll("\r", "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
     // "Not logged in" is codex's NORMAL logged-out answer (exit 1, no error
     // prefix). Anything else on a failing probe is a probe error, not an auth
     // verdict (adapter-local knowledge of the native CLI's output is allowed).
@@ -99,16 +111,23 @@ export async function probeLogin(
     if (r.code === 0 && statusLines.some((line) => /^logged in using chatgpt[.!]?$/i.test(line))) {
       return { authed: true, method: "chatgpt", probeError: null };
     }
-    if (r.code === 0 && statusLines.some((line) => /^logged in using (?:an? )?api key[.!]?$/i.test(line))) {
+    if (
+      r.code === 0 &&
+      statusLines.some((line) => /^logged in using (?:an? )?api key[.!]?$/i.test(line))
+    ) {
       return { authed: true, method: "api_key", probeError: null };
     }
-    if (r.code === 0 && statusLines.some((line) => /^logged in using (?:an? )?access token[.!]?$/i.test(line))) {
+    if (
+      r.code === 0 &&
+      statusLines.some((line) => /^logged in using (?:an? )?access token[.!]?$/i.test(line))
+    ) {
       return { authed: true, method: "access_token", probeError: null };
     }
     // Redact BEFORE labelStreams truncates: truncation could split a token
     // into a prefix the redactor no longer recognizes.
     const detail = labelStreams(r.stderr, r.stdout, { transform: redactSecrets });
-    const reason = detail ?? `codex login status exited with ${r.code ?? r.signal ?? "unknown result"}`;
+    const reason =
+      detail ?? `codex login status exited with ${r.code ?? r.signal ?? "unknown result"}`;
     return {
       authed: false,
       method: "unknown",
@@ -118,7 +137,9 @@ export async function probeLogin(
     return {
       authed: false,
       method: "unknown",
-      probeError: [...redactSecrets(err instanceof Error ? err.message : String(err))].slice(0, 300).join(""),
+      probeError: [...redactSecrets(err instanceof Error ? err.message : String(err))]
+        .slice(0, 300)
+        .join(""),
     };
   }
 }
@@ -139,7 +160,9 @@ export function hasApiKey(): boolean {
 export function codexAuthModeAt(home: string): "local_session" | "api_key" | null {
   if (!home.trim() || resolve(home) === resolve(defaultNativeCodexHome())) return null;
   try {
-    const parsed = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) as { auth_mode?: unknown };
+    const parsed = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) as {
+      auth_mode?: unknown;
+    };
     if (parsed.auth_mode === "chatgpt") return "local_session";
     if (parsed.auth_mode === "apikey") return "api_key";
     return null;

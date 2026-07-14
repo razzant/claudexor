@@ -8,7 +8,10 @@
  * value, and the truth source — a bad value must never be persisted to die
  * later as an opaque native error.
  */
-import type { ControlSettingsUpdateRequest, GlobalConfig as GlobalConfigT } from "@claudexor/schema";
+import type {
+  ControlSettingsUpdateRequest,
+  GlobalConfig as GlobalConfigT,
+} from "@claudexor/schema";
 import { GlobalConfig } from "@claudexor/schema";
 import { validateModel } from "@claudexor/core";
 import { buildRegistry, harnessModels } from "./registry.js";

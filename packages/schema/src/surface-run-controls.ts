@@ -15,29 +15,46 @@ import { EffortHint } from "./harness.js";
 export function validateSurfaceRunControls(obj: Record<string, unknown>): string | null {
   const primaryHarnessError = validateOptionalNonEmptyString(obj.primaryHarness, "primaryHarness");
   if (primaryHarnessError) return primaryHarnessError;
-  if (obj.web !== undefined && (typeof obj.web !== "string" || !ExternalContextPolicy.safeParse(obj.web).success)) {
+  if (
+    obj.web !== undefined &&
+    (typeof obj.web !== "string" || !ExternalContextPolicy.safeParse(obj.web).success)
+  ) {
     return "web must be a valid external context policy";
   }
   if (
     obj.externalContextPolicy !== undefined &&
-    (typeof obj.externalContextPolicy !== "string" || !ExternalContextPolicy.safeParse(obj.externalContextPolicy).success)
+    (typeof obj.externalContextPolicy !== "string" ||
+      !ExternalContextPolicy.safeParse(obj.externalContextPolicy).success)
   ) {
     return "externalContextPolicy must be a valid external context policy";
   }
-  if (obj.web !== undefined && obj.externalContextPolicy !== undefined && obj.web !== obj.externalContextPolicy) {
+  if (
+    obj.web !== undefined &&
+    obj.externalContextPolicy !== undefined &&
+    obj.web !== obj.externalContextPolicy
+  ) {
     return "web and externalContextPolicy must be equal when both are provided";
   }
   const modelError = validateOptionalNonEmptyString(obj.model, "model");
   if (modelError) return modelError;
-  if (obj.effort !== undefined && (typeof obj.effort !== "string" || !EffortHint.safeParse(obj.effort).success)) {
+  if (
+    obj.effort !== undefined &&
+    (typeof obj.effort !== "string" || !EffortHint.safeParse(obj.effort).success)
+  ) {
     return "effort must be a valid effort value";
   }
   const testsError = validateStringArray(obj.tests, "tests");
   if (testsError) return testsError;
-  if (obj.maxUsd !== undefined && (typeof obj.maxUsd !== "number" || !Number.isFinite(obj.maxUsd) || obj.maxUsd < 0)) {
+  if (
+    obj.maxUsd !== undefined &&
+    (typeof obj.maxUsd !== "number" || !Number.isFinite(obj.maxUsd) || obj.maxUsd < 0)
+  ) {
     return "maxUsd must be a non-negative number";
   }
-  if (obj.access !== undefined && (typeof obj.access !== "string" || !AccessProfile.safeParse(obj.access).success)) {
+  if (
+    obj.access !== undefined &&
+    (typeof obj.access !== "string" || !AccessProfile.safeParse(obj.access).success)
+  ) {
     return "access must be a valid access profile";
   }
   if (obj.reviewerPanel !== undefined) {
@@ -52,10 +69,16 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
       if (typeof entry.harness !== "string" || entry.harness.trim() === "") {
         return "reviewerPanel[].harness must be a non-empty string";
       }
-      if (entry.model !== undefined && (typeof entry.model !== "string" || entry.model.trim() === "")) {
+      if (
+        entry.model !== undefined &&
+        (typeof entry.model !== "string" || entry.model.trim() === "")
+      ) {
         return "reviewerPanel[].model must be a non-empty string";
       }
-      if (entry.effort !== undefined && (typeof entry.effort !== "string" || !EffortHint.safeParse(entry.effort).success)) {
+      if (
+        entry.effort !== undefined &&
+        (typeof entry.effort !== "string" || !EffortHint.safeParse(entry.effort).success)
+      ) {
         return "reviewerPanel[].effort must be a valid effort value";
       }
     }
@@ -72,11 +95,15 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
       if (!isPlainRecord(entry)) return "protectedPathApprovals entries must be objects";
       const keys = Object.keys(entry);
       const allowed = new Set(["path", "reason"]);
-      for (const key of keys) if (!allowed.has(key)) return `unknown protectedPathApprovals field: ${key}`;
+      for (const key of keys)
+        if (!allowed.has(key)) return `unknown protectedPathApprovals field: ${key}`;
       if (typeof entry.path !== "string" || entry.path.trim() === "") {
         return "protectedPathApprovals[].path must be a non-empty string";
       }
-      if (entry.reason !== undefined && (typeof entry.reason !== "string" || entry.reason.trim() === "")) {
+      if (
+        entry.reason !== undefined &&
+        (typeof entry.reason !== "string" || entry.reason.trim() === "")
+      ) {
         return "protectedPathApprovals[].reason must be a non-empty string";
       }
     }

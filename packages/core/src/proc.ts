@@ -323,16 +323,18 @@ export async function runCaptureRaw(
     else abortSignal.addEventListener("abort", requestCancel, { once: true });
   }
   try {
-    const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
-      child.on("error", (err) => {
-        if (typeof child.pid === "number") unregisterChildProcess(child.pid);
-        reject(err);
-      });
-      child.on("close", (c, s) => {
-        if (typeof child.pid === "number") unregisterChildProcess(child.pid);
-        resolve([c, s]);
-      });
-    });
+    const [code, signal] = await new Promise<[number | null, NodeJS.Signals | null]>(
+      (resolve, reject) => {
+        child.on("error", (err) => {
+          if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+          reject(err);
+        });
+        child.on("close", (c, s) => {
+          if (typeof child.pid === "number") unregisterChildProcess(child.pid);
+          resolve([c, s]);
+        });
+      },
+    );
     return {
       code,
       signal,
@@ -345,4 +347,3 @@ export async function runCaptureRaw(
     abortSignal?.removeEventListener("abort", requestCancel);
   }
 }
-

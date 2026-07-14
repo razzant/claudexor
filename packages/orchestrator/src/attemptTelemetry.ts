@@ -5,7 +5,13 @@
  * no regex over prose, and a tool error is "recovered" only when the SAME
  * tool later succeeds against the SAME target.
  */
-import type { AttemptTelemetryRecord, ExternalContextPolicy, HarnessEvent, TaskContract, ToolKind } from "@claudexor/schema";
+import type {
+  AttemptTelemetryRecord,
+  ExternalContextPolicy,
+  HarnessEvent,
+  TaskContract,
+  ToolKind,
+} from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 
 export interface ToolErrorRecord {
@@ -87,10 +93,6 @@ export function createAttemptTelemetry(
     outcome: null,
   };
 }
-
-
-
-
 
 /**
  * Observe a normalized harness event into the attempt telemetry. Governance is
@@ -176,7 +178,12 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     // INV-043: recovery must be attributable to the failed operation — same
     // tool, same KIND, same target (a non-web tool sharing a name with a web
     // tool must not clear its web error).
-    if (!err.recovered && err.tool === tool.name && err.kind === tool.kind && err.target === (tool.target ?? null)) {
+    if (
+      !err.recovered &&
+      err.tool === tool.name &&
+      err.kind === tool.kind &&
+      err.target === (tool.target ?? null)
+    ) {
       err.recovered = true;
     }
   }

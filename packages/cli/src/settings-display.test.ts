@@ -34,7 +34,7 @@ describe("daemonRuntimeDiffLines", () => {
         budget: { maxUsdPerRun: null },
         runtime: {
           reviewerTimeoutMs: 2_400_000,
-      harnessInactivityTimeoutMs: 1_200_000,
+          harnessInactivityTimeoutMs: 1_200_000,
           transientRetry: {
             maxRetries: 2,
             initialDelayMs: 1_000,

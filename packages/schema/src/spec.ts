@@ -27,12 +27,23 @@ export type InterviewOption = z.infer<typeof InterviewOption>;
 export const InterviewQuestion = z
   .object({
     id: Id.describe("Question id."),
-    tier: z.number().int().nonnegative().default(0).describe("Hierarchical depth of the question (0 = foundational)."),
+    tier: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Hierarchical depth of the question (0 = foundational)."),
     prompt: z.string().describe("The question text shown to the user."),
     kind: InterviewQuestionKind.default("single"),
-    options: z.array(InterviewOption).default([]).describe("Selectable options; empty for pure free-text questions."),
+    options: z
+      .array(InterviewOption)
+      .default([])
+      .describe("Selectable options; empty for pure free-text questions."),
     /** Whether free-text is accepted in addition to / instead of options. */
-    allow_text: z.boolean().default(false).describe("Whether free-text is accepted in addition to or instead of options."),
+    allow_text: z
+      .boolean()
+      .default(false)
+      .describe("Whether free-text is accepted in addition to or instead of options."),
     rationale: z.string().optional().describe("Why this question matters for the spec."),
   })
   .describe("One quiz card of the spec interview.");
@@ -42,7 +53,11 @@ export const InterviewAnswer = z
   .object({
     question_id: Id.describe("Id of the question being answered."),
     option_ids: z.array(Id).default([]).describe("Ids of the selected options."),
-    text: z.string().nullable().default(null).describe("Free-text answer; null when only options were selected."),
+    text: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Free-text answer; null when only options were selected."),
   })
   .describe("The user's answer to one interview question.");
 export type InterviewAnswer = z.infer<typeof InterviewAnswer>;
@@ -55,18 +70,32 @@ export const ClarificationItem = z
   .object({
     id: Id.describe("Clarification id."),
     claim: z.string().describe("The ambiguous claim or open question that needs resolution."),
-    status: z.enum(["open", "resolved"]).default("open").describe("Whether the ambiguity is still open or has been resolved."),
-    resolution: z.string().nullable().default(null).describe("How the ambiguity was resolved; null while open."),
+    status: z
+      .enum(["open", "resolved"])
+      .default("open")
+      .describe("Whether the ambiguity is still open or has been resolved."),
+    resolution: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("How the ambiguity was resolved; null while open."),
   })
-  .describe("An explicit unresolved ambiguity (NEEDS_CLARIFICATION); the interview refuses to freeze while any is open.");
+  .describe(
+    "An explicit unresolved ambiguity (NEEDS_CLARIFICATION); the interview refuses to freeze while any is open.",
+  );
 export type ClarificationItem = z.infer<typeof ClarificationItem>;
 
 /** Acceptance criterion in EARS style ("WHEN <cond>, THE SYSTEM SHALL <behavior>"). */
 export const SpecAcceptanceCriterion = z
   .object({
     id: Id.describe("Criterion id."),
-    behavior: z.string().describe("Required behavior, EARS style (WHEN <condition>, THE SYSTEM SHALL <behavior>)."),
-    required: z.boolean().default(true).describe("Whether this criterion is required (vs advisory)."),
+    behavior: z
+      .string()
+      .describe("Required behavior, EARS style (WHEN <condition>, THE SYSTEM SHALL <behavior>)."),
+    required: z
+      .boolean()
+      .default(true)
+      .describe("Whether this criterion is required (vs advisory)."),
   })
   .describe("Acceptance criterion in EARS style.");
 export type SpecAcceptanceCriterion = z.infer<typeof SpecAcceptanceCriterion>;
@@ -88,7 +117,9 @@ export const SpecConstraints = z
     protected_paths: z
       .array(z.string())
       .default([])
-      .describe("Spec-owned protected path globs that raise review risk; per-run approvals cannot be frozen into a spec."),
+      .describe(
+        "Spec-owned protected path globs that raise review risk; per-run approvals cannot be frozen into a spec.",
+      ),
   })
   .strict()
   .describe("Constraints frozen into the spec.");
@@ -99,8 +130,16 @@ const SpecPackBase = z.object({
   id: Id.describe("SpecPack id."),
   created_at: IsoTimestamp.describe("When this SpecPack revision was created."),
   /** Monotonic revision; each freeze increments it (spec-anchored history). */
-  version: z.number().int().positive().default(1).describe("Monotonic revision; each freeze increments it."),
-  frozen: z.boolean().default(false).describe("Whether the spec is frozen (immutable and runnable)."),
+  version: z
+    .number()
+    .int()
+    .positive()
+    .default(1)
+    .describe("Monotonic revision; each freeze increments it."),
+  frozen: z
+    .boolean()
+    .default(false)
+    .describe("Whether the spec is frozen (immutable and runnable)."),
   intent: z
     .object({
       raw: z.string().describe("The user's original request, verbatim."),
@@ -108,17 +147,35 @@ const SpecPackBase = z.object({
     })
     .describe("The user intent this spec captures."),
   summary: z.string().default("").describe("Short human-readable summary of the spec."),
-  success_criteria: z.array(SpecAcceptanceCriterion).default([]).describe("Acceptance criteria the implementation is held to."),
+  success_criteria: z
+    .array(SpecAcceptanceCriterion)
+    .default([])
+    .describe("Acceptance criteria the implementation is held to."),
   non_goals: z.array(z.string()).default([]).describe("Explicitly out-of-scope outcomes."),
-  forbidden_approaches: z.array(z.string()).default([]).describe("Approaches the implementation must not take."),
-  decided_tradeoffs: z.array(z.string()).default([]).describe("Tradeoffs already decided during the interview."),
+  forbidden_approaches: z
+    .array(z.string())
+    .default([])
+    .describe("Approaches the implementation must not take."),
+  decided_tradeoffs: z
+    .array(z.string())
+    .default([])
+    .describe("Tradeoffs already decided during the interview."),
   constraints: SpecConstraints.default({}),
-  tests: z.array(TestCommand).default([]).describe("Deterministic test commands frozen into the spec."),
+  tests: z
+    .array(TestCommand)
+    .default([])
+    .describe("Deterministic test commands frozen into the spec."),
   tasks: z.array(SpecTask).default([]).describe("Dependency-ordered implementation checklist."),
-  open_questions: z.array(ClarificationItem).default([]).describe("Unresolved ambiguities; must all be resolved before freezing."),
+  open_questions: z
+    .array(ClarificationItem)
+    .default([])
+    .describe("Unresolved ambiguities; must all be resolved before freezing."),
   interview: z
     .object({
-      questions: z.array(InterviewQuestion).default([]).describe("Questions asked during the interview."),
+      questions: z
+        .array(InterviewQuestion)
+        .default([])
+        .describe("Questions asked during the interview."),
       answers: z.array(InterviewAnswer).default([]).describe("The user's answers."),
     })
     .default({ questions: [], answers: [] })

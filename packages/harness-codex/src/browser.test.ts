@@ -5,7 +5,15 @@ import { join } from "node:path";
 import { codexBrowserArgs, codexConfigHasNodeRepl, codexExecArgs } from "./index.js";
 
 describe("node_repl suppression — config-aware (must never break scoped homes)", () => {
-  const spec = { access: "readonly" as const, model_hint: null, effort_hint: null, external_context_policy: "auto" as const, prompt: "go", attachments: [], browser: null };
+  const spec = {
+    access: "readonly" as const,
+    model_hint: null,
+    effort_hint: null,
+    external_context_policy: "auto" as const,
+    prompt: "go",
+    attachments: [],
+    browser: null,
+  };
 
   it("does NOT touch node_repl by default (no opts) — the unconditional override created an invalid transport-less entry on scoped homes", () => {
     expect(codexExecArgs(spec).join(" ")).not.toContain("node_repl");
@@ -13,8 +21,12 @@ describe("node_repl suppression — config-aware (must never break scoped homes)
   });
 
   it("disables node_repl in BOTH exec branches when suppressNodeRepl is set", () => {
-    expect(codexExecArgs(spec, { suppressNodeRepl: true }).join(" ")).toContain("mcp_servers.node_repl.enabled=false");
-    expect(codexExecArgs({ ...spec, resume_session_id: "s" }, { suppressNodeRepl: true }).join(" ")).toContain("mcp_servers.node_repl.enabled=false");
+    expect(codexExecArgs(spec, { suppressNodeRepl: true }).join(" ")).toContain(
+      "mcp_servers.node_repl.enabled=false",
+    );
+    expect(
+      codexExecArgs({ ...spec, resume_session_id: "s" }, { suppressNodeRepl: true }).join(" "),
+    ).toContain("mcp_servers.node_repl.enabled=false");
   });
 
   it("codexConfigHasNodeRepl is true ONLY when the loaded config actually defines node_repl", () => {
@@ -92,7 +104,9 @@ describe("codexExecArgs image attachments", () => {
     effort_hint: null,
     external_context_policy: "auto" as const,
     prompt: "что видишь на картинке?",
-    attachments: [{ id: "a1", kind: "image" as const, mime: "image/png", name: "f.png", path: "/tmp/f.png" }],
+    attachments: [
+      { id: "a1", kind: "image" as const, mime: "image/png", name: "f.png", path: "/tmp/f.png" },
+    ],
     browser: null,
     ...(resume ? { resume_session_id: "ses-x" } : {}),
   });
@@ -127,5 +141,4 @@ describe("codexExecArgs image attachments", () => {
     expect(args).not.toContain("--");
     expect(args[args.length - 1]).toBe("plain");
   });
-
 });

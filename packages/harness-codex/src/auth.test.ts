@@ -4,20 +4,46 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import type { CliRunLoopOptions } from "@claudexor/core";
-import { codexAuthModeAt, codexExecArgs, createCodexAdapter, defaultNativeCodexHome, ensureCodexApiAuth, probeLogin, selectCodexRunAuthRoute } from "./index.js";
+import {
+  codexAuthModeAt,
+  codexExecArgs,
+  createCodexAdapter,
+  defaultNativeCodexHome,
+  ensureCodexApiAuth,
+  probeLogin,
+  selectCodexRunAuthRoute,
+} from "./index.js";
 
 describe("Codex strict runtime auth routing", () => {
   it("does not fall back for explicit routes and keeps auto subscription-first", () => {
     const attempts: string[] = [];
-    const sub = () => { attempts.push("subscription"); return false; };
-    const key = () => { attempts.push("api_key"); return true; };
+    const sub = () => {
+      attempts.push("subscription");
+      return false;
+    };
+    const key = () => {
+      attempts.push("api_key");
+      return true;
+    };
     expect(selectCodexRunAuthRoute("subscription", sub, key)).toBeNull();
     expect(attempts).toEqual(["subscription"]);
     attempts.length = 0;
     expect(selectCodexRunAuthRoute("auto", sub, key)).toBe("api_key");
     expect(attempts).toEqual(["subscription", "api_key"]);
     attempts.length = 0;
-    expect(selectCodexRunAuthRoute("api_key", () => { attempts.push("subscription"); return true; }, () => { attempts.push("api_key"); return false; })).toBeNull();
+    expect(
+      selectCodexRunAuthRoute(
+        "api_key",
+        () => {
+          attempts.push("subscription");
+          return true;
+        },
+        () => {
+          attempts.push("api_key");
+          return false;
+        },
+      ),
+    ).toBeNull();
     expect(attempts).toEqual(["api_key"]);
   });
 });
@@ -30,7 +56,12 @@ function fakeCodexBin(dir: string, script: string): string {
   return bin;
 }
 
-const KEY_VARS = ["CLAUDEXOR_CODEX_API_KEY", "CODEX_API_KEY", "OPENAI_API_KEY", "CLAUDEXOR_DISABLE_STORED_SECRETS"] as const;
+const KEY_VARS = [
+  "CLAUDEXOR_CODEX_API_KEY",
+  "CODEX_API_KEY",
+  "OPENAI_API_KEY",
+  "CLAUDEXOR_DISABLE_STORED_SECRETS",
+] as const;
 
 describe("ensureCodexApiAuth", () => {
   let home: string;
@@ -81,7 +112,10 @@ describe("ensureCodexApiAuth", () => {
 
   it("does not overwrite an existing auth.json (respects native login)", () => {
     const authPath = join(home, "auth.json");
-    writeFileSync(authPath, JSON.stringify({ auth_mode: "chatgpt", tokens: { id: "preexisting" } }));
+    writeFileSync(
+      authPath,
+      JSON.stringify({ auth_mode: "chatgpt", tokens: { id: "preexisting" } }),
+    );
     process.env.OPENAI_API_KEY = "sk-test-123";
     ensureCodexApiAuth({ CODEX_HOME: home });
     const parsed = JSON.parse(readFileSync(authPath, "utf8"));
@@ -89,13 +123,32 @@ describe("ensureCodexApiAuth", () => {
   });
 
   it("emits `exec resume <id>` args when resuming a native session", () => {
-    const args = codexExecArgs({ access: "workspace_write", model_hint: null, effort_hint: null, external_context_policy: "auto", attachments: [], browser: null, prompt: "follow up", resume_session_id: "th-123" });
+    const args = codexExecArgs({
+      access: "workspace_write",
+      model_hint: null,
+      effort_hint: null,
+      external_context_policy: "auto",
+      attachments: [],
+      browser: null,
+      prompt: "follow up",
+      resume_session_id: "th-123",
+    });
     expect(args.slice(0, 4)).toEqual(["exec", "resume", "th-123", "--json"]);
     expect(args[args.length - 1]).toBe("follow up");
   });
 
   it("forwards model and reasoning effort as separate Codex config", () => {
-    expect(codexExecArgs({ access: "readonly", model_hint: "gpt-5.5", effort_hint: "xhigh", external_context_policy: "cached", attachments: [], browser: null, prompt: "review" })).toEqual([
+    expect(
+      codexExecArgs({
+        access: "readonly",
+        model_hint: "gpt-5.5",
+        effort_hint: "xhigh",
+        external_context_policy: "cached",
+        attachments: [],
+        browser: null,
+        prompt: "review",
+      }),
+    ).toEqual([
       "exec",
       "--json",
       "--sandbox",
@@ -118,7 +171,10 @@ describe("codexAuthModeAt (route evidence from codex's own auth.json)", () => {
     try {
       writeFileSync(join(home, "auth.json"), JSON.stringify({ auth_mode: "chatgpt", tokens: {} }));
       expect(codexAuthModeAt(home)).toBe("local_session");
-      writeFileSync(join(home, "auth.json"), JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-x" }));
+      writeFileSync(
+        join(home, "auth.json"),
+        JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-x" }),
+      );
       expect(codexAuthModeAt(home)).toBe("api_key");
       writeFileSync(join(home, "auth.json"), JSON.stringify({ auth_mode: "quantum" }));
       expect(codexAuthModeAt(home)).toBeNull(); // unknown mode: undisclosed, never guessed
@@ -156,7 +212,10 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     process.env.OPENAI_API_KEY = "must-not-reach-probe";
     process.env.OPENAI_BASE_URL = "https://redirect.invalid";
     try {
-      const bin = fakeCodexBin(dir, `[ -z "$OPENAI_API_KEY" ] && [ -z "$OPENAI_BASE_URL" ] || exit 9\necho 'Logged in using ChatGPT'; exit 0`);
+      const bin = fakeCodexBin(
+        dir,
+        `[ -z "$OPENAI_API_KEY" ] && [ -z "$OPENAI_BASE_URL" ] || exit 9\necho 'Logged in using ChatGPT'; exit 0`,
+      );
       expect(await probeLogin(bin)).toEqual({ authed: true, method: "chatgpt", probeError: null });
     } finally {
       if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -173,14 +232,21 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
 
   it("'Not logged in' on a failing exit is a clean logged-out verdict, not a probe error", async () => {
     const bin = fakeCodexBin(dir, 'echo "Not logged in" >&2; exit 1');
-    expect(await probeLogin(bin)).toEqual({ authed: false, method: "logged_out", probeError: null });
+    expect(await probeLogin(bin)).toEqual({
+      authed: false,
+      method: "logged_out",
+      probeError: null,
+    });
   });
 
   it("a config-load failure is a PROBE ERROR, never silently 'not logged in'", async () => {
     // The live regression: a stale pinned codex 0.137 shim + a config.toml
     // written for 0.142 ("unknown variant `ultra`") reported the logged-in
     // subscription as logged out.
-    const bin = fakeCodexBin(dir, 'echo "Error loading configuration: config.toml:3:26: unknown variant \\`ultra\\`" >&2; exit 1');
+    const bin = fakeCodexBin(
+      dir,
+      'echo "Error loading configuration: config.toml:3:26: unknown variant \\`ultra\\`" >&2; exit 1',
+    );
     const r = await probeLogin(bin);
     expect(r.authed).toBe(false);
     expect(r.method).toBe("unknown");
@@ -198,7 +264,11 @@ describe("probeLogin (native-session probe vs probe failure)", () => {
     const api = fakeCodexBin(dir, 'echo "Logged in using an API key"; exit 0');
     expect(await probeLogin(api)).toEqual({ authed: true, method: "api_key", probeError: null });
     const access = fakeCodexBin(dir, 'echo "Logged in using access token"; exit 0');
-    expect(await probeLogin(access)).toEqual({ authed: true, method: "access_token", probeError: null });
+    expect(await probeLogin(access)).toEqual({
+      authed: true,
+      method: "access_token",
+      probeError: null,
+    });
   });
 
   it("treats exit 0 with an unrecognized status as a probe error", async () => {
@@ -270,7 +340,11 @@ describe("Codex transport-aware native doctor", () => {
     expect(probeEnv?.HOME).toBe("/scoped/home");
     expect(probeEnv?.CODEX_HOME).toBe(defaultNativeCodexHome());
     expect(report.auth_sources).toEqual([
-      expect.objectContaining({ source: "native_session", availability: "available", verification: "passed" }),
+      expect.objectContaining({
+        source: "native_session",
+        availability: "available",
+        verification: "passed",
+      }),
     ]);
     await expect(adapter.discover()).resolves.toMatchObject({
       capability_profile: {
@@ -299,7 +373,11 @@ describe("Codex transport-aware native doctor", () => {
       codexApiKey: () => "api-key",
       runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
         cliOptions = options;
-        yield { type: "completed", session_id: options.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
       },
     });
     const spec = HarnessRunSpec.parse({

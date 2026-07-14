@@ -24,9 +24,18 @@ export interface ThreadTurnRouteCtx {
   createThreadTurn(
     id: string,
     prompt: string,
-    opts: { parentRunId?: string | null; planRunId?: string | null; attachments?: AttachmentInput[] },
+    opts: {
+      parentRunId?: string | null;
+      planRunId?: string | null;
+      attachments?: AttachmentInput[];
+    },
   ): Promise<unknown>;
-  setTurnEnqueueError?: (turnId: string, message: string, code: string | null, retryable?: boolean) => void;
+  setTurnEnqueueError?: (
+    turnId: string,
+    message: string,
+    code: string | null,
+    retryable?: boolean,
+  ) => void;
   /** Per-thread promise chain (owned by the server; shared with turn creation). */
   threadTurnChains: Map<string, Promise<void>>;
 }
@@ -35,25 +44,37 @@ export interface ThreadTurnRouteCtx {
  * Chain `work` onto the thread's serialization chain and drop the entry once
  * settled so the Map cannot grow unbounded across a thread's lifetime.
  */
-function chainOnThread(ctx: ThreadTurnRouteCtx, threadId: string, work: () => Promise<void>): Promise<void> {
+function chainOnThread(
+  ctx: ThreadTurnRouteCtx,
+  threadId: string,
+  work: () => Promise<void>,
+): Promise<void> {
   const previous = ctx.threadTurnChains.get(threadId) ?? Promise.resolve();
   const chained = previous.catch(() => undefined).then(work);
-  const entry: Promise<void> = chained.then(() => undefined, () => undefined).finally(() => {
-    if (ctx.threadTurnChains.get(threadId) === entry) ctx.threadTurnChains.delete(threadId);
-  });
+  const entry: Promise<void> = chained
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .finally(() => {
+      if (ctx.threadTurnChains.get(threadId) === entry) ctx.threadTurnChains.delete(threadId);
+    });
   ctx.threadTurnChains.set(threadId, entry);
   return chained;
 }
 
 function errStatus(err: unknown, fallback = 400): number {
-  return err && typeof err === "object" && "status" in err ? Number((err as { status: number }).status) : fallback;
+  return err && typeof err === "object" && "status" in err
+    ? Number((err as { status: number }).status)
+    : fallback;
 }
 
 /** A typed throw's machine code (e.g. the trust gate's), null when absent or
  * non-string (a numeric errno-style `code` must not leak into the typed
  * refusal contract). ONE owner — daemon-server's refusal recorder reuses it. */
 export function errCode(err: unknown): string | null {
-  const code = err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : null;
+  const code =
+    err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : null;
   return typeof code === "string" && code ? code : null;
 }
 
@@ -67,13 +88,20 @@ export function errCode(err: unknown): string | null {
  * return it), and errCode yields null for absent/non-string codes.
  */
 export function recordTurnEnqueueFailure(
-  setTurnEnqueueError: ((turnId: string, message: string, code: string | null, retryable?: boolean) => void) | undefined,
+  setTurnEnqueueError:
+    | ((turnId: string, message: string, code: string | null, retryable?: boolean) => void)
+    | undefined,
   turnId: string | undefined,
   err: unknown,
 ): void {
   if (!turnId || !setTurnEnqueueError) return;
   try {
-    setTurnEnqueueError(turnId, err instanceof Error ? err.message : String(err), errCode(err), false);
+    setTurnEnqueueError(
+      turnId,
+      err instanceof Error ? err.message : String(err),
+      errCode(err),
+      false,
+    );
   } catch {
     /* recording the refusal must not mask the original error */
   }
@@ -97,24 +125,40 @@ export function handleThreadTurnCreate(
     let createdTurnId: string | null = null;
     try {
       const detail = await ctx.threadDetail(threadId);
-      const thread = detail.thread as { repo: { root: string } | null; mode: string; auth_preference: string; head_run_id: string | null; primary_harness: string | null; eligible_harnesses?: string[]; run_ids?: string[]; workspace?: { mode?: string } };
+      const thread = detail.thread as {
+        repo: { root: string } | null;
+        mode: string;
+        auth_preference: string;
+        head_run_id: string | null;
+        primary_harness: string | null;
+        eligible_harnesses?: string[];
+        run_ids?: string[];
+        workspace?: { mode?: string };
+      };
       let prompt = String(body["prompt"] ?? "");
       let mode = typeof body["mode"] === "string" ? (body["mode"] as string) : thread.mode;
-      const planRunId = typeof body["planRunId"] === "string" ? (body["planRunId"] as string) : null;
+      const planRunId =
+        typeof body["planRunId"] === "string" ? (body["planRunId"] as string) : null;
       // "Implement plan": prefix the approved plan from an earlier turn into
       // the prompt and force agent mode. The plan run must belong to THIS
       // thread (no cross-thread artifact reads).
       if (planRunId) {
         if (!(thread.run_ids ?? []).includes(planRunId)) {
-          throw Object.assign(new Error(`planRunId ${planRunId} is not a turn of this thread`), { status: 400 });
+          throw Object.assign(new Error(`planRunId ${planRunId} is not a turn of this thread`), {
+            status: 400,
+          });
         }
         const planText = await ctx.readRunArtifactText(planRunId, "final/plan.md");
         if (!planText || !planText.trim()) {
           // Fail loudly: "Implement plan" with an unreadable plan must NOT
           // silently run the bare prompt as agent (review r2 #7).
-          throw Object.assign(new Error(`plan run ${planRunId} has no readable final/plan.md to implement`), { status: 400 });
+          throw Object.assign(
+            new Error(`plan run ${planRunId} has no readable final/plan.md to implement`),
+            { status: 400 },
+          );
         }
-        prompt = `Implement the following approved plan. Deviate only where the code contradicts it, and say so.\n\n${planText}\n\n## Additional instruction\n${prompt}`.trim();
+        prompt =
+          `Implement the following approved plan. Deviate only where the code contradicts it, and say so.\n\n${planText}\n\n## Additional instruction\n${prompt}`.trim();
         mode = "agent";
       }
       // Agent turns run "live" in the execution tree (in-place project or the
@@ -128,15 +172,18 @@ export function handleThreadTurnCreate(
       // thread's sticky pool, else omit.
       const turnPool = Array.isArray(body["harnesses"])
         ? (body["harnesses"] as string[])
-        : (thread.eligible_harnesses && thread.eligible_harnesses.length > 0 ? thread.eligible_harnesses : undefined);
+        : thread.eligible_harnesses && thread.eligible_harnesses.length > 0
+          ? thread.eligible_harnesses
+          : undefined;
       // Inherit the sticky primary ONLY when it stays valid in that pool. If the
       // pool (per-turn OR the inherited thread pool) does not contain the primary
       // — e.g. the user dropped the primary harness from the pool via the "⋯"
       // chips — drop the bias rather than drag it along; the engine would
       // otherwise reject the turn with "primary not in pool".
       const inheritPrimary =
-        body["primaryHarness"] === undefined && thread.primary_harness
-          && (!turnPool || turnPool.includes(thread.primary_harness))
+        body["primaryHarness"] === undefined &&
+        thread.primary_harness &&
+        (!turnPool || turnPool.includes(thread.primary_harness))
           ? thread.primary_harness
           : undefined;
       const params = ctx.normalizeStart(
@@ -149,9 +196,14 @@ export function handleThreadTurnCreate(
           threadId,
           parentRunId: thread.head_run_id ?? undefined,
           planRunId: planRunId ?? undefined,
-          authPreference: typeof body["authPreference"] === "string" ? body["authPreference"] : (thread.auth_preference as "auto"),
+          authPreference:
+            typeof body["authPreference"] === "string"
+              ? body["authPreference"]
+              : (thread.auth_preference as "auto"),
           ...(inheritPrimary ? { primaryHarness: inheritPrimary } : {}),
-          ...(body["harnesses"] === undefined && thread.eligible_harnesses && thread.eligible_harnesses.length > 0
+          ...(body["harnesses"] === undefined &&
+          thread.eligible_harnesses &&
+          thread.eligible_harnesses.length > 0
             ? { harnesses: thread.eligible_harnesses }
             : {}),
         }),
@@ -186,7 +238,11 @@ export function handleThreadTurnCreate(
         }
         // Untyped enqueue throws are INFRA failures (daemon socket down) —
         // 500, matching POST /runs; typed statuses pass through.
-        return ctx.json(res, errStatus(err, 500), { error: message, turnId: turn.id, retryable: false });
+        return ctx.json(res, errStatus(err, 500), {
+          error: message,
+          turnId: turn.id,
+          retryable: false,
+        });
       }
       // POST-ENQUEUE phase: the job EXISTS now. A status-poll throw here is
       // transient observation loss, NOT a refusal — record nothing on the
@@ -205,7 +261,12 @@ export function handleThreadTurnCreate(
       }
       if (rec.runId && rec.runDir) {
         return ctx.json(res, 200, {
-          ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
+          ...ControlRunStartInfo.parse({
+            jobId: rec.id,
+            runId: rec.runId,
+            taskId: rec.taskId,
+            runDir: rec.runDir,
+          }),
           turnId: turn.id,
           threadId,
         });
@@ -215,7 +276,13 @@ export function handleThreadTurnCreate(
       // (mirrors POST /runs' 500), never as an accepted queued turn. The
       // daemon hook has already persisted the refusal on the turn record.
       if (ctx.isTerminalState(rec.state)) {
-        return ctx.json(res, 500, { jobId: rec.id, turnId: turn.id, threadId, state: rec.state, error: rec.error ?? `run ended pre-start: ${rec.state}` });
+        return ctx.json(res, 500, {
+          jobId: rec.id,
+          turnId: turn.id,
+          threadId,
+          state: rec.state,
+          error: rec.error ?? `run ended pre-start: ${rec.state}`,
+        });
       }
       // The turn IS recorded (turnId) and the job is canonical in the daemon;
       // the runner binds the run when it starts. Return 202 without cancelling.
@@ -261,19 +328,33 @@ export function handleThreadTurnRetry(
       const detail = await ctx.threadDetail(threadId);
       const turns = detail.turns as Array<Record<string, unknown>>;
       const turn = turns.find((t) => t["id"] === turnId);
-      if (!turn) throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
+      if (!turn)
+        throw Object.assign(new Error(`no such turn on this thread: ${turnId}`), { status: 404 });
       if (turn["run_id"]) {
-        throw Object.assign(new Error(`turn ${turnId} already has a run; retry only repairs refused turns`), { status: 409 });
+        throw Object.assign(
+          new Error(`turn ${turnId} already has a run; retry only repairs refused turns`),
+          { status: 409 },
+        );
       }
       const recorded = turn["enqueue_error"] as { retryable?: unknown } | null | undefined;
       if (!recorded) {
-        throw Object.assign(new Error(`turn ${turnId} has no recorded refusal; its job may still be queued or starting`), { status: 409 });
+        throw Object.assign(
+          new Error(
+            `turn ${turnId} has no recorded refusal; its job may still be queued or starting`,
+          ),
+          { status: 409 },
+        );
       }
       // Recorded as NOT replayable (the original enqueue threw before any
       // job existed): refuse immediately — no registry lookup can find
       // params that were never recorded.
       if (recorded.retryable === false) {
-        throw Object.assign(new Error(`turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`), { status: 409 });
+        throw Object.assign(
+          new Error(
+            `turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`,
+          ),
+          { status: 409 },
+        );
       }
       // Retry repairs the TAIL of the conversation only. Re-running an OLDER
       // refused turn would bind its run as the thread's new head (bindTurnRun
@@ -282,7 +363,9 @@ export function handleThreadTurnRetry(
       const lastTurn = turns[turns.length - 1];
       if (lastTurn && lastTurn["id"] !== turnId) {
         throw Object.assign(
-          new Error(`turn ${turnId} is not the latest turn of this thread; the conversation moved on — send a new message instead`),
+          new Error(
+            `turn ${turnId} is not the latest turn of this thread; the conversation moved on — send a new message instead`,
+          ),
           { status: 409 },
         );
       }
@@ -296,10 +379,17 @@ export function handleThreadTurnRetry(
       if (!last) {
         // The refusal happened before any job existed (enqueue itself threw):
         // there are no recorded params to replay faithfully — honest refusal.
-        throw Object.assign(new Error(`turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`), { status: 409 });
+        throw Object.assign(
+          new Error(
+            `turn ${turnId} has no recorded enqueue attempt to replay; send a new message instead`,
+          ),
+          { status: 409 },
+        );
       }
       if (last.state === "queued" || last.state === "running") {
-        throw Object.assign(new Error(`turn ${turnId} already has an active job (${last.state})`), { status: 409 });
+        throw Object.assign(new Error(`turn ${turnId} already has an active job (${last.state})`), {
+          status: 409,
+        });
       }
       // REPLAY-ENQUEUE phase. Deliberately NO eager clear of the old refusal:
       // the daemon hook (a fast-failing replay) can write a FRESH refusal at
@@ -338,7 +428,12 @@ export function handleThreadTurnRetry(
       }
       if (rec.runId && rec.runDir) {
         return ctx.json(res, 200, {
-          ...ControlRunStartInfo.parse({ jobId: rec.id, runId: rec.runId, taskId: rec.taskId, runDir: rec.runDir }),
+          ...ControlRunStartInfo.parse({
+            jobId: rec.id,
+            runId: rec.runId,
+            taskId: rec.taskId,
+            runDir: rec.runDir,
+          }),
           turnId,
           threadId,
         });
@@ -348,13 +443,21 @@ export function handleThreadTurnRetry(
       // one (mirrors POST /runs), never as an accepted queued turn. The
       // runner hook has already persisted the refusal on the turn.
       if (ctx.isTerminalState(rec.state)) {
-        return ctx.json(res, 500, { jobId: rec.id, turnId, threadId, state: rec.state, error: rec.error ?? `run ended pre-start: ${rec.state}` });
+        return ctx.json(res, 500, {
+          jobId: rec.id,
+          turnId,
+          threadId,
+          state: rec.state,
+          error: rec.error ?? `run ended pre-start: ${rec.state}`,
+        });
       }
       return ctx.json(res, 202, { jobId: rec.id, turnId, threadId, state: rec.state });
     } catch (err) {
       // Guard refusals only (404/409): never overwrite the original recorded
       // refusal with bookkeeping noise.
-      return ctx.json(res, errStatus(err), { error: err instanceof Error ? err.message : "bad request" });
+      return ctx.json(res, errStatus(err), {
+        error: err instanceof Error ? err.message : "bad request",
+      });
     }
   });
 }

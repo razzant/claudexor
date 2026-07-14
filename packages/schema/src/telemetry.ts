@@ -36,24 +36,52 @@ export const WebEvidenceRecord = z
       "Policy actually executed by the harness route (disclosed upgrades, e.g. cached to live).",
     ),
     attempted: z.boolean().default(false).describe("Whether any web activity was attempted."),
-    satisfied: z.boolean().default(false).describe("Whether the web-evidence requirement was satisfied."),
+    satisfied: z
+      .boolean()
+      .default(false)
+      .describe("Whether the web-evidence requirement was satisfied."),
     status: WebEvidenceStatus.default("none"),
-    tool: z.string().nullable().default(null).describe("Web tool that produced the evidence, when any."),
-    target: z.string().nullable().default(null).describe("Redacted target (query/url) of the web activity, when any."),
-    error_summary: z.string().nullable().default(null).describe("Redacted error detail when web activity failed."),
+    tool: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Web tool that produced the evidence, when any."),
+    target: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted target (query/url) of the web activity, when any."),
+    error_summary: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted error detail when web activity failed."),
   })
-  .describe("Typed web-evidence record computed by the orchestrator; surfaces project it and never re-derive evidence from raw events.");
+  .describe(
+    "Typed web-evidence record computed by the orchestrator; surfaces project it and never re-derive evidence from raw events.",
+  );
 export type WebEvidenceRecord = z.infer<typeof WebEvidenceRecord>;
 
 export const ToolErrorRecord = z
   .object({
     tool: z.string().describe("Native tool name that errored."),
     kind: ToolKind.default("other"),
-    target: z.string().nullable().default(null).describe("Redacted target of the tool use, when known."),
+    target: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted target of the tool use, when known."),
     summary: z.string().describe("Redacted error summary."),
     /** True when a later successful result of the same tool exists in the same attempt. */
-    recovered: z.boolean().default(false).describe("True when a later successful result of the same tool exists in the same attempt."),
-    tool_use_id: z.string().nullable().default(null).describe("Tool use id correlating the error to its call, when known."),
+    recovered: z
+      .boolean()
+      .default(false)
+      .describe("True when a later successful result of the same tool exists in the same attempt."),
+    tool_use_id: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Tool use id correlating the error to its call, when known."),
   })
   .describe("One tool error observed during an attempt.");
 export type ToolErrorRecord = z.infer<typeof ToolErrorRecord>;
@@ -64,7 +92,13 @@ export const TransientFailureRecord = z
       .enum(["network", "stream_disconnect", "service_unavailable", "timeout", "unknown"])
       .default("unknown")
       .describe("Kind of transient failure."),
-    retry_delay_ms: z.number().int().nonnegative().nullable().default(null).describe("Suggested retry delay in milliseconds, when reported."),
+    retry_delay_ms: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .default(null)
+      .describe("Suggested retry delay in milliseconds, when reported."),
   })
   .describe("An adapter-declared transient failure that informed bounded retry policy.");
 export type TransientFailureRecord = z.infer<typeof TransientFailureRecord>;
@@ -80,14 +114,31 @@ export type AttemptOutcomeStatus = z.infer<typeof AttemptOutcomeStatus>;
  */
 export const AttemptOutcome = z
   .object({
-    deliverable_present: z.boolean().default(false).describe("Whether the attempt produced the deliverable the intent asked for."),
-    gates_passed: z.boolean().nullable().default(null).describe("Whether deterministic gates passed; null when no gates ran."),
+    deliverable_present: z
+      .boolean()
+      .default(false)
+      .describe("Whether the attempt produced the deliverable the intent asked for."),
+    gates_passed: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe("Whether deterministic gates passed; null when no gates ran."),
     harness_errored: z.boolean().default(false).describe("Whether the harness itself errored."),
-    web_required_unsatisfied: z.boolean().default(false).describe("True when required web evidence was not satisfied."),
-    tool_warnings_count: z.number().int().nonnegative().default(0).describe("Count of tool warnings in the attempt."),
+    web_required_unsatisfied: z
+      .boolean()
+      .default(false)
+      .describe("True when required web evidence was not satisfied."),
+    tool_warnings_count: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Count of tool warnings in the attempt."),
     status: AttemptOutcomeStatus.default("success"),
   })
-  .describe("Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.");
+  .describe(
+    "Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.",
+  );
 export type AttemptOutcome = z.infer<typeof AttemptOutcome>;
 
 export const AttemptTelemetryRecord = z
@@ -103,7 +154,9 @@ export const AttemptTelemetryRecord = z
       .string()
       .nullable()
       .default(null)
-      .describe("Model the harness stream actually reported; null when never disclosed (rendered as unverified, never guessed)."),
+      .describe(
+        "Model the harness stream actually reported; null when never disclosed (rendered as unverified, never guessed).",
+      ),
     /**
      * Auth route the attempt ACTUALLY ran under (route evidence, like
      * observed_model): adapters disclose their chosen route as a typed
@@ -123,9 +176,21 @@ export const AttemptTelemetryRecord = z
     tool_errors: z
       .array(ToolErrorRecord)
       .default([])
-      .describe("Tool errors, bounded by the writer (most recent first when truncated; tool_errors_total keeps the true count)."),
-    tool_errors_total: z.number().int().nonnegative().default(0).describe("True total count of tool errors."),
-    unrecovered_tool_errors: z.number().int().nonnegative().default(0).describe("Tool errors with no later successful recovery."),
+      .describe(
+        "Tool errors, bounded by the writer (most recent first when truncated; tool_errors_total keeps the true count).",
+      ),
+    tool_errors_total: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("True total count of tool errors."),
+    unrecovered_tool_errors: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Tool errors with no later successful recovery."),
     /** tool_result events that arrived WITHOUT a status field (never treated as ok). */
     statusless_tool_results: z
       .number()
@@ -139,7 +204,9 @@ export const AttemptTelemetryRecord = z
       .int()
       .nonnegative()
       .default(0)
-      .describe("Native lines/events the adapter could not parse or did not recognize (never silently zero)."),
+      .describe(
+        "Native lines/events the adapter could not parse or did not recognize (never silently zero).",
+      ),
     /** Adapter-declared transient failures that informed bounded retry policy. */
     transient_failures: z
       .array(TransientFailureRecord)
@@ -148,7 +215,9 @@ export const AttemptTelemetryRecord = z
     /** Contract/outcome projection for this attempt. */
     outcome: AttemptOutcome.default({}),
   })
-  .describe("Telemetry for one attempt: route evidence, web evidence, tool errors, dropped events, and outcome.");
+  .describe(
+    "Telemetry for one attempt: route evidence, web evidence, tool errors, dropped events, and outcome.",
+  );
 export type AttemptTelemetryRecord = z.infer<typeof AttemptTelemetryRecord>;
 
 export const RunTelemetry = z
@@ -160,15 +229,24 @@ export const RunTelemetry = z
     requested_access: AccessProfile.describe("Access profile the caller requested."),
     effective_access: AccessProfile.describe("Access profile actually enforced by the engine."),
     external_context_policy: ExternalContextPolicy.describe("Requested web policy for the run."),
-    effective_web_mode: ExternalContextPolicy.describe("Web policy actually executed by the selected route."),
+    effective_web_mode: ExternalContextPolicy.describe(
+      "Web policy actually executed by the selected route.",
+    ),
     web_required: z.boolean().default(false).describe("Whether the run required web evidence."),
     /** Attempt whose output became the final answer/patch; null when no attempt succeeded. */
     final_attempt_id: Id.nullable()
       .default(null)
-      .describe("Attempt whose output became the final answer/patch; null when no attempt succeeded."),
+      .describe(
+        "Attempt whose output became the final answer/patch; null when no attempt succeeded.",
+      ),
     /** Run-level web evidence: the final attempt's evidence, else the most severe attempt evidence. */
-    web: WebEvidenceRecord.describe("Run-level web evidence: the final attempt's evidence, else the most severe attempt evidence."),
-    attempts: z.array(AttemptTelemetryRecord).default([]).describe("Per-attempt telemetry records."),
+    web: WebEvidenceRecord.describe(
+      "Run-level web evidence: the final attempt's evidence, else the most severe attempt evidence.",
+    ),
+    attempts: z
+      .array(AttemptTelemetryRecord)
+      .default([])
+      .describe("Per-attempt telemetry records."),
     /** Sum of attempt outcome warnings; surfaces render this separately from terminal state. */
     tool_warnings_total: z
       .number()

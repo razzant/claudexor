@@ -55,7 +55,9 @@ export function resolveAttachments(inputs: AttachmentInput[] | undefined): Attac
       throw attachmentError(`attachment ${index} path must be absolute: ${attachmentPath}`);
     }
     if (!existsSync(attachmentPath) || !lstatSync(attachmentPath).isFile()) {
-      throw attachmentError(`attachment ${index} path does not exist or is not a file: ${attachmentPath}`);
+      throw attachmentError(
+        `attachment ${index} path does not exist or is not a file: ${attachmentPath}`,
+      );
     }
     out.push({ id: newId("att"), kind: a.kind, mime: a.mime, name: a.name, path: attachmentPath });
   }

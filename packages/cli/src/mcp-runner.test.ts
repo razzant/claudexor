@@ -13,7 +13,15 @@ describe("makeInteractionBridge (MCP daemon-run interaction plumbing)", () => {
     const pending = [
       {
         interactionId: "int-1",
-        questions: [{ id: "q1", question: "Pick", header: null, options: [{ label: "A", description: null }], multi_select: false }],
+        questions: [
+          {
+            id: "q1",
+            question: "Pick",
+            header: null,
+            options: [{ label: "A", description: null }],
+            multi_select: false,
+          },
+        ],
         timeoutAt: null,
       },
     ];
@@ -53,7 +61,9 @@ describe("makeInteractionBridge (MCP daemon-run interaction plumbing)", () => {
         detailCalls += 1;
         return {
           ok: true,
-          json: async () => ({ pendingInteractions: [{ interactionId: "int-2", questions: [], timeoutAt: null }] }),
+          json: async () => ({
+            pendingInteractions: [{ interactionId: "int-2", questions: [], timeoutAt: null }],
+          }),
         } as never;
       }),
     );
@@ -107,11 +117,16 @@ describe("mcp daemon body mapping", () => {
     void mcpSurfaceRunner; // body mapping is exercised through the daemon route below
     const daemonRun = await import("./daemon-run.js");
     const bodies: Record<string, unknown>[] = [];
-    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({ client: {} as never, addr: { baseUrl: "http://x", token: "t" } as never });
-    const enqueueSpy = vi.spyOn(daemonRun, "enqueueAndAwait").mockImplementation(async (_c, _a, body) => {
-      bodies.push(body);
-      return { runId: "r", runDir: "", status: "no_op", jobId: "j" };
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
     });
+    const enqueueSpy = vi
+      .spyOn(daemonRun, "enqueueAndAwait")
+      .mockImplementation(async (_c, _a, body) => {
+        bodies.push(body);
+        return { runId: "r", runDir: "", status: "no_op", jobId: "j" };
+      });
     try {
       const runner = mcpSurfaceRunner();
       await runner({ mode: "agent", prompt: "go", externalContextPolicy: "cached" });

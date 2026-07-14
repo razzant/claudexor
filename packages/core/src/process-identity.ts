@@ -37,7 +37,10 @@ export interface UnknownProcessIdentity {
   reason: ProcessIdentityUnknownReason;
 }
 
-export type ProcessIdentity = KnownProcessIdentity | MissingProcessIdentity | UnknownProcessIdentity;
+export type ProcessIdentity =
+  | KnownProcessIdentity
+  | MissingProcessIdentity
+  | UnknownProcessIdentity;
 export type ProcessIdentityComparison = "same" | "different" | "missing" | "unknown";
 
 export interface ProcessIdentityReader {
@@ -75,7 +78,11 @@ function canonicalPositive(value: string): boolean {
   return /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
 }
 
-function unknown(pid: number, platform: string, reason: ProcessIdentityUnknownReason): UnknownProcessIdentity {
+function unknown(
+  pid: number,
+  platform: string,
+  reason: ProcessIdentityUnknownReason,
+): UnknownProcessIdentity {
   return { status: "unknown", pid, platform, reason };
 }
 
@@ -84,7 +91,8 @@ export function parseLinuxProcStat(raw: string, expectedPid: number): ProcessIde
   if (!validPositiveInteger(expectedPid)) return unknown(expectedPid, "linux", "invalid_pid");
   const firstSpace = raw.indexOf(" ");
   const commEnd = raw.lastIndexOf(")");
-  if (firstSpace <= 0 || commEnd <= firstSpace + 1) return unknown(expectedPid, "linux", "malformed_response");
+  if (firstSpace <= 0 || commEnd <= firstSpace + 1)
+    return unknown(expectedPid, "linux", "malformed_response");
   const parsedPid = raw.slice(0, firstSpace);
   if (!canonicalPositive(parsedPid) || Number(parsedPid) !== expectedPid) {
     return unknown(expectedPid, "linux", "malformed_response");
@@ -92,13 +100,20 @@ export function parseLinuxProcStat(raw: string, expectedPid: number): ProcessIde
   if (raw[firstSpace + 1] !== "(" || raw[commEnd + 1] !== " ") {
     return unknown(expectedPid, "linux", "malformed_response");
   }
-  const fieldsFromState = raw.slice(commEnd + 2).trim().split(/ +/);
+  const fieldsFromState = raw
+    .slice(commEnd + 2)
+    .trim()
+    .split(/ +/);
   const state = fieldsFromState[0];
   const processGroup = fieldsFromState[2];
   const startTicks = fieldsFromState[19];
   if (
-    !state || !LINUX_PROCESS_STATES.has(state) || !processGroup || !canonicalPositive(processGroup) ||
-    !startTicks || !canonicalUnsigned(startTicks)
+    !state ||
+    !LINUX_PROCESS_STATES.has(state) ||
+    !processGroup ||
+    !canonicalPositive(processGroup) ||
+    !startTicks ||
+    !canonicalUnsigned(startTicks)
   ) {
     return unknown(expectedPid, "linux", "malformed_response");
   }
@@ -116,16 +131,23 @@ export function parseLinuxProcStat(raw: string, expectedPid: number): ProcessIde
 export function parseDarwinHelperOutput(raw: string, expectedPid: number): ProcessIdentity {
   if (!validPositiveInteger(expectedPid)) return unknown(expectedPid, "darwin", "invalid_pid");
   const line = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
-  if (line.includes("\n") || line.includes("\r")) return unknown(expectedPid, "darwin", "malformed_response");
+  if (line.includes("\n") || line.includes("\r"))
+    return unknown(expectedPid, "darwin", "malformed_response");
   const fields = line.split("\t");
   if (fields.length !== 5 || fields[0] !== "claudexor-process-identity-v2") {
     return unknown(expectedPid, "darwin", "malformed_response");
   }
   const [, pidText, pgidText, seconds, micros] = fields;
   if (
-    !pidText || !canonicalPositive(pidText) || Number(pidText) !== expectedPid ||
-    !pgidText || !canonicalPositive(pgidText) || !seconds || !canonicalUnsigned(seconds) ||
-    !micros || !/^[0-9]{6}$/.test(micros)
+    !pidText ||
+    !canonicalPositive(pidText) ||
+    Number(pidText) !== expectedPid ||
+    !pgidText ||
+    !canonicalPositive(pgidText) ||
+    !seconds ||
+    !canonicalUnsigned(seconds) ||
+    !micros ||
+    !/^[0-9]{6}$/.test(micros)
   ) {
     return unknown(expectedPid, "darwin", "malformed_response");
   }
@@ -145,25 +167,37 @@ export function compareProcessIdentity(
 ): ProcessIdentityComparison {
   if (observed.status === "missing") return "missing";
   if (observed.status === "unknown") return "unknown";
-  return expected.pid === observed.pid && expected.platform === observed.platform &&
-    expected.source === observed.source && expected.startToken === observed.startToken &&
-    expected.processGroupId === observed.processGroupId ? "same" : "different";
+  return expected.pid === observed.pid &&
+    expected.platform === observed.platform &&
+    expected.source === observed.source &&
+    expected.startToken === observed.startToken &&
+    expected.processGroupId === observed.processGroupId
+    ? "same"
+    : "different";
 }
 
 export function isKnownProcessIdentity(value: unknown): value is KnownProcessIdentity {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<KnownProcessIdentity>;
   if (
-    candidate.status !== "known" || !validPositiveInteger(candidate.pid as number) ||
+    candidate.status !== "known" ||
+    !validPositiveInteger(candidate.pid as number) ||
     !validPositiveInteger(candidate.processGroupId as number)
-  ) return false;
+  )
+    return false;
   if (candidate.platform === "linux") {
-    return candidate.source === "procfs_stat" && typeof candidate.startToken === "string" &&
-      /^linux:(0|[1-9][0-9]*)$/.test(candidate.startToken);
+    return (
+      candidate.source === "procfs_stat" &&
+      typeof candidate.startToken === "string" &&
+      /^linux:(0|[1-9][0-9]*)$/.test(candidate.startToken)
+    );
   }
   if (candidate.platform === "darwin") {
-    return candidate.source === "proc_pidinfo" && typeof candidate.startToken === "string" &&
-      /^darwin:(0|[1-9][0-9]*):[0-9]{6}$/.test(candidate.startToken);
+    return (
+      candidate.source === "proc_pidinfo" &&
+      typeof candidate.startToken === "string" &&
+      /^darwin:(0|[1-9][0-9]*):[0-9]{6}$/.test(candidate.startToken)
+    );
   }
   return false;
 }
@@ -205,7 +239,8 @@ export class ProcessIdentityService implements ProcessIdentityReader {
     this.platform = options.platform ?? process.platform;
     this.selfPid = options.selfPid ?? process.pid;
     this.readTextFile = options.readTextFile ?? ((path) => readFileSync(path, "utf8"));
-    this.darwinHelperPath = options.darwinHelperPath === undefined ? bundledDarwinHelperPath() : options.darwinHelperPath;
+    this.darwinHelperPath =
+      options.darwinHelperPath === undefined ? bundledDarwinHelperPath() : options.darwinHelperPath;
     this.runDarwinHelper = options.runDarwinHelper ?? executeDarwinHelper;
   }
 
@@ -226,7 +261,8 @@ export class ProcessIdentityService implements ProcessIdentityReader {
       return parseLinuxProcStat(this.readTextFile(`/proc/${pid}/stat`), pid);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      if (code === "ENOENT" || code === "ESRCH") return { status: "missing", pid, platform: "linux" };
+      if (code === "ENOENT" || code === "ESRCH")
+        return { status: "missing", pid, platform: "linux" };
       if (code === "EACCES" || code === "EPERM") return unknown(pid, "linux", "permission_denied");
       return unknown(pid, "linux", "io_error");
     }

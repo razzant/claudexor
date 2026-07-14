@@ -53,8 +53,12 @@ function adapterWith(
 ): HarnessAdapter {
   return {
     id,
-    async discover() { throw new Error("discovery must not run during an exact capability smoke"); },
-    async doctor() { throw new Error("doctor must not run during an exact capability smoke"); },
+    async discover() {
+      throw new Error("discovery must not run during an exact capability smoke");
+    },
+    async doctor() {
+      throw new Error("doctor must not run during an exact capability smoke");
+    },
     run(spec) {
       capture?.(spec);
       return events(spec) as ReturnType<HarnessAdapter["run"]>;
@@ -64,8 +68,19 @@ function adapterWith(
 
 async function exactEvents(spec: HarnessRunSpec) {
   return [
-    { type: "started", session_id: spec.session_id, ts: now().toISOString(), credential_route: "vendor_native", credential_source: "native_session" },
-    { type: "message", session_id: spec.session_id, ts: now().toISOString(), text: expectedToken(spec) },
+    {
+      type: "started",
+      session_id: spec.session_id,
+      ts: now().toISOString(),
+      credential_route: "vendor_native",
+      credential_source: "native_session",
+    },
+    {
+      type: "message",
+      session_id: spec.session_id,
+      ts: now().toISOString(),
+      text: expectedToken(spec),
+    },
     { type: "completed", session_id: spec.session_id, ts: now().toISOString() },
   ];
 }
@@ -77,7 +92,9 @@ async function* yieldExact(spec: HarnessRunSpec) {
 describe("AuthCapabilityVerifier", () => {
   it("proves only an exact same-harness native-session readonly round trip", async () => {
     let captured: HarnessRunSpec | undefined;
-    const adapter = adapterWith(yieldExact, (spec) => { captured = spec; });
+    const adapter = adapterWith(yieldExact, (spec) => {
+      captured = spec;
+    });
     const { subject, lookup, root } = verifier(adapter);
     const binding = prepare(subject);
 
@@ -122,55 +139,142 @@ describe("AuthCapabilityVerifier", () => {
   ] as const)("fails closed for %s", async (_label, route, source, reason) => {
     const adapter = adapterWith(async function* (spec) {
       yield {
-        type: "started", session_id: spec.session_id, ts: now().toISOString(),
+        type: "started",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
         ...(route ? { credential_route: route } : {}),
         ...(source ? { credential_source: source } : {}),
       };
-      yield { type: "message", session_id: spec.session_id, ts: now().toISOString(), text: expectedToken(spec) };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        text: expectedToken(spec),
+      };
       yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
     });
     const { subject } = verifier(adapter);
-    await expect(subject.verify({ binding: prepare(subject), startedAt: now().toISOString() }))
-      .resolves.toMatchObject({ verification: "failed", selectionReason: reason });
+    await expect(
+      subject.verify({ binding: prepare(subject), startedAt: now().toISOString() }),
+    ).resolves.toMatchObject({ verification: "failed", selectionReason: reason });
   });
 
   it("refuses a registry key/adapter identity mismatch without running it", async () => {
     const run = vi.fn();
-    const wrong = adapterWith(async function* () { run(); }, undefined, "codex");
+    const wrong = adapterWith(
+      async function* () {
+        run();
+      },
+      undefined,
+      "codex",
+    );
     const { subject } = verifier(wrong);
-    const receipt = await subject.verify({ binding: prepare(subject), startedAt: now().toISOString() });
+    const receipt = await subject.verify({
+      binding: prepare(subject),
+      startedAt: now().toISOString(),
+    });
     expect(run).not.toHaveBeenCalled();
     expect(receipt.selectionReason).toBe("adapter_identity_mismatch");
   });
 
   it.each([
-    ["harness error", async function* (spec: HarnessRunSpec) {
-      yield { type: "started", session_id: spec.session_id, ts: now().toISOString(), credential_route: "vendor_native", credential_source: "native_session" };
-      yield { type: "error", session_id: spec.session_id, ts: now().toISOString(), error: "redacted failure" };
-      yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
-    }, "harness_error"],
-    ["missing completion", async function* (spec: HarnessRunSpec) {
-      yield { type: "started", session_id: spec.session_id, ts: now().toISOString(), credential_route: "vendor_native", credential_source: "native_session" };
-      yield { type: "message", session_id: spec.session_id, ts: now().toISOString(), text: expectedToken(spec) };
-    }, "missing_completion"],
-    ["wrong response", async function* (spec: HarnessRunSpec) {
-      yield { type: "started", session_id: spec.session_id, ts: now().toISOString(), credential_route: "vendor_native", credential_source: "native_session" };
-      yield { type: "message", session_id: spec.session_id, ts: now().toISOString(), text: "not the nonce" };
-      yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
-    }, "response_mismatch"],
-    ["interaction", async function* (spec: HarnessRunSpec) {
-      yield { type: "started", session_id: spec.session_id, ts: now().toISOString(), credential_route: "vendor_native", credential_source: "native_session" };
-      yield { type: "interaction_requested", session_id: spec.session_id, ts: now().toISOString(), interaction: { interaction_id: "i", questions: [] } };
-      yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
-    }, "harness_error"],
-    ["event after completion", async function* (spec: HarnessRunSpec) {
-      yield* yieldExact(spec);
-      yield { type: "message", session_id: spec.session_id, ts: now().toISOString(), text: "late" };
-    }, "protocol_violation"],
+    [
+      "harness error",
+      async function* (spec: HarnessRunSpec) {
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          credential_route: "vendor_native",
+          credential_source: "native_session",
+        };
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          error: "redacted failure",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
+      },
+      "harness_error",
+    ],
+    [
+      "missing completion",
+      async function* (spec: HarnessRunSpec) {
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          credential_route: "vendor_native",
+          credential_source: "native_session",
+        };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          text: expectedToken(spec),
+        };
+      },
+      "missing_completion",
+    ],
+    [
+      "wrong response",
+      async function* (spec: HarnessRunSpec) {
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          credential_route: "vendor_native",
+          credential_source: "native_session",
+        };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          text: "not the nonce",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
+      },
+      "response_mismatch",
+    ],
+    [
+      "interaction",
+      async function* (spec: HarnessRunSpec) {
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          credential_route: "vendor_native",
+          credential_source: "native_session",
+        };
+        yield {
+          type: "interaction_requested",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          interaction: { interaction_id: "i", questions: [] },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
+      },
+      "harness_error",
+    ],
+    [
+      "event after completion",
+      async function* (spec: HarnessRunSpec) {
+        yield* yieldExact(spec);
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts: now().toISOString(),
+          text: "late",
+        };
+      },
+      "protocol_violation",
+    ],
   ])("rejects %s", async (_label, events, reason) => {
     const { subject } = verifier(adapterWith(events));
-    await expect(subject.verify({ binding: prepare(subject), startedAt: now().toISOString() }))
-      .resolves.toMatchObject({ verification: "failed", selectionReason: reason });
+    await expect(
+      subject.verify({ binding: prepare(subject), startedAt: now().toISOString() }),
+    ).resolves.toMatchObject({ verification: "failed", selectionReason: reason });
   });
 
   it("fails when the supposedly readonly smoke changes its owned scratch", async () => {
@@ -179,7 +283,10 @@ describe("AuthCapabilityVerifier", () => {
       yield* yieldExact(spec);
     });
     const { subject } = verifier(adapter);
-    const receipt = await subject.verify({ binding: prepare(subject), startedAt: now().toISOString() });
+    const receipt = await subject.verify({
+      binding: prepare(subject),
+      startedAt: now().toISOString(),
+    });
     expect(receipt.selectionReason).toBe("scratch_mutated");
     subject.cleanup(receipt.attemptId);
   });
@@ -191,27 +298,50 @@ describe("AuthCapabilityVerifier", () => {
       controller.abort();
     });
     const { subject } = verifier(adapter);
-    await expect(subject.verify({ binding: prepare(subject), startedAt: now().toISOString(), abortSignal: controller.signal }))
-      .resolves.toMatchObject({ verification: "failed", selectionReason: "cancelled" });
+    await expect(
+      subject.verify({
+        binding: prepare(subject),
+        startedAt: now().toISOString(),
+        abortSignal: controller.signal,
+      }),
+    ).resolves.toMatchObject({ verification: "failed", selectionReason: "cancelled" });
   });
 
   it("turns adapter exceptions into redacted failed receipts", async () => {
-    const { subject } = verifier(adapterWith(async function* () { throw new Error("secret-bearing vendor output"); }));
-    const receipt = await subject.verify({ binding: prepare(subject), startedAt: now().toISOString() });
+    const { subject } = verifier(
+      adapterWith(async function* () {
+        throw new Error("secret-bearing vendor output");
+      }),
+    );
+    const receipt = await subject.verify({
+      binding: prepare(subject),
+      startedAt: now().toISOString(),
+    });
     expect(receipt).toMatchObject({ verification: "failed", selectionReason: "adapter_error" });
     expect(JSON.stringify(receipt)).not.toContain("secret-bearing");
   });
 
   it("does not call any unrelated adapter when the selected harness is absent", async () => {
     const { subject, lookup } = verifier(undefined);
-    const receipt = await subject.verify({ binding: prepare(subject), startedAt: now().toISOString() });
+    const receipt = await subject.verify({
+      binding: prepare(subject),
+      startedAt: now().toISOString(),
+    });
     expect(lookup).toHaveBeenCalledTimes(1);
-    expect(receipt).toMatchObject({ availability: "unavailable", verification: "failed", selectionReason: "adapter_unavailable" });
+    expect(receipt).toMatchObject({
+      availability: "unavailable",
+      verification: "failed",
+      selectionReason: "adapter_unavailable",
+    });
   });
 
   it("binds the request before execution and refuses a changed digest", async () => {
     const run = vi.fn();
-    const { subject } = verifier(adapterWith(async function* () { run(); }));
+    const { subject } = verifier(
+      adapterWith(async function* () {
+        run();
+      }),
+    );
     const binding = { ...prepare(subject), requestDigest: "f".repeat(64) };
     const receipt = await subject.verify({ binding, startedAt: now().toISOString() });
     expect(run).not.toHaveBeenCalled();

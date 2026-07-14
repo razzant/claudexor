@@ -1,10 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { flagBool, flagStr, flagStringList, flagValues, parseArgs, requiredStringFlagError } from "./args.js";
+import {
+  flagBool,
+  flagStr,
+  flagStringList,
+  flagValues,
+  parseArgs,
+  requiredStringFlagError,
+} from "./args.js";
 
 describe("cli args", () => {
   it("parses --in-place as a boolean flag (present => true, absent => false)", () => {
     // Followed by another --flag (how the Terminal-Bench adapter emits it).
-    expect(flagBool(parseArgs(["run", "p", "--in-place", "--mode", "max-attempts"]), "in-place")).toBe(true);
+    expect(
+      flagBool(parseArgs(["run", "p", "--in-place", "--mode", "max-attempts"]), "in-place"),
+    ).toBe(true);
     // Trailing boolean flag.
     expect(flagBool(parseArgs(["run", "p", "--in-place"]), "in-place")).toBe(true);
     // Absent.
@@ -35,7 +44,17 @@ describe("cli args", () => {
   });
 
   it("preserves repeated flag values while flagStr keeps last-value compatibility", () => {
-    const args = parseArgs(["run", "fix", "--test", "pnpm build", "--test=pnpm test", "--harness", "codex", "--harness", "claude"]);
+    const args = parseArgs([
+      "run",
+      "fix",
+      "--test",
+      "pnpm build",
+      "--test=pnpm test",
+      "--harness",
+      "codex",
+      "--harness",
+      "claude",
+    ]);
     expect(flagValues(args, "test")).toEqual(["pnpm build", "pnpm test"]);
     expect(flagStr(args, "test")).toBe("pnpm test");
     expect(flagValues(args, "harness")).toEqual(["codex", "claude"]);
@@ -65,15 +84,15 @@ describe("cli args", () => {
   });
 
   it("rejects empty comma-separated entries in string-list flags", () => {
-    expect(() => flagStringList(parseArgs(["run", "fix", "--harness", "codex,,claude"]), "harness")).toThrow(
-      /invalid --harness value/,
-    );
+    expect(() =>
+      flagStringList(parseArgs(["run", "fix", "--harness", "codex,,claude"]), "harness"),
+    ).toThrow(/invalid --harness value/);
     expect(() => flagStringList(parseArgs(["run", "fix", "--attach", "a.txt,"]), "attach")).toThrow(
       /invalid --attach value/,
     );
-    expect(() => flagStringList(parseArgs(["run", "fix", "--image", ",shot.png"]), "image")).toThrow(
-      /invalid --image value/,
-    );
+    expect(() =>
+      flagStringList(parseArgs(["run", "fix", "--image", ",shot.png"]), "image"),
+    ).toThrow(/invalid --image value/);
   });
 
   it("stores flags in a prototype-free map", () => {
@@ -85,12 +104,21 @@ describe("cli args", () => {
   });
 
   it("rejects value-taking flags when no value is provided", () => {
-    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "--json"]), ["spec"])).toBe("claudexor: --spec requires a value");
-    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec="]), ["spec"])).toBe("claudexor: --spec requires a value");
-    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "spec.json"]), ["spec"])).toBeNull();
-    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--test", "pnpm build", "--test", "--json"]), ["test"])).toBe(
-      "claudexor: --test requires a value",
+    expect(
+      requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "--json"]), ["spec"]),
+    ).toBe("claudexor: --spec requires a value");
+    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec="]), ["spec"])).toBe(
+      "claudexor: --spec requires a value",
     );
+    expect(
+      requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "spec.json"]), ["spec"]),
+    ).toBeNull();
+    expect(
+      requiredStringFlagError(
+        parseArgs(["run", "fix it", "--test", "pnpm build", "--test", "--json"]),
+        ["test"],
+      ),
+    ).toBe("claudexor: --test requires a value");
   });
 });
 

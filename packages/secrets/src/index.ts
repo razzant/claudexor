@@ -50,7 +50,13 @@ export class SecretStore {
     // env typo FAILS LOUDLY rather than silently falling back to the Keychain
     // (e.g. CLAUDEXOR_SECRETS_BACKEND=fil must not quietly hit the real Keychain).
     const envBackend = process.env.CLAUDEXOR_SECRETS_BACKEND;
-    if (envBackend !== undefined && envBackend !== "" && envBackend !== "file" && envBackend !== "keychain" && envBackend !== "auto") {
+    if (
+      envBackend !== undefined &&
+      envBackend !== "" &&
+      envBackend !== "file" &&
+      envBackend !== "keychain" &&
+      envBackend !== "auto"
+    ) {
       throw new Error(`CLAUDEXOR_SECRETS_BACKEND must be file|keychain|auto (got '${envBackend}')`);
     }
     if (envBackend === "file") return "file";
@@ -100,9 +106,13 @@ export class SecretStore {
   delete(name: string): void {
     if (this.resolvedBackend() === "keychain") {
       try {
-        execFileSync("security", ["delete-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`], {
-          stdio: "ignore",
-        });
+        execFileSync(
+          "security",
+          ["delete-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`],
+          {
+            stdio: "ignore",
+          },
+        );
       } catch {
         /* ignore */
       }
@@ -142,7 +152,9 @@ export class SecretStore {
       }
       return out;
     } catch (err) {
-      throw new Error(`invalid Claudexor secret store at ${path}: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(
+        `invalid Claudexor secret store at ${path}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -190,7 +202,10 @@ export class SecretStore {
   private keychainNames(): string[] {
     if (platform() !== "darwin") return [];
     try {
-      const out = execFileSync("security", ["dump-keychain"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      const out = execFileSync("security", ["dump-keychain"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
       const re = new RegExp(`"svce"<blob>="${SERVICE}:([^"]+)"`, "g");
       const names: string[] = [];
       for (let m = re.exec(out); m !== null; m = re.exec(out)) {

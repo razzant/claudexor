@@ -174,8 +174,27 @@ export async function guardAnnouncedRun(
       spendUsd = null;
     }
     if (signal?.aborted) {
-      return cancelledResult(a.log, a.runId, a.taskId, a.mode, a.paths.root, [], undefined, spendUsd);
+      return cancelledResult(
+        a.log,
+        a.runId,
+        a.taskId,
+        a.mode,
+        a.paths.root,
+        [],
+        undefined,
+        spendUsd,
+      );
     }
-    return failTerminally(a.log, a.store, a.paths, a.runId, a.taskId, a.mode, a.phase, err, spendUsd);
+    return failTerminally(
+      a.log,
+      a.store,
+      a.paths,
+      a.runId,
+      a.taskId,
+      a.mode,
+      a.phase,
+      err,
+      spendUsd,
+    );
   }
 }

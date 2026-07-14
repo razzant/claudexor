@@ -45,7 +45,10 @@ const reviewerModel = flag("reviewer-model");
 // recorded as an EMPTY prediction, then the loop continues.
 const taskTimeoutSec = Math.max(
   1,
-  Number.parseInt(flag("task-timeout-sec") ?? process.env.CLAUDEXOR_SWE_TASK_TIMEOUT_SEC ?? "1800", 10) || 1800,
+  Number.parseInt(
+    flag("task-timeout-sec") ?? process.env.CLAUDEXOR_SWE_TASK_TIMEOUT_SEC ?? "1800",
+    10,
+  ) || 1800,
 );
 const harness = process.env.CLAUDEXOR_SWE_HARNESS || "codex";
 const modelName = process.env.CLAUDEXOR_SWE_MODEL_NAME || "claudexor";
@@ -58,7 +61,9 @@ if (!existsSync(cliEntry)) die(`built CLI not found at ${cliEntry} (run \`pnpm b
 
 const tasks = loadTasksFromJsonl(tasksPath);
 if (tasks.length === 0) die(`no tasks loaded from ${tasksPath}`);
-log(`runner: ${tasks.length} task(s), n=${n}, harness=${harness}, task-timeout=${taskTimeoutSec}s, cli=${cliEntry}`);
+log(
+  `runner: ${tasks.length} task(s), n=${n}, harness=${harness}, task-timeout=${taskTimeoutSec}s, cli=${cliEntry}`,
+);
 
 const workRoot = isAbsolute(workdir) ? workdir : resolve(process.cwd(), workdir);
 const predictions: Prediction[] = [];
@@ -67,11 +72,24 @@ for (const task of tasks) {
   const dir = join(workRoot, task.instance_id);
   if (!existsSync(join(dir, ".git"))) {
     log(`skip ${task.instance_id}: prepared repo missing at ${dir} (empty prediction)`);
-    predictions.push({ instance_id: task.instance_id, model_name_or_path: modelName, model_patch: "" });
+    predictions.push({
+      instance_id: task.instance_id,
+      model_name_or_path: modelName,
+      model_patch: "",
+    });
     writePredictions(predictions, predsPath);
     continue;
   }
-  const cliArgs = [cliEntry, "agent", task.problem_statement, "--n", String(n), "--harness", harness, "--json"];
+  const cliArgs = [
+    cliEntry,
+    "agent",
+    task.problem_statement,
+    "--n",
+    String(n),
+    "--harness",
+    harness,
+    "--json",
+  ];
   if (maxUsd) cliArgs.push("--max-usd", maxUsd);
   if (reviewerModel) cliArgs.push("--reviewer-model", reviewerModel);
 
@@ -89,13 +107,21 @@ for (const task of tasks) {
   // empty prediction and move on so the sweep doesn't hang on one stuck task.
   if (r.error && (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT") {
     log(`  ${task.instance_id}: TIMED OUT after ${taskTimeoutSec}s (killed); empty patch`);
-    predictions.push({ instance_id: task.instance_id, model_name_or_path: modelName, model_patch: "" });
+    predictions.push({
+      instance_id: task.instance_id,
+      model_name_or_path: modelName,
+      model_patch: "",
+    });
     writePredictions(predictions, predsPath);
     continue;
   }
   if (r.signal) {
     log(`  ${task.instance_id}: killed by signal ${r.signal}; empty patch`);
-    predictions.push({ instance_id: task.instance_id, model_name_or_path: modelName, model_patch: "" });
+    predictions.push({
+      instance_id: task.instance_id,
+      model_name_or_path: modelName,
+      model_patch: "",
+    });
     writePredictions(predictions, predsPath);
     continue;
   }
@@ -105,7 +131,10 @@ for (const task of tasks) {
   const out = (r.stdout ?? "").trim();
   try {
     const start = out.indexOf("{");
-    const res = JSON.parse(start >= 0 ? out.slice(start) : out) as { runDir?: string; status?: string };
+    const res = JSON.parse(start >= 0 ? out.slice(start) : out) as {
+      runDir?: string;
+      status?: string;
+    };
     if (res.runDir) {
       const patchFile = join(res.runDir, "final", "patch.diff");
       if (existsSync(patchFile)) patch = readFileSync(patchFile, "utf8");
@@ -116,7 +145,11 @@ for (const task of tasks) {
     if (r.stderr) log(`  stderr: ${r.stderr.slice(0, 400)}`);
   }
 
-  predictions.push({ instance_id: task.instance_id, model_name_or_path: modelName, model_patch: patch });
+  predictions.push({
+    instance_id: task.instance_id,
+    model_name_or_path: modelName,
+    model_patch: patch,
+  });
   writePredictions(predictions, predsPath); // incremental: survive a mid-run abort
 }
 

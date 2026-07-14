@@ -37,7 +37,9 @@ function routeSites(src) {
   }
   for (const [name] of regexByName) {
     if (!src.includes(`&& ${name}`)) {
-      throw new Error(`endpoint extractor: regex route '${name}' is declared but never used with a method guard`);
+      throw new Error(
+        `endpoint extractor: regex route '${name}' is declared but never used with a method guard`,
+      );
     }
   }
   return sites;
@@ -70,9 +72,7 @@ const READ_ONLY_NON_GET = new Set([
 // `this.json(res, 200, detailFor(...))` where detailFor zod-parses the DTO).
 // docs-truth self-checks every named schema exists in generated/, so a rename
 // fails loudly instead of shipping a dangling ref.
-const ROUTE_RESPONSE_OVERRIDES = new Map([
-  ["GET /runs/:id", "ControlRunDetail"],
-]);
+const ROUTE_RESPONSE_OVERRIDES = new Map([["GET /runs/:id", "ControlRunDetail"]]);
 
 export function endpointDetails(srcPath = "packages/control-api/src/daemon-server.ts") {
   const src = readFileSync(srcPath, "utf8");
@@ -80,11 +80,13 @@ export function endpointDetails(srcPath = "packages/control-api/src/daemon-serve
   const details = sites.map((site, i) => {
     // The handler slice is bounded by the NEXT route guard (or a hard cap for
     // the last route) — no formatting-sensitive sentinels.
-    const sliceEnd = i + 1 < sites.length ? sites[i + 1].index : Math.min(site.index + 4000, src.length);
+    const sliceEnd =
+      i + 1 < sites.length ? sites[i + 1].index : Math.min(site.index + 4000, src.length);
     const body = src.slice(site.index, sliceEnd);
     // Request schema: any PascalCase *Request DTO parsed in the handler; the
     // `body = X.parse(` form is preferred when both appear.
-    const requestMatch = /body = ([A-Z]\w+)\.parse\(/.exec(body) ?? /\b([A-Z]\w*Request)\.parse\(/.exec(body);
+    const requestMatch =
+      /body = ([A-Z]\w+)\.parse\(/.exec(body) ?? /\b([A-Z]\w*Request)\.parse\(/.exec(body);
     // Response schema, two validated forms (both zod-parse the wire value):
     //  - the service() helper's schema argument (last arg, tolerant of commas
     //    inside the input argument);
@@ -103,7 +105,13 @@ export function endpointDetails(srcPath = "packages/control-api/src/daemon-serve
       responseSchema: ROUTE_RESPONSE_OVERRIDES.get(key) ?? (serviceMatch ? serviceMatch[1] : null),
     };
   });
-  details.push({ method: "GET", path: "/healthz", mutating: false, requestSchema: null, responseSchema: null });
+  details.push({
+    method: "GET",
+    path: "/healthz",
+    mutating: false,
+    requestSchema: null,
+    responseSchema: null,
+  });
   const seen = new Set();
   return details
     .filter((d) => {
@@ -112,7 +120,9 @@ export function endpointDetails(srcPath = "packages/control-api/src/daemon-serve
       seen.add(key);
       return true;
     })
-    .sort((a, b) => (a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path)));
+    .sort((a, b) =>
+      a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path),
+    );
 }
 
 /** Deterministic machine artifact for external agents (docs/reference/endpoints.json). */
@@ -136,7 +146,8 @@ export function renderEndpointsJson(details) {
   );
 }
 
-export const GEN_BEGIN = "<!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->";
+export const GEN_BEGIN =
+  "<!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->";
 export const GEN_END = "<!-- END GENERATED ENDPOINTS -->";
 
 /** Deterministic rendering of the generated inventory block. */

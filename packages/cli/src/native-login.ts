@@ -12,13 +12,21 @@ export interface NativeLoginSpec {
 type LoginDefinition = Omit<NativeLoginSpec, "binary"> & { binaryName: () => string };
 
 const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
-  codex: { binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex", args: ["login"], displayCommand: "codex login" },
+  codex: {
+    binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
+    args: ["login"],
+    displayCommand: "codex login",
+  },
   claude: {
     binaryName: () => process.env.CLAUDEXOR_CLAUDE_BIN || "claude",
     args: ["auth", "login", "--claudeai"],
     displayCommand: "claude auth login --claudeai",
   },
-  cursor: { binaryName: () => process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent", args: ["login"], displayCommand: "cursor-agent login" },
+  cursor: {
+    binaryName: () => process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent",
+    args: ["login"],
+    displayCommand: "cursor-agent login",
+  },
 };
 
 /**
@@ -53,9 +61,28 @@ export function nativeLoginEnv(
   const runtime = harnessRuntimeEnv(source);
   const env: NodeJS.ProcessEnv = {};
   const allowed = [
-    "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "NO_COLOR",
-    "USER", "LOGNAME", "SHELL", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "COLORTERM",
+    "NO_COLOR",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
     "NODE_EXTRA_CA_CERTS",
   ] as const;
   for (const key of allowed) {

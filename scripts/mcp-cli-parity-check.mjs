@@ -47,7 +47,9 @@ const cliBooleanFlags = [...cliRegistry.BOOLEAN_FLAGS];
 const acpSrc = readFileSync(join(root, "packages/acp-server/src/validate.ts"), "utf8");
 const acpAllowMatch = /const allowedKeys = new Set\(\[([\s\S]*?)\]\)/.exec(acpSrc);
 if (!acpAllowMatch) {
-  console.error("mcp-cli-parity: could not locate the session/prompt allowedKeys in packages/acp-server/src/validate.ts");
+  console.error(
+    "mcp-cli-parity: could not locate the session/prompt allowedKeys in packages/acp-server/src/validate.ts",
+  );
   process.exit(1);
 }
 const acpFields = [...acpAllowMatch[1].matchAll(/"([A-Za-z]+)"/g)].map((m) => m[1]);
@@ -62,7 +64,10 @@ const MCP_TO_CLI = {
   web: { cli: "web" },
   externalContextPolicy: { cli: "web", reason: "control-api parity alias of web" },
   n: { cli: "n" },
-  repoPath: { cli: null, reason: "the CLI runs in its cwd; MCP hosts pass the project root explicitly" },
+  repoPath: {
+    cli: null,
+    reason: "the CLI runs in its cwd; MCP hosts pass the project root explicitly",
+  },
   tests: { cli: "test" },
   maxUsd: { cli: "max-usd" },
   access: { cli: "access" },
@@ -77,7 +82,10 @@ const BOOLEAN_FLAG_MAP = {
   "until-clean": { mcp: null, reason: "convergence strategy; not exposed one-shot (CLI/app only)" },
   swarm: { mcp: null, reason: "encoded in the claudexor_explore TOOL NAME" },
   create: { mcp: null, reason: "encoded in the claudexor_create TOOL NAME" },
-  "in-place": { mcp: null, reason: "live-tree mutation is a CLI-only explicit opt-in (never a remote-ish surface default)" },
+  "in-place": {
+    mcp: null,
+    reason: "live-tree mutation is a CLI-only explicit opt-in (never a remote-ish surface default)",
+  },
   json: { mcp: null, reason: "CLI output shaping, not a run control" },
   all: { mcp: null, reason: "subcommand scope flag, not a run control" },
   "dry-run": { mcp: null, reason: "subcommand plumbing" },
@@ -105,9 +113,12 @@ const CLI_ONLY_EXEMPT = {
   answers: "spec-interview plumbing (CLI spec flow only)",
   previous: "spec-interview plumbing (CLI spec flow only)",
   spec: "spec-file attach (CLI spec flow only)",
-  attach: "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only; a prompt cannot carry an image)",
-  image: "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only)",
-  "access-default": "trust subcommand flag, not a run control (was invisible to the old VALUE_FLAGS source-regex; the registry surfaces it)",
+  attach:
+    "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only; a prompt cannot carry an image)",
+  image:
+    "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only)",
+  "access-default":
+    "trust subcommand flag, not a run control (was invisible to the old VALUE_FLAGS source-regex; the registry surfaces it)",
   "from-env": "secrets subcommand flag, not a run control",
   backend: "secrets subcommand flag, not a run control",
   "apply-mode": "decision subcommand flag, not a run control",
@@ -122,16 +133,22 @@ const failures = [];
 for (const arg of mcpArgs) {
   const mapping = MCP_TO_CLI[arg];
   if (!mapping) {
-    failures.push(`MCP arg '${arg}' has no declared CLI mapping — add it to MCP_TO_CLI (or the CLI flag itself)`);
+    failures.push(
+      `MCP arg '${arg}' has no declared CLI mapping — add it to MCP_TO_CLI (or the CLI flag itself)`,
+    );
     continue;
   }
   if (mapping.cli && !cliValueFlags.includes(mapping.cli)) {
-    failures.push(`MCP arg '${arg}' maps to CLI flag '--${mapping.cli}' which is not in VALUE_FLAGS`);
+    failures.push(
+      `MCP arg '${arg}' maps to CLI flag '--${mapping.cli}' which is not in VALUE_FLAGS`,
+    );
   }
 }
 for (const declared of Object.keys(MCP_TO_CLI)) {
   if (!mcpArgs.includes(declared)) {
-    failures.push(`MCP_TO_CLI declares '${declared}' but the claudexor_run schema does not expose it — stale mapping`);
+    failures.push(
+      `MCP_TO_CLI declares '${declared}' but the claudexor_run schema does not expose it — stale mapping`,
+    );
   }
 }
 
@@ -143,22 +160,30 @@ const mappedCliFlags = new Set(
 for (const flag of cliValueFlags) {
   if (mappedCliFlags.has(flag)) continue;
   if (flag in CLI_ONLY_EXEMPT) continue;
-  failures.push(`CLI value flag '--${flag}' has no MCP argument and no exemption — grow the MCP schema or add a justified exemption`);
+  failures.push(
+    `CLI value flag '--${flag}' has no MCP argument and no exemption — grow the MCP schema or add a justified exemption`,
+  );
 }
 for (const exempt of Object.keys(CLI_ONLY_EXEMPT)) {
   if (!cliValueFlags.includes(exempt)) {
-    failures.push(`CLI_ONLY_EXEMPT lists '--${exempt}' which is no longer a CLI value flag — stale exemption`);
+    failures.push(
+      `CLI_ONLY_EXEMPT lists '--${exempt}' which is no longer a CLI value flag — stale exemption`,
+    );
   }
 }
 
 for (const flag of cliBooleanFlags) {
   if (!(flag in BOOLEAN_FLAG_MAP)) {
-    failures.push(`CLI boolean flag '--${flag}' has no declared MCP mapping/exemption in BOOLEAN_FLAG_MAP`);
+    failures.push(
+      `CLI boolean flag '--${flag}' has no declared MCP mapping/exemption in BOOLEAN_FLAG_MAP`,
+    );
   }
 }
 for (const declared of Object.keys(BOOLEAN_FLAG_MAP)) {
   if (!cliBooleanFlags.includes(declared)) {
-    failures.push(`BOOLEAN_FLAG_MAP declares '--${declared}' which is not a CLI boolean flag — stale mapping`);
+    failures.push(
+      `BOOLEAN_FLAG_MAP declares '--${declared}' which is not a CLI boolean flag — stale mapping`,
+    );
   }
 }
 
@@ -168,7 +193,9 @@ const ACP_EQUIVALENT = { repoPath: "session/new cwd anchors the project" };
 for (const arg of mcpArgs) {
   if (arg in ACP_EQUIVALENT) continue;
   if (!acpFields.includes(arg)) {
-    failures.push(`MCP arg '${arg}' is not accepted by the ACP session/prompt allowlist — the surfaces drifted`);
+    failures.push(
+      `MCP arg '${arg}' is not accepted by the ACP session/prompt allowlist — the surfaces drifted`,
+    );
   }
 }
 
@@ -186,11 +213,15 @@ for (const tool of tools) {
   }
   const expectReadOnly = !MUTATING_TOOLS.has(tool.name);
   if (tool.annotations.readOnlyHint !== expectReadOnly) {
-    failures.push(`MCP tool '${tool.name}' readOnlyHint=${tool.annotations.readOnlyHint} contradicts its nature (expected ${expectReadOnly})`);
+    failures.push(
+      `MCP tool '${tool.name}' readOnlyHint=${tool.annotations.readOnlyHint} contradicts its nature (expected ${expectReadOnly})`,
+    );
   }
   const required = Array.isArray(tool.inputSchema?.required) ? tool.inputSchema.required : [];
   if (required.includes("prompt") && !tool.outputSchema) {
-    failures.push(`MCP run tool '${tool.name}' declares no outputSchema (structured results contract)`);
+    failures.push(
+      `MCP run tool '${tool.name}' declares no outputSchema (structured results contract)`,
+    );
   }
 }
 for (const recovery of ["claudexor_runs", "claudexor_inspect", "claudexor_apply_check"]) {
@@ -204,4 +235,6 @@ if (failures.length > 0) {
   for (const f of failures) console.error(`  - ${f}`);
   process.exit(1);
 }
-console.log(`mcp-cli-parity check passed (${mcpArgs.length} MCP args, ${cliValueFlags.length} CLI value flags, ${cliBooleanFlags.length} boolean flags, ${acpFields.length} ACP fields, ${Object.keys(CLI_ONLY_EXEMPT).length} exemptions)`);
+console.log(
+  `mcp-cli-parity check passed (${mcpArgs.length} MCP args, ${cliValueFlags.length} CLI value flags, ${cliBooleanFlags.length} boolean flags, ${acpFields.length} ACP fields, ${Object.keys(CLI_ONLY_EXEMPT).length} exemptions)`,
+);

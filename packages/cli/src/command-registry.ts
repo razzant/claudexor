@@ -79,11 +79,34 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     valueHint: "<mode>",
     help: "agent verb: ask | plan | audit | agent | orchestrate (strategies are flags, not modes);\n                           apply verb: delivery mode apply | commit | branch | pr",
   },
-  { name: "n", kind: "value", valueHint: "<N>", help: "Best-of-N width (agent): N isolated candidates + cross-review" },
-  { name: "synthesis", kind: "value", valueHint: "<mode>", help: "Best-of-N synthesis: auto (default, only n>=3)|always|never" },
-  { name: "attempts", kind: "value", valueHint: "<N>", help: "Convergence cap (agent): repair loop up to N attempts" },
-  { name: "until-clean", kind: "boolean", help: "Convergence (agent): iterate until the review/gates are clean" },
-  { name: "swarm", kind: "boolean", help: "Research swarm (audit): bounded read-only explorer fan-out" },
+  {
+    name: "n",
+    kind: "value",
+    valueHint: "<N>",
+    help: "Best-of-N width (agent): N isolated candidates + cross-review",
+  },
+  {
+    name: "synthesis",
+    kind: "value",
+    valueHint: "<mode>",
+    help: "Best-of-N synthesis: auto (default, only n>=3)|always|never",
+  },
+  {
+    name: "attempts",
+    kind: "value",
+    valueHint: "<N>",
+    help: "Convergence cap (agent): repair loop up to N attempts",
+  },
+  {
+    name: "until-clean",
+    kind: "boolean",
+    help: "Convergence (agent): iterate until the review/gates are clean",
+  },
+  {
+    name: "swarm",
+    kind: "boolean",
+    help: "Research swarm (audit): bounded read-only explorer fan-out",
+  },
   { name: "create", kind: "boolean", help: "Create-from-scratch intent (agent)" },
   {
     name: "autonomy",
@@ -91,7 +114,12 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     valueHint: "<level>",
     help: "Orchestrate: how much the orchestrator may act without confirmation:\n                           suggest (default, read-only plan) | auto_safe | auto_full",
   },
-  { name: "test", kind: "value", valueHint: '"<cmd>"', help: "Deterministic gate command(s); repeat flag or separate with ';;'" },
+  {
+    name: "test",
+    kind: "value",
+    valueHint: '"<cmd>"',
+    help: "Deterministic gate command(s); repeat flag or separate with ';;'",
+  },
   {
     name: "allow-protected-path",
     kind: "value",
@@ -99,10 +127,30 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     help: "Explicitly approve protected gate/test path changes for this run",
   },
   { name: "max-usd", kind: "value", valueHint: "<amount>", help: "Hard per-run spend cap (USD)" },
-  { name: "max-tool-calls", kind: "value", valueHint: "<n>", help: "Orchestrate executor: cap on plan tool calls" },
-  { name: "diff", kind: "value", valueHint: "<file>", help: "Diff file for the review verb (per-commit gate)" },
-  { name: "intent", kind: "value", valueHint: '"<text>"', help: "Review intent context for the review verb" },
-  { name: "tests", kind: "value", valueHint: '"<evidence>"', help: "Test evidence text for the review verb" },
+  {
+    name: "max-tool-calls",
+    kind: "value",
+    valueHint: "<n>",
+    help: "Orchestrate executor: cap on plan tool calls",
+  },
+  {
+    name: "diff",
+    kind: "value",
+    valueHint: "<file>",
+    help: "Diff file for the review verb (per-commit gate)",
+  },
+  {
+    name: "intent",
+    kind: "value",
+    valueHint: '"<text>"',
+    help: "Review intent context for the review verb",
+  },
+  {
+    name: "tests",
+    kind: "value",
+    valueHint: '"<evidence>"',
+    help: "Test evidence text for the review verb",
+  },
   {
     name: "reviewer-panel",
     kind: "value",
@@ -115,28 +163,83 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     valueHint: "<map>",
     help: 'Per-family reviewer model, e.g. "openai=gpt-4o-mini,anthropic=claude-haiku"',
   },
-  { name: "reviewer-effort", kind: "value", valueHint: "<map>", help: 'Per-family reviewer effort, e.g. "anthropic=max"' },
+  {
+    name: "reviewer-effort",
+    kind: "value",
+    valueHint: "<map>",
+    help: 'Per-family reviewer effort, e.g. "anthropic=max"',
+  },
   {
     name: "access",
     kind: "value",
     valueHint: "<profile>",
     help: "Access profile: readonly|workspace_write|full|external_sandbox_full|inherit_native",
   },
-  { name: "web", kind: "value", valueHint: "<mode>", help: "External web/search policy: off|auto|cached|live" },
-  { name: "model", kind: "value", valueHint: "<id>", help: "Model hint forwarded to the selected harness route" },
-  { name: "effort", kind: "value", valueHint: "<level>", help: "Reasoning effort hint: low|medium|high|xhigh|max" },
-  { name: "primary-harness", kind: "value", valueHint: "<id>", help: "Bias single-route modes and first candidate choice" },
-  { name: "portfolio", kind: "value", valueHint: "<id>", help: "Budget/routing portfolio (default: subscription-first)" },
+  {
+    name: "web",
+    kind: "value",
+    valueHint: "<mode>",
+    help: "External web/search policy: off|auto|cached|live",
+  },
+  {
+    name: "model",
+    kind: "value",
+    valueHint: "<id>",
+    help: "Model hint forwarded to the selected harness route",
+  },
+  {
+    name: "effort",
+    kind: "value",
+    valueHint: "<level>",
+    help: "Reasoning effort hint: low|medium|high|xhigh|max",
+  },
+  {
+    name: "primary-harness",
+    kind: "value",
+    valueHint: "<id>",
+    help: "Bias single-route modes and first candidate choice",
+  },
+  {
+    name: "portfolio",
+    kind: "value",
+    valueHint: "<id>",
+    help: "Budget/routing portfolio (default: subscription-first)",
+  },
   {
     name: "in-place",
     kind: "boolean",
     help: "Run write turns against the live project tree (single-candidate\n                           in-place; best-of-N candidates stay isolated and the winner is adopted)\n                           instead of a throwaway envelope",
   },
-  { name: "answers", kind: "value", valueHint: "<file>", help: "Answers JSON for claudexor spec (batch mode)" },
-  { name: "previous", kind: "value", valueHint: "<spec.json>", help: "Previous SpecPack JSON for section-level diff" },
-  { name: "spec", kind: "value", valueHint: "<spec.json>", help: "Frozen SpecPack context for agent/best-of/create/convergence" },
-  { name: "attach", kind: "value", valueHint: "<path[,path...]>", help: "Attach file(s) to ask/agent/best-of/plan/audit" },
-  { name: "image", kind: "value", valueHint: "<path[,path...]>", help: "Attach image file(s) (alias for --attach with image kind)" },
+  {
+    name: "answers",
+    kind: "value",
+    valueHint: "<file>",
+    help: "Answers JSON for claudexor spec (batch mode)",
+  },
+  {
+    name: "previous",
+    kind: "value",
+    valueHint: "<spec.json>",
+    help: "Previous SpecPack JSON for section-level diff",
+  },
+  {
+    name: "spec",
+    kind: "value",
+    valueHint: "<spec.json>",
+    help: "Frozen SpecPack context for agent/best-of/create/convergence",
+  },
+  {
+    name: "attach",
+    kind: "value",
+    valueHint: "<path[,path...]>",
+    help: "Attach file(s) to ask/agent/best-of/plan/audit",
+  },
+  {
+    name: "image",
+    kind: "value",
+    valueHint: "<path[,path...]>",
+    help: "Attach image file(s) (alias for --attach with image kind)",
+  },
   {
     name: "backend",
     kind: "value",
@@ -150,7 +253,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     kind: "boolean",
     help: "Plugin: show lifecycle actions; apply: check patch without mutating",
   },
-  { name: "force", kind: "boolean", help: "Reapply verified Claudexor-owned plugin drift; never overwrites unowned files" },
+  {
+    name: "force",
+    kind: "boolean",
+    help: "Reapply verified Claudexor-owned plugin drift; never overwrites unowned files",
+  },
   { name: "from-env", kind: "value", valueHint: "<VAR>", help: null },
   // trust sub-flags: documented inline under the trust usage entry.
   { name: "allow-full-access", kind: "boolean", help: null },
@@ -312,7 +419,16 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     usageArgs: "<run_id> <action>",
     summary:
       'Decide a blocked run: --accept-risk|--override|--revert|--accept-clean-patch [--apply-mode m]|--rerun --feedback "<text>"',
-    flags: ["accept-risk", "override", "revert", "accept-clean-patch", "rerun", "apply-mode", "feedback", "json"],
+    flags: [
+      "accept-risk",
+      "override",
+      "revert",
+      "accept-clean-patch",
+      "rerun",
+      "apply-mode",
+      "feedback",
+      "json",
+    ],
     mutability: "delivery",
     stability: "stable",
     recovery: true,
@@ -331,7 +447,10 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     extraUsageLines: [
       { text: "--allow-full-access", help: "Permit access=full (unsandboxed) for this repo" },
       { text: "--revoke-full-access", help: "Revoke the full-access allow" },
-      { text: "--access-default <profile>", help: "readonly|workspace_write default for write modes" },
+      {
+        text: "--access-default <profile>",
+        help: "readonly|workspace_write default for write modes",
+      },
     ],
     flags: ["allow-full-access", "revoke-full-access", "access-default", "json"],
     mutability: "ops",
@@ -404,7 +523,8 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   {
     id: "models",
     usageArgs: "[--harness <id>] [--all]",
-    summary: "List a harness's enumerable models (raw-api: OpenAI GET /v1/models; --all includes fakes)",
+    summary:
+      "List a harness's enumerable models (raw-api: OpenAI GET /v1/models; --all includes fakes)",
     flags: ["harness", "all", "json"],
     mutability: "read",
     stability: "stable",
@@ -426,7 +546,11 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
 ];
 
 /** REPL slash-command vocabulary (second surface, same registry). */
-export const REPL_COMMANDS: readonly { readonly name: string; readonly args?: string; readonly help: string }[] = [
+export const REPL_COMMANDS: readonly {
+  readonly name: string;
+  readonly args?: string;
+  readonly help: string;
+}[] = [
   { name: "/ask", args: "<q>", help: "read-only answer turn" },
   { name: "/plan", args: "<prompt>", help: "read-only planning turn" },
   { name: "/audit", args: "[prompt]", help: "read-only audit turn" },
@@ -446,10 +570,14 @@ export const REPL_COMMANDS: readonly { readonly name: string; readonly args?: st
 export const KNOWN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.map((f) => f.name));
 
 /** Flags that require a non-empty value. */
-export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter((f) => f.kind === "value").map((f) => f.name);
+export const VALUE_FLAGS: readonly string[] = CLI_FLAGS.filter((f) => f.kind === "value").map(
+  (f) => f.name,
+);
 
 /** Flags that never consume a following token as a value. */
-export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.filter((f) => f.kind === "boolean").map((f) => f.name));
+export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(
+  CLI_FLAGS.filter((f) => f.kind === "boolean").map((f) => f.name),
+);
 
 /**
  * Registry-enforced per-command flag scope: every command accepts exactly its
@@ -458,7 +586,10 @@ export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.filter((f) =
  * ignored — the same bug class as unknown flags, one data-driven owner.
  * Unknown verbs return null (dispatch owns unknown/renamed-verb errors).
  */
-export function commandFlagScopeError(commandId: string, flagNames: readonly string[]): string | null {
+export function commandFlagScopeError(
+  commandId: string,
+  flagNames: readonly string[],
+): string | null {
   const cmd = CLI_COMMANDS.find((c) => c.id === commandId || (c.aliases ?? []).includes(commandId));
   if (!cmd) return null;
   const allowed = new Set([...cmd.flags, "json", "help", "version"]);
@@ -491,7 +622,8 @@ export function recoveryVerbs(): readonly string[] {
 const USAGE_COLUMN = 42;
 
 function usageLabel(cmd: CliCommandSpec): string {
-  const verb = cmd.aliases && cmd.aliases.length > 0 ? `${cmd.id} | ${cmd.aliases.join(" | ")}` : cmd.id;
+  const verb =
+    cmd.aliases && cmd.aliases.length > 0 ? `${cmd.id} | ${cmd.aliases.join(" | ")}` : cmd.id;
   return cmd.usageArgs ? `claudexor ${verb} ${cmd.usageArgs}` : `claudexor ${verb}`;
 }
 
@@ -516,7 +648,8 @@ export function renderHelp(version: string): string {
   lines.push("Options:");
   for (const flag of CLI_FLAGS) {
     if (flag.help === null) continue;
-    const label = flag.kind === "value" ? `--${flag.name} ${flag.valueHint ?? "<value>"}` : `--${flag.name}`;
+    const label =
+      flag.kind === "value" ? `--${flag.name} ${flag.valueHint ?? "<value>"}` : `--${flag.name}`;
     lines.push(padded(label, flag.help, 25));
   }
   return lines.join("\n") + "\n";
@@ -557,7 +690,11 @@ export interface HelpJson {
     readonly value_hint: string | null;
     readonly description: string | null;
   }[];
-  readonly repl_commands: readonly { readonly name: string; readonly args: string | null; readonly description: string }[];
+  readonly repl_commands: readonly {
+    readonly name: string;
+    readonly args: string | null;
+    readonly description: string;
+  }[];
 }
 
 /** Machine-readable help (`claudexor help --json`). */
@@ -581,6 +718,10 @@ export function helpJson(version: string): HelpJson {
       value_hint: f.valueHint ?? null,
       description: f.help === null ? null : f.help.replace(/\n\s+/g, " "),
     })),
-    repl_commands: REPL_COMMANDS.map((c) => ({ name: c.name, args: c.args ?? null, description: c.help })),
+    repl_commands: REPL_COMMANDS.map((c) => ({
+      name: c.name,
+      args: c.args ?? null,
+      description: c.help,
+    })),
   };
 }

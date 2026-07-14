@@ -24,7 +24,10 @@ export const IsoTimestamp = z.string().min(1).describe("ISO-8601 timestamp strin
 export type IsoTimestamp = z.infer<typeof IsoTimestamp>;
 
 /** A content hash (algo:hex), e.g. "sha256:abcd...". */
-export const ContentHash = z.string().min(1).describe('Content hash in algo:hex form, e.g. "sha256:abcd...".');
+export const ContentHash = z
+  .string()
+  .min(1)
+  .describe('Content hash in algo:hex form, e.g. "sha256:abcd...".');
 export type ContentHash = z.infer<typeof ContentHash>;
 
 export const RiskLevel = z
@@ -58,7 +61,9 @@ export type OutputReadyState = z.infer<typeof OutputReadyState>;
 /** Provider families used for route-diversity reasoning. Open-ended via "unknown". */
 export const ProviderFamily = z
   .enum(["openai", "anthropic", "google", "cursor", "opencode", "xai", "local", "unknown"])
-  .describe('Vendor/provider family a harness routes to, used for route-diversity reasoning; open-ended via "unknown".');
+  .describe(
+    'Vendor/provider family a harness routes to, used for route-diversity reasoning; open-ended via "unknown".',
+  );
 export type ProviderFamily = z.infer<typeof ProviderFamily>;
 
 /**
@@ -95,7 +100,9 @@ export const Intent = z
     "audit",
     "orchestrate",
   ])
-  .describe("Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes).");
+  .describe(
+    "Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes).",
+  );
 export type Intent = z.infer<typeof Intent>;
 
 /**

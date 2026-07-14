@@ -44,15 +44,18 @@ export async function* withInactivityWatchdog<T>(
   let wake: (() => void) | null = null;
   const arm = (): void => {
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      if (opts.isSuspended?.()) {
-        arm();
-        return;
-      }
-      timedOut = true;
-      opts.onTimeout();
-      wake?.();
-    }, Math.max(1, opts.timeoutMs));
+    timer = setTimeout(
+      () => {
+        if (opts.isSuspended?.()) {
+          arm();
+          return;
+        }
+        timedOut = true;
+        opts.onTimeout();
+        wake?.();
+      },
+      Math.max(1, opts.timeoutMs),
+    );
     // Deliberately NOT unref'd: a wedged in-process stream can leave nothing
     // else on the event loop, and an unref'd watchdog would let node exit 0
     // mid-run instead of firing the timeout.

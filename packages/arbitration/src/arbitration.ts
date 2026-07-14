@@ -1,4 +1,9 @@
-import type { DecisionRecord, GateResult, PairwiseComparison, ReviewFinding } from "@claudexor/schema";
+import type {
+  DecisionRecord,
+  GateResult,
+  PairwiseComparison,
+  ReviewFinding,
+} from "@claudexor/schema";
 import { DecisionRecord as DecisionRecordSchema, isBlocking } from "@claudexor/schema";
 
 /** Evidence assembled for one tournament candidate. */
@@ -119,21 +124,36 @@ export interface ArbitrationResult {
   pairwise: PairwiseComparison[];
 }
 
-const CRITERIA: { key: string; better: (a: CandidateEvidence, b: CandidateEvidence) => "a" | "b" | "tie" }[] = [
+const CRITERIA: {
+  key: string;
+  better: (a: CandidateEvidence, b: CandidateEvidence) => "a" | "b" | "tie";
+}[] = [
   {
     key: "gates",
     better: (a, b) =>
-      requiredGatesPassed(a) === requiredGatesPassed(b) ? "tie" : requiredGatesPassed(a) ? "a" : "b",
+      requiredGatesPassed(a) === requiredGatesPassed(b)
+        ? "tie"
+        : requiredGatesPassed(a)
+          ? "a"
+          : "b",
   },
   {
     key: "gates_coverage",
     better: (a, b) =>
-      acceptanceFraction(a) === acceptanceFraction(b) ? "tie" : acceptanceFraction(a) > acceptanceFraction(b) ? "a" : "b",
+      acceptanceFraction(a) === acceptanceFraction(b)
+        ? "tie"
+        : acceptanceFraction(a) > acceptanceFraction(b)
+          ? "a"
+          : "b",
   },
   {
     key: "blockers",
     better: (a, b) =>
-      openBlockerCount(a) === openBlockerCount(b) ? "tie" : openBlockerCount(a) < openBlockerCount(b) ? "a" : "b",
+      openBlockerCount(a) === openBlockerCount(b)
+        ? "tie"
+        : openBlockerCount(a) < openBlockerCount(b)
+          ? "a"
+          : "b",
   },
   {
     key: "tests",
@@ -207,7 +227,9 @@ export function arbitrate(
   const runnerUp = ranking[1];
   // An exact tie on every evidence axis: the winner is the first in route order.
   // Disclose it instead of presenting the pick as evidence-decisive.
-  const tiedWithRunnerUp = runnerUp ? compareTuples(scoreTuple(winner), scoreTuple(runnerUp)) === 0 : false;
+  const tiedWithRunnerUp = runnerUp
+    ? compareTuples(scoreTuple(winner), scoreTuple(runnerUp)) === 0
+    : false;
 
   const requiredOk = requiredGatesPassed(winner);
   const blockerCount = openBlockerCount(winner);
@@ -223,13 +245,12 @@ export function arbitrate(
   // separately by the apply gate.
   const reviewCleanVerified = reviewRan && winner.finalReviewClean && blockerCount === 0;
   const harnessFailed = winner.gates.some((g) => g.id === "harness" && g.status === "failed");
-  const outcome =
-    harnessFailed
-      ? "blocked"
-      : !hasDiff
-        ? noOpOk
-          ? "no_op"
-          : "blocked"
+  const outcome = harnessFailed
+    ? "blocked"
+    : !hasDiff
+      ? noOpOk
+        ? "no_op"
+        : "blocked"
       : !hasGates
         ? reviewCleanVerified
           ? "ready"
@@ -243,12 +264,14 @@ export function arbitrate(
   // DETERMINISTIC gate — a real test count or a REQUIRED gate that passed — not
   // mere gate presence (a non-required/diagnostic gate must not read as "tests
   // passed"). A no-gate run adopted on review evidence is cross_family_review.
-  const gateVerified = (winner.testsTotal > 0 && winner.testsPassed === winner.testsTotal) || winner.gates.some((g) => g.required && g.status === "passed");
-  const verificationBasis = outcome === "ready" ? (gateVerified ? "both" : "cross_family_review") : "none";
-  const status =
-    harnessFailed
-      ? "failed"
-      : outcome === "ready"
+  const gateVerified =
+    (winner.testsTotal > 0 && winner.testsPassed === winner.testsTotal) ||
+    winner.gates.some((g) => g.required && g.status === "passed");
+  const verificationBasis =
+    outcome === "ready" ? (gateVerified ? "both" : "cross_family_review") : "none";
+  const status = harnessFailed
+    ? "failed"
+    : outcome === "ready"
       ? "success"
       : outcome === "no_op"
         ? "no_op"
@@ -263,8 +286,10 @@ export function arbitrate(
     const reasons: string[] = [];
     if (!requiredGatesPassed(c)) reasons.push("required gates not all passing");
     if (openBlockerCount(c) > 0) reasons.push(`${openBlockerCount(c)} open blocker(s)`);
-    if (acceptanceFraction(c) < acceptanceFraction(winner)) reasons.push("lower gates-derived criteria coverage");
-    if (effectiveTestFraction(c) < effectiveTestFraction(winner)) reasons.push("weaker test evidence");
+    if (acceptanceFraction(c) < acceptanceFraction(winner))
+      reasons.push("lower gates-derived criteria coverage");
+    if (effectiveTestFraction(c) < effectiveTestFraction(winner))
+      reasons.push("weaker test evidence");
     if (!c.finalReviewClean) reasons.push("no clean final review");
     whyNot[c.label] = reasons.length > 0 ? reasons.join("; ") : "narrowly behind on tie-breakers";
   }
@@ -284,7 +309,9 @@ export function arbitrate(
       `required gates ${requiredGatesPassed(winner) ? "passed" : "FAILED"}`,
       `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
       ...(tiedWithRunnerUp
-        ? [`tie: winner chosen by route order (no distinguishing evidence vs ${runnerUp?.label ?? "runner-up"})`]
+        ? [
+            `tie: winner chosen by route order (no distinguishing evidence vs ${runnerUp?.label ?? "runner-up"})`,
+          ]
         : []),
     ],
     evidence_facts: [

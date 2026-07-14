@@ -15,11 +15,26 @@ mkdirSync(dirname(output), { recursive: true });
 const temporary = `${output}.${process.pid}.tmp`;
 rmSync(temporary, { force: true });
 
-const compile = spawnSync("/usr/bin/xcrun", [
-  "clang", "-std=c11", "-Os", "-Wall", "-Wextra", "-Werror",
-  "-mmacosx-version-min=13.0", "-arch", "arm64", "-arch", "x86_64",
-  source, "-o", temporary,
-], { encoding: "utf8" });
+const compile = spawnSync(
+  "/usr/bin/xcrun",
+  [
+    "clang",
+    "-std=c11",
+    "-Os",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-mmacosx-version-min=13.0",
+    "-arch",
+    "arm64",
+    "-arch",
+    "x86_64",
+    source,
+    "-o",
+    temporary,
+  ],
+  { encoding: "utf8" },
+);
 if (compile.status !== 0) {
   rmSync(temporary, { force: true });
   process.stderr.write(compile.stderr || "failed to compile Darwin process identity helper\n");
@@ -27,7 +42,11 @@ if (compile.status !== 0) {
 }
 
 chmodSync(temporary, 0o755);
-const sign = spawnSync("/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", temporary], { encoding: "utf8" });
+const sign = spawnSync(
+  "/usr/bin/codesign",
+  ["--force", "--sign", "-", "--timestamp=none", temporary],
+  { encoding: "utf8" },
+);
 if (sign.status !== 0) {
   rmSync(temporary, { force: true });
   process.stderr.write(sign.stderr || "failed to ad-hoc sign Darwin process identity helper\n");
@@ -38,7 +57,9 @@ const architectures = spawnSync("/usr/bin/lipo", ["-archs", temporary], { encodi
 const archSet = new Set((architectures.stdout ?? "").trim().split(/\s+/).filter(Boolean));
 if (architectures.status !== 0 || !archSet.has("arm64") || !archSet.has("x86_64")) {
   rmSync(temporary, { force: true });
-  process.stderr.write(`process identity helper is not universal: ${architectures.stdout || architectures.stderr}\n`);
+  process.stderr.write(
+    `process identity helper is not universal: ${architectures.stdout || architectures.stderr}\n`,
+  );
   process.exit(1);
 }
 
@@ -48,9 +69,12 @@ const probe = spawnSync(temporary, ["--pid", String(process.pid)], {
 });
 const fields = (probe.stdout ?? "").trimEnd().split("\t");
 if (
-  probe.status !== 0 || fields.length !== 5 ||
-  fields[0] !== "claudexor-process-identity-v2" || fields[1] !== String(process.pid) ||
-  !/^[1-9][0-9]*$/.test(fields[2] ?? "") || !/^(0|[1-9][0-9]*)$/.test(fields[3] ?? "") ||
+  probe.status !== 0 ||
+  fields.length !== 5 ||
+  fields[0] !== "claudexor-process-identity-v2" ||
+  fields[1] !== String(process.pid) ||
+  !/^[1-9][0-9]*$/.test(fields[2] ?? "") ||
+  !/^(0|[1-9][0-9]*)$/.test(fields[3] ?? "") ||
   !/^[0-9]{6}$/.test(fields[4] ?? "")
 ) {
   rmSync(temporary, { force: true });

@@ -19,7 +19,10 @@ export interface ChecklistValidation {
 }
 
 export function exactPanelMatch(triadModels: readonly string[], scopeModel: string): boolean;
-export function completionTermination(finishReason: unknown): { complete: boolean; error: string | null };
+export function completionTermination(finishReason: unknown): {
+  complete: boolean;
+  error: string | null;
+};
 export function validateChecklistResponse(
   items: unknown,
   model: string,

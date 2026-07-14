@@ -3,10 +3,15 @@ import { AccessProfile, EffortHint, ExternalContextPolicy } from "@claudexor/sch
 import { loadConfig } from "@claudexor/config";
 import { buildGateway, buildRegistry } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import { connectDaemonIfRunning, daemonOutcomeSummary, ensureDaemon, enqueueAndAwait, fetchApplyEligibility } from "./daemon-run.js";
+import {
+  connectDaemonIfRunning,
+  daemonOutcomeSummary,
+  ensureDaemon,
+  enqueueAndAwait,
+  fetchApplyEligibility,
+} from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import type { ControlApiAddress } from "./live.js";
-
 
 export interface SurfaceRunnerHooks {
   onEvent?: (event: any) => void;
@@ -114,7 +119,8 @@ export function mcpSurfaceRunner() {
   return async (p: any, hooks?: SurfaceRunnerHooks) => {
     if (p?.mode !== "agent") return inProcess(p, hooks);
     const { client, addr } = await ensureDaemon();
-    const repoRoot = typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd();
+    const repoRoot =
+      typeof p?.repoPath === "string" && p.repoPath.trim() ? p.repoPath : process.cwd();
     const body: Record<string, unknown> = {
       prompt: String(p?.prompt ?? ""),
       mode: "agent",
@@ -122,7 +128,11 @@ export function mcpSurfaceRunner() {
       execution: { isolation: "envelope" },
       ...(p?.harness ? { harnesses: [String(p.harness)] } : {}),
       ...(p?.primaryHarness ? { primaryHarness: String(p.primaryHarness) } : {}),
-      ...(p?.race === true ? { n: typeof p?.n === "number" ? p.n : 2 } : typeof p?.n === "number" ? { n: p.n } : {}),
+      ...(p?.race === true
+        ? { n: typeof p?.n === "number" ? p.n : 2 }
+        : typeof p?.n === "number"
+          ? { n: p.n }
+          : {}),
       ...(p?.create === true ? { create: true } : {}),
       ...(Array.isArray(p?.tests) ? { tests: p.tests.map(String) } : {}),
       ...(typeof p?.maxUsd === "number" ? { maxUsd: p.maxUsd } : {}),
@@ -130,15 +140,27 @@ export function mcpSurfaceRunner() {
       // `externalContextPolicy` is the control-api-parity alias of `web`; the
       // validator already enforced equality when both are present. Honor the
       // alias alone too — dropping it would silently run the daemon default.
-      ...(p?.web ? { web: String(p.web) } : p?.externalContextPolicy ? { web: String(p.externalContextPolicy) } : {}),
+      ...(p?.web
+        ? { web: String(p.web) }
+        : p?.externalContextPolicy
+          ? { web: String(p.externalContextPolicy) }
+          : {}),
       ...(p?.model ? { model: String(p.model) } : {}),
       ...(p?.effort ? { effort: String(p.effort) } : {}),
       ...(Array.isArray(p?.reviewerPanel) ? { reviewerPanel: p.reviewerPanel } : {}),
-      ...(p?.reviewerModels && typeof p.reviewerModels === "object" ? { reviewerModels: p.reviewerModels } : {}),
-      ...(p?.reviewerEfforts && typeof p.reviewerEfforts === "object" ? { reviewerEfforts: p.reviewerEfforts } : {}),
-      ...(Array.isArray(p?.protectedPathApprovals) ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
+      ...(p?.reviewerModels && typeof p.reviewerModels === "object"
+        ? { reviewerModels: p.reviewerModels }
+        : {}),
+      ...(p?.reviewerEfforts && typeof p.reviewerEfforts === "object"
+        ? { reviewerEfforts: p.reviewerEfforts }
+        : {}),
+      ...(Array.isArray(p?.protectedPathApprovals)
+        ? { protectedPathApprovals: p.protectedPathApprovals }
+        : {}),
     };
-    const interactionBridge = hooks?.onInteraction ? makeInteractionBridge(addr, hooks.onInteraction) : undefined;
+    const interactionBridge = hooks?.onInteraction
+      ? makeInteractionBridge(addr, hooks.onInteraction)
+      : undefined;
     // Host cancellation (MCP notifications/cancelled -> ctx signal) becomes
     // the same TYPED daemon cancel the CLI's Ctrl-C path posts; the wait loop
     // then resolves with the honest cancelled terminal.
@@ -161,7 +183,8 @@ export function mcpSurfaceRunner() {
     const summary =
       primary && primary.kind !== "patch"
         ? primary.text.trim()
-        : (reason ?? (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
+        : (reason ??
+          (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
     // The derived apply verdict rides the result (single producer: the run
     // detail endpoint). Soft-fail: a detail hiccup never eats the run result.
     const applyEligibility = await fetchApplyEligibility(addr, out.runId);
@@ -179,13 +202,23 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
   // daemon-tracked runs to recover — say so instead of spawning one.
   const conn = await connectDaemonIfRunning();
   if (!conn) {
-    return { summary: "the Claudexor daemon is not running — there are no live daemon-tracked runs to recover (start one with `claudexor daemon start` or run a mutating tool first)" };
+    return {
+      summary:
+        "the Claudexor daemon is not running — there are no live daemon-tracked runs to recover (start one with `claudexor daemon start` or run a mutating tool first)",
+    };
   }
   const { addr } = conn;
   const get = async (path: string): Promise<Record<string, unknown>> => {
-    const res = await fetch(`${addr.baseUrl}${path}`, { headers: { authorization: `Bearer ${addr.token}` } });
+    const res = await fetch(`${addr.baseUrl}${path}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) throw new Error(typeof body["error"] === "string" ? (body["error"] as string) : `HTTP ${res.status} for ${path}`);
+    if (!res.ok)
+      throw new Error(
+        typeof body["error"] === "string"
+          ? (body["error"] as string)
+          : `HTTP ${res.status} for ${path}`,
+      );
     return body;
   };
   if (mode === "__runs_list") {
@@ -207,12 +240,17 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
     const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
     const decision = (detail["decision"] ?? null) as Record<string, unknown> | null;
     return {
-      summary: typeof detail["finalSummary"] === "string" && detail["finalSummary"] ? detail["finalSummary"] : `run ${runId}: ${String(summary["status"] ?? "unknown")}`,
+      summary:
+        typeof detail["finalSummary"] === "string" && detail["finalSummary"]
+          ? detail["finalSummary"]
+          : `run ${runId}: ${String(summary["status"] ?? "unknown")}`,
       runId,
       status: summary["status"] ?? null,
       decisionStatus: decision ? (decision["status"] ?? null) : null,
       applyEligibility: detail["applyEligibility"] ?? null,
-      pendingInteractions: Array.isArray(detail["pendingInteractions"]) ? (detail["pendingInteractions"] as unknown[]).length : 0,
+      pendingInteractions: Array.isArray(detail["pendingInteractions"])
+        ? (detail["pendingInteractions"] as unknown[]).length
+        : 0,
     };
   }
   // __apply_check: the server-side dry gate + patch check (no mutation).
@@ -223,15 +261,32 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
-    return { summary: `apply check refused: ${typeof body["error"] === "string" ? body["error"] : `HTTP ${res.status}`}`, runId, eligible: false };
+    return {
+      summary: `apply check refused: ${typeof body["error"] === "string" ? body["error"] : `HTTP ${res.status}`}`,
+      runId,
+      eligible: false,
+    };
   }
   // HTTP 200 carries the ApplyResult; `ok:false` means `git apply --check`
   // itself failed — an honest conflict verdict, never "applies cleanly".
   if (body["ok"] !== true) {
-    const stderr = typeof body["stderr"] === "string" && body["stderr"].trim() ? `: ${body["stderr"].trim()}` : "";
-    return { summary: `apply check failed: the patch does NOT apply cleanly${stderr}`, runId, eligible: false, check: body };
+    const stderr =
+      typeof body["stderr"] === "string" && body["stderr"].trim()
+        ? `: ${body["stderr"].trim()}`
+        : "";
+    return {
+      summary: `apply check failed: the patch does NOT apply cleanly${stderr}`,
+      runId,
+      eligible: false,
+      check: body,
+    };
   }
-  return { summary: "apply check passed: the patch applies cleanly to the original project", runId, eligible: true, check: body };
+  return {
+    summary: "apply check passed: the patch applies cleanly to the original project",
+    runId,
+    eligible: true,
+    check: body,
+  };
 }
 
 /**
@@ -239,7 +294,10 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
  * signal posts the typed cancel control exactly once. Runs on the poll tick
  * so an abort that races run-binding still lands.
  */
-export function makeCancelBridge(addr: ControlApiAddress, signal: AbortSignal): (info: { runId: string }) => void {
+export function makeCancelBridge(
+  addr: ControlApiAddress,
+  signal: AbortSignal,
+): (info: { runId: string }) => void {
   let posted = false;
   return ({ runId }) => {
     if (posted || !signal.aborted || !runId) return;
@@ -247,7 +305,9 @@ export function makeCancelBridge(addr: ControlApiAddress, signal: AbortSignal): 
     void fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/control`, {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ control: { kind: "cancel", reason: "mcp host cancelled the tool call" } }),
+      body: JSON.stringify({
+        control: { kind: "cancel", reason: "mcp host cancelled the tool call" },
+      }),
     }).catch(() => {
       posted = false; // transient failure: retry on the next tick
     });
@@ -271,7 +331,11 @@ export function makeInteractionBridge(
   return async ({ runId }) => {
     if (handling || Date.now() - lastCheck < 1_000) return;
     lastCheck = Date.now();
-    let pending: Array<{ interactionId?: string; questions?: unknown[]; timeoutAt?: string | null }> = [];
+    let pending: Array<{
+      interactionId?: string;
+      questions?: unknown[];
+      timeoutAt?: string | null;
+    }> = [];
     try {
       const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}`, {
         headers: { Authorization: `Bearer ${addr.token}` },
@@ -290,22 +354,31 @@ export function makeInteractionBridge(
       handling = true;
       try {
         const result = await onInteraction({
-          request: { interaction_id: id, questions: Array.isArray(pi.questions) ? pi.questions : [] },
+          request: {
+            interaction_id: id,
+            questions: Array.isArray(pi.questions) ? pi.questions : [],
+          },
           timeoutAt: pi.timeoutAt ?? undefined,
         });
         const answers = result && Array.isArray(result.answers) ? result.answers : null;
         if (answers) {
-          await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({
-              answers: answers.map((a: any) => ({
-                questionId: a.question_id,
-                selectedLabels: a.selected_labels ?? [],
-                ...(a.free_text ? { freeText: a.free_text } : {}),
-              })),
-            }),
-          }).catch(() => {
+          await fetch(
+            `${addr.baseUrl}/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${addr.token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                answers: answers.map((a: any) => ({
+                  questionId: a.question_id,
+                  selectedLabels: a.selected_labels ?? [],
+                  ...(a.free_text ? { freeText: a.free_text } : {}),
+                })),
+              }),
+            },
+          ).catch(() => {
             /* stale/failed answers surface as engine timeout-decline; never crash the wait loop */
           });
         }

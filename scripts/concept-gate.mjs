@@ -189,7 +189,9 @@ function checkCommit(sha) {
     // Id hygiene across the merge: an id present in ANY parent must survive,
     // even when the resolution picked the other parent's file wholesale.
     const afterIds = invIds(after);
-    const gone = [...new Set(parentTexts.flatMap((t) => [...invIds(t)]))].filter((id) => !afterIds.has(id));
+    const gone = [...new Set(parentTexts.flatMap((t) => [...invIds(t)]))].filter(
+      (id) => !afterIds.has(id),
+    );
     if (gone.length > 0) {
       return (
         `merge commit ${sha.slice(0, 10)} REMOVES invariant id(s) ${gone.join(", ")} from ${BIBLE}.\n` +
@@ -234,7 +236,8 @@ function checkCommit(sha) {
       }
       const baseVal = basePieces.get(key);
       const changed = [...new Set(parentVals.filter((v) => v !== baseVal))];
-      if (changed.length >= 2) touched.add(key); // conflicting edits: any pick discards one
+      if (changed.length >= 2)
+        touched.add(key); // conflicting edits: any pick discards one
       else if (changed.length === 1 && result !== changed[0]) touched.add(key); // dropped an in-flight edit
       // changed.length === 1 && result === changed[0] → clean adoption
       // changed.length === 0 → parents all at base; result matches a parent → clean
@@ -244,7 +247,10 @@ function checkCommit(sha) {
     const touchedInv = [...touched].filter((k) => k.startsWith("INV-")).sort();
     const touchedChunks = [...touched].filter((k) => !k.startsWith("INV-")).sort();
     const detail =
-      touchedInv.join(", ") + (touchedChunks.length > 0 ? `${touchedInv.length > 0 ? "; " : ""}non-invariant: ${touchedChunks.join(", ")}` : "");
+      touchedInv.join(", ") +
+      (touchedChunks.length > 0
+        ? `${touchedInv.length > 0 ? "; " : ""}non-invariant: ${touchedChunks.join(", ")}`
+        : "");
 
     const msg = git(["log", "-1", "--format=%B", sha]);
     const marker = msg.match(MARKER_RE);
@@ -295,7 +301,9 @@ function checkCommit(sha) {
   // the entire numbered constitution is new surface and the marker's presence
   // (owner-approved rewrite) is the whole check.
   if (invIds(before).size === 0) {
-    console.log(`concept-gate: ${sha.slice(0, 10)} carries ${marker[0]} (founding numbered-constitution commit)`);
+    console.log(
+      `concept-gate: ${sha.slice(0, 10)} carries ${marker[0]} (founding numbered-constitution commit)`,
+    );
     return null;
   }
 
@@ -346,7 +354,9 @@ function checkDuplicateIds() {
 function resolveShas() {
   const rangeIdx = process.argv.indexOf("--range");
   if (rangeIdx >= 0) {
-    return git(["rev-list", process.argv[rangeIdx + 1]]).split("\n").filter(Boolean);
+    return git(["rev-list", process.argv[rangeIdx + 1]])
+      .split("\n")
+      .filter(Boolean);
   }
   if (process.argv.includes("--since-last-tag")) {
     let baseTag = "";

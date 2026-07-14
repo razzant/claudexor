@@ -6,12 +6,7 @@
  */
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { validateModel } from "@claudexor/core";
-import {
-  ControlSettingsSnapshot,
-  EffortHint,
-  GlobalConfig,
-  Portfolio,
-} from "@claudexor/schema";
+import { ControlSettingsSnapshot, EffortHint, GlobalConfig, Portfolio } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
 import { connectDaemonIfRunning } from "./daemon-run.js";
@@ -102,7 +97,11 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
       // same strict gate the daemon settings endpoint applies.
       const harnessKey = /^harness\.([^.]+)\.(default_model|fallback_model|effort)$/.exec(key);
       if (harnessKey) {
-        const [, harnessId, field] = harnessKey as unknown as [string, string, "default_model" | "fallback_model" | "effort"];
+        const [, harnessId, field] = harnessKey as unknown as [
+          string,
+          string,
+          "default_model" | "fallback_model" | "effort",
+        ];
         if (!isKnownHarness(harnessId))
           throw new Error(`unknown harness '${harnessId}' (run \`claudexor harness list --all\`)`);
         const cleared = value === "none";

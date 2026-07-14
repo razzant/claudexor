@@ -37,11 +37,15 @@ describe("raw-api models() — enumeration producer", () => {
 
   it("GETs <baseURL>/models with a Bearer auth header and parses the OpenAI list", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ object: "list", data: [{ id: "gpt-4o-mini" }, { id: "gpt-4o" }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ object: "list", data: [{ id: "gpt-4o-mini" }, { id: "gpt-4o" }] }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -69,33 +73,46 @@ describe("raw-api models() — enumeration producer", () => {
 
   it("fails soft (returns []) on a non-OK response — never throws into the picker", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("nope", { status: 401 })),
+    );
     const adapter = createRawApiAdapter();
     expect(await adapter.models!()).toEqual([]);
   });
 
   it("fails soft (returns []) on a network error", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      throw new Error("ECONNREFUSED");
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      }),
+    );
     const adapter = createRawApiAdapter();
     await expect(adapter.models!()).resolves.toEqual([]);
   });
 
   it("emits typed transient metadata for retryable raw-api HTTP failures", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("try later", { status: 503 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("try later", { status: 503 })),
+    );
     const adapter = createRawApiAdapter();
-    const events = await collect(adapter.run(HarnessRunSpec.parse({
-      session_id: "s1",
-      intent: "review",
-      prompt: "x",
-      cwd: process.cwd(),
-      access: "readonly",
-      external_context_policy: "auto",
-      tool_permission_policy: { web: "auto", allow: [], deny: [] },
-    })));
+    const events = await collect(
+      adapter.run(
+        HarnessRunSpec.parse({
+          session_id: "s1",
+          intent: "review",
+          prompt: "x",
+          cwd: process.cwd(),
+          access: "readonly",
+          external_context_policy: "auto",
+          tool_permission_policy: { web: "auto", allow: [], deny: [] },
+        }),
+      ),
+    );
     const error = events.find((e) => e.type === "error");
     expect(error?.transient?.kind).toBe("service_unavailable");
   });

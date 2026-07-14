@@ -25,10 +25,17 @@ export type DecisionResolution =
 export function resolveDecisionBody(args: ParsedArgs): DecisionResolution {
   const chosen = ACTION_FLAGS.filter((f) => flagBool(args, f.flag));
   if (chosen.length === 0) {
-    return { ok: false, message: "one action is required (--accept-risk | --override | --revert | --accept-clean-patch | --rerun)" };
+    return {
+      ok: false,
+      message:
+        "one action is required (--accept-risk | --override | --revert | --accept-clean-patch | --rerun)",
+    };
   }
   if (chosen.length > 1) {
-    return { ok: false, message: `only one action at a time (got ${chosen.map((c) => `--${c.flag}`).join(", ")})` };
+    return {
+      ok: false,
+      message: `only one action at a time (got ${chosen.map((c) => `--${c.flag}`).join(", ")})`,
+    };
   }
   const action = chosen[0]!.action;
   const body: Record<string, unknown> = { action };
@@ -43,7 +50,10 @@ export function resolveDecisionBody(args: ParsedArgs): DecisionResolution {
     const applyMode = flagStr(args, "apply-mode");
     if (applyMode !== undefined) {
       if (!APPLY_MODES.includes(applyMode)) {
-        return { ok: false, message: `invalid --apply-mode '${applyMode}' (expected apply|branch|commit|pr|artifact_only)` };
+        return {
+          ok: false,
+          message: `invalid --apply-mode '${applyMode}' (expected apply|branch|commit|pr|artifact_only)`,
+        };
       }
       body["applyMode"] = applyMode;
     }

@@ -34,13 +34,19 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
   if (p.require_no_accepted_block_open && openBlockers.some((f) => f.severity === "BLOCK")) {
     reasons.push("an accepted BLOCK finding is open");
   }
-  if (p.require_no_accepted_fix_first_open && openBlockers.some((f) => f.severity === "FIX_FIRST")) {
+  if (
+    p.require_no_accepted_fix_first_open &&
+    openBlockers.some((f) => f.severity === "FIX_FIRST")
+  ) {
     reasons.push("an accepted FIX_FIRST finding is open");
   }
   // An accepted NEEDS_HUMAN escalation blocks convergence on its own. Without
   // this, a run with cross-family clean review disabled could converge to
   // success with an open NEEDS_HUMAN (the v0.8 hole), bypassing the human gate.
-  if (p.require_no_accepted_needs_human_open && openBlockers.some((f) => f.severity === "NEEDS_HUMAN")) {
+  if (
+    p.require_no_accepted_needs_human_open &&
+    openBlockers.some((f) => f.severity === "NEEDS_HUMAN")
+  ) {
     reasons.push("an accepted NEEDS_HUMAN escalation is open");
   }
   if (p.require_final_cross_family_clean_review && !input.finalReviewClean) {

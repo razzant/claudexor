@@ -10,11 +10,21 @@ describe("parseCursorEvent", () => {
       parse({ type: "assistant", message: { content: [{ text: "hello" }] } }, "s1"),
       // Documented headless shape: tool_call.writeToolCall.args.path + subtype lifecycle.
       parse(
-        { type: "tool_call", subtype: "started", call_id: "c1", tool_call: { writeToolCall: { args: { path: "a.ts", fileText: "x" } } } },
+        {
+          type: "tool_call",
+          subtype: "started",
+          call_id: "c1",
+          tool_call: { writeToolCall: { args: { path: "a.ts", fileText: "x" } } },
+        },
         "s1",
       ),
       parse(
-        { type: "tool_call", subtype: "completed", call_id: "c1", tool_call: { writeToolCall: { args: { path: "a.ts" }, result: { linesCreated: 1 } } } },
+        {
+          type: "tool_call",
+          subtype: "completed",
+          call_id: "c1",
+          tool_call: { writeToolCall: { args: { path: "a.ts" }, result: { linesCreated: 1 } } },
+        },
         "s1",
       ),
       parse({ type: "result", total_cost_usd: 0.02, subtype: "success", result: "All done" }, "s1"),
@@ -45,11 +55,23 @@ describe("parseCursorEvent", () => {
   it("maps failed tool calls to error tool_results", () => {
     const parse = createCursorParser();
     parse(
-      { type: "tool_call", subtype: "started", call_id: "c2", tool_call: { shellToolCall: { args: { command: "pnpm test" } } } },
+      {
+        type: "tool_call",
+        subtype: "started",
+        call_id: "c2",
+        tool_call: { shellToolCall: { args: { command: "pnpm test" } } },
+      },
       "s1",
     );
     const out = parse(
-      { type: "tool_call", subtype: "failed", call_id: "c2", tool_call: { shellToolCall: { args: { command: "pnpm test" }, result: { error: "exit 1" } } } },
+      {
+        type: "tool_call",
+        subtype: "failed",
+        call_id: "c2",
+        tool_call: {
+          shellToolCall: { args: { command: "pnpm test" }, result: { error: "exit 1" } },
+        },
+      },
       "s1",
     ) as HarnessEvent[];
     expect(out[0]?.type).toBe("tool_result");
@@ -61,11 +83,26 @@ describe("parseCursorEvent", () => {
   it("maps rejected tool calls to denied diagnostics, not ok", () => {
     const parse = createCursorParser();
     parse(
-      { type: "tool_call", subtype: "started", call_id: "c3", tool_call: { webFetchToolCall: { args: { url: "https://example.com" } } } },
+      {
+        type: "tool_call",
+        subtype: "started",
+        call_id: "c3",
+        tool_call: { webFetchToolCall: { args: { url: "https://example.com" } } },
+      },
       "s1",
     );
     const out = parse(
-      { type: "tool_call", subtype: "completed", call_id: "c3", tool_call: { webFetchToolCall: { args: { url: "https://example.com" }, result: { rejected: { reason: "User Rejected" } } } } },
+      {
+        type: "tool_call",
+        subtype: "completed",
+        call_id: "c3",
+        tool_call: {
+          webFetchToolCall: {
+            args: { url: "https://example.com" },
+            result: { rejected: { reason: "User Rejected" } },
+          },
+        },
+      },
       "s1",
     ) as HarnessEvent[];
     expect(out[0]?.type).toBe("tool_result");

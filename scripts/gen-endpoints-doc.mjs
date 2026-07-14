@@ -8,7 +8,14 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { GEN_BEGIN, GEN_END, endpointDetails, implementedEndpoints, renderEndpointBlock, renderEndpointsJson } from "./endpoints-lib.mjs";
+import {
+  GEN_BEGIN,
+  GEN_END,
+  endpointDetails,
+  implementedEndpoints,
+  renderEndpointBlock,
+  renderEndpointsJson,
+} from "./endpoints-lib.mjs";
 
 const DOC = "docs/ARCHITECTURE.md";
 const JSON_ARTIFACT = "docs/reference/endpoints.json";

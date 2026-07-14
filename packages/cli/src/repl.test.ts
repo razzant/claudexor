@@ -4,7 +4,11 @@ import { parseReplLine, replModeIsMutating } from "./repl.js";
 describe("parseReplLine", () => {
   it("treats bare text and /best-of as agent (write) turns", () => {
     expect(parseReplLine("fix the bug")).toMatchObject({ mode: "agent", prompt: "fix the bug" });
-    expect(parseReplLine("/best-of make it faster")).toMatchObject({ mode: "agent", prompt: "make it faster", race: true });
+    expect(parseReplLine("/best-of make it faster")).toMatchObject({
+      mode: "agent",
+      prompt: "make it faster",
+      race: true,
+    });
   });
 
   it("maps read-only commands to their read-only modes", () => {

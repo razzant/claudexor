@@ -74,10 +74,15 @@ export class AuthCapabilityVerifier {
   ) {
     this.now = deps.now ?? (() => new Date());
     this.receiptId = deps.receiptId ?? (() => `authcap-${randomUUID()}`);
-    this.scratchRoot = resolve(deps.scratchRoot ?? join(realpathSync(tmpdir()), "claudexor-auth-smokes"));
+    this.scratchRoot = resolve(
+      deps.scratchRoot ?? join(realpathSync(tmpdir()), "claudexor-auth-smokes"),
+    );
   }
 
-  static fromRegistry(registry: AdapterRegistry, deps: AuthCapabilityVerifierDeps = {}): AuthCapabilityVerifier {
+  static fromRegistry(
+    registry: AdapterRegistry,
+    deps: AuthCapabilityVerifierDeps = {},
+  ): AuthCapabilityVerifier {
     return new AuthCapabilityVerifier((id) => registry.get(id), deps);
   }
 
@@ -125,8 +130,9 @@ export class AuthCapabilityVerifier {
     const binding = AuthCapabilityBinding.parse(request.binding);
     const disclosure = binding.disclosure;
     const expected = challengeFor(binding.attemptId);
-    const requestMismatch = binding.challengeDigest !== sha256(expected)
-      || binding.requestDigest !== capabilityRequestDigest(disclosure, binding.challengeDigest);
+    const requestMismatch =
+      binding.challengeDigest !== sha256(expected) ||
+      binding.requestDigest !== capabilityRequestDigest(disclosure, binding.challengeDigest);
     const responseHash = createHash("sha256");
     const streamHash = createHash("sha256");
     let response = "";
@@ -196,14 +202,16 @@ export class AuthCapabilityVerifier {
         } satisfies HarnessRunSpec);
         for await (const raw of adapter.run(spec)) {
           const event = HarnessEvent.parse(raw);
-          streamHash.update(JSON.stringify({
-            type: event.type,
-            session: event.session_id,
-            route: event.credential_route ?? null,
-            source: event.credential_source ?? null,
-            aborted: event.aborted ?? false,
-            textDigest: event.text === undefined ? null : sha256(event.text),
-          }));
+          streamHash.update(
+            JSON.stringify({
+              type: event.type,
+              session: event.session_id,
+              route: event.credential_route ?? null,
+              source: event.credential_source ?? null,
+              aborted: event.aborted ?? false,
+              textDigest: event.text === undefined ? null : sha256(event.text),
+            }),
+          );
           if (terminalSeen) eventsAfterCompleted += 1;
           if (event.session_id !== spec.session_id) {
             sessionMismatchEvents += 1;
@@ -222,7 +230,8 @@ export class AuthCapabilityVerifier {
                 evidence.add(`credential-route:${event.credential_route}`);
               }
               if (event.credential_source) {
-                if (effectiveSource && effectiveSource !== event.credential_source) sourceConflict = true;
+                if (effectiveSource && effectiveSource !== event.credential_source)
+                  sourceConflict = true;
                 effectiveSource ??= event.credential_source;
                 evidence.add(`credential-source:${event.credential_source}`);
               }
@@ -286,11 +295,25 @@ export class AuthCapabilityVerifier {
     else if (cancelled) selectionReason = "cancelled";
     else if (adapterFailed) selectionReason = "adapter_error";
     else if (startedEvents === 0 || effective === null) selectionReason = "route_missing";
-    else if (routeConflict || effective !== disclosure.requiredRoute) selectionReason = "route_mismatch";
+    else if (routeConflict || effective !== disclosure.requiredRoute)
+      selectionReason = "route_mismatch";
     else if (effectiveSource === null) selectionReason = "source_missing";
-    else if (sourceConflict || effectiveSource !== disclosure.requiredSource) selectionReason = "source_mismatch";
-    else if (protocolViolation || startedEvents !== 1 || completedEvents > 1 || eventsAfterCompleted > 0) selectionReason = "protocol_violation";
-    else if (errorEvents > 0 || unexpectedToolEvents > 0 || interactionEvents > 0 || sessionMismatchEvents > 0) selectionReason = "harness_error";
+    else if (sourceConflict || effectiveSource !== disclosure.requiredSource)
+      selectionReason = "source_mismatch";
+    else if (
+      protocolViolation ||
+      startedEvents !== 1 ||
+      completedEvents > 1 ||
+      eventsAfterCompleted > 0
+    )
+      selectionReason = "protocol_violation";
+    else if (
+      errorEvents > 0 ||
+      unexpectedToolEvents > 0 ||
+      interactionEvents > 0 ||
+      sessionMismatchEvents > 0
+    )
+      selectionReason = "harness_error";
     else if (completedEvents === 0) selectionReason = "missing_completion";
     else if (scratchBeforeDigest !== scratchAfterDigest) selectionReason = "scratch_mutated";
     else if (responseOverflow || response !== expected) selectionReason = "response_mismatch";
@@ -307,7 +330,8 @@ export class AuthCapabilityVerifier {
       effective,
       effectiveSource,
       selectionReason,
-      availability: effective && effectiveSource ? "available" : adapterMissing ? "unavailable" : "unknown",
+      availability:
+        effective && effectiveSource ? "available" : adapterMissing ? "unavailable" : "unknown",
       verification: passed ? "passed" : "failed",
       billingKnowledge: "unknown",
       costKnowledge: "unknown",
@@ -341,7 +365,12 @@ export class AuthCapabilityVerifier {
     const path = join(root, attemptId);
     if (!existsSync(path)) return;
     const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isDirectory() || realpathSync(path) !== path || !path.startsWith(root + sep)) {
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isDirectory() ||
+      realpathSync(path) !== path ||
+      !path.startsWith(root + sep)
+    ) {
       throw new Error("refusing unsafe auth capability scratch cleanup");
     }
     rmSync(path, { recursive: true, force: false });
@@ -355,7 +384,8 @@ export class AuthCapabilityVerifier {
     if (existsSync(path)) throw new Error("auth capability scratch already exists");
     mkdirSync(path, { recursive: false, mode: 0o700 });
     chmodSync(path, 0o700);
-    if (realpathSync(path) !== path || !path.startsWith(root + sep)) throw new Error("unsafe auth capability scratch path");
+    if (realpathSync(path) !== path || !path.startsWith(root + sep))
+      throw new Error("unsafe auth capability scratch path");
     return path;
   }
 }
@@ -364,24 +394,29 @@ function challengeFor(attemptId: string): string {
   return `claudexor-auth-capability-v1-${sha256(`auth-capability-v1:${attemptId}`).slice(0, 32)}`;
 }
 
-function capabilityRequestDigest(disclosure: AuthSmokeDisclosureType, challengeDigest: string): string {
-  return sha256(JSON.stringify({
-    schemaVersion: 1,
-    protocolVersion: 1,
-    harness: disclosure.harness,
-    requested: disclosure.requested,
-    requiredRoute: disclosure.requiredRoute,
-    requiredSource: disclosure.requiredSource,
-    networkScope: disclosure.networkScope,
-    cwdPolicy: "owned_external_scratch_v1",
-    intent: "explain",
-    access: "readonly",
-    externalContextPolicy: "off",
-    maxTurns: 1,
-    envInheritance: "clean",
-    evidencePolicy: "stream_only",
-    challengeDigest,
-  }));
+function capabilityRequestDigest(
+  disclosure: AuthSmokeDisclosureType,
+  challengeDigest: string,
+): string {
+  return sha256(
+    JSON.stringify({
+      schemaVersion: 1,
+      protocolVersion: 1,
+      harness: disclosure.harness,
+      requested: disclosure.requested,
+      requiredRoute: disclosure.requiredRoute,
+      requiredSource: disclosure.requiredSource,
+      networkScope: disclosure.networkScope,
+      cwdPolicy: "owned_external_scratch_v1",
+      intent: "explain",
+      access: "readonly",
+      externalContextPolicy: "off",
+      maxTurns: 1,
+      envInheritance: "clean",
+      evidencePolicy: "stream_only",
+      challengeDigest,
+    }),
+  );
 }
 
 function fingerprintTree(root: string): string {
@@ -391,7 +426,13 @@ function fingerprintTree(root: string): string {
       const path = join(directory, name);
       const rel = relative(root, path);
       const stat = lstatSync(path);
-      const type = stat.isDirectory() ? "directory" : stat.isFile() ? "file" : stat.isSymbolicLink() ? "symlink" : "other";
+      const type = stat.isDirectory()
+        ? "directory"
+        : stat.isFile()
+          ? "file"
+          : stat.isSymbolicLink()
+            ? "symlink"
+            : "other";
       hash.update(JSON.stringify({ rel, type, mode: stat.mode, size: stat.size }));
       if (stat.isDirectory()) walk(path);
       else if (stat.isSymbolicLink()) hash.update(readlinkSync(path));

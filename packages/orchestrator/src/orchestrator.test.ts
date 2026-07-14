@@ -487,7 +487,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       n: 6,
     });
-        const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
+    const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
     expect(primary.length).toBeGreaterThanOrEqual(1);
     expect(primary.length).toBeLessThanOrEqual(4);
     expect(primary.some((c) => c.attemptId === "a05" || c.attemptId === "a06")).toBe(false);
@@ -1313,7 +1313,10 @@ describe("Orchestrator", () => {
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
-    const res = await new Orchestrator({ registry: new Map([["asker", adapter]]), reviewers: [] }).run({
+    const res = await new Orchestrator({
+      registry: new Map([["asker", adapter]]),
+      reviewers: [],
+    }).run({
       repoRoot: repo,
       prompt: "Read this attachment",
       mode: "ask",
@@ -1328,7 +1331,13 @@ describe("Orchestrator", () => {
     const repo = await initRepo();
     const image = join(repo, "shot.png");
     writeFileSync(image, "png-bytes\n");
-    const attachment = { id: "att-img", kind: "image" as const, mime: "image/png", name: "shot.png", path: image };
+    const attachment = {
+      id: "att-img",
+      kind: "image" as const,
+      mime: "image/png",
+      name: "shot.png",
+      path: image,
+    };
     const mk = (id: string, imageInput: "none" | "file_path"): HarnessAdapter => ({
       id,
       async discover() {
@@ -1343,7 +1352,11 @@ describe("Orchestrator", () => {
         });
       },
       async doctor() {
-        return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["explain"] });
+        return ConformanceReport.parse({
+          harness_id: id,
+          status: "ok",
+          enabled_intents: ["explain"],
+        });
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -1388,7 +1401,12 @@ describe("Orchestrator", () => {
         session_id: sessionId,
         ts,
         text: "WebSearch",
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "current Node.js LTS version" },
+        tool: {
+          name: "WebSearch",
+          kind: "web",
+          use_id: "toolu_web",
+          target: "current Node.js LTS version",
+        },
       };
       yield {
         type: "tool_result",
@@ -1633,7 +1651,10 @@ describe("Orchestrator", () => {
     // Direct verdict coverage on the same repo (private method, cast):
     const { finalVerifyPatch } = await import("./finalVerifier.js");
     const noopVerifyLog = { emit: () => undefined };
-    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+    }).trim();
     const goodPatch = [
       "diff --git a/v.txt b/v.txt",
       "new file mode 100644",
@@ -1644,8 +1665,17 @@ describe("Orchestrator", () => {
       "",
     ].join("\n");
     const failingGates = [{ id: "g1", command: "exit 3", required: true }];
-    const gatesFail = await finalVerifyPatch(repo, { baseSha, diff: goodPatch }, failingGates, noopVerifyLog);
-    expect(gatesFail).toMatchObject({ attempted: true, applied_cleanly: true, gates_passed: false });
+    const gatesFail = await finalVerifyPatch(
+      repo,
+      { baseSha, diff: goodPatch },
+      failingGates,
+      noopVerifyLog,
+    );
+    expect(gatesFail).toMatchObject({
+      attempted: true,
+      applied_cleanly: true,
+      gates_passed: false,
+    });
     // A patch built against content the base never had -> apply refusal.
     const conflictPatch = [
       "diff --git a/math.js b/math.js",
@@ -1657,7 +1687,12 @@ describe("Orchestrator", () => {
       "+patched",
       "",
     ].join("\n");
-    const conflict = await finalVerifyPatch(repo, { baseSha, diff: conflictPatch }, failingGates, noopVerifyLog);
+    const conflict = await finalVerifyPatch(
+      repo,
+      { baseSha, diff: conflictPatch },
+      failingGates,
+      noopVerifyLog,
+    );
     expect(conflict.attempted).toBe(true);
     expect(conflict.applied_cleanly).toBe(false);
     // No base sha at the HELPER level FAILS CLOSED (the in-place exemption
@@ -1687,7 +1722,10 @@ describe("Orchestrator", () => {
     // Parse-normalized hash (defaults applied) — matching both producers.
     const { SpecPack } = await import("@claudexor/schema");
     const goodHash = hashJson(SpecPack.parse(JSON.parse(readFileSync(specPath, "utf8"))));
-    const orch = new Orchestrator({ registry: new Map([["fake-impl", diffImplementer("fake-impl")]]), reviewers: [] });
+    const orch = new Orchestrator({
+      registry: new Map([["fake-impl", diffImplementer("fake-impl")]]),
+      reviewers: [],
+    });
     // Tamper AFTER freeze: success criteria silently rewritten.
     writeFileSync(specPath, JSON.stringify({ ...spec, summary: "TAMPERED contract" }));
     await expect(
@@ -1737,9 +1775,17 @@ describe("Orchestrator", () => {
     const prev = process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"];
     process.env["CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS"] = "400";
     try {
-      const orch = new Orchestrator({ registry: new Map([["wedged", hangingAdapter]]), reviewers: [] });
+      const orch = new Orchestrator({
+        registry: new Map([["wedged", hangingAdapter]]),
+        reviewers: [],
+      });
       const started = Date.now();
-      const res = await orch.run({ repoRoot: repo, prompt: "x", mode: "ask", harnesses: ["wedged"] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "ask",
+        harnesses: ["wedged"],
+      });
       expect(Date.now() - started).toBeLessThan(10_000);
       expect(res.status).toBe("failed");
       expect(res.summary).toContain("inactivity watchdog");
@@ -1782,7 +1828,9 @@ describe("Orchestrator", () => {
     expect(res.summary).toContain("escaped mid-strategy");
     const events = readFileSync(paths.eventsPath, "utf8");
     expect(events).toContain("run.failed");
-    expect(readFileSync(join(paths.root, "final", "failure.yaml"), "utf8")).toContain("escaped mid-strategy");
+    expect(readFileSync(join(paths.root, "final", "failure.yaml"), "utf8")).toContain(
+      "escaped mid-strategy",
+    );
 
     // An abort mid-strategy is a CANCELLED terminal, not an internal failure.
     const ctrl = new AbortController();
@@ -1791,7 +1839,15 @@ describe("Orchestrator", () => {
     const log2 = new EventLog(paths2.eventsPath, "run-net-cancel", "task-nc");
     const res2 = await guard(ctrl.signal, async (announce) => {
       log2.emit("run.created", { mode: "agent", prompt: "x" });
-      announce({ log: log2, store, paths: paths2, runId: "run-net-cancel", taskId: "task-nc", mode: "agent", phase: "race" });
+      announce({
+        log: log2,
+        store,
+        paths: paths2,
+        runId: "run-net-cancel",
+        taskId: "task-nc",
+        mode: "agent",
+        phase: "race",
+      });
       throw new Error("abort surfaced as throw");
     });
     expect(res2.status).toBe("cancelled");
@@ -1803,7 +1859,9 @@ describe("Orchestrator", () => {
     // realLikeAdapter declares NO effort_levels — a configured per-harness
     // effort must be DISCLOSED as ignored on harness.started, never silently
     // dropped (and never forwarded to a CLI that has no such flag).
-    const registry = new Map<string, HarnessAdapter>([["codex", realLikeAdapter("codex", "openai")]]);
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", realLikeAdapter("codex", "openai")],
+    ]);
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-effort-disclosure-"));
     writeFileSync(join(configDir, "config.yaml"), "harnesses:\n  codex:\n    effort: high\n");
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
@@ -1875,7 +1933,12 @@ describe("Orchestrator", () => {
         session_id: sessionId,
         ts,
         text: "WebSearch",
-        tool: { name: "WebSearch", kind: "web", use_id: "toolu_web", target: "current Node.js LTS version" },
+        tool: {
+          name: "WebSearch",
+          kind: "web",
+          use_id: "toolu_web",
+          target: "current Node.js LTS version",
+        },
       };
       yield {
         type: "tool_result",
@@ -2181,7 +2244,7 @@ describe("Orchestrator", () => {
             provider_family: family,
             capabilities: {
               review: true,
-                  effort_levels: family === "anthropic" ? ["max"] : [],
+              effort_levels: family === "anthropic" ? ["max"] : [],
             },
             access_profiles_supported: ["readonly"],
           });
@@ -2255,7 +2318,7 @@ describe("Orchestrator", () => {
             provider_family: family,
             capabilities: {
               review: true,
-                  effort_levels: family === "anthropic" ? ["max"] : [],
+              effort_levels: family === "anthropic" ? ["max"] : [],
             },
             access_profiles_supported: ["readonly"],
           });
@@ -2744,9 +2807,17 @@ describe("Orchestrator", () => {
       reviewerPanel: [{ harness: "rev", model: "retry-model" }],
     });
 
-    const emptyRes = await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 });
+    const emptyRes = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-impl"],
+      n: 1,
+    });
     expect(emptyRes.status).toBe("failed");
-    expect(emptyRes.summary).toMatch(/model inventory call failed after retry: model inventory was empty/);
+    expect(emptyRes.summary).toMatch(
+      /model inventory call failed after retry: model inventory was empty/,
+    );
     expect(modelCalls).toBe(2);
     expect((modelCallTimes[1] ?? 0) - (modelCallTimes[0] ?? 0)).toBeGreaterThanOrEqual(200);
   });
@@ -2778,7 +2849,7 @@ describe("Orchestrator", () => {
             provider_family: "cursor",
             capabilities: {
               review: opts.reviewCapability ?? true,
-                  known_models: opts.knownModels ?? [],
+              known_models: opts.knownModels ?? [],
             },
             access_profiles_supported: opts.accessProfiles ?? ["readonly"],
           });
@@ -3170,10 +3241,16 @@ describe("Orchestrator", () => {
     expect(summary).toContain("- Review blockers: 1");
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "plan-review.yaml"), "utf8");
     expect(reviewYaml).toContain("status: accepted");
-    const reviewPlanEvidence = readFileSync(join(res.runDir, "review-evidence", "PLAN_ACCEPTED.md"), "utf8");
+    const reviewPlanEvidence = readFileSync(
+      join(res.runDir, "review-evidence", "PLAN_ACCEPTED.md"),
+      "utf8",
+    );
     expect(reviewPlanEvidence).toContain("## Plan from fake-success");
     expect(reviewPlanEvidence).toContain("Implemented by the fake harness.");
-    const reviewDiffEvidence = readFileSync(join(res.runDir, "review-evidence", "DIFF.patch"), "utf8");
+    const reviewDiffEvidence = readFileSync(
+      join(res.runDir, "review-evidence", "DIFF.patch"),
+      "utf8",
+    );
     expect(reviewDiffEvidence).toBe("(plan review — no code diff)\n");
     expect(reviewDiffEvidence).not.toContain("Implemented by the fake harness.");
   });
@@ -3245,7 +3322,7 @@ describe("Orchestrator", () => {
             implement: true,
             edit_files: true,
             review: true,
-            },
+          },
           access_profiles_supported: ["workspace_write"],
         });
       },
@@ -4063,12 +4140,22 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       async *run(spec) {
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts };
-        yield { type: "message", session_id: spec.session_id, ts, text: "I would suggest refactoring things." };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: "I would suggest refactoring things.",
+        };
         yield { type: "completed", session_id: spec.session_id, ts };
       },
     };
     const orch = new Orchestrator({ registry: new Map([["planner", proseBrain]]), reviewers: [] });
-    const res = await orch.run({ repoRoot: repo, prompt: "goal", mode: "orchestrate", harnesses: ["planner"] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "goal",
+      mode: "orchestrate",
+      harnesses: ["planner"],
+    });
     expect(res.status).toBe("not_converged");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain('"run.failed"');
@@ -4459,13 +4546,17 @@ describe("interaction late-answer honesty", () => {
   it("emits interaction.answer_discarded when the answer arrives after the timeout", async () => {
     const { interactionChannelFor } = await import("./interaction.js");
     const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
-    const log = { emit: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }) };
-    let releaseAnswer: (v: { answers: { question_id: string; answer: string }[] }) => void = () => undefined;
+    const log = {
+      emit: (type: string, payload: Record<string, unknown>) => events.push({ type, payload }),
+    };
+    let releaseAnswer: (v: { answers: { question_id: string; answer: string }[] }) => void = () =>
+      undefined;
     const channel = interactionChannelFor(
       {
-        onInteraction: () => new Promise((resolve) => {
-          releaseAnswer = resolve;
-        }),
+        onInteraction: () =>
+          new Promise((resolve) => {
+            releaseAnswer = resolve;
+          }),
         interactionTimeoutMs: 100,
       } as never,
       log as never,
@@ -4556,27 +4647,39 @@ describe("interaction channel registration order", () => {
 
 describe("auth-route attempt telemetry (route evidence)", () => {
   it("captures the adapter's first-class credential route (first-wins) into the record", async () => {
-    const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
+    const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } =
+      await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("auto", false);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, {
-      type: "started", session_id: "s", ts, credential_route: "vendor_native",
+      type: "started",
+      session_id: "s",
+      ts,
+      credential_route: "vendor_native",
     } as never);
     // A later conflicting value must not overwrite the decided route.
     observeAttemptTelemetry(t, {
-      type: "message", session_id: "s", ts, text: "x", credential_route: "managed_api_key",
+      type: "message",
+      session_id: "s",
+      ts,
+      text: "x",
+      credential_route: "managed_api_key",
     } as never);
     expect(t.authMode).toBe("local_session");
     expect(attemptTelemetryRecord("a1", "codex", t).auth_mode).toBe("local_session");
   });
 
   it("an absent credential route stays undisclosed (never guessed from payload)", async () => {
-    const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
+    const { attemptTelemetryRecord, createAttemptTelemetry, observeAttemptTelemetry } =
+      await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("auto", false);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, { type: "started", session_id: "s", ts } as never);
     observeAttemptTelemetry(t, {
-      type: "started", session_id: "s", ts, payload: { auth_route: "local_session" },
+      type: "started",
+      session_id: "s",
+      ts,
+      payload: { auth_route: "local_session" },
     } as never);
     expect(t.authMode).toBeNull();
     expect(attemptTelemetryRecord("a1", "codex", t).auth_mode).toBeNull();
@@ -4585,19 +4688,30 @@ describe("auth-route attempt telemetry (route evidence)", () => {
 
 describe("web evidence recovery keying (INV-043)", () => {
   it("keeps the failure DISCLOSED when an unrelated-target web success satisfies the evidence gate", async () => {
-    const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");
+    const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } =
+      await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("auto", false);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
-      tool: { name: "WebSearch", kind: "web", status: "error", target: "query-A", error_summary: "search A failed" },
+      type: "tool_result",
+      session_id: "s",
+      ts,
+      tool: {
+        name: "WebSearch",
+        kind: "web",
+        status: "error",
+        target: "query-A",
+        error_summary: "search A failed",
+      },
     } as never);
     expect(t.web.failed).toBe(true);
     // Success on a DIFFERENT target: evidence obtained (satisfied — the gate
     // asks for evidence, and reformulated queries are legitimate recovery),
     // but the A-failure stays disclosed (failed remains true).
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
+      type: "tool_result",
+      session_id: "s",
+      ts,
       tool: { name: "WebSearch", kind: "web", status: "ok", target: "query-B" },
     } as never);
     expect(t.web.satisfied).toBe(true);
@@ -4611,44 +4725,76 @@ describe("web evidence recovery keying (INV-043)", () => {
     // A second failure on another target: BOTH stay disclosed until each
     // recovers (the rollup derives from the tool+target-keyed store).
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
-      tool: { name: "WebFetch", kind: "web", status: "error", target: "https://c", error_summary: "fetch C failed" },
+      type: "tool_result",
+      session_id: "s",
+      ts,
+      tool: {
+        name: "WebFetch",
+        kind: "web",
+        status: "error",
+        target: "https://c",
+        error_summary: "fetch C failed",
+      },
     } as never);
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
+      type: "tool_result",
+      session_id: "s",
+      ts,
       tool: { name: "WebFetch", kind: "web", status: "ok", target: "https://c" },
     } as never);
     expect(t.web.failed).toBe(true); // query-A is STILL unrecovered
     // Success on the SAME target is the attributable recovery that clears it.
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
+      type: "tool_result",
+      session_id: "s",
+      ts,
       tool: { name: "WebSearch", kind: "web", status: "ok", target: "query-A" },
     } as never);
     expect(t.web.failed).toBe(false);
   });
 
   it("a same-name same-target success of a DIFFERENT kind does not recover a web error", async () => {
-    const { createAttemptTelemetry, observeAttemptTelemetry } = await import("./attemptTelemetry.js");
+    const { createAttemptTelemetry, observeAttemptTelemetry } =
+      await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("auto", false);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
-      tool: { name: "fetch", kind: "web", status: "error", target: "https://a", error_summary: "net down" },
+      type: "tool_result",
+      session_id: "s",
+      ts,
+      tool: {
+        name: "fetch",
+        kind: "web",
+        status: "error",
+        target: "https://a",
+        error_summary: "net down",
+      },
     } as never);
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
+      type: "tool_result",
+      session_id: "s",
+      ts,
       tool: { name: "fetch", kind: "command", status: "ok", target: "https://a" },
     } as never);
     expect(t.toolErrors.filter((e) => !e.recovered).length).toBe(1); // web error NOT laundered
   });
 
   it("web_required with only failures stays blocking regardless", async () => {
-    const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } = await import("./attemptTelemetry.js");
+    const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } =
+      await import("./attemptTelemetry.js");
     const t = createAttemptTelemetry("live", true);
     const ts = new Date().toISOString();
     observeAttemptTelemetry(t, {
-      type: "tool_result", session_id: "s", ts,
-      tool: { name: "WebFetch", kind: "web", status: "error", target: "https://x", error_summary: "boom" },
+      type: "tool_result",
+      session_id: "s",
+      ts,
+      tool: {
+        name: "WebFetch",
+        kind: "web",
+        status: "error",
+        target: "https://x",
+        error_summary: "boom",
+      },
     } as never);
     expect(webUnsatisfied(t)).toBe(true);
   });
@@ -4678,7 +4824,10 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
       yield { type: "usage", session_id: sessionId, ts, usage: { cost_usd: 0.01 } };
       yield { type: "completed", session_id: sessionId, ts };
     });
-    const res = await new Orchestrator({ registry: new Map([["spender", adapter]]), reviewers: [] }).run({
+    const res = await new Orchestrator({
+      registry: new Map([["spender", adapter]]),
+      reviewers: [],
+    }).run({
       repoRoot: repo,
       prompt: "2+2?",
       mode: "ask",
@@ -4735,7 +4884,8 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
   });
 
   it("watchdog re-arms while a question is awaiting the user (isSuspended) instead of killing the run", async () => {
-    const { withInactivityWatchdog, HarnessInactivityTimeoutError } = await import("@claudexor/core");
+    const { withInactivityWatchdog, HarnessInactivityTimeoutError } =
+      await import("@claudexor/core");
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     let suspended = true;
     async function* slowSource() {
@@ -4820,7 +4970,9 @@ describe("structured-first plan parsing", () => {
     const bare = extractOrchestratePlan(JSON.stringify(plan));
     expect(bare.plan).not.toBeNull();
     expect(bare.plan!.tool_calls[0]!.tool).toBe("status");
-    const fenced = extractOrchestratePlan("Report:\n\n```json\n" + JSON.stringify(plan) + "\n```\n");
+    const fenced = extractOrchestratePlan(
+      "Report:\n\n```json\n" + JSON.stringify(plan) + "\n```\n",
+    );
     expect(fenced.plan).not.toBeNull();
     const neither = extractOrchestratePlan("no plan here");
     expect(neither.plan).toBeNull();
@@ -4832,7 +4984,13 @@ describe("strict structured-output schema (critic findings)", () => {
   it("optional fields become NULLABLE (never force-required) and explicit nulls parse back", async () => {
     const { orchestratePlanJsonSchema } = await import("@claudexor/schema");
     const schema = orchestratePlanJsonSchema() as {
-      properties?: { tool_calls?: { items?: { anyOf?: Array<{ properties?: Record<string, { type?: unknown }>; required?: string[] }> } } };
+      properties?: {
+        tool_calls?: {
+          items?: {
+            anyOf?: Array<{ properties?: Record<string, { type?: unknown }>; required?: string[] }>;
+          };
+        };
+      };
     };
     const variants = schema.properties?.tool_calls?.items?.anyOf ?? [];
     const startRun = variants.find((v) => v.properties && "harness" in v.properties)!;
@@ -4841,7 +4999,9 @@ describe("strict structured-output schema (critic findings)", () => {
     expect(Array.isArray(harnessType) ? harnessType : [harnessType]).toContain("null"); // ...but nullable
     const { extractOrchestratePlan } = await import("./orchestratePlanner.js");
     const withNulls = extractOrchestratePlan(
-      JSON.stringify({ tool_calls: [{ tool: "start_run", prompt: "p", mode: "agent", harness: null, why: "w" }] }),
+      JSON.stringify({
+        tool_calls: [{ tool: "start_run", prompt: "p", mode: "agent", harness: null, why: "w" }],
+      }),
     );
     expect(withNulls.plan).not.toBeNull();
     expect(withNulls.plan!.tool_calls[0]).not.toHaveProperty("harness", null);
@@ -4861,18 +5021,28 @@ describe("browser gate (INV-066): every unmet condition disarms; fully-armed inj
     const routedWith = (supportsBrowser: boolean) => ({ supportsBrowser });
     const base = { browser: true };
     // 1) run did not opt in
-    expect(orch.browserSpecFor({ browser: false }, routedWith(true), "auto", "full", paths)).toBeNull();
+    expect(
+      orch.browserSpecFor({ browser: false }, routedWith(true), "auto", "full", paths),
+    ).toBeNull();
     // 2) harness lacks browser_tool
     expect(orch.browserSpecFor(base, routedWith(false), "auto", "full", paths)).toBeNull();
     // 3) web policy off (the browser is live egress riding external context policy)
     expect(orch.browserSpecFor(base, routedWith(true), "off", "full", paths)).toBeNull();
     // 4) access below full (workspace-write sandboxes cancel navigation — live-verified)
-    expect(orch.browserSpecFor(base, routedWith(true), "auto", "workspace_write", paths)).toBeNull();
+    expect(
+      orch.browserSpecFor(base, routedWith(true), "auto", "workspace_write", paths),
+    ).toBeNull();
     expect(orch.browserSpecFor(base, routedWith(true), "auto", "readonly", paths)).toBeNull();
     // FULLY ARMED: opt-in + capability + web + full access -> headed spec into the run tree.
     const armed = orch.browserSpecFor(base, routedWith(true), "auto", "full", paths);
     expect(armed).toEqual({ output_dir: "/tmp/run-root/browser", headless: false });
-    const sandboxFull = orch.browserSpecFor(base, routedWith(true), "live", "external_sandbox_full", paths);
+    const sandboxFull = orch.browserSpecFor(
+      base,
+      routedWith(true),
+      "live",
+      "external_sandbox_full",
+      paths,
+    );
     expect(sandboxFull).not.toBeNull();
   });
 });

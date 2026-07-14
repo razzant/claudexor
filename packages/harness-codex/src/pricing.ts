@@ -27,7 +27,10 @@ interface Price {
 // bug over-estimated mini turns ~8x in the budget ledger).
 const TABLE: { match: RegExp; price: Price }[] = [
   { match: /mini|nano/i, price: { input: 0.15, output: 0.6, cached: 0.075 } },
-  { match: /gpt-5[.\d]*-codex|gpt-5[.\d]*-pro/i, price: { input: 1.25, output: 10, cached: 0.125 } },
+  {
+    match: /gpt-5[.\d]*-codex|gpt-5[.\d]*-pro/i,
+    price: { input: 1.25, output: 10, cached: 0.125 },
+  },
   { match: /gpt-5|o3|o4/i, price: { input: 1.25, output: 10, cached: 0.125 } },
   { match: /gpt-4o|gpt-4\.1/i, price: { input: 2.5, output: 10, cached: 1.25 } },
 ];
@@ -54,7 +57,10 @@ export function priceForModel(model: string | null | undefined): Price {
  * Estimate USD cost from token usage. Returns undefined when no usable token
  * counts are present (so we never fabricate a zero/spurious cost).
  */
-export function estimateCodexCostUsd(model: string | null | undefined, usage: TokenUsage): number | undefined {
+export function estimateCodexCostUsd(
+  model: string | null | undefined,
+  usage: TokenUsage,
+): number | undefined {
   const input = usage.input_tokens ?? 0;
   const output = usage.output_tokens ?? 0;
   // Codex usage reports cached_input_tokens as a SUBSET of input_tokens (the

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AgentCapabilityCatalog, ControlRunStartRequest, MODE_MUTABILITY, RUN_START_CLIENT_REJECTED_KEYS } from "@claudexor/schema";
+import {
+  AgentCapabilityCatalog,
+  ControlRunStartRequest,
+  MODE_MUTABILITY,
+  RUN_START_CLIENT_REJECTED_KEYS,
+} from "@claudexor/schema";
 import { CLI_COMMANDS } from "./command-registry.js";
 import { mcpToolNames } from "./capabilities.js";
 
@@ -18,7 +23,13 @@ describe("AgentCapabilityCatalog surfaces", () => {
         writeModes: ["agent", "orchestrate"],
         isolationKinds: ["envelope", "live"],
         workspaceModes: ["in_place", "isolated"],
-        accessProfiles: ["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"],
+        accessProfiles: [
+          "readonly",
+          "workspace_write",
+          "full",
+          "external_sandbox_full",
+          "inherit_native",
+        ],
         applyModes: ["apply", "commit", "branch", "pr"],
       },
       cliCommands: [{ id: "ask", mutability: "read", stability: "stable", recovery: false }],
@@ -45,7 +56,13 @@ describe("AgentCapabilityCatalog surfaces", () => {
   });
 
   it("MODE_MUTABILITY covers every canonical mode with a closed verdict", () => {
-    expect(Object.keys(MODE_MUTABILITY).sort()).toEqual(["agent", "ask", "audit", "orchestrate", "plan"]);
+    expect(Object.keys(MODE_MUTABILITY).sort()).toEqual([
+      "agent",
+      "ask",
+      "audit",
+      "orchestrate",
+      "plan",
+    ]);
     for (const v of Object.values(MODE_MUTABILITY)) expect(["read", "write"]).toContain(v);
   });
 

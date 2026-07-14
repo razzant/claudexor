@@ -7,9 +7,21 @@ import {
   type SpecFieldChange,
   diffSpecPacks,
 } from "@claudexor/interview";
-import { type InterviewAnswer, type InterviewQuestion, type SpecPack, SpecPack as SpecPackSchema } from "@claudexor/schema";
 import {
-  assertNoInlineSecretValues, ensureDir, hashJson, readJsonSafe, redactSecrets, writeJson, writeText } from "@claudexor/util";
+  type InterviewAnswer,
+  type InterviewQuestion,
+  type SpecPack,
+  SpecPack as SpecPackSchema,
+} from "@claudexor/schema";
+import {
+  assertNoInlineSecretValues,
+  ensureDir,
+  hashJson,
+  readJsonSafe,
+  redactSecrets,
+  writeJson,
+  writeText,
+} from "@claudexor/util";
 
 export interface SpecAnswersFile {
   answers: InterviewAnswer[];
@@ -51,14 +63,18 @@ export function loadFrozenSpec(path: string): LoadedFrozenSpec {
   try {
     raw = readFileSync(path, "utf8");
   } catch (err) {
-    throw new Error(`cannot read --spec '${path}': ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `cannot read --spec '${path}': ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`invalid --spec '${path}' JSON: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `invalid --spec '${path}' JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   const result = SpecPackSchema.safeParse(parsed);
@@ -73,7 +89,9 @@ export function loadFrozenSpec(path: string): LoadedFrozenSpec {
   try {
     resolved = realpathSync(path);
   } catch (err) {
-    throw new Error(`cannot resolve --spec '${path}': ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `cannot resolve --spec '${path}': ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   return { spec: result.data, specPath: resolved, specHash: hashJson(result.data) };
@@ -151,7 +169,10 @@ function isMarkdownHeading(line: string): boolean {
 function markdownHeadingText(line: string): string {
   let i = 0;
   while (i < line.length && line[i] === "#") i++;
-  return line.slice(i).trim().replace(/\s+#+\s*$/, "");
+  return line
+    .slice(i)
+    .trim()
+    .replace(/\s+#+\s*$/, "");
 }
 
 /** A "no open decisions" sentinel bullet body, e.g. `(none)` / `(none — ...)`. */
@@ -219,10 +240,15 @@ export function extractQuestionsFromPlan(plan: string): InterviewQuestion[] {
     // Skip the echoed grounding instruction itself (it carries the format spec, not
     // real questions). Its placeholder bullets would be dropped anyway, but the
     // "Rules:" lines could otherwise parse as junk questions.
-    if (blockLines.some((l) => {
-      const low = l.toLowerCase();
-      return low.includes("in exactly this format") || low.includes("[single] = pick exactly one");
-    })) continue;
+    if (
+      blockLines.some((l) => {
+        const low = l.toLowerCase();
+        return (
+          low.includes("in exactly this format") || low.includes("[single] = pick exactly one")
+        );
+      })
+    )
+      continue;
     blocks.push({ questions: parseQuestionBullets(blockLines), afterReviewFindings });
   }
   // Best block: most tagged (single/multi) questions, tie-broken by total count.
@@ -230,7 +256,9 @@ export function extractQuestionsFromPlan(plan: string): InterviewQuestion[] {
   // is not displaced by an appended review error block.
   let best: InterviewQuestion[] = [];
   let bestScore: [number, number] = [-1, -1];
-  const candidates = blocks.some((b) => !b.afterReviewFindings) ? blocks.filter((b) => !b.afterReviewFindings) : blocks;
+  const candidates = blocks.some((b) => !b.afterReviewFindings)
+    ? blocks.filter((b) => !b.afterReviewFindings)
+    : blocks;
   for (const { questions: qs } of candidates) {
     const tagged = qs.filter((q) => q.kind === "single" || q.kind === "multi").length;
     const score: [number, number] = [tagged, qs.length];
@@ -271,7 +299,10 @@ function parseQuestionBullets(blockLines: string[]): InterviewQuestion[] {
     // option segments (a real choice). An untagged legacy bullet with a single `::`
     // (e.g. prose "Session store :: Redis vs Postgres?") is kept as ONE free-text
     // question, not silently turned into a 1-option choice.
-    const segments = body.split("::").map((p) => p.trim()).filter((p) => p.length > 0);
+    const segments = body
+      .split("::")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
     const splitAsChoice = kindTagged ? segments.length > 1 : segments.length >= 3;
     const promptText = splitAsChoice ? (segments[0] ?? "") : body;
     if (!promptText) continue;
@@ -332,7 +363,12 @@ function answerText(q: InterviewQuestion, answers: InterviewAnswer[]): string | 
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
-export function draftFromPlanAndAnswers(prompt: string, plan: string, questions: InterviewQuestion[], file: SpecAnswersFile): SpecDraft {
+export function draftFromPlanAndAnswers(
+  prompt: string,
+  plan: string,
+  questions: InterviewQuestion[],
+  file: SpecAnswersFile,
+): SpecDraft {
   // Resolve each interview question to its answer (selected option labels + free
   // text), or null when unanswered. RECORD the resolved decisions in the frozen
   // SpecPack — both structurally (open_questions: status resolved + resolution) and
@@ -358,10 +394,19 @@ export function draftFromPlanAndAnswers(prompt: string, plan: string, questions:
       `Plan grounding hash: ${hashJson({ plan })}`,
       ...resolved.map(({ q, answer }) => `Interview — ${q.prompt} → ${answer}`),
     ],
-    tests: (file.tests ?? []).map((command, i) => ({ id: `gate-${i + 1}`, command, required: true })),
+    tests: (file.tests ?? []).map((command, i) => ({
+      id: `gate-${i + 1}`,
+      command,
+      required: true,
+    })),
     tasks: [
       { id: "task-1", title: "Implement against the frozen SpecPack", depends_on: [], done: false },
-      { id: "task-2", title: "Run deterministic gates and cross-family review", depends_on: ["task-1"], done: false },
+      {
+        id: "task-2",
+        title: "Run deterministic gates and cross-family review",
+        depends_on: ["task-1"],
+        done: false,
+      },
     ],
     clarifications: questions.map((q) => {
       const answer = answerText(q, file.answers);
@@ -403,7 +448,9 @@ export function validateAnswers(questions: InterviewQuestion[], answers: Intervi
       throw new Error(`spec answer for "${q.id}": unknown option id(s): ${unknown.join(", ")}`);
     }
     if (q.kind === "single" && (a.option_ids?.length ?? 0) > 1) {
-      throw new Error(`spec answer for "${q.id}": single-choice question accepts at most one option`);
+      throw new Error(
+        `spec answer for "${q.id}": single-choice question accepts at most one option`,
+      );
     }
     if (!q.allow_text && (a.text?.trim() ?? "") !== "") {
       throw new Error(`spec answer for "${q.id}": free text is not allowed for this question`);
@@ -411,7 +458,11 @@ export function validateAnswers(questions: InterviewQuestion[], answers: Intervi
   }
 }
 
-export async function freezeSpecFromGrounding(prompt: string, plan: string, answers: SpecAnswersFile): Promise<SpecPack> {
+export async function freezeSpecFromGrounding(
+  prompt: string,
+  plan: string,
+  answers: SpecAnswersFile,
+): Promise<SpecPack> {
   const questions = extractQuestionsFromPlan(plan);
   validateAnswers(questions, answers.answers);
   const engine = new InterviewEngine({
@@ -441,7 +492,9 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
     spec.summary || "(none)",
     "",
     "## Acceptance Criteria",
-    ...(spec.success_criteria.length ? spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`) : ["- (none)"]),
+    ...(spec.success_criteria.length
+      ? spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`)
+      : ["- (none)"]),
     "",
     "## Tests",
     ...(spec.tests.length ? spec.tests.map((t) => `- ${t.command}`) : ["- (none configured)"]),
@@ -450,7 +503,9 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
     ...(spec.non_goals.length ? spec.non_goals.map((x) => `- ${x}`) : ["- (none)"]),
     "",
     "## Forbidden approaches",
-    ...(spec.forbidden_approaches.length ? spec.forbidden_approaches.map((x) => `- ${x}`) : ["- (none)"]),
+    ...(spec.forbidden_approaches.length
+      ? spec.forbidden_approaches.map((x) => `- ${x}`)
+      : ["- (none)"]),
     "",
     "## Source plan grounding",
     redactSecrets(plan).trim(),
@@ -461,7 +516,12 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
   ].join("\n");
 }
 
-export function persistSpec(repoRoot: string, spec: SpecPack, plan: string, previous?: SpecPack | null): {
+export function persistSpec(
+  repoRoot: string,
+  spec: SpecPack,
+  plan: string,
+  previous?: SpecPack | null,
+): {
   specDir: string;
   specHash: string;
   changes: SpecFieldChange[];

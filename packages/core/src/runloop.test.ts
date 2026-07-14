@@ -47,19 +47,52 @@ describe("runCliHarness session mode", () => {
       spec: spec(),
       parseEvent: (obj) => {
         const o = obj as Record<string, unknown>;
-        if (o["type"] === "echo") return [{ type: "message", session_id: "ses-loop", ts: new Date().toISOString(), text: String(o["text"]) }];
-        if (o["type"] === "answered") return [{ type: "message", session_id: "ses-loop", ts: new Date().toISOString(), text: `answered:${String(o["behavior"])}` }];
+        if (o["type"] === "echo")
+          return [
+            {
+              type: "message",
+              session_id: "ses-loop",
+              ts: new Date().toISOString(),
+              text: String(o["text"]),
+            },
+          ];
+        if (o["type"] === "answered")
+          return [
+            {
+              type: "message",
+              session_id: "ses-loop",
+              ts: new Date().toISOString(),
+              text: `answered:${String(o["behavior"])}`,
+            },
+          ];
         if (o["type"] === "result") return [];
         return null;
       },
       session: {
-        initialStdin: JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "hello" }] } }) + "\n",
+        initialStdin:
+          JSON.stringify({
+            type: "user",
+            message: { role: "user", content: [{ type: "text", text: "hello" }] },
+          }) + "\n",
         matches: (obj) => (obj as Record<string, unknown>)["type"] === "control_request",
         handle: async function* (obj, io: ChildStdin) {
           const o = obj as Record<string, any>;
           written.push(String(o["request_id"]));
-          yield { type: "interaction_requested", session_id: "ses-loop", ts: new Date().toISOString() } as HarnessEvent;
-          io.write(JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: o["request_id"], response: { behavior: "allow" } } }) + "\n");
+          yield {
+            type: "interaction_requested",
+            session_id: "ses-loop",
+            ts: new Date().toISOString(),
+          } as HarnessEvent;
+          io.write(
+            JSON.stringify({
+              type: "control_response",
+              response: {
+                subtype: "success",
+                request_id: o["request_id"],
+                response: { behavior: "allow" },
+              },
+            }) + "\n",
+          );
         },
         closeStdinOn: (obj) => (obj as Record<string, unknown>)["type"] === "result",
       },

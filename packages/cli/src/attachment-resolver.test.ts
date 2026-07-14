@@ -62,6 +62,8 @@ describe("daemon attachment resolver", () => {
           path,
         },
       ]),
-    ).toEqual([expect.objectContaining({ kind: "file", mime: "text/plain", name: "note.txt", path })]);
+    ).toEqual([
+      expect.objectContaining({ kind: "file", mime: "text/plain", name: "note.txt", path }),
+    ]);
   });
 });

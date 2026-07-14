@@ -100,9 +100,7 @@ export function validateChecklistResponse(items, model, requiredItems) {
     status: missingItems.length === 0 ? "responded" : "partial",
     findings,
     missingItems,
-    error: missingItems.length === 0
-      ? null
-      : `missing checklist items: ${missingItems.join(", ")}`,
+    error: missingItems.length === 0 ? null : `missing checklist items: ${missingItems.join(", ")}`,
   };
 }
 
@@ -123,7 +121,7 @@ export function releaseReviewDecision({ triadActors, scope, quorum = 2 }) {
   const responsiveTriad = triadActors.filter((actor) => actor.status === "responded");
   const allFindings = [
     ...responsiveTriad.flatMap((actor) => actor.findings ?? []),
-    ...(scope?.status === "responded" ? scope.findings ?? [] : []),
+    ...(scope?.status === "responded" ? (scope.findings ?? []) : []),
   ];
   const failures = blockingFindings(allFindings);
   const reasons = [];

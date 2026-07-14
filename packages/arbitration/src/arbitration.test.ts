@@ -51,7 +51,9 @@ describe("arbitrate", () => {
     const b = candidate("B"); // identical evidence on every axis
     const res = arbitrate([a, b]);
     expect(res.ranking[0]?.label).toBe("A"); // route order
-    expect(res.decision.final_checks.some((c) => c.includes("tie: winner chosen by route order"))).toBe(true);
+    expect(
+      res.decision.final_checks.some((c) => c.includes("tie: winner chosen by route order")),
+    ).toBe(true);
     // A genuinely better candidate is NOT flagged as a tie.
     const c = candidate("C", { diffSize: 10 });
     const res2 = arbitrate([c, candidate("D", { diffSize: 999 })]);
@@ -92,7 +94,19 @@ describe("arbitrate", () => {
       candidate("A", {
         diffBytes: 0,
         diffSize: 0,
-        gates: [{ id: "harness", status: "failed", required: true, command: "codex", exit_code: 1, duration_ms: 1, stdout_tail: null, stderr_tail: null, output_truncated: false }],
+        gates: [
+          {
+            id: "harness",
+            status: "failed",
+            required: true,
+            command: "codex",
+            exit_code: 1,
+            duration_ms: 1,
+            stdout_tail: null,
+            stderr_tail: null,
+            output_truncated: false,
+          },
+        ],
         testsPassed: 0,
         testsTotal: 1,
         finalReviewClean: false,
@@ -120,7 +134,19 @@ describe("arbitrate", () => {
       candidate("A", {
         testsPassed: 0,
         testsTotal: 0,
-        gates: [{ id: "lint", command: "lint", exit_code: 0, status: "passed", duration_ms: 1, required: false, stdout_tail: null, stderr_tail: null, output_truncated: false }],
+        gates: [
+          {
+            id: "lint",
+            command: "lint",
+            exit_code: 0,
+            status: "passed",
+            duration_ms: 1,
+            required: false,
+            stdout_tail: null,
+            stderr_tail: null,
+            output_truncated: false,
+          },
+        ],
       }),
     ]);
     expect(res.decision.status).toBe("success");
@@ -128,7 +154,9 @@ describe("arbitrate", () => {
   });
 
   it("keeps a no-gate run ungated when the review is NOT verified (no observed evidence)", () => {
-    const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0, reviewVerified: false })]);
+    const res = arbitrate([
+      candidate("A", { gates: [], testsPassed: 0, testsTotal: 0, reviewVerified: false }),
+    ]);
     expect(res.decision.status).toBe("ungated");
     expect(res.decision.outcome).toBe("ungated");
     expect(res.decision.apply_recommendation).toBe("human_review");

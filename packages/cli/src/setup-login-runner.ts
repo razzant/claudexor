@@ -169,7 +169,8 @@ function validateManifest(manifestPath: string): SetupLoginManifest {
   const base = resolve(dirname(manifestPath));
   for (const output of [manifest.statePath, manifest.resultPath, manifest.permitPath]) {
     const absolute = resolve(output);
-    if (!absolute.startsWith(base + sep)) throw new Error("setup-login sidecar escapes its job directory");
+    if (!absolute.startsWith(base + sep))
+      throw new Error("setup-login sidecar escapes its job directory");
   }
   return manifest;
 }
@@ -183,9 +184,13 @@ async function waitForPermit(
   while (now().getTime() <= deadline) {
     const permit = readRunnerPermit(manifest.permitPath);
     if (
-      permit && permit.jobId === manifest.jobId && permit.executionId === manifest.executionId &&
-      permit.commandDigest === manifest.commandDigest && permit.manifestDigest === manifest.manifestDigest
-    ) return permit;
+      permit &&
+      permit.jobId === manifest.jobId &&
+      permit.executionId === manifest.executionId &&
+      permit.commandDigest === manifest.commandDigest &&
+      permit.manifestDigest === manifest.manifestDigest
+    )
+      return permit;
     await sleep(Math.min(PERMIT_POLL_MS, Math.max(1, deadline - now().getTime())));
   }
   return null;
@@ -193,7 +198,10 @@ async function waitForPermit(
 
 function persistResult(
   manifest: SetupLoginManifest,
-  result: Omit<SetupLoginRunnerResult, "version" | "jobId" | "executionId" | "commandDigest" | "manifestDigest">,
+  result: Omit<
+    SetupLoginRunnerResult,
+    "version" | "jobId" | "executionId" | "commandDigest" | "manifestDigest"
+  >,
 ): void {
   atomicPrivateJson(manifest.resultPath, {
     version: SETUP_LOGIN_PROTOCOL_VERSION,
@@ -205,14 +213,18 @@ function persistResult(
   } satisfies SetupLoginRunnerResult);
 }
 
-function waitForExit(child: ReturnType<typeof spawn>): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+function waitForExit(
+  child: ReturnType<typeof spawn>,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolveExit, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => resolveExit({ code, signal }));
   });
 }
 
-function describeCaptureFailure(captured: Exclude<ProcessGroupCapture, { status: "known" }>): string {
+function describeCaptureFailure(
+  captured: Exclude<ProcessGroupCapture, { status: "known" }>,
+): string {
   return captured.status === "missing"
     ? "setup-login worker disappeared before its process group could be captured"
     : `setup-login worker process-group identity is unprovable: ${captured.reason}`;
@@ -230,7 +242,10 @@ function runnerBootstrapEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.Pro
 function isDirectEntrypoint(): boolean {
   if (!process.argv[1]) return false;
   try {
-    return realpathSync(resolve(process.argv[1])) === realpathSync(resolve(fileURLToPath(import.meta.url)));
+    return (
+      realpathSync(resolve(process.argv[1])) ===
+      realpathSync(resolve(fileURLToPath(import.meta.url)))
+    );
   } catch {
     return false;
   }
@@ -244,9 +259,13 @@ if (isDirectEntrypoint()) {
     process.exitCode = 2;
   } else {
     (workerMode ? runSetupLoginWorker(manifestPath) : runSetupLogin(manifestPath)).then(
-      (code) => { process.exitCode = code; },
+      (code) => {
+        process.exitCode = code;
+      },
       (error) => {
-        process.stderr.write(`setup-login-runner: ${error instanceof Error ? error.message : String(error)}\n`);
+        process.stderr.write(
+          `setup-login-runner: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
         process.exitCode = 1;
       },
     );

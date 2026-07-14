@@ -26,13 +26,24 @@ export const AUTO_SYNTHESIS_MIN_CANDIDATES = 3;
  * complementary strengths. A single clearly-winning candidate — and any n<3
  * auto race — is NOT synthesized.
  */
-export function decideSynthesis(candidates: CandidateEvidence[], mode: SynthesisMode = "auto"): SynthesisDecision {
+export function decideSynthesis(
+  candidates: CandidateEvidence[],
+  mode: SynthesisMode = "auto",
+): SynthesisDecision {
   if (mode === "never") return { synthesize: false, reason: "synthesis disabled", sources: [] };
   if (candidates.length < 2) {
-    return { synthesize: false, reason: "need >= 2 candidates to synthesize", sources: candidates.map((c) => c.attemptId) };
+    return {
+      synthesize: false,
+      reason: "need >= 2 candidates to synthesize",
+      sources: candidates.map((c) => c.attemptId),
+    };
   }
   if (mode === "always") {
-    return { synthesize: true, reason: "synthesis forced (always)", sources: candidates.map((c) => c.attemptId) };
+    return {
+      synthesize: true,
+      reason: "synthesis forced (always)",
+      sources: candidates.map((c) => c.attemptId),
+    };
   }
   if (candidates.length < AUTO_SYNTHESIS_MIN_CANDIDATES) {
     return {
@@ -62,7 +73,11 @@ export function decideSynthesis(candidates: CandidateEvidence[], mode: Synthesis
       (second.diffSize ?? 0) < (top.diffSize ?? 0)); // second is simpler on a lower-priority axis
 
   if (clearWinner && !topFixable && !complementary) {
-    return { synthesize: false, reason: "a single candidate clearly passes all gates and review", sources: [top.attemptId] };
+    return {
+      synthesize: false,
+      reason: "a single candidate clearly passes all gates and review",
+      sources: [top.attemptId],
+    };
   }
 
   const reasons: string[] = [];
@@ -107,7 +122,9 @@ export function buildSynthesisPlan(candidates: CandidateEvidence[]): SynthesisPl
   const borrowTestsFrom = bestTests.attemptId !== base.attemptId ? bestTests.attemptId : null;
   const instructions = [
     `Start from ${base.label}.`,
-    borrowTestsFrom ? `Use the stronger gate/test results from ${bestTests.label} as evidence, but do not edit protected tests or gate configuration unless the user explicitly asked for test changes.` : "",
+    borrowTestsFrom
+      ? `Use the stronger gate/test results from ${bestTests.label} as evidence, but do not edit protected tests or gate configuration unless the user explicitly asked for test changes.`
+      : "",
     fixFindings.length > 0 ? `Fix the accepted findings (${fixFindings.length}).` : "",
     "Produce a single coherent patch; do not blindly concatenate diffs. The result will be re-reviewed.",
   ]

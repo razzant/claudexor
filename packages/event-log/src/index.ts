@@ -143,7 +143,8 @@ export function lastSeqInFile(path: string): number {
     lineNo += 1;
     try {
       const parsed = JSON.parse(trimmed) as { seq?: unknown };
-      const seq = typeof parsed.seq === "number" && Number.isFinite(parsed.seq) ? parsed.seq : lineNo;
+      const seq =
+        typeof parsed.seq === "number" && Number.isFinite(parsed.seq) ? parsed.seq : lineNo;
       if (seq > last) last = seq;
     } catch {
       if (lineNo > last) last = lineNo;

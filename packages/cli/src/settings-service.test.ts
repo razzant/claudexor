@@ -19,21 +19,28 @@ writeFileSync(
 );
 chmodSync(stubBin, 0o755);
 process.env["CLAUDEXOR_CODEX_BIN"] = stubBin;
-const { applyHarnessSettingsPatches, assertSettingsPatchValid } = await import("./settings-service.js");
+const { applyHarnessSettingsPatches, assertSettingsPatchValid } =
+  await import("./settings-service.js");
 
 /** The daemon POST /settings validation core, tested offline
  * against the codex manifest truth source (static known_models). */
 describe("assertSettingsPatchValid", () => {
   it("rejects fake harness ids everywhere they could persist", async () => {
     await expect(
-      assertSettingsPatchValid(ControlSettingsUpdateRequest.parse({ primaryHarness: "fake-success" })),
-    ).rejects.toThrow(/not a real registered harness/);
-    await expect(
-      assertSettingsPatchValid(ControlSettingsUpdateRequest.parse({ eligibleHarnesses: ["codex", "fake-implement"] })),
+      assertSettingsPatchValid(
+        ControlSettingsUpdateRequest.parse({ primaryHarness: "fake-success" }),
+      ),
     ).rejects.toThrow(/not a real registered harness/);
     await expect(
       assertSettingsPatchValid(
-        ControlSettingsUpdateRequest.parse({ harnesses: { "fake-success": { defaultModel: "fake-model" } } }),
+        ControlSettingsUpdateRequest.parse({ eligibleHarnesses: ["codex", "fake-implement"] }),
+      ),
+    ).rejects.toThrow(/not a real registered harness/);
+    await expect(
+      assertSettingsPatchValid(
+        ControlSettingsUpdateRequest.parse({
+          harnesses: { "fake-success": { defaultModel: "fake-model" } },
+        }),
       ),
     ).rejects.toThrow(/not persistable/);
   });
@@ -41,7 +48,9 @@ describe("assertSettingsPatchValid", () => {
   it("refuses a model outside the harness truth source with the actionable message (HTTP 400 path)", async () => {
     await expect(
       assertSettingsPatchValid(
-        ControlSettingsUpdateRequest.parse({ harnesses: { codex: { defaultModel: "ghost-model-9000" } } }),
+        ControlSettingsUpdateRequest.parse({
+          harnesses: { codex: { defaultModel: "ghost-model-9000" } },
+        }),
       ),
     ).rejects.toThrow(/refused defaultModel 'ghost-model-9000'.*truth source: manifest/s);
     // A truth-listed model passes.
@@ -74,7 +83,10 @@ describe("applyHarnessSettingsPatches", () => {
   it("merges real-harness patches and rejects unknown/fake ids", () => {
     const merged = applyHarnessSettingsPatches(
       {},
-      { codex: ControlSettingsUpdateRequest.parse({ harnesses: { codex: { enabled: false } } }).harnesses!["codex"]! },
+      {
+        codex: ControlSettingsUpdateRequest.parse({ harnesses: { codex: { enabled: false } } })
+          .harnesses!["codex"]!,
+      },
     );
     expect(merged["codex"]?.enabled).toBe(false);
     expect(() => applyHarnessSettingsPatches({}, { "fake-success": { enabled: false } })).toThrow(

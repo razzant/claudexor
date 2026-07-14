@@ -11,7 +11,11 @@ function sleep(ms: number): Promise<void> {
 function wire(tools: McpTool[], opts: { version?: string } = {}) {
   const c2s = new PassThrough();
   const s2c = new PassThrough();
-  const handle = serveClaudexorMcp({ version: opts.version ?? "0.0.0-test", tools, transport: { read: c2s, write: s2c } });
+  const handle = serveClaudexorMcp({
+    version: opts.version ?? "0.0.0-test",
+    tools,
+    transport: { read: c2s, write: s2c },
+  });
   const responses: any[] = [];
   const requests: any[] = [];
   const rl = createInterface({ input: s2c });
@@ -47,7 +51,12 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
-        return { summary: "slow done", runId: "run-slow", runDir: "/tmp/run-slow", status: "succeeded" };
+        return {
+          summary: "slow done",
+          runId: "run-slow",
+          runDir: "/tmp/run-slow",
+          status: "succeeded",
+        };
       }
       return { summary: `ran in ${p.mode} mode` };
     });
@@ -58,7 +67,12 @@ describe("Claudexor MCP server (SDK v2)", () => {
     // The old hand-rolled loop awaited each call inline: a multi-minute race
     // blocked ping/tools/list. The SDK dispatches concurrently —
     // the ping MUST answer while the slow tools/call is still running.
-    w.send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name: "claudexor_run", arguments: { prompt: "go" } },
+    });
     await sleep(80);
     w.send({ jsonrpc: "2.0", id: 4, method: "ping" });
     await sleep(120);
@@ -76,10 +90,21 @@ describe("Claudexor MCP server (SDK v2)", () => {
   });
 
   it("returns the run SUMMARY plus the runId/artifacts trailer (hosts get a handle)", async () => {
-    const tools = defaultClaudexorTools(async () => ({ runId: "r1", runDir: "/tmp/r1", status: "succeeded", summary: "Did the thing.", winner: "A" }));
+    const tools = defaultClaudexorTools(async () => ({
+      runId: "r1",
+      runDir: "/tmp/r1",
+      status: "succeeded",
+      summary: "Did the thing.",
+      winner: "A",
+    }));
     const w = wire(tools);
     await w.initialize();
-    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "claudexor_run", arguments: { prompt: "go" } },
+    });
     await sleep(120);
     await w.close();
 
@@ -113,7 +138,13 @@ describe("Claudexor MCP server (SDK v2)", () => {
         writeModes: ["agent", "orchestrate"],
         isolationKinds: ["envelope", "live"],
         workspaceModes: ["in_place", "isolated"],
-        accessProfiles: ["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"],
+        accessProfiles: [
+          "readonly",
+          "workspace_write",
+          "full",
+          "external_sandbox_full",
+          "inherit_native",
+        ],
         applyModes: ["apply", "commit", "branch", "pr"],
       },
       cliCommands: [{ id: "ask", mutability: "read", stability: "stable", recovery: false }],
@@ -127,8 +158,18 @@ describe("Claudexor MCP server (SDK v2)", () => {
     });
     const w = wire(tools);
     await w.initialize();
-    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_capabilities", arguments: {} } });
-    w.send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "claudexor_status", arguments: {} } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "claudexor_capabilities", arguments: {} },
+    });
+    w.send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "claudexor_status", arguments: {} },
+    });
     await sleep(150);
     await w.close();
     const cap = w.responses.find((r) => r.id === 1);
@@ -165,27 +206,63 @@ describe("Claudexor MCP server (SDK v2)", () => {
       { id: 6, name: "claudexor_run", arguments: { prompt: "go", extra: true } },
       { id: 7, name: "claudexor_best_of", arguments: { prompt: "go", n: 1 } },
       { id: 8, name: "claudexor_run", arguments: { prompt: "go", tests: "pnpm test" } },
-      { id: 9, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "" }] } },
-      { id: 10, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] } },
+      {
+        id: 9,
+        name: "claudexor_run",
+        arguments: { prompt: "go", reviewerPanel: [{ harness: "" }] },
+      },
+      {
+        id: 10,
+        name: "claudexor_run",
+        arguments: {
+          prompt: "go",
+          reviewerPanel: [{ harness: "claude", authPreference: "api_key" }],
+        },
+      },
       { id: 11, name: "claudexor_run", arguments: { prompt: "go", maxUsd: -1 } },
-      { id: 12, name: "claudexor_run", arguments: { prompt: "go", protectedPathApprovals: [{ reason: "missing path" }] } },
-      { id: 13, name: "claudexor_run", arguments: { prompt: "go", reviewerModels: { opneai: "gpt-5.5" } } },
-      { id: 14, name: "claudexor_run", arguments: { prompt: "go", reviewerEfforts: { opneai: "xhigh" } } },
+      {
+        id: 12,
+        name: "claudexor_run",
+        arguments: { prompt: "go", protectedPathApprovals: [{ reason: "missing path" }] },
+      },
+      {
+        id: 13,
+        name: "claudexor_run",
+        arguments: { prompt: "go", reviewerModels: { opneai: "gpt-5.5" } },
+      },
+      {
+        id: 14,
+        name: "claudexor_run",
+        arguments: { prompt: "go", reviewerEfforts: { opneai: "xhigh" } },
+      },
       { id: 15, name: "claudexor_run", arguments: { prompt: "go", effort: "turbo" } },
       { id: 16, name: "claudexor_run", arguments: { prompt: "go", web: "internet" } },
       { id: 17, name: "claudexor_run", arguments: { prompt: "go", harness: "" } },
       { id: 18, name: "claudexor_run", arguments: { prompt: "go", primaryHarness: " " } },
       { id: 19, name: "claudexor_run", arguments: { prompt: "go", model: "" } },
-      { id: 20, name: "claudexor_run", arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] } },
+      {
+        id: 20,
+        name: "claudexor_run",
+        arguments: { prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] },
+      },
       { id: 21, name: "claudexor_run", arguments: { prompt: "go", tests: [`echo ${secretLike}`] } },
-      { id: 22, name: "claudexor_run", arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] } },
+      {
+        id: 22,
+        name: "claudexor_run",
+        arguments: { prompt: "go", protectedPathApprovals: [{ path: secretLike }] },
+      },
       // The prompt hard block: a secret-like value INSIDE the prompt is
       // refused on the MCP surface too (prompts are durable artifacts).
       { id: 23, name: "claudexor_run", arguments: { prompt: `deploy with ${secretLike}` } },
       { id: 24, name: "claudexor_ask", arguments: { prompt: `explain ${secretLike}` } },
     ];
     for (const call of invalidCalls) {
-      w.send({ jsonrpc: "2.0", id: call.id, method: "tools/call", params: { name: call.name, arguments: call.arguments } });
+      w.send({
+        jsonrpc: "2.0",
+        id: call.id,
+        method: "tools/call",
+        params: { name: call.name, arguments: call.arguments },
+      });
     }
     await sleep(250);
     await w.close();
@@ -218,11 +295,21 @@ describe("Claudexor MCP server (SDK v2)", () => {
       runDir: "/tmp/r-s1",
       status: "succeeded",
       summary: "Did the thing.",
-      applyEligibility: { eligible: false, state: "blocked", reason: "review found blockers", requiredAction: "decision" },
+      applyEligibility: {
+        eligible: false,
+        state: "blocked",
+        reason: "review found blockers",
+        requiredAction: "decision",
+      },
     }));
     const w = wire(tools);
     await w.initialize();
-    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "claudexor_run", arguments: { prompt: "go" } },
+    });
     await sleep(150);
     await w.close();
     const res = w.responses.find((r) => r.id === 1)?.result;
@@ -255,7 +342,16 @@ describe("Claudexor MCP server (SDK v2)", () => {
         request: {
           interaction_id: "int-1",
           questions: [
-            { id: "q1", question: "Pick one", header: null, options: [{ label: "A", description: null }, { label: "B", description: "second" }], multi_select: false },
+            {
+              id: "q1",
+              question: "Pick one",
+              header: null,
+              options: [
+                { label: "A", description: null },
+                { label: "B", description: "second" },
+              ],
+              multi_select: false,
+            },
             { id: "q2", question: "Say more", header: "Detail", options: [], multi_select: false },
           ],
         },
@@ -267,7 +363,12 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const w = wire(tools);
     // Declare the elicitation capability so the SDK allows elicitInput.
     await w.initialize({ elicitation: {} });
-    w.send({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: { name: "claudexor_run", arguments: { prompt: "go" } },
+    });
     // Answer each incoming elicitation/create server request over the wire.
     const answered = new Set<string>();
     for (let i = 0; i < 60; i += 1) {
@@ -287,7 +388,9 @@ describe("Claudexor MCP server (SDK v2)", () => {
     }
     await w.close();
 
-    expect(w.responses.find((r) => r.id === 9)?.result?.content?.[0]?.text).toContain("asked and answered");
+    expect(w.responses.find((r) => r.id === 9)?.result?.content?.[0]?.text).toContain(
+      "asked and answered",
+    );
     expect(receivedAnswers).toEqual({
       interaction_id: "int-1", // typed InteractionAnswerSet parity with ACP/daemon
       answers: [
@@ -306,7 +409,12 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const tools = defaultClaudexorTools(runner);
     const w = wire(tools);
     await w.initialize(); // no elicitation capability
-    w.send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "claudexor_run", arguments: { prompt: "go" } },
+    });
     await sleep(150);
     await w.close();
     // No capability -> no bridge is offered at all; the engine's own
@@ -332,9 +440,18 @@ describe("Claudexor MCP server (SDK v2)", () => {
       });
     const w = wire(defaultClaudexorTools(runner));
     await w.initialize();
-    w.send({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "claudexor_run", arguments: { prompt: "go" } } });
+    w.send({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: "claudexor_run", arguments: { prompt: "go" } },
+    });
     await sleep(150);
-    w.send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7, reason: "host cancelled" } });
+    w.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: 7, reason: "host cancelled" },
+    });
     for (let i = 0; i < 40 && !sawAbort; i += 1) await sleep(50);
     await w.close();
     expect(sawAbort).toBe(true);
@@ -413,7 +530,10 @@ describe("Claudexor MCP server (SDK v2)", () => {
       return origWrite(chunk, ...rest);
     };
     try {
-      const w = wire(defaultClaudexorTools(async () => "ok"), { version: "0.2.0" });
+      const w = wire(
+        defaultClaudexorTools(async () => "ok"),
+        { version: "0.2.0" },
+      );
       await w.close();
     } finally {
       (process.stderr as any).write = origWrite;

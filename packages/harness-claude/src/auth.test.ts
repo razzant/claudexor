@@ -2,7 +2,14 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { claudeArgsForSpec, claudeAuthSourceReadiness, createClaudeAdapter, defaultNativeClaudeConfigDir, probeAuthStatus, selectClaudeRunAuthRoute } from "./index.js";
+import {
+  claudeArgsForSpec,
+  claudeAuthSourceReadiness,
+  createClaudeAdapter,
+  defaultNativeClaudeConfigDir,
+  probeAuthStatus,
+  selectClaudeRunAuthRoute,
+} from "./index.js";
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import type { CliRunLoopOptions } from "@claudexor/core";
 
@@ -21,15 +28,33 @@ const readonlyUnsupported = async () => ({
 describe("Claude strict runtime auth routing", () => {
   it("does not fall back for explicit routes and keeps auto subscription-first", () => {
     const attempts: string[] = [];
-    const sub = () => { attempts.push("subscription"); return false; };
-    const key = () => { attempts.push("api_key"); return true; };
+    const sub = () => {
+      attempts.push("subscription");
+      return false;
+    };
+    const key = () => {
+      attempts.push("api_key");
+      return true;
+    };
     expect(selectClaudeRunAuthRoute("subscription", sub, key)).toBeNull();
     expect(attempts).toEqual(["subscription"]);
     attempts.length = 0;
     expect(selectClaudeRunAuthRoute("auto", sub, key)).toBe("api_key");
     expect(attempts).toEqual(["subscription", "api_key"]);
     attempts.length = 0;
-    expect(selectClaudeRunAuthRoute("api_key", () => { attempts.push("subscription"); return true; }, () => { attempts.push("api_key"); return false; })).toBeNull();
+    expect(
+      selectClaudeRunAuthRoute(
+        "api_key",
+        () => {
+          attempts.push("subscription");
+          return true;
+        },
+        () => {
+          attempts.push("api_key");
+          return false;
+        },
+      ),
+    ).toBeNull();
     expect(attempts).toEqual(["api_key"]);
   });
 });
@@ -106,7 +131,12 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
       const bin = fakeClaudeBin(dir, `echo '{"loggedIn": false, "authMethod": "none"}'; exit 1`);
-      expect(await probeAuthStatus(bin)).toEqual({ loggedIn: false, authed: false, authMethod: "none", probeError: null });
+      expect(await probeAuthStatus(bin)).toEqual({
+        loggedIn: false,
+        authed: false,
+        authMethod: "none",
+        probeError: null,
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -115,8 +145,16 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
   it("accepts only the exact claude.ai auth method", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
-      const bin = fakeClaudeBin(dir, `echo '{"loggedIn": true, "authMethod": "claude.ai"}'; exit 0`);
-      expect(await probeAuthStatus(bin)).toEqual({ loggedIn: true, authed: true, authMethod: "claude.ai", probeError: null });
+      const bin = fakeClaudeBin(
+        dir,
+        `echo '{"loggedIn": true, "authMethod": "claude.ai"}'; exit 0`,
+      );
+      expect(await probeAuthStatus(bin)).toEqual({
+        loggedIn: true,
+        authed: true,
+        authMethod: "claude.ai",
+        probeError: null,
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -126,7 +164,12 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     const dir = mkdtempSync(join(tmpdir(), "claude-probe-"));
     try {
       const bin = fakeClaudeBin(dir, `echo '{"loggedIn": true, "authMethod": "api_key"}'; exit 0`);
-      expect(await probeAuthStatus(bin)).toEqual({ loggedIn: true, authed: false, authMethod: "api_key", probeError: null });
+      expect(await probeAuthStatus(bin)).toEqual({
+        loggedIn: true,
+        authed: false,
+        authMethod: "api_key",
+        probeError: null,
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -161,7 +204,11 @@ describe("probeAuthStatus (JSON verdict beats exit code; probe failures are dist
     const controller = new AbortController();
     let captured: Record<string, unknown> | undefined;
     const result = await probeAuthStatus("/fake/claude", {
-      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/must/not/win", ANTHROPIC_API_KEY: "secret" },
+      env: {
+        HOME: "/scoped/home",
+        CLAUDE_CONFIG_DIR: "/must/not/win",
+        ANTHROPIC_API_KEY: "secret",
+      },
       abortSignal: controller.signal,
       runCapture: async (_cmd, _args, options) => {
         captured = options as unknown as Record<string, unknown>;
@@ -211,10 +258,12 @@ describe("Claude readonly enforcement capability", () => {
       fresh: true,
     });
     expect(report.status).toBe("degraded");
-    expect(report.checks).toContainEqual(expect.objectContaining({
-      id: "readonly_enforcement",
-      status: "fail",
-    }));
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        id: "readonly_enforcement",
+        status: "fail",
+      }),
+    );
     expect(report.reasons).toContain("test readonly profile unavailable");
   });
 
@@ -272,10 +321,22 @@ describe("Claude transport-aware source selection", () => {
         probeEnv = options?.env;
         return nativeProbe;
       },
-      anthropicApiKey: () => { apiSecretReads += 1; return "api-key"; },
-      claudeOAuthToken: () => { oauthSecretReads += 1; return "oauth-token"; },
-      smokeIsolatedApiKey: async () => { smokeCalls += 1; return { ok: true, detail: "must not run" }; },
-      smokeIsolatedOAuthToken: async () => { smokeCalls += 1; return { ok: true, detail: "must not run" }; },
+      anthropicApiKey: () => {
+        apiSecretReads += 1;
+        return "api-key";
+      },
+      claudeOAuthToken: () => {
+        oauthSecretReads += 1;
+        return "oauth-token";
+      },
+      smokeIsolatedApiKey: async () => {
+        smokeCalls += 1;
+        return { ok: true, detail: "must not run" };
+      },
+      smokeIsolatedOAuthToken: async () => {
+        smokeCalls += 1;
+        return { ok: true, detail: "must not run" };
+      },
     });
 
     const report = await adapter.doctor({
@@ -292,7 +353,11 @@ describe("Claude transport-aware source selection", () => {
     expect(probeEnv?.HOME).toBe("/scoped/home");
     expect(probeEnv?.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
     expect(report.auth_sources).toEqual([
-      expect.objectContaining({ source: "native_session", availability: "available", verification: "passed" }),
+      expect.objectContaining({
+        source: "native_session",
+        availability: "available",
+        verification: "passed",
+      }),
     ]);
   });
 
@@ -328,14 +393,20 @@ describe("Claude transport-aware source selection", () => {
       claudeOAuthToken: () => "oauth-token",
       runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
         cliOptions = options;
-        yield { type: "completed", session_id: options.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
       },
     });
 
-    for await (const _event of adapter.run(spec({
-      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
-      auth_preference: "auto",
-    }))) {
+    for await (const _event of adapter.run(
+      spec({
+        env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
+        auth_preference: "auto",
+      }),
+    )) {
       // drain
     }
 
@@ -350,19 +421,30 @@ describe("Claude transport-aware source selection", () => {
     const adapter = createClaudeAdapter({
       detectVersion: async () => "2.1.165",
       probeReadonlyProfile: readonlySupported,
-      probeAuthStatus: async () => ({ loggedIn: false, authed: false, authMethod: "none", probeError: null }),
+      probeAuthStatus: async () => ({
+        loggedIn: false,
+        authed: false,
+        authMethod: "none",
+        probeError: null,
+      }),
       anthropicApiKey: () => "api-key",
       claudeOAuthToken: () => "oauth-token",
       runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
         cliOptions = options;
-        yield { type: "completed", session_id: options.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
       },
     });
 
-    for await (const _event of adapter.run(spec({
-      env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
-      auth_preference: "auto",
-    }))) {
+    for await (const _event of adapter.run(
+      spec({
+        env: { HOME: "/scoped/home", CLAUDE_CONFIG_DIR: "/scoped/config" },
+        auth_preference: "auto",
+      }),
+    )) {
       // drain
     }
 

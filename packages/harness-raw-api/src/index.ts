@@ -1,6 +1,16 @@
 import { readFileSync } from "node:fs";
-import type { ConformanceReport, HarnessEvent, HarnessManifest, HarnessModel, HarnessRunSpec, ProviderFamily } from "@claudexor/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type {
+  ConformanceReport,
+  HarnessEvent,
+  HarnessManifest,
+  HarnessModel,
+  HarnessRunSpec,
+  ProviderFamily,
+} from "@claudexor/schema";
+import {
+  ConformanceReport as ConformanceReportSchema,
+  HarnessManifest as HarnessManifestSchema,
+} from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, abortSignalFromSpec } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
@@ -40,7 +50,10 @@ function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, 
   const parts: Array<Record<string, unknown>> = [{ type: "text", text: spec.prompt }];
   for (const a of images) {
     try {
-      parts.push({ type: "image_url", image_url: { url: `data:${a.mime};base64,${readFileSync(a.path).toString("base64")}` } });
+      parts.push({
+        type: "image_url",
+        image_url: { url: `data:${a.mime};base64,${readFileSync(a.path).toString("base64")}` },
+      });
     } catch {
       // Late-deleted attachment: skip; the text prompt still goes through.
     }
@@ -64,11 +77,15 @@ export interface RawApiConfig {
 export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
   const id = config.id ?? "raw-api";
   const providerFamily = config.providerFamily ?? "openai";
-  const baseUrl = config.baseUrl ?? process.env.CLAUDEXOR_RAWAPI_BASE_URL ?? "https://api.openai.com/v1";
-  const keyEnv = config.keyEnv ?? (process.env.CLAUDEXOR_RAWAPI_KEY ? "CLAUDEXOR_RAWAPI_KEY" : "OPENAI_API_KEY");
+  const baseUrl =
+    config.baseUrl ?? process.env.CLAUDEXOR_RAWAPI_BASE_URL ?? "https://api.openai.com/v1";
+  const keyEnv =
+    config.keyEnv ?? (process.env.CLAUDEXOR_RAWAPI_KEY ? "CLAUDEXOR_RAWAPI_KEY" : "OPENAI_API_KEY");
   const defaultModel = config.defaultModel ?? process.env.CLAUDEXOR_RAWAPI_MODEL ?? "gpt-4o-mini";
 
-  function apiKey(env: Record<string, string | null | undefined> = process.env): string | undefined {
+  function apiKey(
+    env: Record<string, string | null | undefined> = process.env,
+  ): string | undefined {
     const value = env[keyEnv];
     if (value) return value;
     // Secret fallback is INSTANCE-SCOPED so a key for one provider is never sent
@@ -76,7 +93,10 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
     // default OpenAI-compatible instance owns the managed "raw" (and "openai")
     // secret; every named instance (openrouter, …) resolves ONLY its own slot.
     if (id === "raw-api") {
-      return resolveSecret("raw") ?? (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined);
+      return (
+        resolveSecret("raw") ??
+        (keyEnv === "OPENAI_API_KEY" ? (resolveSecret("openai") ?? undefined) : undefined)
+      );
     }
     return resolveSecret(id) ?? undefined;
   }
@@ -117,7 +137,9 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           auth: {
             supported_sources: ["api_key_env"],
             preferred_source: "api_key_env",
-            credential_transports: [{ source: "api_key_env", kind: "http_header", relocatable_by: ["ENV"] }],
+            credential_transports: [
+              { source: "api_key_env", kind: "http_header", relocatable_by: ["ENV"] },
+            ],
           },
           access_control: { readonly_mechanism: "none" },
           isolation: { supported_containment: ["env_or_file_injection"] },
@@ -183,7 +205,11 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         harness_id: id,
         status: "degraded",
         checks: [
-          { id: "api_key", status: "pass", detail: "key available (unproven without isolated smoke)" },
+          {
+            id: "api_key",
+            status: "pass",
+            detail: "key available (unproven without isolated smoke)",
+          },
           { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
         ],
         // No native edit tools: planner/reviewer roles only.
@@ -208,7 +234,11 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         });
         if (!res.ok) return [];
         const json = await res.json();
-        return parseModelsList(json).map((m) => ({ id: m.id, label: m.label, context_window: m.context_window }));
+        return parseModelsList(json).map((m) => ({
+          id: m.id,
+          label: m.label,
+          context_window: m.context_window,
+        }));
       } catch {
         return [];
       }
@@ -217,7 +247,12 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       const key = apiKey({ ...process.env, ...spec.env });
       if (!key) {
-        yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: `raw-api: ${keyEnv} not set` };
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          error: `raw-api: ${keyEnv} not set`,
+        };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
         return;
       }
@@ -238,14 +273,18 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-          body: JSON.stringify({ model, messages: [{ role: "user", content: rawApiUserContent(spec) }] }),
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: rawApiUserContent(spec) }],
+          }),
           signal,
         });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
           const retryAfter = res.headers.get("retry-after");
           const resetsAt = retryAfter ? resetsAtFromRetryAfter(retryAfter) : null;
-          const retryDelayMs = retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : null;
+          const retryDelayMs =
+            retryAfter && Number.isFinite(Number(retryAfter)) ? Number(retryAfter) * 1000 : null;
           yield {
             type: "error",
             session_id: spec.session_id,
@@ -253,26 +292,45 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             error: `raw-api HTTP ${res.status}`,
             // A 429 is a TYPED rate-limit signal (cooldown/fallback governance
             // reads ev.rate_limit, never prose), with the native reset when known.
-            ...(res.status === 429 ? { rate_limit: { resets_at: resetsAt, retry_delay_ms: retryDelayMs } } : {}),
-            ...(res.status === 429 || RAW_API_TRANSIENT_STATUS.has(res.status)
-              ? { transient: { kind: res.status === 408 ? "timeout" : "service_unavailable", retry_delay_ms: retryDelayMs } }
+            ...(res.status === 429
+              ? { rate_limit: { resets_at: resetsAt, retry_delay_ms: retryDelayMs } }
               : {}),
-            payload: res.status === 429 ? { resets_at: resetsAt } : { body: redactSecrets(body.slice(0, 500)) },
+            ...(res.status === 429 || RAW_API_TRANSIENT_STATUS.has(res.status)
+              ? {
+                  transient: {
+                    kind: res.status === 408 ? "timeout" : "service_unavailable",
+                    retry_delay_ms: retryDelayMs,
+                  },
+                }
+              : {}),
+            payload:
+              res.status === 429
+                ? { resets_at: resetsAt }
+                : { body: redactSecrets(body.slice(0, 500)) },
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;
         }
         const json = await res.json();
         const parsed = parseChatCompletion(json);
-        if (parsed.text) yield { type: "message", session_id: spec.session_id, ts: nowIso(), text: parsed.text };
+        if (parsed.text)
+          yield { type: "message", session_id: spec.session_id, ts: nowIso(), text: parsed.text };
         yield {
           type: "usage",
           session_id: spec.session_id,
           ts: nowIso(),
-          usage: { input_tokens: parsed.usage.input_tokens, output_tokens: parsed.usage.output_tokens },
+          usage: {
+            input_tokens: parsed.usage.input_tokens,
+            output_tokens: parsed.usage.output_tokens,
+          },
           observed_model: parsed.model ?? undefined,
         };
-        yield { type: "completed", session_id: spec.session_id, ts: nowIso(), observed_model: parsed.model ?? undefined };
+        yield {
+          type: "completed",
+          session_id: spec.session_id,
+          ts: nowIso(),
+          observed_model: parsed.model ?? undefined,
+        };
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
         yield {
@@ -280,7 +338,11 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           session_id: spec.session_id,
           ts: nowIso(),
           error: message,
-          transient: { kind: err instanceof DOMException && err.name === "TimeoutError" ? "timeout" : "network", retry_delay_ms: null },
+          transient: {
+            kind:
+              err instanceof DOMException && err.name === "TimeoutError" ? "timeout" : "network",
+            retry_delay_ms: null,
+          },
         };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
       }
@@ -290,7 +352,8 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
 
 function resetsAtFromRetryAfter(header: string): string | null {
   const seconds = Number(header);
-  if (Number.isFinite(seconds) && seconds >= 0) return new Date(Date.now() + seconds * 1000).toISOString();
+  if (Number.isFinite(seconds) && seconds >= 0)
+    return new Date(Date.now() + seconds * 1000).toISOString();
   const date = new Date(header);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }

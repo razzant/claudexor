@@ -20,7 +20,11 @@ afterEach(() => {
 
 /** Drive the real `claudexor mcp serve` over stdio with newline JSON-RPC. */
 function mcpClient(cwd: string, env: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, [CLI, "mcp", "serve"], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [CLI, "mcp", "serve"], {
+    cwd,
+    env,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
   const responses: any[] = [];
   let stderr = "";
   child.stderr.on("data", (c: Buffer) => {
@@ -38,7 +42,10 @@ function mcpClient(cwd: string, env: NodeJS.ProcessEnv) {
     for (;;) {
       const hit = responses.find((r) => r.id === id);
       if (hit) return hit;
-      if (Date.now() > deadline) throw new Error(`no response for id ${String(id)} within ${timeoutMs}ms; stderr: ${stderr.slice(-400)}`);
+      if (Date.now() > deadline)
+        throw new Error(
+          `no response for id ${String(id)} within ${timeoutMs}ms; stderr: ${stderr.slice(-400)}`,
+        );
       await new Promise((r) => setTimeout(r, 100));
     }
   };
@@ -58,7 +65,11 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
         jsonrpc: "2.0",
         id: 0,
         method: "initialize",
-        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "canary", version: "1.0" } },
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "canary", version: "1.0" },
+        },
       });
       const init = await mcp.waitFor(0, 15_000);
       expect(init.result?.protocolVersion).toBe("2025-06-18");
@@ -74,7 +85,10 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: "claudexor_run", arguments: { prompt: "fix add()", repoPath: sb.repo, harness: "fake-success" } },
+        params: {
+          name: "claudexor_run",
+          arguments: { prompt: "fix add()", repoPath: sb.repo, harness: "fake-success" },
+        },
       });
       // Concurrency contract: ping answers WHILE the run is in flight.
       mcp.send({ jsonrpc: "2.0", id: 3, method: "ping" });
@@ -103,13 +117,24 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
     const installOut = install.json() as { ok: boolean; results: Array<{ state: string }> };
     expect(installOut.ok).toBe(true);
     expect(installOut.results[0]?.state).toBe("installed");
-    const skillPath = join(sb.home, ".cursor", "plugins", "local", "claudexor", "skills", "claudexor", "SKILL.md");
+    const skillPath = join(
+      sb.home,
+      ".cursor",
+      "plugins",
+      "local",
+      "claudexor",
+      "skills",
+      "claudexor",
+      "SKILL.md",
+    );
     expect(existsSync(skillPath)).toBe(true);
     expect(readFileSync(skillPath, "utf8")).toContain("claudexor:managed");
 
     // Idempotent rerun: no changes.
     const rerun = cli(sb, ["plugin", "install", "cursor", "--json"]);
-    expect((rerun.json() as { results: Array<{ changed: boolean }> }).results[0]?.changed).toBe(false);
+    expect((rerun.json() as { results: Array<{ changed: boolean }> }).results[0]?.changed).toBe(
+      false,
+    );
 
     // Doctor self-tests the MCP server boot against the CURRENT runtime.
     const doctor = cli(sb, ["plugin", "doctor", "cursor", "--json"]);
@@ -118,7 +143,9 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
     // Marker-preserving mutation = OWNED drift -> repair rewrites it.
     writeFileSync(skillPath, readFileSync(skillPath, "utf8") + "\n<!-- local tweak -->\n");
     const drifted = cli(sb, ["plugin", "status", "cursor", "--json"]);
-    expect((drifted.json() as { results: Array<{ state: string }> }).results[0]?.state).toBe("drifted");
+    expect((drifted.json() as { results: Array<{ state: string }> }).results[0]?.state).toBe(
+      "drifted",
+    );
     const repair = cli(sb, ["plugin", "repair", "cursor", "--json"]);
     expect((repair.json() as { ok: boolean }).ok).toBe(true);
     expect(readFileSync(skillPath, "utf8")).not.toContain("local tweak");
@@ -126,22 +153,40 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
     // Uninstall removes owned artifacts; the manifest is gone.
     const uninstall = cli(sb, ["plugin", "uninstall", "cursor", "--json"]);
     expect((uninstall.json() as { ok: boolean }).ok).toBe(true);
-    expect(existsSync(join(sb.home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"))).toBe(false);
+    expect(
+      existsSync(
+        join(sb.home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"),
+      ),
+    ).toBe(false);
     expect(existsSync(skillPath)).toBe(false);
 
     // Collision honesty: a pre-existing UNOWNED file (no marker) blocks a
     // fresh install even with --force — user files are never clobbered.
-    const unownedRoot = join(sb.home, ".cursor", "plugins", "local", "claudexor", "skills", "claudexor");
+    const unownedRoot = join(
+      sb.home,
+      ".cursor",
+      "plugins",
+      "local",
+      "claudexor",
+      "skills",
+      "claudexor",
+    );
     mkdirSync(unownedRoot, { recursive: true });
     writeFileSync(join(unownedRoot, "SKILL.md"), "user-owned content without marker\n");
     const blocked = cli(sb, ["plugin", "install", "cursor", "--force", "--json"]);
     expect((blocked.json() as { ok: boolean }).ok).toBe(false);
     expect(blocked.stdout + blocked.stderr).toMatch(/not Claudexor-owned/);
-    expect(readFileSync(join(unownedRoot, "SKILL.md"), "utf8")).toBe("user-owned content without marker\n");
+    expect(readFileSync(join(unownedRoot, "SKILL.md"), "utf8")).toBe(
+      "user-owned content without marker\n",
+    );
   }, 120_000);
 
   it("[INV-002:acp-conformance-smoke] `acp serve` initialize carries authMethods and a session prompt round-trips a summary", async () => {
-    const child = spawn(process.execPath, [CLI, "acp", "serve"], { cwd: sb.repo, env: sb.env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [CLI, "acp", "serve"], {
+      cwd: sb.repo,
+      env: sb.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     const messages: any[] = [];
     const rl = createInterface({ input: child.stdout });
     rl.on("line", (l) => {
@@ -155,7 +200,8 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
       for (;;) {
         const hit = messages.find(pred);
         if (hit) return hit;
-        if (Date.now() > deadline) throw new Error(`ACP message not observed within ${timeoutMs}ms`);
+        if (Date.now() > deadline)
+          throw new Error(`ACP message not observed within ${timeoutMs}ms`);
         await new Promise((r) => setTimeout(r, 100));
       }
     };
@@ -172,11 +218,21 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
         jsonrpc: "2.0",
         id: 3,
         method: "session/prompt",
-        params: { sessionId, prompt: "what is 2+2?", mode: "ask", harness: "fake-success", _meta: { "vendor/x": 1 } },
+        params: {
+          sessionId,
+          prompt: "what is 2+2?",
+          mode: "ask",
+          harness: "fake-success",
+          _meta: { "vendor/x": 1 },
+        },
       });
       const done = await waitFor((m) => m.id === 3, 120_000);
       expect(done.result?.stopReason).toBe("end_turn");
-      const chunk = messages.find((m) => m.method === "session/update" && m.params?.update?.sessionUpdate === "agent_message_chunk");
+      const chunk = messages.find(
+        (m) =>
+          m.method === "session/update" &&
+          m.params?.update?.sessionUpdate === "agent_message_chunk",
+      );
       expect(chunk).toBeTruthy();
     } finally {
       child.stdin.end();

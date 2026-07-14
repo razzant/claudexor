@@ -1,7 +1,21 @@
-import type { AccessProfile, ConformanceReport, HarnessEvent, HarnessManifest, HarnessRunSpec } from "@claudexor/schema";
-import { ConformanceReport as ConformanceReportSchema, HarnessManifest as HarnessManifestSchema } from "@claudexor/schema";
+import type {
+  AccessProfile,
+  ConformanceReport,
+  HarnessEvent,
+  HarnessManifest,
+  HarnessRunSpec,
+} from "@claudexor/schema";
+import {
+  ConformanceReport as ConformanceReportSchema,
+  HarnessManifest as HarnessManifestSchema,
+} from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, providerScrubEnv, runCapture, runCliHarness } from "@claudexor/core";
+import {
+  HarnessUnavailableError,
+  providerScrubEnv,
+  runCapture,
+  runCliHarness,
+} from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
@@ -37,7 +51,9 @@ async function detectVersion(): Promise<string | null> {
 
 const PROVIDER_KEY_ENV = ["OPENCODE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"] as const;
 
-function providerKey(env: Record<string, string | null | undefined> = process.env): { envVar: (typeof PROVIDER_KEY_ENV)[number]; value: string } | null {
+function providerKey(
+  env: Record<string, string | null | undefined> = process.env,
+): { envVar: (typeof PROVIDER_KEY_ENV)[number]; value: string } | null {
   for (const envVar of PROVIDER_KEY_ENV) {
     if (env[envVar]) return { envVar, value: env[envVar] as string };
   }
@@ -54,7 +70,9 @@ function providerKey(env: Record<string, string | null | undefined> = process.en
   return null;
 }
 
-function providerKeyAvailable(env: Record<string, string | null | undefined> = process.env): boolean {
+function providerKeyAvailable(
+  env: Record<string, string | null | undefined> = process.env,
+): boolean {
   return providerKey(env) !== null;
 }
 
@@ -82,7 +100,9 @@ export function createOpenCodeAdapter(): HarnessAdapter {
     async discover(): Promise<HarnessManifest> {
       const version = await detectVersion();
       if (version === null) {
-        throw new HarnessUnavailableError("opencode not found on PATH (set CLAUDEXOR_OPENCODE_BIN)");
+        throw new HarnessUnavailableError(
+          "opencode not found on PATH (set CLAUDEXOR_OPENCODE_BIN)",
+        );
       }
       const authReady = providerKeyAvailable();
       return HarnessManifestSchema.parse({
@@ -113,7 +133,9 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           auth: {
             supported_sources: ["api_key_env"],
             preferred_source: authReady ? "api_key_env" : null,
-            credential_transports: [{ source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] }],
+            credential_transports: [
+              { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
+            ],
           },
           // HONEST access surface: the only permission flag the adapter drives
           // is `--dangerously-skip-permissions` (full access), so there is no
@@ -198,9 +220,23 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         status: authReady ? "degraded" : "unavailable",
         checks: [
           { id: "installed", status: "pass", detail: redactSecrets(version) },
-          { id: "provider_auth", status: authReady ? "pass" : "fail", detail: authReady ? "provider key available (unproven without isolated smoke)" : undefined },
-          { id: "isolated_smoke", status: "skip", detail: "no isolated smoke implemented for opencode yet" },
-          { id: "readonly_conformance", status: "skip", detail: "readonly not proven for opencode adapter yet" },
+          {
+            id: "provider_auth",
+            status: authReady ? "pass" : "fail",
+            detail: authReady
+              ? "provider key available (unproven without isolated smoke)"
+              : undefined,
+          },
+          {
+            id: "isolated_smoke",
+            status: "skip",
+            detail: "no isolated smoke implemented for opencode yet",
+          },
+          {
+            id: "readonly_conformance",
+            status: "skip",
+            detail: "readonly not proven for opencode adapter yet",
+          },
         ],
         // COMPLETE intent bookkeeping: every declared-capability intent is in
         // exactly one list, so routing can never lose an intent to a gap
@@ -209,7 +245,9 @@ export function createOpenCodeAdapter(): HarnessAdapter {
         enabled_intents: authReady ? OPENCODE_ENABLED_INTENTS : [],
         disabled_intents: authReady ? OPENCODE_DISABLED_INTENTS : ALL_OPENCODE_INTENTS,
         reasons: authReady
-          ? ["key present but route unproven (no isolated smoke); read-only and reviewer intents stay disabled until conformance-proven"]
+          ? [
+              "key present but route unproven (no isolated smoke); read-only and reviewer intents stay disabled until conformance-proven",
+            ]
           : ["opencode provider auth not configured"],
         auth_sources: [readiness],
       });

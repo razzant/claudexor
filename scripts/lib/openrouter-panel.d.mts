@@ -17,9 +17,17 @@ export function callOpenRouterModel(
 export function exactObservedModelMatch(requestedModel: unknown, observedModel: unknown): boolean;
 export function isFindingShaped(item: unknown): boolean;
 export function isBlockingSeverity(severity: unknown): boolean;
-export function parseFindingsArray(raw: string): { findings: unknown[] | null; error: string | null };
+export function parseFindingsArray(raw: string): {
+  findings: unknown[] | null;
+  error: string | null;
+};
 export function runOpenRouterPanel(
   models: string[],
   prompt: string,
   opts?: { quorum?: number; maxTokens?: number; timeoutMs?: number },
-): Promise<{ actors: PanelActor[]; quorumMet: boolean; responsiveCount: number; findings: Array<Record<string, unknown>> }>;
+): Promise<{
+  actors: PanelActor[];
+  quorumMet: boolean;
+  responsiveCount: number;
+  findings: Array<Record<string, unknown>>;
+}>;

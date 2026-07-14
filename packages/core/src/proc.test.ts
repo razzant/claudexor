@@ -27,7 +27,9 @@ describe("spawnProcess", () => {
       "setTimeout(() => {}, 5000)",
     ].join(";");
 
-    for await (const ev of spawnProcess(process.execPath, ["-e", script], { cancelKillDelayMs: 100 })) {
+    for await (const ev of spawnProcess(process.execPath, ["-e", script], {
+      cancelKillDelayMs: 100,
+    })) {
       if (ev.type === "stdout" && ev.line === "ready") break;
     }
 
@@ -47,7 +49,10 @@ describe("spawnProcess", () => {
     const ac = new AbortController();
     let sawReady = false;
     const done = (async () => {
-      for await (const ev of spawnProcess(process.execPath, ["-e", script], { abortSignal: ac.signal, cancelKillDelayMs: 100 })) {
+      for await (const ev of spawnProcess(process.execPath, ["-e", script], {
+        abortSignal: ac.signal,
+        cancelKillDelayMs: 100,
+      })) {
         if (ev.type === "stdout" && ev.line === "ready") {
           sawReady = true;
           ac.abort();
@@ -79,9 +84,12 @@ describe("labelStreams", () => {
     // (Assembled at runtime so the diff itself never carries a key-shaped literal.)
     const secret = ["sk", "live", "0123456789abcdef".repeat(2)].join("-");
     const noisy = "x".repeat(280) + " token=" + secret;
-    const out = labelStreams(noisy, "", { maxLen: 100, transform: (s) => s.replaceAll(secret, "[redacted]") });
+    const out = labelStreams(noisy, "", {
+      maxLen: 100,
+      transform: (s) => s.replaceAll(secret, "[redacted]"),
+    });
     expect(out).not.toContain(["sk", "live"].join("-"));
-    expect([...out ?? ""].length).toBeLessThanOrEqual(100 + "stderr: ".length);
+    expect([...(out ?? "")].length).toBeLessThanOrEqual(100 + "stderr: ".length);
   });
 
   it("gives each present stream its own budget so one cannot evict the other", () => {

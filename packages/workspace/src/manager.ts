@@ -46,7 +46,9 @@ export interface CreateEnvelopeOptions {
  * (command names/titles mutate; the kernel start time never does). */
 export function processStartTime(pid: number): string | null {
   try {
-    const out = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+      encoding: "utf8",
+    }).trim();
     return out.length > 0 ? out : null;
   } catch {
     return null;
@@ -75,7 +77,10 @@ export class WorkspaceManager {
    */
   private envelopeBase(taskId: string, attemptId: string): string {
     const idPattern = /^[A-Za-z0-9._-]+$/;
-    for (const [label, id] of [["taskId", taskId], ["attemptId", attemptId]] as const) {
+    for (const [label, id] of [
+      ["taskId", taskId],
+      ["attemptId", attemptId],
+    ] as const) {
       if (!idPattern.test(id) || id === "." || id === "..") {
         throw new WorkspaceError(`${label} '${id}' is not a safe path segment`);
       }
@@ -117,7 +122,11 @@ export class WorkspaceManager {
     // themselves; the kernel start time never does).
     writeFileSync(
       join(base, "owner.json"),
-      JSON.stringify({ pid: process.pid, started: processStartTime(process.pid), created_at: nowIso() }) + "\n",
+      JSON.stringify({
+        pid: process.pid,
+        started: processStartTime(process.pid),
+        created_at: nowIso(),
+      }) + "\n",
     );
 
     // In-place mode: mutate the live repoRoot directly (no isolated worktree).
@@ -248,7 +257,12 @@ export class WorkspaceManager {
     const opencodeConfig = join(homeDir, ".config", "opencode");
     for (const d of [homeDir, codexHome, claudeConfig, cursorConfig, opencodeConfig]) ensureDir(d);
     return {
-      env: { HOME: homeDir, CODEX_HOME: codexHome, CLAUDE_CONFIG_DIR: claudeConfig, XDG_CONFIG_HOME: join(homeDir, ".config") },
+      env: {
+        HOME: homeDir,
+        CODEX_HOME: codexHome,
+        CLAUDE_CONFIG_DIR: claudeConfig,
+        XDG_CONFIG_HOME: join(homeDir, ".config"),
+      },
       dispose: () => {
         try {
           rmSync(base, { recursive: true, force: true });
@@ -271,7 +285,11 @@ export class WorkspaceManager {
    * starts with `-- `/`++ ` (rendering as `--- `/`+++ ` in the diff) keeps
    * its bytes, per the diff-fidelity contract (INV-041).
    */
-  private static relativizePlainDiffHeadersFor(text: string, baselineRoot: string, liveRoot: string): string {
+  private static relativizePlainDiffHeadersFor(
+    text: string,
+    baselineRoot: string,
+    liveRoot: string,
+  ): string {
     const base = baselineRoot.endsWith("/") ? baselineRoot : `${baselineRoot}/`;
     const live = liveRoot.endsWith("/") ? liveRoot : `${liveRoot}/`;
     const swap = (s: string): string => s.split(base).join("a/").split(live).join("b/");
@@ -336,16 +354,36 @@ export class WorkspaceManager {
       try {
         const r = await runCaptureRaw(
           "diff",
-          ["-ruN", "-x", ".git", "-x", "node_modules", "-x", "__pycache__", "-x", ".venv", "-x", "venv", baseline, env.repo_root],
+          [
+            "-ruN",
+            "-x",
+            ".git",
+            "-x",
+            "node_modules",
+            "-x",
+            "__pycache__",
+            "-x",
+            ".venv",
+            "-x",
+            "venv",
+            baseline,
+            env.repo_root,
+          ],
           { timeoutMs: 120_000 },
         );
         // Relativize the header paths to the git-style a/<rel> b/<rel> shape.
         // Downstream consumers (diffstat, protected-path/risk gating) match
         // REPO-RELATIVE globs like `test/**`; absolute `/…/repo/test/x`
         // headers would silently bypass every one of them.
-        const relativized = WorkspaceManager.relativizePlainDiffHeadersFor(r.stdout, baseline, env.repo_root);
+        const relativized = WorkspaceManager.relativizePlainDiffHeadersFor(
+          r.stdout,
+          baseline,
+          env.repo_root,
+        );
         const CAP = 200_000;
-        return relativized.length > CAP ? relativized.slice(0, CAP) + "\n... [diff truncated]\n" : relativized;
+        return relativized.length > CAP
+          ? relativized.slice(0, CAP) + "\n... [diff truncated]\n"
+          : relativized;
       } catch {
         // best-effort: if `diff` is unavailable the loop still works (reviewers read the live tree)
         return "";
@@ -438,5 +476,4 @@ export class WorkspaceManager {
       }),
     );
   }
-
 }

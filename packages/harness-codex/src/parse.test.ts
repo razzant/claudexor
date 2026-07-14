@@ -27,7 +27,9 @@ describe("parseCodexEvent", () => {
     expect(types).toContain("message");
     expect(types).toContain("usage");
 
-    const fileChange = events.find((e) => e.type === "file_change" && e.payload?.["path"] === "src/a.ts");
+    const fileChange = events.find(
+      (e) => e.type === "file_change" && e.payload?.["path"] === "src/a.ts",
+    );
     expect(fileChange?.tool?.kind).toBe("file");
 
     const cmdResult = events.find((e) => e.type === "tool_result" && e.tool?.kind === "command");
@@ -51,7 +53,14 @@ describe("parseCodexEvent", () => {
     const out = parseCodexEvent(
       {
         type: "item.completed",
-        item: { id: "i9", type: "command_execution", command: "pnpm test", exit_code: 1, status: "failed", aggregated_output: "2 tests failed" },
+        item: {
+          id: "i9",
+          type: "command_execution",
+          command: "pnpm test",
+          exit_code: 1,
+          status: "failed",
+          aggregated_output: "2 tests failed",
+        },
       },
       "s1",
     );
@@ -66,7 +75,16 @@ describe("parseCodexEvent", () => {
 
   it("maps failed web searches to error tool_results", () => {
     const out = parseCodexEvent(
-      { type: "item.completed", item: { id: "w1", type: "web_search", query: "x", status: "failed", error: "search backend unavailable" } },
+      {
+        type: "item.completed",
+        item: {
+          id: "w1",
+          type: "web_search",
+          query: "x",
+          status: "failed",
+          error: "search backend unavailable",
+        },
+      },
       "s1",
     );
     expect(out?.[0]?.type).toBe("tool_result");
@@ -76,9 +94,14 @@ describe("parseCodexEvent", () => {
   });
 
   it("maps turn/item progress events instead of dropping live progress", () => {
-    expect(parseCodexEvent({ type: "turn.started", turn_id: "t1" }, "s1")?.[0]?.type).toBe("thinking");
+    expect(parseCodexEvent({ type: "turn.started", turn_id: "t1" }, "s1")?.[0]?.type).toBe(
+      "thinking",
+    );
     const cmd = parseCodexEvent(
-      { type: "item.started", item: { id: "i1", type: "command_execution", command: "ls", status: "in_progress" } },
+      {
+        type: "item.started",
+        item: { id: "i1", type: "command_execution", command: "ls", status: "in_progress" },
+      },
       "s1",
     );
     expect(cmd?.[0]?.type).toBe("tool_call");
@@ -86,10 +109,15 @@ describe("parseCodexEvent", () => {
     expect(cmd?.[0]?.payload?.["status"]).toBe("in_progress");
     // updated progress ticks are recognized-but-skipped, not dropped
     expect(
-      parseCodexEvent({ type: "item.updated", item: { id: "i1", type: "command_execution", command: "ls" } }, "s1"),
+      parseCodexEvent(
+        { type: "item.updated", item: { id: "i1", type: "command_execution", command: "ls" } },
+        "s1",
+      ),
     ).toEqual([]);
     // unknown item types are null so the run loop counts them
-    expect(parseCodexEvent({ type: "item.started", item: { type: "agent_message" } }, "s1")).toBeNull();
+    expect(
+      parseCodexEvent({ type: "item.started", item: { type: "agent_message" } }, "s1"),
+    ).toBeNull();
     expect(parseCodexEvent({ type: "something.new" }, "s1")).toBeNull();
   });
 
@@ -97,7 +125,15 @@ describe("parseCodexEvent", () => {
     // Live shape (codex 0.137): item.started carries query:"" with the real
     // query under action; the call must NOT surface as a query-less "web search".
     const started = parseCodexEvent(
-      { type: "item.started", item: { id: "ws1", type: "web_search", query: "", action: { type: "search", query: "node lts version", queries: ["node lts version"] } } },
+      {
+        type: "item.started",
+        item: {
+          id: "ws1",
+          type: "web_search",
+          query: "",
+          action: { type: "search", query: "node lts version", queries: ["node lts version"] },
+        },
+      },
       "s1",
     )?.[0];
     expect(started?.type).toBe("tool_call");
@@ -105,22 +141,39 @@ describe("parseCodexEvent", () => {
     expect(started?.tool?.target).toContain("node lts version");
     // Falls back to action.queries[0] when action.query is absent.
     const fromQueries = parseCodexEvent(
-      { type: "item.started", item: { id: "ws2", type: "web_search", query: "", action: { type: "search", queries: ["fallback query"] } } },
+      {
+        type: "item.started",
+        item: {
+          id: "ws2",
+          type: "web_search",
+          query: "",
+          action: { type: "search", queries: ["fallback query"] },
+        },
+      },
       "s1",
     )?.[0];
     expect(fromQueries?.text).toBe("fallback query");
     // No query anywhere -> the honest generic label, no crash.
-    const none = parseCodexEvent({ type: "item.started", item: { id: "ws3", type: "web_search", query: "", action: { type: "other" } } }, "s1")?.[0];
+    const none = parseCodexEvent(
+      {
+        type: "item.started",
+        item: { id: "ws3", type: "web_search", query: "", action: { type: "other" } },
+      },
+      "s1",
+    )?.[0];
     expect(none?.text).toBe("web search");
   });
 
   it("maps error and turn.failed to error events", () => {
     expect(parseCodexEvent({ type: "error", message: "boom" }, "s1")?.[0]?.type).toBe("error");
-    expect(parseCodexEvent({ type: "turn.failed", error: { message: "x" } }, "s1")?.[0]?.error).toBe("x");
+    expect(
+      parseCodexEvent({ type: "turn.failed", error: { message: "x" } }, "s1")?.[0]?.error,
+    ).toBe("x");
   });
 
   it("sets the typed rate_limit signal from native error phrasing (conservatively)", () => {
-    const rl = (message: string) => parseCodexEvent({ type: "error", message }, "s1")?.[0]?.rate_limit;
+    const rl = (message: string) =>
+      parseCodexEvent({ type: "error", message }, "s1")?.[0]?.rate_limit;
     // Real rate-limit/quota phrasing -> typed signal.
     expect(rl("HTTP 429 Too Many Requests")).toBeTruthy();
     expect(rl("UsageLimitExceeded")).toBeTruthy();
@@ -129,38 +182,64 @@ describe("parseCodexEvent", () => {
     expect(rl("received 429 items")).toBeUndefined();
     expect(rl("the quota field is missing")).toBeUndefined();
     // A resets_at hint is carried through onto the typed signal.
-    const withReset = parseCodexEvent({ type: "error", message: "rate limit", resets_at: "2026-06-12T09:00:00Z" }, "s1")?.[0];
+    const withReset = parseCodexEvent(
+      { type: "error", message: "rate limit", resets_at: "2026-06-12T09:00:00Z" },
+      "s1",
+    )?.[0];
     expect(withReset?.rate_limit?.resets_at).toBe("2026-06-12T09:00:00Z");
   });
 
   it("sets the typed rate_limit signal on a turn.failed (not only top-level error)", () => {
     // codex surfaces a rate limit via EITHER event; both must produce the typed signal.
-    const failed = parseCodexEvent({ type: "turn.failed", error: { message: "HTTP 429 Too Many Requests", resets_at: "2026-06-12T10:00:00Z" } }, "s1")?.[0];
+    const failed = parseCodexEvent(
+      {
+        type: "turn.failed",
+        error: { message: "HTTP 429 Too Many Requests", resets_at: "2026-06-12T10:00:00Z" },
+      },
+      "s1",
+    )?.[0];
     expect(failed?.type).toBe("error");
     expect(failed?.rate_limit).toBeTruthy();
     expect(failed?.rate_limit?.resets_at).toBe("2026-06-12T10:00:00Z");
     // A non-rate-limit turn.failed carries NO false signal.
-    const benign = parseCodexEvent({ type: "turn.failed", error: { message: "compile error" } }, "s1")?.[0];
+    const benign = parseCodexEvent(
+      { type: "turn.failed", error: { message: "compile error" } },
+      "s1",
+    )?.[0];
     expect(benign?.type).toBe("error");
     expect(benign?.rate_limit).toBeUndefined();
   });
 
   it("sets the typed transient signal on native network/stream disconnect errors", () => {
-    const stream = parseCodexEvent({ type: "error", message: "stream disconnected before completion: failed to lookup address information: nodename nor servname provided, or not known" }, "s1")?.[0];
+    const stream = parseCodexEvent(
+      {
+        type: "error",
+        message:
+          "stream disconnected before completion: failed to lookup address information: nodename nor servname provided, or not known",
+      },
+      "s1",
+    )?.[0];
     expect(stream?.type).toBe("error");
     expect(stream?.transient?.kind).toBe("stream_disconnect");
     expect(() => HarnessEvent.parse(stream)).not.toThrow();
 
-    const failed = parseCodexEvent({ type: "turn.failed", error: { message: "request failed: ENOTFOUND chatgpt.com" } }, "s1")?.[0];
+    const failed = parseCodexEvent(
+      { type: "turn.failed", error: { message: "request failed: ENOTFOUND chatgpt.com" } },
+      "s1",
+    )?.[0];
     expect(failed?.transient?.kind).toBe("network");
 
-    const compile = parseCodexEvent({ type: "error", message: "TypeScript compile error" }, "s1")?.[0];
+    const compile = parseCodexEvent(
+      { type: "error", message: "TypeScript compile error" },
+      "s1",
+    )?.[0];
     expect(compile?.transient).toBeUndefined();
   });
 
   it("maps a codex todo_list to a plan message (the relay plan signal)", () => {
     // Verified live (codex 0.142): item.completed carries item.type=todo_list with items[].{text,completed}.
-    const line = '{"type":"item.completed","item":{"id":"item_0","type":"todo_list","items":[{"text":"Step one","completed":true},{"text":"Step two","completed":false}]}}';
+    const line =
+      '{"type":"item.completed","item":{"id":"item_0","type":"todo_list","items":[{"text":"Step one","completed":true},{"text":"Step two","completed":false}]}}';
     const events = parseCodexEvent(JSON.parse(line), "s1") ?? [];
     for (const e of events) expect(() => HarnessEvent.parse(e)).not.toThrow();
     const msg = events.find((e) => e.type === "message");
@@ -173,7 +252,16 @@ describe("parseCodexEvent", () => {
 describe("plan progress", () => {
   it("maps todo_list items to the TYPED plan_progress field (message kept for plan extraction)", () => {
     const out = parseCodexEvent(
-      { type: "item.completed", item: { type: "todo_list", items: [{ text: "step one", completed: true }, { text: "step two", completed: false }] } },
+      {
+        type: "item.completed",
+        item: {
+          type: "todo_list",
+          items: [
+            { text: "step one", completed: true },
+            { text: "step two", completed: false },
+          ],
+        },
+      },
       "s1",
     );
     const ev = out?.[0];
@@ -197,9 +285,13 @@ describe("structured output flag", () => {
       attachments: [],
       browser: null,
     };
-    const fresh = codexExecArgs({ ...base, resume_session_id: null } as never, { outputSchemaPath: "/tmp/s.json" });
+    const fresh = codexExecArgs({ ...base, resume_session_id: null } as never, {
+      outputSchemaPath: "/tmp/s.json",
+    });
     expect(fresh.join(" ")).toContain("--output-schema /tmp/s.json");
-    const resume = codexExecArgs({ ...base, resume_session_id: "ses-1" } as never, { outputSchemaPath: "/tmp/s.json" });
+    const resume = codexExecArgs({ ...base, resume_session_id: "ses-1" } as never, {
+      outputSchemaPath: "/tmp/s.json",
+    });
     expect(resume.join(" ")).toContain("--output-schema /tmp/s.json");
     const none = codexExecArgs({ ...base, resume_session_id: null } as never, {});
     expect(none.join(" ")).not.toContain("--output-schema");

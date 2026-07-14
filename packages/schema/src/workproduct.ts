@@ -7,7 +7,9 @@ import { Id } from "./primitives.js";
 // never work-product kinds with a producer, so they do not live here.
 export const WorkProductKind = z
   .enum(["patch", "new_repo", "report"])
-  .describe("Kind of work product a run produces: a patch against the base tree, a newly created repository, or a report document.");
+  .describe(
+    "Kind of work product a run produces: a patch against the base tree, a newly created repository, or a report document.",
+  );
 export type WorkProductKind = z.infer<typeof WorkProductKind>;
 
 export const WorkProduct = z
@@ -21,8 +23,12 @@ export const WorkProduct = z
     files: z
       .record(z.string(), z.string())
       .default({})
-      .describe("Kind-specific file payload, e.g. artifact name to path (validated loosely here; specialized per kind by callers)."),
+      .describe(
+        "Kind-specific file payload, e.g. artifact name to path (validated loosely here; specialized per kind by callers).",
+      ),
     meta: z.record(z.string(), z.unknown()).default({}).describe("Kind-specific metadata."),
   })
-  .describe("The deliverable a run produced (patch, new repo, or report), referenced by apply/delivery verbs.");
+  .describe(
+    "The deliverable a run produced (patch, new repo, or report), referenced by apply/delivery verbs.",
+  );
 export type WorkProduct = z.infer<typeof WorkProduct>;

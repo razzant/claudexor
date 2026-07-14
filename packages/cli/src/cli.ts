@@ -51,8 +51,21 @@ import {
   requiredStringFlagError,
   type ParsedArgs,
 } from "./args.js";
-import { authSourceAvailability, checksSummary, print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
-import { KNOWN_FLAGS, VALUE_FLAGS, commandFlagScopeError, helpJson, renderHelp } from "./command-registry.js";
+import {
+  authSourceAvailability,
+  checksSummary,
+  print,
+  printJson,
+  printUsageError,
+  statusGlyph,
+} from "./cli-io.js";
+import {
+  KNOWN_FLAGS,
+  VALUE_FLAGS,
+  commandFlagScopeError,
+  helpJson,
+  renderHelp,
+} from "./command-registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { authCommand, daemonCommand, modelsCommand, secretsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
@@ -100,7 +113,6 @@ import {
   parseReviewerModelFlags,
   parseReviewerPanelFlags,
 } from "./run-options.js";
-
 
 // Single version SSOT: the generated CLAUDEXOR_VERSION constant (from the root
 // package.json) so the banner / --version can never ship stale or drift.
@@ -626,7 +638,9 @@ async function daemonAgentRun(
     ...(p.tests ? { tests: p.tests } : {}),
     ...(p.protectedPathApprovals ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
     ...(p.maxUsd !== undefined ? { maxUsd: p.maxUsd } : {}),
-    ...(p.mode === "orchestrate" && p.maxToolCalls !== undefined ? { maxToolCalls: p.maxToolCalls } : {}),
+    ...(p.mode === "orchestrate" && p.maxToolCalls !== undefined
+      ? { maxToolCalls: p.maxToolCalls }
+      : {}),
     ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
     ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
     ...(flagStr(args, "model") ? { model: flagStr(args, "model") } : {}),
@@ -985,7 +999,8 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
         exitCode: 1,
         error: `claudexor spec: ${err instanceof Error ? err.message : String(err)}`,
       });
-    else process.stderr.write(`claudexor spec: ${err instanceof Error ? err.message : String(err)}\n`);
+    else
+      process.stderr.write(`claudexor spec: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }
@@ -1013,8 +1028,6 @@ function listCliArtifacts(root: string): string[] {
   walk(root);
   return out.sort();
 }
-
-
 
 // KNOWN_FLAGS / VALUE_FLAGS (imported above) and the per-command scope check
 // are projections of the command registry. Unknown flags FAIL LOUDLY: `--harnes
@@ -1193,9 +1206,17 @@ async function main(): Promise<number> {
     // RENAMED verbs hard-error with the new name — no silent aliases (the
     // same doctrine as retired mode ids: a stale script must fail loudly).
     case "run":
-      return printPreflightError(args, json, "claudexor: the 'run' verb was renamed; use 'claudexor agent' (same flags)");
+      return printPreflightError(
+        args,
+        json,
+        "claudexor: the 'run' verb was renamed; use 'claudexor agent' (same flags)",
+      );
     case "race":
-      return printPreflightError(args, json, "claudexor: the 'race' verb was renamed; use 'claudexor best-of' (same flags)");
+      return printPreflightError(
+        args,
+        json,
+        "claudexor: the 'race' verb was renamed; use 'claudexor best-of' (same flags)",
+      );
 
     case "orchestrate":
       return orchestrate(args, "orchestrate", json);
@@ -1414,7 +1435,10 @@ async function main(): Promise<number> {
     case "apply": {
       const runId = args._[1];
       if (!runId) {
-        return printUsageError(json, "usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]");
+        return printUsageError(
+          json,
+          "usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]",
+        );
       }
       // Resolve the owning store from any cwd (project / user Ask / daemon-tracked
       // run in another project) before reading the patch artifact.
@@ -1633,12 +1657,18 @@ async function main(): Promise<number> {
         print(`modes: ${catalog.modes.join(", ")}`);
         print(`available harnesses: ${catalog.availableHarnesses.join(", ") || "(none)"}`);
         for (const h of catalog.harnesses) {
-          const model = h.configuredModel ? ` model=${h.configuredModel}${h.configuredModelValid === false ? " (REJECTED)" : ""}` : "";
-          print(`  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${h.models.count} (${h.models.source})${model}`);
+          const model = h.configuredModel
+            ? ` model=${h.configuredModel}${h.configuredModelValid === false ? " (REJECTED)" : ""}`
+            : "";
+          print(
+            `  ${statusGlyph(h.status)} ${h.id}: ${h.status}; intents=${h.enabledIntents.join(",") || "-"}; models=${h.models.count} (${h.models.source})${model}`,
+          );
         }
         print(`mcp tools: ${catalog.mcpTools.join(", ")}`);
         print(`run-control keys: ${catalog.runControlKeys.join(", ")}`);
-        print(`full JSON: claudexor capabilities --json (or GET /agent-capabilities on the daemon)`);
+        print(
+          `full JSON: claudexor capabilities --json (or GET /agent-capabilities on the daemon)`,
+        );
       }
       return 0;
     }
@@ -1655,7 +1685,11 @@ async function main(): Promise<number> {
       // exit 0 — scripts must not mistake a typo'd verb for success. --json
       // callers get the machine envelope on stdout (stdout purity contract).
       if (json) {
-        printJson({ ok: false, exitCode: 2, error: `claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)` });
+        printJson({
+          ok: false,
+          exitCode: 2,
+          error: `claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)`,
+        });
         return 2;
       }
       process.stderr.write(`claudexor: unknown command '${cmd}'\n\n${HELP}\n`);

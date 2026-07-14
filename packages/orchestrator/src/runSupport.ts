@@ -3,8 +3,16 @@
  * prompt constraints, harness-event redaction/payload projection, and the
  * run summary/findings renderers. Pure functions — no orchestrator state.
  */
-import type { HarnessEvent, ModeKind, ProtectedPathApproval, ReviewFinding } from "@claudexor/schema";
-import { FallbackReason as FallbackReasonSchema, RouteFallbackPayload as RouteFallbackPayloadSchema } from "@claudexor/schema";
+import type {
+  HarnessEvent,
+  ModeKind,
+  ProtectedPathApproval,
+  ReviewFinding,
+} from "@claudexor/schema";
+import {
+  FallbackReason as FallbackReasonSchema,
+  RouteFallbackPayload as RouteFallbackPayloadSchema,
+} from "@claudexor/schema";
 import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
@@ -30,7 +38,9 @@ export function relayPriorPlansSection(plans: { id: string; text: string }[]): s
   const blocks = plans
     .map((p) => {
       const cut = p.text.length > CAP;
-      const body = cut ? `${p.text.slice(0, CAP)}\n[... plan truncated at ${CAP} chars — the source run's plan artifact carries the full text]` : p.text;
+      const body = cut
+        ? `${p.text.slice(0, CAP)}\n[... plan truncated at ${CAP} chars — the source run's plan artifact carries the full text]`
+        : p.text;
       return `### Plan already proposed by ${p.id}\n${body}`;
     })
     .join("\n\n");
@@ -52,7 +62,6 @@ export function transientRetryDelayMs(
   const delay = nativeDelayMs ?? fallback;
   return Math.min(delay, policy.maxDelayMs);
 }
-
 
 export function gateProtectedPaths(commands: string[]): string[] {
   if (commands.length === 0) return [];
@@ -91,7 +100,6 @@ export function gateProtectedPaths(commands: string[]): string[] {
   return [...paths];
 }
 
-
 export function promptWithProtectedPathConstraint(
   prompt: string,
   protectedPaths: string[],
@@ -121,19 +129,13 @@ export function promptWithProtectedPathConstraint(
         ...approvalLines,
       ]
     : [];
-  return [
-    prompt,
-    ...specLines,
-    ...autoLines,
-  ].join("\n");
+  return [prompt, ...specLines, ...autoLines].join("\n");
 }
-
 
 export function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
 
 export function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
   try {
@@ -147,7 +149,6 @@ export function redactHarnessEvent(ev: HarnessEvent): HarnessEvent {
     };
   }
 }
-
 
 export function harnessEventPayload(
   harnessId: string,
@@ -191,7 +192,6 @@ export function pushUniqueText(parts: string[], text: string): void {
   parts.push(normalized);
 }
 
-
 export function formatFindings(findings: ReviewFinding[]): string {
   if (findings.length === 0) return "(no findings recorded)";
   return findings
@@ -205,7 +205,6 @@ export function formatFindings(findings: ReviewFinding[]): string {
     )
     .join("\n");
 }
-
 
 export function renderSummary(
   runId: string,
@@ -287,7 +286,11 @@ export function envInheritance(cfg: ResolvedConfigLike): "mirror_native" | "clea
 
 export function transientRetryPolicy(cfg: ResolvedConfigLike): TransientRetryPolicy {
   const c = cfg.global.runtime.transient_retry;
-  return { maxRetries: c.max_retries, initialDelayMs: c.initial_delay_ms, maxDelayMs: c.max_delay_ms };
+  return {
+    maxRetries: c.max_retries,
+    initialDelayMs: c.initial_delay_ms,
+    maxDelayMs: c.max_delay_ms,
+  };
 }
 
 export function reviewerTimeoutMs(cfg: ResolvedConfigLike): number {
@@ -329,7 +332,6 @@ export function observeAuthSwitch(
   }
 }
 
-
 /** Observe ALL budget/quota signals from one harness event and disclose
  * quota pressure ONCE per attempt (crossing semantics). One owner — the
  * agent, plan, and read-only loops all consume this instead of pasting the
@@ -344,7 +346,11 @@ export function observeBudgetSignals(
 ): void {
   for (const obs of observationsFromEvent(harnessId, ev)) {
     ledger.observe(obs);
-    if (obs.kind === "used_percent" && (obs.used_percent ?? 0) >= 50 && !state.quotaPressureDisclosed) {
+    if (
+      obs.kind === "used_percent" &&
+      (obs.used_percent ?? 0) >= 50 &&
+      !state.quotaPressureDisclosed
+    ) {
       state.quotaPressureDisclosed = true;
       log?.emit("budget.quota_pressure", {
         harness_id: harnessId,
@@ -416,7 +422,13 @@ export function pickStallRotationIdx(
 export function recordCleanAttemptMetrics(
   configDir: string,
   harnessId: string,
-  sample: { costUsd: number; streamMs: number; errored: boolean; aborted: boolean; authMode?: "local_session" | "api_key" | null },
+  sample: {
+    costUsd: number;
+    streamMs: number;
+    errored: boolean;
+    aborted: boolean;
+    authMode?: "local_session" | "api_key" | null;
+  },
 ): void {
   if (sample.errored || sample.aborted) {
     if (sample.authMode) recordHarnessMetric(configDir, harnessId, { authMode: sample.authMode });
@@ -433,22 +445,35 @@ export function recordCleanAttemptMetrics(
  * (start_run/race): inPlace forced false, no thread binding, no nested
  * autonomy, recursion depth incremented. Pure construction; the caller
  * asserts the envelope invariant. */
-export function buildEnvelopeSubInput<T extends {
-  repoRoot: string;
-  portfolio?: unknown;
-  web?: unknown;
-  externalContextPolicy?: unknown;
-  signal?: AbortSignal;
-  orchestrateDepth?: number;
-}>(
+export function buildEnvelopeSubInput<
+  T extends {
+    repoRoot: string;
+    portfolio?: unknown;
+    web?: unknown;
+    externalContextPolicy?: unknown;
+    signal?: AbortSignal;
+    orchestrateDepth?: number;
+  },
+>(
   input: T,
-  call: { tool: "start_run" | "race"; prompt: string; mode?: string; n?: number; harness?: string | null },
+  call: {
+    tool: "start_run" | "race";
+    prompt: string;
+    mode?: string;
+    n?: number;
+    harness?: string | null;
+  },
   remainingUsd: number | null,
 ) {
   return {
     repoRoot: input.repoRoot,
     prompt: call.prompt,
-    mode: (call.tool === "start_run" ? (call.mode ?? "agent") : "agent") as "agent" | "ask" | "plan" | "audit" | "orchestrate",
+    mode: (call.tool === "start_run" ? (call.mode ?? "agent") : "agent") as
+      | "agent"
+      | "ask"
+      | "plan"
+      | "audit"
+      | "orchestrate",
     n: call.tool === "race" ? call.n : undefined,
     harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
     portfolio: input.portfolio,
@@ -485,7 +510,11 @@ export function buildEnvelopeSubInput<T extends {
 export async function deliverPlanAnswer(
   input: {
     runId?: string;
-    answerInteraction?: (runId: string, interactionId: string, answers: InteractionAnswerSet) => Promise<boolean> | boolean;
+    answerInteraction?: (
+      runId: string,
+      interactionId: string,
+      answers: InteractionAnswerSet,
+    ) => Promise<boolean> | boolean;
   },
   call: {
     interaction_id: string;
@@ -493,7 +522,11 @@ export async function deliverPlanAnswer(
   },
 ): Promise<{ status: "done" | "skipped"; runId: null; detail: string }> {
   if (!input.answerInteraction) {
-    return { status: "skipped", runId: null, detail: "no live interaction surface in this context" };
+    return {
+      status: "skipped",
+      runId: null,
+      detail: "no live interaction surface in this context",
+    };
   }
   const delivered = await input.answerInteraction(input.runId ?? "", call.interaction_id, {
     interaction_id: call.interaction_id,

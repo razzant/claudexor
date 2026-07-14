@@ -5,10 +5,15 @@ import type { DaemonRunRecord } from "./daemon-server.js";
 import { TERMINAL_STATES, readNewLines, redactedSseLine } from "./sse-shared.js";
 
 export interface StreamEventsCtx {
-findRun(id: string): Promise<DaemonRunRecord | null | undefined>;
-json(res: ServerResponse, status: number, value: unknown): void;
-opts: { daemon: { status(id: string): Promise<DaemonRunRecord> }; bus?: { subscribe(fn: (event: { run_id?: string }) => void): () => void } | undefined; pollMs?: number; heartbeatMs?: number };
-sseClients: Set<ServerResponse>;
+  findRun(id: string): Promise<DaemonRunRecord | null | undefined>;
+  json(res: ServerResponse, status: number, value: unknown): void;
+  opts: {
+    daemon: { status(id: string): Promise<DaemonRunRecord> };
+    bus?: { subscribe(fn: (event: { run_id?: string }) => void): () => void } | undefined;
+    pollMs?: number;
+    heartbeatMs?: number;
+  };
+  sseClients: Set<ServerResponse>;
 }
 
 /**
@@ -18,7 +23,13 @@ sseClients: Set<ServerResponse>;
  * status await). Extracted from DaemonControlApiServer verbatim; the ctx
  * object carries the four server facilities the stream needs.
  */
-export async function streamRunEvents(ctx: StreamEventsCtx, id: string, lastEventId: number, req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function streamRunEvents(
+  ctx: StreamEventsCtx,
+  id: string,
+  lastEventId: number,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   const rec = await ctx.findRun(id);
   if (!rec) return ctx.json(res, 404, { error: "no such run" });
   // A QUEUED job has no runDir yet — that is a wait, not a 404:

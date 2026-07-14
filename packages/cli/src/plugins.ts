@@ -25,7 +25,13 @@ import {
 export type PluginHost = "cursor" | "claude" | "codex" | "opencode";
 export type PluginTarget = PluginHost | "all";
 export type PluginVerb = "install" | "status" | "doctor" | "repair" | "uninstall";
-export type PluginInstallState = "missing" | "installed" | "registered" | "drifted" | "partial" | "blocked";
+export type PluginInstallState =
+  | "missing"
+  | "installed"
+  | "registered"
+  | "drifted"
+  | "partial"
+  | "blocked";
 
 export const PLUGIN_HOSTS: PluginHost[] = ["cursor", "claude", "codex", "opencode"];
 export const PLUGIN_TARGETS: PluginTarget[] = [...PLUGIN_HOSTS, "all"];
@@ -184,8 +190,12 @@ function opencodeMcpEntry(runtime: RuntimePaths): Record<string, unknown> {
 /** `claudexor inspect <runId>`, `follow <runId>`, ... — from the registry's recovery verbs. */
 function recoveryVerbLine(): string {
   const verbs = recoveryVerbs();
-  const parts = verbs.map((verb, i) => (i === 0 ? `\`claudexor ${verb} <runId>\`` : `\`${verb} <runId>\``));
-  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}` : (parts[0] ?? "");
+  const parts = verbs.map((verb, i) =>
+    i === 0 ? `\`claudexor ${verb} <runId>\`` : `\`${verb} <runId>\``,
+  );
+  return parts.length > 1
+    ? `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}`
+    : (parts[0] ?? "");
 }
 
 function skillText(host: PluginHost): string {
@@ -239,11 +249,10 @@ function skillText(host: PluginHost): string {
 }
 
 function commandText(host: PluginHost): string {
-  const frontmatter = (
+  const frontmatter =
     host === "claude" || host === "cursor" || host === "opencode"
       ? ["---", "description: Use Claudexor CLI/MCP for harness-agnostic coding workflows", "---"]
-      : []
-  );
+      : [];
   return [
     ...frontmatter,
     managedComment().trimEnd(),
@@ -255,7 +264,9 @@ function commandText(host: PluginHost): string {
     "",
     "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
     "",
-  ].filter((line, i, all) => line !== "" || all[i - 1] !== "").join("\n");
+  ]
+    .filter((line, i, all) => line !== "" || all[i - 1] !== "")
+    .join("\n");
 }
 
 function readmeText(host: PluginHost): string {
@@ -301,7 +312,8 @@ function manifest(kind: "claude" | "codex" | "cursor"): string {
       interface: {
         displayName: "Claudexor",
         shortDescription: "Harness-agnostic coding through the local Claudexor CLI.",
-        longDescription: "Use Claudexor for local planning, runs, races, and review through generated skills and one-shot MCP tools.",
+        longDescription:
+          "Use Claudexor for local planning, runs, races, and review through generated skills and one-shot MCP tools.",
         developerName: "Claudexor",
         category: "Productivity",
         capabilities: ["Productivity"],
@@ -332,7 +344,8 @@ function manifest(kind: "claude" | "codex" | "cursor"): string {
 }
 
 function opencodePluginText(runtime: RuntimePaths): string {
-  const hint = "Use Claudexor MCP tools or run `claudexor plan/agent/best-of` when cross-harness orchestration, review, or evidence-backed execution is useful.";
+  const hint =
+    "Use Claudexor MCP tools or run `claudexor plan/agent/best-of` when cross-harness orchestration, review, or evidence-backed execution is useful.";
   return `${managedComment("js")}export const ClaudexorPlugin = async () => {\n  const hint = ${JSON.stringify(hint)};\n  return {\n    \"experimental.chat.system.transform\": async (_input, output) => {\n      if (!output || typeof output !== \"object\") return;\n      const current = typeof output.system === \"string\" ? output.system : typeof output.prompt === \"string\" ? output.prompt : \"\";\n      if (current.includes(\"Claudexor\")) return;\n      if (typeof output.system === \"string\") output.system = output.system + \"\\n\\n\" + hint;\n      else if (typeof output.prompt === \"string\") output.prompt = output.prompt + \"\\n\\n\" + hint;\n    },\n  };\n};\n\nexport default ClaudexorPlugin;\n\n// OpenCode hook note: uses experimental.chat.system.transform because OpenCode does not expose tui.prompt.append as a plugin hook.\n// MCP command: ${runtime.nodePath} ${runtime.cliPath} mcp serve\n`;
 }
 
@@ -345,11 +358,31 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
     artifacts: (home, runtime) => {
       const root = join(home, ".claude", "skills", "claudexor");
       return [
-        { path: join(root, ".claude-plugin", "plugin.json"), content: manifest("claude"), description: "Claude plugin manifest" },
-        { path: join(root, "skills", "claudexor", "SKILL.md"), content: skillText("claude"), description: "Claude skill" },
-        { path: join(root, "commands", "claudexor.md"), content: commandText("claude"), description: "Claude command" },
-        { path: join(root, ".mcp.json"), content: jsonText(mcpServers(runtime)), description: "Claude MCP config" },
-        { path: join(root, "README.md"), content: readmeText("claude"), description: "Claude integration README" },
+        {
+          path: join(root, ".claude-plugin", "plugin.json"),
+          content: manifest("claude"),
+          description: "Claude plugin manifest",
+        },
+        {
+          path: join(root, "skills", "claudexor", "SKILL.md"),
+          content: skillText("claude"),
+          description: "Claude skill",
+        },
+        {
+          path: join(root, "commands", "claudexor.md"),
+          content: commandText("claude"),
+          description: "Claude command",
+        },
+        {
+          path: join(root, ".mcp.json"),
+          content: jsonText(mcpServers(runtime)),
+          description: "Claude MCP config",
+        },
+        {
+          path: join(root, "README.md"),
+          content: readmeText("claude"),
+          description: "Claude integration README",
+        },
       ];
     },
     legacy: (home) => [
@@ -360,7 +393,8 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         verifier: legacyThinShimVerifier,
       },
     ],
-    reloadNote: "Start a new Claude Code session; skills-directory plugins auto-load from ~/.claude/skills.",
+    reloadNote:
+      "Start a new Claude Code session; skills-directory plugins auto-load from ~/.claude/skills.",
   },
   codex: {
     host: "codex",
@@ -370,10 +404,26 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
     artifacts: (home, runtime) => {
       const root = join(home, ".codex", "plugins", "claudexor");
       return [
-        { path: join(root, ".codex-plugin", "plugin.json"), content: manifest("codex"), description: "Codex plugin manifest" },
-        { path: join(root, "skills", "claudexor", "SKILL.md"), content: skillText("codex"), description: "Codex skill" },
-        { path: join(root, ".mcp.json"), content: jsonText(mcpServers(runtime)), description: "Codex MCP config" },
-        { path: join(root, "README.md"), content: readmeText("codex"), description: "Codex integration README" },
+        {
+          path: join(root, ".codex-plugin", "plugin.json"),
+          content: manifest("codex"),
+          description: "Codex plugin manifest",
+        },
+        {
+          path: join(root, "skills", "claudexor", "SKILL.md"),
+          content: skillText("codex"),
+          description: "Codex skill",
+        },
+        {
+          path: join(root, ".mcp.json"),
+          content: jsonText(mcpServers(runtime)),
+          description: "Codex MCP config",
+        },
+        {
+          path: join(root, "README.md"),
+          content: readmeText("codex"),
+          description: "Codex integration README",
+        },
       ];
     },
     config: "codex-marketplace",
@@ -385,7 +435,8 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         verifier: legacyCodexSkillVerifier,
       },
     ],
-    reloadNote: "Restart Codex, open Plugins, choose the personal marketplace, then install/enable Claudexor.",
+    reloadNote:
+      "Restart Codex, open Plugins, choose the personal marketplace, then install/enable Claudexor.",
   },
   cursor: {
     host: "cursor",
@@ -395,11 +446,31 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
     artifacts: (home, runtime) => {
       const root = join(home, ".cursor", "plugins", "local", "claudexor");
       return [
-        { path: join(root, ".cursor-plugin", "plugin.json"), content: manifest("cursor"), description: "Cursor plugin manifest" },
-        { path: join(root, "skills", "claudexor", "SKILL.md"), content: skillText("cursor"), description: "Cursor skill" },
-        { path: join(root, "commands", "claudexor.md"), content: commandText("cursor"), description: "Cursor command" },
-        { path: join(root, "mcp.json"), content: jsonText(mcpServers(runtime)), description: "Cursor MCP config" },
-        { path: join(root, "README.md"), content: readmeText("cursor"), description: "Cursor integration README" },
+        {
+          path: join(root, ".cursor-plugin", "plugin.json"),
+          content: manifest("cursor"),
+          description: "Cursor plugin manifest",
+        },
+        {
+          path: join(root, "skills", "claudexor", "SKILL.md"),
+          content: skillText("cursor"),
+          description: "Cursor skill",
+        },
+        {
+          path: join(root, "commands", "claudexor.md"),
+          content: commandText("cursor"),
+          description: "Cursor command",
+        },
+        {
+          path: join(root, "mcp.json"),
+          content: jsonText(mcpServers(runtime)),
+          description: "Cursor MCP config",
+        },
+        {
+          path: join(root, "README.md"),
+          content: readmeText("cursor"),
+          description: "Cursor integration README",
+        },
       ];
     },
     legacy: (home) => [
@@ -410,7 +481,8 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         verifier: legacyThinShimVerifier,
       },
     ],
-    reloadNote: "Reload Cursor and enable the local plugin if it is not auto-enabled; Claudexor does not edit Cursor SQLite/binary state.",
+    reloadNote:
+      "Reload Cursor and enable the local plugin if it is not auto-enabled; Claudexor does not edit Cursor SQLite/binary state.",
   },
   opencode: {
     host: "opencode",
@@ -420,9 +492,21 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
     artifacts: (home, runtime) => {
       const root = join(home, ".config", "opencode");
       return [
-        { path: join(root, "skills", "claudexor", "SKILL.md"), content: skillText("opencode"), description: "OpenCode skill" },
-        { path: join(root, "commands", "claudexor.md"), content: commandText("opencode"), description: "OpenCode command" },
-        { path: join(root, "plugins", "claudexor.js"), content: opencodePluginText(runtime), description: "OpenCode JS plugin" },
+        {
+          path: join(root, "skills", "claudexor", "SKILL.md"),
+          content: skillText("opencode"),
+          description: "OpenCode skill",
+        },
+        {
+          path: join(root, "commands", "claudexor.md"),
+          content: commandText("opencode"),
+          description: "OpenCode command",
+        },
+        {
+          path: join(root, "plugins", "claudexor.js"),
+          content: opencodePluginText(runtime),
+          description: "OpenCode JS plugin",
+        },
       ];
     },
     config: "opencode-mcp",
@@ -434,7 +518,8 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         verifier: legacyOpenCodeAgentVerifier,
       },
     ],
-    reloadNote: "Restart OpenCode; global plugins, commands, skills, and MCP config load from ~/.config/opencode. The JS plugin uses OpenCode's experimental.chat.system.transform hook.",
+    reloadNote:
+      "Restart OpenCode; global plugins, commands, skills, and MCP config load from ~/.config/opencode. The JS plugin uses OpenCode's experimental.chat.system.transform hook.",
   },
 };
 
@@ -449,17 +534,21 @@ function runtimePaths(): RuntimePaths {
   if (!isAbsolute(nodePath) || !existsSync(nodePath) || !statSync(nodePath).isFile()) {
     throw new Error(`unable to resolve a safe Node executable for plugin MCP config: ${nodePath}`);
   }
-  if (!envNode && nodePath !== bundledNode) warnings.push(`using current node instead of ${bundledNode}`);
-  if (!allowTestOverrides && process.env.CLAUDEXOR_NODE_PATH?.trim()) warnings.push("ignored CLAUDEXOR_NODE_PATH outside tests");
+  if (!envNode && nodePath !== bundledNode)
+    warnings.push(`using current node instead of ${bundledNode}`);
+  if (!allowTestOverrides && process.env.CLAUDEXOR_NODE_PATH?.trim())
+    warnings.push("ignored CLAUDEXOR_NODE_PATH outside tests");
 
   const envCli = allowTestOverrides ? process.env.CLAUDEXOR_CLI_PATH?.trim() : undefined;
   const distCli = join(dirname(fileURLToPath(import.meta.url)), "cli.js");
-  const argvCli = process.argv[1] && existsSync(resolve(process.argv[1])) ? resolve(process.argv[1]) : "";
+  const argvCli =
+    process.argv[1] && existsSync(resolve(process.argv[1])) ? resolve(process.argv[1]) : "";
   const cliPath = envCli || (existsSync(distCli) ? distCli : argvCli);
   if (!cliPath || !isAbsolute(cliPath) || !existsSync(cliPath) || !statSync(cliPath).isFile()) {
     throw new Error("unable to resolve a safe absolute claudexor CLI entrypoint");
   }
-  if (!allowTestOverrides && process.env.CLAUDEXOR_CLI_PATH?.trim()) warnings.push("ignored CLAUDEXOR_CLI_PATH outside tests");
+  if (!allowTestOverrides && process.env.CLAUDEXOR_CLI_PATH?.trim())
+    warnings.push("ignored CLAUDEXOR_CLI_PATH outside tests");
   return { home, configDir, nodePath, cliPath, backupStamp: safeTimestamp(), warnings };
 }
 
@@ -479,9 +568,15 @@ function loadState(configDir = userConfigDir()): PluginStateFile {
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    throw new Error(`plugin state is not valid JSON: ${path}: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `plugin state is not valid JSON: ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
-  if (!parsed || typeof parsed !== "object" || (parsed as { version?: unknown }).version !== STATE_VERSION) {
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    (parsed as { version?: unknown }).version !== STATE_VERSION
+  ) {
     throw new Error(`plugin state has unsupported shape: ${path}`);
   }
   const state = parsed as PluginStateFile;
@@ -514,7 +609,13 @@ function readText(path: string): string | null {
   try {
     return readFileSync(path, "utf8");
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === "ENOENT") return null;
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: unknown }).code === "ENOENT"
+    )
+      return null;
     throw new Error(`unable to read ${path}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -525,7 +626,9 @@ function readJsonFile(path: string): unknown | undefined {
   try {
     return JSON.parse(text);
   } catch (err) {
-    throw new Error(`${path} is not strict JSON: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `${path} is not strict JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -570,14 +673,17 @@ function ensureSafeWriteParent(path: string): void {
 }
 
 function assertExistingDirectoryChain(anchor: string, existing: string, managedPath: string): void {
-  if (!isPathInside(anchor, existing)) throw new Error(`${managedPath} resolves outside managed host/config root`);
+  if (!isPathInside(anchor, existing))
+    throw new Error(`${managedPath} resolves outside managed host/config root`);
   let current = anchor;
   const rel = relative(anchor, existing);
   for (const part of ["", ...rel.split(/[\\/]/).filter(Boolean)]) {
     if (part) current = join(current, part);
     const st = lstatSync(current);
     if (st.isSymbolicLink()) {
-      throw new Error(`${current} is a symlink; refusing to create plugin directories through symlinks`);
+      throw new Error(
+        `${current} is a symlink; refusing to create plugin directories through symlinks`,
+      );
     }
     if (!st.isDirectory()) throw new Error(`${current} is not a directory`);
   }
@@ -587,7 +693,13 @@ function assertReadableLeaf(path: string): void {
   try {
     lstatSync(path);
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === "ENOENT") return;
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: unknown }).code === "ENOENT"
+    )
+      return;
     throw err;
   }
   const parent = dirname(path);
@@ -597,7 +709,8 @@ function assertReadableLeaf(path: string): void {
     assertExistingDirectoryChain(anchor, parent, path);
     const realParent = realpathSync(parent);
     const realRoot = realpathSync(root);
-    if (!isPathInside(realRoot, realParent)) throw new Error(`${path} resolves outside managed host/config root`);
+    if (!isPathInside(realRoot, realParent))
+      throw new Error(`${path} resolves outside managed host/config root`);
   }
   rejectSymlinkPath(path);
   if (!lstatSync(path).isFile()) throw new Error(`${path} is not a regular file`);
@@ -608,10 +721,17 @@ function rejectSymlinkPath(path: string): void {
   try {
     st = lstatSync(path);
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === "ENOENT") return;
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: unknown }).code === "ENOENT"
+    )
+      return;
     throw err;
   }
-  if (st.isSymbolicLink()) throw new Error(`${path} is a symlink; refusing to manage plugin files through symlinks`);
+  if (st.isSymbolicLink())
+    throw new Error(`${path} is a symlink; refusing to manage plugin files through symlinks`);
 }
 
 function assertSafeLeaf(path: string): void {
@@ -626,7 +746,13 @@ function assertSafeLeaf(path: string): void {
     const st = lstatSync(path);
     if (!st.isFile()) throw new Error(`${path} is not a regular file`);
   } catch (err) {
-    if (err && typeof err === "object" && "code" in err && (err as { code?: unknown }).code === "ENOENT") return;
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as { code?: unknown }).code === "ENOENT"
+    )
+      return;
     throw err;
   }
 }
@@ -649,14 +775,16 @@ interface TreeEntry {
 
 function listTreeEntries(root: string): TreeEntry[] {
   if (!existsSync(root)) return [];
-  if (lstatSync(root).isSymbolicLink()) throw new Error(`${root} is a symlink; refusing recursive plugin cleanup`);
+  if (lstatSync(root).isSymbolicLink())
+    throw new Error(`${root} is a symlink; refusing recursive plugin cleanup`);
   const out: TreeEntry[] = [];
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
       const rel = relative(root, path);
       const st = lstatSync(path);
-      if (st.isSymbolicLink()) throw new Error(`${path} is a symlink; refusing recursive plugin cleanup`);
+      if (st.isSymbolicLink())
+        throw new Error(`${path} is a symlink; refusing recursive plugin cleanup`);
       if (st.isDirectory()) {
         out.push({ rel, kind: "dir" });
         walk(path);
@@ -687,7 +815,8 @@ function assertLegacyTargetInRoot(target: LegacyTarget): void {
   assertExistingDirectoryChain(target.root, target.path, target.path);
   const root = realpathSync(target.root);
   const path = realpathSync(target.path);
-  if (!isPathInside(root, path)) throw new Error(`${target.path} resolves outside ${target.root}; refusing legacy cleanup`);
+  if (!isPathInside(root, path))
+    throw new Error(`${target.path} resolves outside ${target.root}; refusing legacy cleanup`);
 }
 
 function isOldThinShimManifest(text: string): boolean {
@@ -739,13 +868,17 @@ function exactLegacyText(text: string, expected: string): boolean {
 function legacyThinShimVerifier(file: string, text: string): boolean {
   if (file.endsWith("plugin.json")) return isOldThinShimManifest(text);
   if (file === "commands/claudexor.md") {
-    return exactLegacyText(text, OLD_LEGACY_CLAUDE_COMMAND) || exactLegacyText(text, OLD_LEGACY_CURSOR_COMMAND);
+    return (
+      exactLegacyText(text, OLD_LEGACY_CLAUDE_COMMAND) ||
+      exactLegacyText(text, OLD_LEGACY_CURSOR_COMMAND)
+    );
   }
   return false;
 }
 
 function legacyCodexSkillVerifier(file: string, text: string): boolean {
-  const expected = "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n";
+  const expected =
+    "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n";
   return file === "SKILL.md" && exactLegacyText(text, expected);
 }
 
@@ -790,12 +923,25 @@ function backupFile(def: HostDefinition, runtime: RuntimePaths, path: string): s
 }
 
 function hasManagedMarker(text: string): boolean {
-  return text.includes(MARKER) || text.includes('"marker": "claudexor:managed host-plugin-lifecycle"');
+  return (
+    text.includes(MARKER) || text.includes('"marker": "claudexor:managed host-plugin-lifecycle"')
+  );
 }
 
-function artifactOwned(state: PluginStateFile, host: PluginHost, artifact: Artifact, current: string, force: boolean): boolean {
+function artifactOwned(
+  state: PluginStateFile,
+  host: PluginHost,
+  artifact: Artifact,
+  current: string,
+  force: boolean,
+): boolean {
   const entry = state.hosts[host]?.artifacts[artifact.path];
-  return entry?.hash === hashText(current) || (entry !== undefined && hasManagedMarker(current)) || current === artifact.content || (force && hasManagedMarker(current));
+  return (
+    entry?.hash === hashText(current) ||
+    (entry !== undefined && hasManagedMarker(current)) ||
+    current === artifact.content ||
+    (force && hasManagedMarker(current))
+  );
 }
 
 function isPathInside(root: string, path: string): boolean {
@@ -815,7 +961,13 @@ function recordArtifact(state: PluginStateFile, host: PluginHost, artifact: Arti
   hs.updatedAt = new Date().toISOString();
 }
 
-function recordConfig(state: PluginStateFile, host: PluginHost, path: string, key: string, value: unknown): void {
+function recordConfig(
+  state: PluginStateFile,
+  host: PluginHost,
+  path: string,
+  key: string,
+  value: unknown,
+): void {
   const hs = hostState(state, host);
   hs.configEntries[key] = {
     host,
@@ -841,33 +993,69 @@ function desiredCodexMarketplaceEntry(): Record<string, unknown> {
   };
 }
 
-function validateConfigEntry(stateEntry: StateConfigEntry | undefined, host: PluginHost, path: string, key: string, res: PluginHostResult): boolean {
+function validateConfigEntry(
+  stateEntry: StateConfigEntry | undefined,
+  host: PluginHost,
+  path: string,
+  key: string,
+  res: PluginHostResult,
+): boolean {
   if (!stateEntry) return true;
   if (stateEntry.host === host && stateEntry.path === path && stateEntry.key === key) return true;
-  res.errors.push(`${stateFilePath()} contains out-of-scope ${host} config state for ${key}; remove that state entry or clean it manually`);
+  res.errors.push(
+    `${stateFilePath()} contains out-of-scope ${host} config state for ${key}; remove that state entry or clean it manually`,
+  );
   return false;
 }
 
-function configEntryOwned(stateEntry: StateConfigEntry | undefined, current: unknown, desired: unknown, force: boolean, requireState = false): boolean {
+function configEntryOwned(
+  stateEntry: StateConfigEntry | undefined,
+  current: unknown,
+  desired: unknown,
+  force: boolean,
+  requireState = false,
+): boolean {
   if (requireState && !stateEntry) return false;
   const currentText = JSON.stringify(current);
   const hasMarker = currentText.includes(MARKER);
   const exactMarkedDesired = !requireState && hasMarker && jsonText(current) === jsonText(desired);
-  return stateEntry?.hash === hashText(jsonText(current)) || exactMarkedDesired || (stateEntry !== undefined && hasMarker) || (force && hasMarker);
+  return (
+    stateEntry?.hash === hashText(jsonText(current)) ||
+    exactMarkedDesired ||
+    (stateEntry !== undefined && hasMarker) ||
+    (force && hasMarker)
+  );
 }
 
 function codexMarketplaceEntries(plugins: unknown[]): Array<{ index: number; value: unknown }> {
   return plugins
     .map((value, index) => ({ index, value }))
-    .filter(({ value }) => value && typeof value === "object" && (value as { name?: unknown }).name === "claudexor");
+    .filter(
+      ({ value }) =>
+        value && typeof value === "object" && (value as { name?: unknown }).name === "claudexor",
+    );
 }
 
-function mergeCodexMarketplace(state: PluginStateFile, dryRun: boolean, force: boolean, def: HostDefinition, runtime: RuntimePaths, res: PluginHostResult): boolean {
+function mergeCodexMarketplace(
+  state: PluginStateFile,
+  dryRun: boolean,
+  force: boolean,
+  def: HostDefinition,
+  runtime: RuntimePaths,
+  res: PluginHostResult,
+): boolean {
   const path = join(userHomeDir(), ".agents", "plugins", "marketplace.json");
   const desired = desiredCodexMarketplaceEntry();
   const parsed = readJsonFile(path);
-  const base = parsed === undefined ? { name: "personal", interface: { displayName: "Personal" }, plugins: [] } : parsed;
-  if (!base || typeof base !== "object" || !Array.isArray((base as { plugins?: unknown }).plugins)) {
+  const base =
+    parsed === undefined
+      ? { name: "personal", interface: { displayName: "Personal" }, plugins: [] }
+      : parsed;
+  if (
+    !base ||
+    typeof base !== "object" ||
+    !Array.isArray((base as { plugins?: unknown }).plugins)
+  ) {
     res.errors.push(`${path} is not a Codex marketplace JSON object with plugins[]`);
     return false;
   }
@@ -885,7 +1073,9 @@ function mergeCodexMarketplace(state: PluginStateFile, dryRun: boolean, force: b
       return true;
     }
     const insertAt = matches[0]?.index ?? obj.plugins.length;
-    obj.plugins = obj.plugins.filter((p) => !(p && typeof p === "object" && (p as { name?: unknown }).name === "claudexor"));
+    obj.plugins = obj.plugins.filter(
+      (p) => !(p && typeof p === "object" && (p as { name?: unknown }).name === "claudexor"),
+    );
     obj.plugins.splice(insertAt, 0, desired);
   } else {
     obj.plugins.push(desired);
@@ -912,7 +1102,11 @@ function chooseOpenCodeConfigPath(): string {
   return json;
 }
 
-function openCodeConfigObject(path: string, parsed: unknown, res: PluginHostResult): { obj: { mcp?: unknown; [key: string]: unknown }; mcp: Record<string, unknown> } | null {
+function openCodeConfigObject(
+  path: string,
+  parsed: unknown,
+  res: PluginHostResult,
+): { obj: { mcp?: unknown; [key: string]: unknown }; mcp: Record<string, unknown> } | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     res.errors.push(`${path} is not an OpenCode JSON config object`);
     return null;
@@ -926,11 +1120,19 @@ function openCodeConfigObject(path: string, parsed: unknown, res: PluginHostResu
   return { obj, mcp: obj.mcp as Record<string, unknown> };
 }
 
-function mergeOpenCodeMcp(state: PluginStateFile, dryRun: boolean, force: boolean, def: HostDefinition, runtime: RuntimePaths, res: PluginHostResult): boolean {
+function mergeOpenCodeMcp(
+  state: PluginStateFile,
+  dryRun: boolean,
+  force: boolean,
+  def: HostDefinition,
+  runtime: RuntimePaths,
+  res: PluginHostResult,
+): boolean {
   const path = chooseOpenCodeConfigPath();
   const desired = opencodeMcpEntry(runtime);
   const parsed = readJsonFile(path);
-  const base = parsed === undefined ? { $schema: "https://opencode.ai/config.json", mcp: {} } : parsed;
+  const base =
+    parsed === undefined ? { $schema: "https://opencode.ai/config.json", mcp: {} } : parsed;
   const validated = openCodeConfigObject(path, base, res);
   if (!validated) return false;
   const { obj, mcp } = validated;
@@ -962,7 +1164,12 @@ function mergeOpenCodeMcp(state: PluginStateFile, dryRun: boolean, force: boolea
   return true;
 }
 
-function checkConfig(host: PluginHost, state: PluginStateFile, res: PluginHostResult, runtime: RuntimePaths): boolean {
+function checkConfig(
+  host: PluginHost,
+  state: PluginStateFile,
+  res: PluginHostResult,
+  runtime: RuntimePaths,
+): boolean {
   if (host === "codex") {
     const path = join(userHomeDir(), ".agents", "plugins", "marketplace.json");
     const parsed = readJsonFile(path);
@@ -971,7 +1178,12 @@ function checkConfig(host: PluginHost, state: PluginStateFile, res: PluginHostRe
       return false;
     }
     const desired = desiredCodexMarketplaceEntry();
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray((parsed as { plugins?: unknown }).plugins)) {
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      !Array.isArray((parsed as { plugins?: unknown }).plugins)
+    ) {
       res.errors.push(`${path} is not a Codex marketplace JSON object with plugins[]`);
       return false;
     }
@@ -987,7 +1199,11 @@ function checkConfig(host: PluginHost, state: PluginStateFile, res: PluginHostRe
       res.errors.push(`${path} has an unowned claudexor marketplace entry`);
       return false;
     }
-    res.notes.push(matches.length > 0 ? "Codex marketplace entry is drifted" : "Codex marketplace entry is missing");
+    res.notes.push(
+      matches.length > 0
+        ? "Codex marketplace entry is drifted"
+        : "Codex marketplace entry is missing",
+    );
     return false;
   }
   if (host === "opencode") {
@@ -1011,7 +1227,9 @@ function checkConfig(host: PluginHost, state: PluginStateFile, res: PluginHostRe
       recordConfig(state, "opencode", path, "opencode-mcp", desired);
       return true;
     }
-    res.notes.push(current !== undefined ? "OpenCode MCP entry is drifted" : "OpenCode MCP entry is missing");
+    res.notes.push(
+      current !== undefined ? "OpenCode MCP entry is drifted" : "OpenCode MCP entry is missing",
+    );
     return false;
   }
   if (host === "cursor") {
@@ -1019,23 +1237,41 @@ function checkConfig(host: PluginHost, state: PluginStateFile, res: PluginHostRe
     if (existsSync(ideState)) {
       try {
         readJsonFile(ideState);
-        res.notes.push("Cursor JSON state detected and parseable; no SQLite/binary enablement was touched");
+        res.notes.push(
+          "Cursor JSON state detected and parseable; no SQLite/binary enablement was touched",
+        );
       } catch (err) {
-        res.warnings.push(`Cursor JSON state was not parseable and was not changed: ${err instanceof Error ? err.message : String(err)}`);
+        res.warnings.push(
+          `Cursor JSON state was not parseable and was not changed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     } else {
-      res.notes.push("Cursor plugin files are managed directly; no stable JSON registration file was found");
+      res.notes.push(
+        "Cursor plugin files are managed directly; no stable JSON registration file was found",
+      );
     }
   }
   return true;
 }
 
-function removeConfig(host: PluginHost, state: PluginStateFile, dryRun: boolean, force: boolean, def: HostDefinition, runtime: RuntimePaths, res: PluginHostResult): boolean {
+function removeConfig(
+  host: PluginHost,
+  state: PluginStateFile,
+  dryRun: boolean,
+  force: boolean,
+  def: HostDefinition,
+  runtime: RuntimePaths,
+  res: PluginHostResult,
+): boolean {
   if (host === "codex") {
     const path = join(userHomeDir(), ".agents", "plugins", "marketplace.json");
     const parsed = readJsonFile(path);
     if (parsed === undefined) return true;
-    if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { plugins?: unknown }).plugins)) {
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      !Array.isArray((parsed as { plugins?: unknown }).plugins)
+    ) {
       res.errors.push(`${path} is not a Codex marketplace JSON object with plugins[]`);
       return false;
     }
@@ -1044,11 +1280,18 @@ function removeConfig(host: PluginHost, state: PluginStateFile, dryRun: boolean,
     if (!validateConfigEntry(stateEntry, "codex", path, "codex-marketplace", res)) return false;
     const matches = codexMarketplaceEntries(obj.plugins);
     if (matches.length === 0) return true;
-    if (matches.some(({ value }) => !configEntryOwned(stateEntry, value, desiredCodexMarketplaceEntry(), force, true))) {
+    if (
+      matches.some(
+        ({ value }) =>
+          !configEntryOwned(stateEntry, value, desiredCodexMarketplaceEntry(), force, true),
+      )
+    ) {
       res.errors.push(`${path} has an unowned claudexor marketplace entry`);
       return false;
     }
-    obj.plugins = obj.plugins.filter((p) => !(p && typeof p === "object" && (p as { name?: unknown }).name === "claudexor"));
+    obj.plugins = obj.plugins.filter(
+      (p) => !(p && typeof p === "object" && (p as { name?: unknown }).name === "claudexor"),
+    );
     if (!dryRun) {
       const b = backupFile(def, runtime, path);
       res.notes.push(`backed up marketplace to ${b}`);
@@ -1087,7 +1330,12 @@ function removeConfig(host: PluginHost, state: PluginStateFile, dryRun: boolean,
   return true;
 }
 
-function checkArtifacts(def: HostDefinition, artifacts: Artifact[], state: PluginStateFile, res: PluginHostResult): { all: boolean; any: boolean; drift: boolean; blocked: boolean } {
+function checkArtifacts(
+  def: HostDefinition,
+  artifacts: Artifact[],
+  state: PluginStateFile,
+  res: PluginHostResult,
+): { all: boolean; any: boolean; drift: boolean; blocked: boolean } {
   let all = true;
   let any = false;
   let drift = false;
@@ -1115,7 +1363,15 @@ function checkArtifacts(def: HostDefinition, artifacts: Artifact[], state: Plugi
   return { all, any, drift, blocked };
 }
 
-function applyArtifacts(def: HostDefinition, artifacts: Artifact[], state: PluginStateFile, dryRun: boolean, force: boolean, runtime: RuntimePaths, res: PluginHostResult): boolean {
+function applyArtifacts(
+  def: HostDefinition,
+  artifacts: Artifact[],
+  state: PluginStateFile,
+  dryRun: boolean,
+  force: boolean,
+  runtime: RuntimePaths,
+  res: PluginHostResult,
+): boolean {
   for (const artifact of artifacts) {
     const current = readText(artifact.path);
     if (current === artifact.content) {
@@ -1143,27 +1399,53 @@ function applyArtifacts(def: HostDefinition, artifacts: Artifact[], state: Plugi
 function obsoleteArtifactRoots(host: PluginHost, home: string): string[] {
   switch (host) {
     case "claude":
-      return [join(home, ".claude", "skills", "claudexor"), join(home, ".claude", "plugins", "claudexor")];
+      return [
+        join(home, ".claude", "skills", "claudexor"),
+        join(home, ".claude", "plugins", "claudexor"),
+      ];
     case "codex":
-      return [join(home, ".codex", "plugins", "claudexor"), join(home, ".agents", "skills", "claudexor")];
+      return [
+        join(home, ".codex", "plugins", "claudexor"),
+        join(home, ".agents", "skills", "claudexor"),
+      ];
     case "cursor":
       return [join(home, ".cursor", "plugins", "local", "claudexor")];
     case "opencode":
-      return [join(home, ".config", "opencode", "skills", "claudexor"), join(home, ".config", "opencode", "claudexor")];
+      return [
+        join(home, ".config", "opencode", "skills", "claudexor"),
+        join(home, ".config", "opencode", "claudexor"),
+      ];
   }
 }
 
-function artifactStatePathAllowed(def: HostDefinition, artifacts: Artifact[], path: string): boolean {
+function artifactStatePathAllowed(
+  def: HostDefinition,
+  artifacts: Artifact[],
+  path: string,
+): boolean {
   if (artifacts.some((a) => a.path === path)) return true;
   return obsoleteArtifactRoots(def.host, userHomeDir()).some((root) => isPathInside(root, path));
 }
 
-function removeObsoleteStateArtifacts(def: HostDefinition, artifacts: Artifact[], state: PluginStateFile, dryRun: boolean, _force: boolean, res: PluginHostResult): boolean {
+function removeObsoleteStateArtifacts(
+  def: HostDefinition,
+  artifacts: Artifact[],
+  state: PluginStateFile,
+  dryRun: boolean,
+  _force: boolean,
+  res: PluginHostResult,
+): boolean {
   const hs = hostState(state, def.host);
   const allowed = new Set(artifacts.map((a) => a.path));
   for (const [path, entry] of Object.entries(hs.artifacts)) {
-    if (entry.host !== def.host || entry.path !== path || !artifactStatePathAllowed(def, artifacts, path)) {
-      res.errors.push(`${stateFilePath()} contains out-of-scope ${def.host} artifact state for ${path}; remove that state entry or clean it manually`);
+    if (
+      entry.host !== def.host ||
+      entry.path !== path ||
+      !artifactStatePathAllowed(def, artifacts, path)
+    ) {
+      res.errors.push(
+        `${stateFilePath()} contains out-of-scope ${def.host} artifact state for ${path}; remove that state entry or clean it manually`,
+      );
       return false;
     }
     if (allowed.has(path)) continue;
@@ -1174,7 +1456,9 @@ function removeObsoleteStateArtifacts(def: HostDefinition, artifacts: Artifact[]
     }
     const owned = entry.hash === hashText(current);
     if (!owned) {
-      res.errors.push(`${path} is obsolete Claudexor state but no longer matches ownership evidence`);
+      res.errors.push(
+        `${path} is obsolete Claudexor state but no longer matches ownership evidence`,
+      );
       return false;
     }
     if (!dryRun) {
@@ -1187,7 +1471,14 @@ function removeObsoleteStateArtifacts(def: HostDefinition, artifacts: Artifact[]
   return true;
 }
 
-function removeArtifacts(def: HostDefinition, artifacts: Artifact[], state: PluginStateFile, dryRun: boolean, force: boolean, res: PluginHostResult): boolean {
+function removeArtifacts(
+  def: HostDefinition,
+  artifacts: Artifact[],
+  state: PluginStateFile,
+  dryRun: boolean,
+  force: boolean,
+  res: PluginHostResult,
+): boolean {
   if (!removeObsoleteStateArtifacts(def, artifacts, state, dryRun, force, res)) return false;
   const hs = hostState(state, def.host);
   const paths = artifacts.map((a) => a.path).sort((a, b) => b.length - a.length);
@@ -1198,7 +1489,10 @@ function removeArtifacts(def: HostDefinition, artifacts: Artifact[], state: Plug
       continue;
     }
     const desired = artifacts.find((a) => a.path === path);
-    const owned = hs.artifacts[path]?.hash === hashText(current) || current === desired?.content || (force && hasManagedMarker(current));
+    const owned =
+      hs.artifacts[path]?.hash === hashText(current) ||
+      current === desired?.content ||
+      (force && hasManagedMarker(current));
     if (!owned) {
       res.errors.push(`${path} exists but no longer matches Claudexor ownership state`);
       return false;
@@ -1219,13 +1513,19 @@ function pruneEmptyDirs(_root: string): void {
   // recursive directory cleanup in user config roots.
 }
 
-function removeVerifiedLegacy(def: HostDefinition, dryRun: boolean, res: PluginHostResult): boolean {
+function removeVerifiedLegacy(
+  def: HostDefinition,
+  dryRun: boolean,
+  res: PluginHostResult,
+): boolean {
   for (const legacy of def.legacy(userHomeDir())) {
     if (!existsSync(legacy.path)) continue;
     if (isLegacyOwned(legacy)) {
       if (!dryRun) rmSync(legacy.path, { recursive: true, force: true });
       res.changed = true;
-      res.actions.push(`${dryRun ? "would remove" : "removed"} verified legacy shim ${legacy.path}`);
+      res.actions.push(
+        `${dryRun ? "would remove" : "removed"} verified legacy shim ${legacy.path}`,
+      );
       continue;
     }
     const entries = listTreeEntries(legacy.path);
@@ -1234,7 +1534,9 @@ function removeVerifiedLegacy(def: HostDefinition, dryRun: boolean, res: PluginH
     if (hasModernMarker) continue;
     const hasLegacyShape = files.some((f) => legacy.expectedFiles.includes(f));
     if (hasLegacyShape) {
-      res.errors.push(`${legacy.path} looks like a legacy Claudexor path but is not verified as old shim content`);
+      res.errors.push(
+        `${legacy.path} looks like a legacy Claudexor path but is not verified as old shim content`,
+      );
       return false;
     }
   }
@@ -1268,19 +1570,31 @@ async function mcpSelfTest(runtime: RuntimePaths): Promise<string | null> {
       pending = frames.pop() ?? "";
       try {
         for (const frame of frames.filter(Boolean)) lines.push(JSON.parse(frame));
-        const init = lines.find((line) => line && typeof line === "object" && (line as { id?: unknown }).id === 1) as { result?: { serverInfo?: { name?: string } } } | undefined;
+        const init = lines.find(
+          (line) => line && typeof line === "object" && (line as { id?: unknown }).id === 1,
+        ) as { result?: { serverInfo?: { name?: string } } } | undefined;
         if (init?.result?.serverInfo?.name && !sentToolsList) {
           sentToolsList = true;
-          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) + "\n");
-          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n");
+          child.stdin.write(
+            JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }) +
+              "\n",
+          );
+          child.stdin.write(
+            JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }) + "\n",
+          );
         }
-        const tools = lines.find((line) => line && typeof line === "object" && (line as { id?: unknown }).id === 2) as { result?: { tools?: unknown } } | undefined;
+        const tools = lines.find(
+          (line) => line && typeof line === "object" && (line as { id?: unknown }).id === 2,
+        ) as { result?: { tools?: unknown } } | undefined;
         if (tools && !settled) {
           settled = true;
           const listed = tools.result?.tools;
           clearTimeout(timer);
           child.kill("SIGTERM");
-          if (Array.isArray(listed) && listed.some((t: { name?: string }) => t.name === "claudexor_status")) {
+          if (
+            Array.isArray(listed) &&
+            listed.some((t: { name?: string }) => t.name === "claudexor_status")
+          ) {
             resolve(null);
           } else {
             resolve("MCP self-test returned an unexpected tools-list response");
@@ -1291,11 +1605,15 @@ async function mcpSelfTest(runtime: RuntimePaths): Promise<string | null> {
           settled = true;
           clearTimeout(timer);
           child.kill("SIGTERM");
-          resolve(`MCP self-test response parse failed: ${err instanceof Error ? err.message : String(err)}`);
+          resolve(
+            `MCP self-test response parse failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
     });
-    child.stderr.on("data", (d) => { stderr += String(d); });
+    child.stderr.on("data", (d) => {
+      stderr += String(d);
+    });
     child.on("error", (err) => {
       if (settled) return;
       settled = true;
@@ -1306,25 +1624,40 @@ async function mcpSelfTest(runtime: RuntimePaths): Promise<string | null> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (!stdout) resolve(`MCP self-test exited before response (${code ?? "signal"}): ${stderr.trim()}`);
-      else resolve(`MCP self-test exited before tools-list completed (${code ?? "signal"}): ${stderr.trim()}`);
+      if (!stdout)
+        resolve(`MCP self-test exited before response (${code ?? "signal"}): ${stderr.trim()}`);
+      else
+        resolve(
+          `MCP self-test exited before tools-list completed (${code ?? "signal"}): ${stderr.trim()}`,
+        );
     });
-    child.stdin.write(JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-06-18",
-        capabilities: {},
-        clientInfo: { name: "claudexor-plugin-doctor", version: CLAUDEXOR_VERSION },
-      },
-    }) + "\n");
+    child.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "claudexor-plugin-doctor", version: CLAUDEXOR_VERSION },
+        },
+      }) + "\n",
+    );
   });
 }
 
 function mcpSelfTestEnv(runtime: RuntimePaths): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const key of ["HOME", "PATH", "CLAUDEXOR_CONFIG_DIR", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL"]) {
+  for (const key of [
+    "HOME",
+    "PATH",
+    "CLAUDEXOR_CONFIG_DIR",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+  ]) {
     const value = process.env[key];
     if (value) env[key] = value;
   }
@@ -1333,11 +1666,16 @@ function mcpSelfTestEnv(runtime: RuntimePaths): Record<string, string> {
 }
 
 function verbNote(def: HostDefinition, verb: PluginVerb): string {
-  if (verb === "uninstall") return `${def.displayName} integration removed from managed Claudexor files/config; restart the host to unload cached plugin state.`;
+  if (verb === "uninstall")
+    return `${def.displayName} integration removed from managed Claudexor files/config; restart the host to unload cached plugin state.`;
   return def.reloadNote;
 }
 
-function initialResult(def: HostDefinition, verb: PluginVerb, runtime: RuntimePaths): PluginHostResult {
+function initialResult(
+  def: HostDefinition,
+  verb: PluginVerb,
+  runtime: RuntimePaths,
+): PluginHostResult {
   return {
     host: def.host,
     state: "missing",
@@ -1351,7 +1689,13 @@ function initialResult(def: HostDefinition, verb: PluginVerb, runtime: RuntimePa
   };
 }
 
-async function runHost(def: HostDefinition, verb: PluginVerb, options: PluginCommandOptions, state: PluginStateFile, runtime: RuntimePaths): Promise<PluginHostResult> {
+async function runHost(
+  def: HostDefinition,
+  verb: PluginVerb,
+  options: PluginCommandOptions,
+  state: PluginStateFile,
+  runtime: RuntimePaths,
+): Promise<PluginHostResult> {
   const dryRun = options.dryRun === true;
   const force = options.force === true;
   const res = initialResult(def, verb, runtime);
@@ -1367,7 +1711,11 @@ async function runHost(def: HostDefinition, verb: PluginVerb, options: PluginCom
       else if (art.drift) res.state = "drifted";
       else if (art.any || (hasConfig && configOk)) res.state = "partial";
       else res.state = "missing";
-      if (verb === "doctor" && dryRun && (res.state === "installed" || res.state === "registered")) {
+      if (
+        verb === "doctor" &&
+        dryRun &&
+        (res.state === "installed" || res.state === "registered")
+      ) {
         res.actions.push("would run MCP initialize/initialized/tools-list self-test");
       } else if (verb === "doctor" && (res.state === "installed" || res.state === "registered")) {
         const mcpError = await mcpSelfTest(runtime);
@@ -1412,11 +1760,17 @@ async function runHost(def: HostDefinition, verb: PluginVerb, options: PluginCom
       res.state = "blocked";
       return res;
     }
-    if (def.config === "codex-marketplace" && !mergeCodexMarketplace(state, dryRun, force, def, runtime, res)) {
+    if (
+      def.config === "codex-marketplace" &&
+      !mergeCodexMarketplace(state, dryRun, force, def, runtime, res)
+    ) {
       res.state = "blocked";
       return res;
     }
-    if (def.config === "opencode-mcp" && !mergeOpenCodeMcp(state, dryRun, force, def, runtime, res)) {
+    if (
+      def.config === "opencode-mcp" &&
+      !mergeOpenCodeMcp(state, dryRun, force, def, runtime, res)
+    ) {
       res.state = "blocked";
       return res;
     }
@@ -1451,16 +1805,22 @@ function exitCodeFor(verb: PluginVerb, result: PluginCommandResult): number {
   return result.results.every((r) => r.ok) ? 0 : 1;
 }
 
-export async function runPluginCommand(verb: PluginVerb, target: PluginTarget, options: PluginCommandOptions = {}): Promise<PluginCommandResult> {
+export async function runPluginCommand(
+  verb: PluginVerb,
+  target: PluginTarget,
+  options: PluginCommandOptions = {},
+): Promise<PluginCommandResult> {
   if (!PLUGIN_VERBS.includes(verb)) throw new Error(`unknown plugin command '${verb}'`);
-  if (!PLUGIN_TARGETS.includes(target)) throw new Error(`unknown plugin target '${target}' (expected ${PLUGIN_TARGETS.join("|")})`);
+  if (!PLUGIN_TARGETS.includes(target))
+    throw new Error(`unknown plugin target '${target}' (expected ${PLUGIN_TARGETS.join("|")})`);
   const runtime = runtimePaths();
   const state = loadState(runtime.configDir);
   const results: PluginHostResult[] = [];
   for (const host of targets(target)) {
     results.push(await runHost(HOST_DEFINITIONS[host], verb, options, state, runtime));
   }
-  if (!options.dryRun && (verb === "install" || verb === "repair" || verb === "uninstall")) saveState(state, runtime.configDir);
+  if (!options.dryRun && (verb === "install" || verb === "repair" || verb === "uninstall"))
+    saveState(state, runtime.configDir);
   const result = {
     verb,
     target,
@@ -1486,7 +1846,13 @@ export function formatPluginResult(result: PluginCommandResult): string {
   return lines.join("\n");
 }
 
-export function pluginCommandErrorResult(verb: string | undefined, target: string | undefined, dryRun: boolean, exitCode: number, error: string): PluginCommandErrorResult {
+export function pluginCommandErrorResult(
+  verb: string | undefined,
+  target: string | undefined,
+  dryRun: boolean,
+  exitCode: number,
+  error: string,
+): PluginCommandErrorResult {
   return {
     verb: verb ?? null,
     target: target ?? null,

@@ -95,7 +95,10 @@ export class BudgetLedger {
   /** USD still available under the nearest cap in the ledger chain (null = uncapped). */
   private remainingHeadroomUsd(): number | null {
     const cap = this.limits.maxUsd ?? null;
-    const local = cap === null || cap <= 0 ? null : cap * this.thresholds.hard - (this.spendUsd + this.outstandingHolds());
+    const local =
+      cap === null || cap <= 0
+        ? null
+        : cap * this.thresholds.hard - (this.spendUsd + this.outstandingHolds());
     const parent = this.parent?.remainingHeadroomUsd() ?? null;
     if (local === null) return parent;
     if (parent === null) return local;
@@ -105,7 +108,12 @@ export class BudgetLedger {
   reserve(input: ReserveInput): ReserveResult {
     const tier = this.tier();
     if (tier === "hard") {
-      return { granted: false, tier, reason: "budget exhausted (hard cap reached)", denied: "hard_cap" };
+      return {
+        granted: false,
+        tier,
+        reason: "budget exhausted (hard cap reached)",
+        denied: "hard_cap",
+      };
     }
     // DD-27 wave guard: an estimate-bearing reservation must FIT UNDER the
     // remaining headroom, or it is DENIED without recording the hold — a

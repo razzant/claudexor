@@ -27,7 +27,9 @@ async function collect(events: AsyncIterable<HarnessEvent>): Promise<HarnessEven
 describe("fake harness adapters", () => {
   it("fake-success emits file_change, exact usage cost, and a terminal completed", async () => {
     const events = await collect(createFakeHarness("fake-success").run(spec()));
-    expect(events.some((e) => e.type === "file_change" && e.payload?.["path"] === "FAKE_CHANGE.txt")).toBe(true);
+    expect(
+      events.some((e) => e.type === "file_change" && e.payload?.["path"] === "FAKE_CHANGE.txt"),
+    ).toBe(true);
     const usage = events.find((e) => e.type === "usage");
     expect(usage?.usage?.cost_usd).toBeCloseTo(0.01);
     expect(events[events.length - 1]?.type).toBe("completed");
@@ -75,7 +77,12 @@ describe("fake harness adapters", () => {
     const dir = mkdtempSync(join(tmpdir(), "fake-impl-"));
     try {
       const promptCanary = "promptLeakCanary-do-the-thing";
-      const s = HarnessRunSpec.parse({ session_id: "ses-impl", intent: "implement", prompt: promptCanary, cwd: dir });
+      const s = HarnessRunSpec.parse({
+        session_id: "ses-impl",
+        intent: "implement",
+        prompt: promptCanary,
+        cwd: dir,
+      });
       const events = await collect(createFakeHarness("fake-implement").run(s));
       const file = join(dir, "FAKE_CHANGE.txt");
       expect(existsSync(file)).toBe(true);
@@ -92,9 +99,17 @@ describe("fake harness adapters", () => {
   it("fake-implement emits a fenced tool_calls plan (and writes nothing) for the orchestrate intent", async () => {
     const dir = mkdtempSync(join(tmpdir(), "fake-orch-"));
     try {
-      const s = HarnessRunSpec.parse({ session_id: "ses-orch", intent: "orchestrate", prompt: "ship", cwd: dir });
+      const s = HarnessRunSpec.parse({
+        session_id: "ses-orch",
+        intent: "orchestrate",
+        prompt: "ship",
+        cwd: dir,
+      });
       const events = await collect(createFakeHarness("fake-implement").run(s));
-      const text = events.filter((e) => e.type === "message").map((e) => e.text ?? "").join("\n");
+      const text = events
+        .filter((e) => e.type === "message")
+        .map((e) => e.text ?? "")
+        .join("\n");
       // The fenced JSON must be a SCHEMA-VALID OrchestratePlan (matches the doc claim),
       // not just a string that happens to contain "tool_calls".
       const m = /```json\s*\n([\s\S]*?)\n```/.exec(text);

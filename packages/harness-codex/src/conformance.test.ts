@@ -13,7 +13,11 @@ const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
  * The shared run loop counts such lines as drops instead of failing the run;
  * the parity test mirrors that and bounds the damage.
  */
-function parseLines(raw: string): { events: unknown[]; invalidLines: number; recognizedLines: number } {
+function parseLines(raw: string): {
+  events: unknown[];
+  invalidLines: number;
+  recognizedLines: number;
+} {
   let invalidLines = 0;
   let recognizedLines = 0;
   const events: unknown[] = [];
@@ -36,7 +40,9 @@ function parseLines(raw: string): { events: unknown[]; invalidLines: number; rec
 describe("codex adapter conformance fixtures", () => {
   for (const name of readdirSync(FIXTURES).filter((f) => f.endsWith(".jsonl"))) {
     it(`parses ${name} into a conformant typed stream`, () => {
-      const { events, invalidLines, recognizedLines } = parseLines(readFileSync(join(FIXTURES, name), "utf8"));
+      const { events, invalidLines, recognizedLines } = parseLines(
+        readFileSync(join(FIXTURES, name), "utf8"),
+      );
       const stats = validateTypedStream(events);
       expect(recognizedLines).toBeGreaterThan(3);
       expect(invalidLines).toBeLessThanOrEqual(2); // torn-line tolerance, never silence
@@ -51,9 +57,13 @@ describe("codex adapter conformance fixtures", () => {
       if (name.startsWith("session-resume")) {
         // v0.9 contract: the native session id is surfaced for thread resume,
         // and a 429 becomes the TYPED rate_limit signal (never prose-matched).
-        const started = events.find((e) => (e as { type?: string }).type === "started") as { payload?: Record<string, unknown> } | undefined;
+        const started = events.find((e) => (e as { type?: string }).type === "started") as
+          | { payload?: Record<string, unknown> }
+          | undefined;
         expect(started?.payload?.["native_session_id"]).toBeTruthy();
-        const limited = events.find((e) => (e as { rate_limit?: unknown }).rate_limit !== undefined);
+        const limited = events.find(
+          (e) => (e as { rate_limit?: unknown }).rate_limit !== undefined,
+        );
         expect(limited).toBeTruthy();
       }
     });

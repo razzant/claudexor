@@ -27,17 +27,31 @@ export async function checkName(name: string): Promise<NameCheck[]> {
   const npm = await head(`https://registry.npmjs.org/${encodeURIComponent(lc)}`);
   checks.push({ registry: "npm", availability: availability(npm), detail: status(npm) });
 
-  const npmScoped = await head(`https://registry.npmjs.org/${encodeURIComponent("@" + lc + "/cli")}`);
-  checks.push({ registry: "npm (@scope/cli)", availability: availability(npmScoped), detail: status(npmScoped) });
+  const npmScoped = await head(
+    `https://registry.npmjs.org/${encodeURIComponent("@" + lc + "/cli")}`,
+  );
+  checks.push({
+    registry: "npm (@scope/cli)",
+    availability: availability(npmScoped),
+    detail: status(npmScoped),
+  });
 
   const pypi = await head(`https://pypi.org/pypi/${encodeURIComponent(lc)}/json`);
   checks.push({ registry: "pypi", availability: availability(pypi), detail: status(pypi) });
 
   const crates = await head(`https://crates.io/api/v1/crates/${encodeURIComponent(lc)}`);
-  checks.push({ registry: "crates.io", availability: availability(crates), detail: status(crates) });
+  checks.push({
+    registry: "crates.io",
+    availability: availability(crates),
+    detail: status(crates),
+  });
 
   const ghUser = await head(`https://github.com/${encodeURIComponent(lc)}`);
-  checks.push({ registry: "github org/user", availability: availability(ghUser), detail: status(ghUser) });
+  checks.push({
+    registry: "github org/user",
+    availability: availability(ghUser),
+    detail: status(ghUser),
+  });
 
   return checks;
 }

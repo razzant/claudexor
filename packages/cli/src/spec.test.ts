@@ -124,23 +124,35 @@ do the thing
       "## Open Questions\n- [single] Which? :: A :: B\n- [text] Notes?",
     );
     // unknown option id
-    expect(() => validateAnswers(qs, [{ question_id: "q1", option_ids: ["o9"], text: null }])).toThrow(/unknown option/);
+    expect(() =>
+      validateAnswers(qs, [{ question_id: "q1", option_ids: ["o9"], text: null }]),
+    ).toThrow(/unknown option/);
     // single with >1 option
-    expect(() => validateAnswers(qs, [{ question_id: "q1", option_ids: ["o1", "o2"], text: null }])).toThrow(/at most one/);
+    expect(() =>
+      validateAnswers(qs, [{ question_id: "q1", option_ids: ["o1", "o2"], text: null }]),
+    ).toThrow(/at most one/);
     // free text where allow_text is false (single choice)
-    expect(() => validateAnswers(qs, [{ question_id: "q1", option_ids: ["o1"], text: "extra" }])).toThrow(/free text is not allowed/);
+    expect(() =>
+      validateAnswers(qs, [{ question_id: "q1", option_ids: ["o1"], text: "extra" }]),
+    ).toThrow(/free text is not allowed/);
     // unknown question id (stale/malformed answer) fails loudly, not silently dropped
-    expect(() => validateAnswers(qs, [{ question_id: "q9", option_ids: [], text: "x" }])).toThrow(/unknown question/);
+    expect(() => validateAnswers(qs, [{ question_id: "q9", option_ids: [], text: "x" }])).toThrow(
+      /unknown question/,
+    );
     // duplicate answers for the same question fail loudly (would otherwise silently use the first)
-    expect(() => validateAnswers(qs, [
-      { question_id: "q1", option_ids: ["o1"], text: null },
-      { question_id: "q1", option_ids: ["o2"], text: null },
-    ])).toThrow(/duplicate/);
+    expect(() =>
+      validateAnswers(qs, [
+        { question_id: "q1", option_ids: ["o1"], text: null },
+        { question_id: "q1", option_ids: ["o2"], text: null },
+      ]),
+    ).toThrow(/duplicate/);
     // valid answers do not throw
-    expect(() => validateAnswers(qs, [
-      { question_id: "q1", option_ids: ["o1"], text: null },
-      { question_id: "q2", option_ids: [], text: "some notes" },
-    ])).not.toThrow();
+    expect(() =>
+      validateAnswers(qs, [
+        { question_id: "q1", option_ids: ["o1"], text: null },
+        { question_id: "q2", option_ids: [], text: "some notes" },
+      ]),
+    ).not.toThrow();
   });
 
   it("preserves legitimate angle-bracket option labels (only exact templates are dropped)", () => {
@@ -366,7 +378,15 @@ describe("commit-review panel lib", () => {
   it("requires exact OpenRouter route proof before a response can count", async () => {
     const { exactObservedModelMatch } = await import("../../../scripts/lib/openrouter-panel.mjs");
     expect(exactObservedModelMatch("openai/gpt-5.6-sol", "openai/gpt-5.6-sol")).toBe(true);
-    for (const observed of ["openai/gpt-5.6", "anthropic/gpt-5.6-sol", "", "   ", null, undefined, 56]) {
+    for (const observed of [
+      "openai/gpt-5.6",
+      "anthropic/gpt-5.6-sol",
+      "",
+      "   ",
+      null,
+      undefined,
+      56,
+    ]) {
       expect(exactObservedModelMatch("openai/gpt-5.6-sol", observed)).toBe(false);
     }
     expect(exactObservedModelMatch("", "")).toBe(false);
@@ -374,7 +394,8 @@ describe("commit-review panel lib", () => {
 
   it("isBlockingSeverity accepts both the gate vocabulary and Claudexor-native blocking severities", async () => {
     const { isBlockingSeverity } = await import("../../../scripts/lib/openrouter-panel.mjs");
-    for (const s of ["FAIL", "fail", "BLOCK", "FIX_FIRST", "NEEDS_HUMAN"]) expect(isBlockingSeverity(s)).toBe(true);
+    for (const s of ["FAIL", "fail", "BLOCK", "FIX_FIRST", "NEEDS_HUMAN"])
+      expect(isBlockingSeverity(s)).toBe(true);
     for (const s of ["WARN", "NIT", "", undefined]) expect(isBlockingSeverity(s)).toBe(false);
   });
 
@@ -382,15 +403,21 @@ describe("commit-review panel lib", () => {
     const { parseFindingsArray } = await import("../../../scripts/lib/openrouter-panel.mjs");
     expect(parseFindingsArray('[{"severity":"FAIL","finding":"x"}]').findings).toHaveLength(1);
     // Standard markdown WITHOUT trailing newline before the closing fence.
-    expect(parseFindingsArray('```json\n[{"severity":"WARN","finding":"y"}]```').findings).toHaveLength(1);
+    expect(
+      parseFindingsArray('```json\n[{"severity":"WARN","finding":"y"}]```').findings,
+    ).toHaveLength(1);
     expect(parseFindingsArray("no json at all").findings).toBeNull();
     expect(parseFindingsArray('```json\n{"not":"array"}\n```').findings).toBeNull();
     // Quorum shape: junk arrays are UNUSABLE, empty arrays are a clean pass,
     // and finding-shaped items survive filtering.
     expect(parseFindingsArray('[{"unrelated":"junk"},{"foo":1}]').findings).toBeNull();
     // STRICT: half-junk arrays are unusable too (a mixed response is untrustworthy).
-    expect(parseFindingsArray('[{"severity":"WARN","finding":"real"},{"junk":1}]').findings).toBeNull();
+    expect(
+      parseFindingsArray('[{"severity":"WARN","finding":"real"},{"junk":1}]').findings,
+    ).toBeNull();
     expect(parseFindingsArray("[]").findings).toEqual([]);
-    expect(parseFindingsArray('[{"severity":"WARN","claim":"uses claim key"}]').findings).toHaveLength(1);
+    expect(
+      parseFindingsArray('[{"severity":"WARN","claim":"uses claim key"}]').findings,
+    ).toHaveLength(1);
   });
 });

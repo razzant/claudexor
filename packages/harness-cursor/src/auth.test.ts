@@ -641,7 +641,11 @@ describe("cursor adapter auth route wiring", () => {
       apiSmokeCacheTtlMs: 60_000,
       apiSmokeFailureCacheTtlMs: 60_000,
       runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
-        yield { type: "completed", session_id: opts.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
+        yield {
+          type: "completed",
+          session_id: opts.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
       },
     });
 
@@ -794,36 +798,46 @@ describe("cursor adapter auth route wiring", () => {
       verification: "not_run",
       status: "degraded",
     },
-  ])("normalizes native readiness for $name", async ({ probe, availability, verification, status }) => {
-    let keyReads = 0;
-    let observedSignal: AbortSignal | undefined;
-    const adapter = createCursorAdapter({
-      detectVersion: async () => "cursor-test",
-      nativeAuthOk: async (_env, signal) => {
-        observedSignal = signal;
-        return probe;
-      },
-      cursorApiKey: () => { keyReads += 1; return "must-not-read"; },
-      listCursorModels: async () => [],
-      smokeIsolatedApiKey: async () => ({ ok: true, detail: "must not run" }),
-      runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
-        yield { type: "completed", session_id: opts.spec.session_id, ts: "2026-01-01T00:00:00.000Z" };
-      },
-    });
-    const controller = new AbortController();
-    const report = await adapter.doctor({
-      cwd: "/repo",
-      authPreference: "subscription",
-      authSource: "native_session",
-      abortSignal: controller.signal,
-    });
-    expect(keyReads).toBe(0);
-    expect(observedSignal).toBe(controller.signal);
-    expect(report.status).toBe(status);
-    expect(report.auth_sources).toEqual([
-      expect.objectContaining({ source: "native_session", availability, verification }),
-    ]);
-  });
+  ])(
+    "normalizes native readiness for $name",
+    async ({ probe, availability, verification, status }) => {
+      let keyReads = 0;
+      let observedSignal: AbortSignal | undefined;
+      const adapter = createCursorAdapter({
+        detectVersion: async () => "cursor-test",
+        nativeAuthOk: async (_env, signal) => {
+          observedSignal = signal;
+          return probe;
+        },
+        cursorApiKey: () => {
+          keyReads += 1;
+          return "must-not-read";
+        },
+        listCursorModels: async () => [],
+        smokeIsolatedApiKey: async () => ({ ok: true, detail: "must not run" }),
+        runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+          yield {
+            type: "completed",
+            session_id: opts.spec.session_id,
+            ts: "2026-01-01T00:00:00.000Z",
+          };
+        },
+      });
+      const controller = new AbortController();
+      const report = await adapter.doctor({
+        cwd: "/repo",
+        authPreference: "subscription",
+        authSource: "native_session",
+        abortSignal: controller.signal,
+      });
+      expect(keyReads).toBe(0);
+      expect(observedSignal).toBe(controller.signal);
+      expect(report.status).toBe(status);
+      expect(report.auth_sources).toEqual([
+        expect.objectContaining({ source: "native_session", availability, verification }),
+      ]);
+    },
+  );
 
   it("does not spawn cursor-agent when only an unproven API key route exists", async () => {
     let spawned = false;

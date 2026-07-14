@@ -12,7 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FinalVerifyRecord } from "@claudexor/schema";
 import { type GateSpec, gatesPassed, runGates } from "@claudexor/review";
-import { applyPatchProtected, branchDelete, worktreeAdd, worktreeRemove } from "@claudexor/workspace";
+import {
+  applyPatchProtected,
+  branchDelete,
+  worktreeAdd,
+  worktreeRemove,
+} from "@claudexor/workspace";
 import { newId, redactSecrets } from "@claudexor/util";
 
 interface VerifiableWinner {
@@ -94,15 +99,27 @@ export async function finalVerifyPatch(
     await worktreeAdd(execRoot, verifyTree, branch, winner.baseSha);
     const applied = await applyPatchProtected(verifyTree, winner.diff);
     if (!applied.ok) {
-      return done({ applied_cleanly: false, reason: applied.detail ?? "apply failed on the verify tree" });
+      return done({
+        applied_cleanly: false,
+        reason: applied.detail ?? "apply failed on the verify tree",
+      });
     }
     if (specs.length === 0) {
-      return done({ applied_cleanly: true, gates_passed: null, reason: "no deterministic gates configured" });
+      return done({
+        applied_cleanly: true,
+        gates_passed: null,
+        reason: "no deterministic gates configured",
+      });
     }
     const gates = await runGates(specs, { cwd: verifyTree });
     log.emit("gate.completed", {
       attempt_id: "final-verify",
-      gates: gates.map((g) => ({ id: g.id, status: g.status, exit_code: g.exit_code, duration_ms: g.duration_ms })),
+      gates: gates.map((g) => ({
+        id: g.id,
+        status: g.status,
+        exit_code: g.exit_code,
+        duration_ms: g.duration_ms,
+      })),
       passed: gatesPassed(gates),
     });
     return done({
@@ -111,7 +128,10 @@ export async function finalVerifyPatch(
       gates: gates.map((g) => ({ id: g.id, status: g.status })),
     });
   } catch (err) {
-    return done({ applied_cleanly: null, reason: redactSecrets(err instanceof Error ? err.message : String(err)) });
+    return done({
+      applied_cleanly: null,
+      reason: redactSecrets(err instanceof Error ? err.message : String(err)),
+    });
   } finally {
     try {
       await worktreeRemove(execRoot, verifyTree);

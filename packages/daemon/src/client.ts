@@ -24,7 +24,10 @@ export class DaemonClient {
       };
       // A socket that accepts but never replies must not hang the caller
       // (`daemon status`) forever — fail loudly after a bounded wait.
-      const timer = setTimeout(() => finish(() => reject(new Error(`daemon RPC timeout (${method})`))), 10_000);
+      const timer = setTimeout(
+        () => finish(() => reject(new Error(`daemon RPC timeout (${method})`))),
+        10_000,
+      );
       timer.unref?.();
       // Attach the error handler first so connect failures (ENOENT/ECONNREFUSED)
       // never become an unhandled 'error' event.
@@ -67,10 +70,7 @@ export class DaemonClient {
       createdAt?: string;
       startedAt?: string;
       finishedAt?: string;
-    }>(
-      "claudexor.status",
-      { id },
-    );
+    }>("claudexor.status", { id });
   }
   list() {
     return this.call<

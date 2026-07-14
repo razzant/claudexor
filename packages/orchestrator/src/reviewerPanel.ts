@@ -159,7 +159,9 @@ export async function resolveExplicitReviewerPanel(
       const requestedEffort = entry.effort ?? null;
       if (requestedEffort && !manifest.capabilities.effort_levels.includes(requestedEffort)) {
         const supported = manifest.capabilities.effort_levels.join(", ");
-        const suffix = supported ? ` (supported: ${supported})` : " (harness declares no effort controls)";
+        const suffix = supported
+          ? ` (supported: ${supported})`
+          : " (harness declares no effort controls)";
         throw new HarnessUnavailableError(
           `reviewer harness '${entry.harness}' does not support requested effort '${requestedEffort}'${suffix}`,
         );

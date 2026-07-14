@@ -1,4 +1,9 @@
-import type { ConformanceReport, HarnessCapabilities, HarnessManifest, Intent } from "@claudexor/schema";
+import type {
+  ConformanceReport,
+  HarnessCapabilities,
+  HarnessManifest,
+  Intent,
+} from "@claudexor/schema";
 
 /** Map declared capabilities to the intents an adapter could in principle play. */
 export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
@@ -19,7 +24,10 @@ export function capabilityIntents(caps: HarnessCapabilities): Intent[] {
  * behind conformance. A degraded adapter keeps only the intents it explicitly
  * still enables; an unavailable adapter gets none.
  */
-export function allowedIntents(manifest: HarnessManifest, report: ConformanceReport | null): Intent[] {
+export function allowedIntents(
+  manifest: HarnessManifest,
+  report: ConformanceReport | null,
+): Intent[] {
   const base = capabilityIntents(manifest.capabilities);
   if (!report || report.status === "unavailable") return [];
   if (report.status === "ok") {
@@ -33,5 +41,7 @@ export function allowedIntents(manifest: HarnessManifest, report: ConformanceRep
   // explicitly re-enabled. Capability declarations alone are not enough once
   // conformance/auth is degraded.
   if (report.enabled_intents.length === 0) return [];
-  return base.filter((i) => report.enabled_intents.includes(i) && !report.disabled_intents.includes(i));
+  return base.filter(
+    (i) => report.enabled_intents.includes(i) && !report.disabled_intents.includes(i),
+  );
 }

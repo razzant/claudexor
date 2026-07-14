@@ -42,7 +42,11 @@ describe("ThreadStore", () => {
     const { path, s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });
     const turn = s.createTurn(t.id, "do risky work");
-    s.setTurnEnqueueError(turn.id, "access profile 'full' requires allow_full_access: true", "trust_full_access_required");
+    s.setTurnEnqueueError(
+      turn.id,
+      "access profile 'full' requires allow_full_access: true",
+      "trust_full_access_required",
+    );
     const refused = s.getTurn(turn.id);
     expect(refused?.enqueue_error?.message).toContain("allow_full_access");
     expect(refused?.enqueue_error?.code).toBe("trust_full_access_required");
@@ -87,7 +91,11 @@ describe("ThreadStore", () => {
 
   it("persists a sticky eligible pool and primary, and survives a reload", () => {
     const { path, s } = store();
-    const t = s.createThread({ repoRoot: "/tmp/proj", primaryHarness: "codex", eligibleHarnesses: ["codex", "claude"] });
+    const t = s.createThread({
+      repoRoot: "/tmp/proj",
+      primaryHarness: "codex",
+      eligibleHarnesses: ["codex", "claude"],
+    });
     expect(t.eligible_harnesses).toEqual(["codex", "claude"]);
     expect(t.primary_harness).toBe("codex");
     expect(s.createThread({}).eligible_harnesses).toEqual([]); // default empty
@@ -97,16 +105,26 @@ describe("ThreadStore", () => {
     expect(reloaded?.primary_harness).toBe("codex");
     // Invariant at CREATE too: a primary outside a non-empty pool is cleared, so a
     // thread is never born claiming a primary the engine would drop.
-    const incoherent = s.createThread({ repoRoot: "/tmp/p2", primaryHarness: "codex", eligibleHarnesses: ["claude"] });
+    const incoherent = s.createThread({
+      repoRoot: "/tmp/p2",
+      primaryHarness: "codex",
+      eligibleHarnesses: ["claude"],
+    });
     expect(incoherent.eligible_harnesses).toEqual(["claude"]);
     expect(incoherent.primary_harness).toBeNull();
     // Empty pool imposes no constraint — a standalone primary is kept (engine auto-pools).
-    expect(s.createThread({ primaryHarness: "codex", eligibleHarnesses: [] }).primary_harness).toBe("codex");
+    expect(s.createThread({ primaryHarness: "codex", eligibleHarnesses: [] }).primary_harness).toBe(
+      "codex",
+    );
   });
 
   it("updateThread switches the sticky primary (incl. clear to null) and pool", () => {
     const { s } = store();
-    const t = s.createThread({ repoRoot: "/tmp/proj", primaryHarness: "codex", eligibleHarnesses: ["codex"] });
+    const t = s.createThread({
+      repoRoot: "/tmp/proj",
+      primaryHarness: "codex",
+      eligibleHarnesses: ["codex"],
+    });
     s.updateThread(t.id, { primaryHarness: "claude", eligibleHarnesses: ["claude", "cursor"] });
     expect(s.getThread(t.id)?.primary_harness).toBe("claude");
     expect(s.getThread(t.id)?.eligible_harnesses).toEqual(["claude", "cursor"]);
@@ -118,7 +136,11 @@ describe("ThreadStore", () => {
 
   it("updateThread clears a sticky primary that falls outside a narrowed pool (invariant)", () => {
     const { s } = store();
-    const t = s.createThread({ repoRoot: "/tmp/proj", primaryHarness: "codex", eligibleHarnesses: ["codex", "claude"] });
+    const t = s.createThread({
+      repoRoot: "/tmp/proj",
+      primaryHarness: "codex",
+      eligibleHarnesses: ["codex", "claude"],
+    });
     // Remove the primary harness (codex) from the pool: the primary must not persist
     // outside a non-empty pool, so it auto-clears to null (Auto) — the UI then shows
     // Auto instead of lying that codex answers while the engine drops it.
@@ -174,33 +196,62 @@ describe("ThreadStore", () => {
   it("coerces removed enum values during migration instead of dropping", () => {
     const { path } = store();
     const legacy = {
-      threads: [{
-        schema_version: 1, id: "th-blocked", created_at: "t", updated_at: "t",
-        repo: { root: "/p", base_ref: "HEAD" }, title: "Blocked", mode: "agent",
-        auth_preference: "auto", primary_harness: null, run_ids: [], head_run_id: null,
-        state: "blocked", // removed -> must coerce to "active", not drop
-      }],
+      threads: [
+        {
+          schema_version: 1,
+          id: "th-blocked",
+          created_at: "t",
+          updated_at: "t",
+          repo: { root: "/p", base_ref: "HEAD" },
+          title: "Blocked",
+          mode: "agent",
+          auth_preference: "auto",
+          primary_harness: null,
+          run_ids: [],
+          head_run_id: null,
+          state: "blocked", // removed -> must coerce to "active", not drop
+        },
+      ],
       sessions: [
         {
-          schema_version: 1, id: "se-latest", thread_id: "th-blocked", harness_id: "codex",
-          native_session_id: "vendor-1", resume_kind: "resume_latest", // retired -> resume_by_id
-          state: "live", created_at: "t", updated_at: "t",
+          schema_version: 1,
+          id: "se-latest",
+          thread_id: "th-blocked",
+          harness_id: "codex",
+          native_session_id: "vendor-1",
+          resume_kind: "resume_latest", // retired -> resume_by_id
+          state: "live",
+          created_at: "t",
+          updated_at: "t",
         },
         {
           // The dangerous shape: a LIVE rehost record with a stale native id.
           // Migration must flip it to none/rebound or resumeMap would resume a
           // session whose own semantics said "native resume impossible".
-          schema_version: 1, id: "se-rehost", thread_id: "th-blocked", harness_id: "claude",
-          native_session_id: "stale-native-id", resume_kind: "rehost",
-          state: "live", created_at: "t", updated_at: "t",
+          schema_version: 1,
+          id: "se-rehost",
+          thread_id: "th-blocked",
+          harness_id: "claude",
+          native_session_id: "stale-native-id",
+          resume_kind: "rehost",
+          state: "live",
+          created_at: "t",
+          updated_at: "t",
         },
       ],
-      turns: [{ id: "tn-o", thread_id: "th-blocked", created_at: "t", kind: "orchestrate" /* removed -> followup */ }],
+      turns: [
+        {
+          id: "tn-o",
+          thread_id: "th-blocked",
+          created_at: "t",
+          kind: "orchestrate" /* removed -> followup */,
+        },
+      ],
     };
     writeFileSync(path, JSON.stringify(legacy));
     const s = new ThreadStore(path);
     expect(s.getThread("th-blocked")?.state).toBe("active"); // migrated, not dropped
-    expect(existsSync(`${path}.bak`)).toBe(false);            // no data loss
+    expect(existsSync(`${path}.bak`)).toBe(false); // no data loss
     expect(s.turnsFor("th-blocked")[0]?.kind).toBe("followup");
     // Retired session resume kinds are coerced: resume_latest keeps native
     // continuity; a live rehost record does NOT leak its stale native id into
@@ -222,7 +273,10 @@ describe("ThreadStore", () => {
     // Valid binding passes through normalized.
     expect(s.assertKnownIds(a.id, turnA.id)).toEqual({ threadId: a.id, turnId: turnA.id });
     // No binding at all is fine (plain non-thread runs).
-    expect(s.assertKnownIds(undefined, undefined)).toEqual({ threadId: undefined, turnId: undefined });
+    expect(s.assertKnownIds(undefined, undefined)).toEqual({
+      threadId: undefined,
+      turnId: undefined,
+    });
     expect(s.assertKnownIds("", "")).toEqual({ threadId: undefined, turnId: undefined });
     // Bogus ids fail loudly.
     expect(() => s.assertKnownIds("th-nope", undefined)).toThrow(/no such thread/);
@@ -236,7 +290,14 @@ describe("ThreadStore", () => {
 
   it("backs up the store and logs when a record is truly unparseable", () => {
     const { path } = store();
-    writeFileSync(path, JSON.stringify({ threads: [{ id: "broken" /* missing required fields */ }], sessions: [], turns: [] }));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        threads: [{ id: "broken" /* missing required fields */ }],
+        sessions: [],
+        turns: [],
+      }),
+    );
     const s = new ThreadStore(path);
     expect(s.listThreads()).toEqual([]); // unparseable record dropped
     expect(existsSync(`${path}.bak`)).toBe(true); // original preserved (fail loudly)

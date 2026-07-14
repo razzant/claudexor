@@ -59,7 +59,9 @@ export function readLoginManifest(path: string): SetupLoginManifest {
   const resultParent = realpathSync(dirname(resolve(manifest.resultPath)));
   const permitParent = realpathSync(dirname(resolve(manifest.permitPath)));
   if (
-    stateParent !== jobDir || resultParent !== jobDir || permitParent !== jobDir ||
+    stateParent !== jobDir ||
+    resultParent !== jobDir ||
+    permitParent !== jobDir ||
     basename(manifest.statePath) !== "runner-state.json" ||
     basename(manifest.resultPath) !== "runner-result.json" ||
     basename(manifest.permitPath) !== "runner-permit.json"
@@ -67,7 +69,8 @@ export function readLoginManifest(path: string): SetupLoginManifest {
     throw new Error("setup-login sidecar path escapes or relocates its daemon-owned job directory");
   }
   const cwd = realpathSync(manifest.cwd);
-  if (cwd !== jobDir && !cwd.startsWith(jobDir + sep)) throw new Error("setup-login cwd escapes its job directory");
+  if (cwd !== jobDir && !cwd.startsWith(jobDir + sep))
+    throw new Error("setup-login cwd escapes its job directory");
   return manifest;
 }
 
@@ -76,11 +79,21 @@ export function captureExecutableEvidence(path: string): SetupExecutableEvidence
   const fd = openSync(canonical, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = fstatSync(fd, { bigint: true });
-    if (!stat.isFile() || stat.nlink !== 1n || stat.size < 0n || stat.size > 1024n * 1024n * 1024n) {
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1n ||
+      stat.size < 0n ||
+      stat.size > 1024n * 1024n * 1024n
+    ) {
       throw new Error("setup executable is not a bounded singly-linked regular file");
     }
     const named = lstatSync(canonical, { bigint: true });
-    if (named.isSymbolicLink() || !named.isFile() || named.dev !== stat.dev || named.ino !== stat.ino) {
+    if (
+      named.isSymbolicLink() ||
+      !named.isFile() ||
+      named.dev !== stat.dev ||
+      named.ino !== stat.ino
+    ) {
       throw new Error("setup executable changed during safe open");
     }
     const bytes = readFileSync(fd);
@@ -97,7 +110,10 @@ export function captureExecutableEvidence(path: string): SetupExecutableEvidence
   }
 }
 
-export function commandDigest(executable: SetupExecutableEvidence, args: readonly string[]): string {
+export function commandDigest(
+  executable: SetupExecutableEvidence,
+  args: readonly string[],
+): string {
   return createHash("sha256")
     .update(JSON.stringify({ executable, args: [...args] }))
     .digest("hex");
@@ -112,7 +128,9 @@ export function sealLoginManifest(
 
 export function verifyExecutableEvidence(expected: SetupExecutableEvidence): boolean {
   try {
-    return JSON.stringify(captureExecutableEvidence(expected.realpath)) === JSON.stringify(expected);
+    return (
+      JSON.stringify(captureExecutableEvidence(expected.realpath)) === JSON.stringify(expected)
+    );
   } catch {
     return false;
   }
@@ -120,8 +138,10 @@ export function verifyExecutableEvidence(expected: SetupExecutableEvidence): boo
 
 function assertManifestDigests(manifest: SetupLoginManifest): void {
   const { manifestDigest, ...unsigned } = manifest;
-  if (digestJson(unsigned) !== manifestDigest) throw new Error("setup-login manifest digest mismatch");
-  if (manifest.binary !== manifest.executable.realpath) throw new Error("setup-login manifest binary contradicts executable evidence");
+  if (digestJson(unsigned) !== manifestDigest)
+    throw new Error("setup-login manifest digest mismatch");
+  if (manifest.binary !== manifest.executable.realpath)
+    throw new Error("setup-login manifest binary contradicts executable evidence");
   if (commandDigest(manifest.executable, manifest.args) !== manifest.commandDigest) {
     throw new Error("setup-login manifest command digest mismatch");
   }
@@ -197,7 +217,12 @@ function readPrivateJson(path: string): unknown {
       throw new Error("setup-login sidecar is not a bounded regular file");
     }
     const named = lstatSync(absolute);
-    if (named.isSymbolicLink() || !named.isFile() || named.dev !== opened.dev || named.ino !== opened.ino) {
+    if (
+      named.isSymbolicLink() ||
+      !named.isFile() ||
+      named.dev !== opened.dev ||
+      named.ino !== opened.ino
+    ) {
       throw new Error("setup-login sidecar changed during safe open");
     }
     return JSON.parse(readFileSync(fd, "utf8"));

@@ -8,7 +8,11 @@
 const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.PANEL_REQUEST_TIMEOUT_MS || 10 * 60_000);
 
 function isAbortError(err) {
-  return typeof err === "object" && err !== null && (err.name === "AbortError" || String(err).includes("AbortError"));
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err.name === "AbortError" || String(err).includes("AbortError"))
+  );
 }
 
 /** Untrusted provider response values stay `unknown` at this boundary. A
@@ -25,14 +29,27 @@ export function exactObservedModelMatch(requestedModel, observedModel) {
   );
 }
 
-export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+export async function callOpenRouterModel(
+  model,
+  prompt,
+  { maxTokens = 60_000, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {},
+) {
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) return { model, status: "error", raw: "", error: "OPENROUTER_API_KEY is required", startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+    if (!apiKey)
+      return {
+        model,
+        status: "error",
+        raw: "",
+        error: "OPENROUTER_API_KEY is required",
+        startedAt,
+        firstEventAt: null,
+        completedAt: new Date().toISOString(),
+      };
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
@@ -48,7 +65,17 @@ export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, t
     const firstEventAt = new Date().toISOString();
     const bodyText = await res.text();
     const doneAt = () => new Date().toISOString();
-    if (!res.ok) return { model, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
+    if (!res.ok)
+      return {
+        model,
+        status: "error",
+        raw: bodyText,
+        error: `HTTP ${res.status}`,
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: doneAt(),
+      };
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
     const observedModel = typeof body.model === "string" ? body.model : null;
@@ -68,10 +95,39 @@ export async function callOpenRouterModel(model, prompt, { maxTokens = 60_000, t
         completedAt: doneAt(),
       };
     }
-    if (!raw.trim()) return { model, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
-    return { model, observedModel, observedModelSource: "openrouter_response_body", status: "responded", raw, ms: Date.now() - started, startedAt, firstEventAt, completedAt: doneAt() };
+    if (!raw.trim())
+      return {
+        model,
+        status: "error",
+        raw: bodyText,
+        error: "empty completion",
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: doneAt(),
+      };
+    return {
+      model,
+      observedModel,
+      observedModelSource: "openrouter_response_body",
+      status: "responded",
+      raw,
+      ms: Date.now() - started,
+      startedAt,
+      firstEventAt,
+      completedAt: doneAt(),
+    };
   } catch (err) {
-    return { model, status: isAbortError(err) ? "timed_out" : "error", raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+    return {
+      model,
+      status: isAbortError(err) ? "timed_out" : "error",
+      raw: "",
+      error: String(err),
+      ms: Date.now() - started,
+      startedAt,
+      firstEventAt: null,
+      completedAt: new Date().toISOString(),
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -85,7 +141,12 @@ export function isFindingShaped(item) {
     typeof item === "object" &&
     typeof item.severity === "string" &&
     item.severity.trim().length > 0 &&
-    (typeof item.finding === "string" ? item.finding : typeof item.claim === "string" ? item.claim : "").trim().length > 0
+    (typeof item.finding === "string"
+      ? item.finding
+      : typeof item.claim === "string"
+        ? item.claim
+        : ""
+    ).trim().length > 0
   );
 }
 
@@ -102,7 +163,8 @@ export function parseFindingsArray(raw) {
   }
   let lastBlock = null;
   // Tolerant fence: standard markdown may omit the newline before the closing fence.
-  for (const match of raw.matchAll(/```json\s*([\s\S]*?)```/g)) lastBlock = (match[1] ?? "").trim() || null;
+  for (const match of raw.matchAll(/```json\s*([\s\S]*?)```/g))
+    lastBlock = (match[1] ?? "").trim() || null;
   if (!lastBlock) return { findings: null, error: "no JSON findings array found" };
   try {
     const arr = JSON.parse(lastBlock);
@@ -119,7 +181,10 @@ export function parseFindingsArray(raw) {
 function validateFindings(arr) {
   if (arr.length === 0) return { findings: [], error: null };
   if (!arr.every((i) => isFindingShaped(i))) {
-    return { findings: null, error: "array contains non-finding-shaped items (severity + finding/claim required)" };
+    return {
+      findings: null,
+      error: "array contains non-finding-shaped items (severity + finding/claim required)",
+    };
   }
   // A reviewer answering INSUFFICIENT_EVIDENCE did not review: its response
   // is quorum-UNUSABLE (fail closed), not a non-blocking pass vote — parity
@@ -135,8 +200,14 @@ function validateFindings(arr) {
  * array of findings ({severity, finding, evidence}). Quorum = min responders
  * with PARSEABLE findings. Returns typed, fail-loud results.
  */
-export async function runOpenRouterPanel(models, prompt, { quorum = 2, maxTokens, timeoutMs } = {}) {
-  const results = await Promise.all(models.map((m) => callOpenRouterModel(m, prompt, { maxTokens, timeoutMs })));
+export async function runOpenRouterPanel(
+  models,
+  prompt,
+  { quorum = 2, maxTokens, timeoutMs } = {},
+) {
+  const results = await Promise.all(
+    models.map((m) => callOpenRouterModel(m, prompt, { maxTokens, timeoutMs })),
+  );
   const actors = results.map((r) => {
     if (r.status !== "responded") return { ...r, findings: null, parseError: r.error ?? r.status };
     const parsed = parseFindingsArray(r.raw);

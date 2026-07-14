@@ -22,7 +22,13 @@ export function observationsFromEvent(harnessId: string, ev: HarnessEvent): Budg
     // Token-derived costs (e.g. codex) are honest estimates -> "observed"; only
     // natively-reported costs (e.g. claude) are "exact".
     const quality = ev.usage.estimated ? "observed" : "exact";
-    out.push({ harness_id: harnessId, ts: nowIso(), quality, kind: "spend", usd: ev.usage.cost_usd });
+    out.push({
+      harness_id: harnessId,
+      ts: nowIso(),
+      quality,
+      kind: "spend",
+      usd: ev.usage.cost_usd,
+    });
   }
   if (ev.quota) {
     // The CLI's own machine-readable window record (codex rollout
@@ -46,7 +52,10 @@ function singleObservationFromEvent(harnessId: string, ev: HarnessEvent): Budget
     const resets = ev.rate_limit.resets_at ?? null;
     const delay = ev.rate_limit.retry_delay_ms ?? null;
     const cooldownUntil =
-      resets ?? new Date(Date.now() + (typeof delay === "number" && delay > 0 ? delay : DEFAULT_COOLDOWN_MS)).toISOString();
+      resets ??
+      new Date(
+        Date.now() + (typeof delay === "number" && delay > 0 ? delay : DEFAULT_COOLDOWN_MS),
+      ).toISOString();
     return {
       harness_id: harnessId,
       ts: nowIso(),

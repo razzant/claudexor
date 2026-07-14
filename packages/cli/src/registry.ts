@@ -56,7 +56,11 @@ export function buildGateway(opts: RegistryOptions = {}): HarnessGateway {
  * only when the harness has no truth source at all. Fails soft — adapter
  * models() already swallows network/auth errors and returns [].
  */
-export async function harnessModels(harnessId: string, cwd: string, includeFakes = false): Promise<ControlHarnessModelsResponse> {
+export async function harnessModels(
+  harnessId: string,
+  cwd: string,
+  includeFakes = false,
+): Promise<ControlHarnessModelsResponse> {
   const adapter = buildRegistry({ includeFakes }).get(harnessId);
   if (!adapter) {
     return { harnessId, models: [], source: "none", verifiedAgainst: null };

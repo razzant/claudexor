@@ -5,7 +5,6 @@ import { daemonDir, readToken } from "@claudexor/daemon";
 import type { InteractionAnswerSet, InteractionQuestion } from "@claudexor/schema";
 import { InteractionQuestion as InteractionQuestionSchema } from "@claudexor/schema";
 
-
 const print = (s: string): void => {
   process.stdout.write(s + "\n");
 };
@@ -27,7 +26,8 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")})`;
     case "harness.event": {
       const sub = String(p["type"] ?? "");
-      if (sub === "message" && typeof p["title"] === "string") return `[${who}] ${truncate(String(p["title"]), 160)}`;
+      if (sub === "message" && typeof p["title"] === "string")
+        return `[${who}] ${truncate(String(p["title"]), 160)}`;
       if (sub === "tool_call" && p["tool"] && typeof p["tool"] === "object") {
         const tool = p["tool"] as Record<string, unknown>;
         return `[${who}] tool ${String(tool["name"] ?? "?")}${tool["target"] ? ` — ${truncate(String(tool["target"]), 100)}` : ""}`;
@@ -100,15 +100,19 @@ export async function promptQuestionsOnTty(
     for (const q of questions) {
       print("");
       print(`? ${q.header ? `[${q.header}] ` : ""}${q.question}`);
-      q.options.forEach((o, idx) => print(`   ${idx + 1}) ${o.label}${o.description ? ` — ${o.description}` : ""}`));
-      const hint = q.options.length > 0
-        ? q.multi_select
-          ? "numbers separated by commas, or free text"
-          : "a number, or free text"
-        : "free text";
-      const raw = (signal
-        ? await rl.question(`   answer (${hint}): `, { signal })
-        : await rl.question(`   answer (${hint}): `)
+      q.options.forEach((o, idx) =>
+        print(`   ${idx + 1}) ${o.label}${o.description ? ` — ${o.description}` : ""}`),
+      );
+      const hint =
+        q.options.length > 0
+          ? q.multi_select
+            ? "numbers separated by commas, or free text"
+            : "a number, or free text"
+          : "free text";
+      const raw = (
+        signal
+          ? await rl.question(`   answer (${hint}): `, { signal })
+          : await rl.question(`   answer (${hint}): `)
       ).trim();
       if (!raw) continue;
       const picks = raw
@@ -140,9 +144,13 @@ export interface ControlApiAddress {
 }
 
 export function controlApiAddress(): ControlApiAddress {
-  const info = JSON.parse(readFileSync(join(daemonDir(), "control-api.json"), "utf8")) as { host?: string; port?: number };
+  const info = JSON.parse(readFileSync(join(daemonDir(), "control-api.json"), "utf8")) as {
+    host?: string;
+    port?: number;
+  };
   const token = readToken();
-  if (!info.host || !info.port || !token) throw new Error("daemon control API is not available (run: claudexor daemon start)");
+  if (!info.host || !info.port || !token)
+    throw new Error("daemon control API is not available (run: claudexor daemon start)");
   return { baseUrl: `http://${info.host}:${info.port}`, token };
 }
 
@@ -184,7 +192,8 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
       if (line) print(line);
     }
     const type = String(ev["type"] ?? "");
-    if (type === "run.completed" || type === "run.failed" || type === "run.blocked") sawTerminal = true;
+    if (type === "run.completed" || type === "run.failed" || type === "run.blocked")
+      sawTerminal = true;
     if (type === "run.failed" || type === "run.blocked") exitCode = 1;
     if (type === "interaction.requested" && !json) {
       await answerInteractionFromTty(addr, runId, ev);
@@ -195,7 +204,10 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
   for (let attempt = 0; attempt <= maxReconnects; attempt += 1) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, Math.min(500 * attempt, 3_000)));
-      if (!json) process.stderr.write(`claudexor follow: reconnecting (${attempt}/${maxReconnects}, resume from seq ${lastSeq})...\n`);
+      if (!json)
+        process.stderr.write(
+          `claudexor follow: reconnecting (${attempt}/${maxReconnects}, resume from seq ${lastSeq})...\n`,
+        );
     }
     let res: Response;
     try {
@@ -250,11 +262,17 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     }
     if (sawTerminal) return exitCode;
   }
-  process.stderr.write(`claudexor follow: stream lost after ${maxReconnects} reconnects (no terminal event observed)\n`);
+  process.stderr.write(
+    `claudexor follow: stream lost after ${maxReconnects} reconnects (no terminal event observed)\n`,
+  );
   return 1;
 }
 
-async function answerInteractionFromTty(addr: ControlApiAddress, runId: string, ev: Record<string, unknown>): Promise<void> {
+async function answerInteractionFromTty(
+  addr: ControlApiAddress,
+  runId: string,
+  ev: Record<string, unknown>,
+): Promise<void> {
   const p = (ev["payload"] ?? {}) as Record<string, unknown>;
   const interactionId = typeof p["interaction_id"] === "string" ? p["interaction_id"] : null;
   if (!interactionId) return;
@@ -282,22 +300,35 @@ async function answerInteractionFromTty(addr: ControlApiAddress, runId: string, 
       };
       const state = detail.summary?.state ?? "";
       const active = state === "running" || state === "queued";
-      const stillPending = (detail.pendingInteractions ?? []).some((pi) => pi.interactionId === interactionId);
+      const stillPending = (detail.pendingInteractions ?? []).some(
+        (pi) => pi.interactionId === interactionId,
+      );
       if (!active || !stillPending) return;
     }
   } catch {
     /* fall through to the deadline guard */
   }
-  const answers = await promptQuestionsOnTty(interactionId, questions, typeof p["timeout_at"] === "string" ? p["timeout_at"] : undefined);
+  const answers = await promptQuestionsOnTty(
+    interactionId,
+    questions,
+    typeof p["timeout_at"] === "string" ? p["timeout_at"] : undefined,
+  );
   if (!answers) return;
   const body = {
-    answers: answers.answers.map((a) => ({ questionId: a.question_id, selectedLabels: a.selected_labels, freeText: a.free_text })),
+    answers: answers.answers.map((a) => ({
+      questionId: a.question_id,
+      selectedLabels: a.selected_labels,
+      freeText: a.free_text,
+    })),
   };
-  const res = await fetch(`${addr.baseUrl}/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await fetch(
+    `${addr.baseUrl}/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     print(`(answer not delivered: ${res.status}${detail ? ` ${truncate(detail, 120)}` : ""})`);

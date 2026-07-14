@@ -5,7 +5,6 @@ import type { Readable, Writable } from "node:stream";
 import { extractPromptText, summarizeResult } from "./prompt.js";
 import { validateRunControls } from "./validate.js";
 
-
 export const ACP_PROTOCOL_VERSION = 1;
 
 export interface RunnerHooks {
@@ -62,7 +61,11 @@ export class AcpServer {
       } catch {
         // JSON-RPC 2.0 prescribes a Parse Error response with id null —
         // a malformed frame must never vanish silently (fail-loud surface).
-        this.write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error: invalid JSON frame" } });
+        this.write({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "parse error: invalid JSON frame" },
+        });
         continue;
       }
       // Responses to OUR outgoing requests carry an id and no method.
@@ -86,7 +89,11 @@ export class AcpServer {
       // responses and session/cancel while the run is active. Handler errors
       // are reported per-request, not thrown into the loop.
       void this.handle(msg).catch((err) => {
-        this.write({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: err instanceof Error ? err.message : String(err) } });
+        this.write({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32603, message: err instanceof Error ? err.message : String(err) },
+        });
       });
     }
   }
@@ -121,9 +128,12 @@ export class AcpServer {
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       if (deadlineMs !== undefined && Number.isFinite(deadlineMs)) {
-        timer = setTimeout(() => {
-          if (this.pendingRequests.delete(id)) resolve(null);
-        }, Math.max(0, deadlineMs));
+        timer = setTimeout(
+          () => {
+            if (this.pendingRequests.delete(id)) resolve(null);
+          },
+          Math.max(0, deadlineMs),
+        );
         timer.unref?.();
       }
       this.pendingRequests.set(id, (result) => {
@@ -141,7 +151,9 @@ export class AcpServer {
         this.reply(id, {
           protocolVersion: ACP_PROTOCOL_VERSION,
           agentInfo: { name: this.opts.name ?? "claudexor", version: this.opts.version ?? "dev" },
-          agentCapabilities: { promptCapabilities: { image: false, audio: false, embeddedContext: true } },
+          agentCapabilities: {
+            promptCapabilities: { image: false, audio: false, embeddedContext: true },
+          },
           // ACP v1 InitializeResponse carries authMethods; strict clients
           // deserialize it. Claudexor needs no editor-side auth: empty list.
           authMethods: [],
@@ -181,14 +193,23 @@ export class AcpServer {
           return;
         }
         if (!sessionId || !this.sessions.has(sessionId) || !this.sessionCwds.has(sessionId)) {
-          this.error(id, -32600, "session/prompt requires a known session created with session/new cwd");
+          this.error(
+            id,
+            -32600,
+            "session/prompt requires a known session created with session/new cwd",
+          );
           return;
         }
         const runControlError = validateRunControls(params);
         if (runControlError) {
           // The machine-readable class (e.g. inline_secret_rejected) rides
           // JSON-RPC error.data so ACP hosts can branch without parsing prose.
-          this.error(id, -32600, runControlError.message, runControlError.code ? { code: runControlError.code } : undefined);
+          this.error(
+            id,
+            -32600,
+            runControlError.message,
+            runControlError.code ? { code: runControlError.code } : undefined,
+          );
           return;
         }
         // One active run per session: a second prompt while one is running is
@@ -232,7 +253,9 @@ export class AcpServer {
               ...(params?.protectedPathApprovals !== undefined
                 ? { protectedPathApprovals: params.protectedPathApprovals }
                 : {}),
-              ...(params?.reviewerPanel !== undefined ? { reviewerPanel: params.reviewerPanel } : {}),
+              ...(params?.reviewerPanel !== undefined
+                ? { reviewerPanel: params.reviewerPanel }
+                : {}),
               ...(params?.reviewerModels !== undefined
                 ? { reviewerModels: params.reviewerModels }
                 : {}),
@@ -248,7 +271,10 @@ export class AcpServer {
           if (summary) {
             this.notify("session/update", {
               sessionId,
-              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: summary } },
+              update: {
+                sessionUpdate: "agent_message_chunk",
+                content: { type: "text", text: summary },
+              },
             });
           }
           this.reply(id, { stopReason: controller.signal.aborted ? "cancelled" : "end_turn" });
@@ -294,14 +320,20 @@ export class AcpServer {
       if (sub === "message" && typeof p["text"] === "string" && p["text"].trim()) {
         this.notify("session/update", {
           sessionId,
-          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: p["text"] } },
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: p["text"] },
+          },
         });
         return;
       }
       if (sub === "thinking" && typeof p["text"] === "string" && p["text"].trim()) {
         this.notify("session/update", {
           sessionId,
-          update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: p["text"] } },
+          update: {
+            sessionUpdate: "agent_thought_chunk",
+            content: { type: "text", text: p["text"] },
+          },
         });
         return;
       }
@@ -418,7 +450,8 @@ export class AcpServer {
       // Bound the wait by the interaction's own deadline (the engine stamps
       // timeoutAt on every interaction request); a silent editor then yields
       // a null response instead of a forever-pending server request.
-      const deadlineMs = Date.parse(String(request?.timeout_at ?? ctx?.timeoutAt ?? "")) - Date.now();
+      const deadlineMs =
+        Date.parse(String(request?.timeout_at ?? ctx?.timeoutAt ?? "")) - Date.now();
       const response = await this.request(
         "session/request_permission",
         {
@@ -429,15 +462,26 @@ export class AcpServer {
         Number.isFinite(deadlineMs) ? deadlineMs : 900_000,
       );
       const optionId = response?.outcome?.optionId ?? response?.optionId;
-      const picked = typeof optionId === "string" ? options.find((o: any) => o.optionId === optionId) : undefined;
+      const picked =
+        typeof optionId === "string"
+          ? options.find((o: any) => o.optionId === optionId)
+          : undefined;
       // Terminal status for the announced call either way: completed on an
       // answer, failed on decline/timeout — a started tool_call never hangs.
       this.notify("session/update", {
         sessionId,
-        update: { sessionUpdate: "tool_call_update", toolCallId, status: picked ? "completed" : "failed" },
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId,
+          status: picked ? "completed" : "failed",
+        },
       });
       if (picked) {
-        answers.push({ question_id: String(q?.id ?? ""), selected_labels: [picked.name], free_text: null });
+        answers.push({
+          question_id: String(q?.id ?? ""),
+          selected_labels: [picked.name],
+          free_text: null,
+        });
       }
     }
     if (declinedFreeText) {
@@ -454,6 +498,8 @@ export class AcpServer {
     }
     // Returning answers only for the choice questions; an empty set is a benign
     // decline (orchestrator/adapter then continue with assumptions).
-    return answers.length > 0 ? { interaction_id: String(request?.interaction_id ?? ""), answers } : null;
+    return answers.length > 0
+      ? { interaction_id: String(request?.interaction_id ?? ""), answers }
+      : null;
   }
 }

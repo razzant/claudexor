@@ -89,7 +89,9 @@ for (const { name, entry, outfile } of TARGETS) {
     },
     logLevel: "info",
   }).catch((err) => {
-    process.stderr.write(`[bundle-cli] esbuild failed for ${name} (${entry}): ${err?.message ?? err}\n`);
+    process.stderr.write(
+      `[bundle-cli] esbuild failed for ${name} (${entry}): ${err?.message ?? err}\n`,
+    );
     process.exit(1);
   });
 

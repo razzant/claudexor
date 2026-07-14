@@ -9,7 +9,14 @@ import {
   ResolvedConfig as ResolvedConfigSchema,
   TrustConfig,
 } from "@claudexor/schema";
-import { ensureDir, pathExists, readTextSafe, sha256, userConfigDir, writeText } from "@claudexor/util";
+import {
+  ensureDir,
+  pathExists,
+  readTextSafe,
+  sha256,
+  userConfigDir,
+  writeText,
+} from "@claudexor/util";
 
 export function globalConfigDir(): string {
   return userConfigDir();
@@ -20,14 +27,18 @@ export class ConfigParseError extends Error {
     public readonly path: string,
     cause: unknown,
   ) {
-    super(`invalid Claudexor YAML config at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    super(
+      `invalid Claudexor YAML config at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
     this.name = "ConfigParseError";
   }
 }
 
 /** Short stable hash of a repo root path, used to key user-local trust files. */
 export function repoHash(repoRoot: string): string {
-  return sha256(repoRoot).replace(/^sha256:/, "").slice(0, 16);
+  return sha256(repoRoot)
+    .replace(/^sha256:/, "")
+    .slice(0, 16);
 }
 
 function readYaml(path: string): unknown | null {
@@ -54,10 +65,22 @@ function readYaml(path: string): unknown | null {
  */
 const RETIRED_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
   { path: ["secrets"], retired: "secret refs moved to the SecretStore (Keychain / 0600 store)" },
-  { path: ["budget", "max_usd_per_day"], retired: "per-day caps were removed; quota respect + per-run caps remain" },
-  { path: ["routing", "default_model"], retired: "model choice is harness-scoped (INV-103); use harnesses.<id>.default_model" },
-  { path: ["harnesses", "*", "auth_ref"], retired: "auth routes come from doctor + auth_preference; refs live in the SecretStore" },
-  { path: ["harnesses", "*", "native_options"], retired: "never consumed by any adapter (v0.15 triage); per-harness knobs are typed fields" },
+  {
+    path: ["budget", "max_usd_per_day"],
+    retired: "per-day caps were removed; quota respect + per-run caps remain",
+  },
+  {
+    path: ["routing", "default_model"],
+    retired: "model choice is harness-scoped (INV-103); use harnesses.<id>.default_model",
+  },
+  {
+    path: ["harnesses", "*", "auth_ref"],
+    retired: "auth routes come from doctor + auth_preference; refs live in the SecretStore",
+  },
+  {
+    path: ["harnesses", "*", "native_options"],
+    retired: "never consumed by any adapter (v0.15 triage); per-harness knobs are typed fields",
+  },
 ];
 
 /** Keys older `claudexor init` scaffolds wrote into PROJECT config and current
@@ -66,8 +89,14 @@ const RETIRED_PROJECT_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = 
   { path: ["project"], retired: "language_stack was never consumed" },
   { path: ["delivery"], retired: "delivery knobs were never consumed from project config" },
   { path: ["review"], retired: "review attempts/strictness moved to engine policy" },
-  { path: ["context", "agents_md_first"], retired: "context assembly always reads agent docs first" },
-  { path: ["context", "never_silent_truncate"], retired: "no-silent-truncation is a Bible invariant, not a knob" },
+  {
+    path: ["context", "agents_md_first"],
+    retired: "context assembly always reads agent docs first",
+  },
+  {
+    path: ["context", "never_silent_truncate"],
+    retired: "no-silent-truncation is a Bible invariant, not a knob",
+  },
 ];
 
 /**
@@ -85,7 +114,9 @@ function migrateRetiredValues(raw: unknown): unknown {
       r["default_policy"] = "auto";
       // Disclose the rewrite: a user who pinned the retired value must not
       // find their setting silently changed.
-      process.stderr.write("claudexor: routing.default_policy 'portfolio' was retired (it behaved identically to 'auto'); using 'auto'\n");
+      process.stderr.write(
+        "claudexor: routing.default_policy 'portfolio' was retired (it behaved identically to 'auto'); using 'auto'\n",
+      );
     }
   }
   return raw;
@@ -101,13 +132,21 @@ function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): un
         continue;
       }
       const deeper = here.filter((s) => s.length > 1).map((s) => s.slice(1));
-      if (deeper.length > 0 && typeof value === "object" && value !== null && !Array.isArray(value)) {
+      if (
+        deeper.length > 0 &&
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value)
+      ) {
         strip(value as Record<string, unknown>, deeper);
       }
     }
   };
   const clone = structuredClone(raw) as Record<string, unknown>;
-  strip(clone, matchers.map((m) => m.path));
+  strip(
+    clone,
+    matchers.map((m) => m.path),
+  );
   return clone;
 }
 
@@ -140,7 +179,9 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const sources: string[] = [];
 
   const globalPath = join(globalConfigDir(), "config.yaml");
-  const globalRaw = migrateRetiredValues(stripRetiredKeys(readYaml(globalPath), RETIRED_CONFIG_KEYS));
+  const globalRaw = migrateRetiredValues(
+    stripRetiredKeys(readYaml(globalPath), RETIRED_CONFIG_KEYS),
+  );
   if (globalRaw !== null) sources.push(globalPath);
   const global = applyEnvOverrides(parseStrict(GlobalConfig, globalRaw ?? {}, globalPath));
 
@@ -333,7 +374,10 @@ function withConfigLock<T>(path: string, fn: () => T): T {
  * Update ~/.claudexor/config.yaml with validated global settings. Sensitive
  * values are not accepted here. Locked + atomic (see withConfigLock).
  */
-export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): { path: string; config: GlobalConfig } {
+export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): {
+  path: string;
+  config: GlobalConfig;
+} {
   const path = globalConfigPath();
   ensureDir(globalConfigDir());
   return withConfigLock(path, () => {
@@ -372,7 +416,7 @@ export function initProjectConfig(repoRoot: string): InitResult {
     "#\n" +
     "# Optional: require files as mandatory run context (fail-closed if missing,\n" +
     "# enforced uniformly across every mode). Empty by default; uncomment to opt in:\n" +
-    '#   context:\n' +
+    "#   context:\n" +
     '#     mandatory_files: ["README.md", "docs/ARCHITECTURE.md"]\n';
   writeText(configPath, header + yamlStringify(config));
   return { configPath, created: true };

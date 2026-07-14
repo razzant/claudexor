@@ -6,7 +6,12 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ControlCandidate, ReviewFinding, isBlocking, type DecisionRecord } from "@claudexor/schema";
+import {
+  ControlCandidate,
+  ReviewFinding,
+  isBlocking,
+  type DecisionRecord,
+} from "@claudexor/schema";
 
 interface RawAttempt {
   attempt_id?: unknown;

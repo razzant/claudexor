@@ -52,7 +52,12 @@ import {
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
-import { HarnessUnavailableError, summarizeDiffPaths as diffStats, validateModel, withInactivityWatchdog } from "@claudexor/core";
+import {
+  HarnessUnavailableError,
+  summarizeDiffPaths as diffStats,
+  validateModel,
+  withInactivityWatchdog,
+} from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
 import {
   type AnnouncedRunContext,
@@ -369,7 +374,6 @@ interface CandidateRun {
   infraPhase?: "workspace" | "harness";
 }
 
-
 /** User-level per-harness defaults (from the global config) applied at route time. */
 interface HarnessRouteSettings {
   defaultModel: string | null;
@@ -485,7 +489,11 @@ export class Orchestrator {
     // executor's plan steps — on any other mode it would be a silent no-op
     // knob. The CLI and control API validate this already; a direct embedder
     // must get the same loud refusal, not quiet acceptance.
-    if (resolved.maxToolCalls !== undefined && resolved.maxToolCalls !== null && mode !== "orchestrate") {
+    if (
+      resolved.maxToolCalls !== undefined &&
+      resolved.maxToolCalls !== null &&
+      mode !== "orchestrate"
+    ) {
       throw new Error(
         `maxToolCalls caps the orchestrate EXECUTOR's plan steps and only applies to mode=orchestrate (got mode=${mode}); drop the knob or switch modes`,
       );
@@ -514,7 +522,9 @@ export class Orchestrator {
           return this.runAsk(resolved, announce);
         case "audit":
           // `--swarm` selects the bounded read-only research swarm (old `explore`).
-          return resolved.swarm ? this.runExplore(resolved, announce) : this.runAudit(resolved, announce);
+          return resolved.swarm
+            ? this.runExplore(resolved, announce)
+            : this.runAudit(resolved, announce);
         case "agent":
           // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
           // and `--attempts` select the convergence loop; `--n` selects the race
@@ -588,7 +598,9 @@ export class Orchestrator {
           const check = validateModel(
             requestedModel,
             typeof adapter.models === "function"
-              ? (await adapter.models({ cwd, env: reviewHome.env, authPreference })).map((x) => x.id)
+              ? (await adapter.models({ cwd, env: reviewHome.env, authPreference })).map(
+                  (x) => x.id,
+                )
               : m.capabilities.known_models,
             typeof adapter.models === "function" ? "api" : "manifest",
           );
@@ -1260,7 +1272,6 @@ export class Orchestrator {
     return this.config(repoRoot).project;
   }
 
-
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
     const cfg = resolvedCfg.project;
@@ -1400,8 +1411,7 @@ export class Orchestrator {
         // Run cap precedence: explicit run input > surface deps > the user's
         // configured global per-run default. ($/day caps were removed; the budget
         // priority is respecting harness-reported subscription/OAuth quota.)
-        max_usd:
-          this.resolveMaxUsdCap(input.maxUsd, resolvedCfg),
+        max_usd: this.resolveMaxUsdCap(input.maxUsd, resolvedCfg),
       },
       // The resolved harness-scoped model map (scalar already expanded to the
       // primary by resolveRunInput). The contract is what route spec building
@@ -1564,12 +1574,7 @@ export class Orchestrator {
     runInput?: RunInput,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
-    const knobs = this.routeSpecKnobs(
-      routed,
-      contract,
-      modelHint,
-      effortHint,
-    );
+    const knobs = this.routeSpecKnobs(routed, contract, modelHint, effortHint);
     // In-place envelopes mutate the live tree under the user's native environment
     // (no scoped HOME), so the vendor's own session store is reachable: the turn
     // RESUMES the native CLI session (real continuity, like the read-only paths).
@@ -1694,7 +1699,11 @@ export class Orchestrator {
             // Live plan checklist: forward the adapter's typed plan
             // progress as a run event (LAST WINS; the UI renders the latest).
             if (safeEv.plan_progress) {
-              log?.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
+              log?.emit("plan.progress", {
+                attempt_id: attemptId,
+                harness_id: adapter.id,
+                items: safeEv.plan_progress.items,
+              });
             }
             if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
               cost += safeEv.usage.cost_usd;
@@ -2056,7 +2065,16 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
-    announce?.({ log, store, paths, runId, taskId, mode, phase: "race", spend: () => ledger.spend() });
+    announce?.({
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      mode,
+      phase: "race",
+      spend: () => ledger.spend(),
+    });
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
@@ -2146,7 +2164,15 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, mode);
+    const reviewersOutcome = await this.resolveReviewersWithArtifacts(
+      input,
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      mode,
+    );
     if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
     const reviewers = reviewersOutcome.reviewers;
     const reviewVerified = this.routeVerified(reviewers);
@@ -2315,7 +2341,15 @@ export class Orchestrator {
           this.candidateIntent(input),
           log,
           effectiveWeb,
-          this.interactionChannelFor(input, log, runId, taskId, slot.attemptId, adapter.id, slot.routed.supportsInteractive),
+          this.interactionChannelFor(
+            input,
+            log,
+            runId,
+            taskId,
+            slot.attemptId,
+            adapter.id,
+            slot.routed.supportsInteractive,
+          ),
           (streamedUsd) => {
             const lg = slotLedger(slot);
             lg.updateHold(slot.leaseId, streamedUsd);
@@ -2342,7 +2376,10 @@ export class Orchestrator {
         // post-stream throw (e.g. the secret-token assertion) carries its
         // streamed spend on the error — settle the TRUE cost, never launder
         // real spend down to 0.
-        const carriedCost = typeof (err as { costUsd?: unknown })?.costUsd === "number" ? (err as { costUsd: number }).costUsd : 0;
+        const carriedCost =
+          typeof (err as { costUsd?: unknown })?.costUsd === "number"
+            ? (err as { costUsd: number }).costUsd
+            : 0;
         slotLedger(slot).settle(slot.leaseId, carriedCost);
         const message = safeErrorMessage(err);
         // envelope is still undefined when wsm.create() itself threw — that is
@@ -2412,17 +2449,28 @@ export class Orchestrator {
 
     if (input.signal?.aborted) {
       await disposeReviewEnvelopes();
-      return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
-        this.writeRunTelemetry(
-          store,
-          paths,
-          contract,
-          runId,
-          taskId,
-          mode,
-          runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
-          null,
-        ),
+      return cancelledResult(
+        log,
+        runId,
+        taskId,
+        mode,
+        paths.root,
+        cancelledCandidates(),
+        () =>
+          this.writeRunTelemetry(
+            store,
+            paths,
+            contract,
+            runId,
+            taskId,
+            mode,
+            runs.map((r) => ({
+              attemptId: r.attemptId,
+              harnessId: r.harnessId,
+              telemetry: r.telemetry,
+            })),
+            null,
+          ),
         ledger.spend(),
       );
     }
@@ -2587,17 +2635,28 @@ export class Orchestrator {
       await disposeReviewEnvelopes();
     }
     if (input.signal?.aborted) {
-      return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
-        this.writeRunTelemetry(
-          store,
-          paths,
-          contract,
-          runId,
-          taskId,
-          mode,
-          runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
-          null,
-        ),
+      return cancelledResult(
+        log,
+        runId,
+        taskId,
+        mode,
+        paths.root,
+        cancelledCandidates(),
+        () =>
+          this.writeRunTelemetry(
+            store,
+            paths,
+            contract,
+            runId,
+            taskId,
+            mode,
+            runs.map((r) => ({
+              attemptId: r.attemptId,
+              harnessId: r.harnessId,
+              telemetry: r.telemetry,
+            })),
+            null,
+          ),
         ledger.spend(),
       );
     }
@@ -2665,7 +2724,15 @@ export class Orchestrator {
             "synthesize",
             log,
             effectiveWeb,
-            this.interactionChannelFor(input, log, runId, taskId, "synth", synthAdapter.id, synthRouted.supportsInteractive),
+            this.interactionChannelFor(
+              input,
+              log,
+              runId,
+              taskId,
+              "synth",
+              synthAdapter.id,
+              synthRouted.supportsInteractive,
+            ),
             undefined,
             input,
           );
@@ -2689,17 +2756,28 @@ export class Orchestrator {
             );
             evidences.push(...synthEvidence);
             if (input.signal?.aborted) {
-              return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
-                this.writeRunTelemetry(
-                  store,
-                  paths,
-                  contract,
-                  runId,
-                  taskId,
-                  mode,
-                  runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
-                  null,
-                ),
+              return cancelledResult(
+                log,
+                runId,
+                taskId,
+                mode,
+                paths.root,
+                cancelledCandidates(),
+                () =>
+                  this.writeRunTelemetry(
+                    store,
+                    paths,
+                    contract,
+                    runId,
+                    taskId,
+                    mode,
+                    runs.map((r) => ({
+                      attemptId: r.attemptId,
+                      harnessId: r.harnessId,
+                      telemetry: r.telemetry,
+                    })),
+                    null,
+                  ),
                 ledger.spend(),
               );
             }
@@ -2721,17 +2799,28 @@ export class Orchestrator {
       }
     }
     if (input.signal?.aborted) {
-      return cancelledResult(log, runId, taskId, mode, paths.root, cancelledCandidates(), () =>
-        this.writeRunTelemetry(
-          store,
-          paths,
-          contract,
-          runId,
-          taskId,
-          mode,
-          runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
-          null,
-        ),
+      return cancelledResult(
+        log,
+        runId,
+        taskId,
+        mode,
+        paths.root,
+        cancelledCandidates(),
+        () =>
+          this.writeRunTelemetry(
+            store,
+            paths,
+            contract,
+            runId,
+            taskId,
+            mode,
+            runs.map((r) => ({
+              attemptId: r.attemptId,
+              harnessId: r.harnessId,
+              telemetry: r.telemetry,
+            })),
+            null,
+          ),
         ledger.spend(),
       );
     }
@@ -2744,7 +2833,17 @@ export class Orchestrator {
       });
     } catch (err) {
       // Arbitration throws end terminally with artifacts, never as an orphan.
-      return failTerminally(log, store, paths, runId, taskId, mode, "arbitration", err, ledger.spend());
+      return failTerminally(
+        log,
+        store,
+        paths,
+        runId,
+        taskId,
+        mode,
+        "arbitration",
+        err,
+        ledger.spend(),
+      );
     }
     log.emit("arbitration.completed", {
       winner: result.decision.winner,
@@ -2798,7 +2897,9 @@ export class Orchestrator {
       ...result.decision,
       // Shared honesty owner: a blocked terminal overrides the persisted
       // decision (status/outcome/human_review + evidence fact).
-      ...(status === "blocked" ? blockedDecisionOverride(result.decision.evidence_facts, finalVerify) : {}),
+      ...(status === "blocked"
+        ? blockedDecisionOverride(result.decision.evidence_facts, finalVerify)
+        : {}),
       review_verified: actualReviewVerified,
       final_verify: finalVerify,
     });
@@ -3041,7 +3142,6 @@ export class Orchestrator {
     };
   }
 
-
   /** Single-owner telemetry artifact (final/telemetry.yaml); surfaces project it, never recompute. */
   private writeRunTelemetry(
     store: ArtifactStore,
@@ -3239,7 +3339,8 @@ export class Orchestrator {
     return reviewCandidate({
       ...input,
       reviewerTimeoutMs: input.reviewerTimeoutMs ?? reviewerTimeoutMs(this.config(input.cwd)),
-      transientRetryPolicy: input.transientRetryPolicy ?? transientRetryPolicy(this.config(input.cwd)),
+      transientRetryPolicy:
+        input.transientRetryPolicy ?? transientRetryPolicy(this.config(input.cwd)),
       env: reviewHome.env,
     }).finally(() => reviewHome.dispose());
   }
@@ -3457,7 +3558,16 @@ export class Orchestrator {
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    announce?.({ log, store, paths, runId, taskId, mode, phase: "convergence", spend: () => ledger.spend() });
+    announce?.({
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      mode,
+      phase: "convergence",
+      spend: () => ledger.spend(),
+    });
 
     // Live (in-place) isolation deliberately tolerates non-git stateful
     // environments; only envelope isolation needs the git boundary.
@@ -3491,7 +3601,15 @@ export class Orchestrator {
       diff: "(per-attempt)\n",
       tests: this.testsEvidence(contract),
     });
-    const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, mode);
+    const reviewersOutcome = await this.resolveReviewersWithArtifacts(
+      input,
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      mode,
+    );
     if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
     const reviewers = reviewersOutcome.reviewers;
     const reviewVerified = this.routeVerified(reviewers);
@@ -3716,7 +3834,15 @@ export class Orchestrator {
             "repair",
             log,
             effectiveWeb,
-            this.interactionChannelFor(input, log, runId, taskId, attemptId, adapter.id, routed.supportsInteractive),
+            this.interactionChannelFor(
+              input,
+              log,
+              runId,
+              taskId,
+              attemptId,
+              adapter.id,
+              routed.supportsInteractive,
+            ),
             (streamedUsd) => {
               const lg = this.harnessLedger(harnessLedgers, ledger, routed);
               lg.updateHold(lease.lease?.lease_id ?? "", streamedUsd);
@@ -3930,7 +4056,17 @@ export class Orchestrator {
             }
           })();
         } catch (err) {
-          return failTerminally(log, store, paths, runId, taskId, mode, "review", err, ledger.spend());
+          return failTerminally(
+            log,
+            store,
+            paths,
+            runId,
+            taskId,
+            mode,
+            "review",
+            err,
+            ledger.spend(),
+          );
         }
 
         if (conv.converged) {
@@ -3985,7 +4121,14 @@ export class Orchestrator {
           if (adapterPool.length > 1 && triedSinceProgress.size < adapterPool.length) {
             // Quota-headroom consumer (mid-run, where quota observations EXIST);
             // pick + honest route event owned by runSupport.rotateOnStall.
-            adapterIdx = rotateOnStall(adapterPool.map((a) => a.adapter.id), adapterIdx, ledger, triedSinceProgress, log, lastRun?.harnessId ?? null);
+            adapterIdx = rotateOnStall(
+              adapterPool.map((a) => a.adapter.id),
+              adapterIdx,
+              ledger,
+              triedSinceProgress,
+              log,
+              lastRun?.harnessId ?? null,
+            );
             routed = adapterPool[adapterIdx] as RoutedAdapter;
             adapter = routed.adapter;
           } else {
@@ -4056,7 +4199,9 @@ export class Orchestrator {
       // overrides the persisted decision; final_verify is recorded either way.
       decision = {
         ...decision,
-        ...(status === "blocked" ? blockedDecisionOverride(decision.evidence_facts, convFinalVerify) : {}),
+        ...(status === "blocked"
+          ? blockedDecisionOverride(decision.evidence_facts, convFinalVerify)
+          : {}),
         final_verify: convFinalVerify,
       };
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
@@ -4251,12 +4396,29 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
-    announce?.({ log, store, paths, runId, taskId, mode: "plan", phase: "plan", spend: () => ledger.spend() });
+    announce?.({
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      mode: "plan",
+      phase: "plan",
+      spend: () => ledger.spend(),
+    });
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
-    const reviewersOutcome = await this.resolveReviewersWithArtifacts(input, log, store, paths, runId, taskId, "plan");
+    const reviewersOutcome = await this.resolveReviewersWithArtifacts(
+      input,
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      "plan",
+    );
     if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
     const reviewers = reviewersOutcome.reviewers;
 
@@ -4375,8 +4537,7 @@ export class Orchestrator {
         const spec = HarnessRunSpec.parse({
           session_id: newId("ses"),
           intent: "plan",
-          prompt:
-            this.planPrompt(input.prompt) + contextSection + relayPriorPlansSection(plans),
+          prompt: this.planPrompt(input.prompt) + contextSection + relayPriorPlansSection(plans),
           cwd: this.execRootOf(input),
           access: "readonly",
           // Planners must SEE any image/file the user attached (e.g. "plan a fix for
@@ -4457,7 +4618,11 @@ export class Orchestrator {
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
               observeAttemptTelemetry(telemetry, safeEv);
               if (safeEv.plan_progress) {
-                log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
+                log.emit("plan.progress", {
+                  attempt_id: attemptId,
+                  harness_id: adapter.id,
+                  items: safeEv.plan_progress.items,
+                });
               }
               // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
@@ -4547,7 +4712,17 @@ export class Orchestrator {
           harnessId: p.harnessId,
           status: p.status,
         })),
-        () => this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null),
+        () =>
+          this.writeRunTelemetry(
+            store,
+            paths,
+            contract,
+            runId,
+            taskId,
+            "plan",
+            attemptTelemetries,
+            null,
+          ),
         ledger.spend(),
       );
     }
@@ -4691,7 +4866,17 @@ export class Orchestrator {
           harnessId: p.harnessId,
           status: p.status,
         })),
-        () => this.writeRunTelemetry(store, paths, contract, runId, taskId, "plan", attemptTelemetries, null),
+        () =>
+          this.writeRunTelemetry(
+            store,
+            paths,
+            contract,
+            runId,
+            taskId,
+            "plan",
+            attemptTelemetries,
+            null,
+          ),
         ledger.spend(),
       );
     }
@@ -4791,40 +4976,61 @@ export class Orchestrator {
   }
 
   /** ask: one selected harness answers read-only questions; no patch/apply controls. */
-  private async runAsk(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
-    return this.runReadOnlyReport(input, {
-      mode: "ask",
-      swarm: false,
-      intent: "explain",
-      title: "Answer",
-      artifactName: "answer.md",
-      defaultPrompt: "Answer the user's question.",
-    }, announce);
+  private async runAsk(
+    input: RunInput,
+    announce?: (a: AnnouncedRunContext) => void,
+  ): Promise<OrchestratorResult> {
+    return this.runReadOnlyReport(
+      input,
+      {
+        mode: "ask",
+        swarm: false,
+        intent: "explain",
+        title: "Answer",
+        artifactName: "answer.md",
+        defaultPrompt: "Answer the user's question.",
+      },
+      announce,
+    );
   }
 
   /** audit --swarm: bounded read-only research swarm (the old `explore` mode). */
-  private async runExplore(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
-    return this.runReadOnlyReport(input, {
-      mode: "audit",
-      swarm: true,
-      intent: "audit",
-      title: "Explore synthesis",
-      artifactName: "explore.md",
-      defaultPrompt:
-        "Explore this repository and synthesize evidence-cited findings, omissions, and follow-up questions.",
-    }, announce);
+  private async runExplore(
+    input: RunInput,
+    announce?: (a: AnnouncedRunContext) => void,
+  ): Promise<OrchestratorResult> {
+    return this.runReadOnlyReport(
+      input,
+      {
+        mode: "audit",
+        swarm: true,
+        intent: "audit",
+        title: "Explore synthesis",
+        artifactName: "explore.md",
+        defaultPrompt:
+          "Explore this repository and synthesize evidence-cited findings, omissions, and follow-up questions.",
+      },
+      announce,
+    );
   }
 
   /** audit: single read-only audit/map report. */
-  private async runAudit(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
-    return this.runReadOnlyReport(input, {
-      mode: "audit",
-      swarm: false,
-      intent: "audit",
-      title: "Audit report",
-      artifactName: "report.md",
-      defaultPrompt: "audit this repository",
-    }, announce);
+  private async runAudit(
+    input: RunInput,
+    announce?: (a: AnnouncedRunContext) => void,
+  ): Promise<OrchestratorResult> {
+    return this.runReadOnlyReport(
+      input,
+      {
+        mode: "audit",
+        swarm: false,
+        intent: "audit",
+        title: "Audit report",
+        artifactName: "report.md",
+        defaultPrompt: "audit this repository",
+      },
+      announce,
+    );
   }
 
   /**
@@ -4837,11 +5043,17 @@ export class Orchestrator {
    * harnesses unlock cross-family race/review in the plan space.
    */
   /** ONE owner of the per-run USD cap precedence: explicit input -> embedder deps -> operator config. */
-  private resolveMaxUsdCap(inputMaxUsd: number | null | undefined, cfg: ReturnType<typeof loadConfig>): number | null {
+  private resolveMaxUsdCap(
+    inputMaxUsd: number | null | undefined,
+    cfg: ReturnType<typeof loadConfig>,
+  ): number | null {
     return inputMaxUsd ?? this.deps.maxUsd ?? cfg.global.budget.max_usd_per_run ?? null;
   }
 
-  private async runOrchestrate(input: RunInput, announce?: (a: AnnouncedRunContext) => void): Promise<OrchestratorResult> {
+  private async runOrchestrate(
+    input: RunInput,
+    announce?: (a: AnnouncedRunContext) => void,
+  ): Promise<OrchestratorResult> {
     // "Doctor-verified" must mean status ok — degraded key-present routes are
     // excluded from the pool the planner plans over (readiness honesty).
     const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot }, "orchestrate");
@@ -4864,7 +5076,12 @@ export class Orchestrator {
       budget: { max_usd: aggregateMaxUsd, max_tool_calls: input.maxToolCalls ?? null },
       autonomy,
     });
-    const plannerPrompt = buildOrchestratePlannerPrompt(goal, pool, crossFamily, orchestrateContract);
+    const plannerPrompt = buildOrchestratePlannerPrompt(
+      goal,
+      pool,
+      crossFamily,
+      orchestrateContract,
+    );
     return this.runReadOnlyReport(
       // The executed pool is pinned to the PLANNED pool (no double doctor
       // resolution drift between the prompt's claims and the actual route).
@@ -4922,7 +5139,16 @@ export class Orchestrator {
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
     const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
-    announce?.({ log, store, paths, runId, taskId, mode: opts.mode, phase: "report", spend: () => ledger.spend() });
+    announce?.({
+      log,
+      store,
+      paths,
+      runId,
+      taskId,
+      mode: opts.mode,
+      phase: "report",
+      spend: () => ledger.spend(),
+    });
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
@@ -5204,7 +5430,11 @@ export class Orchestrator {
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
               observeAttemptTelemetry(telemetry, safeEv);
               if (safeEv.plan_progress) {
-                log.emit("plan.progress", { attempt_id: attemptId, harness_id: adapter.id, items: safeEv.plan_progress.items });
+                log.emit("plan.progress", {
+                  attempt_id: attemptId,
+                  harness_id: adapter.id,
+                  items: safeEv.plan_progress.items,
+                });
               }
               // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
@@ -5446,7 +5676,17 @@ export class Orchestrator {
           harnessId: a.harnessId,
           status: a.status,
         })),
-        () => this.writeRunTelemetry(store, paths, contract, runId, taskId, opts.mode, attemptTelemetries, null),
+        () =>
+          this.writeRunTelemetry(
+            store,
+            paths,
+            contract,
+            runId,
+            taskId,
+            opts.mode,
+            attemptTelemetries,
+            null,
+          ),
         ledger.spend(),
       );
     }
@@ -6054,13 +6294,20 @@ export class Orchestrator {
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
     remainingUsd: number | null,
-  ): Promise<{ status: OrchestrateStepStatus; runId: string | null; detail: string | null; spendUsd?: number | null }> {
+  ): Promise<{
+    status: OrchestrateStepStatus;
+    runId: string | null;
+    detail: string | null;
+    spendUsd?: number | null;
+  }> {
     switch (call.tool) {
       case "start_run":
       case "race": {
         // Isolated envelope sub-run (construction owned by runSupport);
         // recursion guard via orchestrateDepth+1, may NOT orchestrate.
-        const subInput: RunInput = { ...buildEnvelopeSubInput(input, call, remainingUsd) } as RunInput;
+        const subInput: RunInput = {
+          ...buildEnvelopeSubInput(input, call, remainingUsd),
+        } as RunInput;
         // SAFETY INVARIANT 1 (asserted, not convention): a safe sub-run is an
         // isolated envelope — never a live in-place turn.
         assertEnvelopeSubRun(subInput);
@@ -6226,8 +6473,6 @@ export class Orchestrator {
         : `deliver failed: ${delivered.detail ?? "unknown"}`,
     };
   }
-
-
 }
 
 function assertNoSecretLikeTokens(label: string, text: string): void {

@@ -87,7 +87,10 @@ export class ThreadStore {
     // unparseable record is dropped — and then the original file is backed up
     // and the loss is logged, so a schema change never SILENTLY erases history.
     let dropped = 0;
-    const keep = <T>(items: unknown[] | undefined, schema: { safeParse(v: unknown): { success: boolean; data?: T } }): T[] =>
+    const keep = <T>(
+      items: unknown[] | undefined,
+      schema: { safeParse(v: unknown): { success: boolean; data?: T } },
+    ): T[] =>
       (items ?? []).flatMap((item) => {
         let parsed = schema.safeParse(item);
         if (!parsed.success && item && typeof item === "object") {
@@ -159,7 +162,11 @@ export class ThreadStore {
       mode: input.mode ?? (input.repoRoot ? "agent" : "ask"),
       // An isolated workspace needs a git project for its worktree; a no-project
       // thread is always in_place (review #6 — never persist a doomed config).
-      workspace: { mode: input.repoRoot ? input.workspace ?? "in_place" : "in_place", worktree_path: null, base_sha: null },
+      workspace: {
+        mode: input.repoRoot ? (input.workspace ?? "in_place") : "in_place",
+        worktree_path: null,
+        base_sha: null,
+      },
       auth_preference: input.authPreference ?? "auto",
       primary_harness: primary,
       eligible_harnesses: eligible,
@@ -234,7 +241,9 @@ export class ThreadStore {
       // workspace/session context from one thread while advancing another
       // thread's lineage. A turn also never rides without its thread id.
       if (!threadId) {
-        throw Object.assign(new Error(`turnId ${turnId} requires its threadId`), { code: "unbound_turn" });
+        throw Object.assign(new Error(`turnId ${turnId} requires its threadId`), {
+          code: "unbound_turn",
+        });
       }
       if (turn.thread_id !== threadId) {
         throw Object.assign(
@@ -323,7 +332,12 @@ export class ThreadStore {
    * recorded job to replay (the enqueue itself threw) so surfaces offer
    * "send a new message" instead of a doomed Retry.
    */
-  setTurnEnqueueError(turnId: string, message: string, code: string | null = null, retryable = true): void {
+  setTurnEnqueueError(
+    turnId: string,
+    message: string,
+    code: string | null = null,
+    retryable = true,
+  ): void {
     const turn = this.state.turns.find((t) => t.id === turnId);
     if (!turn || turn.run_id) return;
     turn.enqueue_error = { message: redactSecrets(message), code, retryable, failed_at: nowIso() };
@@ -332,10 +346,16 @@ export class ThreadStore {
     this.persist();
   }
 
-
   /** Record/refresh the native CLI session a harness emitted for this thread. */
-  recordSession(threadId: string, harnessId: string, nativeSessionId: string, observedModel?: string | null): void {
-    const existing = this.state.sessions.find((s) => s.thread_id === threadId && s.harness_id === harnessId);
+  recordSession(
+    threadId: string,
+    harnessId: string,
+    nativeSessionId: string,
+    observedModel?: string | null,
+  ): void {
+    const existing = this.state.sessions.find(
+      (s) => s.thread_id === threadId && s.harness_id === harnessId,
+    );
     const now = nowIso();
     if (existing) {
       existing.native_session_id = nativeSessionId;
@@ -362,5 +382,4 @@ export class ThreadStore {
     if (thread) thread.updated_at = now;
     this.persist();
   }
-
 }

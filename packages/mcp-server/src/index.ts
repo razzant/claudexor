@@ -10,7 +10,11 @@ import {
   MissingRequiredClientCapabilityError,
   fromJsonSchema,
 } from "@modelcontextprotocol/server";
-import { StdioServerTransport, serveStdio, type ServeStdioOptions } from "@modelcontextprotocol/server/stdio";
+import {
+  StdioServerTransport,
+  serveStdio,
+  type ServeStdioOptions,
+} from "@modelcontextprotocol/server/stdio";
 import {
   EffortHint,
   ExternalContextPolicy,
@@ -50,9 +54,13 @@ function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, u
       // Claudexor's generated schemas are trees; a cycle would mean a schema
       // refactor introduced recursion — fail LOUDLY at server start rather
       // than silently degrading validation to permissive.
-      if (stack.includes(ref)) throw new Error(`cyclic $ref '${ref}' in a generated tool schema — flatten the schema or drop its outputSchema`);
+      if (stack.includes(ref))
+        throw new Error(
+          `cyclic $ref '${ref}' in a generated tool schema — flatten the schema or drop its outputSchema`,
+        );
       const target = resolvePointer(ref);
-      if (target === undefined) throw new Error(`unresolved $ref '${ref}' in a generated tool schema`);
+      if (target === undefined)
+        throw new Error(`unresolved $ref '${ref}' in a generated tool schema`);
       return resolve(target, [...stack, ref]);
     }
     const out: Record<string, unknown> = {};
@@ -71,7 +79,6 @@ const mcpRunToolResultSchema = inlineJsonSchemaRefs(
 const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
   agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
 );
-
 
 /**
  * Claudexor's MCP surface on the official TypeScript SDK v2.
@@ -92,7 +99,12 @@ export interface McpToolContext {
    * Resolves null when the host lacks the elicitation capability or declines
    * — the engine's timeout-decline fallback stays the honest default.
    */
-  elicit: ((request: { interaction_id: string; questions: InteractionQuestion[] }) => Promise<InteractionAnswer[] | null>) | null;
+  elicit:
+    | ((request: {
+        interaction_id: string;
+        questions: InteractionQuestion[];
+      }) => Promise<InteractionAnswer[] | null>)
+    | null;
   /**
    * The request's cancellation signal (`notifications/cancelled` from the
    * host) — runners abort the underlying run with it, exactly like Ctrl-C
@@ -130,7 +142,11 @@ export interface McpServerOptions {
 }
 
 /** Build the SDK server with Claudexor's tools registered (one era-agnostic factory). */
-export function buildMcpServer(opts: { name?: string; version?: string; tools: McpTool[] }): SdkMcpServer {
+export function buildMcpServer(opts: {
+  name?: string;
+  version?: string;
+  tools: McpTool[];
+}): SdkMcpServer {
   const server = new SdkMcpServer({
     name: opts.name ?? "claudexor",
     version: opts.version ?? "dev",
@@ -143,7 +159,9 @@ export function buildMcpServer(opts: { name?: string; version?: string; tools: M
         inputSchema: fromJsonSchema(tool.inputSchema as any) as any,
         // Structured results are DECLARED (outputSchema) and mirrored in text;
         // annotations are the MCP behavior hints (read-only vs mutating).
-        ...(tool.outputSchema ? { outputSchema: fromJsonSchema(tool.outputSchema as any) as any } : {}),
+        ...(tool.outputSchema
+          ? { outputSchema: fromJsonSchema(tool.outputSchema as any) as any }
+          : {}),
         ...(tool.annotations ? { annotations: tool.annotations } : {}),
       },
       (async (args: unknown, ctx: any) => {
@@ -187,7 +205,9 @@ export function buildMcpServer(opts: { name?: string; version?: string; tools: M
 export function serveClaudexorMcp(opts: McpServerOptions): { close(): Promise<void> } {
   warnOnPluginVersionSkew(opts.version);
   const serveOpts: ServeStdioOptions = {
-    ...(opts.transport ? { transport: new StdioServerTransport(opts.transport.read, opts.transport.write) } : {}),
+    ...(opts.transport
+      ? { transport: new StdioServerTransport(opts.transport.read, opts.transport.write) }
+      : {}),
     // Out-of-band transport errors go to stderr — stdout is the wire.
     onerror: (err) => process.stderr.write(`claudexor mcp: ${err.message}\n`),
   };
@@ -229,7 +249,11 @@ function elicitBridge(ctx: any): McpToolContext["elicit"] {
       const hasOptions = q.options.length > 0;
       const property: Record<string, unknown> = hasOptions
         ? q.multi_select
-          ? { type: "array", items: { type: "string", enum: q.options.map((o) => o.label) }, description: optionLegend(q) }
+          ? {
+              type: "array",
+              items: { type: "string", enum: q.options.map((o) => o.label) },
+              description: optionLegend(q),
+            }
           : { type: "string", enum: q.options.map((o) => o.label), description: optionLegend(q) }
         : { type: "string", description: "Free-text answer" };
       let result: any;
@@ -273,25 +297,33 @@ function optionLegend(q: InteractionQuestion): string {
 }
 
 function validateToolArguments(tool: McpTool, args: unknown): string | null {
-  if (!args || typeof args !== "object" || Array.isArray(args)) return "tool arguments must be an object";
+  if (!args || typeof args !== "object" || Array.isArray(args))
+    return "tool arguments must be an object";
   const obj = args as Record<string, unknown>;
-  const allowed = new Set(Object.keys((tool.inputSchema.properties ?? {}) as Record<string, unknown>));
+  const allowed = new Set(
+    Object.keys((tool.inputSchema.properties ?? {}) as Record<string, unknown>),
+  );
   for (const key of Object.keys(obj)) {
     if (!allowed.has(key)) return `unknown argument: ${key}`;
   }
   // Prompt is required exactly when the tool's own schema REQUIRES it — no
   // per-tool-name special cases (no-argument tools like status/capabilities
   // simply do not declare a prompt property).
-  const requiredKeys = Array.isArray(tool.inputSchema.required) ? (tool.inputSchema.required as string[]) : [];
+  const requiredKeys = Array.isArray(tool.inputSchema.required)
+    ? (tool.inputSchema.required as string[])
+    : [];
   if (requiredKeys.includes("prompt")) {
-    if (typeof obj.prompt !== "string" || obj.prompt.trim().length === 0) return "prompt must be a non-empty string";
+    if (typeof obj.prompt !== "string" || obj.prompt.trim().length === 0)
+      return "prompt must be a non-empty string";
   }
   const harnessError = validateOptionalNonEmptyString(obj.harness, "harness");
   if (harnessError) return harnessError;
-  if (obj.repoPath !== undefined && (typeof obj.repoPath !== "string" || !isAbsolute(obj.repoPath))) return "repoPath must be an absolute path";
+  if (obj.repoPath !== undefined && (typeof obj.repoPath !== "string" || !isAbsolute(obj.repoPath)))
+    return "repoPath must be an absolute path";
   const nSchema = ((tool.inputSchema.properties ?? {}) as Record<string, { minimum?: unknown }>).n;
   const minN = typeof nSchema?.minimum === "number" ? nSchema.minimum : 1;
-  if (obj.n !== undefined && (!Number.isInteger(obj.n) || (obj.n as number) < minN)) return `n must be an integer >= ${minN}`;
+  if (obj.n !== undefined && (!Number.isInteger(obj.n) || (obj.n as number) < minN))
+    return `n must be an integer >= ${minN}`;
   // Shared semantic run-control rules (ONE owner in @claudexor/schema).
   const runControlError = validateSurfaceRunControls(obj);
   if (runControlError) return runControlError;
@@ -367,7 +399,10 @@ function structuredRunResult(result: unknown): Record<string, unknown> {
     runId: typeof r["runId"] === "string" && r["runId"] ? r["runId"] : null,
     runDir: typeof r["runDir"] === "string" && r["runDir"] ? r["runDir"] : null,
     status: typeof r["status"] === "string" && r["status"] ? r["status"] : null,
-    applyEligibility: r["applyEligibility"] && typeof r["applyEligibility"] === "object" ? r["applyEligibility"] : null,
+    applyEligibility:
+      r["applyEligibility"] && typeof r["applyEligibility"] === "object"
+        ? r["applyEligibility"]
+        : null,
   };
 }
 
@@ -377,25 +412,62 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     PROVIDER_FAMILIES.map((family) => [family, { type: "string", minLength: 1 }]),
   );
   const reviewerEffortProperties = Object.fromEntries(
-    PROVIDER_FAMILIES.map((family) => [
-      family,
-      { type: "string", enum: EffortHint.options },
-    ]),
+    PROVIDER_FAMILIES.map((family) => [family, { type: "string", enum: EffortHint.options }]),
   );
   const promptSchema = (minN = 1) => ({
     type: "object",
     additionalProperties: false,
     properties: {
-      prompt: { type: "string", minLength: 1, pattern: "\\S", description: "The user task or question to run through Claudexor." },
-      harness: { type: "string", minLength: 1, description: "Optional harness id to force for this one-shot run." },
-      primaryHarness: { type: "string", minLength: 1, description: "Optional primary harness id for this run." },
-      model: { type: "string", minLength: 1, description: "Optional model override for the primary harness." },
-      effort: { type: "string", enum: EffortHint.options, description: "Optional effort override for the primary harness." },
-      web: { type: "string", enum: ExternalContextPolicy.options, description: "External context policy for this run." },
-      externalContextPolicy: { type: "string", enum: ExternalContextPolicy.options, description: "Alias of web for control-api parity." },
-      n: { type: "integer", minimum: minN, description: "Optional best-of-N width for candidate races." },
-      repoPath: { type: "string", description: "Absolute path of the target project. Defaults to the MCP server cwd." },
-      tests: { type: "array", items: { type: "string", minLength: 1 }, description: "Deterministic gate commands for this run." },
+      prompt: {
+        type: "string",
+        minLength: 1,
+        pattern: "\\S",
+        description: "The user task or question to run through Claudexor.",
+      },
+      harness: {
+        type: "string",
+        minLength: 1,
+        description: "Optional harness id to force for this one-shot run.",
+      },
+      primaryHarness: {
+        type: "string",
+        minLength: 1,
+        description: "Optional primary harness id for this run.",
+      },
+      model: {
+        type: "string",
+        minLength: 1,
+        description: "Optional model override for the primary harness.",
+      },
+      effort: {
+        type: "string",
+        enum: EffortHint.options,
+        description: "Optional effort override for the primary harness.",
+      },
+      web: {
+        type: "string",
+        enum: ExternalContextPolicy.options,
+        description: "External context policy for this run.",
+      },
+      externalContextPolicy: {
+        type: "string",
+        enum: ExternalContextPolicy.options,
+        description: "Alias of web for control-api parity.",
+      },
+      n: {
+        type: "integer",
+        minimum: minN,
+        description: "Optional best-of-N width for candidate races.",
+      },
+      repoPath: {
+        type: "string",
+        description: "Absolute path of the target project. Defaults to the MCP server cwd.",
+      },
+      tests: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        description: "Deterministic gate commands for this run.",
+      },
       maxUsd: { type: "number", minimum: 0, description: "Optional per-run budget ceiling." },
       access: {
         type: "string",
@@ -449,8 +521,15 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   // ask/audit/plan are read-only by construction, and MCP orchestrate is
   // suggest-autonomy only (a read-only plan). Only agent-mode tools mutate.
   const annotationsFor = (params: Record<string, unknown>): McpToolAnnotations =>
-    params["mode"] === "agent" ? { readOnlyHint: false, destructiveHint: false } : { readOnlyHint: true };
-  const mk = (name: string, description: string, params: Record<string, unknown>, minN = 1): McpTool => ({
+    params["mode"] === "agent"
+      ? { readOnlyHint: false, destructiveHint: false }
+      : { readOnlyHint: true };
+  const mk = (
+    name: string,
+    description: string,
+    params: Record<string, unknown>,
+    minN = 1,
+  ): McpTool => ({
     name,
     description,
     inputSchema: promptSchema(minN),
@@ -471,7 +550,9 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
                   const interactionId = ictx?.request?.interaction_id ?? "";
                   const answers = await ctx.elicit!({
                     interaction_id: interactionId,
-                    questions: Array.isArray(ictx?.request?.questions) ? ictx.request.questions : [],
+                    questions: Array.isArray(ictx?.request?.questions)
+                      ? ictx.request.questions
+                      : [],
                   });
                   // The TYPED InteractionAnswerSet carries the interaction id
                   // (ACP/daemon parity; the engine keys the set to the request).
@@ -487,17 +568,45 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   const runIdSchema = {
     type: "object",
     additionalProperties: false,
-    properties: { runId: { type: "string", minLength: 1, description: "Daemon run id (from a run tool's runId trailer or claudexor_runs)." } },
+    properties: {
+      runId: {
+        type: "string",
+        minLength: 1,
+        description: "Daemon run id (from a run tool's runId trailer or claudexor_runs).",
+      },
+    },
     required: ["runId"],
   };
   return [
-    mk("claudexor_ask", "One-shot read-only answer through Claudexor; returns final output, not a live thread.", { mode: "ask" }),
-    mk("claudexor_explore", "One-shot bounded read-only exploration and synthesis through Claudexor.", { mode: "audit", swarm: true }),
-    mk("claudexor_run", "One-shot Agent-mode Claudexor run; returns the final WorkProduct summary plus runId.", { mode: "agent" }),
-    mk("claudexor_best_of", "One-shot best-of-N Claudexor run with cross-family review.", { mode: "agent", race: true }, 2),
+    mk(
+      "claudexor_ask",
+      "One-shot read-only answer through Claudexor; returns final output, not a live thread.",
+      { mode: "ask" },
+    ),
+    mk(
+      "claudexor_explore",
+      "One-shot bounded read-only exploration and synthesis through Claudexor.",
+      { mode: "audit", swarm: true },
+    ),
+    mk(
+      "claudexor_run",
+      "One-shot Agent-mode Claudexor run; returns the final WorkProduct summary plus runId.",
+      { mode: "agent" },
+    ),
+    mk(
+      "claudexor_best_of",
+      "One-shot best-of-N Claudexor run with cross-family review.",
+      { mode: "agent", race: true },
+      2,
+    ),
     mk("claudexor_plan", "One-shot read-only Claudexor implementation plan.", { mode: "plan" }),
-    mk("claudexor_create", "One-shot create-from-scratch Claudexor run.", { mode: "agent", create: true }),
-    mk("claudexor_orchestrate", "One-shot typed Claudexor orchestration plan over the tool belt.", { mode: "orchestrate" }),
+    mk("claudexor_create", "One-shot create-from-scratch Claudexor run.", {
+      mode: "agent",
+      create: true,
+    }),
+    mk("claudexor_orchestrate", "One-shot typed Claudexor orchestration plan over the tool belt.", {
+      mode: "orchestrate",
+    }),
     {
       name: "claudexor_status",
       description:
@@ -508,7 +617,10 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         const result = await runner({ mode: "__status" });
         return {
           text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
         };
       },
     },
@@ -523,7 +635,10 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         const result = await runner({ mode: "__capabilities" });
         return {
           text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
         };
       },
     },
@@ -538,7 +653,10 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         const result = await runner({ mode: "__runs_list" });
         return {
           text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
         };
       },
     },
@@ -552,20 +670,27 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         const result = await runner({ mode: "__run_inspect", runId: String(args?.runId ?? "") });
         return {
           text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
         };
       },
     },
     {
       name: "claudexor_apply_check",
-      description: "Dry-check whether a run's patch would apply cleanly to its original project (no mutation).",
+      description:
+        "Dry-check whether a run's patch would apply cleanly to its original project (no mutation).",
       inputSchema: runIdSchema,
       annotations: { readOnlyHint: true, idempotentHint: true },
       handler: async (args) => {
         const result = await runner({ mode: "__apply_check", runId: String(args?.runId ?? "") });
         return {
           text: formatRunResult(result),
-          structured: (result && typeof result === "object" ? result : {}) as Record<string, unknown>,
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
         };
       },
     },

@@ -16,10 +16,15 @@ export const Attachment = z
   .object({
     id: Id.describe("Attachment id."),
     kind: AttachmentKind.default("file"),
-    mime: z.string().default("application/octet-stream").describe("MIME type of the attachment content."),
+    mime: z
+      .string()
+      .default("application/octet-stream")
+      .describe("MIME type of the attachment content."),
     name: z.string().default("").describe("Original file name as provided by the user or agent."),
     /** Resolved local path in the scoped attachment store. */
-    path: z.string().describe("Resolved local path in the scoped attachment store (kept outside any worktree)."),
+    path: z
+      .string()
+      .describe("Resolved local path in the scoped attachment store (kept outside any worktree)."),
   })
   .describe(
     "A user- or agent-provided file/image attached to a turn, stored in the scoped attachment store and forwarded to harnesses in their native shape.",
@@ -37,9 +42,18 @@ export type Attachment = z.infer<typeof Attachment>;
 export const AttachmentInput = z
   .object({
     kind: AttachmentKind.default("file"),
-    mime: z.string().default("application/octet-stream").describe("MIME type of the attachment content."),
+    mime: z
+      .string()
+      .default("application/octet-stream")
+      .describe("MIME type of the attachment content."),
     name: z.string().default("").describe("Original file name for the attachment."),
-    data: z.string().nullable().default(null).describe("Base64-inline attachment bytes for a fresh upload; null when path is used instead."),
+    data: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Base64-inline attachment bytes for a fresh upload; null when path is used instead.",
+      ),
     path: z
       .string()
       .nullable()

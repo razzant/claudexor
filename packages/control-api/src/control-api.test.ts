@@ -2262,9 +2262,7 @@ describe("DaemonControlApiServer", () => {
         });
         expect(created.status).toBe(200);
         expect(await created.json()).toMatchObject({ jobId: "setup-1", action: "login" });
-        expect(seen).toEqual([
-          { harness: "cursor", action: "login", authRequest: "subscription" },
-        ]);
+        expect(seen).toEqual([{ harness: "cursor", action: "login", authRequest: "subscription" }]);
 
         const listed = await fetch(
           `${base}/setup/jobs?harness=cursor&action=login&active=true&limit=1`,

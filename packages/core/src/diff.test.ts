@@ -90,8 +90,15 @@ describe("parseUnifiedDiff", () => {
       "Mcmb=x#L",
       "",
     ].join("\n");
-    const stub = ["diff --git a/img.png b/img.png", "Binary files a/img.png and b/img.png differ", ""].join("\n");
-    expect(parseUnifiedDiff(withPayload).files[0]).toMatchObject({ binary: true, binaryStub: false });
+    const stub = [
+      "diff --git a/img.png b/img.png",
+      "Binary files a/img.png and b/img.png differ",
+      "",
+    ].join("\n");
+    expect(parseUnifiedDiff(withPayload).files[0]).toMatchObject({
+      binary: true,
+      binaryStub: false,
+    });
     expect(parseUnifiedDiff(stub).files[0]).toMatchObject({ binary: true, binaryStub: true });
   });
 
@@ -210,7 +217,11 @@ describe("parseUnifiedDiff — plain GNU diffs (non-git in-place fallback)", () 
     ].join("\n");
     const res = parseUnifiedDiff(doc);
     expect(res.files).toHaveLength(2);
-    expect(res.files[0]).toMatchObject({ binary: true, binaryStub: true, newPath: "/repo/img.png" });
+    expect(res.files[0]).toMatchObject({
+      binary: true,
+      binaryStub: true,
+      newPath: "/repo/img.png",
+    });
     expect(res.files[1]).toMatchObject({ added: true, oldPath: null, newPath: "/repo/new.txt" });
   });
 

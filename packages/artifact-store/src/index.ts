@@ -29,7 +29,10 @@ export interface RunPaths {
 export class ArtifactStore {
   readonly claudexorDir: string;
 
-  constructor(public readonly repoRoot: string, options: { claudexorDir?: string } = {}) {
+  constructor(
+    public readonly repoRoot: string,
+    options: { claudexorDir?: string } = {},
+  ) {
     this.claudexorDir = options.claudexorDir ?? projectRuntimeDir(repoRoot);
   }
 
@@ -48,7 +51,9 @@ export class ArtifactStore {
     // via registry lookup — this is the defense-in-depth floor beneath them,
     // the same reasoning as the envelope-id validation in dispose()).
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId)) {
-      throw new Error(`invalid run id '${runId}': a run id is a single path segment ([A-Za-z0-9._-], no separators)`);
+      throw new Error(
+        `invalid run id '${runId}': a run id is a single path segment ([A-Za-z0-9._-], no separators)`,
+      );
     }
     const root = join(this.runsDir(), runId);
     return {

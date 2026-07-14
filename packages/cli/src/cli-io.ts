@@ -31,7 +31,10 @@ export function authSourceAvailability(status: {
   const sources = status.authSources ?? [];
   if (sources.length === 0) return "readiness-not-reported";
   return sources
-    .map((source) => `${source.source}[availability=${source.availability},verification=${source.verification}]`)
+    .map(
+      (source) =>
+        `${source.source}[availability=${source.availability},verification=${source.verification}]`,
+    )
     .join(", ");
 }
 

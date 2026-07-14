@@ -33,7 +33,9 @@ try {
   // The dynamic import is INSIDE the try: an unbuilt workspace (no dist)
   // throws ERR_MODULE_NOT_FOUND here, which must degrade to "versions
   // unknown" (structure checks still run), not crash the gate.
-  const { buildRegistry } = await import(pathToFileURL(join(root, "packages/cli/dist/registry.js")).href);
+  const { buildRegistry } = await import(
+    pathToFileURL(join(root, "packages/cli/dist/registry.js")).href
+  );
   for (const adapter of buildRegistry({ includeFakes: false }).values()) {
     try {
       const manifest = await adapter.discover();
@@ -92,18 +94,27 @@ const disclosures = []; // never strict-fatal: synthetic-only coverage notes
 // silently skipping it would let a new adapter ship with zero stream proof.
 const NO_FIXTURES_EXEMPT = {
   "harness-fake": "the fake harnesses ARE the deterministic synthetic sources other suites consume",
-  "harness-raw-api": "no native CLI stream exists to record; the adapter consumes the OpenAI-compatible HTTP API shape directly (unit-tested in-package)",
+  "harness-raw-api":
+    "no native CLI stream exists to record; the adapter consumes the OpenAI-compatible HTTP API shape directly (unit-tested in-package)",
 };
 const packagesDir = join(root, "packages");
 const allHarnessPkgs = readdirSync(packagesDir).filter((d) => d.startsWith("harness-"));
 for (const pkg of allHarnessPkgs) {
   if (!existsSync(join(packagesDir, pkg, "fixtures")) && !(pkg in NO_FIXTURES_EXEMPT)) {
-    failures.push(`packages/${pkg}: no fixtures/ directory and no NO_FIXTURES_EXEMPT entry — new adapters need stream fixtures or a justified exemption`);
+    failures.push(
+      `packages/${pkg}: no fixtures/ directory and no NO_FIXTURES_EXEMPT entry — new adapters need stream fixtures or a justified exemption`,
+    );
   }
 }
 for (const exempt of Object.keys(NO_FIXTURES_EXEMPT)) {
-  if (!allHarnessPkgs.includes(exempt)) failures.push(`NO_FIXTURES_EXEMPT lists '${exempt}' which is not a harness package — stale exemption`);
-  else if (existsSync(join(packagesDir, exempt, "fixtures"))) failures.push(`NO_FIXTURES_EXEMPT lists '${exempt}' but it HAS a fixtures dir — drop the stale exemption`);
+  if (!allHarnessPkgs.includes(exempt))
+    failures.push(
+      `NO_FIXTURES_EXEMPT lists '${exempt}' which is not a harness package — stale exemption`,
+    );
+  else if (existsSync(join(packagesDir, exempt, "fixtures")))
+    failures.push(
+      `NO_FIXTURES_EXEMPT lists '${exempt}' but it HAS a fixtures dir — drop the stale exemption`,
+    );
 }
 const harnessDirs = allHarnessPkgs.filter((d) => existsSync(join(packagesDir, d, "fixtures")));
 for (const pkg of harnessDirs) {
@@ -136,18 +147,25 @@ for (const pkg of harnessDirs) {
       continue;
     }
     if (entry.source !== "synthetic" && entry.source !== "recorded") {
-      failures.push(`${relDir}/${file}: source must be 'synthetic' or 'recorded' (got '${entry.source ?? ""}')`);
+      failures.push(
+        `${relDir}/${file}: source must be 'synthetic' or 'recorded' (got '${entry.source ?? ""}')`,
+      );
     }
     if (entry.source === "recorded" && !semver(entry.cli_version)) {
       failures.push(`${relDir}/${file}: recorded fixture without a semver cli_version`);
     }
   }
   for (const declared of Object.keys(manifest.fixtures)) {
-    if (!files.includes(declared)) failures.push(`${relDir}/manifest.yaml declares '${declared}' but the file is gone — stale entry`);
+    if (!files.includes(declared))
+      failures.push(
+        `${relDir}/manifest.yaml declares '${declared}' but the file is gone — stale entry`,
+      );
   }
   const recorded = Object.entries(manifest.fixtures).filter(([, e]) => e.source === "recorded");
   if (recorded.length === 0) {
-    disclosures.push(`${manifest.cli}: SYNTHETIC-ONLY fixtures (no recorded real stream) — record one when a live route is available`);
+    disclosures.push(
+      `${manifest.cli}: SYNTHETIC-ONLY fixtures (no recorded real stream) — record one when a live route is available`,
+    );
     continue;
   }
   const installed = installedVersion(manifest.cli);
@@ -155,12 +173,16 @@ for (const pkg of harnessDirs) {
     // Recorded fixtures EXIST but cannot be validated here — drift-grade:
     // a release machine (--strict) must have the vendor CLI to prove the
     // recordings still match; a dev machine just sees the warning.
-    driftWarnings.push(`${manifest.cli}: CLI not installed/answering here; recorded fixtures cannot be freshness-checked on this machine`);
+    driftWarnings.push(
+      `${manifest.cli}: CLI not installed/answering here; recorded fixtures cannot be freshness-checked on this machine`,
+    );
     continue;
   }
   for (const [file, entry] of recorded) {
     if (semver(entry.cli_version) !== installed) {
-      driftWarnings.push(`${manifest.cli}: ${file} recorded against ${entry.cli_version}, installed CLI is ${installed} — re-record to keep stream-shape proof current`);
+      driftWarnings.push(
+        `${manifest.cli}: ${file} recorded against ${entry.cli_version}, installed CLI is ${installed} — re-record to keep stream-shape proof current`,
+      );
     }
   }
 }
@@ -173,7 +195,11 @@ if (failures.length > 0) {
   process.exit(1);
 }
 if (strict && driftWarnings.length > 0) {
-  console.error(`fixture-freshness: ${driftWarnings.length} drift warning(s) escalated by --strict — re-record against the installed CLIs`);
+  console.error(
+    `fixture-freshness: ${driftWarnings.length} drift warning(s) escalated by --strict — re-record against the installed CLIs`,
+  );
   process.exit(1);
 }
-console.log(`fixture-freshness check passed (${harnessDirs.length} harness fixture sets, ${driftWarnings.length} drift, ${disclosures.length} notes)`);
+console.log(
+  `fixture-freshness check passed (${harnessDirs.length} harness fixture sets, ${driftWarnings.length} drift, ${disclosures.length} notes)`,
+);

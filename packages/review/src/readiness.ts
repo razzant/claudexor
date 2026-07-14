@@ -31,5 +31,9 @@ export class ReadinessLedger {
 
 /** Stable signature for a set of failure reasons, for thrash detection. */
 export function failureSignature(reasons: string[]): string {
-  return reasons.slice().map((r) => r.toLowerCase()).sort().join(" | ");
+  return reasons
+    .slice()
+    .map((r) => r.toLowerCase())
+    .sort()
+    .join(" | ");
 }

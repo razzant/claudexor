@@ -1,6 +1,12 @@
 import { join } from "node:path";
 import { parseUnifiedDiff } from "@claudexor/core";
-import { containsSecretLikeToken, readTextSafe, redactSecrets, sha256, writeText } from "@claudexor/util";
+import {
+  containsSecretLikeToken,
+  readTextSafe,
+  redactSecrets,
+  sha256,
+  writeText,
+} from "@claudexor/util";
 
 /**
  * The `.adversarial-review/` evidence packet that bridges clean-context
@@ -40,11 +46,19 @@ export function writeEvidencePacket(dir: string, packet: EvidencePacket): void {
   writeText(join(dir, "USER_INTENT.md"), evidenceProse("USER_INTENT.md", packet.userIntent));
   writeText(
     join(dir, "FORBIDDEN_FINDINGS.md"),
-    evidenceProse("FORBIDDEN_FINDINGS.md", packet.forbiddenFindings, "(none — no approaches explicitly rejected)"),
+    evidenceProse(
+      "FORBIDDEN_FINDINGS.md",
+      packet.forbiddenFindings,
+      "(none — no approaches explicitly rejected)",
+    ),
   );
   writeText(
     join(dir, "PLAN_ACCEPTED.md"),
-    evidenceProse("PLAN_ACCEPTED.md", packet.planAccepted, "(no formal plan — see USER_INTENT.md for requirements)"),
+    evidenceProse(
+      "PLAN_ACCEPTED.md",
+      packet.planAccepted,
+      "(no formal plan — see USER_INTENT.md for requirements)",
+    ),
   );
   writeDiffEvidence(dir, packet.diff);
   writeText(
@@ -52,7 +66,10 @@ export function writeEvidencePacket(dir: string, packet: EvidencePacket): void {
     redactSecrets((packet.filesToReadWhole ?? []).join("\n")) + "\n",
   );
   writeText(join(dir, "TESTS.txt"), evidenceProse("TESTS.txt", packet.tests, "(tests not run)"));
-  writeText(join(dir, "DECIDED_TRADEOFFS.md"), evidenceProse("DECIDED_TRADEOFFS.md", packet.decidedTradeoffs, "(none)"));
+  writeText(
+    join(dir, "DECIDED_TRADEOFFS.md"),
+    evidenceProse("DECIDED_TRADEOFFS.md", packet.decidedTradeoffs, "(none)"),
+  );
   if (packet.runtime !== undefined)
     writeText(join(dir, "RUNTIME.md"), evidenceProse("RUNTIME.md", packet.runtime));
 }
@@ -61,7 +78,9 @@ function evidenceProse(fileName: string, value: string | undefined, fallback = "
   const raw = (value ?? fallback).trim();
   const redacted = redactSecrets(raw);
   if (containsSecretLikeToken(redacted)) {
-    throw new Error(`${fileName} evidence contains a secret-like token after redaction; refusing to persist evidence packet`);
+    throw new Error(
+      `${fileName} evidence contains a secret-like token after redaction; refusing to persist evidence packet`,
+    );
   }
   return `${redacted}\n`;
 }
@@ -145,4 +164,3 @@ export function preflightEvidence(dir: string): PreflightResult {
   }
   return { ok: missing.length === 0 && empty.length === 0, missing, empty };
 }
-

@@ -3,7 +3,13 @@ import { HarnessRunSpec } from "@claudexor/schema";
 import { claudeArgsForSpec } from "./index.js";
 
 function specWith(over: Partial<Record<string, unknown>>): HarnessRunSpec {
-  return HarnessRunSpec.parse({ session_id: "ses_1", intent: "implement", prompt: "do it", cwd: "/tmp", ...over });
+  return HarnessRunSpec.parse({
+    session_id: "ses_1",
+    intent: "implement",
+    prompt: "do it",
+    cwd: "/tmp",
+    ...over,
+  });
 }
 
 describe("claude browser injection (via claudeArgsForSpec)", () => {

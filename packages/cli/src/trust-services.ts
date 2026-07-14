@@ -19,9 +19,14 @@ export async function listTrustService(): Promise<ControlTrustListResponse> {
   });
 }
 
-export async function updateTrustService(input: { repoRoot: string; allowFullAccess: boolean }): Promise<ControlTrustState> {
+export async function updateTrustService(input: {
+  repoRoot: string;
+  allowFullAccess: boolean;
+}): Promise<ControlTrustState> {
   if (!isAbsolute(input.repoRoot)) {
-    throw Object.assign(new Error(`repoRoot must be an absolute path (got ${input.repoRoot})`), { status: 400 });
+    throw Object.assign(new Error(`repoRoot must be an absolute path (got ${input.repoRoot})`), {
+      status: 400,
+    });
   }
   const res = updateTrustConfig(input.repoRoot, (cfg) => ({
     ...cfg,

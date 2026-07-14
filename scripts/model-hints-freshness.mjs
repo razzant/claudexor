@@ -51,7 +51,9 @@ for (const adapter of buildRegistry({ includeFakes: false }).values()) {
   // version — compare against that instead of re-spawning binaries.
   const installed = semver(manifest.version);
   if (installed === null) {
-    console.log(`model-hints: ${adapter.id} — vendor CLI not discoverable here; hints verified against ${verified} (unchecked)`);
+    console.log(
+      `model-hints: ${adapter.id} — vendor CLI not discoverable here; hints verified against ${verified} (unchecked)`,
+    );
     continue;
   }
   if (installed !== semver(verified)) {
@@ -66,4 +68,7 @@ for (const adapter of buildRegistry({ includeFakes: false }).values()) {
 for (const w of warnings) console.warn(`model-hints WARNING: ${w}`);
 for (const f of failures) console.error(`model-hints FAILURE: ${f}`);
 if (failures.length > 0 || (strict && warnings.length > 0)) process.exit(1);
-console.log("model-hints freshness gate passed" + (warnings.length ? ` (${warnings.length} warning${warnings.length === 1 ? "" : "s"})` : ""));
+console.log(
+  "model-hints freshness gate passed" +
+    (warnings.length ? ` (${warnings.length} warning${warnings.length === 1 ? "" : "s"})` : ""),
+);

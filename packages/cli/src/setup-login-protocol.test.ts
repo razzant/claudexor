@@ -31,8 +31,12 @@ import {
 } from "./setup-login-protocol.js";
 
 let root: string;
-beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), "setup protocol with spaces "))); });
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+beforeEach(() => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), "setup protocol with spaces ")));
+});
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
 
 function knownLeader(pid: number): KnownProcessIdentity {
   return {
@@ -48,9 +52,8 @@ function knownLeader(pid: number): KnownProcessIdentity {
 function processGroups(pid = 4242): ProcessGroupService {
   const leader = knownLeader(pid);
   const identity: ProcessIdentityReader = {
-    read: (requested) => requested === pid
-      ? leader
-      : { status: "missing", pid: requested, platform: "darwin" },
+    read: (requested) =>
+      requested === pid ? leader : { status: "missing", pid: requested, platform: "darwin" },
     self: () => leader,
   };
   return new ProcessGroupService({
@@ -63,7 +66,9 @@ function processGroups(pid = 4242): ProcessGroupService {
 
 function prepare(
   script: string,
-  overrides: Partial<Omit<SetupLoginManifest, "manifestDigest" | "executable" | "commandDigest">> = {},
+  overrides: Partial<
+    Omit<SetupLoginManifest, "manifestDigest" | "executable" | "commandDigest">
+  > = {},
   name = "setup-protocol",
 ) {
   const jobDir = join(root, name);
@@ -112,10 +117,12 @@ describe("setup-login sidecar protocol v2", () => {
     const issuedAt = new Date().toISOString();
     issuePermit(spec, issuedAt);
 
-    expect(await runSetupLoginWorker(manifestPath, {
-      processGroupService: processGroups(),
-      selfPid: 4242,
-    })).toBe(0);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(0);
 
     expect(readRunnerState(spec.statePath)).toMatchObject({
       version: 2,
@@ -140,21 +147,27 @@ describe("setup-login sidecar protocol v2", () => {
     const script = [
       "#!/bin/sh",
       "printf '%s' \"$1\" > argv.txt",
-      "printf '%s|%s|%s|%s' \"$OPENAI_API_KEY\" \"$ANTHROPIC_API_KEY\" \"$OPENAI_BASE_URL\" \"$CODEX_HOME\" > env.txt",
+      'printf \'%s|%s|%s|%s\' "$OPENAI_API_KEY" "$ANTHROPIC_API_KEY" "$OPENAI_BASE_URL" "$CODEX_HOME" > env.txt',
       "exit 0",
       "",
     ].join("\n");
     const { jobDir, manifestPath, spec } = prepare(script);
     issuePermit(spec);
-    const old = [process.env.OPENAI_API_KEY, process.env.ANTHROPIC_API_KEY, process.env.OPENAI_BASE_URL];
+    const old = [
+      process.env.OPENAI_API_KEY,
+      process.env.ANTHROPIC_API_KEY,
+      process.env.OPENAI_BASE_URL,
+    ];
     process.env.OPENAI_API_KEY = "secret-openai";
     process.env.ANTHROPIC_API_KEY = "secret-anthropic";
     process.env.OPENAI_BASE_URL = "https://override.invalid";
     try {
-      expect(await runSetupLoginWorker(manifestPath, {
-        processGroupService: processGroups(),
-        selfPid: 4242,
-      })).toBe(0);
+      expect(
+        await runSetupLoginWorker(manifestPath, {
+          processGroupService: processGroups(),
+          selfPid: 4242,
+        }),
+      ).toBe(0);
       expect(readFileSync(join(jobDir, "argv.txt"), "utf8")).toBe("login");
       expect(readFileSync(join(jobDir, "env.txt"), "utf8")).toBe("|||" + defaultNativeCodexHome());
     } finally {
@@ -171,10 +184,12 @@ describe("setup-login sidecar protocol v2", () => {
   ])("persists non-success exit evidence %#", async ({ script, exitCode, signal }) => {
     const { manifestPath, spec } = prepare("#!/bin/sh\n" + script + "\n");
     issuePermit(spec);
-    expect(await runSetupLoginWorker(manifestPath, {
-      processGroupService: processGroups(),
-      selfPid: 4242,
-    })).toBe(1);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(1);
     expect(readRunnerResult(spec.resultPath)).toMatchObject({
       commandStarted: true,
       permitIssuedAt: expect.any(String),
@@ -187,12 +202,17 @@ describe("setup-login sidecar protocol v2", () => {
     let spawned = 0;
     const expired = new Date(Date.now() - 1).toISOString();
     const { manifestPath, spec } = prepare("#!/bin/sh\nexit 0\n", { permitDeadlineAt: expired });
-    expect(await runSetupLoginWorker(manifestPath, {
-      processGroupService: processGroups(),
-      selfPid: 4242,
-      now: () => new Date(Date.parse(expired) + 1),
-      spawnProcess: (() => { spawned += 1; throw new Error("must not spawn"); }) as never,
-    })).toBe(1);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+        now: () => new Date(Date.parse(expired) + 1),
+        spawnProcess: (() => {
+          spawned += 1;
+          throw new Error("must not spawn");
+        }) as never,
+      }),
+    ).toBe(1);
     expect(spawned).toBe(0);
     expect(readRunnerResult(spec.resultPath)).toMatchObject({
       commandStarted: false,
@@ -208,11 +228,16 @@ describe("setup-login sidecar protocol v2", () => {
     const { manifestPath, spec } = prepare("#!/bin/sh\nexit 0\n");
     issuePermit(spec);
     writeFileSync(spec.binary, "#!/bin/sh\nexit 9\n", { mode: 0o700 });
-    expect(await runSetupLoginWorker(manifestPath, {
-      processGroupService: processGroups(),
-      selfPid: 4242,
-      spawnProcess: (() => { spawned += 1; throw new Error("must not spawn"); }) as never,
-    })).toBe(1);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+        spawnProcess: (() => {
+          spawned += 1;
+          throw new Error("must not spawn");
+        }) as never,
+      }),
+    ).toBe(1);
     expect(spawned).toBe(0);
     expect(readRunnerResult(spec.resultPath)).toMatchObject({
       commandStarted: false,

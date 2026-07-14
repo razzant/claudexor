@@ -26,7 +26,14 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { GEN_BEGIN, GEN_END, endpointDetails, implementedEndpoints, renderEndpointBlock, renderEndpointsJson } from "./endpoints-lib.mjs";
+import {
+  GEN_BEGIN,
+  GEN_END,
+  endpointDetails,
+  implementedEndpoints,
+  renderEndpointBlock,
+  renderEndpointsJson,
+} from "./endpoints-lib.mjs";
 
 const failures = [];
 
@@ -55,20 +62,28 @@ const implemented = implementedEndpoints();
   const begin = arch.indexOf(GEN_BEGIN);
   const end = arch.indexOf(GEN_END);
   if (begin === -1 || end === -1) {
-    failures.push("docs/ARCHITECTURE.md is missing the GENERATED ENDPOINTS markers (run node scripts/gen-endpoints-doc.mjs)");
+    failures.push(
+      "docs/ARCHITECTURE.md is missing the GENERATED ENDPOINTS markers (run node scripts/gen-endpoints-doc.mjs)",
+    );
   } else {
     const current = arch.slice(begin, end + GEN_END.length);
     const expected = renderEndpointBlock(implemented);
     if (current !== expected) {
-      failures.push("docs/ARCHITECTURE.md endpoint inventory is stale; run node scripts/gen-endpoints-doc.mjs and commit");
+      failures.push(
+        "docs/ARCHITECTURE.md endpoint inventory is stale; run node scripts/gen-endpoints-doc.mjs and commit",
+      );
     }
     const documented = documentedEndpoints(arch);
     for (const ep of documented) {
-      if (!implemented.has(ep)) failures.push(`docs/ARCHITECTURE.md documents '${ep}' but daemon-server.ts does not implement it`);
+      if (!implemented.has(ep))
+        failures.push(
+          `docs/ARCHITECTURE.md documents '${ep}' but daemon-server.ts does not implement it`,
+        );
     }
     for (const ep of implemented) {
       if (ep === "GET /healthz") continue; // internal liveness; optional in docs
-      if (!documented.has(ep)) failures.push(`docs/ARCHITECTURE.md is missing implemented endpoint '${ep}'`);
+      if (!documented.has(ep))
+        failures.push(`docs/ARCHITECTURE.md is missing implemented endpoint '${ep}'`);
     }
   }
 
@@ -81,15 +96,21 @@ const implemented = implementedEndpoints();
     try {
       currentJson = readFileSync("docs/reference/endpoints.json", "utf8");
     } catch {
-      failures.push("docs/reference/endpoints.json is missing; run node scripts/gen-endpoints-doc.mjs and commit");
+      failures.push(
+        "docs/reference/endpoints.json is missing; run node scripts/gen-endpoints-doc.mjs and commit",
+      );
     }
     if (currentJson !== null && currentJson !== expectedJson) {
-      failures.push("docs/reference/endpoints.json is stale; run node scripts/gen-endpoints-doc.mjs and commit");
+      failures.push(
+        "docs/reference/endpoints.json is stale; run node scripts/gen-endpoints-doc.mjs and commit",
+      );
     }
     for (const d of details) {
       for (const ref of [d.requestSchema, d.responseSchema]) {
         if (ref && !existsSync(`packages/schema/generated/${ref}.schema.json`)) {
-          failures.push(`endpoints.json references schema '${ref}' but packages/schema/generated/${ref}.schema.json does not exist`);
+          failures.push(
+            `endpoints.json references schema '${ref}' but packages/schema/generated/${ref}.schema.json does not exist`,
+          );
         }
       }
     }
@@ -101,7 +122,8 @@ const implemented = implementedEndpoints();
 for (const docPath of ["docs/INTEGRATIONS.md", "README.md"]) {
   const documented = documentedEndpoints(readFileSync(docPath, "utf8"));
   for (const ep of documented) {
-    if (!implemented.has(ep)) failures.push(`${docPath} documents '${ep}' but daemon-server.ts does not implement it`);
+    if (!implemented.has(ep))
+      failures.push(`${docPath} documents '${ep}' but daemon-server.ts does not implement it`);
   }
 }
 
@@ -117,7 +139,9 @@ for (const docPath of ["docs/INTEGRATIONS.md", "README.md"]) {
 // mcp-cli-parity-check): a partial docs-truth pass must never read as green.
 const registryDist = "packages/cli/dist/command-registry.js";
 if (!existsSync(registryDist)) {
-  console.error(`docs-truth: ${registryDist} is missing — run \`pnpm build\` first (the gate reads the built command registry)`);
+  console.error(
+    `docs-truth: ${registryDist} is missing — run \`pnpm build\` first (the gate reads the built command registry)`,
+  );
   process.exit(1);
 }
 const cliRegistry = await import(join(process.cwd(), registryDist));
@@ -133,8 +157,10 @@ if (!modeMatch) {
   const readme = readFileSync("README.md", "utf8");
   const renderedHelp = cliRegistry.renderHelp("0.0.0");
   for (const mode of modes) {
-    if (!readme.includes(mode)) failures.push(`README.md does not mention canonical mode id '${mode}'`);
-    if (!renderedHelp.includes(mode)) failures.push(`CLI help (command registry) does not mention canonical mode id '${mode}'`);
+    if (!readme.includes(mode))
+      failures.push(`README.md does not mention canonical mode id '${mode}'`);
+    if (!renderedHelp.includes(mode))
+      failures.push(`CLI help (command registry) does not mention canonical mode id '${mode}'`);
   }
 }
 
@@ -147,18 +173,21 @@ if (!modeMatch) {
   const flagNames = new Set(cliRegistry.CLI_FLAGS.map((f) => f.name));
   for (const cmd of cliRegistry.CLI_COMMANDS) {
     for (const flag of cmd.flags) {
-      if (!flagNames.has(flag)) failures.push(`command registry: command '${cmd.id}' references unknown flag '--${flag}'`);
+      if (!flagNames.has(flag))
+        failures.push(`command registry: command '${cmd.id}' references unknown flag '--${flag}'`);
     }
   }
   const renderedHelp = cliRegistry.renderHelp("0.0.0");
   for (const m of renderedHelp.matchAll(/--([a-z-]+)/g)) {
-    if (!flagNames.has(m[1])) failures.push(`CLI help mentions '--${m[1]}' but the command registry does not declare it`);
+    if (!flagNames.has(m[1]))
+      failures.push(`CLI help mentions '--${m[1]}' but the command registry does not declare it`);
   }
   // Every declared flag must be consumed by at least one command (no orphan knobs).
   const consumed = new Set(cliRegistry.CLI_COMMANDS.flatMap((c) => [...c.flags]));
   consumed.add("help").add("version"); // global preflight affordances
   for (const flag of flagNames) {
-    if (!consumed.has(flag)) failures.push(`command registry declares '--${flag}' but no command consumes it`);
+    if (!consumed.has(flag))
+      failures.push(`command registry declares '--${flag}' but no command consumes it`);
   }
 }
 
@@ -169,12 +198,16 @@ if (!modeMatch) {
 const versionTs = readFileSync("packages/util/src/version.ts", "utf8");
 const constMatch = /CLAUDEXOR_VERSION\s*=\s*"([^"]+)"/.exec(versionTs);
 if (!constMatch) {
-  failures.push("could not locate CLAUDEXOR_VERSION in packages/util/src/version.ts (run `pnpm gen:version`)");
+  failures.push(
+    "could not locate CLAUDEXOR_VERSION in packages/util/src/version.ts (run `pnpm gen:version`)",
+  );
 } else {
   const constant = constMatch[1];
   const rootVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
   if (constant !== rootVersion) {
-    failures.push(`CLAUDEXOR_VERSION (${constant}) != root package.json version (${rootVersion}); run \`pnpm gen:version\``);
+    failures.push(
+      `CLAUDEXOR_VERSION (${constant}) != root package.json version (${rootVersion}); run \`pnpm gen:version\``,
+    );
   }
   const manifests = [];
   for (const pkg of readdirSync("packages")) {
@@ -186,13 +219,18 @@ if (!constMatch) {
     }
   }
   try {
-    manifests.push(["benchmarks/runner/package.json", JSON.parse(readFileSync("benchmarks/runner/package.json", "utf8")).version]);
+    manifests.push([
+      "benchmarks/runner/package.json",
+      JSON.parse(readFileSync("benchmarks/runner/package.json", "utf8")).version,
+    ]);
   } catch {
     /* runner absent */
   }
   for (const [path, version] of manifests) {
     if (version !== constant) {
-      failures.push(`${path} version (${version}) != CLAUDEXOR_VERSION (${constant}); bump it (changesets fixed lockstep)`);
+      failures.push(
+        `${path} version (${version}) != CLAUDEXOR_VERSION (${constant}); bump it (changesets fixed lockstep)`,
+      );
     }
   }
 }
@@ -201,14 +239,20 @@ if (!constMatch) {
 // 5. Debug-route parity (AppModel.swift vs apps/macos/README.md).
 // --------------------------------------------------------------------------
 
-const appModelSrc = readFileSync("apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift", "utf8");
-const switchMatch = /switch ProcessInfo\.processInfo\.environment\["CLAUDEXOR_DEBUG_ROUTE"\]\s*\{([\s\S]*?)\n\s*\}/.exec(
-  appModelSrc,
+const appModelSrc = readFileSync(
+  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift",
+  "utf8",
 );
+const switchMatch =
+  /switch ProcessInfo\.processInfo\.environment\["CLAUDEXOR_DEBUG_ROUTE"\]\s*\{([\s\S]*?)\n\s*\}/.exec(
+    appModelSrc,
+  );
 if (!switchMatch) {
   failures.push("could not locate the CLAUDEXOR_DEBUG_ROUTE switch in AppModel.swift");
 } else {
-  const handledRoutes = new Set([...switchMatch[1].matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]));
+  const handledRoutes = new Set(
+    [...switchMatch[1].matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]),
+  );
   const macReadme = readFileSync("apps/macos/README.md", "utf8");
   const bulletMatch = /- `CLAUDEXOR_DEBUG_ROUTE`:[\s\S]*?(?=\n- `|\n\n)/.exec(macReadme);
   const documentedRoutes = new Set();
@@ -220,10 +264,16 @@ if (!switchMatch) {
     failures.push("could not locate the CLAUDEXOR_DEBUG_ROUTE bullet in apps/macos/README.md");
   }
   for (const r of handledRoutes) {
-    if (!documentedRoutes.has(r)) failures.push(`AppModel.swift handles debug route '${r}' but apps/macos/README.md does not document it`);
+    if (!documentedRoutes.has(r))
+      failures.push(
+        `AppModel.swift handles debug route '${r}' but apps/macos/README.md does not document it`,
+      );
   }
   for (const r of documentedRoutes) {
-    if (!handledRoutes.has(r)) failures.push(`apps/macos/README.md documents debug route '${r}' but AppModel.swift does not handle it`);
+    if (!handledRoutes.has(r))
+      failures.push(
+        `apps/macos/README.md documents debug route '${r}' but AppModel.swift does not handle it`,
+      );
   }
 }
 
@@ -239,7 +289,8 @@ const DELETED_SCREEN_PHRASES = [
   "Task list screen",
   "Review Queue screen",
 ];
-const NEGATION_BEFORE = /\b(no|not|never|without|removed|deleted|dropped|former|old|legacy|previous|no longer|instead of)\b[^.]*$/i;
+const NEGATION_BEFORE =
+  /\b(no|not|never|without|removed|deleted|dropped|former|old|legacy|previous|no longer|instead of)\b[^.]*$/i;
 
 for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
   const text = readFileSync(docPath, "utf8");
@@ -252,7 +303,9 @@ for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
       const before = text.slice(sentenceStart, idx).replace(/\s+/g, " ");
       if (!NEGATION_BEFORE.test(before)) {
         const line = text.slice(0, idx).split("\n").length;
-        failures.push(`${docPath}:${line} reintroduces deleted screen '${phrase}' as a current screen (use a negation if describing its removal)`);
+        failures.push(
+          `${docPath}:${line} reintroduces deleted screen '${phrase}' as a current screen (use a negation if describing its removal)`,
+        );
       }
       idx = text.indexOf(phrase, idx + phrase.length);
     }
@@ -292,7 +345,8 @@ function collectSourceHaystack() {
       return;
     }
     for (const name of entries) {
-      if (name === "node_modules" || name === "dist" || name === ".build" || name === "generated") continue;
+      if (name === "node_modules" || name === "dist" || name === ".build" || name === "generated")
+        continue;
       const p = join(dir, name);
       let st;
       try {
@@ -321,26 +375,69 @@ function collectSourceHaystack() {
   // underscore, or dotted identifiers. Plain words, flags, paths, and
   // env-style ALLCAPS with dashes are skipped (flags/env are covered by
   // their own checks).
-  const codeShaped = /^(?:[A-Za-z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)$/;
+  const codeShaped =
+    /^(?:[A-Za-z][a-z0-9]+(?:[A-Z][A-Za-z0-9]*)+|[a-z][a-z0-9]*(?:_[a-z0-9]+)+|[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)$/;
   // Terms that are conceptual vocabulary, wire values, or external names —
   // not identifiers this repo's source must contain.
   const allow = new Set([
     // wire/status/config VALUES documented as data, not symbols
-    "in_place", "workspace_write", "external_sandbox_full", "inherit_native",
-    "best_of_n", "max_attempts", "until_clean", "readonly_audit", "daily",
-    "until_convergence", "readonly_swarm", "create_from_scratch", "auto_safe",
-    "auto_full", "not_converged", "stuck_no_progress", "no_op", "new_repo",
-    "accept_risk", "override_needs_human", "accept_clean_patch",
-    "rerun_with_feedback", "revert_run", "waiting_on_user", "api_key",
-    "local_session", "native_session", "api_key_env", "provider_auth_file",
-    "os_keychain", "http_header", "config_file", "env_var", "oauth_token_env",
-    "subscription-first", "claude_oauth", "browser_tool", "image_input",
-    "web_policy", "effort_levels", "known_models",
-    "web_search", "node_repl", "review_not_run", "cross_family_review",
-    "applied_review_blocked", "not_applied", "user.name", "user.email",
+    "in_place",
+    "workspace_write",
+    "external_sandbox_full",
+    "inherit_native",
+    "best_of_n",
+    "max_attempts",
+    "until_clean",
+    "readonly_audit",
+    "daily",
+    "until_convergence",
+    "readonly_swarm",
+    "create_from_scratch",
+    "auto_safe",
+    "auto_full",
+    "not_converged",
+    "stuck_no_progress",
+    "no_op",
+    "new_repo",
+    "accept_risk",
+    "override_needs_human",
+    "accept_clean_patch",
+    "rerun_with_feedback",
+    "revert_run",
+    "waiting_on_user",
+    "api_key",
+    "local_session",
+    "native_session",
+    "api_key_env",
+    "provider_auth_file",
+    "os_keychain",
+    "http_header",
+    "config_file",
+    "env_var",
+    "oauth_token_env",
+    "subscription-first",
+    "claude_oauth",
+    "browser_tool",
+    "image_input",
+    "web_policy",
+    "effort_levels",
+    "known_models",
+    "web_search",
+    "node_repl",
+    "review_not_run",
+    "cross_family_review",
+    "applied_review_blocked",
+    "not_applied",
+    "user.name",
+    "user.email",
     // external tools / ecosystem names
-    "swift.org", "cursor.com", "opencode.ai", "modelcontextprotocol.io",
-    "openrouter.ai", "claude.ai", "openai.com",
+    "swift.org",
+    "cursor.com",
+    "opencode.ai",
+    "modelcontextprotocol.io",
+    "openrouter.ai",
+    "claude.ai",
+    "openai.com",
   ]);
   for (const docPath of PUBLIC_DOCS) {
     const text = readFileSync(docPath, "utf8");
@@ -351,10 +448,18 @@ function collectSourceHaystack() {
       seen.add(token);
       if (!codeShaped.test(token)) continue;
       if (allow.has(token)) continue;
-      if (token.endsWith(".md") || token.endsWith(".json") || token.endsWith(".yaml") || token.endsWith(".yml")) continue;
+      if (
+        token.endsWith(".md") ||
+        token.endsWith(".json") ||
+        token.endsWith(".yaml") ||
+        token.endsWith(".yml")
+      )
+        continue;
       if (haystack.includes(token)) continue;
       const line = text.slice(0, m.index).split("\n").length;
-      failures.push(`${docPath}:${line} references \`${token}\` which does not exist in the source tree (stale symbol?)`);
+      failures.push(
+        `${docPath}:${line} references \`${token}\` which does not exist in the source tree (stale symbol?)`,
+      );
     }
   }
 }
@@ -364,7 +469,10 @@ function collectSourceHaystack() {
 // --------------------------------------------------------------------------
 
 {
-  const taskDetail = readFileSync("apps/macos/ClaudexorApp/Sources/ClaudexorApp/TaskDetailView.swift", "utf8");
+  const taskDetail = readFileSync(
+    "apps/macos/ClaudexorApp/Sources/ClaudexorApp/TaskDetailView.swift",
+    "utf8",
+  );
   const tabEnum = /enum Tab[^{]*\{([\s\S]*?)\n\s*\}/.exec(taskDetail);
   if (!tabEnum) {
     failures.push("could not locate the inspector Tab enum in TaskDetailView.swift");
@@ -377,12 +485,17 @@ function collectSourceHaystack() {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
     if (tabs.length < 2) {
-      failures.push(`inspector Tab enum extraction looks broken: found ${tabs.length} tab(s) in TaskDetailView.swift`);
+      failures.push(
+        `inspector Tab enum extraction looks broken: found ${tabs.length} tab(s) in TaskDetailView.swift`,
+      );
     }
     // Docs speak the user-facing label (`Outcome`, `Timeline`), so parity
     // accepts either the label from the `label` switch or the raw case id.
     const labelByCase = new Map(
-      [...tabEnum[1].matchAll(/case \.(\w+):\s*return "([^"]+)"/g)].map((m) => [m[1].toLowerCase(), m[2].toLowerCase()]),
+      [...tabEnum[1].matchAll(/case \.(\w+):\s*return "([^"]+)"/g)].map((m) => [
+        m[1].toLowerCase(),
+        m[2].toLowerCase(),
+      ]),
     );
     const design = readFileSync("docs/DESIGN_SYSTEM.md", "utf8").toLowerCase();
     for (const tab of tabs) {
@@ -399,10 +512,14 @@ function collectSourceHaystack() {
   const tools = new Set([...mcpSrc.matchAll(/"(claudexor_[a-z_]+)"/g)].map((m) => m[1]));
   const integrations = readFileSync("docs/INTEGRATIONS.md", "utf8");
   for (const tool of tools) {
-    if (!integrations.includes(tool)) failures.push(`docs/INTEGRATIONS.md does not document MCP tool '${tool}'`);
+    if (!integrations.includes(tool))
+      failures.push(`docs/INTEGRATIONS.md does not document MCP tool '${tool}'`);
   }
   for (const m of integrations.matchAll(/`(claudexor_[a-z_]+)`/g)) {
-    if (!tools.has(m[1])) failures.push(`docs/INTEGRATIONS.md documents MCP tool '${m[1]}' which the server does not expose`);
+    if (!tools.has(m[1]))
+      failures.push(
+        `docs/INTEGRATIONS.md documents MCP tool '${m[1]}' which the server does not expose`,
+      );
   }
 
   // CLI verb parity (one-directional, toward the registry): every user-facing
@@ -412,14 +529,20 @@ function collectSourceHaystack() {
   // the hand-written verb list cannot silently rot when commands are added.
   // Case-insensitive heading match; the section may also be the last one
   // (no following `## ` heading), hence the `$` alternative.
-  const matrixMatch = /^##\s+Surface Matrix\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im.exec(integrations);
+  const matrixMatch = /^##\s+Surface Matrix\s*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im.exec(
+    integrations,
+  );
   if (!matrixMatch) {
-    failures.push("docs/INTEGRATIONS.md no longer has a '## Surface Matrix' section (CLI verb parity check needs it)");
+    failures.push(
+      "docs/INTEGRATIONS.md no longer has a '## Surface Matrix' section (CLI verb parity check needs it)",
+    );
   } else {
     for (const cmd of cliRegistry.CLI_COMMANDS) {
       if (cmd.id === "help") continue;
       if (!new RegExp(`\\b${cmd.id}\\b`, "i").test(matrixMatch[1])) {
-        failures.push(`docs/INTEGRATIONS.md Surface Matrix does not mention CLI verb '${cmd.id}' (declared in the command registry)`);
+        failures.push(
+          `docs/INTEGRATIONS.md Surface Matrix does not mention CLI verb '${cmd.id}' (declared in the command registry)`,
+        );
       }
     }
   }
@@ -474,7 +597,9 @@ function collectSourceHaystack() {
       failures.push(`docs/FEATURES.md claims ${header[1]} rows but the table has ${rows.length}`);
     }
     if (rows.length > 0 && header[2] === undefined) {
-      failures.push("docs/FEATURES.md has rows but no per-status '(status: n, …)' breakdown in the count header");
+      failures.push(
+        "docs/FEATURES.md has rows but no per-status '(status: n, …)' breakdown in the count header",
+      );
     }
     const claimed = {};
     for (const part of (header[2] ?? "").split(",")) {
@@ -520,10 +645,15 @@ function collectSourceHaystack() {
     const allLiterals = new Set();
     const walk = (dir) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "generated") continue;
+        if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "generated")
+          continue;
         const p = join(dir, entry.name);
         if (entry.isDirectory()) walk(p);
-        else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts") && !entry.name.endsWith(".story.ts")) {
+        else if (
+          entry.name.endsWith(".ts") &&
+          !entry.name.endsWith(".test.ts") &&
+          !entry.name.endsWith(".story.ts")
+        ) {
           const src = readFileSync(p, "utf8");
           for (const m of src.matchAll(/\bCLAUDEXOR_[A-Z_]+\b/g)) {
             allLiterals.add(m[0]);
@@ -535,14 +665,18 @@ function collectSourceHaystack() {
     walk("packages");
     for (const v of envVars) {
       if (!integrations.includes(v)) {
-        failures.push(`docs/INTEGRATIONS.md Environment reference is missing '${v}' (read by product source)`);
+        failures.push(
+          `docs/INTEGRATIONS.md Environment reference is missing '${v}' (read by product source)`,
+        );
       }
     }
     // Allowlist self-check: a renamed/removed literal must not linger as a
     // silent stale exclusion.
     for (const excluded of NOT_ENV_VARS) {
       if (!allLiterals.has(excluded)) {
-        failures.push(`docs-truth NOT_ENV_VARS lists '${excluded}' which no longer appears in product sources — stale exclusion`);
+        failures.push(
+          `docs-truth NOT_ENV_VARS lists '${excluded}' which no longer appears in product sources — stale exclusion`,
+        );
       }
     }
   }
@@ -561,8 +695,15 @@ function collectSourceHaystack() {
     failures.push("docs/AGENT_ONBOARDING.md is missing");
   }
   if (onboarding) {
-    for (const anchor of ["help --json", "capabilities --json", "docs/reference/endpoints.json", "claudexor decision", "inline_secret_rejected"]) {
-      if (!onboarding.includes(anchor)) failures.push(`docs/AGENT_ONBOARDING.md no longer mentions '${anchor}'`);
+    for (const anchor of [
+      "help --json",
+      "capabilities --json",
+      "docs/reference/endpoints.json",
+      "claudexor decision",
+      "inline_secret_rejected",
+    ]) {
+      if (!onboarding.includes(anchor))
+        failures.push(`docs/AGENT_ONBOARDING.md no longer mentions '${anchor}'`);
     }
   }
 }

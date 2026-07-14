@@ -49,7 +49,12 @@ export const OrchestrateContract = z
       .describe("Tools the planner may use this run."),
     budget: z
       .object({
-        max_usd: z.number().nonnegative().nullable().default(null).describe("USD cap for the whole orchestration; null = no cap."),
+        max_usd: z
+          .number()
+          .nonnegative()
+          .nullable()
+          .default(null)
+          .describe("USD cap for the whole orchestration; null = no cap."),
         max_tool_calls: z
           .number()
           .int()
@@ -62,7 +67,9 @@ export const OrchestrateContract = z
       .describe("Budget limits for the orchestration."),
     autonomy: OrchestrateAutonomy.default("suggest"),
   })
-  .describe("Contract for one orchestrate run: goal, allowed tool belt, budget, and autonomy level.");
+  .describe(
+    "Contract for one orchestrate run: goal, allowed tool belt, budget, and autonomy level.",
+  );
 export type OrchestrateContract = z.infer<typeof OrchestrateContract>;
 
 /**
@@ -109,7 +116,12 @@ export const OrchestratePlanCall = z
       .object({
         tool: z.literal("race"),
         prompt: z.string().min(1).describe("Prompt raced across harnesses."),
-        n: z.number().int().min(2).default(2).describe("Number of race candidates (one per harness)."),
+        n: z
+          .number()
+          .int()
+          .min(2)
+          .default(2)
+          .describe("Number of race candidates (one per harness)."),
         why: z.string().default("").describe("Planner's reason for this step."),
       })
       .describe("Race the prompt as a best-of-N run."),
@@ -135,8 +147,15 @@ export const OrchestratePlanCall = z
           .array(
             z.object({
               question_id: z.string().min(1).describe("Id of the question being answered."),
-              selected_labels: z.array(z.string()).default([]).describe("Labels of the selected options."),
-              free_text: z.string().nullable().default(null).describe("Free-text answer; null when only options were selected."),
+              selected_labels: z
+                .array(z.string())
+                .default([])
+                .describe("Labels of the selected options."),
+              free_text: z
+                .string()
+                .nullable()
+                .default(null)
+                .describe("Free-text answer; null when only options were selected."),
             }),
           )
           .default([])
@@ -156,7 +175,9 @@ export const OrchestratePlanCall = z
       })
       .describe("Deliver a run's work product to the project (the only live-tree-mutating tool)."),
   ])
-  .describe("One concrete tool invocation in a planner plan, with per-tool typed args discriminated on `tool`.");
+  .describe(
+    "One concrete tool invocation in a planner plan, with per-tool typed args discriminated on `tool`.",
+  );
 export type OrchestratePlanCall = z.infer<typeof OrchestratePlanCall>;
 
 /**
@@ -167,15 +188,22 @@ export type OrchestratePlanCall = z.infer<typeof OrchestratePlanCall>;
  */
 export const OrchestratePlan = z
   .object({
-    tool_calls: z.array(OrchestratePlanCall).min(1).describe("Ordered tool invocations of the plan."),
+    tool_calls: z
+      .array(OrchestratePlanCall)
+      .min(1)
+      .describe("Ordered tool invocations of the plan."),
   })
-  .describe("The typed orchestration plan extracted from the planner's report; persisted as final/orchestration.yaml.");
+  .describe(
+    "The typed orchestration plan extracted from the planner's report; persisted as final/orchestration.yaml.",
+  );
 export type OrchestratePlan = z.infer<typeof OrchestratePlan>;
 
 /** Per-step executor status (auto_safe/auto_full). */
 export const OrchestrateStepStatus = z
   .enum(["pending", "running", "done", "skipped", "blocked", "failed"])
-  .describe("Executor status of one plan step: pending, running, done, skipped, blocked (risky step awaiting a human), or failed.");
+  .describe(
+    "Executor status of one plan step: pending, running, done, skipped, blocked (risky step awaiting a human), or failed.",
+  );
 export type OrchestrateStepStatus = z.infer<typeof OrchestrateStepStatus>;
 
 /**
@@ -192,10 +220,16 @@ export const OrchestratePlanProgress = z
         z.object({
           index: z.number().int().nonnegative().describe("Position of the step in the plan."),
           tool: OrchestrateToolName,
-          risk: z.enum(["safe", "risky"]).describe("Risk class of the step: safe (no live-tree mutation) or risky."),
+          risk: z
+            .enum(["safe", "risky"])
+            .describe("Risk class of the step: safe (no live-tree mutation) or risky."),
           status: OrchestrateStepStatus,
           /** Sub-run id this step started/targeted (start_run/race/review/status/apply), when known. */
-          run_id: z.string().nullable().default(null).describe("Sub-run id this step started/targeted, when known."),
+          run_id: z
+            .string()
+            .nullable()
+            .default(null)
+            .describe("Sub-run id this step started/targeted, when known."),
           detail: z.string().nullable().default(null).describe("Human-readable step detail."),
         }),
       )
@@ -207,9 +241,13 @@ export const OrchestratePlanProgress = z
       .string()
       .nullable()
       .default(null)
-      .describe("Set when the executor stopped early (first risky step under auto_safe, budget, abort)."),
+      .describe(
+        "Set when the executor stopped early (first risky step under auto_safe, budget, abort).",
+      ),
   })
-  .describe("Typed executor progress over a plan's tool calls, persisted as final/orchestration_progress.yaml and projected into run detail.");
+  .describe(
+    "Typed executor progress over a plan's tool calls, persisted as final/orchestration_progress.yaml and projected into run detail.",
+  );
 export type OrchestratePlanProgress = z.infer<typeof OrchestratePlanProgress>;
 
 /**
@@ -244,7 +282,9 @@ function strictifyForStructuredOutput(node: unknown): Record<string, unknown> {
     for (const key of Object.keys(obj)) obj[key] = walk(obj[key]);
     if (obj["type"] === "object" && obj["properties"] && typeof obj["properties"] === "object") {
       const props = obj["properties"] as Record<string, unknown>;
-      const originallyRequired = new Set(Array.isArray(obj["required"]) ? (obj["required"] as unknown[]) : []);
+      const originallyRequired = new Set(
+        Array.isArray(obj["required"]) ? (obj["required"] as unknown[]) : [],
+      );
       // Vendor strict mode demands required = ALL keys; fields that were
       // OPTIONAL in the source schema stay expressible by becoming NULLABLE
       // (the OpenAI strict-mode recipe) — otherwise the model would be FORCED

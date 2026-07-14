@@ -37,7 +37,10 @@ function manifest(): HarnessManifest {
   });
 }
 
-function report(status: ConformanceReport["status"], extra: Partial<ConformanceReport> = {}): ConformanceReport {
+function report(
+  status: ConformanceReport["status"],
+  extra: Partial<ConformanceReport> = {},
+): ConformanceReport {
   return {
     harness_id: "x",
     status,
@@ -63,7 +66,10 @@ describe("allowedIntents", () => {
   });
 
   it("degraded grants only explicitly enabled intents", () => {
-    const intents = allowedIntents(manifest(), report("degraded", { enabled_intents: ["implement"] }));
+    const intents = allowedIntents(
+      manifest(),
+      report("degraded", { enabled_intents: ["implement"] }),
+    );
     expect(intents).toContain("implement");
     expect(intents).not.toContain("explain");
     expect(intents).not.toContain("review");

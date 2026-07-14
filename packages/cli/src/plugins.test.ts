@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
@@ -8,7 +17,15 @@ import { pluginCommandErrorResult, runPluginCommand } from "./plugins.js";
 
 const MANAGED_VERSION_MARKER = `claudexor:managed host-plugin-lifecycle; version=${CLAUDEXOR_VERSION}`;
 
-async function withTempHome(fn: (paths: { dir: string; home: string; config: string; cli: string; childEnv: string }) => Promise<void> | void): Promise<void> {
+async function withTempHome(
+  fn: (paths: {
+    dir: string;
+    home: string;
+    config: string;
+    cli: string;
+    childEnv: string;
+  }) => Promise<void> | void,
+): Promise<void> {
   const dir = mkTemp();
   const home = join(dir, "home");
   const config = join(dir, "config");
@@ -82,7 +99,10 @@ function hashText(text: string): string {
 }
 
 function normalizeHome(text: string, home: string, cli: string, config = ""): string {
-  const normalized = text.replaceAll(home, "<HOME>").replaceAll(cli, "<CLI>").replaceAll(process.execPath, "<NODE>");
+  const normalized = text
+    .replaceAll(home, "<HOME>")
+    .replaceAll(cli, "<CLI>")
+    .replaceAll(process.execPath, "<NODE>");
   return config ? normalized.replaceAll(config, "<CONFIG>") : normalized;
 }
 
@@ -101,7 +121,13 @@ cross-family review, and budget balancing. Prefer it for multi-harness work.
 These plugins are thin shims: they call the local CLI; all orchestration lives in claudexor.`;
 
 function oldThinShimManifest(): string {
-  return JSON.stringify({ name: "claudexor", version: "0.10.2", description: "Claudexor control plane (thin shim)" }, null, 2) + "\n";
+  return (
+    JSON.stringify(
+      { name: "claudexor", version: "0.10.2", description: "Claudexor control plane (thin shim)" },
+      null,
+      2,
+    ) + "\n"
+  );
 }
 
 describe("plugin lifecycle", () => {
@@ -136,18 +162,28 @@ describe("plugin lifecycle", () => {
         ["codex", "registered"],
         ["opencode", "installed"],
       ]);
-      const claudeManifest = readJson(join(home, ".claude", "skills", "claudexor", ".claude-plugin", "plugin.json"));
+      const claudeManifest = readJson(
+        join(home, ".claude", "skills", "claudexor", ".claude-plugin", "plugin.json"),
+      );
       expect(claudeManifest.claudexor.marker).toBe("claudexor:managed host-plugin-lifecycle");
 
-      const codexManifest = readJson(join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json"));
+      const codexManifest = readJson(
+        join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json"),
+      );
       expect(codexManifest.skills).toBe("./skills/");
       expect(codexManifest.mcpServers).toBe("./.mcp.json");
-      expect(existsSync(join(home, ".codex", "plugins", "claudexor", "commands", "claudexor.md"))).toBe(false);
+      expect(
+        existsSync(join(home, ".codex", "plugins", "claudexor", "commands", "claudexor.md")),
+      ).toBe(false);
       const codexMcp = readJson(join(home, ".codex", "plugins", "claudexor", ".mcp.json"));
       expect(codexMcp.mcpServers.claudexor.env.CLAUDEXOR_CONFIG_DIR).toBe(config);
-      expect(codexMcp.mcpServers.claudexor.env.CLAUDEXOR_MANAGED).toBe("claudexor:managed host-plugin-lifecycle");
+      expect(codexMcp.mcpServers.claudexor.env.CLAUDEXOR_MANAGED).toBe(
+        "claudexor:managed host-plugin-lifecycle",
+      );
 
-      const cursorManifest = readJson(join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"));
+      const cursorManifest = readJson(
+        join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"),
+      );
       expect(cursorManifest.interface).toBeUndefined();
       expect(cursorManifest.claudexor).toBeUndefined();
       expect(cursorManifest.mcpServers).toBe("./mcp.json");
@@ -155,18 +191,40 @@ describe("plugin lifecycle", () => {
       expect(cursorManifest.skills).toEqual(["skills/claudexor"]);
       expect(cursorManifest.displayName).toBeUndefined();
       expect(cursorManifest.publisher).toBeUndefined();
-      for (const p of [...cursorManifest.commands, ...cursorManifest.skills]) expect(p).not.toContain("*");
-      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"))).toBe(true);
-      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", ".mcp.json"))).toBe(false);
-      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", "skills", "claudexor", "SKILL.md"))).toBe(true);
+      for (const p of [...cursorManifest.commands, ...cursorManifest.skills])
+        expect(p).not.toContain("*");
+      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"))).toBe(
+        true,
+      );
+      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", ".mcp.json"))).toBe(
+        false,
+      );
+      expect(
+        existsSync(
+          join(home, ".cursor", "plugins", "local", "claudexor", "skills", "claudexor", "SKILL.md"),
+        ),
+      ).toBe(true);
 
-      const opencodePlugin = readFileSync(join(home, ".config", "opencode", "plugins", "claudexor.js"), "utf8");
-      expect(opencodePlugin).toContain("\"experimental.chat.system.transform\"");
-      const claudeSkill = readFileSync(join(home, ".claude", "skills", "claudexor", "skills", "claudexor", "SKILL.md"), "utf8");
+      const opencodePlugin = readFileSync(
+        join(home, ".config", "opencode", "plugins", "claudexor.js"),
+        "utf8",
+      );
+      expect(opencodePlugin).toContain('"experimental.chat.system.transform"');
+      const claudeSkill = readFileSync(
+        join(home, ".claude", "skills", "claudexor", "skills", "claudexor", "SKILL.md"),
+        "utf8",
+      );
       expect(claudeSkill.startsWith("---\nname: claudexor\n")).toBe(true);
       expect(claudeSkill).toContain(`---\n<!-- ${MANAGED_VERSION_MARKER} -->\n# Claudexor`);
-      const cursorCommand = readFileSync(join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md"), "utf8");
-      expect(cursorCommand.startsWith("---\ndescription: Use Claudexor CLI/MCP for harness-agnostic coding workflows\n---\n")).toBe(true);
+      const cursorCommand = readFileSync(
+        join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md"),
+        "utf8",
+      );
+      expect(
+        cursorCommand.startsWith(
+          "---\ndescription: Use Claudexor CLI/MCP for harness-agnostic coding workflows\n---\n",
+        ),
+      ).toBe(true);
       expect(cursorCommand).toContain(`---\n<!-- ${MANAGED_VERSION_MARKER} -->\nUse Claudexor`);
 
       const marketplace = readJson(join(home, ".agents", "plugins", "marketplace.json"));
@@ -190,29 +248,37 @@ describe("plugin lifecycle", () => {
         ".config/opencode/plugins/claudexor.js",
         ".config/opencode/skills/claudexor/SKILL.md",
       ];
-      const snapshot = Object.fromEntries(goldenFiles.map((file) => {
-        const text = readFileSync(join(home, file), "utf8");
-        return [file, normalizeHome(text, home, cli, config).split("\n").filter((line) =>
-          line.includes("claudexor:managed host-plugin-lifecycle") ||
-          line.includes("\"CLAUDEXOR_CONFIG_DIR\"") ||
-          line.includes("\"skills\"") ||
-          line.includes("\"mcpServers\"") ||
-          line.includes("\"experimental.chat.system.transform\"") ||
-          line.includes("\"command\"") ||
-          line.includes("one-shot") ||
-          line.includes("Do not claim live thread parity"),
-        )];
-      }));
+      const snapshot = Object.fromEntries(
+        goldenFiles.map((file) => {
+          const text = readFileSync(join(home, file), "utf8");
+          return [
+            file,
+            normalizeHome(text, home, cli, config)
+              .split("\n")
+              .filter(
+                (line) =>
+                  line.includes("claudexor:managed host-plugin-lifecycle") ||
+                  line.includes('"CLAUDEXOR_CONFIG_DIR"') ||
+                  line.includes('"skills"') ||
+                  line.includes('"mcpServers"') ||
+                  line.includes('"experimental.chat.system.transform"') ||
+                  line.includes('"command"') ||
+                  line.includes("one-shot") ||
+                  line.includes("Do not claim live thread parity"),
+              ),
+          ];
+        }),
+      );
       expect(snapshot).toEqual({
         ".claude/skills/claudexor/.claude-plugin/plugin.json": [
-          "  \"description\": \"Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)\",",
-          "    \"marker\": \"claudexor:managed host-plugin-lifecycle\",",
+          '  "description": "Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)",',
+          '    "marker": "claudexor:managed host-plugin-lifecycle",',
         ],
         ".claude/skills/claudexor/.mcp.json": [
-          "  \"mcpServers\": {",
-          "      \"command\": \"<NODE>\",",
-          "        \"CLAUDEXOR_CONFIG_DIR\": \"<CONFIG>\",",
-          "        \"CLAUDEXOR_MANAGED\": \"claudexor:managed host-plugin-lifecycle\",",
+          '  "mcpServers": {',
+          '      "command": "<NODE>",',
+          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
+          '        "CLAUDEXOR_MANAGED": "claudexor:managed host-plugin-lifecycle",',
         ],
         ".claude/skills/claudexor/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
@@ -223,35 +289,35 @@ describe("plugin lifecycle", () => {
           "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
         ],
         ".codex/plugins/claudexor/.codex-plugin/plugin.json": [
-          "  \"description\": \"Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)\",",
-          "  \"skills\": \"./skills/\",",
-          "  \"mcpServers\": \"./.mcp.json\",",
-          "    \"longDescription\": \"Use Claudexor for local planning, runs, races, and review through generated skills and one-shot MCP tools.\",",
+          '  "description": "Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)",',
+          '  "skills": "./skills/",',
+          '  "mcpServers": "./.mcp.json",',
+          '    "longDescription": "Use Claudexor for local planning, runs, races, and review through generated skills and one-shot MCP tools.",',
         ],
         ".codex/plugins/claudexor/.mcp.json": [
-          "  \"mcpServers\": {",
-          "      \"command\": \"<NODE>\",",
-          "        \"CLAUDEXOR_CONFIG_DIR\": \"<CONFIG>\",",
-          "        \"CLAUDEXOR_MANAGED\": \"claudexor:managed host-plugin-lifecycle\",",
+          '  "mcpServers": {',
+          '      "command": "<NODE>",',
+          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
+          '        "CLAUDEXOR_MANAGED": "claudexor:managed host-plugin-lifecycle",',
         ],
         ".codex/plugins/claudexor/skills/claudexor/SKILL.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
         ],
         ".cursor/plugins/local/claudexor/.cursor-plugin/plugin.json": [
-          "  \"description\": \"Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)\",",
-          "  \"skills\": [",
-          "  \"mcpServers\": \"./mcp.json\"",
+          '  "description": "Claudexor control plane host integration (claudexor:managed host-plugin-lifecycle)",',
+          '  "skills": [',
+          '  "mcpServers": "./mcp.json"',
         ],
         ".cursor/plugins/local/claudexor/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
           "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
         ],
         ".cursor/plugins/local/claudexor/mcp.json": [
-          "  \"mcpServers\": {",
-          "      \"command\": \"<NODE>\",",
-          "        \"CLAUDEXOR_CONFIG_DIR\": \"<CONFIG>\",",
-          "        \"CLAUDEXOR_MANAGED\": \"claudexor:managed host-plugin-lifecycle\",",
+          '  "mcpServers": {',
+          '      "command": "<NODE>",',
+          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
+          '        "CLAUDEXOR_MANAGED": "claudexor:managed host-plugin-lifecycle",',
         ],
         ".config/opencode/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
@@ -259,7 +325,7 @@ describe("plugin lifecycle", () => {
         ],
         ".config/opencode/plugins/claudexor.js": [
           `// ${MANAGED_VERSION_MARKER}`,
-          "    \"experimental.chat.system.transform\": async (_input, output) => {",
+          '    "experimental.chat.system.transform": async (_input, output) => {',
         ],
         ".config/opencode/skills/claudexor/SKILL.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
@@ -270,15 +336,25 @@ describe("plugin lifecycle", () => {
       const status = await runPluginCommand("status", "all");
       expect(status.exitCode).toBe(0);
       expect(status.ok).toBe(true);
-      expect(status.results.every((r) => r.state === "installed" || r.state === "registered")).toBe(true);
+      expect(status.results.every((r) => r.state === "installed" || r.state === "registered")).toBe(
+        true,
+      );
 
       const doctor = await runPluginCommand("doctor", "all");
       expect(doctor.exitCode).toBe(0);
-      expect(doctor.results.every((r) => r.actions.includes("MCP initialize/tools-list self-test passed"))).toBe(true);
+      expect(
+        doctor.results.every((r) =>
+          r.actions.includes("MCP initialize/tools-list self-test passed"),
+        ),
+      ).toBe(true);
 
       const dryDoctor = await runPluginCommand("doctor", "all", { dryRun: true });
       expect(dryDoctor.exitCode).toBe(0);
-      expect(dryDoctor.results.every((r) => r.actions.includes("would run MCP initialize/initialized/tools-list self-test"))).toBe(true);
+      expect(
+        dryDoctor.results.every((r) =>
+          r.actions.includes("would run MCP initialize/initialized/tools-list self-test"),
+        ),
+      ).toBe(true);
     });
   });
 
@@ -301,7 +377,10 @@ describe("plugin lifecycle", () => {
       expect(codex.results[0]?.state).toBe("partial");
 
       expect((await runPluginCommand("install", "opencode")).exitCode).toBe(0);
-      rmSync(join(home, ".config", "opencode", "skills", "claudexor"), { recursive: true, force: true });
+      rmSync(join(home, ".config", "opencode", "skills", "claudexor"), {
+        recursive: true,
+        force: true,
+      });
       rmSync(join(home, ".config", "opencode", "commands", "claudexor.md"), { force: true });
       rmSync(join(home, ".config", "opencode", "plugins", "claudexor.js"), { force: true });
       const opencode = await runPluginCommand("status", "opencode");
@@ -323,7 +402,8 @@ describe("plugin lifecycle", () => {
       const env = readJson(childEnv);
       expect(env.HOME).toBe(home);
       expect(env.CLAUDEXOR_CONFIG_DIR).toBe(config);
-      const generated = readJson(join(home, ".codex", "plugins", "claudexor", ".mcp.json")).mcpServers.claudexor.env;
+      const generated = readJson(join(home, ".codex", "plugins", "claudexor", ".mcp.json"))
+        .mcpServers.claudexor.env;
       expect(env.CLAUDEXOR_CONFIG_DIR).toBe(generated.CLAUDEXOR_CONFIG_DIR);
       expect(env.CLAUDEXOR_MANAGED).toBe(generated.CLAUDEXOR_MANAGED);
       expect(env.CLAUDEXOR_PLUGIN_VERSION).toBe(generated.CLAUDEXOR_PLUGIN_VERSION);
@@ -339,7 +419,7 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const path = join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json");
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, "{\"name\":\"someone-else\"}\n");
+      writeFileSync(path, '{"name":"someone-else"}\n');
       const result = await runPluginCommand("install", "codex", { force: true });
       expect(result.exitCode).toBe(1);
       expect(result.results[0]?.state).toBe("blocked");
@@ -412,7 +492,13 @@ describe("plugin lifecycle", () => {
       const outsideClaude = join(dir, "outside-claude-root");
       mkdirSync(outsideClaude, { recursive: true });
       symlinkSync(outsideClaude, claudeRoot, "dir");
-      const oldClaudeManifest = join(claudeRoot, "plugins", "claudexor", ".claude-plugin", "plugin.json");
+      const oldClaudeManifest = join(
+        claudeRoot,
+        "plugins",
+        "claudexor",
+        ".claude-plugin",
+        "plugin.json",
+      );
       const oldClaudeCommand = join(claudeRoot, "plugins", "claudexor", "commands", "claudexor.md");
       mkdirSync(dirname(oldClaudeManifest), { recursive: true });
       mkdirSync(dirname(oldClaudeCommand), { recursive: true });
@@ -448,7 +534,7 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const conflict = join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json");
       mkdirSync(dirname(conflict), { recursive: true });
-      writeFileSync(conflict, "{\"name\":\"someone-else\"}\n");
+      writeFileSync(conflict, '{"name":"someone-else"}\n');
 
       const install = await runPluginCommand("install", "all");
       expect(install.exitCode).toBe(1);
@@ -471,11 +557,16 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const legacy = join(home, ".agents", "skills", "claudexor", "SKILL.md");
       mkdirSync(dirname(legacy), { recursive: true });
-      writeFileSync(legacy, "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n");
+      writeFileSync(
+        legacy,
+        "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n",
+      );
       const result = await runPluginCommand("install", "codex");
       expect(result.exitCode).toBe(0);
       expect(existsSync(join(home, ".agents", "skills", "claudexor"))).toBe(false);
-      expect(existsSync(join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json"))).toBe(true);
+      expect(
+        existsSync(join(home, ".codex", "plugins", "claudexor", ".codex-plugin", "plugin.json")),
+      ).toBe(true);
     });
   });
 
@@ -483,7 +574,10 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const legacy = join(home, ".agents", "skills", "claudexor", "SKILL.md");
       mkdirSync(dirname(legacy), { recursive: true });
-      writeFileSync(legacy, "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n\nuser edits\n");
+      writeFileSync(
+        legacy,
+        "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n\nuser edits\n",
+      );
 
       const result = await runPluginCommand("install", "codex");
 
@@ -497,7 +591,10 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const legacy = join(home, ".config", "opencode", "claudexor", "AGENTS.md");
       mkdirSync(dirname(legacy), { recursive: true });
-      writeFileSync(legacy, "These plugins are thin shims\nHarness-agnostic coding via the claudexor CLI\n\nuser edits\n");
+      writeFileSync(
+        legacy,
+        "These plugins are thin shims\nHarness-agnostic coding via the claudexor CLI\n\nuser edits\n",
+      );
 
       const result = await runPluginCommand("install", "opencode");
 
@@ -509,12 +606,29 @@ describe("plugin lifecycle", () => {
 
   it("blocks user-modified Claude and Cursor legacy commands even when they include old shim phrases", async () => {
     await withTempHome(async ({ home }) => {
-      const oldClaudeManifest = join(home, ".claude", "plugins", "claudexor", ".claude-plugin", "plugin.json");
-      const oldClaudeCommand = join(home, ".claude", "plugins", "claudexor", "commands", "claudexor.md");
+      const oldClaudeManifest = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        ".claude-plugin",
+        "plugin.json",
+      );
+      const oldClaudeCommand = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
       mkdirSync(dirname(oldClaudeManifest), { recursive: true });
       mkdirSync(dirname(oldClaudeCommand), { recursive: true });
       writeFileSync(oldClaudeManifest, oldThinShimManifest());
-      writeFileSync(oldClaudeCommand, `---\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n\nuser edits still mention claudexor race\n`);
+      writeFileSync(
+        oldClaudeCommand,
+        `---\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n\nuser edits still mention claudexor race\n`,
+      );
 
       const result = await runPluginCommand("install", "claude");
 
@@ -524,12 +638,31 @@ describe("plugin lifecycle", () => {
     });
 
     await withTempHome(async ({ home }) => {
-      const oldCursorManifest = join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json");
-      const oldCursorCommand = join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md");
+      const oldCursorManifest = join(
+        home,
+        ".cursor",
+        "plugins",
+        "local",
+        "claudexor",
+        ".cursor-plugin",
+        "plugin.json",
+      );
+      const oldCursorCommand = join(
+        home,
+        ".cursor",
+        "plugins",
+        "local",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
       mkdirSync(dirname(oldCursorManifest), { recursive: true });
       mkdirSync(dirname(oldCursorCommand), { recursive: true });
       writeFileSync(oldCursorManifest, oldThinShimManifest());
-      writeFileSync(oldCursorCommand, `---\nname: claudexor\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n\nuser edits still mention claudexor race\n`);
+      writeFileSync(
+        oldCursorCommand,
+        `---\nname: claudexor\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n\nuser edits still mention claudexor race\n`,
+      );
 
       const result = await runPluginCommand("install", "cursor");
 
@@ -541,46 +674,133 @@ describe("plugin lifecycle", () => {
 
   it("migrates exact old Claude and Cursor thin shims whose manifests had no marker", async () => {
     await withTempHome(async ({ home }) => {
-      const oldClaudeManifest = join(home, ".claude", "plugins", "claudexor", ".claude-plugin", "plugin.json");
-      const oldClaudeCommand = join(home, ".claude", "plugins", "claudexor", "commands", "claudexor.md");
-      const oldCursorManifest = join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json");
-      const oldCursorCommand = join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md");
-      for (const path of [oldClaudeManifest, oldClaudeCommand, oldCursorManifest, oldCursorCommand]) mkdirSync(dirname(path), { recursive: true });
+      const oldClaudeManifest = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        ".claude-plugin",
+        "plugin.json",
+      );
+      const oldClaudeCommand = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
+      const oldCursorManifest = join(
+        home,
+        ".cursor",
+        "plugins",
+        "local",
+        "claudexor",
+        ".cursor-plugin",
+        "plugin.json",
+      );
+      const oldCursorCommand = join(
+        home,
+        ".cursor",
+        "plugins",
+        "local",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
+      for (const path of [oldClaudeManifest, oldClaudeCommand, oldCursorManifest, oldCursorCommand])
+        mkdirSync(dirname(path), { recursive: true });
       writeFileSync(oldClaudeManifest, oldThinShimManifest());
       writeFileSync(oldClaudeCommand, `---\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n`);
       writeFileSync(oldCursorManifest, oldThinShimManifest());
-      writeFileSync(oldCursorCommand, `---\nname: claudexor\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n`);
+      writeFileSync(
+        oldCursorCommand,
+        `---\nname: claudexor\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n`,
+      );
 
       const result = await runPluginCommand("install", "all");
       expect(result.exitCode).toBe(0);
       expect(existsSync(join(home, ".claude", "plugins", "claudexor"))).toBe(false);
-      expect(readJson(join(home, ".claude", "skills", "claudexor", ".claude-plugin", "plugin.json")).claudexor.marker).toBe(
-        "claudexor:managed host-plugin-lifecycle",
-      );
-      expect(readJson(join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json")).description).toContain(
-        "claudexor:managed host-plugin-lifecycle",
-      );
-      expect(readFileSync(join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md"), "utf8")).not.toContain(
-        "These plugins are thin shims",
-      );
+      expect(
+        readJson(join(home, ".claude", "skills", "claudexor", ".claude-plugin", "plugin.json"))
+          .claudexor.marker,
+      ).toBe("claudexor:managed host-plugin-lifecycle");
+      expect(
+        readJson(
+          join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"),
+        ).description,
+      ).toContain("claudexor:managed host-plugin-lifecycle");
+      expect(
+        readFileSync(
+          join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md"),
+          "utf8",
+        ),
+      ).not.toContain("These plugins are thin shims");
     });
   });
 
   it("removes verified legacy shims on uninstall and blocks ambiguous legacy paths", async () => {
     await withTempHome(async ({ home }) => {
-      const oldClaudeManifest = join(home, ".claude", "plugins", "claudexor", ".claude-plugin", "plugin.json");
-      const oldClaudeCommand = join(home, ".claude", "plugins", "claudexor", "commands", "claudexor.md");
+      const oldClaudeManifest = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        ".claude-plugin",
+        "plugin.json",
+      );
+      const oldClaudeCommand = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
       const oldCodexSkill = join(home, ".agents", "skills", "claudexor", "SKILL.md");
-      const oldCursorManifest = join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json");
-      const oldCursorCommand = join(home, ".cursor", "plugins", "local", "claudexor", "commands", "claudexor.md");
+      const oldCursorManifest = join(
+        home,
+        ".cursor",
+        "plugins",
+        "local",
+        "claudexor",
+        ".cursor-plugin",
+        "plugin.json",
+      );
+      const oldCursorCommand = join(
+        home,
+        ".cursor",
+        "plugins",
+        "local",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
       const oldOpenCodeAgent = join(home, ".config", "opencode", "claudexor", "AGENTS.md");
-      for (const path of [oldClaudeManifest, oldClaudeCommand, oldCodexSkill, oldCursorManifest, oldCursorCommand, oldOpenCodeAgent]) mkdirSync(dirname(path), { recursive: true });
+      for (const path of [
+        oldClaudeManifest,
+        oldClaudeCommand,
+        oldCodexSkill,
+        oldCursorManifest,
+        oldCursorCommand,
+        oldOpenCodeAgent,
+      ])
+        mkdirSync(dirname(path), { recursive: true });
       writeFileSync(oldClaudeManifest, oldThinShimManifest());
       writeFileSync(oldClaudeCommand, `---\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n`);
-      writeFileSync(oldCodexSkill, "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n");
+      writeFileSync(
+        oldCodexSkill,
+        "---\nname: claudexor\ndescription: Harness-agnostic coding via the claudexor CLI\n---\n",
+      );
       writeFileSync(oldCursorManifest, oldThinShimManifest());
-      writeFileSync(oldCursorCommand, `---\nname: claudexor\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n`);
-      writeFileSync(oldOpenCodeAgent, "These plugins are thin shims\nHarness-agnostic coding via the claudexor CLI\n");
+      writeFileSync(
+        oldCursorCommand,
+        `---\nname: claudexor\ndescription: Run Claudexor\n---\n${OLD_THIN_SHIM}\n`,
+      );
+      writeFileSync(
+        oldOpenCodeAgent,
+        "These plugins are thin shims\nHarness-agnostic coding via the claudexor CLI\n",
+      );
 
       expect((await runPluginCommand("uninstall", "claude")).exitCode).toBe(0);
       expect((await runPluginCommand("uninstall", "codex")).exitCode).toBe(0);
@@ -593,9 +813,16 @@ describe("plugin lifecycle", () => {
     });
 
     await withTempHome(async ({ home }) => {
-      const ambiguous = join(home, ".claude", "plugins", "claudexor", ".claude-plugin", "plugin.json");
+      const ambiguous = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        ".claude-plugin",
+        "plugin.json",
+      );
       mkdirSync(dirname(ambiguous), { recursive: true });
-      writeFileSync(ambiguous, "{\"name\":\"claudexor\"}\n");
+      writeFileSync(ambiguous, '{"name":"claudexor"}\n');
       const result = await runPluginCommand("uninstall", "claude");
       expect(result.exitCode).toBe(1);
       expect(result.results[0]?.errors.join("\n")).toContain("looks like a legacy Claudexor path");
@@ -603,8 +830,22 @@ describe("plugin lifecycle", () => {
     });
 
     await withTempHome(async ({ home }) => {
-      const oldClaudeManifest = join(home, ".claude", "plugins", "claudexor", ".claude-plugin", "plugin.json");
-      const oldClaudeCommand = join(home, ".claude", "plugins", "claudexor", "commands", "claudexor.md");
+      const oldClaudeManifest = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        ".claude-plugin",
+        "plugin.json",
+      );
+      const oldClaudeCommand = join(
+        home,
+        ".claude",
+        "plugins",
+        "claudexor",
+        "commands",
+        "claudexor.md",
+      );
       const extraDir = join(home, ".claude", "plugins", "claudexor", "user-empty-dir");
       mkdirSync(dirname(oldClaudeManifest), { recursive: true });
       mkdirSync(dirname(oldClaudeCommand), { recursive: true });
@@ -655,7 +896,11 @@ describe("plugin lifecycle", () => {
       rmSync(join(config, "plugins", "state.json"), { force: true });
       const result = await runPluginCommand("uninstall", "cursor");
       expect(result.exitCode).toBe(0);
-      expect(existsSync(join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"))).toBe(false);
+      expect(
+        existsSync(
+          join(home, ".cursor", "plugins", "local", "claudexor", ".cursor-plugin", "plugin.json"),
+        ),
+      ).toBe(false);
     });
   });
 
@@ -685,19 +930,25 @@ describe("plugin lifecycle", () => {
         join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"),
         join(home, ".config", "opencode", "plugins", "claudexor.js"),
       ];
-      for (const path of driftPaths) writeFileSync(path, readFileSync(path, "utf8") + "\nmanual drift\n");
+      for (const path of driftPaths)
+        writeFileSync(path, readFileSync(path, "utf8") + "\nmanual drift\n");
 
       const repair = await runPluginCommand("repair", "all");
       expect(repair.exitCode).toBe(0);
       expect(repair.results.every((r) => r.ok)).toBe(true);
-      expect(repair.results.some((r) => r.notes.some((note) => note.includes(".claudexor-backups")))).toBe(true);
-      for (const path of driftPaths) expect(readFileSync(path, "utf8")).not.toContain("manual drift");
+      expect(
+        repair.results.some((r) => r.notes.some((note) => note.includes(".claudexor-backups"))),
+      ).toBe(true);
+      for (const path of driftPaths)
+        expect(readFileSync(path, "utf8")).not.toContain("manual drift");
 
       const uninstall = await runPluginCommand("uninstall", "all");
       expect(uninstall.exitCode).toBe(0);
       for (const path of driftPaths) expect(existsSync(path)).toBe(false);
       const marketplace = readJson(join(home, ".agents", "plugins", "marketplace.json"));
-      expect(marketplace.plugins.some((p: { name?: string }) => p.name === "claudexor")).toBe(false);
+      expect(marketplace.plugins.some((p: { name?: string }) => p.name === "claudexor")).toBe(
+        false,
+      );
       const opencode = readJson(join(home, ".config", "opencode", "opencode.json"));
       expect(opencode.mcp.claudexor).toBeUndefined();
     });
@@ -722,7 +973,9 @@ describe("plugin lifecycle", () => {
 
       const uninstall = await runPluginCommand("uninstall", "codex");
       expect(uninstall.exitCode).toBe(1);
-      expect(uninstall.results[0]?.errors.join("\n")).toContain("out-of-scope codex artifact state");
+      expect(uninstall.results[0]?.errors.join("\n")).toContain(
+        "out-of-scope codex artifact state",
+      );
       expect(existsSync(outside)).toBe(true);
     });
   });
@@ -755,7 +1008,7 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home, config }) => {
       expect((await runPluginCommand("install", "cursor")).exitCode).toBe(0);
       const obsolete = join(home, ".cursor", "plugins", "local", "claudexor", ".mcp.json");
-      const text = "{\"old\":true,\"marker\":\"claudexor:managed host-plugin-lifecycle\"}\n";
+      const text = '{"old":true,"marker":"claudexor:managed host-plugin-lifecycle"}\n';
       writeFileSync(obsolete, text);
       const statePath = join(config, "plugins", "state.json");
       const state = readJson(statePath);
@@ -779,7 +1032,7 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home, config }) => {
       expect((await runPluginCommand("install", "cursor")).exitCode).toBe(0);
       const obsolete = join(home, ".cursor", "plugins", "local", "claudexor", ".mcp.json");
-      const text = "{\"old\":true,\"marker\":\"claudexor:managed host-plugin-lifecycle\"}\n";
+      const text = '{"old":true,"marker":"claudexor:managed host-plugin-lifecycle"}\n';
       writeFileSync(obsolete, text);
       const statePath = join(config, "plugins", "state.json");
       const state = readJson(statePath);
@@ -796,7 +1049,9 @@ describe("plugin lifecycle", () => {
       const repair = await runPluginCommand("repair", "cursor");
 
       expect(repair.exitCode).toBe(1);
-      expect(repair.results[0]?.errors.join("\n")).toContain("obsolete Claudexor state but no longer matches ownership evidence");
+      expect(repair.results[0]?.errors.join("\n")).toContain(
+        "obsolete Claudexor state but no longer matches ownership evidence",
+      );
       expect(readFileSync(obsolete, "utf8")).toContain("user edits");
     });
   });
@@ -808,11 +1063,15 @@ describe("plugin lifecycle", () => {
       writeFileSync(ideState, "{ broken\n");
       const install = await runPluginCommand("install", "cursor");
       expect(install.exitCode).toBe(0);
-      expect(install.results[0]?.warnings.join("\n")).toContain("Cursor JSON state was not parseable");
+      expect(install.results[0]?.warnings.join("\n")).toContain(
+        "Cursor JSON state was not parseable",
+      );
       const status = await runPluginCommand("status", "cursor");
       expect(status.exitCode).toBe(0);
       expect(status.results[0]?.state).toBe("installed");
-      expect(status.results[0]?.warnings.join("\n")).toContain("Cursor JSON state was not parseable");
+      expect(status.results[0]?.warnings.join("\n")).toContain(
+        "Cursor JSON state was not parseable",
+      );
     });
   });
 
@@ -820,32 +1079,72 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const marketplacePath = join(home, ".agents", "plugins", "marketplace.json");
       mkdirSync(dirname(marketplacePath), { recursive: true });
-      writeFileSync(marketplacePath, JSON.stringify({
-        name: "personal",
-        interface: { displayName: "Personal" },
-        plugins: [{ name: "other", source: { source: "local", path: "./plugins/other" }, policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" }, category: "Productivity" }],
-      }, null, 2));
+      writeFileSync(
+        marketplacePath,
+        JSON.stringify(
+          {
+            name: "personal",
+            interface: { displayName: "Personal" },
+            plugins: [
+              {
+                name: "other",
+                source: { source: "local", path: "./plugins/other" },
+                policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+                category: "Productivity",
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
       const opencodePath = join(home, ".config", "opencode", "opencode.json");
       mkdirSync(dirname(opencodePath), { recursive: true });
-      writeFileSync(opencodePath, JSON.stringify({ mcp: { other: { type: "local", command: ["node", "other"] } } }, null, 2));
+      writeFileSync(
+        opencodePath,
+        JSON.stringify({ mcp: { other: { type: "local", command: ["node", "other"] } } }, null, 2),
+      );
 
       expect((await runPluginCommand("install", "all")).exitCode).toBe(0);
-      expect(readJson(marketplacePath).plugins.some((p: { name?: string }) => p.name === "other")).toBe(true);
+      expect(
+        readJson(marketplacePath).plugins.some((p: { name?: string }) => p.name === "other"),
+      ).toBe(true);
       expect(readJson(opencodePath).mcp.other).toBeDefined();
     });
 
     await withTempHome(async ({ home }) => {
       const marketplacePath = join(home, ".agents", "plugins", "marketplace.json");
       mkdirSync(dirname(marketplacePath), { recursive: true });
-      writeFileSync(marketplacePath, JSON.stringify({ name: "personal", plugins: [{ name: "claudexor", source: { source: "local", path: "./somewhere-else" } }] }, null, 2));
+      writeFileSync(
+        marketplacePath,
+        JSON.stringify(
+          {
+            name: "personal",
+            plugins: [{ name: "claudexor", source: { source: "local", path: "./somewhere-else" } }],
+          },
+          null,
+          2,
+        ),
+      );
       const opencodePath = join(home, ".config", "opencode", "opencode.json");
       mkdirSync(dirname(opencodePath), { recursive: true });
-      writeFileSync(opencodePath, JSON.stringify({ mcp: { claudexor: { type: "local", command: ["node", "other"] } } }, null, 2));
+      writeFileSync(
+        opencodePath,
+        JSON.stringify(
+          { mcp: { claudexor: { type: "local", command: ["node", "other"] } } },
+          null,
+          2,
+        ),
+      );
 
       const install = await runPluginCommand("install", "all");
       expect(install.exitCode).toBe(1);
-      expect(install.results.find((r) => r.host === "codex")?.errors.join("\n")).toContain("unowned claudexor marketplace entry");
-      expect(install.results.find((r) => r.host === "opencode")?.errors.join("\n")).toContain("unowned mcp.claudexor entry");
+      expect(install.results.find((r) => r.host === "codex")?.errors.join("\n")).toContain(
+        "unowned claudexor marketplace entry",
+      );
+      expect(install.results.find((r) => r.host === "opencode")?.errors.join("\n")).toContain(
+        "unowned mcp.claudexor entry",
+      );
     });
   });
 
@@ -856,7 +1155,9 @@ describe("plugin lifecycle", () => {
       writeFileSync(marketplacePath, "null\n");
       const codex = await runPluginCommand("install", "codex");
       expect(codex.exitCode).toBe(1);
-      expect(codex.results[0]?.errors.join("\n")).toContain("is not a Codex marketplace JSON object with plugins[]");
+      expect(codex.results[0]?.errors.join("\n")).toContain(
+        "is not a Codex marketplace JSON object with plugins[]",
+      );
       expect(readFileSync(marketplacePath, "utf8")).toBe("null\n");
     });
 
@@ -866,7 +1167,9 @@ describe("plugin lifecycle", () => {
       writeFileSync(opencodePath, "null\n");
       const opencode = await runPluginCommand("install", "opencode");
       expect(opencode.exitCode).toBe(1);
-      expect(opencode.results[0]?.errors.join("\n")).toContain("is not an OpenCode JSON config object");
+      expect(opencode.results[0]?.errors.join("\n")).toContain(
+        "is not an OpenCode JSON config object",
+      );
       expect(readFileSync(opencodePath, "utf8")).toBe("null\n");
     });
   });
@@ -890,7 +1193,10 @@ describe("plugin lifecycle", () => {
       const marketplacePath = join(home, ".agents", "plugins", "marketplace.json");
       const statePath = join(config, "plugins", "state.json");
       const state = readJson(statePath);
-      state.hosts.codex.configEntries["codex-marketplace"].path = join(home, "wrong-marketplace.json");
+      state.hosts.codex.configEntries["codex-marketplace"].path = join(
+        home,
+        "wrong-marketplace.json",
+      );
       writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
 
       const status = await runPluginCommand("status", "codex");
@@ -899,7 +1205,10 @@ describe("plugin lifecycle", () => {
       expect(status.results[0]?.errors.join("\n")).toContain("out-of-scope codex config state");
 
       const marketplace = readJson(marketplacePath);
-      marketplace.plugins.push({ name: "claudexor", source: { source: "local", path: "./foreign" } });
+      marketplace.plugins.push({
+        name: "claudexor",
+        source: { source: "local", path: "./foreign" },
+      });
       writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2) + "\n");
       state.hosts.codex.configEntries["codex-marketplace"].path = marketplacePath;
       writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
@@ -907,7 +1216,9 @@ describe("plugin lifecycle", () => {
       const repair = await runPluginCommand("repair", "codex");
       expect(repair.exitCode).toBe(1);
       expect(repair.results[0]?.errors.join("\n")).toContain("unowned claudexor marketplace entry");
-      expect(readJson(marketplacePath).plugins.filter((p: { name?: string }) => p.name === "claudexor")).toHaveLength(2);
+      expect(
+        readJson(marketplacePath).plugins.filter((p: { name?: string }) => p.name === "claudexor"),
+      ).toHaveLength(2);
     });
 
     await withTempHome(async ({ home }) => {
@@ -920,10 +1231,15 @@ describe("plugin lifecycle", () => {
         category: "Productivity",
         claudexor: { marker: "claudexor:managed host-plugin-lifecycle" },
       };
-      writeFileSync(marketplacePath, JSON.stringify({ name: "personal", plugins: [owned, owned] }, null, 2));
+      writeFileSync(
+        marketplacePath,
+        JSON.stringify({ name: "personal", plugins: [owned, owned] }, null, 2),
+      );
       const result = await runPluginCommand("install", "codex", { force: true });
       expect(result.exitCode).toBe(0);
-      expect(readJson(marketplacePath).plugins.filter((p: { name?: string }) => p.name === "claudexor")).toHaveLength(1);
+      expect(
+        readJson(marketplacePath).plugins.filter((p: { name?: string }) => p.name === "claudexor"),
+      ).toHaveLength(1);
     });
   });
 
@@ -947,7 +1263,17 @@ describe("plugin lifecycle", () => {
     await withTempHome(async ({ home }) => {
       const marketplacePath = join(home, ".agents", "plugins", "marketplace.json");
       mkdirSync(dirname(marketplacePath), { recursive: true });
-      writeFileSync(marketplacePath, JSON.stringify({ name: "personal", plugins: [{ name: "claudexor", source: { source: "local", path: "./foreign" } }] }, null, 2));
+      writeFileSync(
+        marketplacePath,
+        JSON.stringify(
+          {
+            name: "personal",
+            plugins: [{ name: "claudexor", source: { source: "local", path: "./foreign" } }],
+          },
+          null,
+          2,
+        ),
+      );
       const result = await runPluginCommand("uninstall", "codex");
       expect(result.exitCode).toBe(1);
       expect(readJson(marketplacePath).plugins).toHaveLength(1);

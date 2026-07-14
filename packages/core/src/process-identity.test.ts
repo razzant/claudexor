@@ -8,7 +8,12 @@ import {
 } from "./process-identity.js";
 import { ProcessGroupService, parseProcessGroupHandle } from "./process-group.js";
 
-function linuxStat(pid: number, pgid: number, startTicks: string, comm = "worker ) with spaces"): string {
+function linuxStat(
+  pid: number,
+  pgid: number,
+  startTicks: string,
+  comm = "worker ) with spaces",
+): string {
   // fieldsFromState[0]=state, [2]=pgrp/field5, [19]=starttime/field22.
   const fields4Through21 = Array.from({ length: 18 }, (_, index) => String(index + 1));
   fields4Through21[1] = String(pgid);
@@ -16,7 +21,14 @@ function linuxStat(pid: number, pgid: number, startTicks: string, comm = "worker
 }
 
 function knownLinux(pid: number, pgid: number, startToken: string): KnownProcessIdentity {
-  return { status: "known", pid, platform: "linux", source: "procfs_stat", startToken, processGroupId: pgid };
+  return {
+    status: "known",
+    pid,
+    platform: "linux",
+    source: "procfs_stat",
+    startToken,
+    processGroupId: pgid,
+  };
 }
 
 describe("locale-independent process identity", () => {
@@ -35,12 +47,19 @@ describe("locale-independent process identity", () => {
   });
 
   it("strictly parses Darwin PID/PGID/start and rejects localized prose", () => {
-    expect(parseDarwinHelperOutput("claudexor-process-identity-v2\t123\t123\t1777777777\t000042\n", 123)).toEqual({
-      status: "known", pid: 123, platform: "darwin", source: "proc_pidinfo",
-      startToken: "darwin:1777777777:000042", processGroupId: 123,
+    expect(
+      parseDarwinHelperOutput("claudexor-process-identity-v2\t123\t123\t1777777777\t000042\n", 123),
+    ).toEqual({
+      status: "known",
+      pid: 123,
+      platform: "darwin",
+      source: "proc_pidinfo",
+      startToken: "darwin:1777777777:000042",
+      processGroupId: 123,
     });
     expect(parseDarwinHelperOutput("Mon Jul 14 10:00:00 2026\n", 123)).toMatchObject({
-      status: "unknown", reason: "malformed_response",
+      status: "unknown",
+      reason: "malformed_response",
     });
   });
 
@@ -50,7 +69,9 @@ describe("locale-independent process identity", () => {
     expect(compareProcessIdentity(expected, knownLinux(90, 91, "linux:100"))).toBe("different");
     const missing = new ProcessIdentityService({
       platform: "linux",
-      readTextFile: () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }); },
+      readTextFile: () => {
+        throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      },
     });
     expect(missing.read(90).status).toBe("missing");
   });
@@ -58,32 +79,52 @@ describe("locale-independent process identity", () => {
 
 describe("process group handles", () => {
   it("brands only an exact known group leader and round-trips strict persisted JSON", () => {
-    const identity = { read: () => knownLinux(55, 55, "linux:1"), self: () => knownLinux(1, 1, "linux:0") };
+    const identity = {
+      read: () => knownLinux(55, 55, "linux:1"),
+      self: () => knownLinux(1, 1, "linux:0"),
+    };
     const service = new ProcessGroupService({ platform: "linux", identity });
     const captured = service.captureLeader(55);
     expect(captured.status).toBe("known");
     if (captured.status !== "known") throw new Error("expected known group");
-    expect(parseProcessGroupHandle(JSON.parse(JSON.stringify(captured.handle)))).toMatchObject({ pgid: 55 });
+    expect(parseProcessGroupHandle(JSON.parse(JSON.stringify(captured.handle)))).toMatchObject({
+      pgid: 55,
+    });
 
     const memberIdentity = { ...identity, read: () => knownLinux(55, 44, "linux:1") };
-    expect(new ProcessGroupService({ platform: "linux", identity: memberIdentity }).captureLeader(55)).toMatchObject({
-      status: "unknown", reason: "not_process_group_leader",
+    expect(
+      new ProcessGroupService({ platform: "linux", identity: memberIdentity }).captureLeader(55),
+    ).toMatchObject({
+      status: "unknown",
+      reason: "not_process_group_leader",
     });
   });
 
   it("treats only ESRCH as proof that every process in the group is gone", () => {
-    const identity = { read: () => knownLinux(55, 55, "linux:1"), self: () => knownLinux(1, 1, "linux:0") };
+    const identity = {
+      read: () => knownLinux(55, 55, "linux:1"),
+      self: () => knownLinux(1, 1, "linux:0"),
+    };
     const captured = new ProcessGroupService({ platform: "linux", identity }).captureLeader(55);
     if (captured.status !== "known") throw new Error("expected known group");
     const empty = new ProcessGroupService({
-      platform: "linux", identity,
-      probeProcessGroup: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); },
+      platform: "linux",
+      identity,
+      probeProcessGroup: () => {
+        throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      },
     });
     const denied = new ProcessGroupService({
-      platform: "linux", identity,
-      probeProcessGroup: () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
+      platform: "linux",
+      identity,
+      probeProcessGroup: () => {
+        throw Object.assign(new Error("denied"), { code: "EPERM" });
+      },
     });
     expect(empty.probeEmpty(captured.handle).status).toBe("empty");
-    expect(denied.probeEmpty(captured.handle)).toMatchObject({ status: "unknown", reason: "permission_denied" });
+    expect(denied.probeEmpty(captured.handle)).toMatchObject({
+      status: "unknown",
+      reason: "permission_denied",
+    });
   });
 });

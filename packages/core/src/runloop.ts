@@ -76,8 +76,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
   let exitSignal: NodeJS.Signals | null = null;
   const abortSignal = abortSignalFromSpec(spec);
 
-  const stderrTail = (): string =>
-    redact(stderrRing.join("\n")).slice(-STDERR_DETAIL_MAX).trim();
+  const stderrTail = (): string => redact(stderrRing.join("\n")).slice(-STDERR_DETAIL_MAX).trim();
 
   // Box the stdin handle: it is assigned inside the onSpawn callback, which
   // TypeScript's control-flow narrowing cannot see through a plain let.
@@ -171,7 +170,8 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
 
   const payload: Record<string, unknown> = {};
   if (droppedUnparsedLines > 0) payload["dropped_unparsed_lines"] = droppedUnparsedLines;
-  if (droppedUnrecognizedEvents > 0) payload["dropped_unrecognized_events"] = droppedUnrecognizedEvents;
+  if (droppedUnrecognizedEvents > 0)
+    payload["dropped_unrecognized_events"] = droppedUnrecognizedEvents;
   if (aborted) payload["aborted"] = true;
   if (exitCode !== null) payload["exit_code"] = exitCode;
   yield {

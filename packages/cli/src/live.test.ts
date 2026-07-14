@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { followRun } from "./live.js";
 
 /** Stub control API speaking just enough SSE for the follow contract. */
-function sseServer(handler: (lastEventId: number, res: import("node:http").ServerResponse) => void): Promise<{ server: Server; port: number }> {
+function sseServer(
+  handler: (lastEventId: number, res: import("node:http").ServerResponse) => void,
+): Promise<{ server: Server; port: number }> {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       const lastEventId = Number(req.headers["last-event-id"] ?? 0);
@@ -42,9 +44,13 @@ describe("claudexor follow", () => {
   function writeControlApiInfo(port: number): void {
     const daemonDir = join(dir, "daemon");
     mkdirSync(daemonDir, { recursive: true, mode: 0o700 });
-    writeFileSync(join(daemonDir, "control-api.json"), JSON.stringify({ host: "127.0.0.1", port }), {
-      mode: 0o600,
-    });
+    writeFileSync(
+      join(daemonDir, "control-api.json"),
+      JSON.stringify({ host: "127.0.0.1", port }),
+      {
+        mode: 0o600,
+      },
+    );
     writeFileSync(join(daemonDir, "token"), "tkn-follow", { mode: 0o600 });
   }
 

@@ -43,7 +43,10 @@ export function harnessRuntimeEnv(source: NodeJS.ProcessEnv = process.env): Node
  * install) is visible instead of silently answering for the wrong version.
  * Returns null when the binary is not on the harness PATH.
  */
-export function resolveHarnessBinary(bin: string, source: NodeJS.ProcessEnv = process.env): string | null {
+export function resolveHarnessBinary(
+  bin: string,
+  source: NodeJS.ProcessEnv = process.env,
+): string | null {
   const names = binaryNameCandidates(bin, source);
   if (isAbsolute(bin)) {
     for (const name of names) if (isExecutableFile(name)) return name;
@@ -92,9 +95,15 @@ function isExecutableFile(path: string): boolean {
  * on at-risk node can die mid-run. Returns null when not applicable. Diagnostic
  * only (doctor surfaces it); never gates a run.
  */
-export function atRiskNodeAdvisory(execPath: string = process.execPath, platform: NodeJS.Platform = process.platform): string | null {
+export function atRiskNodeAdvisory(
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
   if (platform !== "darwin") return null;
-  const atRisk = execPath.includes("/Cellar/node") || execPath.startsWith("/opt/homebrew/") || execPath.startsWith("/usr/local/Cellar/");
+  const atRisk =
+    execPath.includes("/Cellar/node") ||
+    execPath.startsWith("/opt/homebrew/") ||
+    execPath.startsWith("/usr/local/Cellar/");
   if (!atRisk) return null;
   return `node at ${execPath} is Homebrew-signed and may be SIGKILLed by macOS; install a notarized Node (e.g. under ~/.claudexor/node/bin) and put it first on PATH`;
 }

@@ -13,10 +13,9 @@ export interface ParsedArgs {
 /** Minimal, dependency-free arg parser: supports `--k v`, `--k=v`, and boolean `--k`. */
 export function parseArgs(argv: string[]): ParsedArgs {
   const _: string[] = [];
-  const flags: Record<string, string | boolean | Array<string | boolean>> = Object.create(null) as Record<
-    string,
-    string | boolean | Array<string | boolean>
-  >;
+  const flags: Record<string, string | boolean | Array<string | boolean>> = Object.create(
+    null,
+  ) as Record<string, string | boolean | Array<string | boolean>>;
   const setFlag = (key: string, value: string | boolean): void => {
     const existing = flags[key];
     if (Array.isArray(existing)) {
@@ -85,9 +84,9 @@ export function requiredStringFlagError(args: ParsedArgs, keys: readonly string[
   for (const key of keys) {
     if (!Object.prototype.hasOwnProperty.call(args.flags, key)) continue;
     for (const value of flagValues(args, key)) {
-      if (typeof value !== "string" || value.trim() === "") return `claudexor: --${key} requires a value`;
+      if (typeof value !== "string" || value.trim() === "")
+        return `claudexor: --${key} requires a value`;
     }
   }
   return null;
 }
-

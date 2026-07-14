@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "node -e \"const {existsSync}=require('node:fs'); for (const f of ['dist/cli.js','dist/claudexord.js','dist/setup-login-runner.js']) if (!existsSync(f)) { console.error('prepublishOnly: missing '+f+' \u2014 run pnpm build before publishing'); process.exit(1); }\""
+    "prepublishOnly": "node -e \"const {existsSync}=require('node:fs'); for (const f of ['dist/cli.js','dist/claudexord.js','dist/setup-login-runner.js']) if (!existsSync(f)) { console.error('prepublishOnly: missing '+f+' — run pnpm build before publishing'); process.exit(1); }\""
   },
   "dependencies": {
     "@claudexor/acp-server": "workspace:*",

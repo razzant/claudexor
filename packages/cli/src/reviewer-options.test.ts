@@ -51,15 +51,11 @@ describe("reviewer option parsing", () => {
   });
 
   it("fails loudly on empty reviewer-model comma entries", () => {
-    expect(() => parseReviewerModelMap(",openai=gpt-5.5")).toThrow(
-      /empty comma-separated entry/,
-    );
+    expect(() => parseReviewerModelMap(",openai=gpt-5.5")).toThrow(/empty comma-separated entry/);
     expect(() => parseReviewerModelMap("openai=gpt-5.5,,anthropic=claude")).toThrow(
       /empty comma-separated entry/,
     );
-    expect(() => parseReviewerModelMap("openai=gpt-5.5,")).toThrow(
-      /empty comma-separated entry/,
-    );
+    expect(() => parseReviewerModelMap("openai=gpt-5.5,")).toThrow(/empty comma-separated entry/);
   });
 
   it("returns undefined for an unset flag", () => {

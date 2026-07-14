@@ -4,7 +4,8 @@ import { nowIso, redactSecrets } from "@claudexor/util";
 type Json = any;
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
-const CLAUDE_TRANSIENT_RE = /overloaded|temporar(?:y|ily) unavailable|network|econnreset|etimedout|enotfound|eai_again|stream/i;
+const CLAUDE_TRANSIENT_RE =
+  /overloaded|temporar(?:y|ily) unavailable|network|econnreset|etimedout|enotfound|eai_again|stream/i;
 
 function toolKindFor(name: string): ToolKind {
   if (name === "WebSearch" || name === "WebFetch") return "web";
@@ -45,7 +46,11 @@ interface SessionTask {
 const sessionTasks = new Map<string, SessionTask[]>();
 const SESSION_TASKS_MAX_SESSIONS = 64;
 
-function applySessionTask(sessionId: string, tool: string, input: Record<string, unknown>): boolean {
+function applySessionTask(
+  sessionId: string,
+  tool: string,
+  input: Record<string, unknown>,
+): boolean {
   if (!sessionTasks.has(sessionId) && sessionTasks.size >= SESSION_TASKS_MAX_SESSIONS) {
     const oldest = sessionTasks.keys().next().value;
     if (oldest !== undefined) sessionTasks.delete(oldest);
@@ -87,7 +92,11 @@ function releaseSessionTasks(sessionId: string): void {
 }
 
 function sessionTaskItems(sessionId: string): SessionTask[] {
-  return (sessionTasks.get(sessionId) ?? []).map((t) => ({ id: `claude-${t.id}`, title: t.title, status: t.status }));
+  return (sessionTasks.get(sessionId) ?? []).map((t) => ({
+    id: `claude-${t.id}`,
+    title: t.title,
+    status: t.status,
+  }));
 }
 
 export function parseClaudeEvent(obj: Json, sessionId: string): HarnessEvent[] | null {
@@ -140,7 +149,9 @@ function parseClaudeEventStateful(
     }
     if (CLAUDE_TRANSIENT_RE.test(errText)) {
       ev.transient = {
-        kind: /overloaded|temporar(?:y|ily) unavailable/i.test(errText) ? "service_unavailable" : "network",
+        kind: /overloaded|temporar(?:y|ily) unavailable/i.test(errText)
+          ? "service_unavailable"
+          : "network",
         retry_delay_ms: typeof obj.retry_delay_ms === "number" ? obj.retry_delay_ms : null,
       };
     }
@@ -153,7 +164,11 @@ function parseClaudeEventStateful(
     for (const block of content) {
       if (block?.type === "text" && block.text) {
         out.push({ type: "message", session_id: sessionId, ts, text: String(block.text) });
-      } else if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
+      } else if (
+        block?.type === "thinking" &&
+        typeof block.thinking === "string" &&
+        block.thinking.trim()
+      ) {
         out.push({ type: "thinking", session_id: sessionId, ts, text: String(block.thinking) });
       } else if (block?.type === "tool_use") {
         const name = String(block.name ?? "tool");
@@ -167,17 +182,36 @@ function parseClaudeEventStateful(
         if (tool.use_id) pendingTools.set(tool.use_id, tool);
         if (EDIT_TOOLS.has(name)) {
           const path = input.file_path ?? input.path ?? input.notebook_path;
-          out.push({ type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name, tool_use_id: block.id } });
+          out.push({
+            type: "file_change",
+            session_id: sessionId,
+            ts,
+            tool,
+            payload: { path, tool: name, tool_use_id: block.id },
+          });
         } else if (name === "TodoWrite" && Array.isArray(input.todos)) {
           // Typed plan progress, legacy surface: older claude CLIs plan
           // via TodoWrite (whole-list updates; statuses map 1:1).
-          const items = (input.todos as Array<{ content?: unknown; status?: unknown }>).map((t, i) => ({
-            id: `claude-${i}`,
-            title: String(t.content ?? ""),
-            status:
-              t.status === "completed" ? ("completed" as const) : t.status === "in_progress" ? ("in_progress" as const) : ("pending" as const),
-          }));
-          out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, plan_progress: { items } });
+          const items = (input.todos as Array<{ content?: unknown; status?: unknown }>).map(
+            (t, i) => ({
+              id: `claude-${i}`,
+              title: String(t.content ?? ""),
+              status:
+                t.status === "completed"
+                  ? ("completed" as const)
+                  : t.status === "in_progress"
+                    ? ("in_progress" as const)
+                    : ("pending" as const),
+            }),
+          );
+          out.push({
+            type: "tool_call",
+            session_id: sessionId,
+            ts,
+            text: name,
+            tool,
+            plan_progress: { items },
+          });
         } else if (name === "TaskCreate" || name === "TaskUpdate") {
           // Typed plan progress, current surface (LIVE-VERIFIED 2.1.165):
           // claude plans via TaskCreate/TaskUpdate. The adapter accumulates the
@@ -194,7 +228,14 @@ function parseClaudeEventStateful(
               plan_progress: { items: sessionTaskItems(sessionId) },
             });
           } else {
-            out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, payload: { input } });
+            out.push({
+              type: "tool_call",
+              session_id: sessionId,
+              ts,
+              text: name,
+              tool,
+              payload: { input },
+            });
           }
         } else if (name === "ExitPlanMode" && typeof input.plan === "string" && input.plan.trim()) {
           // The produced plan rides in ExitPlanMode's INPUT; surface it as the
@@ -202,7 +243,14 @@ function parseClaudeEventStateful(
           out.push({ type: "message", session_id: sessionId, ts, text: String(input.plan) });
           out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool });
         } else {
-          out.push({ type: "tool_call", session_id: sessionId, ts, text: name, tool, payload: { input } });
+          out.push({
+            type: "tool_call",
+            session_id: sessionId,
+            ts,
+            text: name,
+            tool,
+            payload: { input },
+          });
         }
       }
     }
@@ -262,7 +310,10 @@ function parseClaudeEventStateful(
           type: "tool_result",
           session_id: sessionId,
           ts,
-          text: status !== "ok" ? `tool_result: ${status}${detail ? `: ${detail}` : ""}` : "tool_result",
+          text:
+            status !== "ok"
+              ? `tool_result: ${status}${detail ? `: ${detail}` : ""}`
+              : "tool_result",
           tool,
         });
       }
@@ -305,7 +356,12 @@ function parseClaudeEventStateful(
           payload: { max_turns_reached: true, num_turns: numberOrUndef(obj.num_turns) },
         });
       } else {
-        out.push({ type: "error", session_id: sessionId, ts, error: `result subtype: ${obj.subtype}` });
+        out.push({
+          type: "error",
+          session_id: sessionId,
+          ts,
+          error: `result subtype: ${obj.subtype}`,
+        });
       }
     }
     return out;
@@ -335,14 +391,19 @@ function toolTarget(name: string, input: Record<string, unknown>): string | unde
 }
 
 function summarizeToolResultContent(content: unknown): string {
-  if (typeof content === "string") return redactSecrets(content).trim().replace(/\s+/g, " ").slice(0, 1000);
+  if (typeof content === "string")
+    return redactSecrets(content).trim().replace(/\s+/g, " ").slice(0, 1000);
   if (Array.isArray(content)) {
     const parts = content
       .map((item) => {
         if (typeof item === "string") return item;
         if (!item || typeof item !== "object" || Array.isArray(item)) return "";
         const rec = item as Record<string, unknown>;
-        return typeof rec["text"] === "string" ? rec["text"] : typeof rec["content"] === "string" ? rec["content"] : "";
+        return typeof rec["text"] === "string"
+          ? rec["text"]
+          : typeof rec["content"] === "string"
+            ? rec["content"]
+            : "";
       })
       .filter(Boolean);
     return redactSecrets(parts.join(" ")).trim().replace(/\s+/g, " ").slice(0, 1000);

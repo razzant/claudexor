@@ -75,7 +75,11 @@ const consumerRoots = [join(root, "packages"), join(root, "apps"), join(root, "b
 const consumerFiles = [];
 for (const r of consumerRoots) {
   try {
-    walk(r, consumerFiles, (p) => p.endsWith(".ts") && !p.endsWith(".test.ts") && p.includes(`${sep}src${sep}`));
+    walk(
+      r,
+      consumerFiles,
+      (p) => p.endsWith(".ts") && !p.endsWith(".test.ts") && p.includes(`${sep}src${sep}`),
+    );
   } catch {
     /* apps may not have a TS src; ignore */
   }
@@ -127,7 +131,9 @@ for (const [name, sites] of declaredAt) {
 }
 
 if (violations.length > 0) {
-  console.error("staged-field check FAILED: schema field(s) with no consumer outside the schema definition:\n");
+  console.error(
+    "staged-field check FAILED: schema field(s) with no consumer outside the schema definition:\n",
+  );
   for (const v of violations.sort((a, b) => a.name.localeCompare(b.name))) {
     console.error(`  ${v.name}  (declared at ${v.sites.join(", ")})`);
   }

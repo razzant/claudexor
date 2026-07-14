@@ -46,9 +46,7 @@ status after`),
 \`\`\`json
 {"severity":"BLOCK","category":"correctness","claim":"single fenced finding"}
 \`\`\``),
-    ).toEqual([
-      { severity: "BLOCK", category: "correctness", claim: "single fenced finding" },
-    ]);
+    ).toEqual([{ severity: "BLOCK", category: "correctness", claim: "single fenced finding" }]);
   });
 
   it("prefers a later complete array over an earlier object-shaped example", () => {

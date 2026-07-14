@@ -3,7 +3,8 @@ import { runCapture } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
 
 const BIN = process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent";
-const CURSOR_LOGGED_OUT = /not logged in|not authenticated|unauthenticated|authentication required|no account|account\s*:\s*(?:none|unknown|not configured|-)(?:\s|$)|authenticated\s*:\s*(?:false|no|none|0)|logged in\s*:\s*(?:false|no|none|0)/i;
+const CURSOR_LOGGED_OUT =
+  /not logged in|not authenticated|unauthenticated|authentication required|no account|account\s*:\s*(?:none|unknown|not configured|-)(?:\s|$)|authenticated\s*:\s*(?:false|no|none|0)|logged in\s*:\s*(?:false|no|none|0)/i;
 
 export interface CursorNativeAuthProbe {
   authed: boolean;
@@ -46,12 +47,17 @@ export function cursorStatusAuthenticated(code: number | null, text: string): bo
   // Accepted grammar is intentionally narrow and vendor-facing: an explicit
   // "logged in" / "authenticated" verdict, or an Account field containing an
   // email-shaped principal. Bare "account" prose is never readiness proof.
-  return text.replaceAll("\r", "").split("\n").some((rawLine) => {
-    const line = rawLine.trim().replace(/^✓\s+/, "");
-    return /^logged in(?:\s+as\s+\S+)?[.!]?$/i.test(line)
-      || /^authenticated[.!]?$/i.test(line)
-      || /^account\s*:\s*[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(line);
-  });
+  return text
+    .replaceAll("\r", "")
+    .split("\n")
+    .some((rawLine) => {
+      const line = rawLine.trim().replace(/^✓\s+/, "");
+      return (
+        /^logged in(?:\s+as\s+\S+)?[.!]?$/i.test(line) ||
+        /^authenticated[.!]?$/i.test(line) ||
+        /^account\s*:\s*[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(line)
+      );
+    });
 }
 
 export function cursorStatusLoggedOut(text: string): boolean {
@@ -70,7 +76,8 @@ export function selectCursorAuthRoute(input: {
 }): CursorAuthRoute {
   const keyRouteReady = input.hasKey && input.apiKeyReady;
   if (input.authPreference === "api_key") return keyRouteReady ? "api_key" : "unavailable";
-  if (input.authPreference === "subscription") return input.nativeAuthed ? "local_session" : "unavailable";
+  if (input.authPreference === "subscription")
+    return input.nativeAuthed ? "local_session" : "unavailable";
   if (input.nativeAuthed) return "local_session";
   return keyRouteReady ? "api_key" : "unavailable";
 }

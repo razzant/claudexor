@@ -68,7 +68,9 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
       print(`trust file: ${path}${cfg.sources.includes(path) ? "" : " (not created yet)"}`);
       print(`allow_full_access: ${cfg.trust.allow_full_access}`);
       print(`access_default: ${cfg.trust.access_default}`);
-      print("change with: claudexor trust --allow-full-access | --revoke-full-access | --access-default readonly|workspace_write");
+      print(
+        "change with: claudexor trust --allow-full-access | --revoke-full-access | --access-default readonly|workspace_write",
+      );
     }
     return 0;
   } catch (err) {

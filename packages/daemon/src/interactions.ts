@@ -1,4 +1,8 @@
-import type { ControlPendingInteraction, InteractionAnswerSet, InteractionRequest } from "@claudexor/schema";
+import type {
+  ControlPendingInteraction,
+  InteractionAnswerSet,
+  InteractionRequest,
+} from "@claudexor/schema";
 import { InteractionAnswerSet as InteractionAnswerSetSchema } from "@claudexor/schema";
 
 /** Structural twin of the orchestrator's PendingInteractionContext. */
@@ -52,12 +56,21 @@ export class InteractionRegistry {
     });
   }
 
-  answer(runId: string, interactionId: string, rawAnswers: unknown): { status: InteractionAnswerStatus; message?: string } {
+  answer(
+    runId: string,
+    interactionId: string,
+    rawAnswers: unknown,
+  ): { status: InteractionAnswerStatus; message?: string } {
     this.prune();
     const entry = this.pending.get(this.key(runId, interactionId));
-    if (!entry) return { status: "not_found", message: `no pending interaction '${interactionId}' for run '${runId}'` };
+    if (!entry)
+      return {
+        status: "not_found",
+        message: `no pending interaction '${interactionId}' for run '${runId}'`,
+      };
     const parsed = InteractionAnswerSetSchema.safeParse(rawAnswers);
-    if (!parsed.success) return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
+    if (!parsed.success)
+      return { status: "rejected", message: parsed.error.issues[0]?.message ?? "invalid answers" };
     this.pending.delete(this.key(runId, interactionId));
     entry.resolve(parsed.data);
     return { status: "delivered" };

@@ -13,9 +13,7 @@ interface CliPrimaryOutputCandidate {
   path: string;
 }
 
-export function primaryOutputCandidatesForCli(
-  mode?: ModeKind,
-): CliPrimaryOutputCandidate[] {
+export function primaryOutputCandidatesForCli(mode?: ModeKind): CliPrimaryOutputCandidate[] {
   return mode === "ask"
     ? [{ kind: "answer", path: "final/answer.md" }]
     : mode === "plan"
@@ -38,10 +36,7 @@ export function primaryOutputCandidatesForCli(
             ];
 }
 
-export function primaryOutputForCli(
-  root: string,
-  mode?: ModeKind,
-): CliPrimaryOutput | null {
+export function primaryOutputForCli(root: string, mode?: ModeKind): CliPrimaryOutput | null {
   for (const candidate of primaryOutputCandidatesForCli(mode)) {
     const text = readTextSafe(join(root, candidate.path));
     if (text?.trim()) return { ...candidate, text };

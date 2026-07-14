@@ -18,7 +18,9 @@ describe("BudgetLedger", () => {
     const r3 = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
     led.settle(r3.lease?.lease_id ?? "", 0.1);
     expect(led.tier()).toBe("hard");
-    expect(led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" }).granted).toBe(false);
+    expect(led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" }).granted).toBe(
+      false,
+    );
   });
 
   it("settle fails loudly on an unknown lease and never double-counts a re-settle", () => {
@@ -40,7 +42,12 @@ describe("BudgetLedger", () => {
 
   it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {
     const led = new BudgetLedger({ maxUsd: 1.0 });
-    const r = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex", estimateUsd: 0.2 });
+    const r = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "codex",
+      estimateUsd: 0.2,
+    });
     expect(r.granted).toBe(true);
     // Streamed cost raises the hold; the tier sees it BEFORE settlement.
     led.updateHold(r.lease?.lease_id ?? "", 0.95);
@@ -62,7 +69,12 @@ describe("BudgetLedger", () => {
     // 0.95 fits under the parent cap (the wave guard denies estimates that
     // would consume headroom to the boundary), and its hold is visible at the
     // parent tier (0.95/1.0 ≥ downgrade threshold).
-    const r = child.reserve({ taskId: "t", intent: "implement", harnessId: "codex", estimateUsd: 0.95 });
+    const r = child.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "codex",
+      estimateUsd: 0.95,
+    });
     expect(r.granted).toBe(true);
     expect(parent.tier()).toBe("downgrade");
     child.cancel(r.lease?.lease_id ?? "");
@@ -82,7 +94,11 @@ describe("BudgetLedger", () => {
   });
 });
 
-function cand(id: string, fam: ProviderFamily, over: Partial<RouterCandidate> = {}): RouterCandidate {
+function cand(
+  id: string,
+  fam: ProviderFamily,
+  over: Partial<RouterCandidate> = {},
+): RouterCandidate {
   return {
     harnessId: id,
     providerFamily: fam,
@@ -98,22 +114,33 @@ function cand(id: string, fam: ProviderFamily, over: Partial<RouterCandidate> = 
 describe("router", () => {
   it("selects the highest-utility available harness", () => {
     const led = new BudgetLedger();
-    const best = selectHarness([cand("codex", "openai"), cand("claude", "anthropic", { qualityForIntent: 0.9 })], {
-      portfolio: "daily-rich",
-      ledger: led,
-    });
+    const best = selectHarness(
+      [cand("codex", "openai"), cand("claude", "anthropic", { qualityForIntent: 0.9 })],
+      {
+        portfolio: "daily-rich",
+        ledger: led,
+      },
+    );
     expect(best?.harnessId).toBe("claude");
   });
 
   it("returns null when nothing is available", () => {
     const led = new BudgetLedger();
-    expect(selectHarness([cand("x", "openai", { available: false })], { portfolio: "daily-rich", ledger: led })).toBeNull();
+    expect(
+      selectHarness([cand("x", "openai", { available: false })], {
+        portfolio: "daily-rich",
+        ledger: led,
+      }),
+    ).toBeNull();
   });
 
   it("subscription-first prefers local_session over api_key", () => {
     const led = new BudgetLedger();
     const best = selectHarness(
-      [cand("api", "openai", { authMode: "api_key" }), cand("sub", "anthropic", { authMode: "local_session" })],
+      [
+        cand("api", "openai", { authMode: "api_key" }),
+        cand("sub", "anthropic", { authMode: "local_session" }),
+      ],
       { portfolio: "subscription-first", ledger: led },
     );
     expect(best?.harnessId).toBe("sub");
@@ -126,20 +153,39 @@ describe("router", () => {
       session_id: "s",
       ts: new Date().toISOString(),
       error: "rate limited",
-      rate_limit: { resets_at: new Date(Date.now() + 3_600_000).toISOString(), retry_delay_ms: null },
+      rate_limit: {
+        resets_at: new Date(Date.now() + 3_600_000).toISOString(),
+        retry_delay_ms: null,
+      },
     });
     expect(obs?.kind).toBe("rate_limited");
     led.observe(obs as NonNullable<typeof obs>);
     expect(led.cooldownActive("codex")).toBe(true);
-    expect(selectHarness([cand("codex", "openai")], { portfolio: "daily-rich", ledger: led })).toBeNull();
+    expect(
+      selectHarness([cand("codex", "openai")], { portfolio: "daily-rich", ledger: led }),
+    ).toBeNull();
   });
 
   it("only the typed rate_limit field trips a cooldown (no regex governance over prose)", () => {
     const ts = new Date().toISOString();
     // Error PROSE alone never trips a cooldown here — detection is the adapter's
     // job and arrives as the typed field; the budget layer just projects it.
-    expect(observationsFromEvent("x", { type: "error", session_id: "s", ts, error: "HTTP 429 Too Many Requests" })).toEqual([]);
-    expect(observationsFromEvent("x", { type: "error", session_id: "s", ts, error: "received 429 items" })).toEqual([]);
+    expect(
+      observationsFromEvent("x", {
+        type: "error",
+        session_id: "s",
+        ts,
+        error: "HTTP 429 Too Many Requests",
+      }),
+    ).toEqual([]);
+    expect(
+      observationsFromEvent("x", {
+        type: "error",
+        session_id: "s",
+        ts,
+        error: "received 429 items",
+      }),
+    ).toEqual([]);
     // The typed field drives the observation; a retry_delay_ms becomes the cooldown.
     const [obs] = observationsFromEvent("x", {
       type: "error",
@@ -159,10 +205,20 @@ describe("wave guard (estimate holds)", () => {
     const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
     expect(first.granted).toBe(true);
     // Second slot holds the floor and fits (0.05 < 0.1 remaining).
-    const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.05 });
+    const second = ledger.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "h",
+      estimateUsd: 0.05,
+    });
     expect(second.granted).toBe(true);
     // Third slot would need 0.06 but only 0.05 remains -> typed wave denial.
-    const third = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.06 });
+    const third = ledger.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "h",
+      estimateUsd: 0.06,
+    });
     expect(third.granted).toBe(false);
     expect(third.denied).toBe("estimate_headroom");
     // The denial recorded NO hold: the tier is unchanged for granted work.
@@ -176,7 +232,12 @@ describe("wave guard (estimate holds)", () => {
     const ledger = new BudgetLedger({ maxUsd: 0.05 });
     const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
     expect(first.granted).toBe(true);
-    const second = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", estimateUsd: 0.05 });
+    const second = ledger.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "h",
+      estimateUsd: 0.05,
+    });
     expect(second.granted).toBe(false);
     expect(second.denied).toBe("estimate_headroom");
     // Granted work is unaffected: the tier never went hard on estimates alone.
@@ -241,7 +302,10 @@ describe("portfolio metrics", () => {
       });
       const ledger = new BudgetLedger();
       // cheapest: the 20x cost spread must pick codex.
-      const cheap = selectHarness([mk("codex", "openai"), mk("claude", "anthropic")], { portfolio: "cheapest", ledger });
+      const cheap = selectHarness([mk("codex", "openai"), mk("claude", "anthropic")], {
+        portfolio: "cheapest",
+        ledger,
+      });
       expect(cheap?.harnessId).toBe("codex");
       // strongest with a decisive quality prior: claude wins despite cost.
       const strong = selectHarness(
@@ -264,7 +328,11 @@ describe("portfolio metrics", () => {
     const { join } = await import("node:path");
     const dir = mkdtempSync(join(tmpdir(), "claudexor-metrics-auth-"));
     try {
-      recordHarnessMetric(dir, "codex", { costUsd: 0.02, durationMs: 30_000, authMode: "local_session" });
+      recordHarnessMetric(dir, "codex", {
+        costUsd: 0.02,
+        durationMs: 30_000,
+        authMode: "local_session",
+      });
       let m = loadHarnessMetrics(dir);
       expect(m["codex"]!.last_auth_mode).toBe("local_session");
       expect(m["codex"]!.samples).toBe(1);

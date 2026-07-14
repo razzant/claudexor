@@ -84,16 +84,22 @@ for (const [name, actual, expected] of [
   ["SCOPE_MODEL", process.env.SCOPE_MODEL, SCOPE_MODEL],
 ]) {
   if (actual !== undefined && actual.trim() !== expected) {
-    console.error(`${name} cannot override the exact release panel: expected '${expected}', got '${actual}'.`);
+    console.error(
+      `${name} cannot override the exact release panel: expected '${expected}', got '${actual}'.`,
+    );
     process.exit(2);
   }
 }
 if (process.env.TRIAD_DIRECT_OPENAI === "1" || process.env.TRIAD_DIRECT_ANTHROPIC === "1") {
-  console.error("Direct-provider reviewer routes are forbidden: the release panel must use the exact OpenRouter route.");
+  console.error(
+    "Direct-provider reviewer routes are forbidden: the release panel must use the exact OpenRouter route.",
+  );
   process.exit(2);
 }
 if (arg("skip-scope") !== null) {
-  console.error("--skip-scope is diagnostic-only in older releases and cannot satisfy the v2 release gate.");
+  console.error(
+    "--skip-scope is diagnostic-only in older releases and cannot satisfy the v2 release gate.",
+  );
   process.exit(2);
 }
 if (
@@ -124,7 +130,6 @@ const REQUEST_TIMEOUT_MS = 900_000;
 /** Per-file cap inside the touched-file pack; the diff itself is never cut. */
 const MAX_FILE_BYTES = 200_000;
 const MAX_PACK_BYTES = positiveIntEnv("TRIAD_MAX_PACK_BYTES", 3_000_000);
-
 
 function git(args, opts = {}) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024, ...opts });
@@ -202,7 +207,12 @@ const THOROUGHNESS = `- Do NOT stop after finding the first issue. Check EVERY i
 const PATHSPEC = (() => {
   const i = process.argv.indexOf("--paths");
   const v = i >= 0 ? process.argv[i + 1] : undefined;
-  return v ? v.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  return v
+    ? v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
 })();
 const pathArgs = PATHSPEC.length > 0 ? ["--", ...PATHSPEC] : [];
 
@@ -410,7 +420,11 @@ async function callModel(model, prompt) {
 }
 
 function isAbortError(err) {
-  return typeof err === "object" && err !== null && (err.name === "AbortError" || String(err).includes("AbortError"));
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err.name === "AbortError" || String(err).includes("AbortError"))
+  );
 }
 
 async function callOpenRouter(model, prompt) {
@@ -418,11 +432,25 @@ async function callOpenRouter(model, prompt) {
   const startedAt = new Date(started).toISOString();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  const route = { transport: "openrouter", source: "openrouter", routeProof: "openrouter:/api/v1/chat/completions" };
+  const route = {
+    transport: "openrouter",
+    source: "openrouter",
+    routeProof: "openrouter:/api/v1/chat/completions",
+  };
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      return { model, ...route, status: "error", raw: "", error: "OPENROUTER_API_KEY is required for OpenRouter-routed reviewer", ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+      return {
+        model,
+        ...route,
+        status: "error",
+        raw: "",
+        error: "OPENROUTER_API_KEY is required for OpenRouter-routed reviewer",
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt: null,
+        completedAt: new Date().toISOString(),
+      };
     }
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
@@ -442,7 +470,17 @@ async function callOpenRouter(model, prompt) {
     const firstEventAt = new Date().toISOString();
     const bodyText = await res.text();
     if (!res.ok) {
-      return { model, ...route, status: "error", raw: bodyText, error: `HTTP ${res.status}`, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+      return {
+        model,
+        ...route,
+        status: "error",
+        raw: bodyText,
+        error: `HTTP ${res.status}`,
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: new Date().toISOString(),
+      };
     }
     const body = JSON.parse(bodyText);
     const raw = body.choices?.[0]?.message?.content ?? "";
@@ -483,11 +521,48 @@ async function callOpenRouter(model, prompt) {
         completedAt: new Date().toISOString(),
       };
     }
-    if (!raw.trim()) return { model, ...route, observedModel, responseId: body.id ?? null, status: "error", raw: bodyText, error: "empty completion", ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
-    return { model, ...route, observedModel, responseId: body.id ?? null, finishReason, status: "responded", raw, usage, ms: Date.now() - started, startedAt, firstEventAt, completedAt: new Date().toISOString() };
+    if (!raw.trim())
+      return {
+        model,
+        ...route,
+        observedModel,
+        responseId: body.id ?? null,
+        status: "error",
+        raw: bodyText,
+        error: "empty completion",
+        ms: Date.now() - started,
+        startedAt,
+        firstEventAt,
+        completedAt: new Date().toISOString(),
+      };
+    return {
+      model,
+      ...route,
+      observedModel,
+      responseId: body.id ?? null,
+      finishReason,
+      status: "responded",
+      raw,
+      usage,
+      ms: Date.now() - started,
+      startedAt,
+      firstEventAt,
+      completedAt: new Date().toISOString(),
+    };
   } catch (err) {
     const timedOut = isAbortError(err);
-    return { model, ...route, status: timedOut ? "timed_out" : "error", timedOut, raw: "", error: String(err), ms: Date.now() - started, startedAt, firstEventAt: null, completedAt: new Date().toISOString() };
+    return {
+      model,
+      ...route,
+      status: timedOut ? "timed_out" : "error",
+      timedOut,
+      raw: "",
+      error: String(err),
+      ms: Date.now() - started,
+      startedAt,
+      firstEventAt: null,
+      completedAt: new Date().toISOString(),
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -511,10 +586,16 @@ function extractJsonArray(raw) {
       /* fall through to bracket scan */
     }
     const ends = [];
-    for (let pos = candidate.indexOf("]"); pos !== -1; pos = candidate.indexOf("]", pos + 1)) ends.push(pos);
+    for (let pos = candidate.indexOf("]"); pos !== -1; pos = candidate.indexOf("]", pos + 1))
+      ends.push(pos);
     for (const end of ends.reverse()) {
       const starts = [];
-      for (let pos = candidate.indexOf("["); pos !== -1 && pos <= end; pos = candidate.indexOf("[", pos + 1)) starts.push(pos);
+      for (
+        let pos = candidate.indexOf("[");
+        pos !== -1 && pos <= end;
+        pos = candidate.indexOf("[", pos + 1)
+      )
+        starts.push(pos);
       for (const start of starts.reverse()) {
         try {
           const obj = JSON.parse(candidate.slice(start, end + 1));
@@ -542,7 +623,9 @@ async function main() {
   // Fail BEFORE remote submission if the evidence contains a token-like value:
   // a leaked secret must not reach OpenRouter or the persisted artifacts.
   if (containsSecretLikeToken(triadPrompt)) {
-    console.error("ABORT: review evidence contains a secret-like token; scrub the diff/files first.");
+    console.error(
+      "ABORT: review evidence contains a secret-like token; scrub the diff/files first.",
+    );
     process.exit(1);
   }
   writeFileSync(join(outDir, "triad-prompt.md"), redactSecrets(triadPrompt));
@@ -552,7 +635,8 @@ async function main() {
   // hung panel must be diagnosable from disk, not indistinguishable from a hang.
   const progressPath = join(outDir, "reviewer-progress.jsonl");
   const progress = (entry) => appendFileSync(progressPath, JSON.stringify(entry) + "\n");
-  for (const model of TRIAD_MODELS) progress({ ts: new Date().toISOString(), type: "reviewer.started", model });
+  for (const model of TRIAD_MODELS)
+    progress({ ts: new Date().toISOString(), type: "reviewer.started", model });
   const triadResults = await Promise.all(TRIAD_MODELS.map((m) => callModel(m, triadPrompt)));
 
   const actorRecords = [];
@@ -575,17 +659,24 @@ async function main() {
         parsed = validation.findings;
         parseError = validation.error;
         missingItems = validation.missingItems;
-        writeFileSync(join(outDir, `triad-${slug}.parsed-json-blocks.json`), redactSecrets(JSON.stringify(arr, null, 2)) + "\n");
+        writeFileSync(
+          join(outDir, `triad-${slug}.parsed-json-blocks.json`),
+          redactSecrets(JSON.stringify(arr, null, 2)) + "\n",
+        );
       }
     }
     if (status !== "responded") {
       writeFileSync(
         join(outDir, `triad-${slug}.parse-error.json`),
-        JSON.stringify({
-          error: parseError ?? status,
-          missing_items: missingItems,
-          raw_file: `triad-${slug}.raw.txt`,
-        }, null, 2) + "\n",
+        JSON.stringify(
+          {
+            error: parseError ?? status,
+            missing_items: missingItems,
+            raw_file: `triad-${slug}.raw.txt`,
+          },
+          null,
+          2,
+        ) + "\n",
       );
     }
     const record = {
@@ -615,7 +706,10 @@ async function main() {
       findings: parsed,
     };
     actorRecords.push(record);
-    writeFileSync(join(outDir, `triad-${slug}.metadata.json`), JSON.stringify(record, null, 2) + "\n");
+    writeFileSync(
+      join(outDir, `triad-${slug}.metadata.json`),
+      JSON.stringify(record, null, 2) + "\n",
+    );
     if (record.first_event_at) {
       progress({
         ts: record.first_event_at,
@@ -628,7 +722,12 @@ async function main() {
     }
     progress({
       ts: record.completed_at ?? new Date().toISOString(),
-      type: status === "responded" ? "reviewer.completed" : result.timedOut || status === "timed_out" ? "reviewer.timed_out" : "reviewer.failed",
+      type:
+        status === "responded"
+          ? "reviewer.completed"
+          : result.timedOut || status === "timed_out"
+            ? "reviewer.timed_out"
+            : "reviewer.failed",
       model: result.model,
       observed_model: record.observed_model,
       source: record.source,
@@ -640,18 +739,27 @@ async function main() {
   }
   const responsive = actorRecords.filter((r) => r.status === "responded");
   const quorumMet = responsive.length >= 2;
-  const degraded = actorRecords.filter((r) => r.status !== "responded").map((r) => `${r.model_id}=${r.status}`);
+  const degraded = actorRecords
+    .filter((r) => r.status !== "responded")
+    .map((r) => `${r.model_id}=${r.status}`);
 
   let scope = null;
   {
     const scopePrompt = buildScopePrompt(base);
     if (containsSecretLikeToken(scopePrompt)) {
-      console.error("ABORT: scope evidence contains a secret-like token; scrub the diff/atlas first.");
+      console.error(
+        "ABORT: scope evidence contains a secret-like token; scrub the diff/atlas first.",
+      );
       process.exit(1);
     }
     writeFileSync(join(outDir, "scope-prompt.md"), redactSecrets(scopePrompt));
     console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
-    progress({ ts: new Date().toISOString(), type: "reviewer.started", model: SCOPE_MODEL, role: "scope" });
+    progress({
+      ts: new Date().toISOString(),
+      type: "reviewer.started",
+      model: SCOPE_MODEL,
+      role: "scope",
+    });
     const scopeResult = await callModel(SCOPE_MODEL, scopePrompt);
     if (scopeResult.firstEventAt) {
       progress({
@@ -694,28 +802,51 @@ async function main() {
       if (arr === null) {
         scopeStatus = "parse_failure";
         scopeError = "no_parseable_json_array";
-      }
-      else {
+      } else {
         const validation = validateChecklistResponse(arr, SCOPE_MODEL, SCOPE_ITEMS);
         scopeStatus = validation.status;
         scopeFindings = validation.findings;
         scopeError = validation.error;
         scopeMissing = validation.missingItems;
-        writeFileSync(join(outDir, "scope.parsed-json-blocks.json"), redactSecrets(JSON.stringify(arr, null, 2)) + "\n");
+        writeFileSync(
+          join(outDir, "scope.parsed-json-blocks.json"),
+          redactSecrets(JSON.stringify(arr, null, 2)) + "\n",
+        );
         scopeMeta.status = scopeStatus;
         scopeMeta.error = scopeError;
-        scope = { status: scopeStatus, findings: scopeFindings, missing_items: scopeMissing, error: scopeError, usage: scopeResult.usage ?? null, metadata: scopeMeta };
+        scope = {
+          status: scopeStatus,
+          findings: scopeFindings,
+          missing_items: scopeMissing,
+          error: scopeError,
+          usage: scopeResult.usage ?? null,
+          metadata: scopeMeta,
+        };
       }
     }
     if (!scope) {
       scopeMeta.status = scopeStatus;
       scopeMeta.error = scopeError;
-      scope = { status: scopeStatus, findings: scopeFindings, missing_items: scopeMissing, error: scopeError, metadata: scopeMeta };
+      scope = {
+        status: scopeStatus,
+        findings: scopeFindings,
+        missing_items: scopeMissing,
+        error: scopeError,
+        metadata: scopeMeta,
+      };
     }
     if (scopeStatus !== "responded") {
       writeFileSync(
         join(outDir, "scope.parse-error.json"),
-        JSON.stringify({ error: scopeError ?? scopeStatus, missing_items: scopeMissing, raw_file: "scope.raw.txt" }, null, 2) + "\n",
+        JSON.stringify(
+          {
+            error: scopeError ?? scopeStatus,
+            missing_items: scopeMissing,
+            raw_file: "scope.raw.txt",
+          },
+          null,
+          2,
+        ) + "\n",
       );
     }
     scopeMeta.findings = scopeFindings;
@@ -723,11 +854,12 @@ async function main() {
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
     progress({
       ts: scopeResult.completedAt ?? new Date().toISOString(),
-      type: scopeStatus === "responded"
-        ? "reviewer.completed"
-        : scopeResult.timedOut || scopeStatus === "timed_out"
-          ? "reviewer.timed_out"
-          : "reviewer.failed",
+      type:
+        scopeStatus === "responded"
+          ? "reviewer.completed"
+          : scopeResult.timedOut || scopeStatus === "timed_out"
+            ? "reviewer.timed_out"
+            : "reviewer.failed",
       model: SCOPE_MODEL,
       observed_model: scopeResult.observedModel ?? null,
       source: scopeResult.source ?? null,
@@ -745,7 +877,9 @@ async function main() {
     mkdirSync(resolve(".adversarial-review"), { recursive: true });
     writeFileSync(PANEL_LOCK_PATH, `triad: ${TRIAD_MODELS.join(",")}\nscope: ${SCOPE_MODEL}\n`);
     panelPinnedNow = true;
-    console.error(`panel pinned: wrote the exact immutable v2 reviewer panel to ${PANEL_LOCK_PATH}.`);
+    console.error(
+      `panel pinned: wrote the exact immutable v2 reviewer panel to ${PANEL_LOCK_PATH}.`,
+    );
   }
 
   const decision = releaseReviewDecision({ triadActors: actorRecords, scope, quorum: 2 });
@@ -757,7 +891,13 @@ async function main() {
     panel_source: "built_in_exact",
     panel_pinned_now: panelPinnedNow,
     panel_override_active: false,
-    triad: { models: TRIAD_MODELS, quorum_met: quorumMet, degraded, actors: actorRecords, findings },
+    triad: {
+      models: TRIAD_MODELS,
+      quorum_met: quorumMet,
+      degraded,
+      actors: actorRecords,
+      findings,
+    },
     scope,
     decision,
   };
@@ -766,7 +906,10 @@ async function main() {
   // Markdown table (FAILs first).
   const rows = [...findings, ...(scope?.findings ?? [])]
     .sort((a, b) => (a.verdict === b.verdict ? 0 : a.verdict === "FAIL" ? -1 : 1))
-    .map((f) => `| ${f.model} | ${f.item} | ${f.verdict} | ${f.severity} | ${f.reason.replaceAll("|", "\\|").replaceAll("\n", " ")} |`);
+    .map(
+      (f) =>
+        `| ${f.model} | ${f.item} | ${f.verdict} | ${f.severity} | ${f.reason.replaceAll("|", "\\|").replaceAll("\n", " ")} |`,
+    );
   const table = [
     `# Triad + Scope review — round ${round}`,
     "",

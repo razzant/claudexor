@@ -51,7 +51,9 @@ export interface InterviewEngineOptions {
 /** Thrown when freeze is attempted while ambiguities remain unresolved. */
 export class UnresolvedClarificationsError extends Error {
   constructor(public readonly open: ClarificationItem[]) {
-    super(`cannot freeze SpecPack: ${open.length} open clarification(s) — resolve them first (no silent guessing)`);
+    super(
+      `cannot freeze SpecPack: ${open.length} open clarification(s) — resolve them first (no silent guessing)`,
+    );
     this.name = "UnresolvedClarificationsError";
   }
 }
@@ -59,7 +61,9 @@ export class UnresolvedClarificationsError extends Error {
 /** Thrown when the interview hits the tier cap without the generator converging. */
 export class InterviewNotConvergedError extends Error {
   constructor(public readonly tiers: number) {
-    super(`interview did not converge within ${tiers} tier(s) — refusing to assemble an incomplete spec (no silent guessing)`);
+    super(
+      `interview did not converge within ${tiers} tier(s) — refusing to assemble an incomplete spec (no silent guessing)`,
+    );
     this.name = "InterviewNotConvergedError";
   }
 }
@@ -163,7 +167,10 @@ export class InterviewEngine {
       created_at: nowIso(),
       version: this.revision,
       frozen: true,
-      intent: { raw: redactSecrets(this.opts.intent), normalized: redactSecrets(this.draft.summary ?? "") },
+      intent: {
+        raw: redactSecrets(this.opts.intent),
+        normalized: redactSecrets(this.draft.summary ?? ""),
+      },
       summary: redactSecrets(this.draft.summary ?? ""),
       success_criteria: sanitize(this.draft.success_criteria ?? []),
       non_goals: (this.draft.non_goals ?? []).map(redactSecrets),
@@ -199,7 +206,8 @@ function sanitize<T>(value: T): T {
   if (Array.isArray(value)) return value.map((item) => sanitize(item)) as T;
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) out[key] = sanitize(child);
+    for (const [key, child] of Object.entries(value as Record<string, unknown>))
+      out[key] = sanitize(child);
     return out as T;
   }
   return value;

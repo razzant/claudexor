@@ -64,7 +64,9 @@ describe("claudexor trust", () => {
   });
 
   it("rejects allow+revoke together", async () => {
-    expect(await trustCommand(parseArgs(["--allow-full-access", "--revoke-full-access"]), true)).toBe(1);
+    expect(
+      await trustCommand(parseArgs(["--allow-full-access", "--revoke-full-access"]), true),
+    ).toBe(1);
     expect(String(jsonOut()["error"])).toContain("mutually exclusive");
   });
 });

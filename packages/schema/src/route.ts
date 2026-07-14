@@ -10,7 +10,9 @@ export type RouteProofStatus = z.infer<typeof RouteProofStatus>;
 
 export const RouteEvidenceSource = z
   .enum(["stream_event", "metadata", "model_catalog", "transcript", "unavailable"])
-  .describe("Where the observed model/provider evidence came from: a stream event, response metadata, the model catalog, the transcript, or nowhere.");
+  .describe(
+    "Where the observed model/provider evidence came from: a stream event, response metadata, the model catalog, the transcript, or nowhere.",
+  );
 export type RouteEvidenceSource = z.infer<typeof RouteEvidenceSource>;
 
 /**
@@ -23,18 +25,35 @@ export const RouteProof = z
       .object({
         harness_id: Id.describe("Harness the route was requested on."),
         provider_family: ProviderFamily,
-        model_hint: z.string().nullable().default(null).describe("Model requested for the route; null = harness default."),
+        model_hint: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe("Model requested for the route; null = harness default."),
       })
       .describe("What was requested."),
     observed: z
       .object({
-        provider: z.string().nullable().default(null).describe("Provider actually observed; null when no evidence."),
-        model_id: z.string().nullable().default(null).describe("Model actually observed; null when no evidence."),
+        provider: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe("Provider actually observed; null when no evidence."),
+        model_id: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe("Model actually observed; null when no evidence."),
         evidence_source: RouteEvidenceSource.default("unavailable"),
       })
       .describe("What was actually observed."),
-    diversity_against: z.array(Id).default([]).describe("Harness ids this route was required to be diverse against."),
+    diversity_against: z
+      .array(Id)
+      .default([])
+      .describe("Harness ids this route was required to be diverse against."),
     status: RouteProofStatus,
   })
-  .describe("Records requested vs observed harness/model routing, so multi-model claims cannot silently collapse onto one model.");
+  .describe(
+    "Records requested vs observed harness/model routing, so multi-model claims cannot silently collapse onto one model.",
+  );
 export type RouteProof = z.infer<typeof RouteProof>;

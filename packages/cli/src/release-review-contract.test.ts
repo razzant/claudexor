@@ -40,7 +40,10 @@ describe("release review fail-closed contract", () => {
   it.each([
     ["empty array", []],
     ["malformed row", [{ item: "review_protocol", verdict: "PASS" }]],
-    ["unknown checklist item", [{ item: "not_a_check", verdict: "PASS", severity: "advisory", reason: "x" }]],
+    [
+      "unknown checklist item",
+      [{ item: "not_a_check", verdict: "PASS", severity: "advisory", reason: "x" }],
+    ],
   ])("makes %s quorum-unusable", (_name, value) => {
     expect(validateChecklistResponse(value, "model", TRIAD_ITEMS).status).not.toBe("responded");
   });
@@ -53,14 +56,16 @@ describe("release review fail-closed contract", () => {
 
   it("passes only complete PASS responses from quorum plus scope", () => {
     const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
-    expect(releaseReviewDecision({
-      triadActors: [
-        { status: "responded", findings },
-        { status: "responded", findings },
-        { status: "timed_out" },
-      ],
-      scope: { status: "responded", findings: [] },
-    }).passed).toBe(true);
+    expect(
+      releaseReviewDecision({
+        triadActors: [
+          { status: "responded", findings },
+          { status: "responded", findings },
+          { status: "timed_out" },
+        ],
+        scope: { status: "responded", findings: [] },
+      }).passed,
+    ).toBe(true);
   });
 
   it("fails closed on any FAIL verdict even when quorum and scope are healthy", () => {
@@ -70,7 +75,10 @@ describe("release review fail-closed contract", () => {
     const decision = releaseReviewDecision({
       triadActors: [
         { status: "responded", findings },
-        { status: "responded", findings: validateChecklistResponse(cleanRows(), "other", TRIAD_ITEMS).findings },
+        {
+          status: "responded",
+          findings: validateChecklistResponse(cleanRows(), "other", TRIAD_ITEMS).findings,
+        },
       ],
       scope: { status: "responded", findings: [] },
     });

@@ -27,7 +27,11 @@ export function redactedSseLine(raw: string): string {
 }
 
 /** Incremental line reader for events.jsonl tails (rotation-tolerant). */
-export function readNewLines(path: string, offset: number, carry: string): { lines: string[]; nextOffset: number; rest: string } {
+export function readNewLines(
+  path: string,
+  offset: number,
+  carry: string,
+): { lines: string[]; nextOffset: number; rest: string } {
   const size = statSync(path).size;
   const start = size < offset ? 0 : offset; // file rotated/truncated; start over
   const len = size - start;

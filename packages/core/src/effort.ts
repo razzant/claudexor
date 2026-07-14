@@ -44,7 +44,10 @@ export function normalizeEffort(
   for (const level of supported) {
     const distance = Math.abs(rank(level) - want);
     // Strictly-closer wins; on a tie keep the LOWER-ranked (cheaper) candidate.
-    if (distance < bestDistance || (distance === bestDistance && best !== null && rank(level) < rank(best))) {
+    if (
+      distance < bestDistance ||
+      (distance === bestDistance && best !== null && rank(level) < rank(best))
+    ) {
       best = level;
       bestDistance = distance;
     }

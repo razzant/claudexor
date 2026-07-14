@@ -23,7 +23,8 @@ describe("command registry — the one owner of the CLI surface", () => {
 
   it("every command references only declared flags", () => {
     for (const cmd of CLI_COMMANDS) {
-      for (const flag of cmd.flags) expect(KNOWN_FLAGS.has(flag), `${cmd.id} -> --${flag}`).toBe(true);
+      for (const flag of cmd.flags)
+        expect(KNOWN_FLAGS.has(flag), `${cmd.id} -> --${flag}`).toBe(true);
     }
   });
 
@@ -55,7 +56,8 @@ describe("command registry — the one owner of the CLI surface", () => {
     // Descriptions with help-layout newlines are flattened for machines.
     for (const f of j.flags) if (f.description !== null) expect(f.description).not.toContain("\n");
     // Mutability vocabulary is closed.
-    for (const c of j.commands) expect(["read", "write", "delivery", "ops"]).toContain(c.mutability);
+    for (const c of j.commands)
+      expect(["read", "write", "delivery", "ops"]).toContain(c.mutability);
   });
 
   it("every command restricts flags to its declared set (registry-enforced scope)", () => {
@@ -72,7 +74,12 @@ describe("command registry — the one owner of the CLI surface", () => {
   });
 
   it("host fallback examples and recovery verbs project the registry, not hand lists", () => {
-    expect(hostFallbackExamples()).toEqual(['claudexor ask "..."', 'claudexor plan "..."', 'claudexor agent "..."', 'claudexor best-of "..." --n 4']);
+    expect(hostFallbackExamples()).toEqual([
+      'claudexor ask "..."',
+      'claudexor plan "..."',
+      'claudexor agent "..."',
+      'claudexor best-of "..." --n 4',
+    ]);
     expect(recoveryVerbs()).toEqual(["inspect", "follow", "apply", "decision"]);
   });
 

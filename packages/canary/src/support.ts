@@ -51,7 +51,15 @@ export function makeSandbox(): Sandbox {
   const git = (args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe" });
   git(["init", "-q"]);
   git(["-c", "user.email=canary@claudexor.local", "-c", "user.name=Canary", "add", "-A"]);
-  git(["-c", "user.email=canary@claudexor.local", "-c", "user.name=Canary", "commit", "-qm", "init"]);
+  git([
+    "-c",
+    "user.email=canary@claudexor.local",
+    "-c",
+    "user.name=Canary",
+    "commit",
+    "-qm",
+    "init",
+  ]);
   // HERMETIC vendor stub: codex-truth canaries (settings-write-strict) need
   // the adapter's discover() to answer `--version`, but CI runners ship no
   // codex CLI — the suite must not silently depend on a dev machine's
@@ -59,7 +67,10 @@ export function makeSandbox(): Sandbox {
   // known_models stay the truth source, and no canary run ever executes it
   // (fake harnesses / typed refusals).
   const codexStub = join(base, "codex-stub");
-  writeFileSync(codexStub, '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.0-stub" ;;\n  *) exit 1 ;;\nesac\n');
+  writeFileSync(
+    codexStub,
+    '#!/bin/sh\ncase "$1" in\n  --version) echo "codex-cli 0.0.0-stub" ;;\n  *) exit 1 ;;\nesac\n',
+  );
   chmodSync(codexStub, 0o755);
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -113,7 +124,11 @@ export interface CliResult {
   json: () => unknown;
 }
 
-export function cli(sb: Sandbox, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): CliResult {
+export function cli(
+  sb: Sandbox,
+  args: string[],
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): CliResult {
   const r = spawnSync(process.execPath, [CLI, ...args], {
     cwd: opts.cwd ?? sb.repo,
     env: { ...sb.env, ...opts.env },

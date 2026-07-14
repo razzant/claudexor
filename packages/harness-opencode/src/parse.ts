@@ -8,7 +8,15 @@ function toolKindFor(name: string): ToolKind {
   if (n.includes("webfetch") || n.includes("websearch") || n === "fetch") return "web";
   if (n.includes("bash") || n.includes("shell") || n.includes("command")) return "command";
   if (n.includes("glob") || n.includes("grep") || n.includes("search")) return "search";
-  if (n.includes("edit") || n.includes("write") || n.includes("patch") || n.includes("read") || n.includes("file") || n === "ls") return "file";
+  if (
+    n.includes("edit") ||
+    n.includes("write") ||
+    n.includes("patch") ||
+    n.includes("read") ||
+    n.includes("file") ||
+    n === "ls"
+  )
+    return "file";
   if (n.includes("mcp")) return "mcp";
   return "other";
 }
@@ -26,24 +34,47 @@ export function parseOpenCodeEvent(obj: Json, sessionId: string): HarnessEvent[]
   const type = String(obj?.type ?? "");
 
   if (type === "error") {
-    return [{ type: "error", session_id: sessionId, ts, error: String(obj.error ?? obj.message ?? "opencode error") }];
+    return [
+      {
+        type: "error",
+        session_id: sessionId,
+        ts,
+        error: String(obj.error ?? obj.message ?? "opencode error"),
+      },
+    ];
   }
   if (type === "session" || type === "start" || type === "init") {
     // Surface the native session id (ses_...) so the engine can resume this thread.
     const nativeId =
-      typeof obj.sessionID === "string" ? obj.sessionID : typeof obj.session_id === "string" ? obj.session_id : typeof obj.session?.id === "string" ? obj.session.id : undefined;
-    return [{
-      type: "started",
-      session_id: sessionId,
-      ts,
-      observed_model: typeof obj.model === "string" ? obj.model : undefined,
-      ...(nativeId ? { payload: { native_session_id: nativeId } } : {}),
-    }];
+      typeof obj.sessionID === "string"
+        ? obj.sessionID
+        : typeof obj.session_id === "string"
+          ? obj.session_id
+          : typeof obj.session?.id === "string"
+            ? obj.session.id
+            : undefined;
+    return [
+      {
+        type: "started",
+        session_id: sessionId,
+        ts,
+        observed_model: typeof obj.model === "string" ? obj.model : undefined,
+        ...(nativeId ? { payload: { native_session_id: nativeId } } : {}),
+      },
+    ];
   }
 
   // Text parts can arrive under several shapes across versions.
   const text = obj.text ?? obj.part?.text ?? obj.message?.text ?? obj.delta?.text;
-  if ((type === "message" || type === "text" || type === "assistant" || type === "part" || type.startsWith("message.part")) && typeof text === "string" && text) {
+  if (
+    (type === "message" ||
+      type === "text" ||
+      type === "assistant" ||
+      type === "part" ||
+      type.startsWith("message.part")) &&
+    typeof text === "string" &&
+    text
+  ) {
     return [{ type: "message", session_id: sessionId, ts, text }];
   }
 
@@ -52,7 +83,13 @@ export function parseOpenCodeEvent(obj: Json, sessionId: string): HarnessEvent[]
   if (type === "tool" || type === "tool_call" || (typeof partTool === "string" && partTool)) {
     const name = String(obj.tool ?? obj.name ?? partTool ?? "tool");
     const status = String(obj.status ?? obj.part?.state?.status ?? obj.state?.status ?? "");
-    const target = boundedTarget(obj.path ?? obj.args?.path ?? obj.part?.path ?? obj.args?.command ?? obj.part?.state?.input?.command);
+    const target = boundedTarget(
+      obj.path ??
+        obj.args?.path ??
+        obj.part?.path ??
+        obj.args?.command ??
+        obj.part?.state?.input?.command,
+    );
     const useId = stringOrUndef(obj.id ?? obj.call_id ?? obj.part?.id);
     const tool: ToolRef = { name, kind: toolKindFor(name), use_id: useId, target };
 
@@ -80,15 +117,24 @@ export function parseOpenCodeEvent(obj: Json, sessionId: string): HarnessEvent[]
         },
       ];
       if (EDIT_TOOLS.test(name)) {
-        const path = obj.path ?? obj.args?.path ?? obj.part?.path ?? obj.part?.state?.input?.filePath;
-        events.push({ type: "file_change", session_id: sessionId, ts, tool: { name, kind: "file", use_id: useId }, payload: { path, tool: name } });
+        const path =
+          obj.path ?? obj.args?.path ?? obj.part?.path ?? obj.part?.state?.input?.filePath;
+        events.push({
+          type: "file_change",
+          session_id: sessionId,
+          ts,
+          tool: { name, kind: "file", use_id: useId },
+          payload: { path, tool: name },
+        });
       }
       return events;
     }
     // Pending/running (or legacy shape without status): a tool call start.
     if (EDIT_TOOLS.test(name) && !status) {
       const path = obj.path ?? obj.args?.path ?? obj.part?.path;
-      return [{ type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name } }];
+      return [
+        { type: "file_change", session_id: sessionId, ts, tool, payload: { path, tool: name } },
+      ];
     }
     return [{ type: "tool_call", session_id: sessionId, ts, text: name, tool }];
   }

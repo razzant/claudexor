@@ -25,7 +25,14 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
 
   if (type === "thread.started") {
     // Expose the native session id uniformly so the engine can record it for resume.
-    return [{ type: "started", session_id: sessionId, ts, payload: { thread_id: obj.thread_id, native_session_id: obj.thread_id } }];
+    return [
+      {
+        type: "started",
+        session_id: sessionId,
+        ts,
+        payload: { thread_id: obj.thread_id, native_session_id: obj.thread_id },
+      },
+    ];
   }
   if (type === "turn.completed") {
     const u = obj.usage ?? {};
@@ -44,17 +51,38 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
   }
   if (type === "turn.failed") {
     const message = obj.error?.message ?? "turn failed";
-    const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
+    const ev: HarnessEvent = {
+      type: "error",
+      session_id: sessionId,
+      ts,
+      error: message,
+      payload: obj,
+    };
     applyCodexRateLimit(ev, message, obj.error?.resets_at ?? obj.resets_at);
     applyCodexTransient(ev, message);
     return [ev];
   }
   if (type === "turn.started") {
-    return [{ type: "thinking", session_id: sessionId, ts, text: "turn started", payload: { turn_id: obj.turn_id } }];
+    return [
+      {
+        type: "thinking",
+        session_id: sessionId,
+        ts,
+        text: "turn started",
+        payload: { turn_id: obj.turn_id },
+      },
+    ];
   }
   if (type === "error") {
-    const message = typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error");
-    const ev: HarnessEvent = { type: "error", session_id: sessionId, ts, error: message, payload: obj };
+    const message =
+      typeof obj.message === "string" ? obj.message : (obj.error?.message ?? "codex error");
+    const ev: HarnessEvent = {
+      type: "error",
+      session_id: sessionId,
+      ts,
+      error: message,
+      payload: obj,
+    };
     applyCodexRateLimit(ev, message, obj.resets_at ?? obj.error?.resets_at);
     applyCodexTransient(ev, message);
     return [ev];
@@ -65,7 +93,13 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
     switch (item.type) {
       case "reasoning":
         return [
-          { type: "thinking", session_id: sessionId, ts, text: String(item.text ?? item.summary ?? "reasoning"), payload: { status: type, item_id: item.id } },
+          {
+            type: "thinking",
+            session_id: sessionId,
+            ts,
+            text: String(item.text ?? item.summary ?? "reasoning"),
+            payload: { status: type, item_id: item.id },
+          },
         ];
       case "command_execution":
         if (updated) return [];
@@ -88,7 +122,12 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
             ts,
             text: String(item.tool ?? item.server ?? "mcp tool"),
             tool: mcpToolRef(item),
-            payload: { server: item.server, tool: item.tool, status: item.status ?? type, item_id: item.id },
+            payload: {
+              server: item.server,
+              tool: item.tool,
+              status: item.status ?? type,
+              item_id: item.id,
+            },
           },
         ];
       case "web_search":
@@ -104,7 +143,15 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
           },
         ];
       case "file_change":
-        return [{ type: "file_change", session_id: sessionId, ts, tool: fileToolRef(item), payload: { path: item.path, status: item.status ?? type, item_id: item.id } }];
+        return [
+          {
+            type: "file_change",
+            session_id: sessionId,
+            ts,
+            tool: fileToolRef(item),
+            payload: { path: item.path, status: item.status ?? type, item_id: item.id },
+          },
+        ];
       default:
         return null;
     }
@@ -118,10 +165,19 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
         return [{ type: "thinking", session_id: sessionId, ts, text: String(item.text ?? "") }];
       case "file_change": {
         const path = item.path ?? (Array.isArray(item.changes) ? item.changes[0]?.path : undefined);
-        return [{ type: "file_change", session_id: sessionId, ts, tool: fileToolRef(item), payload: { path, item } }];
+        return [
+          {
+            type: "file_change",
+            session_id: sessionId,
+            ts,
+            tool: fileToolRef(item),
+            payload: { path, item },
+          },
+        ];
       }
       case "command_execution": {
-        const failed = item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0);
+        const failed =
+          item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0);
         const detail = summarizeCodexOutput(item.aggregated_output ?? item.output);
         return [
           {
@@ -151,9 +207,16 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
             tool: {
               ...mcpToolRef(item),
               status: failed ? "error" : "ok",
-              error_summary: failed ? summarizeCodexOutput(item.error ?? item.result) || "mcp tool call failed" : undefined,
+              error_summary: failed
+                ? summarizeCodexOutput(item.error ?? item.result) || "mcp tool call failed"
+                : undefined,
             },
-            payload: { server: item.server, tool: item.tool, status: item.status, item_id: item.id },
+            payload: {
+              server: item.server,
+              tool: item.tool,
+              status: item.status,
+              item_id: item.id,
+            },
           },
         ];
       }
@@ -168,7 +231,9 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
             tool: {
               ...webSearchToolRef(item),
               status: failed ? "error" : "ok",
-              error_summary: failed ? summarizeCodexOutput(item.error) || "web search failed" : undefined,
+              error_summary: failed
+                ? summarizeCodexOutput(item.error) || "web search failed"
+                : undefined,
             },
             payload: { status: item.status, item_id: item.id },
           },
@@ -180,7 +245,10 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
         // live checklist from the typed field while the prose stays available
         // to plan-extraction. Verified shape: item.items[].{text,completed}.
         const items = Array.isArray(item.items) ? item.items : [];
-        const lines = items.map((t: { text?: string; completed?: boolean }) => `${t.completed ? "[x]" : "[ ]"} ${String(t.text ?? "")}`);
+        const lines = items.map(
+          (t: { text?: string; completed?: boolean }) =>
+            `${t.completed ? "[x]" : "[ ]"} ${String(t.text ?? "")}`,
+        );
         return [
           {
             type: "message",
@@ -286,7 +354,9 @@ function fileToolRef(item: Json): ToolRef {
 }
 
 function commandFailureSummary(item: Json): string {
-  return typeof item.exit_code === "number" ? `command exited with code ${item.exit_code}` : "command execution failed";
+  return typeof item.exit_code === "number"
+    ? `command exited with code ${item.exit_code}`
+    : "command execution failed";
 }
 
 function summarizeCodexOutput(value: unknown): string {

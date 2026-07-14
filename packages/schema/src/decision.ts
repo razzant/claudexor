@@ -38,7 +38,9 @@ export type RunStatus = z.infer<typeof RunStatus>;
 
 export const ApplyRecommendation = z
   .enum(["apply", "inspect", "continue", "split_task", "human_review"])
-  .describe("Recommended next action for the run's work product: apply it, inspect first, continue working, split the task, or get human review.");
+  .describe(
+    "Recommended next action for the run's work product: apply it, inspect first, continue working, split the task, or get human review.",
+  );
 export type ApplyRecommendation = z.infer<typeof ApplyRecommendation>;
 
 export const DecisionOutcome = z
@@ -73,16 +75,45 @@ export const FinalVerifyRecord = z
   .object({
     attempted: z.boolean().describe("Whether the final verify was attempted."),
     /** Base the verify tree was created from (the winner envelope's base_sha). */
-    base_sha: z.string().nullable().default(null).describe("Base SHA the verify tree was created from (the winner envelope's base)."),
-    applied_cleanly: z.boolean().nullable().default(null).describe("Whether the patch applied cleanly onto the fresh tree; null when not attempted."),
-    gates_passed: z.boolean().nullable().default(null).describe("Whether the re-run deterministic gates passed; null when not attempted."),
+    base_sha: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Base SHA the verify tree was created from (the winner envelope's base)."),
+    applied_cleanly: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe("Whether the patch applied cleanly onto the fresh tree; null when not attempted."),
+    gates_passed: z
+      .boolean()
+      .nullable()
+      .default(null)
+      .describe("Whether the re-run deterministic gates passed; null when not attempted."),
     gates: z
-      .array(z.object({ id: z.string().describe("Gate id."), status: z.string().describe("Gate status.") }))
+      .array(
+        z.object({
+          id: z.string().describe("Gate id."),
+          status: z.string().describe("Gate status."),
+        }),
+      )
       .default([])
       .describe("Per-gate re-run results."),
-    duration_ms: z.number().int().nonnegative().nullable().default(null).describe("How long the verify took, in milliseconds."),
+    duration_ms: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .default(null)
+      .describe("How long the verify took, in milliseconds."),
     /** Typed reason when attempted=false (e.g. no_patch, no_base_sha) or a failure detail. */
-    reason: z.string().nullable().default(null).describe("Typed reason when attempted=false (e.g. no_patch, no_base_sha) or a failure detail."),
+    reason: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Typed reason when attempted=false (e.g. no_patch, no_base_sha) or a failure detail.",
+      ),
   })
   .describe(
     "FinalVerifier record: the winner's patch was applied onto a fresh worktree at the candidate's own base SHA and the deterministic gates were re-run there; no model involvement.",
@@ -95,16 +126,35 @@ export const DecisionRecord = z
     status: RunStatus,
     outcome: DecisionOutcome.default("blocked"),
     why_winner: z.string().default("").describe("Why the winner was chosen."),
-    why_not_others: z.record(z.string(), z.string()).default({}).describe("Per-candidate reasons the others lost, keyed by candidate id."),
-    accepted_risks: z.array(z.string()).default([]).describe("Risks explicitly accepted in the decision."),
-    final_checks: z.array(z.string()).default([]).describe("Final checks performed before the decision."),
-    evidence_facts: z.array(z.string()).default([]).describe("Evidence facts the decision rests on."),
+    why_not_others: z
+      .record(z.string(), z.string())
+      .default({})
+      .describe("Per-candidate reasons the others lost, keyed by candidate id."),
+    accepted_risks: z
+      .array(z.string())
+      .default([])
+      .describe("Risks explicitly accepted in the decision."),
+    final_checks: z
+      .array(z.string())
+      .default([])
+      .describe("Final checks performed before the decision."),
+    evidence_facts: z
+      .array(z.string())
+      .default([])
+      .describe("Evidence facts the decision rests on."),
     budget_summary: z
       .object({
         // Total settled spend. `estimated` is true when any of it is token-derived
         // (e.g. codex) rather than natively reported — never present an estimate as exact.
-        spend_usd: z.number().nullable().default(null).describe("Total settled spend in USD; null when unknown."),
-        estimated: z.boolean().default(false).describe("True when any of the spend is token-derived rather than natively reported."),
+        spend_usd: z
+          .number()
+          .nullable()
+          .default(null)
+          .describe("Total settled spend in USD; null when unknown."),
+        estimated: z
+          .boolean()
+          .default(false)
+          .describe("True when any of the spend is token-derived rather than natively reported."),
       })
       .default({ spend_usd: null, estimated: false })
       .describe("Settled spend for the run; estimates are disclosed, never presented as exact."),
@@ -116,7 +166,11 @@ export const DecisionRecord = z
     // recorded WHY it did not). Absent for answer-only/no-patch runs.
     final_verify: FinalVerifyRecord.nullable()
       .default(null)
-      .describe("Final verify record; present only for write runs with a patch (or a recorded reason why the verifier did not run)."),
+      .describe(
+        "Final verify record; present only for write runs with a patch (or a recorded reason why the verifier did not run).",
+      ),
   })
-  .describe("The arbitration decision for a run: winner, status/outcome, reasons, spend, and the verification that backs applyability.");
+  .describe(
+    "The arbitration decision for a run: winner, status/outcome, reasons, spend, and the verification that backs applyability.",
+  );
 export type DecisionRecord = z.infer<typeof DecisionRecord>;

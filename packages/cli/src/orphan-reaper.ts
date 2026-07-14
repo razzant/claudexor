@@ -45,7 +45,10 @@ export function reapRecordedOrphans(path: string): string[] {
     if (Array.isArray(raw.pids)) {
       recorded = raw.pids.filter(
         (p): p is RecordedChild =>
-          !!p && typeof p === "object" && typeof (p as RecordedChild).pid === "number" && typeof (p as RecordedChild).cmd === "string",
+          !!p &&
+          typeof p === "object" &&
+          typeof (p as RecordedChild).pid === "number" &&
+          typeof (p as RecordedChild).cmd === "string",
       );
     }
   } catch {
@@ -56,7 +59,9 @@ export function reapRecordedOrphans(path: string): string[] {
     const liveCmd = processCommandName(child.pid);
     if (liveCmd === null) continue; // already gone
     if (basename(liveCmd) !== basename(child.cmd)) {
-      actions.push(`skip pid ${child.pid}: command changed (${basename(liveCmd)} != ${basename(child.cmd)}) — likely recycled`);
+      actions.push(
+        `skip pid ${child.pid}: command changed (${basename(liveCmd)} != ${basename(child.cmd)}) — likely recycled`,
+      );
       continue;
     }
     try {
@@ -72,7 +77,9 @@ export function reapRecordedOrphans(path: string): string[] {
     } catch {
       try {
         process.kill(child.pid, "SIGTERM");
-        actions.push(`SIGTERM orphan pid ${child.pid} (${basename(child.cmd)}; group already gone)`);
+        actions.push(
+          `SIGTERM orphan pid ${child.pid} (${basename(child.cmd)}; group already gone)`,
+        );
       } catch {
         /* exited between the liveness check and the kill */
       }

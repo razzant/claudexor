@@ -49,7 +49,12 @@ describe("resolveHarnessBinary", () => {
   it("passes absolute paths through only when they exist", () => {
     const abs = fakeBin(join(root, "abs"), "tool");
     expect(resolveHarnessBinary(abs, { HOME: root, PATH: "" } as NodeJS.ProcessEnv)).toBe(abs);
-    expect(resolveHarnessBinary(join(root, "abs", "nope"), { HOME: root, PATH: "" } as NodeJS.ProcessEnv)).toBeNull();
+    expect(
+      resolveHarnessBinary(join(root, "abs", "nope"), {
+        HOME: root,
+        PATH: "",
+      } as NodeJS.ProcessEnv),
+    ).toBeNull();
   });
 
   it("splits and joins PATH with the platform delimiter", () => {

@@ -1,4 +1,3 @@
-
 export interface ChatResult {
   text: string;
   model: string | null;
@@ -25,7 +24,8 @@ export function parseModelsList(json: any): ParsedModel[] {
     if (!id) continue;
     const label = typeof entry?.name === "string" ? entry.name : null;
     const ctxRaw = entry?.context_length ?? entry?.context_window;
-    const context_window = typeof ctxRaw === "number" && Number.isInteger(ctxRaw) && ctxRaw > 0 ? ctxRaw : null;
+    const context_window =
+      typeof ctxRaw === "number" && Number.isInteger(ctxRaw) && ctxRaw > 0 ? ctxRaw : null;
     out.push({ id, label, context_window });
   }
   return out;
@@ -41,7 +41,8 @@ export function parseChatCompletion(json: any): ChatResult {
     model: typeof json?.model === "string" ? json.model : null,
     usage: {
       input_tokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : undefined,
-      output_tokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : undefined,
+      output_tokens:
+        typeof usage.completion_tokens === "number" ? usage.completion_tokens : undefined,
     },
   };
 }

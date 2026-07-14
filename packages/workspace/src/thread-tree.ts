@@ -2,7 +2,14 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
 import { ensureDir, projectRuntimeDir } from "@claudexor/util";
-import { branchDelete, isGitRepo, revParse, snapshotTree, worktreeAdd, worktreeAddExisting } from "./git.js";
+import {
+  branchDelete,
+  isGitRepo,
+  revParse,
+  snapshotTree,
+  worktreeAdd,
+  worktreeAddExisting,
+} from "./git.js";
 
 export interface ThreadWorktreeResult {
   /** Absolute path to the thread's persistent worktree (the execution root). */
@@ -23,7 +30,10 @@ export interface ThreadWorktreeResult {
  * The worktree lives in Claudexor's external per-project runtime namespace;
  * the project's own git and ignore files are never used as a runtime boundary.
  */
-export async function ensureThreadWorktree(projectRoot: string, threadId: string): Promise<ThreadWorktreeResult> {
+export async function ensureThreadWorktree(
+  projectRoot: string,
+  threadId: string,
+): Promise<ThreadWorktreeResult> {
   if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId === "." || threadId === "..") {
     throw new WorkspaceError(`threadId '${threadId}' is not a safe path segment`);
   }

@@ -42,7 +42,10 @@ export interface DiffReviewDeps {
   envInheritance: (repoRoot: string) => "mirror_native" | "clean";
 }
 
-export async function runDiffReview(input: DiffReviewInput, deps: DiffReviewDeps): Promise<DiffReviewResult> {
+export async function runDiffReview(
+  input: DiffReviewInput,
+  deps: DiffReviewDeps,
+): Promise<DiffReviewResult> {
   if (!input.diff.trim()) {
     throw new Error("reviewDiff: the diff is empty — nothing to review");
   }
@@ -57,18 +60,24 @@ export async function runDiffReview(input: DiffReviewInput, deps: DiffReviewDeps
     ["decidedTradeoffs", input.decidedTradeoffs],
   ] as const) {
     if (typeof text === "string" && containsSecretLikeToken(text)) {
-      throw new Error(`reviewDiff: ${label} contains a secret-like token; refusing review (remove the secret first)`);
+      throw new Error(
+        `reviewDiff: ${label} contains a secret-like token; refusing review (remove the secret first)`,
+      );
     }
   }
   const reviewers = await deps.resolveReviewers(input.repoRoot, input.authPreference);
   if (reviewers.length === 0) {
-    throw new HarnessUnavailableError("no eligible reviewers (doctor-OK, review-capable) are available");
+    throw new HarnessUnavailableError(
+      "no eligible reviewers (doctor-OK, review-capable) are available",
+    );
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const baseDir = join(deps.execRootOf(input.repoRoot), ".claudexor", "reviews", `diff-${stamp}`);
   const evidenceDir = join(baseDir, "evidence");
   writeEvidencePacket(evidenceDir, {
-    userIntent: redactSecrets(input.userIntent ?? "Review this staged diff for defects before commit."),
+    userIntent: redactSecrets(
+      input.userIntent ?? "Review this staged diff for defects before commit.",
+    ),
     diff: input.diff,
     tests: input.tests ?? "(no test evidence supplied)",
     decidedTradeoffs: input.decidedTradeoffs,
@@ -82,7 +91,9 @@ export async function runDiffReview(input: DiffReviewInput, deps: DiffReviewDeps
     reviewers,
     envInheritance: deps.envInheritance(input.repoRoot),
     signal: input.signal,
-    onReviewerEvent: input.onReviewerEvent ? (event) => input.onReviewerEvent?.({ ...event }) : undefined,
+    onReviewerEvent: input.onReviewerEvent
+      ? (event) => input.onReviewerEvent?.({ ...event })
+      : undefined,
   });
   const findings = await revalidateFindings(result.findings, {
     candidateRoot: input.repoRoot,

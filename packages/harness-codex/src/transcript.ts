@@ -17,7 +17,10 @@ import { join } from "node:path";
  * carries the model. Best-effort: any missing/ambiguous/unreadable state returns
  * null and the proof stays unobserved (safe degradation, never throws).
  */
-export function codexTranscriptModel(codexHome: string | null | undefined, threadId: string | undefined): string | null {
+export function codexTranscriptModel(
+  codexHome: string | null | undefined,
+  threadId: string | undefined,
+): string | null {
   if (!threadId) return null;
   const home = codexHome && codexHome.trim() ? codexHome : join(homedir(), ".codex");
   const rollout = findCodexRollout(join(home, "sessions"), threadId);
@@ -70,10 +73,12 @@ export function codexTranscriptRateLimits(
       } catch {
         continue;
       }
-      const rl = (obj as { payload?: { rate_limits?: Record<string, unknown> } })?.payload?.rate_limits;
+      const rl = (obj as { payload?: { rate_limits?: Record<string, unknown> } })?.payload
+        ?.rate_limits;
       if (!rl || typeof rl !== "object") continue;
       const windows = [rl["primary"], rl["secondary"]].filter(
-        (w): w is { used_percent?: unknown; resets_at?: unknown } => Boolean(w) && typeof w === "object",
+        (w): w is { used_percent?: unknown; resets_at?: unknown } =>
+          Boolean(w) && typeof w === "object",
       );
       let used: number | null = null;
       let resets: string | null = null;

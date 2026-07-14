@@ -79,7 +79,17 @@ export function cUnquoteGitPath(raw: string): string {
       i = j;
       continue;
     }
-    const simple: Record<string, string> = { n: "\n", t: "\t", r: "\r", '"': '"', "\\": "\\", a: "\x07", b: "\b", f: "\f", v: "\v" };
+    const simple: Record<string, string> = {
+      n: "\n",
+      t: "\t",
+      r: "\r",
+      '"': '"',
+      "\\": "\\",
+      a: "\x07",
+      b: "\b",
+      f: "\f",
+      v: "\v",
+    };
     bytes.push(...Buffer.from(simple[next] ?? next, "utf8"));
     i += 2;
   }
@@ -194,10 +204,18 @@ export function parseUnifiedDiff(diff: string): UnifiedDiffSummary {
     }
     // A GNU `diff <opts> old new` command echo (never emitted by git) or a
     // top-level binary stub decides plain mode when it arrives first.
-    if (plainDoc === null && current === null && (line.startsWith("diff ") || (line.startsWith("Binary files ") && line.endsWith(" differ")))) {
+    if (
+      plainDoc === null &&
+      current === null &&
+      (line.startsWith("diff ") || (line.startsWith("Binary files ") && line.endsWith(" differ")))
+    ) {
       plainDoc = true;
     }
-    if (plainDoc !== false && (current === null || (plainDoc === true && inHunk)) && plainFileHeaderAt(idx, plainDoc === true && inHunk)) {
+    if (
+      plainDoc !== false &&
+      (current === null || (plainDoc === true && inHunk)) &&
+      plainFileHeaderAt(idx, plainDoc === true && inHunk)
+    ) {
       // Plain-mode file boundary: before any file, or right after the
       // previous plain file's hunks (GNU diff concatenates files this way).
       plainDoc = true;

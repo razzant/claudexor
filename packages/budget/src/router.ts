@@ -51,7 +51,11 @@ export function routeUtility(c: RouterCandidate, ctx: RouteContext): number {
   const headroom = ctx.ledger.headroom(c.harnessId);
   const diversity = ctx.diversityAgainst?.includes(c.providerFamily) ? 0.5 : 1;
   const authPref =
-    c.authMode === "local_session" ? w.preferSubscription : c.authMode === "api_key" ? w.preferApi : 1;
+    c.authMode === "local_session"
+      ? w.preferSubscription
+      : c.authMode === "api_key"
+        ? w.preferApi
+        : 1;
   const conserve =
     (ctx.portfolio === "conserve-claude" && c.providerFamily === "anthropic") ||
     (ctx.portfolio === "conserve-codex" && c.providerFamily === "openai")
@@ -65,7 +69,10 @@ export function routeUtility(c: RouterCandidate, ctx: RouteContext): number {
 }
 
 /** Choose the highest-utility available harness, or null if none are usable. */
-export function selectHarness(candidates: RouterCandidate[], ctx: RouteContext): RouterCandidate | null {
+export function selectHarness(
+  candidates: RouterCandidate[],
+  ctx: RouteContext,
+): RouterCandidate | null {
   let best: RouterCandidate | null = null;
   let bestU = 0;
   for (const c of candidates) {

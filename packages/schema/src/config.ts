@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { AccessProfile, AuthPreference, ExternalContextPolicy, ProviderFamily } from "./primitives.js";
+import {
+  AccessProfile,
+  AuthPreference,
+  ExternalContextPolicy,
+  ProviderFamily,
+} from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { Portfolio } from "./budget.js";
 
@@ -7,7 +12,9 @@ import { Portfolio } from "./budget.js";
 // identically to "auto"); the config loader migrates it to "auto".
 export const RoutingPolicy = z
   .enum(["auto", "primary"])
-  .describe("Default routing policy: auto (engine picks) or primary (prefer the configured primary harness).");
+  .describe(
+    "Default routing policy: auto (engine picks) or primary (prefer the configured primary harness).",
+  );
 export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
 
 /**
@@ -20,15 +27,26 @@ export const ProjectConfig = z
     version: z.literal(1).default(1).describe("Config format version."),
     context: z
       .object({
-        mandatory_files: z.array(z.string()).default([]).describe("Files every context pack must include."),
+        mandatory_files: z
+          .array(z.string())
+          .default([])
+          .describe("Files every context pack must include."),
         include: z.array(z.string()).default([]).describe("Globs to include in context building."),
-        exclude: z.array(z.string()).default([]).describe("Globs to exclude from context building."),
+        exclude: z
+          .array(z.string())
+          .default([])
+          .describe("Globs to exclude from context building."),
       })
       .strict()
       .default({})
       .describe("Context-building preferences for the project."),
     tests: z
-      .object({ commands: z.array(z.string()).default([]).describe("Test commands run as deterministic gates.") })
+      .object({
+        commands: z
+          .array(z.string())
+          .default([])
+          .describe("Test commands run as deterministic gates."),
+      })
       .strict()
       .default({ commands: [] })
       .describe("Project-configured deterministic test gates."),
@@ -48,8 +66,13 @@ export type ProjectConfig = z.infer<typeof ProjectConfig>;
 export const TrustConfig = z
   .object({
     version: z.literal(1).default(1).describe("Config format version."),
-    access_default: AccessProfile.default("workspace_write").describe("Default access profile for runs in this repo."),
-    allow_full_access: z.boolean().default(false).describe("Per-repo allow required before any run may use the full access profile."),
+    access_default: AccessProfile.default("workspace_write").describe(
+      "Default access profile for runs in this repo.",
+    ),
+    allow_full_access: z
+      .boolean()
+      .default(false)
+      .describe("Per-repo allow required before any run may use the full access profile."),
     /**
      * Provenance ONLY: which repo root this file was written for. The file's
      * key stays the repo-root HASH in its filename — this field never gates
@@ -66,14 +89,18 @@ export const TrustConfig = z
       ),
   })
   .strict()
-  .describe("Sensitive per-repo trust settings — only valid in global/user-local trust files, never in the versioned repo config.");
+  .describe(
+    "Sensitive per-repo trust settings — only valid in global/user-local trust files, never in the versioned repo config.",
+  );
 export type TrustConfig = z.infer<typeof TrustConfig>;
 
 /** Global user config (~/.claudexor/config.yaml). */
 export const GlobalConfig = z
   .object({
     version: z.literal(1).default(1).describe("Config format version."),
-    default_portfolio: Portfolio.default("subscription-first").describe("Budget portfolio used when a run does not specify one."),
+    default_portfolio: Portfolio.default("subscription-first").describe(
+      "Budget portfolio used when a run does not specify one.",
+    ),
     /**
      * How long an interactive run waits for the user's answer to a harness
      * question (interaction.requested) before delivering a benign decline and
@@ -90,8 +117,15 @@ export const GlobalConfig = z
     routing: z
       .object({
         default_policy: RoutingPolicy.default("auto"),
-        primary_harness: z.string().nullable().default(null).describe("Global default primary harness; null = engine decides."),
-        eligible_harnesses: z.array(z.string()).default([]).describe("Harness pool eligible for routing/races; empty = all available."),
+        primary_harness: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe("Global default primary harness; null = engine decides."),
+        eligible_harnesses: z
+          .array(z.string())
+          .default([])
+          .describe("Harness pool eligible for routing/races; empty = all available."),
         /**
          * How the child harness env is built: `mirror_native` inherits the user's
          * shell env (default, matches how the native CLIs run); `clean` spawns from
@@ -100,7 +134,9 @@ export const GlobalConfig = z
         env_inheritance: z
           .enum(["mirror_native", "clean"])
           .default("mirror_native")
-          .describe("How the child harness env is built: mirror_native inherits the user's shell env; clean spawns from a minimal allowlist."),
+          .describe(
+            "How the child harness env is built: mirror_native inherits the user's shell env; clean spawns from a minimal allowlist.",
+          ),
         /** Default auth route preference (subscription/api_key/auto). */
         auth_preference: AuthPreference.default("auto"),
         /**
@@ -111,14 +147,21 @@ export const GlobalConfig = z
         quality_priors: z
           .record(ProviderFamily, z.number().min(0).max(1))
           .default({})
-          .describe("Operator-tunable per-provider-family quality priors (0..1) feeding the router; unset families ride the neutral 0.5."),
+          .describe(
+            "Operator-tunable per-provider-family quality priors (0..1) feeding the router; unset families ride the neutral 0.5.",
+          ),
       })
       .strict()
       .default({})
       .describe("Global routing defaults."),
     budget: z
       .object({
-        max_usd_per_run: z.number().nonnegative().nullable().default(null).describe("Global USD cap per run; null = no cap."),
+        max_usd_per_run: z
+          .number()
+          .nonnegative()
+          .nullable()
+          .default(null)
+          .describe("Global USD cap per run; null = no cap."),
         /**
          * Per-candidate reservation floor (USD) held against the run cap for
          * every race-wave slot AFTER the first, BEFORE any usage streams.
@@ -146,14 +189,37 @@ export const GlobalConfig = z
          */
         transient_retry: z
           .object({
-            max_retries: z.number().int().min(0).max(5).default(2).describe("Maximum retries for a transient failure."),
-            initial_delay_ms: z.number().int().nonnegative().default(1_000).describe("Initial retry delay in milliseconds."),
-            max_delay_ms: z.number().int().nonnegative().default(10_000).describe("Maximum retry delay in milliseconds."),
+            max_retries: z
+              .number()
+              .int()
+              .min(0)
+              .max(5)
+              .default(2)
+              .describe("Maximum retries for a transient failure."),
+            initial_delay_ms: z
+              .number()
+              .int()
+              .nonnegative()
+              .default(1_000)
+              .describe("Initial retry delay in milliseconds."),
+            max_delay_ms: z
+              .number()
+              .int()
+              .nonnegative()
+              .default(10_000)
+              .describe("Maximum retry delay in milliseconds."),
           })
           .strict()
           .default({})
-          .describe("Bounded retry policy for adapter-declared transient failures; user-global only."),
-        reviewer_timeout_ms: z.number().int().positive().default(600_000).describe("Wall-clock timeout for a reviewer run, in milliseconds."),
+          .describe(
+            "Bounded retry policy for adapter-declared transient failures; user-global only.",
+          ),
+        reviewer_timeout_ms: z
+          .number()
+          .int()
+          .positive()
+          .default(600_000)
+          .describe("Wall-clock timeout for a reviewer run, in milliseconds."),
         /**
          * Inactivity watchdog for candidate/planner/read-only harness streams:
          * NO events for this window means the CLI is wedged — the stream is
@@ -181,16 +247,54 @@ export const GlobalConfig = z
         z.string(),
         z
           .object({
-            enabled: z.boolean().default(true).describe("Whether the harness participates in routing."),
-            default_model: z.string().nullable().default(null).describe("Per-harness default model; null = the harness's own default."),
-            effort: EffortHint.nullable().default(null).describe("Default reasoning effort for the harness; null = harness default."),
-            max_turns: z.number().int().positive().nullable().default(null).describe("Default max agent turns; null = no limit."),
-            max_rounds: z.number().int().positive().nullable().default(null).describe("Default max convergence rounds; null = engine default."),
-            max_usd: z.number().nonnegative().nullable().default(null).describe("Per-harness USD cap; null = no cap."),
-            tools_allow: z.array(z.string()).default([]).describe("Tool names allowed for this harness."),
-            tools_deny: z.array(z.string()).default([]).describe("Tool names denied for this harness."),
-            fallback_model: z.string().nullable().default(null).describe("Model to fall back to on typed fallback signals; null = none."),
-            web: ExternalContextPolicy.default("auto").describe("Default web policy for this harness."),
+            enabled: z
+              .boolean()
+              .default(true)
+              .describe("Whether the harness participates in routing."),
+            default_model: z
+              .string()
+              .nullable()
+              .default(null)
+              .describe("Per-harness default model; null = the harness's own default."),
+            effort: EffortHint.nullable()
+              .default(null)
+              .describe("Default reasoning effort for the harness; null = harness default."),
+            max_turns: z
+              .number()
+              .int()
+              .positive()
+              .nullable()
+              .default(null)
+              .describe("Default max agent turns; null = no limit."),
+            max_rounds: z
+              .number()
+              .int()
+              .positive()
+              .nullable()
+              .default(null)
+              .describe("Default max convergence rounds; null = engine default."),
+            max_usd: z
+              .number()
+              .nonnegative()
+              .nullable()
+              .default(null)
+              .describe("Per-harness USD cap; null = no cap."),
+            tools_allow: z
+              .array(z.string())
+              .default([])
+              .describe("Tool names allowed for this harness."),
+            tools_deny: z
+              .array(z.string())
+              .default([])
+              .describe("Tool names denied for this harness."),
+            fallback_model: z
+              .string()
+              .nullable()
+              .default(null)
+              .describe("Model to fall back to on typed fallback signals; null = none."),
+            web: ExternalContextPolicy.default("auto").describe(
+              "Default web policy for this harness.",
+            ),
             /** Per-harness auth route preference; overrides routing.auth_preference. */
             auth_preference: AuthPreference.default("auto"),
           })
@@ -201,7 +305,9 @@ export const GlobalConfig = z
       .describe("Per-harness settings keyed by harness id."),
   })
   .strict()
-  .describe("Global user config (~/.claudexor/config.yaml): portfolio, routing, budget, runtime, and per-harness settings.");
+  .describe(
+    "Global user config (~/.claudexor/config.yaml): portfolio, routing, budget, runtime, and per-harness settings.",
+  );
 export type GlobalConfig = z.infer<typeof GlobalConfig>;
 
 /** The fully-resolved effective config after precedence merge. */
@@ -210,7 +316,10 @@ export const ResolvedConfig = z
     project: ProjectConfig,
     trust: TrustConfig,
     global: GlobalConfig,
-    sources: z.array(z.string()).default([]).describe("Config file paths that contributed to the merge."),
+    sources: z
+      .array(z.string())
+      .default([])
+      .describe("Config file paths that contributed to the merge."),
   })
   .describe("The fully-resolved effective config after precedence merge.");
 export type ResolvedConfig = z.infer<typeof ResolvedConfig>;

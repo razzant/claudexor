@@ -19,7 +19,10 @@ describe("codexTranscriptModel", () => {
       join(dayDir, `rollout-2026-06-17T21-00-00-${thread}.jsonl`),
       [
         JSON.stringify({ type: "session_meta", payload: { id: thread } }),
-        JSON.stringify({ type: "turn_context", payload: { turn_id: "t1", model: "gpt-5.5", effort: "high" } }),
+        JSON.stringify({
+          type: "turn_context",
+          payload: { turn_id: "t1", model: "gpt-5.5", effort: "high" },
+        }),
       ].join("\n") + "\n",
     );
   });
@@ -72,11 +75,18 @@ describe("codexTranscriptRateLimits (quota)", () => {
           rate_limits: {
             limit_id: "codex",
             primary: { used_percent: primaryUsed, window_minutes: 300, resets_at: 1782368577 },
-            secondary: { used_percent: secondaryUsed, window_minutes: 10080, resets_at: 1782387153 },
+            secondary: {
+              used_percent: secondaryUsed,
+              window_minutes: 10080,
+              resets_at: 1782387153,
+            },
           },
         },
       });
-    writeFileSync(join(day, `rollout-2026-07-03T00-00-00-${threadId}.jsonl`), [line(1, 2), line(12.5, 40)].join("\n") + "\n");
+    writeFileSync(
+      join(day, `rollout-2026-07-03T00-00-00-${threadId}.jsonl`),
+      [line(1, 2), line(12.5, 40)].join("\n") + "\n",
+    );
     const rl = codexTranscriptRateLimits(home, threadId);
     expect(rl).not.toBeNull();
     expect(rl!.used_percent).toBe(40); // secondary is the tighter window in the LAST record

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CLEAN_ENV_ALLOWLIST, composeBaseEnv, PROVIDER_SECRET_ENV, providerScrubEnv } from "./env-scope.js";
+import {
+  CLEAN_ENV_ALLOWLIST,
+  composeBaseEnv,
+  PROVIDER_SECRET_ENV,
+  providerScrubEnv,
+} from "./env-scope.js";
 
 describe("providerScrubEnv", () => {
   it("scrubs cross-provider secrets (codex must not inherit anthropic; claude not openai)", () => {
@@ -37,11 +42,23 @@ describe("providerScrubEnv", () => {
 });
 
 describe("composeBaseEnv (env_inheritance)", () => {
-  const source = { PATH: "/usr/bin", HOME: "/home/x", SECRET_THING: "leak", OPENAI_API_KEY: "sk-xxx", FOO_TOKEN: "bar", HTTPS_PROXY: "http://proxy:8080", NODE_EXTRA_CA_CERTS: "/etc/ca.pem" };
+  const source = {
+    PATH: "/usr/bin",
+    HOME: "/home/x",
+    SECRET_THING: "leak",
+    OPENAI_API_KEY: "sk-xxx",
+    FOO_TOKEN: "bar",
+    HTTPS_PROXY: "http://proxy:8080",
+    NODE_EXTRA_CA_CERTS: "/etc/ca.pem",
+  };
 
   it("mirror_native copies the whole parent env", () => {
     const env = composeBaseEnv("mirror_native", source);
-    expect(env.PATH?.split(":").slice(0, 3)).toEqual(["/home/x/.claudexor/node/bin", "/home/x/.local/bin", "/home/x/.npm-global/bin"]);
+    expect(env.PATH?.split(":").slice(0, 3)).toEqual([
+      "/home/x/.claudexor/node/bin",
+      "/home/x/.local/bin",
+      "/home/x/.npm-global/bin",
+    ]);
     expect(env.PATH?.split(":")).toContain("/usr/bin");
     expect(env.SECRET_THING).toBe("leak");
     expect(env.OPENAI_API_KEY).toBe("sk-xxx");
@@ -49,7 +66,11 @@ describe("composeBaseEnv (env_inheritance)", () => {
 
   it("clean keeps only the minimal allowlist (agent isolation): no arbitrary or provider vars leak", () => {
     const env = composeBaseEnv("clean", source);
-    expect(env.PATH?.split(":").slice(0, 3)).toEqual(["/home/x/.claudexor/node/bin", "/home/x/.local/bin", "/home/x/.npm-global/bin"]);
+    expect(env.PATH?.split(":").slice(0, 3)).toEqual([
+      "/home/x/.claudexor/node/bin",
+      "/home/x/.local/bin",
+      "/home/x/.npm-global/bin",
+    ]);
     expect(env.PATH?.split(":")).toContain("/usr/bin");
     expect(env.HOME).toBe("/home/x");
     expect("SECRET_THING" in env).toBe(false);

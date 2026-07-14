@@ -3,8 +3,18 @@ import { daemonOutcomeSummary, exitCodeForState } from "./daemon-run.js";
 
 describe("exitCodeForState", () => {
   it("maps success terminals to 0 and everything else to 1", () => {
-    for (const ok of ["succeeded", "no_op", "ungated", "review_not_run"]) expect(exitCodeForState(ok)).toBe(0);
-    for (const bad of ["blocked", "failed", "cancelled", "interrupted", "exhausted", "not_converged", "stuck_no_progress"]) expect(exitCodeForState(bad)).toBe(1);
+    for (const ok of ["succeeded", "no_op", "ungated", "review_not_run"])
+      expect(exitCodeForState(ok)).toBe(0);
+    for (const bad of [
+      "blocked",
+      "failed",
+      "cancelled",
+      "interrupted",
+      "exhausted",
+      "not_converged",
+      "stuck_no_progress",
+    ])
+      expect(exitCodeForState(bad)).toBe(1);
   });
 });
 
@@ -25,7 +35,11 @@ describe("daemonOutcomeSummary (P2: a reason on every non-success daemon termina
   });
 
   it("falls back to a state label for other non-success terminals", () => {
-    expect(daemonOutcomeSummary({ runId: "r1", status: "not_converged" })).toBe("run not_converged");
-    expect(daemonOutcomeSummary({ runId: "r1", status: "stuck_no_progress" })).toBe("run stuck_no_progress");
+    expect(daemonOutcomeSummary({ runId: "r1", status: "not_converged" })).toBe(
+      "run not_converged",
+    );
+    expect(daemonOutcomeSummary({ runId: "r1", status: "stuck_no_progress" })).toBe(
+      "run stuck_no_progress",
+    );
   });
 });

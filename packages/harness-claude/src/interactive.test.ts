@@ -65,7 +65,10 @@ describe("claude interactive control protocol", () => {
   });
 
   it("opens interactive sessions with the initialize handshake before the prompt", () => {
-    const lines = initialSessionFrames("hello").trim().split("\n").map((l) => JSON.parse(l) as Record<string, any>);
+    const lines = initialSessionFrames("hello")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as Record<string, any>);
     expect(lines).toHaveLength(2);
     expect(lines[0]?.["type"]).toBe("control_request");
     expect(lines[0]?.["request"]["subtype"]).toBe("initialize");
@@ -97,7 +100,9 @@ describe("claude interactive control protocol", () => {
     expect(frame["response"]["request_id"]).toBe("req-1");
     const inner = frame["response"]["response"];
     expect(inner["behavior"]).toBe("allow");
-    expect(inner["updatedInput"]["answers"]).toEqual({ "How should I format the output?": "Summary" });
+    expect(inner["updatedInput"]["answers"]).toEqual({
+      "How should I format the output?": "Summary",
+    });
   });
 
   it("joins multi-select labels and passes free text verbatim", () => {
@@ -131,7 +136,8 @@ describe("claude interactive control protocol", () => {
         answers: [{ question_id: "q1", selected_labels: ["Detailed"], free_text: null }],
       }),
     };
-    for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", channel)) events.push(ev);
+    for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", channel))
+      events.push(ev);
     expect(events).toHaveLength(1);
     expect(events[0]?.type).toBe("interaction_requested");
     expect(events[0]?.interaction?.interaction_id).toBe("req-1");
@@ -144,7 +150,8 @@ describe("claude interactive control protocol", () => {
     const { io, written } = fakeIo();
     const events: HarnessEvent[] = [];
     const channel = { request: async () => null };
-    for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", channel)) events.push(ev);
+    for await (const ev of handleControlRequestFrame(NATIVE_ASK, io, "ses-1", channel))
+      events.push(ev);
     expect(events).toHaveLength(1);
     expect(written[0]).toContain('"behavior":"deny"');
     expect(written[0]).toContain(DECLINE_MESSAGE.slice(0, 20));
@@ -158,7 +165,10 @@ describe("claude interactive control protocol", () => {
       request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "rm -rf /" } },
     };
     const events: HarnessEvent[] = [];
-    for await (const ev of handleControlRequestFrame(frame, io, "ses-1", { request: async () => null })) events.push(ev);
+    for await (const ev of handleControlRequestFrame(frame, io, "ses-1", {
+      request: async () => null,
+    }))
+      events.push(ev);
     expect(events).toHaveLength(0);
     expect(written[0]).toContain('"behavior":"deny"');
     expect(written[0]).toContain("Not permitted by Claudexor policy");
@@ -166,15 +176,24 @@ describe("claude interactive control protocol", () => {
 
   it("answers unknown control subtypes with an error response", async () => {
     const { io, written } = fakeIo();
-    const frame = { type: "control_request", request_id: "req-3", request: { subtype: "hook_callback" } };
+    const frame = {
+      type: "control_request",
+      request_id: "req-3",
+      request: { subtype: "hook_callback" },
+    };
     const events: HarnessEvent[] = [];
-    for await (const ev of handleControlRequestFrame(frame, io, "ses-1", undefined)) events.push(ev);
+    for await (const ev of handleControlRequestFrame(frame, io, "ses-1", undefined))
+      events.push(ev);
     expect(events).toHaveLength(0);
     expect(JSON.parse(written[0] ?? "{}")["response"]["subtype"]).toBe("error");
   });
 
   it("deny frame shape matches the control protocol", () => {
     const frame = JSON.parse(denyResponseFrame("req-9", "nope")) as Record<string, any>;
-    expect(frame["response"]["response"]).toEqual({ behavior: "deny", message: "nope", interrupt: false });
+    expect(frame["response"]["response"]).toEqual({
+      behavior: "deny",
+      message: "nope",
+      interrupt: false,
+    });
   });
 });

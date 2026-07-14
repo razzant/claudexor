@@ -1,5 +1,9 @@
 import type { ModeKind, SpecPack, TaskContract } from "@claudexor/schema";
-import { SCHEMA_VERSION, SpecPack as SpecPackSchema, TaskContract as TaskContractSchema } from "@claudexor/schema";
+import {
+  SCHEMA_VERSION,
+  SpecPack as SpecPackSchema,
+  TaskContract as TaskContractSchema,
+} from "@claudexor/schema";
 import { newId, nowIso, redactSecrets } from "@claudexor/util";
 
 export interface SpecToContractOptions {
@@ -28,7 +32,8 @@ export function buildTaskGraph(tasks: SpecPack["tasks"]): TaskContract["task_gra
   const ids = new Set(nodes.map((n) => n.id));
   for (const n of nodes) {
     for (const dep of n.depends_on) {
-      if (!ids.has(dep)) throw new SpecNotReadyError(`task '${n.id}' depends on unknown task '${dep}'`);
+      if (!ids.has(dep))
+        throw new SpecNotReadyError(`task '${n.id}' depends on unknown task '${dep}'`);
     }
   }
   // Kahn topological sort; leftovers mean a cycle.
@@ -64,7 +69,9 @@ export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptio
   if (!spec.frozen) throw new SpecNotReadyError("SpecPack is not frozen");
   const open = spec.open_questions.filter((q) => q.status === "open");
   if (open.length > 0) {
-    throw new SpecNotReadyError(`SpecPack has ${open.length} open clarification(s); resolve before running`);
+    throw new SpecNotReadyError(
+      `SpecPack has ${open.length} open clarification(s); resolve before running`,
+    );
   }
   return TaskContractSchema.parse({
     schema_version: SCHEMA_VERSION,
@@ -72,13 +79,23 @@ export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptio
     created_at: nowIso(),
     repo: { root: opts.repoRoot, base_ref: opts.baseRef ?? "HEAD", dirty_policy: "snapshot" },
     mode: { kind: opts.mode ?? "agent" },
-    user_intent: { raw: redactSecrets(spec.intent.raw), normalized: redactSecrets(spec.summary || spec.intent.normalized || spec.intent.raw) },
-    success_criteria: spec.success_criteria.map((c) => ({ id: c.id, text: c.behavior, required: c.required })),
+    user_intent: {
+      raw: redactSecrets(spec.intent.raw),
+      normalized: redactSecrets(spec.summary || spec.intent.normalized || spec.intent.raw),
+    },
+    success_criteria: spec.success_criteria.map((c) => ({
+      id: c.id,
+      text: c.behavior,
+      required: c.required,
+    })),
     non_goals: spec.non_goals,
     forbidden_approaches: spec.forbidden_approaches,
     decided_tradeoffs: spec.decided_tradeoffs,
     task_graph: buildTaskGraph(spec.tasks),
-    constraints: { protected_paths: spec.constraints.protected_paths, protected_path_approvals: [] },
+    constraints: {
+      protected_paths: spec.constraints.protected_paths,
+      protected_path_approvals: [],
+    },
     tests: { commands: spec.tests },
     budget: { max_usd: opts.maxUsd ?? null },
   });
@@ -102,14 +119,20 @@ export function diffSpecPacks(a: SpecPack, b: SpecPack): SpecFieldChange[] {
   const diffList = (field: string, before: string[], after: string[]): void => {
     const setB = new Set(before);
     const setA = new Set(after);
-    for (const item of after) if (!setB.has(item)) changes.push({ field, kind: "added", after: item });
-    for (const item of before) if (!setA.has(item)) changes.push({ field, kind: "removed", before: item });
+    for (const item of after)
+      if (!setB.has(item)) changes.push({ field, kind: "added", after: item });
+    for (const item of before)
+      if (!setA.has(item)) changes.push({ field, kind: "removed", before: item });
   };
 
   diffList("non_goals", a.non_goals, b.non_goals);
   diffList("forbidden_approaches", a.forbidden_approaches, b.forbidden_approaches);
   diffList("decided_tradeoffs", a.decided_tradeoffs, b.decided_tradeoffs);
-  diffList("constraints.protected_paths", a.constraints.protected_paths, b.constraints.protected_paths);
+  diffList(
+    "constraints.protected_paths",
+    a.constraints.protected_paths,
+    b.constraints.protected_paths,
+  );
   diffList(
     "success_criteria",
     a.success_criteria.map((c) => c.behavior),

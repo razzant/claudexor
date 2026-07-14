@@ -64,7 +64,8 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   const override =
     blockedEvidence &&
     input.operatorDecision &&
-    (input.operatorDecision.action === "accept_risk" || input.operatorDecision.action === "override_needs_human") &&
+    (input.operatorDecision.action === "accept_risk" ||
+      input.operatorDecision.action === "override_needs_human") &&
     typeof input.operatorDecision.patch_sha256 === "string" &&
     input.operatorDecision.patch_sha256 === sha256(input.patch);
   if (input.state && input.state !== "succeeded" && !override) {
@@ -94,10 +95,13 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     }
   }
   if (!input.workProduct) return "work product is required before apply";
-  if (input.workProduct.kind !== "patch") return `work product kind ${input.workProduct.kind} is not applyable as a patch`;
+  if (input.workProduct.kind !== "patch")
+    return `work product kind ${input.workProduct.kind} is not applyable as a patch`;
   const recorded = input.workProduct.meta?.["patch_sha256"];
-  if (typeof recorded !== "string" || recorded.length === 0) return "work product patch hash is required before apply";
-  if (recorded !== sha256(input.patch)) return "patch artifact hash does not match the reviewed work product";
+  if (typeof recorded !== "string" || recorded.length === 0)
+    return "work product patch hash is required before apply";
+  if (recorded !== sha256(input.patch))
+    return "patch artifact hash does not match the reviewed work product";
   if (!input.originalRepoRoot) return "run original project is unknown; refusing apply";
   try {
     if (realpathSync(input.originalRepoRoot) !== realpathSync(input.targetRepoRoot)) {

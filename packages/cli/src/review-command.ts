@@ -28,7 +28,10 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
   try {
     diffText = readFileSync(diffPath, "utf8");
   } catch (err) {
-    return printUsageError(json, `claudexor review: cannot read --diff '${diffPath}': ${err instanceof Error ? err.message : String(err)}`);
+    return printUsageError(
+      json,
+      `claudexor review: cannot read --diff '${diffPath}': ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   try {
     const orch = new Orchestrator({
@@ -64,7 +67,9 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
         artifactsDir: result.artifactsDir,
       });
     } else {
-      print(`reviewers: ${result.distinctProviders.join(", ") || "none"} (cross-family verified: ${result.crossFamilyVerified})`);
+      print(
+        `reviewers: ${result.distinctProviders.join(", ") || "none"} (cross-family verified: ${result.crossFamilyVerified})`,
+      );
       for (const f of result.findings) print(`  [${f.severity}] ${f.claim}`);
       print(
         ok

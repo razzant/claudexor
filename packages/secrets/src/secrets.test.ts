@@ -31,7 +31,9 @@ describe("SecretStore backend resolution", () => {
 
   it("fails loudly on an invalid CLAUDEXOR_SECRETS_BACKEND value (no silent Keychain fallback)", () => {
     process.env.CLAUDEXOR_SECRETS_BACKEND = "fil";
-    expect(() => new SecretStore("auto").resolvedBackend()).toThrow(/CLAUDEXOR_SECRETS_BACKEND must be file\|keychain\|auto/);
+    expect(() => new SecretStore("auto").resolvedBackend()).toThrow(
+      /CLAUDEXOR_SECRETS_BACKEND must be file\|keychain\|auto/,
+    );
   });
 });
 
@@ -41,7 +43,8 @@ describe("SecretStore (file backend)", () => {
     expect(store.set("OPENAI_API_KEY", "sk-test-123")).toBe("file");
     expect(store.get("OPENAI_API_KEY")).toBe("sk-test-123");
 
-    const mode = statSync(join(process.env.CLAUDEXOR_CONFIG_DIR as string, "secrets.json")).mode & 0o777;
+    const mode =
+      statSync(join(process.env.CLAUDEXOR_CONFIG_DIR as string, "secrets.json")).mode & 0o777;
     expect(mode).toBe(0o600);
 
     store.delete("OPENAI_API_KEY");
@@ -52,7 +55,9 @@ describe("SecretStore (file backend)", () => {
     writeFileSync(join(process.env.CLAUDEXOR_CONFIG_DIR as string, "secrets.json"), "{not-json");
     const store = new SecretStore("file");
     expect(() => store.list()).toThrow(/invalid Claudexor secret store/);
-    expect(() => store.set("OPENAI_API_KEY", "sk-test-123")).toThrow(/invalid Claudexor secret store/);
+    expect(() => store.set("OPENAI_API_KEY", "sk-test-123")).toThrow(
+      /invalid Claudexor secret store/,
+    );
   });
 });
 

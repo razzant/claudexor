@@ -25,7 +25,10 @@ export function pathGuard(workspaceRoot: string, targetPath: string): PathGuardR
   const target = isAbsolute(targetPath) ? resolve(targetPath) : resolve(root, targetPath);
   const rel = relative(root, target);
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-    return { allowed: false, reason: `write to '${targetPath}' resolves outside workspace '${workspaceRoot}'` };
+    return {
+      allowed: false,
+      reason: `write to '${targetPath}' resolves outside workspace '${workspaceRoot}'`,
+    };
   }
   return { allowed: true };
 }

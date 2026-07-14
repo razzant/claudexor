@@ -10,7 +10,15 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CLI, type Sandbox, cli, makeSandbox, readEvents, readRunFile, runFileExists } from "./support.js";
+import {
+  CLI,
+  type Sandbox,
+  cli,
+  makeSandbox,
+  readEvents,
+  readRunFile,
+  runFileExists,
+} from "./support.js";
 
 let sb: Sandbox;
 beforeEach(() => {
@@ -22,7 +30,15 @@ afterEach(() => {
 
 describe("canary golden stories", () => {
   it("[INV-032:modes-canonical] an unknown mode id hard-errors and never silently runs another mode", () => {
-    const r = cli(sb, ["agent", "do things", "--mode", "daily", "--harness", "fake-success", "--json"]);
+    const r = cli(sb, [
+      "agent",
+      "do things",
+      "--mode",
+      "daily",
+      "--harness",
+      "fake-success",
+      "--json",
+    ]);
     expect(r.code).toBe(2);
     expect(r.stdout + r.stderr).toMatch(/mode/i);
   });
@@ -65,7 +81,9 @@ describe("canary golden stories", () => {
       "--json",
     ]);
     expect(withReviewer.code).toBe(2);
-    expect(withReviewer.stdout + withReviewer.stderr).toMatch(/reviewer-effort.*grounding plan run/);
+    expect(withReviewer.stdout + withReviewer.stderr).toMatch(
+      /reviewer-effort.*grounding plan run/,
+    );
     // And malformed values fail loudly on the grounding path too.
     const bad = cli(sb, ["spec", "add a multiply feature", "--max-usd", "not-a-number", "--json"]);
     expect(bad.code).toBe(2);
@@ -75,14 +93,28 @@ describe("canary golden stories", () => {
     const oldRun = cli(sb, ["run", "do things", "--harness", "fake-success", "--json"]);
     expect(oldRun.code).toBe(2);
     expect(oldRun.stdout + oldRun.stderr).toContain("claudexor agent");
-    const oldRace = cli(sb, ["race", "do things", "--n", "2", "--harness", "fake-success", "--json"]);
+    const oldRace = cli(sb, [
+      "race",
+      "do things",
+      "--n",
+      "2",
+      "--harness",
+      "fake-success",
+      "--json",
+    ]);
     expect(oldRace.code).toBe(2);
     expect(oldRace.stdout + oldRace.stderr).toContain("claudexor best-of");
   });
 
   it("[INV-062:prompt-secret-block] a secret-like value in the prompt is hard-blocked before any run starts (no bypass)", () => {
     const secret = "sk-" + "z".repeat(24);
-    const r = cli(sb, ["agent", `deploy the service using ${secret}`, "--harness", "fake-success", "--json"]);
+    const r = cli(sb, [
+      "agent",
+      `deploy the service using ${secret}`,
+      "--harness",
+      "fake-success",
+      "--json",
+    ]);
     expect(r.code).not.toBe(0);
     expect(r.stdout + r.stderr).toMatch(/durable run artifacts/);
     expect(r.stdout + r.stderr).toContain("claudexor secrets set");
@@ -93,7 +125,13 @@ describe("canary golden stories", () => {
   });
 
   it("[INV-093:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
-    const r = cli(sb, ["plan", "make add() add instead of subtract", "--harness", "fake-success", "--json"]);
+    const r = cli(sb, [
+      "plan",
+      "make add() add instead of subtract",
+      "--harness",
+      "fake-success",
+      "--json",
+    ]);
     expect(r.code).toBe(0);
     const out = r.json() as { runDir: string; status: string };
     expect(runFileExists(out.runDir, "final/plan.md")).toBe(true);
@@ -109,7 +147,9 @@ describe("canary golden stories", () => {
     const events = readEvents(out.runDir);
     const types = events.map((e) => e["type"]);
     const firstReady = types.indexOf("output.ready");
-    const terminal = types.findIndex((t) => t === "run.completed" || t === "run.failed" || t === "run.blocked");
+    const terminal = types.findIndex(
+      (t) => t === "run.completed" || t === "run.failed" || t === "run.blocked",
+    );
     expect(firstReady).toBeGreaterThanOrEqual(0);
     expect(terminal).toBeGreaterThan(firstReady);
     // seq is monotonic per run — the SSE snapshot-then-subscribe contract.
@@ -121,7 +161,9 @@ describe("canary golden stories", () => {
     // The CLI contract: the process cwd IS the project scope, even for a plain
     // non-git folder on a read-only ask. (The app's no-project Ask with the
     // user-level store is a control-api thread story — Phase 1 expansion.)
-    const r = cli(sb, ["ask", "what is 2+2?", "--harness", "fake-success", "--json"], { cwd: sb.home });
+    const r = cli(sb, ["ask", "what is 2+2?", "--harness", "fake-success", "--json"], {
+      cwd: sb.home,
+    });
     expect(r.code).toBe(0);
     const out = r.json() as { runDir: string; status: string };
     expect(out.status).toBe("success");
@@ -183,16 +225,22 @@ describe("canary golden stories", () => {
     // end the run within seconds (SIGINT -> typed daemon cancel -> abort
     // kills the in-flight gate and skips the rest), not wait out the suite.
     // The terminal is a typed cancelled run.failed and telemetry still lands.
-    const child = spawn(process.execPath, [CLI, "agent", "cancel me", "--harness", "fake-success", "--test", "sleep 60", "--json"], {
-      cwd: sb.repo,
-      env: sb.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      process.execPath,
+      [CLI, "agent", "cancel me", "--harness", "fake-success", "--test", "sleep 60", "--json"],
+      {
+        cwd: sb.repo,
+        env: sb.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     let stdout = "";
     child.stdout.on("data", (c: Buffer) => {
       stdout += String(c);
     });
-    const exited = new Promise<number | null>((resolve) => child.on("exit", (code) => resolve(code)));
+    const exited = new Promise<number | null>((resolve) =>
+      child.on("exit", (code) => resolve(code)),
+    );
     // Wait until the 60s gate is RUNNING (gate.started in events), then interrupt.
     const runtimeRoot = join(sb.configDir, "projects");
     const deadline = Date.now() + 60_000;
@@ -200,8 +248,8 @@ describe("canary golden stories", () => {
     let gateRunning = false;
     while (Date.now() < deadline && !gateRunning) {
       if (!runDir && existsSync(runtimeRoot)) {
-        const found = readdirSync(runtimeRoot, { recursive: true, encoding: "utf8" }).find((entry) =>
-          entry.endsWith("events.jsonl"),
+        const found = readdirSync(runtimeRoot, { recursive: true, encoding: "utf8" }).find(
+          (entry) => entry.endsWith("events.jsonl"),
         );
         if (found) runDir = dirname(join(runtimeRoot, found));
       }
@@ -245,7 +293,17 @@ describe("canary golden stories", () => {
     };
     const specPath = join(sb.repo, "spec.json");
     writeFileSync(specPath, JSON.stringify(spec));
-    const r = cli(sb, ["best-of", "tamper the protected file", "--spec", specPath, "--harness", "fake-implement", "--n", "2", "--json"]);
+    const r = cli(sb, [
+      "best-of",
+      "tamper the protected file",
+      "--spec",
+      specPath,
+      "--harness",
+      "fake-implement",
+      "--n",
+      "2",
+      "--json",
+    ]);
     const out = r.json() as { runId: string; runDir: string; status: string };
     expect(out.status).toBe("blocked");
     expect(readRunFile(out.runDir, "final/failure.yaml")).toMatch(/NEEDS_HUMAN|human/i);
@@ -332,7 +390,12 @@ describe("canary golden stories", () => {
     const r = cli(sb, ["models", "--harness", "fake-success", "--all", "--json"]);
     expect(r.code).toBe(0);
     const out = r.json() as {
-      harnesses: Array<{ harnessId: string; source: string; models: Array<{ id: string }>; verifiedAgainst: string | null }>;
+      harnesses: Array<{
+        harnessId: string;
+        source: string;
+        models: Array<{ id: string }>;
+        verifiedAgainst: string | null;
+      }>;
     };
     const fake = out.harnesses.find((h) => h.harnessId === "fake-success");
     expect(fake?.source).toBe("manifest");

@@ -21,7 +21,11 @@ export function buildRouteProof(
 ): RouteProof {
   const evidenceSource = observed.evidence_source ?? "unavailable";
   const hasObserved = Boolean(observed.model_id) && evidenceSource !== "unavailable";
-  const status = !hasObserved ? "unverified" : evidenceSource === "metadata" ? "accepted_model_arg" : "verified";
+  const status = !hasObserved
+    ? "unverified"
+    : evidenceSource === "metadata"
+      ? "accepted_model_arg"
+      : "verified";
   return RouteProofSchema.parse({
     requested: {
       harness_id: requested.harness_id,
@@ -53,10 +57,12 @@ export function classifyDiversity(proofs: RouteProof[]): RouteProof[] {
   const requestedHintsByObservedModel = new Map<string, Set<string>>();
   for (const p of proofs) {
     if (p.status === "verified" && p.observed.model_id) {
-      const families = familiesByObservedModel.get(p.observed.model_id) ?? new Set<ProviderFamily>();
+      const families =
+        familiesByObservedModel.get(p.observed.model_id) ?? new Set<ProviderFamily>();
       families.add(p.requested.provider_family);
       familiesByObservedModel.set(p.observed.model_id, families);
-      const requestedHints = requestedHintsByObservedModel.get(p.observed.model_id) ?? new Set<string>();
+      const requestedHints =
+        requestedHintsByObservedModel.get(p.observed.model_id) ?? new Set<string>();
       requestedHints.add(p.requested.model_hint ?? "");
       requestedHintsByObservedModel.set(p.observed.model_id, requestedHints);
     }

@@ -42,8 +42,17 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
       // Model truth degrades soft: a catalog is a status surface, so an
       // unreachable vendor CLI yields source=none instead of throwing the
       // whole catalog away. The fallback is the full typed response shape.
-      const truth: ControlHarnessModelsResponse = await harnessModels(s.id, NO_PROJECT_ROOT, false).catch(
-        (): ControlHarnessModelsResponse => ({ harnessId: s.id, models: [], source: "none", verifiedAgainst: null }),
+      const truth: ControlHarnessModelsResponse = await harnessModels(
+        s.id,
+        NO_PROJECT_ROOT,
+        false,
+      ).catch(
+        (): ControlHarnessModelsResponse => ({
+          harnessId: s.id,
+          models: [],
+          source: "none",
+          verifiedAgainst: null,
+        }),
       );
       const configured = cfg.global.harnesses[s.id]?.default_model ?? null;
       const check = configured
@@ -68,7 +77,11 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
         reasons: [...s.reasons],
         configuredModel: configured,
         configuredModelValid: check ? check.status === "ok" : null,
-        models: { source: truth.source, count: truth.models.length, verifiedAgainst: truth.verifiedAgainst },
+        models: {
+          source: truth.source,
+          count: truth.models.length,
+          verifiedAgainst: truth.verifiedAgainst,
+        },
         webPolicy: s.manifest?.capabilities.web_policy ?? "none",
         imageInput: profile?.image_input ?? "none",
         effortLevels: [...(s.manifest?.capabilities.effort_levels ?? [])],

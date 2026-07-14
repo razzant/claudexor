@@ -1,4 +1,10 @@
-import type { AuthSourceKind, AuthSourceReadiness, ConformanceCheck, HarnessManifest, Intent } from "@claudexor/schema";
+import type {
+  AuthSourceKind,
+  AuthSourceReadiness,
+  ConformanceCheck,
+  HarnessManifest,
+  Intent,
+} from "@claudexor/schema";
 import type { AdapterRegistry, DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runDoctor } from "@claudexor/core";
 import { allowedIntents } from "./gating.js";
@@ -43,10 +49,9 @@ export class HarnessGateway {
   ): Promise<AuthSourceReadiness | null> {
     const adapter = this.registry.get(harnessId);
     if (!adapter) return null;
-    const report = (await runDoctor(
-      new Map([[adapter.id, adapter]]),
-      { ...spec, authSource: source },
-    ))[0];
+    const report = (
+      await runDoctor(new Map([[adapter.id, adapter]]), { ...spec, authSource: source })
+    )[0];
     return report?.auth_sources.find((candidate) => candidate.source === source) ?? null;
   }
 
@@ -62,7 +67,10 @@ export class HarnessGateway {
     return this.statusAllForAdapters(adapters, spec);
   }
 
-  private async statusAllForAdapters(adapters: HarnessAdapter[], spec: DoctorSpec): Promise<HarnessStatus[]> {
+  private async statusAllForAdapters(
+    adapters: HarnessAdapter[],
+    spec: DoctorSpec,
+  ): Promise<HarnessStatus[]> {
     const out: HarnessStatus[] = [];
     for (const adapter of adapters) {
       let manifest: HarnessManifest | null = null;
@@ -97,7 +105,10 @@ export class HarnessGateway {
    * (key present but unproven) are excluded — claims of "doctor-verified"
    * availability must never include them.
    */
-  async doctorOkReal(spec: DoctorSpec = { cwd: process.cwd() }, intent?: Intent): Promise<string[]> {
+  async doctorOkReal(
+    spec: DoctorSpec = { cwd: process.cwd() },
+    intent?: Intent,
+  ): Promise<string[]> {
     const statuses = await this.statusAllForAdapters([...this.registry.values()], spec);
     return statuses
       .filter(

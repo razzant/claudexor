@@ -21,7 +21,15 @@ describe("parseClaudeEvent", () => {
   });
 
   it("maps api_retry overloads to typed rate_limit and transient signals", () => {
-    const out = parseClaudeEvent({ type: "system", subtype: "api_retry", error: "temporarily unavailable / overloaded", retry_delay_ms: 2500 }, "s1")?.[0];
+    const out = parseClaudeEvent(
+      {
+        type: "system",
+        subtype: "api_retry",
+        error: "temporarily unavailable / overloaded",
+        retry_delay_ms: 2500,
+      },
+      "s1",
+    )?.[0];
     expect(out?.type).toBe("thinking");
     expect(out?.rate_limit?.retry_delay_ms).toBe(2500);
     expect(out?.transient?.kind).toBe("service_unavailable");
@@ -76,13 +84,19 @@ describe("parseClaudeEvent", () => {
     // error_max_turns is a BENIGN turn-control outcome (the run hit --max-turns
     // with partial work preserved), NOT a run failure -> a timeline thinking
     // event, never an error (mirrors ExitPlanMode/AskUserQuestion handling).
-    const maxTurns = parseClaudeEvent({ type: "result", subtype: "error_max_turns", num_turns: 12 }, "s1") as HarnessEvent[];
+    const maxTurns = parseClaudeEvent(
+      { type: "result", subtype: "error_max_turns", num_turns: 12 },
+      "s1",
+    ) as HarnessEvent[];
     expect(maxTurns.map((e) => e.type)).toEqual(["usage", "thinking"]);
     expect(maxTurns[1]?.text).toContain("max-turns");
     expect(maxTurns[1]?.payload?.["max_turns_reached"]).toBe(true);
 
     // Other non-success subtypes remain real errors.
-    const realError = parseClaudeEvent({ type: "result", subtype: "error_during_execution" }, "s1") as HarnessEvent[];
+    const realError = parseClaudeEvent(
+      { type: "result", subtype: "error_during_execution" },
+      "s1",
+    ) as HarnessEvent[];
     expect(realError.map((e) => e.type)).toEqual(["usage", "error"]);
   });
 
@@ -91,7 +105,16 @@ describe("parseClaudeEvent", () => {
     parse(
       {
         type: "assistant",
-        message: { content: [{ type: "tool_use", id: "toolu_1", name: "Write", input: { file_path: "/tmp/hello.txt" } }] },
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "Write",
+              input: { file_path: "/tmp/hello.txt" },
+            },
+          ],
+        },
       },
       "s1",
     );
@@ -100,7 +123,11 @@ describe("parseClaudeEvent", () => {
         type: "user",
         message: {
           content: [
-            { type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "text", text: "created /tmp/hello.txt" }] },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [{ type: "text", text: "created /tmp/hello.txt" }],
+            },
           ],
         },
       },
@@ -121,7 +148,11 @@ describe("parseClaudeEvent", () => {
     parse(
       {
         type: "assistant",
-        message: { content: [{ type: "tool_use", id: "toolu_web", name: "WebSearch", input: { query: "x" } }] },
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_web", name: "WebSearch", input: { query: "x" } },
+          ],
+        },
       },
       "s1",
     );
@@ -130,7 +161,12 @@ describe("parseClaudeEvent", () => {
         type: "user",
         message: {
           content: [
-            { type: "tool_result", tool_use_id: "toolu_web", is_error: true, content: [{ type: "text", text: "WebSearch denied by policy" }] },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_web",
+              is_error: true,
+              content: [{ type: "text", text: "WebSearch denied by policy" }],
+            },
           ],
         },
       },
@@ -150,7 +186,9 @@ describe("parseClaudeEvent", () => {
     parse(
       {
         type: "assistant",
-        message: { content: [{ type: "tool_use", id: "toolu_grep", name: "Grep", input: { pattern: "x" } }] },
+        message: {
+          content: [{ type: "tool_use", id: "toolu_grep", name: "Grep", input: { pattern: "x" } }],
+        },
       },
       "s1",
     );
@@ -159,7 +197,12 @@ describe("parseClaudeEvent", () => {
         type: "user",
         message: {
           content: [
-            { type: "tool_result", tool_use_id: "toolu_grep", is_error: true, content: [{ type: "text", text: "Cancelled: parallel tool call Bash(...) errored" }] },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_grep",
+              is_error: true,
+              content: [{ type: "text", text: "Cancelled: parallel tool call Bash(...) errored" }],
+            },
           ],
         },
       },
@@ -176,7 +219,11 @@ describe("parseClaudeEvent", () => {
     parse(
       {
         type: "assistant",
-        message: { content: [{ type: "tool_use", id: "toolu_web", name: "WebSearch", input: { query: "x" } }] },
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_web", name: "WebSearch", input: { query: "x" } },
+          ],
+        },
       },
       "s1",
     );
@@ -185,7 +232,12 @@ describe("parseClaudeEvent", () => {
         type: "user",
         message: {
           content: [
-            { type: "tool_result", tool_use_id: "toolu_web", is_error: true, content: [{ type: "text", text: "WebSearch denied by policy" }] },
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_web",
+              is_error: true,
+              content: [{ type: "text", text: "WebSearch denied by policy" }],
+            },
           ],
         },
       },
@@ -284,11 +336,30 @@ describe("parseClaudeEvent", () => {
   it("translates a headless ExitPlanMode error result to a benign thinking event", () => {
     const parse = createClaudeParser();
     parse(
-      { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_p", name: "ExitPlanMode", input: { plan: "The plan." } }] } },
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_p", name: "ExitPlanMode", input: { plan: "The plan." } },
+          ],
+        },
+      },
       "s1",
     );
     const out = parse(
-      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_p", is_error: true, content: "needs approval" }] } },
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_p",
+              is_error: true,
+              content: "needs approval",
+            },
+          ],
+        },
+      },
       "s1",
     ) as HarnessEvent[];
     expect(out).toHaveLength(1);
@@ -301,12 +372,33 @@ describe("parseClaudeEvent", () => {
     parse(
       {
         type: "assistant",
-        message: { content: [{ type: "tool_use", id: "toolu_q", name: "AskUserQuestion", input: { questions: [{ question: "Which stack?" }] } }] },
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_q",
+              name: "AskUserQuestion",
+              input: { questions: [{ question: "Which stack?" }] },
+            },
+          ],
+        },
       },
       "s1",
     );
     const out = parse(
-      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_q", is_error: true, content: "Answer questions?" }] } },
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_q",
+              is_error: true,
+              content: "Answer questions?",
+            },
+          ],
+        },
+      },
       "s1",
     ) as HarnessEvent[];
     expect(out).toHaveLength(1);
@@ -342,7 +434,15 @@ describe("parseClaudeEvent", () => {
   });
 
   it("recognizes control-protocol plumbing frames without counting them as dropped", () => {
-    expect(parseClaudeEvent({ type: "control_response", response: { subtype: "success", request_id: "req_claudexor_init" } }, "s1")).toEqual([]);
+    expect(
+      parseClaudeEvent(
+        {
+          type: "control_response",
+          response: { subtype: "success", request_id: "req_claudexor_init" },
+        },
+        "s1",
+      ),
+    ).toEqual([]);
     expect(parseClaudeEvent({ type: "control_cancel_request" }, "s1")).toEqual([]);
   });
 });
@@ -355,8 +455,14 @@ describe("plan progress", () => {
         { type: "assistant", message: { content: [{ type: "tool_use", id: "t", name, input }] } },
         sid,
       )?.find((e) => e.type === "tool_call");
-    const c1 = call("TaskCreate", { subject: "step one", description: "d", activeForm: "doing one" });
-    expect(c1?.plan_progress?.items).toEqual([{ id: "claude-1", title: "step one", status: "pending" }]);
+    const c1 = call("TaskCreate", {
+      subject: "step one",
+      description: "d",
+      activeForm: "doing one",
+    });
+    expect(c1?.plan_progress?.items).toEqual([
+      { id: "claude-1", title: "step one", status: "pending" },
+    ]);
     call("TaskCreate", { subject: "step two" });
     const upd = call("TaskUpdate", { taskId: "1", status: "in_progress" });
     expect(upd?.plan_progress?.items).toEqual([
@@ -368,12 +474,13 @@ describe("plan progress", () => {
     // RESUMED-SESSION honesty: an unknown task id CREATES the entry with the
     // CLI's own numbering (the accumulator started fresh mid-conversation).
     const resumed = call("TaskUpdate", { taskId: "99", status: "completed" });
-    expect(resumed?.plan_progress?.items?.find((i) => i.id === "claude-99")?.status).toBe("completed");
+    expect(resumed?.plan_progress?.items?.find((i) => i.id === "claude-99")?.status).toBe(
+      "completed",
+    );
     // A status-less update is still a no-op (nothing to record).
     const noop = call("TaskUpdate", { taskId: "1" });
     expect(noop?.plan_progress).toBeUndefined();
   });
-
 
   it("maps TodoWrite todos to the TYPED plan_progress field on the tool_call event", () => {
     const out = parseClaudeEvent(
@@ -423,7 +530,15 @@ describe("structured output flag", () => {
     const i = args.indexOf("--json-schema");
     expect(i).toBeGreaterThan(-1);
     expect(JSON.parse(args[i + 1]!)).toMatchObject({ type: "object" });
-    const bare = claudeArgsForSpec(HarnessRunSpec.parse({ session_id: "s2", intent: "explain", prompt: "q", cwd: "/tmp", access: "readonly" }));
+    const bare = claudeArgsForSpec(
+      HarnessRunSpec.parse({
+        session_id: "s2",
+        intent: "explain",
+        prompt: "q",
+        cwd: "/tmp",
+        access: "readonly",
+      }),
+    );
     expect(bare).not.toContain("--json-schema");
   });
 });

@@ -33,7 +33,8 @@ export function readRunEvents(rec: RunDirCarrier): Record<string, unknown>[] {
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
-      if (obj && typeof obj === "object" && !Array.isArray(obj)) out.push(obj as Record<string, unknown>);
+      if (obj && typeof obj === "object" && !Array.isArray(obj))
+        out.push(obj as Record<string, unknown>);
     } catch {
       /* malformed line remains in events.jsonl; omit from projections */
     }
@@ -64,10 +65,19 @@ const WARNING_EVENT_TYPES = new Set([
 ]);
 const ERROR_EVENT_TYPES = new Set(["run.failed", "reviewer.failed", "reviewer.timed_out"]);
 
-function timelineSeverity(type: string, payload: Record<string, unknown>, tool: Record<string, unknown>): "info" | "warning" | "error" {
+function timelineSeverity(
+  type: string,
+  payload: Record<string, unknown>,
+  tool: Record<string, unknown>,
+): "info" | "warning" | "error" {
   if (payload["error"] || tool["status"] === "error" || ERROR_EVENT_TYPES.has(type)) return "error";
   const reason = FallbackReason.safeParse(payload["reason"]);
-  if (type === "route.fallback.auth_switched" && reason.success && reason.data === "readiness_preferred") return "info";
+  if (
+    type === "route.fallback.auth_switched" &&
+    reason.success &&
+    reason.data === "readiness_preferred"
+  )
+    return "info";
   if (WARNING_EVENT_TYPES.has(type)) return "warning";
   return "info";
 }
@@ -78,30 +88,43 @@ export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
     // Typed tool info travels on the normalized HarnessEvent `tool` field.
-    const tool = payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
-      ? (payload["tool"] as Record<string, unknown>)
-      : {};
+    const tool =
+      payload["tool"] && typeof payload["tool"] === "object" && !Array.isArray(payload["tool"])
+        ? (payload["tool"] as Record<string, unknown>)
+        : {};
     const harnessId = stringOrNull(payload["harness_id"] ?? payload["harness"]);
     const attemptId = stringOrNull(payload["attempt_id"] ?? payload["attemptId"]);
-    const title = stringOrNull(payload["title"] ?? payload["message"] ?? payload["summary"] ?? payload["text"] ?? payload["error"]) ?? prettyEventType(type);
+    const title =
+      stringOrNull(
+        payload["title"] ??
+          payload["message"] ??
+          payload["summary"] ??
+          payload["text"] ??
+          payload["error"],
+      ) ?? prettyEventType(type);
     const errorSummary = stringOrNull(tool["error_summary"] ?? payload["error"]);
-    const detail = stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ?? stringOrNull(tool["content_summary"]) ?? errorSummary;
+    const detail =
+      stringOrNull(payload["detail"] ?? payload["text"] ?? payload["error"]) ??
+      stringOrNull(tool["content_summary"]) ??
+      errorSummary;
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
     const severity = timelineSeverity(type, payload, tool);
-    out.push(ControlTimelineEvent.parse({
-      type,
-      ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,
-      harnessId,
-      attemptId,
-      title,
-      detail,
-      severity,
-      toolName,
-      target,
-      errorSummary,
-      rawRef: "events.jsonl",
-    }));
+    out.push(
+      ControlTimelineEvent.parse({
+        type,
+        ts: typeof ev["ts"] === "string" ? ev["ts"] : undefined,
+        harnessId,
+        attemptId,
+        title,
+        detail,
+        severity,
+        toolName,
+        target,
+        errorSummary,
+        rawRef: "events.jsonl",
+      }),
+    );
   }
   // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
   if (out.length > TIMELINE_EVENTS_MAX) {
@@ -129,7 +152,9 @@ export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
 export function latestPlanProgress(
   rec: RunDirCarrier,
   winnerAttemptId?: string | null,
-): { items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }> } | null {
+): {
+  items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }>;
+} | null {
   const events = readRunEvents(rec);
   const pick = (matchWinner: boolean): Record<string, unknown> | null => {
     for (let i = events.length - 1; i >= 0; i--) {
@@ -150,10 +175,22 @@ export function latestPlanProgress(
       .map((raw) => {
         const r = raw as { id?: unknown; title?: unknown; status?: unknown };
         if (typeof r.id !== "string" || typeof r.title !== "string") return null;
-        const status = r.status === "completed" ? "completed" : r.status === "in_progress" ? "in_progress" : "pending";
-        return { id: r.id, title: r.title, status: status as "pending" | "in_progress" | "completed" };
+        const status =
+          r.status === "completed"
+            ? "completed"
+            : r.status === "in_progress"
+              ? "in_progress"
+              : "pending";
+        return {
+          id: r.id,
+          title: r.title,
+          status: status as "pending" | "in_progress" | "completed",
+        };
       })
-      .filter((x): x is { id: string; title: string; status: "pending" | "in_progress" | "completed" } => x !== null);
+      .filter(
+        (x): x is { id: string; title: string; status: "pending" | "in_progress" | "completed" } =>
+          x !== null,
+      );
     return { items };
   }
 }

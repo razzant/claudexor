@@ -2,10 +2,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ConfigParseError, listTrustConfigs, loadConfig, repoHash, updateGlobalConfig, updateTrustConfig } from "./index.js";
+import {
+  ConfigParseError,
+  listTrustConfigs,
+  loadConfig,
+  repoHash,
+  updateGlobalConfig,
+  updateTrustConfig,
+} from "./index.js";
 
 describe("loadConfig", () => {
-  function withTempConfig(fn: (paths: { dir: string; repo: string; configDir: string }) => void): void {
+  function withTempConfig(
+    fn: (paths: { dir: string; repo: string; configDir: string }) => void,
+  ): void {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     const prevReviewerTimeout = process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS;
     const prevRetryMax = process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
@@ -30,9 +39,11 @@ describe("loadConfig", () => {
       else process.env.CLAUDEXOR_REVIEWER_TIMEOUT_MS = prevReviewerTimeout;
       if (prevRetryMax === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX;
       else process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX = prevRetryMax;
-      if (prevRetryInitialDelay === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS;
+      if (prevRetryInitialDelay === undefined)
+        delete process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS;
       else process.env.CLAUDEXOR_TRANSIENT_RETRY_INITIAL_DELAY_MS = prevRetryInitialDelay;
-      if (prevRetryMaxDelay === undefined) delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS;
+      if (prevRetryMaxDelay === undefined)
+        delete process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS;
       else process.env.CLAUDEXOR_TRANSIENT_RETRY_MAX_DELAY_MS = prevRetryMaxDelay;
       rmSync(dir, { recursive: true, force: true });
     }

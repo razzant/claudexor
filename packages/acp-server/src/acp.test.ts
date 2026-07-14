@@ -22,7 +22,10 @@ describe("AcpServer", () => {
   it("handles initialize, session/new, session/prompt", async () => {
     const c2s = new PassThrough();
     const s2c = new PassThrough();
-    const server = new AcpServer({ runner: async (p) => ({ ok: true, prompt: p.prompt }), transport: { read: c2s, write: s2c } });
+    const server = new AcpServer({
+      runner: async (p) => ({ ok: true, prompt: p.prompt }),
+      transport: { read: c2s, write: s2c },
+    });
     const serving = server.serve();
 
     const messages: any[] = [];
@@ -32,11 +35,19 @@ describe("AcpServer", () => {
     });
 
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) + "\n");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(30);
     const sid = messages.find((m) => m.id === 2)?.result?.sessionId;
     c2s.write(
-      JSON.stringify({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: sid, prompt: "hello" } }) + "\n",
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "hello" },
+      }) + "\n",
     );
     await sleep(40);
     c2s.end();
@@ -67,7 +78,14 @@ describe("AcpServer", () => {
     });
 
     const projectDir = tempProjectDir();
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: projectDir } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "session/new",
+        params: { cwd: projectDir },
+      }) + "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
     c2s.write(
@@ -130,7 +148,14 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: "relative/project" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "session/new",
+        params: { cwd: "relative/project" },
+      }) + "\n",
+    );
     await sleep(30);
     c2s.end();
     await serving;
@@ -159,15 +184,29 @@ describe("AcpServer", () => {
     });
     const missingDir = join(tmpdir(), `claudexor-acp-missing-${Date.now()}-${Math.random()}`);
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: 42 } }) + "\n");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "   " } }) + "\n");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "session/new", params: { cwd: missingDir } }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: 42 } }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "   " } }) +
+        "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "session/new",
+        params: { cwd: missingDir },
+      }) + "\n",
+    );
     c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 4, method: "session/new", params: {} }) + "\n");
     await sleep(30);
     c2s.end();
     await serving;
 
-    expect(messages.find((m) => m.id === 1)?.error?.message).toContain("non-empty absolute path string");
+    expect(messages.find((m) => m.id === 1)?.error?.message).toContain(
+      "non-empty absolute path string",
+    );
     expect(messages.find((m) => m.id === 2)?.error?.message).toContain("non-empty absolute path");
     expect(messages.find((m) => m.id === 3)?.error?.message).toContain("existing directory");
     expect(messages.find((m) => m.id === 4)?.error?.message).toContain("cwd is required");
@@ -192,8 +231,22 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/prompt", params: { prompt: "go" } }) + "\n");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: "missing", prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "session/prompt",
+        params: { prompt: "go" },
+      }) + "\n",
+    );
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: "missing", prompt: "go" },
+      }) + "\n",
+    );
     await sleep(30);
     c2s.end();
     await serving;
@@ -220,7 +273,14 @@ describe("AcpServer", () => {
     rl.on("line", (l) => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 100, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 100,
+        method: "session/new",
+        params: sessionNewParams(),
+      }) + "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 100)?.result?.sessionId;
     const withSession = (params: Record<string, unknown>) => ({ sessionId: sid, ...params });
@@ -231,7 +291,11 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 1,
         method: "session/prompt",
-        params: withSession({ prompt: "go", tests: "pnpm test", reviewerPanel: [{ harness: "claude" }] }),
+        params: withSession({
+          prompt: "go",
+          tests: "pnpm test",
+          reviewerPanel: [{ harness: "claude" }],
+        }),
       }) + "\n",
     );
     c2s.write(
@@ -239,7 +303,10 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 2,
         method: "session/prompt",
-        params: withSession({ prompt: "go", reviewerPanel: [{ harness: "claude", authPreference: "api_key" }] }),
+        params: withSession({
+          prompt: "go",
+          reviewerPanel: [{ harness: "claude", authPreference: "api_key" }],
+        }),
       }) + "\n",
     );
     c2s.write(
@@ -343,7 +410,10 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 15,
         method: "session/prompt",
-        params: withSession({ prompt: "go", reviewerPanel: [{ harness: "claude", model: secretLike }] }),
+        params: withSession({
+          prompt: "go",
+          reviewerPanel: [{ harness: "claude", model: secretLike }],
+        }),
       }) + "\n",
     );
     c2s.write(
@@ -378,22 +448,50 @@ describe("AcpServer", () => {
 
     expect(calls).toBe(0);
     expect(messages.find((m) => m.id === 1)?.error?.code).toBe(-32600);
-    expect(messages.find((m) => m.id === 2)?.error?.message).toContain("unknown reviewerPanel field");
-    expect(messages.find((m) => m.id === 3)?.error?.message).toContain("effort must be a valid effort value");
-    expect(messages.find((m) => m.id === 4)?.error?.message).toContain("unknown provider family key");
+    expect(messages.find((m) => m.id === 2)?.error?.message).toContain(
+      "unknown reviewerPanel field",
+    );
+    expect(messages.find((m) => m.id === 3)?.error?.message).toContain(
+      "effort must be a valid effort value",
+    );
+    expect(messages.find((m) => m.id === 4)?.error?.message).toContain(
+      "unknown provider family key",
+    );
     expect(messages.find((m) => m.id === 5)?.error?.message).toContain("valid effort values");
     expect(messages.find((m) => m.id === 6)?.error?.message).toContain("race must be a boolean");
-    expect(messages.find((m) => m.id === 7)?.error?.message).toContain("prompt must be a non-empty string");
-    expect(messages.find((m) => m.id === 8)?.error?.message).toContain("prompt must be a non-empty string");
-    expect(messages.find((m) => m.id === 9)?.error?.message).toContain("prompt must be a non-empty string");
-    expect(messages.find((m) => m.id === 10)?.error?.message).toContain("harness must be a non-empty string");
-    expect(messages.find((m) => m.id === 11)?.error?.message).toContain("primaryHarness must be a non-empty string");
-    expect(messages.find((m) => m.id === 12)?.error?.message).toContain("model must be a non-empty string");
-    expect(messages.find((m) => m.id === 13)?.error?.message).toContain("unknown session/prompt field: reviewerPannel");
-    expect(messages.find((m) => m.id === 14)?.error?.message).toContain("race n must be an integer >= 2");
-    expect(messages.find((m) => m.id === 15)?.error?.message).toContain("secret-like value is not accepted");
-    expect(messages.find((m) => m.id === 16)?.error?.message).toContain("secret-like value is not accepted");
-    expect(messages.find((m) => m.id === 17)?.error?.message).toContain("secret-like value is not accepted");
+    expect(messages.find((m) => m.id === 7)?.error?.message).toContain(
+      "prompt must be a non-empty string",
+    );
+    expect(messages.find((m) => m.id === 8)?.error?.message).toContain(
+      "prompt must be a non-empty string",
+    );
+    expect(messages.find((m) => m.id === 9)?.error?.message).toContain(
+      "prompt must be a non-empty string",
+    );
+    expect(messages.find((m) => m.id === 10)?.error?.message).toContain(
+      "harness must be a non-empty string",
+    );
+    expect(messages.find((m) => m.id === 11)?.error?.message).toContain(
+      "primaryHarness must be a non-empty string",
+    );
+    expect(messages.find((m) => m.id === 12)?.error?.message).toContain(
+      "model must be a non-empty string",
+    );
+    expect(messages.find((m) => m.id === 13)?.error?.message).toContain(
+      "unknown session/prompt field: reviewerPannel",
+    );
+    expect(messages.find((m) => m.id === 14)?.error?.message).toContain(
+      "race n must be an integer >= 2",
+    );
+    expect(messages.find((m) => m.id === 15)?.error?.message).toContain(
+      "secret-like value is not accepted",
+    );
+    expect(messages.find((m) => m.id === 16)?.error?.message).toContain(
+      "secret-like value is not accepted",
+    );
+    expect(messages.find((m) => m.id === 17)?.error?.message).toContain(
+      "secret-like value is not accepted",
+    );
     expect(messages.find((m) => m.id === 18)?.error?.message).toContain("durable run artifacts");
     // Machine-readable class in JSON-RPC error.data (hosts branch without prose-parsing).
     expect(messages.find((m) => m.id === 18)?.error?.data?.code).toBe("inline_secret_rejected");
@@ -408,7 +506,13 @@ describe("AcpServer", () => {
         received = await hooks?.onInteraction?.({
           request: {
             interaction_id: "int-1",
-            questions: [{ id: "q1", question: "Red or Blue?", options: [{ label: "Red" }, { label: "Blue" }] }],
+            questions: [
+              {
+                id: "q1",
+                question: "Red or Blue?",
+                options: [{ label: "Red" }, { label: "Blue" }],
+              },
+            ],
           },
         });
         return { ok: true };
@@ -424,14 +528,30 @@ describe("AcpServer", () => {
       messages.push(msg);
       // Client behavior: answer the server->client permission request with Blue.
       if (msg.method === "session/request_permission") {
-        c2s.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: "opt-2" } } }) + "\n");
+        c2s.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: { outcome: { outcome: "selected", optionId: "opt-2" } },
+          }) + "\n",
+        );
       }
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "ask me" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "ask me" },
+      }) + "\n",
+    );
     await sleep(60);
     c2s.end();
     await serving;
@@ -447,7 +567,9 @@ describe("AcpServer", () => {
       runner: (_p, hooks) =>
         new Promise((_resolve, reject) => {
           // Long run that only ends via abort (cooperative cancellation).
-          hooks?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          hooks?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
         }),
       transport: { read: c2s, write: s2c },
     });
@@ -458,13 +580,26 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "long" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "long" },
+      }) + "\n",
+    );
     await sleep(20);
     // session/cancel is a JSON-RPC notification: NO id, and the server must NOT reply.
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: sid } }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: sid } }) +
+        "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
@@ -472,7 +607,11 @@ describe("AcpServer", () => {
     // The prompt is cancelled.
     expect(messages.find((m) => m.id === 2)?.result?.stopReason).toBe("cancelled");
     // No response was emitted for the notification (no message lacking a request id / no id-less response).
-    const responses = messages.filter((m) => Object.prototype.hasOwnProperty.call(m, "result") || Object.prototype.hasOwnProperty.call(m, "error"));
+    const responses = messages.filter(
+      (m) =>
+        Object.prototype.hasOwnProperty.call(m, "result") ||
+        Object.prototype.hasOwnProperty.call(m, "error"),
+    );
     expect(responses.every((m) => m.id === 1 || m.id === 2)).toBe(true);
   });
 
@@ -483,7 +622,14 @@ describe("AcpServer", () => {
       runner: (_p, hooks) =>
         new Promise((resolve, reject) => {
           const t = setTimeout(() => resolve({ ok: true }), 80);
-          hooks?.signal?.addEventListener("abort", () => { clearTimeout(t); reject(new Error("aborted")); }, { once: true });
+          hooks?.signal?.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(t);
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
         }),
       transport: { read: c2s, write: s2c },
     });
@@ -494,12 +640,29 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "first" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "first" },
+      }) + "\n",
+    );
     await sleep(10);
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: sid, prompt: "second" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "second" },
+      }) + "\n",
+    );
     await sleep(120);
     c2s.end();
     await serving;
@@ -516,7 +679,10 @@ describe("AcpServer", () => {
   it("returns a JSON-RPC -32601 error for an unknown method (proper {code,message}, no result)", async () => {
     const c2s = new PassThrough();
     const s2c = new PassThrough();
-    const server = new AcpServer({ runner: async () => ({ ok: true }), transport: { read: c2s, write: s2c } });
+    const server = new AcpServer({
+      runner: async () => ({ ok: true }),
+      transport: { read: c2s, write: s2c },
+    });
     const serving = server.serve();
     const messages: any[] = [];
     const rl = createInterface({ input: s2c });
@@ -524,7 +690,9 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 7, method: "does/not-exist", params: {} }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 7, method: "does/not-exist", params: {} }) + "\n",
+    );
     await sleep(20);
     c2s.end();
     await serving;
@@ -539,7 +707,12 @@ describe("AcpServer", () => {
     const c2s = new PassThrough();
     const s2c = new PassThrough();
     const server = new AcpServer({
-      runner: async () => ({ runId: "r1", status: "succeeded", summary: "Did the thing.", winner: "A" }),
+      runner: async () => ({
+        runId: "r1",
+        status: "succeeded",
+        summary: "Did the thing.",
+        winner: "A",
+      }),
       transport: { read: c2s, write: s2c },
     });
     const serving = server.serve();
@@ -549,15 +722,28 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "go" },
+      }) + "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
 
-    const chunk = messages.find((m) => m.method === "session/update" && m.params?.update?.sessionUpdate === "agent_message_chunk");
+    const chunk = messages.find(
+      (m) =>
+        m.method === "session/update" && m.params?.update?.sessionUpdate === "agent_message_chunk",
+    );
     expect(chunk?.params?.update?.content?.text).toBe("Did the thing.");
     // Never the raw internal object.
     expect(chunk?.params?.update?.content?.text).not.toContain("runId");
@@ -587,10 +773,20 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "ask" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "ask" },
+      }) + "\n",
+    );
     await sleep(60);
     c2s.end();
     await serving;
@@ -616,10 +812,22 @@ describe("AcpServer", () => {
     const s2c = new PassThrough();
     const server = new AcpServer({
       runner: async (_p, hooks) => {
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { use_id: "u1", name: "read" } } });
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { use_id: "u1", name: "read", status: "ok" } } });
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { use_id: "u2", name: "bash" } } });
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { use_id: "u2", name: "bash", status: "error" } } });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_call", tool: { use_id: "u1", name: "read" } },
+        });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_result", tool: { use_id: "u1", name: "read", status: "ok" } },
+        });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_call", tool: { use_id: "u2", name: "bash" } },
+        });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_result", tool: { use_id: "u2", name: "bash", status: "error" } },
+        });
         return { summary: "ok" };
       },
       transport: { read: c2s, write: s2c },
@@ -631,22 +839,40 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "go" },
+      }) + "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
 
-    const updates = messages.filter((m) => m.method === "session/update").map((m) => m.params.update);
-    const u1Done = updates.find((u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === "u1");
-    const u2Done = updates.find((u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === "u2");
+    const updates = messages
+      .filter((m) => m.method === "session/update")
+      .map((m) => m.params.update);
+    const u1Done = updates.find(
+      (u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === "u1",
+    );
+    const u2Done = updates.find(
+      (u) => u.sessionUpdate === "tool_call_update" && u.toolCallId === "u2",
+    );
     expect(u1Done?.status).toBe("completed");
     expect(u2Done?.status).toBe("failed");
     // Every started tool_call reached a terminal status (no client hang).
     const started = updates.filter((u) => u.sessionUpdate === "tool_call").map((u) => u.toolCallId);
-    const completed = updates.filter((u) => u.sessionUpdate === "tool_call_update").map((u) => u.toolCallId);
+    const completed = updates
+      .filter((u) => u.sessionUpdate === "tool_call_update")
+      .map((u) => u.toolCallId);
     for (const id of started) expect(completed).toContain(id);
   });
 
@@ -658,10 +884,22 @@ describe("AcpServer", () => {
         // Two in-flight calls to the SAME tool, neither carrying a use_id. The
         // fallback must queue both synthetic ids so each result completes its own
         // call (the old single-slot map dropped the first started call).
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { name: "bash" } } });
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_call", tool: { name: "bash" } } });
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { name: "bash", status: "ok" } } });
-        hooks?.onEvent?.({ type: "harness.event", payload: { type: "tool_result", tool: { name: "bash", status: "error" } } });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_call", tool: { name: "bash" } },
+        });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_call", tool: { name: "bash" } },
+        });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_result", tool: { name: "bash", status: "ok" } },
+        });
+        hooks?.onEvent?.({
+          type: "harness.event",
+          payload: { type: "tool_result", tool: { name: "bash", status: "error" } },
+        });
         return { summary: "ok" };
       },
       transport: { read: c2s, write: s2c },
@@ -673,16 +911,30 @@ describe("AcpServer", () => {
       if (l.trim()) messages.push(JSON.parse(l));
     });
 
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(20);
     const sid = messages.find((m) => m.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId: sid, prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId: sid, prompt: "go" },
+      }) + "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
 
-    const updates = messages.filter((m) => m.method === "session/update").map((m) => m.params.update);
-    const startedIds = updates.filter((u) => u.sessionUpdate === "tool_call").map((u) => u.toolCallId);
+    const updates = messages
+      .filter((m) => m.method === "session/update")
+      .map((m) => m.params.update);
+    const startedIds = updates
+      .filter((u) => u.sessionUpdate === "tool_call")
+      .map((u) => u.toolCallId);
     const completions = updates.filter((u) => u.sessionUpdate === "tool_call_update");
     // Two distinct synthetic ids were started...
     expect(startedIds.length).toBe(2);
@@ -728,17 +980,29 @@ describe("ACP honesty fixes (publication pass)", () => {
       received = p;
       return "ok";
     });
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(40);
     const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
     c2s.write(
       JSON.stringify({
-        jsonrpc: "2.0", id: 2, method: "session/prompt",
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
         params: {
           sessionId,
           prompt: [
             { type: "text", text: "Fix the bug." },
-            { type: "resource", resource: { uri: "file:///proj/src/app.ts", mimeType: "text/plain", text: "export const broken = 1;" } },
+            {
+              type: "resource",
+              resource: {
+                uri: "file:///proj/src/app.ts",
+                mimeType: "text/plain",
+                text: "export const broken = 1;",
+              },
+            },
             { type: "resource_link", uri: "file:///proj/README.md", name: "README.md" },
           ],
         },
@@ -773,21 +1037,41 @@ describe("ACP honesty fixes (publication pass)", () => {
         request: {
           interaction_id: "int-t",
           timeout_at: new Date(Date.now() + 120).toISOString(),
-          questions: [{ id: "q1", question: "Pick", header: null, options: [{ label: "A", description: null }], multi_select: false }],
+          questions: [
+            {
+              id: "q1",
+              question: "Pick",
+              header: null,
+              options: [{ label: "A", description: null }],
+              multi_select: false,
+            },
+          ],
         },
       });
       return answers ? "answered" : "declined";
     }, updates);
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(40);
     const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
     // The client NEVER answers the permission request; the deadline resolves it.
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId, prompt: "go" },
+      }) + "\n",
+    );
     await sleep(400);
     c2s.end();
     await serving;
     expect(responses.find((r) => r.id === 2)?.result?.stopReason).toBe("end_turn");
-    const started = updates.filter((u) => u.update?.sessionUpdate === "tool_call").map((u) => u.update.toolCallId);
+    const started = updates
+      .filter((u) => u.update?.sessionUpdate === "tool_call")
+      .map((u) => u.update.toolCallId);
     const terminal = updates.filter((u) => u.update?.sessionUpdate === "tool_call_update");
     expect(started.length).toBeGreaterThan(0);
     for (const idStarted of started) {
@@ -799,7 +1083,14 @@ describe("ACP honesty fixes (publication pass)", () => {
 describe("ACP conformance fixes (Phase 5)", () => {
   it("initialize includes authMethods: [] (strict ACP clients deserialize it)", async () => {
     const { c2s, responses, serving } = startServer(async () => "ok");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 1 },
+      }) + "\n",
+    );
     await sleep(40);
     c2s.end();
     await serving;
@@ -808,19 +1099,26 @@ describe("ACP conformance fixes (Phase 5)", () => {
 
   it("session/prompt tolerates the protocol's _meta envelope but still rejects unknown Claudexor knobs", async () => {
     const { c2s, responses, serving } = startServer(async () => "ok");
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(40);
     const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
     c2s.write(
       JSON.stringify({
-        jsonrpc: "2.0", id: 2, method: "session/prompt",
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
         params: { sessionId, prompt: "go", mode: "ask", _meta: { "vendor/trace": "abc" } },
       }) + "\n",
     );
     await sleep(60);
     c2s.write(
       JSON.stringify({
-        jsonrpc: "2.0", id: 3, method: "session/prompt",
+        jsonrpc: "2.0",
+        id: 3,
+        method: "session/prompt",
         params: { sessionId, prompt: "go", mode: "ask", tpyoKnob: true },
       }) + "\n",
     );
@@ -828,30 +1126,59 @@ describe("ACP conformance fixes (Phase 5)", () => {
     c2s.end();
     await serving;
     expect(responses.find((r) => r.id === 2)?.result?.stopReason).toBe("end_turn");
-    expect(responses.find((r) => r.id === 3)?.error?.message).toContain("unknown session/prompt field: tpyoKnob");
+    expect(responses.find((r) => r.id === 3)?.error?.message).toContain(
+      "unknown session/prompt field: tpyoKnob",
+    );
   });
 
   it("announces a tool_call before session/request_permission and completes it after (no orphan ids)", async () => {
     const updates: any[] = [];
-    const { c2s, responses, requests, arrivals, serving } = startServer(async (_p: any, hooks: any) => {
-      const answers = await hooks?.onInteraction?.({
-        request: {
-          interaction_id: "int-7",
-          questions: [{ id: "q1", question: "Pick", header: null, options: [{ label: "A", description: null }], multi_select: false }],
-        },
-      });
-      return answers ? "answered" : "declined";
-    }, updates);
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    const { c2s, responses, requests, arrivals, serving } = startServer(
+      async (_p: any, hooks: any) => {
+        const answers = await hooks?.onInteraction?.({
+          request: {
+            interaction_id: "int-7",
+            questions: [
+              {
+                id: "q1",
+                question: "Pick",
+                header: null,
+                options: [{ label: "A", description: null }],
+                multi_select: false,
+              },
+            ],
+          },
+        });
+        return answers ? "answered" : "declined";
+      },
+      updates,
+    );
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(40);
     const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId, prompt: "go" },
+      }) + "\n",
+    );
     // Answer the permission request when it arrives.
     for (let i = 0; i < 40; i += 1) {
       await sleep(25);
       const perm = requests.find((r) => r.method === "session/request_permission");
       if (perm) {
-        c2s.write(JSON.stringify({ jsonrpc: "2.0", id: perm.id, result: { outcome: { outcome: "selected", optionId: "opt-1" } } }) + "\n");
+        c2s.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: perm.id,
+            result: { outcome: { outcome: "selected", optionId: "opt-1" } },
+          }) + "\n",
+        );
         break;
       }
     }
@@ -864,7 +1191,10 @@ describe("ACP conformance fixes (Phase 5)", () => {
     // WIRE ORDER: announce (tool_call) strictly precedes the permission
     // request; completion (tool_call_update) strictly follows it.
     const announceAt = arrivals.findIndex(
-      (m) => m.method === "session/update" && m.params?.update?.sessionUpdate === "tool_call" && m.params?.update?.toolCallId === announcedId,
+      (m) =>
+        m.method === "session/update" &&
+        m.params?.update?.sessionUpdate === "tool_call" &&
+        m.params?.update?.toolCallId === announcedId,
     );
     const permAt = arrivals.findIndex((m) => m.method === "session/request_permission");
     const completeAt = arrivals.findIndex(
@@ -883,22 +1213,47 @@ describe("ACP conformance fixes (Phase 5)", () => {
 describe("multi-question permission interactions", () => {
   it("each question gets a DISTINCT toolCallId with its own announce/permission/complete triple", async () => {
     const updates: any[] = [];
-    const { c2s, responses, requests, arrivals, serving } = startServer(async (_p: any, hooks: any) => {
-      const answers = await hooks?.onInteraction?.({
-        request: {
-          interaction_id: "int-9",
-          questions: [
-            { id: "qa", question: "First?", header: null, options: [{ label: "A", description: null }], multi_select: false },
-            { id: "qb", question: "Second?", header: null, options: [{ label: "B", description: null }], multi_select: false },
-          ],
-        },
-      });
-      return answers ? `answered ${answers.answers.length}` : "declined";
-    }, updates);
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) + "\n");
+    const { c2s, responses, requests, arrivals, serving } = startServer(
+      async (_p: any, hooks: any) => {
+        const answers = await hooks?.onInteraction?.({
+          request: {
+            interaction_id: "int-9",
+            questions: [
+              {
+                id: "qa",
+                question: "First?",
+                header: null,
+                options: [{ label: "A", description: null }],
+                multi_select: false,
+              },
+              {
+                id: "qb",
+                question: "Second?",
+                header: null,
+                options: [{ label: "B", description: null }],
+                multi_select: false,
+              },
+            ],
+          },
+        });
+        return answers ? `answered ${answers.answers.length}` : "declined";
+      },
+      updates,
+    );
+    c2s.write(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, method: "session/new", params: sessionNewParams() }) +
+        "\n",
+    );
     await sleep(40);
     const sessionId = responses.find((r) => r.id === 1)?.result?.sessionId;
-    c2s.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: "go" } }) + "\n");
+    c2s.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/prompt",
+        params: { sessionId, prompt: "go" },
+      }) + "\n",
+    );
     // Answer BOTH permission requests as they arrive.
     const answered = new Set<string>();
     for (let i = 0; i < 80; i += 1) {
@@ -906,7 +1261,13 @@ describe("multi-question permission interactions", () => {
       for (const req of requests.filter((r) => r.method === "session/request_permission")) {
         if (answered.has(String(req.id))) continue;
         answered.add(String(req.id));
-        c2s.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { outcome: { outcome: "selected", optionId: "opt-1" } } }) + "\n");
+        c2s.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: req.id,
+            result: { outcome: { outcome: "selected", optionId: "opt-1" } },
+          }) + "\n",
+        );
       }
       if (responses.some((r) => r.id === 2)) break;
     }
@@ -920,8 +1281,15 @@ describe("multi-question permission interactions", () => {
     expect(ids[0]).toContain("int-9:");
     // Each id has its own announce and completion on the wire.
     for (const id of ids) {
-      const announce = arrivals.findIndex((m) => m.params?.update?.sessionUpdate === "tool_call" && m.params?.update?.toolCallId === id);
-      const complete = arrivals.findIndex((m) => m.params?.update?.sessionUpdate === "tool_call_update" && m.params?.update?.toolCallId === id);
+      const announce = arrivals.findIndex(
+        (m) =>
+          m.params?.update?.sessionUpdate === "tool_call" && m.params?.update?.toolCallId === id,
+      );
+      const complete = arrivals.findIndex(
+        (m) =>
+          m.params?.update?.sessionUpdate === "tool_call_update" &&
+          m.params?.update?.toolCallId === id,
+      );
       expect(announce).toBeGreaterThanOrEqual(0);
       expect(complete).toBeGreaterThan(announce);
     }
