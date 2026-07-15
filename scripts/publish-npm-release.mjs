@@ -13,8 +13,17 @@ rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 
 const packages = discoverPackages();
-for (const pkg of topological(packages)) {
-  const tarball = pack(pkg);
+const packed = topological(packages).map((pkg) => ({ pkg, tarball: pack(pkg) }));
+for (const { pkg, tarball } of packed) {
+  if (pkg.name === "@claudexor/core") {
+    run(
+      process.execPath,
+      [resolve(root, "scripts/verify-npm-darwin-package.mjs"), "--tarball", tarball],
+      root,
+    );
+  }
+}
+for (const { pkg, tarball } of packed) {
   const integrity = `sha512-${createHash("sha512").update(readFileSync(tarball)).digest("base64")}`;
   const spec = `${pkg.name}@${pkg.version}`;
   const existing = view(spec);

@@ -33,6 +33,8 @@ for (const file of files) {
 }
 
 const release = readFileSync(".github/workflows/release.yml", "utf8");
+const publishNpmJob = jobBody(release, "publish-npm");
+const publishReleaseJob = jobBody(release, "publish-release");
 for (const [label, pattern] of [
   ["workflow has candidate mode", /candidate/],
   ["workflow has publish mode", /publish/],
@@ -41,8 +43,43 @@ for (const [label, pattern] of [
   ["artifact provenance is emitted", /actions\/attest-build-provenance@[0-9a-f]{40}/],
   ["signing is fail-closed", /Signing and notarization secrets are required/],
   ["release assets use collision checks", /Release asset collision/],
+  ["Darwin npm tarball is smoke-tested", /verify-npm-darwin-package\.mjs --tarball/],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
+}
+if (!/^\s{4}runs-on:\s*macos-26\s*$/m.test(publishNpmJob)) {
+  errors.push("release.yml: npm publication must run on macos-26");
+}
+const beforeAssets = publishReleaseJob.indexOf("--phase before");
+const uploadAssets = publishReleaseJob.indexOf('gh release upload "$TAG" "$file"');
+const afterAssets = publishReleaseJob.indexOf("--phase after");
+const publishDraft = publishReleaseJob.indexOf('gh release edit "$TAG" --draft=false --latest');
+if (!(beforeAssets >= 0 && beforeAssets < uploadAssets)) {
+  errors.push("release.yml: remote asset subset must be verified before upload");
+}
+if (!(uploadAssets >= 0 && uploadAssets < afterAssets && afterAssets < publishDraft)) {
+  errors.push(
+    "release.yml: exact remote asset set must be verified after upload and before publish",
+  );
+}
+if (/gh\s+release\s+delete-asset/.test(publishReleaseJob)) {
+  errors.push("release.yml: retry flow must never delete unexpected remote assets");
+}
+
+const coreManifest = JSON.parse(readFileSync("packages/core/package.json", "utf8"));
+if (
+  coreManifest.bin?.["claudexor-process-identity"] !== "./dist/native/claudexor-process-identity"
+) {
+  errors.push("packages/core/package.json: Darwin helper must be an executable npm bin entry");
+}
+if (!String(coreManifest.scripts?.prepack ?? "").includes("verify-npm-darwin-package.mjs")) {
+  errors.push("packages/core/package.json: Darwin helper prepack verification is missing");
+}
+const npmPublisher = readFileSync("scripts/publish-npm-release.mjs", "utf8");
+const verifyDarwinPackage = npmPublisher.indexOf("verify-npm-darwin-package.mjs");
+const publishTarball = npmPublisher.indexOf('"publish"');
+if (verifyDarwinPackage < 0 || publishTarball < 0 || verifyDarwinPackage > publishTarball) {
+  errors.push("publish-npm-release.mjs: Darwin package verification must precede npm publish");
 }
 for (const [label, pattern] of [
   ["--clobber is forbidden", /--clobber/],
@@ -64,3 +101,13 @@ if (errors.length) {
   process.exit(1);
 }
 console.log("release workflow check OK");
+
+function jobBody(workflow, name) {
+  const start = workflow.indexOf(`  ${name}:\n`);
+  if (start < 0) {
+    errors.push(`release.yml: missing ${name} job`);
+    return "";
+  }
+  const next = workflow.slice(start + 2).search(/^  [a-z0-9-]+:\n/m);
+  return next < 0 ? workflow.slice(start) : workflow.slice(start, start + 2 + next);
+}

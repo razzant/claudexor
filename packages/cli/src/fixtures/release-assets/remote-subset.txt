@@ -1,0 +1,2 @@
+Claudexor-2.0.0.dmg
+SHA256SUMS

@@ -1,0 +1,4 @@
+Claudexor-2.0.0.dmg
+Claudexor-2.0.0.zip
+SHA256SUMS
+old-unsigned-build.zip

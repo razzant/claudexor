@@ -239,7 +239,7 @@ jobs:
     name: Publish npm packages with provenance
     needs: [prepare, package-macos]
     if: needs.prepare.outputs.mode == 'publish'
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     permissions:
       contents: read
       id-token: write
@@ -262,6 +262,19 @@ jobs:
           node scripts/verify-release-input.mjs
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify packed Darwin process identity helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="$RUNNER_TEMP/core-package-smoke"
+          mkdir -p "$package_dir"
+          pnpm --filter @claudexor/core pack --pack-destination "$package_dir"
+          tarballs=("$package_dir"/*.tgz)
+          test "${#tarballs[@]}" -eq 1 && test -f "${tarballs[0]}" || {
+            echo "::error::Expected exactly one core npm tarball."
+            exit 1
+          }
+          node scripts/verify-npm-darwin-package.mjs --tarball "${tarballs[0]}"
       - name: Publish only missing, byte-identical packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -358,11 +371,14 @@ jobs:
           else
             gh release create "$TAG" --verify-tag --draft --title "Claudexor $VERSION" --notes-file "$notes"
           fi
+          remote_names="$RUNNER_TEMP/remote-assets-before.txt"
+          gh release view "$TAG" --json assets --jq '.assets[].name' > "$remote_names"
+          node scripts/verify-release-assets.mjs \
+            --phase before --expected-dir release-assets --remote-manifest "$remote_names"
           gh release edit "$TAG" --title "Claudexor $VERSION" --notes-file "$notes" --draft
-          remote_names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
           for file in release-assets/*; do
             name="$(basename "$file")"
-            if grep -Fxq "$name" <<<"$remote_names"; then
+            if grep -Fxq "$name" "$remote_names"; then
               check="$RUNNER_TEMP/collision-$name"
               mkdir -p "$check"
               gh release download "$TAG" --pattern "$name" --dir "$check"
@@ -374,4 +390,8 @@ jobs:
               gh release upload "$TAG" "$file"
             fi
           done
+          remote_names_after="$RUNNER_TEMP/remote-assets-after.txt"
+          gh release view "$TAG" --json assets --jq '.assets[].name' > "$remote_names_after"
+          node scripts/verify-release-assets.mjs \
+            --phase after --expected-dir release-assets --remote-manifest "$remote_names_after"
           gh release edit "$TAG" --draft=false --latest
