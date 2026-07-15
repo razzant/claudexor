@@ -5,7 +5,7 @@
  * them without network access.
  */
 
-import { createPublicKey, verify } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
 
 export const REQUIRED_TRIAD_MODELS = Object.freeze([
@@ -24,6 +24,15 @@ export const REQUIRED_RELEASE_REVIEW_SLOTS = Object.freeze([
   ),
   Object.freeze({ slot: "scope", route: "openrouter", model: REQUIRED_SCOPE_MODEL, effort: null }),
 ]);
+
+export const RELEASE_NATIVE_CHECKLIST_ITEMS = Object.freeze([
+  "sealed_evidence",
+  "intent_and_scope",
+  "runtime_and_security",
+  "tests_and_release",
+]);
+
+export const MAX_RELEASE_REVIEW_START_SKEW_MS = 10_000;
 
 export const TRIAD_ITEMS = Object.freeze([
   "review_protocol",
@@ -85,6 +94,7 @@ const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMVER_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION = 2;
 export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
 
@@ -121,6 +131,11 @@ export function releaseAttestationSigningBytes(attestation) {
     }),
     "utf8",
   );
+}
+
+export function releaseReviewConcurrencyDigest(concurrency) {
+  const { evidenceSha256: _evidenceSha256, ...evidence } = concurrency ?? {};
+  return createHash("sha256").update(canonicalJson(evidence)).digest("hex");
 }
 
 /** Verify authority before trusting any caller-supplied review semantics. */
@@ -270,6 +285,48 @@ export function validateReleaseAttestationPayload(payload, expected) {
     payload.decision?.blockingFindings !== 0
   ) {
     reasons.push("review attestation decision is not passed");
+  }
+  const concurrency = payload.concurrency;
+  if (!concurrency || typeof concurrency !== "object" || Array.isArray(concurrency)) {
+    reasons.push("review attestation concurrency evidence is missing");
+  } else {
+    const starts = Array.isArray(concurrency.slots) ? concurrency.slots : [];
+    const startTimes = starts.map((entry) => Date.parse(entry?.startedAt ?? ""));
+    const firstStart = Date.parse(concurrency.firstStartAt ?? "");
+    const lastStart = Date.parse(concurrency.lastStartAt ?? "");
+    const firstCompletion = Date.parse(concurrency.firstCompletionAt ?? "");
+    if (
+      !UUID_V4.test(concurrency.reviewWaveId ?? "") ||
+      typeof concurrency.reviewRunId !== "string" ||
+      concurrency.reviewRunId.length === 0 ||
+      !SHA256.test(concurrency.promptSha256?.triad ?? "") ||
+      !SHA256.test(concurrency.promptSha256?.scope ?? "") ||
+      concurrency.maxStartSkewMs !== MAX_RELEASE_REVIEW_START_SKEW_MS ||
+      !Number.isFinite(concurrency.observedStartSkewMs) ||
+      concurrency.observedStartSkewMs < 0 ||
+      concurrency.observedStartSkewMs > MAX_RELEASE_REVIEW_START_SKEW_MS ||
+      starts.length !== REQUIRED_RELEASE_REVIEW_SLOTS.length ||
+      starts.some(
+        (entry, index) =>
+          entry?.slot !== REQUIRED_RELEASE_REVIEW_SLOTS[index]?.slot ||
+          !Number.isFinite(startTimes[index]),
+      ) ||
+      !Number.isFinite(firstStart) ||
+      !Number.isFinite(lastStart) ||
+      !Number.isFinite(firstCompletion) ||
+      Math.min(...startTimes) !== firstStart ||
+      Math.max(...startTimes) !== lastStart ||
+      lastStart - firstStart !== concurrency.observedStartSkewMs ||
+      lastStart >= firstCompletion ||
+      !SHA256.test(concurrency.tier1ProgressSha256 ?? "") ||
+      !SHA256.test(concurrency.triadProgressSha256 ?? "") ||
+      payload.evidence?.tier1ProgressSha256 !== concurrency.tier1ProgressSha256 ||
+      payload.evidence?.triadProgressSha256 !== concurrency.triadProgressSha256 ||
+      !SHA256.test(concurrency.evidenceSha256 ?? "") ||
+      releaseReviewConcurrencyDigest(concurrency) !== concurrency.evidenceSha256
+    ) {
+      reasons.push("review attestation concurrency evidence is invalid");
+    }
   }
   if (!Array.isArray(payload.openBlockers) || payload.openBlockers.length !== 0) {
     reasons.push("review attestation has open blockers");

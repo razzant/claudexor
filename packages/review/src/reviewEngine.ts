@@ -99,6 +99,13 @@ const BLOCKED_REVIEWER_RUNTIME_ROOTS = new Set(
   "auth cache daemon home homes logs runs secrets state tmp workspaces".split(" "),
 );
 const TEXT_EVIDENCE_SUFFIXES = [".md", ".txt", ".json", ".yaml", ".yml", ".patch"];
+const REVIEW_WAVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RELEASE_NATIVE_CHECKLIST_ITEMS = [
+  "sealed_evidence",
+  "intent_and_scope",
+  "runtime_and_security",
+  "tests_and_release",
+] as const;
 
 export interface ReviewerProgressEvent {
   type:
@@ -122,6 +129,7 @@ export interface ReviewerProgressEvent {
   at: string;
   duration_ms?: number;
   message?: string;
+  review_wave_id?: string;
 }
 
 interface ReviewerOutput {
@@ -204,6 +212,16 @@ function reviewPrompt(
   patch: DiffEvidence,
   sealed = false,
 ): string {
+  const responseContract = sealed
+    ? [
+        "Output ONLY one JSON object with this exact release-review envelope:",
+        '{"completion":{"verdict":"PASS","checklist":[{"item":"...","completed":true}],"findingCount":0},"findings":[]}',
+        `The completion.checklist must contain exactly these items in this order: ${RELEASE_NATIVE_CHECKLIST_ITEMS.join(", ")}.`,
+        "Every checklist row must set completed=true. findingCount must exactly equal findings.length.",
+        "Use completion.verdict=FAIL for BLOCK, FIX_FIRST, NEEDS_HUMAN, or INSUFFICIENT_EVIDENCE; otherwise PASS.",
+        "findings uses the finding schema below. A clean review is the completed envelope with findings=[], never a bare [] or [{}].",
+      ]
+    : ["Output ONLY a JSON array of findings."];
   return [
     "You are an adversarial code reviewer.",
     `Candidate root: ${candidateRoot}.`,
@@ -214,7 +232,7 @@ function reviewPrompt(
     "All code/file evidence must come from Candidate root or the evidence packet. Do not inspect or cite sibling/base repository paths outside Candidate root; if required evidence is unavailable there, return INSUFFICIENT_EVIDENCE.",
     "Treat TESTS.txt as the gate evidence. Do not rerun full build/test gates from the review; run only small targeted commands when needed to verify a concrete finding.",
     "In finding evidence, cite candidate files with paths relative to Candidate root. Cite evidence packet files by their evidence filename (for example DIFF.patch or TESTS.txt). Do not cite absolute Candidate root, reviewer workspace, or evidenceDir paths; those are disposable transport paths and will be rejected as evidence.",
-    "Output ONLY a JSON array of findings.",
+    ...responseContract,
     `Each finding: {"severity":"BLOCK|FIX_FIRST|WARN|NIT|OUT_OF_SCOPE|INSUFFICIENT_EVIDENCE|NEEDS_HUMAN","category":"correctness|regression|security|performance|maintainability|test_gap|spec_gap|deploy|architecture|ux","claim":"...","evidence":{"files":[{"path":"...","lines":"..."}]},"proposed_fix":"..."}.`,
     "Rules: no evidence => do NOT use BLOCK. Do not relitigate FORBIDDEN_FINDINGS or DECIDED_TRADEOFFS.",
     "",
@@ -246,11 +264,17 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const reviewSpendByReviewer = input.reviewers.map(() => 0);
   const reviewSpendEstimatedByReviewer = input.reviewers.map(() => false);
   const reviewerTimeoutMs = input.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
+  const reviewWaveId =
+    input.env?.["CLAUDEXOR_REVIEW_WAVE_ID"] ?? process.env["CLAUDEXOR_REVIEW_WAVE_ID"] ?? null;
+  if (input.evidenceReadOnly && input.frozenIdentity && !REVIEW_WAVE_ID.test(reviewWaveId ?? "")) {
+    throw new Error("sealed release review requires CLAUDEXOR_REVIEW_WAVE_ID UUID");
+  }
   const frozenMetadata = input.frozenIdentity
     ? {
         candidate_sha: input.frozenIdentity.candidateSha,
         candidate_tree: input.frozenIdentity.candidateTree,
         packet_manifest_sha256: input.frozenIdentity.packetManifestSha256,
+        ...(reviewWaveId ? { review_wave_id: reviewWaveId } : {}),
       }
     : {};
   if (containsSecretLikeToken(input.diff || "(empty diff)\n")) {
@@ -1355,6 +1379,9 @@ function emitReviewerProgress(
     requested_model: reviewer.requestedModel ?? null,
     requested_effort: reviewer.requestedEffort ?? null,
     artifact_dir: artifact.dir,
+    ...(typeof artifact.metadata["review_wave_id"] === "string"
+      ? { review_wave_id: artifact.metadata["review_wave_id"] }
+      : {}),
     ...patch,
   };
   const redacted = redactValue(event);

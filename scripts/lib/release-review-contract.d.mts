@@ -6,6 +6,8 @@ export const REQUIRED_RELEASE_REVIEW_SLOTS: ReadonlyArray<{
   model: string;
   effort: string | null;
 }>;
+export const RELEASE_NATIVE_CHECKLIST_ITEMS: readonly string[];
+export const MAX_RELEASE_REVIEW_START_SKEW_MS: 10000;
 export const TRIAD_ITEMS: readonly string[];
 export const SCOPE_ITEMS: readonly string[];
 export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION: 2;
@@ -50,6 +52,7 @@ export function validateReleaseInput(
 ): { ok: boolean; reasons: string[] };
 export function canonicalJson(value: any): string;
 export function releaseAttestationSigningBytes(attestation: any): Buffer;
+export function releaseReviewConcurrencyDigest(concurrency: any): string;
 export function verifyReleaseAttestationSignature(
   attestation: any,
   authority: any,

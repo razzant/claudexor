@@ -76,6 +76,22 @@ describe("parseFindingsDetailed", () => {
     expect(single.findings).toHaveLength(1);
     expect(single.findings[0]?.claim).toBe("single");
   });
+
+  it("keeps consuming findings from the sealed release completion envelope", () => {
+    const parsed = parseFindingsDetailed(
+      JSON.stringify({
+        completion: {
+          verdict: "PASS",
+          checklist: [{ item: "sealed_evidence", completed: true }],
+          findingCount: 1,
+        },
+        findings: [{ severity: "WARN", category: "test_gap", claim: "wrapped release finding" }],
+      }),
+      { harness_id: "release-reviewer" },
+    );
+    expect(parsed.malformed).toBe(0);
+    expect(parsed.findings.map((finding) => finding.claim)).toEqual(["wrapped release finding"]);
+  });
 });
 
 describe("dedupeFindings", () => {

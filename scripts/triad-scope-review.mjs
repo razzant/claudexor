@@ -44,6 +44,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -639,6 +640,12 @@ async function main() {
   }
   const round = String(arg("round", "1"));
   if (!/^[1-9]\d*$/.test(round)) throw new Error("--round must be a positive integer");
+  const reviewWaveId = process.env.CLAUDEXOR_REVIEW_WAVE_ID ?? "";
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(reviewWaveId)
+  ) {
+    throw new Error("CLAUDEXOR_REVIEW_WAVE_ID must be a UUID shared with native reviewers");
+  }
   const outDir = resolve(requiredArg("out"), `round-${round}`);
   const outputCheck = validateNewReviewOutput(
     candidateRoot,
@@ -659,13 +666,23 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, "triad-prompt.md"), redactSecrets(triadPrompt));
   writeFileSync(join(outDir, "scope-prompt.md"), redactSecrets(scopePrompt));
+  const promptSha256 = {
+    triad: createHash("sha256")
+      .update(readFileSync(join(outDir, "triad-prompt.md")))
+      .digest("hex"),
+    scope: createHash("sha256")
+      .update(readFileSync(join(outDir, "scope-prompt.md")))
+      .digest("hex"),
+  };
+  const reviewRunId = randomUUID();
   console.error(`triad prompt: ${triadPrompt.length} chars; models: ${TRIAD_MODELS.join(", ")}`);
   console.error(`scope prompt: ${scopePrompt.length} chars; model: ${SCOPE_MODEL}`);
 
   // Write every start before any call, then launch the exact four slots in one
   // Promise.all so the Tier-2 evidence has one unambiguous concurrency boundary.
   const progressPath = join(outDir, "reviewer-progress.jsonl");
-  const progress = (entry) => appendFileSync(progressPath, JSON.stringify(entry) + "\n");
+  const progress = (entry) =>
+    appendFileSync(progressPath, JSON.stringify({ ...entry, reviewRunId, reviewWaveId }) + "\n");
   for (const model of TRIAD_MODELS)
     progress({ ts: new Date().toISOString(), type: "reviewer.started", model });
   progress({
@@ -765,6 +782,12 @@ async function main() {
       );
     }
     const record = {
+      candidateSha,
+      candidateTree,
+      packetManifestSha256: frozen.manifestSha256,
+      promptSha256: promptSha256.triad,
+      reviewRunId,
+      reviewWaveId,
       model_id: result.model,
       requested_model: result.model,
       observed_model: result.observedModel ?? null,
@@ -811,6 +834,12 @@ async function main() {
     let scopeError = scopeResult.error ?? null;
     let scopeMissing = [...SCOPE_ITEMS];
     const scopeMeta = {
+      candidateSha,
+      candidateTree,
+      packetManifestSha256: frozen.manifestSha256,
+      promptSha256: promptSha256.scope,
+      reviewRunId,
+      reviewWaveId,
       model_id: SCOPE_MODEL,
       requested_model: SCOPE_MODEL,
       observed_model: scopeResult.observedModel ?? null,
@@ -889,6 +918,9 @@ async function main() {
 
   const decision = releaseReviewDecision({ triadActors: actorRecords, scope, quorum: 2 });
   const summary = {
+    reviewRunId,
+    reviewWaveId,
+    promptSha256,
     round: Number(round),
     base,
     candidate_sha: candidateSha,

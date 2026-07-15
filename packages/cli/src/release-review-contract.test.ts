@@ -8,6 +8,7 @@ import {
   REQUIRED_SCOPE_MODEL,
   REQUIRED_RELEASE_REVIEW_SLOTS,
   REQUIRED_TRIAD_MODELS,
+  MAX_RELEASE_REVIEW_START_SKEW_MS,
   TRIAD_ITEMS,
   buildTouchedFilePack,
   canonicalJson,
@@ -18,6 +19,7 @@ import {
   panelLockText,
   releaseReviewDecision,
   releaseAttestationSigningBytes,
+  releaseReviewConcurrencyDigest,
   validateFrozenReviewBinding,
   validateNewReviewOutput,
   validatePanelLock,
@@ -82,6 +84,29 @@ describe("release review fail-closed contract", () => {
         artifactManifestSha256: digest,
         artifacts: [{ name: "result.json", sha256: digest }],
       })),
+      evidence: {
+        tier1ProgressSha256: digest,
+        triadProgressSha256: digest,
+      },
+      concurrency: (() => {
+        const evidence = {
+          reviewRunId: "triad-run-fixture",
+          reviewWaveId: "11111111-1111-4111-8111-111111111111",
+          promptSha256: { triad: digest, scope: digest },
+          maxStartSkewMs: MAX_RELEASE_REVIEW_START_SKEW_MS,
+          observedStartSkewMs: 500,
+          firstStartAt: "2026-07-15T00:00:00.000Z",
+          lastStartAt: "2026-07-15T00:00:00.500Z",
+          firstCompletionAt: "2026-07-15T00:00:02.000Z",
+          tier1ProgressSha256: digest,
+          triadProgressSha256: digest,
+          slots: REQUIRED_RELEASE_REVIEW_SLOTS.map(({ slot }, index) => ({
+            slot,
+            startedAt: `2026-07-15T00:00:00.${String(index * 100).padStart(3, "0")}Z`,
+          })),
+        };
+        return { ...evidence, evidenceSha256: releaseReviewConcurrencyDigest(evidence) };
+      })(),
       decision: { status: "passed", quorum: 2, responsiveTriad: 3, blockingFindings: 0 },
       openBlockers: [],
     };

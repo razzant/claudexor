@@ -1,10 +1,11 @@
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   REQUIRED_RELEASE_REVIEW_SLOTS,
+  RELEASE_NATIVE_CHECKLIST_ITEMS,
   REQUIRED_SCOPE_MODEL,
   REQUIRED_TRIAD_MODELS,
   SCOPE_ITEMS,
@@ -42,6 +43,8 @@ function makeFixture() {
   roots.push(root);
   const candidateSha = "a".repeat(40);
   const candidateTree = "b".repeat(40);
+  const reviewWaveId = "11111111-1111-4111-8111-111111111111";
+  const reviewRunId = "triad-run-fixture";
   const packet = join(root, "packet");
   const verification = join(root, "verification");
   const tier1 = join(root, "tier1");
@@ -81,10 +84,11 @@ function makeFixture() {
   ]);
 
   cpSync(packet, join(tier1, "evidence"), { recursive: true });
-  writeFileSync(join(tier1, "reviewer-progress.jsonl"), '{"type":"reviewer.completed"}\n');
+  const tier1Progress: unknown[] = [];
   for (const [index, required] of REQUIRED_RELEASE_REVIEW_SLOTS.slice(0, 2).entries()) {
     const dir = join(tier1, `${String(index + 1).padStart(2, "0")}-${required.route}`);
     mkdirSync(dir);
+    const startTime = `2026-07-15T00:00:00.${String(index * 100).padStart(3, "0")}Z`;
     writeJson(join(dir, "metadata.json"), {
       status: "completed",
       route_proof_status: "verified",
@@ -95,18 +99,55 @@ function makeFixture() {
       candidate_sha: candidateSha,
       candidate_tree: candidateTree,
       packet_manifest_sha256: packetManifestSha256,
-      start_time: "2026-07-15T00:00:00.000Z",
+      review_wave_id: reviewWaveId,
+      start_time: startTime,
       first_event_time: "2026-07-15T00:00:01.000Z",
       completion_time: "2026-07-15T00:00:02.000Z",
       duration_ms: 2000,
     });
-    writeJson(join(dir, "parsed-json-blocks.json"), [[]]);
+    const response = {
+      completion: {
+        verdict: "PASS",
+        checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+        findingCount: 0,
+      },
+      findings: [],
+    };
+    writeJson(join(dir, "parsed-json-blocks.json"), [response]);
     writeFileSync(join(dir, "raw-normalized-stream.jsonl"), "{}\n");
     writeFileSync(join(dir, "transcript.md"), "[]\n");
     writeFileSync(join(dir, "prompt.md"), "review\n");
+    tier1Progress.push(
+      {
+        type: "reviewer.started",
+        harness_id: required.route,
+        requested_model: required.model,
+        requested_effort: required.effort,
+        review_wave_id: reviewWaveId,
+        at: startTime,
+      },
+      {
+        type: "reviewer.completed",
+        harness_id: required.route,
+        requested_model: required.model,
+        requested_effort: required.effort,
+        review_wave_id: reviewWaveId,
+        at: "2026-07-15T00:00:02.000Z",
+      },
+    );
   }
+  writeFileSync(
+    join(tier1, "reviewer-progress.jsonl"),
+    `${tier1Progress.map((row) => JSON.stringify(row)).join("\n")}\n`,
+  );
 
-  writeFileSync(join(triad, "reviewer-progress.jsonl"), '{"type":"reviewer.completed"}\n');
+  const triadProgress: unknown[] = [];
+  writeFileSync(join(triad, "triad-prompt.md"), "triad prompt\n");
+  writeFileSync(join(triad, "scope-prompt.md"), "scope prompt\n");
+  const promptSha256 = {
+    triad: sha256File(join(triad, "triad-prompt.md")),
+    scope: sha256File(join(triad, "scope-prompt.md")),
+  };
   const triadActors = REQUIRED_TRIAD_MODELS.map((model, index) => {
     const slug = model.replace(/[^a-z0-9.-]+/gi, "_");
     const rows = TRIAD_ITEMS.map((item) => ({
@@ -115,21 +156,40 @@ function makeFixture() {
       severity: "advisory",
       reason: `${item} passed`,
     }));
+    const startedAt = `2026-07-15T00:00:00.${String(300 + index * 100).padStart(3, "0")}Z`;
     const metadata = {
+      candidateSha,
+      candidateTree,
+      packetManifestSha256,
+      promptSha256: promptSha256.triad,
+      reviewRunId,
+      reviewWaveId,
+      model_id: model,
       requested_model: model,
       requested_effort: null,
       observed_model: model,
       finish_reason: "stop",
       status: "responded",
-      started_at: "2026-07-15T00:00:00.000Z",
+      started_at: startedAt,
       first_event_at: "2026-07-15T00:00:01.000Z",
       completed_at: "2026-07-15T00:00:02.000Z",
       findings: rows.map((row) => ({ ...row, model })),
+      slot: index + 1,
     };
     writeJson(join(triad, `triad-${slug}.metadata.json`), metadata);
     writeFileSync(join(triad, `triad-${slug}.raw.txt`), JSON.stringify(rows));
     writeJson(join(triad, `triad-${slug}.parsed-json-blocks.json`), rows);
-    return { ...metadata, slot: index + 1 };
+    triadProgress.push(
+      { ts: startedAt, type: "reviewer.started", model, reviewRunId, reviewWaveId },
+      {
+        ts: "2026-07-15T00:00:02.000Z",
+        type: "reviewer.completed",
+        model,
+        reviewRunId,
+        reviewWaveId,
+      },
+    );
+    return metadata;
   });
   const scopeRows = SCOPE_ITEMS.map((item) => ({
     item,
@@ -138,12 +198,19 @@ function makeFixture() {
     reason: `${item} passed`,
   }));
   const scopeMetadata = {
+    candidateSha,
+    candidateTree,
+    packetManifestSha256,
+    promptSha256: promptSha256.scope,
+    reviewRunId,
+    reviewWaveId,
+    model_id: REQUIRED_SCOPE_MODEL,
     requested_model: REQUIRED_SCOPE_MODEL,
     requested_effort: null,
     observed_model: REQUIRED_SCOPE_MODEL,
     finish_reason: "stop",
     status: "responded",
-    started_at: "2026-07-15T00:00:00.000Z",
+    started_at: "2026-07-15T00:00:00.600Z",
     first_event_at: "2026-07-15T00:00:01.000Z",
     completed_at: "2026-07-15T00:00:02.000Z",
     findings: scopeRows.map((row) => ({ ...row, model: REQUIRED_SCOPE_MODEL })),
@@ -151,7 +218,32 @@ function makeFixture() {
   writeJson(join(triad, "scope.metadata.json"), scopeMetadata);
   writeFileSync(join(triad, "scope.raw.txt"), JSON.stringify(scopeRows));
   writeJson(join(triad, "scope.parsed-json-blocks.json"), scopeRows);
+  triadProgress.push(
+    {
+      ts: "2026-07-15T00:00:00.600Z",
+      type: "reviewer.started",
+      model: REQUIRED_SCOPE_MODEL,
+      role: "scope",
+      reviewRunId,
+      reviewWaveId,
+    },
+    {
+      ts: "2026-07-15T00:00:02.000Z",
+      type: "reviewer.completed",
+      model: REQUIRED_SCOPE_MODEL,
+      role: "scope",
+      reviewRunId,
+      reviewWaveId,
+    },
+  );
+  writeFileSync(
+    join(triad, "reviewer-progress.jsonl"),
+    `${triadProgress.map((row) => JSON.stringify(row)).join("\n")}\n`,
+  );
   writeJson(join(triad, "summary.json"), {
+    reviewRunId,
+    reviewWaveId,
+    promptSha256,
     candidate_sha: candidateSha,
     candidate_tree: candidateTree,
     packet_manifest_sha256: packetManifestSha256,
@@ -179,6 +271,17 @@ function makeFixture() {
     expected: { candidateSha, candidateTree },
     authority,
     missingArtifact: join(tier1, "01-codex", "transcript.md"),
+    nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
+    tier1Progress: join(tier1, "reviewer-progress.jsonl"),
+    triadPrompt: join(triad, "triad-prompt.md"),
+    triadMetadata: join(
+      triad,
+      `triad-${REQUIRED_TRIAD_MODELS[0]!.replace(/[^a-z0-9.-]+/gi, "_")}.metadata.json`,
+    ),
+    triadSummary: join(triad, "summary.json"),
+    tier1Metadata: REQUIRED_RELEASE_REVIEW_SLOTS.slice(0, 2).map((required, index) =>
+      join(tier1, `${String(index + 1).padStart(2, "0")}-${required.route}`, "metadata.json"),
+    ),
     input: {
       packetDir: packet,
       packetManifestSha256,
@@ -218,5 +321,121 @@ describe("signed release review attestation sealer", () => {
     const fixture = makeFixture();
     writeFileSync(join(fixture.input.packetDir, "EVIDENCE.txt"), "changed\n");
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/evidence digest mismatch/);
+  });
+
+  it.each([
+    ["empty array", []],
+    ["object array", [{}]],
+    [
+      "missing verdict",
+      [
+        {
+          completion: {
+            checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+            findingCount: 0,
+          },
+          findings: [],
+        },
+      ],
+    ],
+    ["missing checklist", [{ completion: { verdict: "PASS", findingCount: 0 }, findings: [] }]],
+    [
+      "incomplete checklist",
+      [
+        {
+          completion: {
+            verdict: "PASS",
+            checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.slice(0, -1).map((item) => ({
+              item,
+              completed: true,
+            })),
+            findingCount: 0,
+          },
+          findings: [],
+        },
+      ],
+    ],
+  ])("refuses native release output with %s", (_name, parsed) => {
+    const fixture = makeFixture();
+    writeJson(fixture.nativeParsed, parsed);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/completion/);
+  });
+
+  it("refuses a native completion whose finding count does not match findings", () => {
+    const fixture = makeFixture();
+    writeJson(fixture.nativeParsed, [
+      {
+        completion: {
+          verdict: "PASS",
+          checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+          findingCount: 1,
+        },
+        findings: [],
+      },
+    ]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/finding count/);
+  });
+
+  it("refuses a malformed finding hidden inside an otherwise complete envelope", () => {
+    const fixture = makeFixture();
+    writeJson(fixture.nativeParsed, [
+      {
+        completion: {
+          verdict: "PASS",
+          checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+          findingCount: 1,
+        },
+        findings: [{}],
+      },
+    ]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/malformed finding/);
+  });
+
+  it("refuses sequential reviewer starts split across directories", () => {
+    const fixture = makeFixture();
+    const rows = readFileSync(fixture.tier1Progress, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    for (const [index, metadataPath] of fixture.tier1Metadata.entries()) {
+      const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+      metadata.start_time = `2026-07-15T00:00:20.${String(index * 100).padStart(3, "0")}Z`;
+      metadata.completion_time = "2026-07-15T00:00:22.000Z";
+      writeJson(metadataPath, metadata);
+    }
+    for (const row of rows) {
+      if (row.type === "reviewer.started") {
+        const index = row.harness_id === "codex" ? 0 : 1;
+        row.at = `2026-07-15T00:00:20.${String(index * 100).padStart(3, "0")}Z`;
+      }
+    }
+    writeFileSync(fixture.tier1Progress, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/did not start in one wave/);
+  });
+
+  it("refuses triad metadata and summary stamped for a different candidate", () => {
+    const fixture = makeFixture();
+    const metadata = JSON.parse(readFileSync(fixture.triadMetadata, "utf8"));
+    metadata.candidateSha = "c".repeat(40);
+    writeJson(fixture.triadMetadata, metadata);
+    const summary = JSON.parse(readFileSync(fixture.triadSummary, "utf8"));
+    summary.triad.actors[0].candidateSha = "c".repeat(40);
+    writeJson(fixture.triadSummary, summary);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/triad-1 SHA mismatch/);
+  });
+
+  it("refuses a prompt changed after per-slot metadata was stamped", () => {
+    const fixture = makeFixture();
+    writeFileSync(fixture.triadPrompt, "different prompt\n");
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/prompt digests mismatch/);
+  });
+
+  it("refuses native and triad artifacts stamped with different wave ids", () => {
+    const fixture = makeFixture();
+    const different = "22222222-2222-4222-8222-222222222222";
+    const summary = JSON.parse(readFileSync(fixture.triadSummary, "utf8"));
+    summary.reviewWaveId = different;
+    writeJson(fixture.triadSummary, summary);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/summary wave mismatch/);
   });
 });

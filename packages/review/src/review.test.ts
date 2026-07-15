@@ -96,6 +96,103 @@ describe("reviewer progress event schema contract", () => {
   });
 });
 
+describe("sealed release native reviewer contract", () => {
+  it("prompts for an explicit completion envelope while preserving generic findings", async () => {
+    const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-release-review-");
+    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-release-review-artifacts-"));
+    const diff = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    writeFileSync(join(evidenceDir, "DIFF.patch"), diff);
+    writeFileSync(join(evidenceDir, "DIFF_SUMMARY.md"), "one release file changed\n");
+    writeFileSync(join(evidenceDir, "FREEZE.json"), "{}\n");
+    writeFileSync(join(evidenceDir, "MANIFEST.sha256"), "sealed fixture\n");
+    let prompt = "";
+    const adapter: HarnessAdapter = {
+      id: "release-reviewer",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "release-reviewer",
+          display_name: "release reviewer",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { review: true, structured_output: true },
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "release-reviewer",
+          status: "ok",
+          enabled_intents: ["review"],
+        });
+      },
+      async *run(spec) {
+        prompt = spec.prompt;
+        const ts = new Date().toISOString();
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "release-model",
+          text: JSON.stringify({
+            completion: {
+              verdict: "PASS",
+              checklist: [
+                "sealed_evidence",
+                "intent_and_scope",
+                "runtime_and_security",
+                "tests_and_release",
+              ].map((item) => ({ item, completed: true })),
+              findingCount: 1,
+            },
+            findings: [
+              { severity: "WARN", category: "test_gap", claim: "release wrapper finding" },
+            ],
+          }),
+        };
+      },
+    };
+    try {
+      const result = await reviewCandidate({
+        candidateLabel: "Release candidate",
+        diff,
+        evidenceDir,
+        evidenceReadOnly: true,
+        frozenIdentity: {
+          candidateSha: "a".repeat(40),
+          candidateTree: "b".repeat(40),
+          packetManifestSha256: "c".repeat(64),
+        },
+        env: { CLAUDEXOR_REVIEW_WAVE_ID: "11111111-1111-4111-8111-111111111111" },
+        artifactsDir,
+        cwd,
+        reviewers: [
+          {
+            adapter,
+            providerFamily: "openai",
+            requestedModel: "release-model",
+            requestedEffort: "xhigh",
+          },
+        ],
+      });
+      expect(prompt).toContain("exact release-review envelope");
+      expect(prompt).toContain(
+        "sealed_evidence, intent_and_scope, runtime_and_security, tests_and_release",
+      );
+      expect(prompt).toContain("findingCount must exactly equal findings.length");
+      expect(result.findings.map((finding) => finding.claim)).toContain("release wrapper finding");
+      expect(
+        JSON.parse(readFileSync(join(artifactsDir, "01-release-reviewer", "metadata.json"), "utf8"))
+          .review_wave_id,
+      ).toBe("11111111-1111-4111-8111-111111111111");
+      expect(readFileSync(join(artifactsDir, "reviewer-progress.jsonl"), "utf8")).toContain(
+        '"review_wave_id":"11111111-1111-4111-8111-111111111111"',
+      );
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(artifactsDir, { recursive: true, force: true });
+    }
+  });
+});
+
 function sameObservedModelReviewer(
   id: string,
   family: ProviderFamily,
