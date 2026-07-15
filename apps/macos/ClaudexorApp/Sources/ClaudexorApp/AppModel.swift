@@ -410,22 +410,6 @@ final class AppModel {
         }
     }
 
-    static func acceptsImages(manifest: JSONValue?) -> Bool {
-        guard case .array(let inputs) = manifest?["capability_profile"]?["attachment_inputs"] else {
-            return false
-        }
-        return inputs.contains { input in
-            guard input["kind"]?.stringValue == "image",
-                  let maxBytes = input["max_bytes"]?.doubleValue, maxBytes > 0, maxBytes.isFinite,
-                  let maxCount = input["max_count"]?.doubleValue, maxCount > 0, maxCount.isFinite,
-                  input["transport"]?.stringValue != nil,
-                  case .array(let mimeTypes) = input["mime_types"] else {
-                return false
-            }
-            return mimeTypes.contains { $0.stringValue?.isEmpty == false }
-        }
-    }
-
     @discardableResult
     func refreshAuthReadinessAfterSetupLifecycle(for family: HarnessFamily, job: SetupJob?) async -> Bool {
         guard let request = family.authReadinessRequest(after: job) else { return false }
@@ -1259,15 +1243,7 @@ final class AppModel {
         let repairMode = mode == .agent
         let result: RunStartResult
         do {
-            var attachmentRefs: [ResourceAttachmentRef] = []
-            for attachment in attachments {
-                attachmentRefs.append(try await client.uploadResource(
-                    kind: attachment.kind,
-                    mime: attachment.mime,
-                    name: attachment.name,
-                    data: attachment.data
-                ))
-            }
+            let attachmentRefs = try await uploadAttachments(attachments, client: client)
             result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
                 prompt: prompt,
                 mode: mode.apiValue,

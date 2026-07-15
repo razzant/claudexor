@@ -6,16 +6,6 @@ import SwiftUI
 /// (live) or `DemoData` (showcase fallback). The canonical shapes live in
 /// `packages/schema`; these are the minimal projections the views display.
 
-// MARK: - Composer attachments
-
-struct PendingAttachment: Identifiable, Equatable, Sendable {
-    let id = UUID()
-    let kind: String
-    let mime: String
-    let name: String
-    let data: Data
-}
-
 // MARK: - Connection
 
 enum Health: Equatable {
