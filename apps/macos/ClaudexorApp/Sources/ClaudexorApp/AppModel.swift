@@ -184,9 +184,7 @@ final class AppModel {
 
     private(set) var client: GatewayClient?
     private var streamTasks: [String: Task<Void, Never>] = [:]
-    /// Durable global journal subscription (list liveness).
     private var globalStreamTask: Task<Void, Never>?
-    /// Opaque global-partition cursor used only with `/v2/global/events`.
     private var globalEventCursor: String?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     private var lastEventIds: [String: Int] = [:]
@@ -2149,10 +2147,6 @@ final class AppModel {
                         guard !runId.isEmpty else { continue }
                         let type = event.payload["type"]?.stringValue ?? ""
                         let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
-                        // Live thread updates: events carry thread_id, so an event for
-                        // the OPEN thread refreshes its conversation. On run.created we
-                        // also start streaming the just-started run — this is how a
-                        // QUEUED (202) turn (which returned no runId) goes live.
                         if let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty {
                             if threadId == self.selectedThreadId, (type == "run.created" || isTerminalEvent) {
                                 await self.openThread(threadId)
@@ -2161,7 +2155,6 @@ final class AppModel {
                             if isTerminalEvent { await self.refreshThreads() }
                         }
                         if !self.liveTasks.contains(where: { $0.id == runId }) {
-                            // A run this app has never seen (e.g. CLI-started).
                             await self.refreshRuns()
                             continue
                         }
@@ -2170,8 +2163,7 @@ final class AppModel {
                         }
                     }
                 } catch let GatewayError.http(status, _) where status == 400 || status == 409 || status == 410 {
-                    // A stale/foreign opaque cursor cannot be guessed. Resnapshot
-                    // the global scope, then restart from a fresh partition cursor.
+                    // Stale opaque cursor: resnapshot, then restart the partition stream.
                     self.globalEventCursor = nil
                     await self.refreshRuns()
                 } catch is DecodingError {

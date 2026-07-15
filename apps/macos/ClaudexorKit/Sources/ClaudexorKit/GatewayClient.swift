@@ -35,7 +35,7 @@ public final class GatewayClient: Sendable {
 
     static let encoder = JSONEncoder(), decoder = JSONDecoder()
 
-    private static func yieldChecked<Element: Sendable>(
+    static func yieldChecked<Element: Sendable>(
         _ element: Element,
         to continuation: AsyncThrowingStream<Element, Error>.Continuation,
         context: String
@@ -532,38 +532,6 @@ public final class GatewayClient: Sendable {
         sseStream(path: "runs/\(runId)/events", lastEventId: lastEventId)
     }
 
-    /// Durable global journal stream. Project and run streams remain scoped;
-    /// callers resnapshot the corresponding scope after a stale cursor.
-    public func globalEvents(lastEventId: String? = nil) -> AsyncThrowingStream<JournalEvent, Error> {
-        let frames = sseFrames(path: "v2/global/events", lastEventId: lastEventId)
-        return AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
-            let task = Task {
-                do {
-                    for try await frame in frames {
-                        if frame.event == "end" {
-                            continuation.finish()
-                            return
-                        }
-                        if frame.event == "error" { throw GatewayError.transport(frame.data) }
-                        guard let data = frame.data.data(using: .utf8) else {
-                            throw GatewayError.decoding("global SSE payload is not UTF-8")
-                        }
-                        let event = try Self.decoder.decode(JournalEvent.self, from: data)
-                        guard event.schemaVersion == 1, event.partition == "global",
-                              frame.id == event.cursor, frame.event == event.type else {
-                            throw GatewayError.decoding("global SSE frame does not match its durable event")
-                        }
-                        guard try Self.yieldChecked(event, to: continuation, context: "global SSE") else { return }
-                    }
-                    throw GatewayError.transport("global SSE ended without a terminal end event")
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-    }
-
     /// Full-snapshot setup lifecycle stream. Unknown names, malformed payloads,
     /// and buffer loss are protocol failures that force a scoped resnapshot.
     public func setupJobEvents(jobId: String, lastEventId: String) -> AsyncThrowingStream<SetupJobEvent, Error> {
@@ -634,7 +602,7 @@ public final class GatewayClient: Sendable {
     /// Raw byte-level frame stream shared by run and setup consumers. Keeping
     /// this below the DTO wrappers prevents the `AsyncBytes.lines` empty-line
     /// regression from returning through a second SSE implementation.
-    private func sseFrames(path: String, lastEventId: String?) -> AsyncThrowingStream<SSEFrame, Error> {
+    func sseFrames(path: String, lastEventId: String?) -> AsyncThrowingStream<SSEFrame, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingOldest(256)) { continuation in
             let task = Task {
                 do {
