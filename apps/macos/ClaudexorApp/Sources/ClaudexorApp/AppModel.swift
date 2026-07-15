@@ -186,6 +186,8 @@ final class AppModel {
     private var streamTasks: [String: Task<Void, Never>] = [:]
     /// Durable global journal subscription (list liveness).
     private var globalStreamTask: Task<Void, Never>?
+    /// Opaque global-partition cursor used only with `/v2/global/events`.
+    private var globalEventCursor: String?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     private var lastEventIds: [String: Int] = [:]
     /// Reentrancy depth of in-flight detail loads per run (see loadRunDetail).
@@ -2098,6 +2100,7 @@ final class AppModel {
     private func cancelAllStreams() {
         globalStreamTask?.cancel()
         globalStreamTask = nil
+        globalEventCursor = nil
         for task in streamTasks.values { task.cancel() }
         streamTasks.removeAll()
         lastEventIds.removeAll()
@@ -2137,26 +2140,20 @@ final class AppModel {
     private func startGlobalStream() {
         globalStreamTask?.cancel()
         globalStreamTask = Task { [weak self] in
-            var firstAttach = true
             while !Task.isCancelled {
                 guard let self, let client = self.client else { break }
                 do {
-                    // The global stream is LIVE-ONLY (documented contract): runs
-                    // started and terminal flips that happened while this stream
-                    // was down are invisible to it, so every (re)attach repairs
-                    // the gap with a list snapshot first.
-                    if !firstAttach { await self.refreshRuns() }
-                    firstAttach = false
-                    for try await env in client.globalEvents() {
-                        let runId = env.event["run_id"]?.stringValue ?? ""
+                    for try await event in client.globalEvents(lastEventId: self.globalEventCursor) {
+                        self.globalEventCursor = event.cursor
+                        let runId = event.payload["run_id"]?.stringValue ?? ""
                         guard !runId.isEmpty else { continue }
-                        let type = env.event["type"]?.stringValue ?? ""
+                        let type = event.payload["type"]?.stringValue ?? ""
                         let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
                         // Live thread updates: events carry thread_id, so an event for
                         // the OPEN thread refreshes its conversation. On run.created we
                         // also start streaming the just-started run — this is how a
                         // QUEUED (202) turn (which returned no runId) goes live.
-                        if let threadId = env.event["thread_id"]?.stringValue, !threadId.isEmpty {
+                        if let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty {
                             if threadId == self.selectedThreadId, (type == "run.created" || isTerminalEvent) {
                                 await self.openThread(threadId)
                                 if type == "run.created", self.streamTasks[runId] == nil { self.stream(runId: runId) }
@@ -2172,6 +2169,17 @@ final class AppModel {
                             await self.loadRunDetail(runId)
                         }
                     }
+                } catch let GatewayError.http(status, _) where status == 400 || status == 409 || status == 410 {
+                    // A stale/foreign opaque cursor cannot be guessed. Resnapshot
+                    // the global scope, then restart from a fresh partition cursor.
+                    self.globalEventCursor = nil
+                    await self.refreshRuns()
+                } catch is DecodingError {
+                    self.globalEventCursor = nil
+                    await self.refreshRuns()
+                } catch GatewayError.decoding {
+                    self.globalEventCursor = nil
+                    await self.refreshRuns()
                 } catch {
                     if Task.isCancelled { break }
                 }

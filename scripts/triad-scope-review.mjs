@@ -651,14 +651,56 @@ async function main() {
     model: SCOPE_MODEL,
     role: "scope",
   });
+  const runSlot = (model, prompt, role) =>
+    callModel(model, prompt).then(
+      (result) => {
+        if (result.firstEventAt) {
+          progress({
+            ts: result.firstEventAt,
+            type: "reviewer.first_event",
+            model,
+            observed_model: result.observedModel ?? null,
+            source: result.source ?? null,
+            transport: result.transport ?? null,
+            ...(role ? { role } : {}),
+          });
+        }
+        progress({
+          ts: result.completedAt ?? new Date().toISOString(),
+          type:
+            result.status === "responded"
+              ? "reviewer.completed"
+              : result.timedOut || result.status === "timed_out"
+                ? "reviewer.timed_out"
+                : "reviewer.failed",
+          model,
+          observed_model: result.observedModel ?? null,
+          source: result.source ?? null,
+          transport: result.transport ?? null,
+          status: result.status,
+          duration_ms: result.ms,
+          ...(role ? { role } : {}),
+        });
+        return result;
+      },
+      (error) => {
+        progress({
+          ts: new Date().toISOString(),
+          type: "reviewer.failed",
+          model,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+          ...(role ? { role } : {}),
+        });
+        throw error;
+      },
+    );
   const slotResults = await Promise.all([
-    ...TRIAD_MODELS.map((model) => callModel(model, triadPrompt)),
-    callModel(SCOPE_MODEL, scopePrompt),
+    ...TRIAD_MODELS.map((model) => runSlot(model, triadPrompt)),
+    runSlot(SCOPE_MODEL, scopePrompt, "scope"),
   ]);
   const triadResults = slotResults.slice(0, TRIAD_MODELS.length);
   const scopeResult = slotResults[TRIAD_MODELS.length];
-  const terminalProgress = [];
-
   const actorRecords = [];
   const findings = [];
   for (const [idx, result] of triadResults.entries()) {
@@ -730,31 +772,6 @@ async function main() {
       join(outDir, `triad-${slug}.metadata.json`),
       JSON.stringify(record, null, 2) + "\n",
     );
-    if (record.first_event_at) {
-      terminalProgress.push({
-        ts: record.first_event_at,
-        type: "reviewer.first_event",
-        model: result.model,
-        observed_model: record.observed_model,
-        source: record.source,
-        transport: record.transport,
-      });
-    }
-    terminalProgress.push({
-      ts: record.completed_at ?? new Date().toISOString(),
-      type:
-        status === "responded"
-          ? "reviewer.completed"
-          : result.timedOut || status === "timed_out"
-            ? "reviewer.timed_out"
-            : "reviewer.failed",
-      model: result.model,
-      observed_model: record.observed_model,
-      source: record.source,
-      transport: record.transport,
-      status,
-      duration_ms: result.ms,
-    });
     findings.push(...parsed);
   }
   const responsive = actorRecords.filter((r) => r.status === "responded");
@@ -765,17 +782,6 @@ async function main() {
 
   let scope = null;
   {
-    if (scopeResult.firstEventAt) {
-      terminalProgress.push({
-        ts: scopeResult.firstEventAt,
-        type: "reviewer.first_event",
-        model: SCOPE_MODEL,
-        observed_model: scopeResult.observedModel ?? null,
-        source: scopeResult.source ?? null,
-        transport: scopeResult.transport ?? null,
-        role: "scope",
-      });
-    }
     writeFileSync(join(outDir, "scope.raw.txt"), redactSecrets(scopeResult.raw ?? ""));
     let scopeStatus = scopeResult.status;
     let scopeFindings = [];
@@ -856,27 +862,7 @@ async function main() {
     scopeMeta.findings = scopeFindings;
     scopeMeta.missing_items = scopeMissing;
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
-    terminalProgress.push({
-      ts: scopeResult.completedAt ?? new Date().toISOString(),
-      type:
-        scopeStatus === "responded"
-          ? "reviewer.completed"
-          : scopeResult.timedOut || scopeStatus === "timed_out"
-            ? "reviewer.timed_out"
-            : "reviewer.failed",
-      model: SCOPE_MODEL,
-      observed_model: scopeResult.observedModel ?? null,
-      source: scopeResult.source ?? null,
-      transport: scopeResult.transport ?? null,
-      role: "scope",
-      status: scopeStatus,
-      duration_ms: scopeResult.ms,
-    });
   }
-
-  terminalProgress
-    .sort((a, b) => String(a.ts).localeCompare(String(b.ts)) || a.type.localeCompare(b.type))
-    .forEach(progress);
 
   // "responded" only: a partial/parse-failed scope pass exits this run FAILED
   // (missing items are release-blocking), and a failed first run must never

@@ -1501,6 +1501,37 @@ import Testing
         #expect(String(describing: overflow.1).contains("buffer overflow"))
     }
 
+    @Test func gatewayGlobalSSEUsesAndValidatesOpaqueJournalCursor() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let client = GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t", session: session)
+        defer { RequestStubURLProtocol.handler = nil }
+
+        RequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/global/events",
+                  request.value(forHTTPHeaderField: "Last-Event-ID") == "epoch-a:41" else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            let body = "id: epoch-a:42\nevent: run.event\ndata: {\"schemaVersion\":1,\"cursor\":\"epoch-a:42\",\"partition\":\"global\",\"type\":\"run.event\",\"observedAt\":\"2026-07-15T00:00:00.000Z\",\"payload\":{\"run_id\":\"run-1\",\"type\":\"run.completed\"}}\n\nevent: end\ndata: {}\n\n"
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream; charset=utf-8"]
+            )!
+            return (response, Data(body.utf8))
+        }
+
+        var events: [JournalEvent] = []
+        do {
+            for try await event in client.globalEvents(lastEventId: "epoch-a:41") { events.append(event) }
+        } catch {
+            Issue.record("unexpected global SSE error: \(error)")
+        }
+        #expect(events.count == 1)
+        #expect(events.first?.cursor == "epoch-a:42")
+        #expect(events.first?.payload["run_id"]?.stringValue == "run-1")
+    }
+
     @Test func gatewayEncodesFreshHarnessAndSetupRecoveryQueries() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestStubURLProtocol.self]

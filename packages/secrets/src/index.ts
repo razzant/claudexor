@@ -1,4 +1,18 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { userConfigDir } from "@claudexor/util";
@@ -51,6 +65,8 @@ export class SecretStore {
     const path = fileStorePath();
     if (!existsSync(path)) return {};
     try {
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new Error("expected a regular file");
       const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         throw new Error("expected an object");
@@ -69,13 +85,37 @@ export class SecretStore {
   }
 
   private writeFileStore(store: Record<string, string>): void {
-    mkdirSync(configDir(), { recursive: true });
+    const dir = configDir();
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o700);
     const path = fileStorePath();
-    writeFileSync(path, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
+    const temporaryPath = join(dir, `.secrets-${randomUUID()}.tmp`);
+    let fd: number | undefined;
     try {
+      fd = openSync(
+        temporaryPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+        0o600,
+      );
+      writeFileSync(fd, JSON.stringify(store, null, 2) + "\n", "utf8");
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      renameSync(temporaryPath, path);
       chmodSync(path, 0o600);
-    } catch {
-      /* best-effort on platforms without POSIX modes */
+      const dirFd = openSync(dir, constants.O_RDONLY);
+      try {
+        fsyncSync(dirFd);
+      } finally {
+        closeSync(dirFd);
+      }
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // The atomic rename removes the temporary pathname on success.
+      }
     }
   }
 
