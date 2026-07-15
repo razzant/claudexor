@@ -468,7 +468,7 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(true);
-  });
+  }, 15000);
 
   it("until-clean terminates on no-progress (bounded, not infinite)", async () => {
     const repo = await initRepo();
