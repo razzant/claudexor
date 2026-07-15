@@ -60,7 +60,7 @@ struct TaskDetailView: View {
         if task.status == .blocked {
             return task.findings.isEmpty ? .diagnostics : .review
         }
-        if task.status == .failed || task.status == .unknown || task.status == .notConverged || task.status == .stuckNoProgress || task.status == .exhausted {
+        if task.status == .failed || task.status == .unknown || task.status == .costUnverifiable || task.status == .exhaustedOvershoot || task.status == .notConverged || task.status == .stuckNoProgress || task.status == .exhausted {
             return task.answerText == nil ? .diagnostics : .answer
         }
         return .answer
@@ -438,7 +438,7 @@ struct TaskDetailView: View {
                             mode: task.mode,
                             harnesses: task.harnesses,
                             primary: task.harnesses.first,
-                            portfolio: model.defaultPortfolio,
+                            routingGoal: model.defaultRoutingGoal,
                             model: nil,
                             n: task.n,
                             capUsd: task.capKnown ? task.capUsd : model.defaultMaxUsdPerRun,

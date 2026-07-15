@@ -1,12 +1,20 @@
-import type { BudgetLease, BudgetObservation, Intent } from "@claudexor/schema";
-import { BudgetLease as BudgetLeaseSchema } from "@claudexor/schema";
+import type {
+  BillingKnowledge,
+  BudgetLease,
+  BudgetObservation,
+  CostEvidence,
+  CostKnowledge,
+  Intent,
+  PaidBudget,
+} from "@claudexor/schema";
+import {
+  BudgetLease as BudgetLeaseSchema,
+  CostEvidence as CostEvidenceSchema,
+} from "@claudexor/schema";
 import { newId, nowIso, sha256 } from "@claudexor/util";
 
 export type CircuitTier = "ok" | "soft" | "downgrade" | "hard";
-
-export interface BudgetLimits {
-  maxUsd?: number | null;
-}
+export type BudgetTerminal = "exhausted" | "exhausted_overshoot" | "cost_unverifiable" | null;
 
 export interface CircuitThresholds {
   soft: number;
@@ -20,14 +28,16 @@ export interface ReserveInput {
   intent: Intent;
   harnessId: string;
   modelHint?: string | null;
-  maxUsd?: number | null;
   reason?: string[];
-  /**
-   * Estimated USD the unit may spend, held against the cap until settled. Holds
-   * make concurrent in-flight units visible to `tier()` so a parallel race wave
-   * cannot blow past `max_usd` between settlements.
-   */
-  estimateUsd?: number;
+  cost?: CostEvidence;
+}
+
+export interface BudgetSettlement {
+  knowledge: CostKnowledge;
+  source: string;
+  provenance: string[];
+  cashUsd?: number;
+  valuationUsd?: number;
 }
 
 export interface ReserveResult {
@@ -35,103 +45,99 @@ export interface ReserveResult {
   tier: CircuitTier;
   lease?: BudgetLease;
   reason?: string;
-  /** Typed denial cause (no string matching on `reason`): `hard_cap` = the
-   * breaker already tripped; `estimate_headroom` = the DD-27 wave guard —
-   * this slot's estimate does not fit, but already-granted work continues. */
-  denied?: "hard_cap" | "estimate_headroom";
+  denied?: "hard_cap" | "estimate_headroom" | "finite_zero" | "unknown_paid_in_flight";
 }
+
+const UNKNOWN_COST: CostEvidence = {
+  knowledge: "unknown",
+  billing: "unknown",
+  source: "route_preflight",
+  provenance: ["route:billing-unknown"],
+  estimatedUsd: null,
+};
 
 /** Stable fingerprint of a prompt for loop detection. */
 export function promptFingerprint(prompt: string): string {
   return sha256(prompt.trim().replace(/\s+/g, " ").toLowerCase());
 }
 
-/**
- * Dollar-based budget ledger with pre-call reservation, prompt-fingerprint loop
- * detection, and a 3-tier circuit breaker (soft-warn -> downgrade -> hard-kill).
- * Sub-ledgers (children) roll their spend up to the parent.
- */
+/** One root incremental-cash ledger. Nested work receives this same instance. */
 export class BudgetLedger {
   private readonly leases = new Map<string, BudgetLease>();
-  /** Outstanding USD holds for reserved-but-unsettled leases (amount-bearing). */
   private readonly holds = new Map<string, number>();
+  private readonly unknownPaidInFlight = new Set<string>();
   private readonly observations: BudgetObservation[] = [];
   private readonly promptCounts = new Map<string, number>();
   private spendUsd = 0;
+  private valuationUsd = 0;
+  private overshot = false;
+  private unverifiable = false;
 
   constructor(
-    private readonly limits: BudgetLimits = {},
-    private readonly thresholds: CircuitThresholds = { soft: 0.75, downgrade: 0.9, hard: 1.0 },
-    private readonly parent?: BudgetLedger,
+    private readonly budget: PaidBudget = { kind: "unlimited" },
+    private readonly thresholds: CircuitThresholds = { soft: 0.75, downgrade: 0.9, hard: 1 },
   ) {}
-
-  /** Create a child sub-ledger whose spend rolls up to this one. */
-  child(limits: BudgetLimits = {}): BudgetLedger {
-    return new BudgetLedger(limits, this.thresholds, this);
-  }
 
   private outstandingHolds(): number {
     let sum = 0;
-    for (const v of this.holds.values()) sum += v;
+    for (const value of this.holds.values()) sum += value;
     return sum;
   }
 
-  tier(): CircuitTier {
-    const cap = this.limits.maxUsd ?? null;
-    const localTier = ((): CircuitTier => {
-      if (cap === null || cap <= 0) return "ok";
-      // Settled spend + outstanding in-flight holds: a parallel wave of
-      // streaming candidates counts against the cap BEFORE settlement.
-      const ratio = (this.spendUsd + this.outstandingHolds()) / cap;
-      if (ratio >= this.thresholds.hard) return "hard";
-      if (ratio >= this.thresholds.downgrade) return "downgrade";
-      if (ratio >= this.thresholds.soft) return "soft";
-      return "ok";
-    })();
-    const parentTier = this.parent?.tier() ?? "ok";
-    return mostSevere(localTier, parentTier);
+  private cap(): number | null {
+    return this.budget.kind === "finite" ? this.budget.maxUsd : null;
   }
 
-  /** USD still available under the nearest cap in the ledger chain (null = uncapped). */
-  private remainingHeadroomUsd(): number | null {
-    const cap = this.limits.maxUsd ?? null;
-    const local =
-      cap === null || cap <= 0
-        ? null
-        : cap * this.thresholds.hard - (this.spendUsd + this.outstandingHolds());
-    const parent = this.parent?.remainingHeadroomUsd() ?? null;
-    if (local === null) return parent;
-    if (parent === null) return local;
-    return Math.min(local, parent);
+  tier(): CircuitTier {
+    const cap = this.cap();
+    if (cap === null) return "ok";
+    if (this.overshot) return "hard";
+    if (cap === 0) return this.spendUsd > 0 || this.outstandingHolds() > 0 ? "hard" : "ok";
+    const ratio = (this.spendUsd + this.outstandingHolds()) / cap;
+    if (ratio >= this.thresholds.hard) return "hard";
+    if (ratio >= this.thresholds.downgrade) return "downgrade";
+    if (ratio >= this.thresholds.soft) return "soft";
+    return "ok";
+  }
+
+  remainingUsd(): number | null {
+    const cap = this.cap();
+    return cap === null ? null : Math.max(0, cap - this.spendUsd - this.outstandingHolds());
   }
 
   reserve(input: ReserveInput): ReserveResult {
-    const tier = this.tier();
-    if (tier === "hard") {
+    const cost = CostEvidenceSchema.parse(input.cost ?? UNKNOWN_COST);
+    const zeroCash = cost.billing === "proven_zero" || cost.billing === "subscription_entitlement";
+    const cap = this.cap();
+    if (cap === 0 && !zeroCash) {
       return {
         granted: false,
-        tier,
-        reason: "budget exhausted (hard cap reached)",
-        denied: "hard_cap",
+        tier: "hard",
+        denied: "finite_zero",
+        reason: "finite(0) admits only proven-zero or subscription-entitlement work",
       };
     }
-    // DD-27 wave guard: an estimate-bearing reservation must FIT UNDER the
-    // remaining headroom, or it is DENIED without recording the hold — a
-    // denied slot must never poison the tier for candidates that were already
-    // granted. `>=` on purpose: an estimate that exactly consumes headroom
-    // would trip the hard tier the instant its hold lands, cancelling every
-    // in-flight candidate with $0 real spend (the equality case is common —
-    // caps and the floor are both round nickels).
-    if (typeof input.estimateUsd === "number" && input.estimateUsd > 0) {
-      const headroom = this.remainingHeadroomUsd();
-      if (headroom !== null && input.estimateUsd >= headroom) {
-        return {
-          granted: false,
-          tier,
-          reason: `insufficient headroom for estimated cost (${input.estimateUsd.toFixed(2)} USD >= ${Math.max(headroom, 0).toFixed(2)} USD remaining)`,
-          denied: "estimate_headroom",
-        };
-      }
+    if (this.tier() === "hard" && !zeroCash) {
+      return { granted: false, tier: "hard", denied: "hard_cap", reason: "budget exhausted" };
+    }
+    const unknownPaid = !zeroCash && cost.knowledge === "unknown";
+    if (cap !== null && cap > 0 && unknownPaid && this.unknownPaidInFlight.size > 0) {
+      return {
+        granted: false,
+        tier: this.tier(),
+        denied: "unknown_paid_in_flight",
+        reason: "one unknown-cost paid unit is already in flight",
+      };
+    }
+    const estimate = zeroCash ? 0 : (cost.estimatedUsd ?? 0);
+    const headroom = this.remainingUsd();
+    if (estimate > 0 && headroom !== null && estimate >= headroom) {
+      return {
+        granted: false,
+        tier: this.tier(),
+        denied: "estimate_headroom",
+        reason: `insufficient headroom for estimated cost (${estimate.toFixed(2)} USD >= ${headroom.toFixed(2)} USD remaining)`,
+      };
     }
     const lease = BudgetLeaseSchema.parse({
       lease_id: newId("lease"),
@@ -140,113 +146,115 @@ export class BudgetLedger {
       intent: input.intent,
       harness_id: input.harnessId,
       model_hint: input.modelHint ?? null,
-      max_usd: input.maxUsd ?? null,
+      cost,
       reason: input.reason ?? [],
       created_at: nowIso(),
       state: "reserved",
     });
     this.leases.set(lease.lease_id, lease);
-    if (typeof input.estimateUsd === "number" && input.estimateUsd > 0) {
-      this.setHold(lease.lease_id, input.estimateUsd);
-    }
-    return { granted: true, tier, lease };
+    if (estimate > 0) this.holds.set(lease.lease_id, estimate);
+    if (unknownPaid && cap !== null) this.unknownPaidInFlight.add(lease.lease_id);
+    return { granted: true, tier: this.tier(), lease };
   }
 
-  /**
-   * Raise a lease's hold to the cost streamed so far (never lowers it). Call from
-   * the usage-event stream so `tier()` reflects in-flight spend mid-attempt.
-   */
   updateHold(leaseId: string, streamedUsd: number): void {
-    if (!this.leases.has(leaseId)) return;
-    const current = this.holds.get(leaseId) ?? 0;
-    if (streamedUsd > current) this.setHold(leaseId, streamedUsd);
-  }
-
-  private setHold(leaseId: string, usd: number): void {
-    const prev = this.holds.get(leaseId) ?? 0;
-    this.holds.set(leaseId, usd);
-    this.parent?.adjustRollupHold(leaseId, usd - prev);
-  }
-
-  private adjustRollupHold(leaseId: string, deltaUsd: number): void {
-    const key = `child:${leaseId}`;
-    const prev = this.holds.get(key) ?? 0;
-    const next = Math.max(0, prev + deltaUsd);
-    if (next === 0) this.holds.delete(key);
-    else this.holds.set(key, next);
-    this.parent?.adjustRollupHold(leaseId, deltaUsd);
-  }
-
-  private clearHold(leaseId: string): void {
-    const held = this.holds.get(leaseId) ?? 0;
-    this.holds.delete(leaseId);
-    if (held > 0) this.parent?.adjustRollupHold(leaseId, -held);
-  }
-
-  settle(leaseId: string, actualUsd: number): void {
     const lease = this.leases.get(leaseId);
-    // Fail loudly: settling a lease this ledger never granted would attribute
-    // spend to nothing (a bookkeeping bug, not a runtime race).
+    if (!lease || lease.state !== "reserved") return;
+    if (lease.cost.billing === "proven_zero" || lease.cost.billing === "subscription_entitlement")
+      return;
+    const current = this.holds.get(leaseId) ?? 0;
+    if (streamedUsd > current) this.holds.set(leaseId, streamedUsd);
+  }
+
+  settle(leaseId: string, settlement: BudgetSettlement): void {
+    const lease = this.leases.get(leaseId);
     if (!lease) throw new Error(`cannot settle unknown lease: ${leaseId}`);
-    // Idempotent for the spend add: a duplicate settle (success path followed
-    // by a late error handler) must never double-count real spend. DECIDED
-    // TRADEOFF: this no-op can also mask a genuine double-settle bug — spend
-    // correctness wins because the duplicate-settle race is a real runtime
-    // path (terminal handler + error handler), while a masked bug still
-    // surfaces in the rollup totals a test would assert on.
     if (lease.state !== "reserved") return;
     lease.state = "settled";
-    this.clearHold(leaseId);
-    this.spendUsd += actualUsd;
-    this.parent?.addRollupSpend(actualUsd);
+    this.holds.delete(leaseId);
+    this.unknownPaidInFlight.delete(leaseId);
+    const zeroCash =
+      lease.cost.billing === "proven_zero" || lease.cost.billing === "subscription_entitlement";
+    const cashUsd = zeroCash ? 0 : Math.max(0, settlement.cashUsd ?? 0);
+    this.spendUsd += cashUsd;
+    this.valuationUsd += Math.max(
+      0,
+      settlement.valuationUsd ?? (zeroCash ? (settlement.cashUsd ?? 0) : 0),
+    );
+    if (this.budget.kind === "finite") {
+      if (!zeroCash && settlement.knowledge === "unknown") this.unverifiable = true;
+      if (this.spendUsd > this.budget.maxUsd) this.overshot = true;
+    }
   }
 
   cancel(leaseId: string): void {
     const lease = this.leases.get(leaseId);
-    if (lease) lease.state = "cancelled";
-    this.clearHold(leaseId);
-  }
-
-  private addRollupSpend(usd: number): void {
-    this.spendUsd += usd;
-    this.parent?.addRollupSpend(usd);
+    if (lease?.state === "reserved") lease.state = "cancelled";
+    this.holds.delete(leaseId);
+    this.unknownPaidInFlight.delete(leaseId);
   }
 
   spend(): number {
     return this.spendUsd;
   }
 
-  observe(o: BudgetObservation): void {
-    this.observations.push(o);
+  valuation(): number {
+    return this.valuationUsd;
+  }
+
+  terminal(): BudgetTerminal {
+    if (this.overshot) return "exhausted_overshoot";
+    if (this.unverifiable) return "cost_unverifiable";
+    return this.tier() === "hard" ? "exhausted" : null;
+  }
+
+  observe(observation: BudgetObservation): void {
+    this.observations.push(observation);
   }
 
   observationsFor(harnessId: string): BudgetObservation[] {
-    return this.observations.filter((o) => o.harness_id === harnessId);
+    return this.observations.filter((observation) => observation.harness_id === harnessId);
   }
 
-  /** True if the harness is in an active cooldown (from an observed rate-limit). */
   cooldownActive(harnessId: string, now: number = Date.now()): boolean {
-    return this.observationsFor(harnessId).some((o) => {
-      if (!o.cooldown_until) return false;
-      const t = Date.parse(o.cooldown_until);
-      return Number.isFinite(t) && t > now;
+    return this.observationsFor(harnessId).some((observation) => {
+      if (!observation.cooldown_until) return false;
+      const time = Date.parse(observation.cooldown_until);
+      return Number.isFinite(time) && time > now;
     });
   }
 
-  /** Observed remaining headroom (0..1) for a harness, or 1 if unknown. */
-  headroom(harnessId: string): number {
-    const used = this.observationsFor(harnessId)
-      .map((o) => o.used_percent)
-      .filter((v): v is number => typeof v === "number");
-    if (used.length === 0) return 1;
-    const maxUsed = Math.max(...used);
-    return Math.max(0, 1 - maxUsed / 100);
+  /** Binding pacing slack across applicable windows; null means honestly unknown. */
+  bindingPaceSlack(harnessId: string, now: number = Date.now()): number | null {
+    const latest = new Map<string, BudgetObservation>();
+    for (const observation of this.observationsFor(harnessId)) {
+      if (observation.kind !== "quota_constraint" || !observation.constraint_id) continue;
+      latest.set(observation.constraint_id, observation);
+    }
+    const slacks: number[] = [];
+    for (const observation of latest.values()) {
+      if (
+        typeof observation.used_ratio !== "number" ||
+        typeof observation.window_seconds !== "number" ||
+        !observation.resets_at
+      )
+        continue;
+      const resetMs = Date.parse(observation.resets_at);
+      if (!Number.isFinite(resetMs) || resetMs <= now) continue;
+      const remaining = Math.min(
+        1,
+        Math.max(0, (resetMs - now) / 1000 / observation.window_seconds),
+      );
+      const elapsedFraction = 1 - remaining;
+      slacks.push(elapsedFraction - observation.used_ratio);
+    }
+    return slacks.length > 0 ? Math.min(...slacks) : null;
   }
 
   recordPrompt(fingerprint: string): number {
-    const n = (this.promptCounts.get(fingerprint) ?? 0) + 1;
-    this.promptCounts.set(fingerprint, n);
-    return n;
+    const count = (this.promptCounts.get(fingerprint) ?? 0) + 1;
+    this.promptCounts.set(fingerprint, count);
+    return count;
   }
 
   isLoop(fingerprint: string, threshold = 3): boolean {
@@ -254,10 +262,69 @@ export class BudgetLedger {
   }
 }
 
-function severity(t: CircuitTier): number {
-  return { ok: 0, soft: 1, downgrade: 2, hard: 3 }[t];
+export function routeCostEvidence(input: {
+  billing?: BillingKnowledge;
+  knowledge?: CostKnowledge;
+  source: string;
+  provenance: string[];
+  estimatedUsd?: number | null;
+}): CostEvidence {
+  return CostEvidenceSchema.parse({
+    billing: input.billing ?? "unknown",
+    knowledge: input.knowledge ?? "unknown",
+    source: input.source,
+    provenance: input.provenance,
+    estimatedUsd: input.estimatedUsd ?? null,
+  });
 }
 
-function mostSevere(a: CircuitTier, b: CircuitTier): CircuitTier {
-  return severity(a) >= severity(b) ? a : b;
+export function attemptCostEvidence(
+  harnessId: string,
+  attemptId: string,
+  estimatedUsd?: number,
+): CostEvidence {
+  return routeCostEvidence({
+    source: "route-preflight",
+    provenance: [`harness:${harnessId}`, `attempt:${attemptId}`],
+    knowledge: estimatedUsd === undefined ? "unknown" : "estimated",
+    estimatedUsd: estimatedUsd ?? null,
+  });
+}
+
+export function usageCostSettlement(
+  cashUsd: number,
+  estimated: boolean,
+  source: string,
+  provenance: string[],
+): BudgetSettlement {
+  return cashUsd > 0
+    ? { knowledge: estimated ? "estimated" : "exact", source, provenance, cashUsd }
+    : { knowledge: "unknown", source: `${source}-missing`, provenance };
+}
+
+export function attemptUsageCostSettlement(
+  cashUsd: number,
+  estimated: boolean,
+  attemptId: string,
+  harnessId: string,
+): BudgetSettlement {
+  return usageCostSettlement(cashUsd, estimated, "harness-usage", [
+    `attempt:${attemptId}`,
+    `harness:${harnessId}`,
+  ]);
+}
+
+export function unknownCostSettlement(source: string, cashUsd?: number): BudgetSettlement {
+  return {
+    knowledge: "unknown",
+    source,
+    provenance: [`orchestrator:${source}`],
+    ...(cashUsd === undefined ? {} : { cashUsd }),
+  };
+}
+
+export function isBudgetTerminal(status: string | null): status is Exclude<BudgetTerminal, null> {
+  return (
+    status === "exhausted" || status === "exhausted_overshoot" || status === "cost_unverifiable"
+  );
 }

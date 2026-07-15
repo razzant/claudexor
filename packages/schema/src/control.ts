@@ -10,7 +10,8 @@ import {
   OutputReadyState,
   ProviderFamily,
 } from "./primitives.js";
-import { Portfolio } from "./budget.js";
+import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
+export { ControlQuotaResponse } from "./quota.js";
 import { AuthSourceReadiness } from "./auth.js";
 import {
   AdapterStatus,
@@ -79,7 +80,7 @@ export const ControlRunStartRequest = z
       .optional()
       .describe("Eligible harness pool for the run; omitted = engine auto-pools."),
     primaryHarness: NonBlankString.optional().describe("Primary harness the run should prefer."),
-    portfolio: Portfolio.optional(),
+    routingGoal: RoutingGoal.optional(),
     /** Scalar model convenience: expands to the RESOLVED PRIMARY harness only
      * (never the pool). With a multi-harness pool and no primary it is
      * rejected — use `models` instead (INV-103). */
@@ -139,12 +140,7 @@ export const ControlRunStartRequest = z
       .describe(
         "Best-of-N synthesis policy: auto only synthesizes an extra candidate when n>=3 and candidates genuinely complement; always/never force it.",
       ),
-    maxUsd: z
-      .number()
-      .nonnegative()
-      .nullable()
-      .optional()
-      .describe("USD cap for the run; null = no cap."),
+    paidBudget: PaidBudget.optional().describe("Explicit incremental-cash budget for the run."),
     /** Requested access profile. Effective access is derived by the engine and never client-supplied. */
     access: AccessProfile.optional().describe(
       "Requested access profile; effective access is derived by the engine and never client-supplied.",
@@ -246,12 +242,14 @@ export const ControlRunState = z
     "failed",
     "cancelled",
     "interrupted_unknown",
+    "cost_unverifiable",
+    "exhausted_overshoot",
     "exhausted",
     "not_converged",
     "stuck_no_progress",
   ])
   .describe(
-    "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted_unknown, exhausted, not_converged, stuck_no_progress).",
+    "Control-plane run state: queued/running while live, then an honest success, block, failure, interruption, cost, exhaustion, non-convergence, or cancellation terminal.",
   );
 export type ControlRunState = z.infer<typeof ControlRunState>;
 
@@ -522,7 +520,7 @@ export const ControlRunSummary = z
     prompt: z.string().optional().describe("The user's prompt for the run."),
     harnesses: z.array(z.string()).optional().describe("Harness pool the run used."),
     primaryHarness: z.string().optional().describe("Primary harness the run preferred."),
-    portfolio: Portfolio.optional(),
+    routingGoal: RoutingGoal.optional(),
     model: z.string().optional().describe("Scalar model requested for the run."),
     reviewerPanel: z
       .array(ControlReviewerPanelEntry)
@@ -533,7 +531,7 @@ export const ControlRunSummary = z
       .optional()
       .describe("Per-run protected-path approvals supplied."),
     n: z.number().int().optional().describe("Race width, when the run was a race."),
-    maxUsd: z.number().nullable().optional().describe("USD cap for the run; null = no cap."),
+    paidBudget: PaidBudget.optional().describe("Explicit incremental-cash budget for the run."),
     spendUsd: z.number().nullable().optional().describe("Settled spend in USD; null when unknown."),
     spendEstimated: z
       .boolean()
@@ -639,7 +637,7 @@ export type ControlTimelineEvent = z.infer<typeof ControlTimelineEvent>;
 
 export const ControlBudgetSnapshot = z
   .object({
-    maxUsd: z.number().nullable().default(null).describe("USD cap for the run; null = no cap."),
+    paidBudget: PaidBudget.default({ kind: "unlimited" }),
     spendUsd: z
       .number()
       .nullable()
@@ -1196,9 +1194,6 @@ export const ControlSettingsSnapshot = z
       .array(z.string())
       .default([])
       .describe("Config file paths that contributed to the snapshot."),
-    defaultPortfolio: Portfolio.default("subscription-first").describe(
-      "Budget portfolio used when a run does not specify one.",
-    ),
     /** How long a run waits for an interactive answer before a benign decline. */
     interactionTimeoutMs: z
       .number()
@@ -1230,16 +1225,15 @@ export const ControlSettingsSnapshot = z
             "How the child harness env is built: mirror_native inherits the shell env; clean spawns from a minimal allowlist.",
           ),
         authPreference: AuthPreference.default("auto"),
+        goal: RoutingGoal.default("auto"),
+        paidFallback: PaidFallback.default("when_unavailable"),
+        qualityTiers: QualityTierSet,
       })
       .default({})
       .describe("Global routing settings."),
     budget: z
       .object({
-        maxUsdPerRun: z
-          .number()
-          .nullable()
-          .default(null)
-          .describe("Global USD cap per run; null = no cap."),
+        paidBudgetPerRun: PaidBudget.default({ kind: "unlimited" }),
       })
       .default({})
       .describe("Global budget limits."),
@@ -1314,12 +1308,6 @@ export const ControlSettingsSnapshot = z
               .nullable()
               .default(null)
               .describe("Default max convergence rounds; null = engine default."),
-            maxUsd: z
-              .number()
-              .nonnegative()
-              .nullable()
-              .default(null)
-              .describe("Per-harness USD cap; null = no cap."),
             toolsAllow: z
               .array(z.string())
               .default([])
@@ -1373,12 +1361,6 @@ export const ControlHarnessSettingsPatch = z
       .nullable()
       .optional()
       .describe("New max convergence rounds; null clears it."),
-    maxUsd: z
-      .number()
-      .nonnegative()
-      .nullable()
-      .optional()
-      .describe("New per-harness USD cap; null clears it."),
     toolsAllow: z.array(NonBlankString).optional().describe("New tool allowlist."),
     toolsDeny: z.array(NonBlankString).optional().describe("New tool denylist."),
     fallbackModel: NonBlankString.nullable()
@@ -1395,7 +1377,9 @@ export type ControlHarnessSettingsPatch = z.infer<typeof ControlHarnessSettingsP
 
 export const ControlSettingsUpdateRequest = z
   .object({
-    defaultPortfolio: Portfolio.optional(),
+    routingGoal: RoutingGoal.optional(),
+    paidFallback: PaidFallback.optional(),
+    qualityTiers: QualityTierSet.optional(),
     interactionTimeoutMs: z
       .number()
       .int()
@@ -1414,15 +1398,7 @@ export const ControlSettingsUpdateRequest = z
       .enum(["mirror_native", "clean"])
       .optional()
       .describe("New child harness env composition mode."),
-    maxUsdPerRun: z
-      .number()
-      .nonnegative()
-      .optional()
-      .describe("New global USD cap per run (mutually exclusive with clearMaxUsdPerRun)."),
-    clearMaxUsdPerRun: z
-      .boolean()
-      .optional()
-      .describe("Clear the global USD cap per run (mutually exclusive with maxUsdPerRun)."),
+    paidBudgetPerRun: PaidBudget.optional().describe("New global incremental-cash budget per run."),
     authPreference: AuthPreference.optional().describe("New global auth route preference."),
     harnesses: z
       .record(NonBlankString, ControlHarnessSettingsPatch)
@@ -1430,14 +1406,5 @@ export const ControlSettingsUpdateRequest = z
       .describe("Per-harness settings patches keyed by harness id."),
   })
   .strict()
-  .superRefine((value, ctx) => {
-    if (value.maxUsdPerRun !== undefined && value.clearMaxUsdPerRun === true) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["maxUsdPerRun"],
-        message: "maxUsdPerRun and clearMaxUsdPerRun are mutually exclusive",
-      });
-    }
-  })
   .describe("Request body for PATCH /settings; absent fields keep their stored values.");
 export type ControlSettingsUpdateRequest = z.infer<typeof ControlSettingsUpdateRequest>;

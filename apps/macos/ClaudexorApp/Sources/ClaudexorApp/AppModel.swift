@@ -62,10 +62,6 @@ enum SpecFlowState: Equatable {
 
 // MARK: - App model
 
-/// Single source of UI state. Prefers the live engine-service (loopback control-api):
-/// connection health, the run list, starting/cancelling runs, and the live SSE activity
-/// stream. Everything the control-api does not yet expose falls back to `DemoData` so
-/// the app is fully legible offline. Live runs are tagged `isLive`.
 @MainActor
 @Observable
 final class AppModel {
@@ -84,15 +80,10 @@ final class AppModel {
     var projectRoot: String = "" {
         didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
     }
-    /// Recently-used project roots (MRU, most-recent first, capped) — powers the
-    /// composer's project chip so you Browse once, then pick from a menu.
     var recentProjects: [String] = [] {
         didSet { UserDefaults.standard.set(recentProjects, forKey: "claudexor.recentProjects") }
     }
 
-    /// Sample data is OFF by default and lives behind an explicit toggle, so live state is
-    /// never silently mixed with mock content. When off, surfaces the engine doesn't expose
-    /// yet show honest empty states instead of demo content.
     var demoMode = false {
         didSet { UserDefaults.standard.set(demoMode, forKey: "claudexor.demoMode") }
     }
@@ -157,6 +148,8 @@ final class AppModel {
     var liveHarnesses: [HarnessInfo] = []
     private var exactAuthSources: [HarnessFamily: [AuthSourceKind: HarnessAuthSource]] = [:]
     var settingsSnapshot: SettingsSnapshot?
+    var quotaResponse: ControlQuotaResponse?
+    var quotaStatus: String?
     var secretBackend = "unknown"
     var storedSecrets: [SecretInfo] = []
     var settingsStatus: String?
@@ -178,9 +171,8 @@ final class AppModel {
         }
     }
 
-    /// Engine-side defaults for launch surfaces (quick launch, retry).
-    var defaultPortfolio: String { settingsSnapshot?.defaultPortfolio ?? "subscription-first" }
-    var defaultMaxUsdPerRun: Double? { settingsSnapshot?.budget.maxUsdPerRun }
+    var defaultRoutingGoal: String { settingsSnapshot?.routing.goal ?? "auto" }
+    var defaultMaxUsdPerRun: Double? { settingsSnapshot?.budget.paidBudgetPerRun.finiteMaxUsd }
 
     private(set) var client: GatewayClient?
     private var streamTasks: [String: Task<Void, Never>] = [:]
@@ -307,6 +299,7 @@ final class AppModel {
         }
         health = .offline
         client = nil
+        quotaResponse = nil
     }
 
     private func tryConnect() async -> Bool {
@@ -320,6 +313,7 @@ final class AppModel {
                 await refreshRuns()
                 await refreshHarnesses()
                 await refreshSettings()
+                await refreshQuota()
                 await refreshSecrets()
                 await refreshThreads()
                 startGlobalStream()
@@ -484,8 +478,6 @@ final class AppModel {
         return values.compactMap(\.stringValue)
     }
 
-    /// Enumerable models for one harness (ADP4 picker). Returns nil when the
-    /// engine is offline OR the request fails, so the view falls back to free text.
     func harnessModels(for family: HarnessFamily) async -> HarnessModelsResponse? {
         guard let client else { return nil }
         return try? await client.harnessModels(harnessId: family.rawValue)
@@ -499,7 +491,15 @@ final class AppModel {
             settingsStatus = "Could not load settings: \(error)"
         }
     }
-
+    func refreshQuota(force: Bool = false) async {
+        guard health == .connected, let client else {
+            quotaResponse = nil; quotaStatus = "Quota is unavailable while the engine is offline."
+            return
+        }
+        do {
+            quotaResponse = try await client.quota(refresh: force); quotaStatus = nil
+        } catch { quotaStatus = "Could not load quota: \(error)" }
+    }
     var normalizedProjectRoot: String {
         projectRoot.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -612,8 +612,8 @@ final class AppModel {
             n: s.n ?? max(1, families.count),
             createdAt: .now, updatedAt: .now,
             activePhase: .review,
-            spendUsd: s.spendUsd ?? 0, capUsd: s.maxUsd ?? 0,
-            spendKnown: s.spendUsd != nil, capKnown: s.maxUsd != nil,
+            spendUsd: s.spendUsd ?? 0, capUsd: s.paidBudget?.finiteMaxUsd ?? 0,
+            spendKnown: s.spendUsd != nil, capKnown: s.paidBudget?.finiteMaxUsd != nil,
             spendEstimated: s.spendEstimated ?? false,
             routeProof: .unverified,
             attentionNote: nil,
@@ -669,7 +669,7 @@ final class AppModel {
     // MARK: Commands
 
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
-                  portfolio: String, model: String?, n: Int, capUsd: Double?,
+                  routingGoal: String, model: String?, n: Int, capUsd: Double?,
                   access: String = "workspace_write", web: String = "auto",
                   tests: [TestCommandInvocation] = [], reviewerPanel: [ReviewerPanelEntry]? = nil,
                   protectedPathApprovals: [ProtectedPathApproval]? = nil,
@@ -732,11 +732,11 @@ final class AppModel {
                                       execution: RunExecution(isolation: "envelope"),
                                       harnesses: orderedHarnesses,
                                       primaryHarness: primary?.rawValue,
-                                      portfolio: portfolio,
+                                      routingGoal: routingGoal,
                                       model: model?.isEmpty == false ? model : nil,
                                       reviewerPanel: reviewerPanel,
                                       n: mode == .bestOfN ? max(n, flags.defaultN ?? 2) : nil,
-                                      maxUsd: capUsd, access: access,
+                                      paidBudget: capUsd.map { .finite(maxUsd: $0) }, access: access,
                                       web: web,
                                       tests: tests.isEmpty ? nil : tests,
                                       protectedPathApprovals: protectedPathApprovals,
@@ -1700,8 +1700,8 @@ final class AppModel {
             task.project = detail.summary.project?.projectName ?? detail.summary.project?.root.map { URL(fileURLWithPath: $0).lastPathComponent } ?? task.project
             task.repoRoot = detail.summary.project?.root ?? task.repoRoot
             task.harnesses = (detail.summary.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
-            task.capUsd = detail.summary.maxUsd ?? task.capUsd
-            task.capKnown = detail.summary.maxUsd != nil || task.capKnown
+            task.capUsd = detail.summary.paidBudget?.finiteMaxUsd ?? task.capUsd
+            task.capKnown = detail.summary.paidBudget?.finiteMaxUsd != nil || task.capKnown
             task.spendUsd = detail.summary.spendUsd ?? task.spendUsd
             task.spendKnown = detail.summary.spendUsd != nil || task.spendKnown
             task.spendEstimated = detail.summary.spendEstimated ?? task.spendEstimated

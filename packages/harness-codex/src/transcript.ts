@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { HarnessEvent } from "@claudexor/schema";
 
 /**
  * Route proof: recover the model codex ACTUALLY ran from its own session
@@ -51,19 +52,18 @@ export function codexTranscriptModel(
 /**
  * Quota headroom: recover codex's OWN rate-window record from the rollout
  * (`event_msg.payload.token_count.rate_limits.{primary,secondary}`), the same
- * native machine-readable source route proof uses. Returns the LAST record's
- * binding window (max used_percent across primary/secondary — the tighter
- * window is the one that throttles). Best-effort: null on anything missing.
+ * native machine-readable source route proof uses. Returns every window in the
+ * LAST record independently. Best-effort: null on anything missing.
  */
 export function codexTranscriptRateLimits(
   codexHome: string | null | undefined,
   threadId: string | undefined,
-): { used_percent: number; resets_at: string | null } | null {
+): NonNullable<HarnessEvent["quota"]> | null {
   if (!threadId) return null;
   const home = codexHome && codexHome.trim() ? codexHome : join(homedir(), ".codex");
   const rollout = findCodexRollout(join(home, "sessions"), threadId);
   if (!rollout) return null;
-  let latest: { used_percent: number; resets_at: string | null } | null = null;
+  let latest: NonNullable<HarnessEvent["quota"]> | null = null;
   try {
     for (const line of readFileSync(rollout, "utf8").split("\n")) {
       if (!line.includes("rate_limits")) continue;
@@ -76,25 +76,41 @@ export function codexTranscriptRateLimits(
       const rl = (obj as { payload?: { rate_limits?: Record<string, unknown> } })?.payload
         ?.rate_limits;
       if (!rl || typeof rl !== "object") continue;
-      const windows = [rl["primary"], rl["secondary"]].filter(
-        (w): w is { used_percent?: unknown; resets_at?: unknown } =>
-          Boolean(w) && typeof w === "object",
-      );
-      let used: number | null = null;
-      let resets: string | null = null;
-      for (const w of windows) {
-        if (typeof w.used_percent !== "number" || !Number.isFinite(w.used_percent)) continue;
-        if (used === null || w.used_percent > used) {
-          used = Math.min(100, Math.max(0, w.used_percent));
-          resets =
-            typeof w.resets_at === "number"
-              ? new Date(w.resets_at * 1000).toISOString()
-              : typeof w.resets_at === "string"
-                ? w.resets_at
-                : null;
-        }
+      const constraints = Object.entries(rl).flatMap(([id, value]) => {
+        if (!value || typeof value !== "object") return [];
+        const w = value as Record<string, unknown>;
+        const rawUsed = w["used_percent"];
+        if (typeof rawUsed !== "number" || !Number.isFinite(rawUsed)) return [];
+        const rawReset = w["resets_at"];
+        const resetsAt =
+          typeof rawReset === "number"
+            ? new Date(rawReset * 1000).toISOString()
+            : typeof rawReset === "string"
+              ? rawReset
+              : null;
+        const minutes = w["window_minutes"];
+        return [
+          {
+            id,
+            label: id,
+            used_ratio: Math.min(1, Math.max(0, rawUsed / 100)),
+            window_seconds:
+              typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0
+                ? minutes * 60
+                : null,
+            resets_at: resetsAt,
+            cooldown_until: null,
+          },
+        ];
+      });
+      if (constraints.length > 0) {
+        latest = {
+          source: "codex_rollout",
+          plan_label: null,
+          subject_id: null,
+          constraints,
+        };
       }
-      if (used !== null) latest = { used_percent: used, resets_at: resets };
     }
   } catch {
     /* unreadable rollout: no quota signal */

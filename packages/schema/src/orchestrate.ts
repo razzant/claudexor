@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { Id, ModeKind } from "./primitives.js";
+import { RunStatus } from "./decision.js";
+import { PaidBudget } from "./budget.js";
 
 /**
  * The autonomous `orchestrate` planner. It is NOT a privileged harness: it is
@@ -27,6 +29,13 @@ export const OrchestrateAutonomy = z
   );
 export type OrchestrateAutonomy = z.infer<typeof OrchestrateAutonomy>;
 
+const OrchestrateStepRequirement = {
+  required: z
+    .boolean()
+    .default(true)
+    .describe("Whether parent success requires this step to succeed."),
+};
+
 export const DEFAULT_ORCHESTRATE_TOOL_BELT: OrchestrateToolName[] = [
   "start_run",
   "race",
@@ -49,12 +58,7 @@ export const OrchestrateContract = z
       .describe("Tools the planner may use this run."),
     budget: z
       .object({
-        max_usd: z
-          .number()
-          .nonnegative()
-          .nullable()
-          .default(null)
-          .describe("USD cap for the whole orchestration; null = no cap."),
+        paid_budget: PaidBudget.default({ kind: "unlimited" }),
         max_tool_calls: z
           .number()
           .int()
@@ -105,6 +109,7 @@ export const OrchestratePlanCall = z
   .discriminatedUnion("tool", [
     z
       .object({
+        ...OrchestrateStepRequirement,
         tool: z.literal("start_run"),
         prompt: z.string().min(1).describe("Prompt for the sub-run."),
         mode: ModeKind.default("agent").describe("Mode for the sub-run."),
@@ -114,6 +119,7 @@ export const OrchestratePlanCall = z
       .describe("Start one isolated sub-run."),
     z
       .object({
+        ...OrchestrateStepRequirement,
         tool: z.literal("race"),
         prompt: z.string().min(1).describe("Prompt raced across harnesses."),
         n: z
@@ -127,6 +133,7 @@ export const OrchestratePlanCall = z
       .describe("Race the prompt as a best-of-N run."),
     z
       .object({
+        ...OrchestrateStepRequirement,
         tool: z.literal("review"),
         run_id: z.string().min(1).describe("Run to review."),
         why: z.string().default("").describe("Planner's reason for this step."),
@@ -134,6 +141,7 @@ export const OrchestratePlanCall = z
       .describe("Review an existing run."),
     z
       .object({
+        ...OrchestrateStepRequirement,
         tool: z.literal("status"),
         run_id: z.string().min(1).describe("Run to inspect."),
         why: z.string().default("").describe("Planner's reason for this step."),
@@ -141,6 +149,7 @@ export const OrchestratePlanCall = z
       .describe("Read the status of an existing run."),
     z
       .object({
+        ...OrchestrateStepRequirement,
         tool: z.literal("answer_question"),
         interaction_id: z.string().min(1).describe("Pending interaction to answer."),
         answers: z
@@ -165,6 +174,7 @@ export const OrchestratePlanCall = z
       .describe("Answer a pending interactive question of a sub-run."),
     z
       .object({
+        ...OrchestrateStepRequirement,
         tool: z.literal("apply"),
         run_id: z.string().min(1).describe("Run whose work product to deliver."),
         mode: z
@@ -206,6 +216,16 @@ export const OrchestrateStepStatus = z
   );
 export type OrchestrateStepStatus = z.infer<typeof OrchestrateStepStatus>;
 
+export const OrchestrateTerminalSource = z.enum([
+  "executor",
+  "subrun",
+  "review",
+  "delivery",
+  "policy",
+  "budget",
+]);
+export type OrchestrateTerminalSource = z.infer<typeof OrchestrateTerminalSource>;
+
 /**
  * Typed executor progress over a plan's tool_calls. Persisted as
  * `final/orchestration_progress.yaml` and projected into the run detail so a
@@ -224,6 +244,17 @@ export const OrchestratePlanProgress = z
             .enum(["safe", "risky"])
             .describe("Risk class of the step: safe (no live-tree mutation) or risky."),
           status: OrchestrateStepStatus,
+          required: z.boolean().default(true),
+          terminal_status: RunStatus.nullable()
+            .default(null)
+            .describe("Actual child/delivery terminal used by the parent outcome reducer."),
+          terminal_source: OrchestrateTerminalSource.nullable()
+            .default(null)
+            .describe("Authority that produced terminal_status."),
+          evidence_refs: z
+            .array(z.string().min(1))
+            .default([])
+            .describe("Immutable run artifact or delivery receipt references."),
           /** Sub-run id this step started/targeted (start_run/race/review/status/apply), when known. */
           run_id: z
             .string()

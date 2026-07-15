@@ -12,22 +12,6 @@
           "default": [],
           "description": "Config file paths that contributed to the snapshot."
         },
-        "defaultPortfolio": {
-          "type": "string",
-          "enum": [
-            "daily-rich",
-            "balanced",
-            "cheapest",
-            "strongest",
-            "burn",
-            "subscription-first",
-            "api-overflow",
-            "conserve-claude",
-            "conserve-codex"
-          ],
-          "description": "Budget portfolio used when a run does not specify one.",
-          "default": "subscription-first"
-        },
         "interactionTimeoutMs": {
           "type": "integer",
           "exclusiveMinimum": 0,
@@ -80,6 +64,86 @@
               ],
               "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
               "default": "auto"
+            },
+            "goal": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "quality",
+                "economy"
+              ],
+              "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend.",
+              "default": "auto"
+            },
+            "paidFallback": {
+              "type": "string",
+              "enum": [
+                "never",
+                "when_unavailable",
+                "allowed_within_cap"
+              ],
+              "description": "When a route with incremental paid spend may be used.",
+              "default": "when_unavailable"
+            },
+            "qualityTiers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "harness": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Non-empty identifier string."
+                      },
+                      "model": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "effort": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high",
+                          "xhigh",
+                          "max"
+                        ],
+                        "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
+                      }
+                    },
+                    "required": [
+                      "harness",
+                      "model",
+                      "effort"
+                    ],
+                    "additionalProperties": false,
+                    "description": "An exact harness, model, and effort route declared by the user."
+                  },
+                  "minItems": 1,
+                  "description": "A group of comparable exact routes at one user-declared quality level."
+                }
+              },
+              "propertyNames": {
+                "enum": [
+                  "plan",
+                  "spec",
+                  "implement",
+                  "create_from_scratch",
+                  "repair",
+                  "review",
+                  "verify",
+                  "synthesize",
+                  "explain",
+                  "audit",
+                  "orchestrate"
+                ]
+              },
+              "default": {},
+              "description": "Per-intent quality tiers ordered highest to lowest; no provider or benchmark priors are inferred."
             }
           },
           "additionalProperties": false,
@@ -89,13 +153,44 @@
         "budget": {
           "type": "object",
           "properties": {
-            "maxUsdPerRun": {
-              "type": [
-                "number",
-                "null"
+            "paidBudgetPerRun": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "unlimited"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "finite"
+                    },
+                    "maxUsd": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "maxUsd"
+                  ],
+                  "additionalProperties": false
+                }
               ],
-              "default": null,
-              "description": "Global USD cap per run; null = no cap."
+              "description": "Incremental-cash budget: explicitly unlimited or a finite non-negative USD cap.",
+              "default": {
+                "kind": "unlimited"
+              }
             }
           },
           "additionalProperties": false,
@@ -169,15 +264,7 @@
               "effort": {
                 "anyOf": [
                   {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high",
-                      "xhigh",
-                      "max"
-                    ],
-                    "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
+                    "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/qualityTiers/additionalProperties/items/items/properties/effort"
                   },
                   {
                     "type": "null"
@@ -211,19 +298,6 @@
                 ],
                 "default": null,
                 "description": "Default max convergence rounds; null = engine default."
-              },
-              "maxUsd": {
-                "anyOf": [
-                  {
-                    "type": "number",
-                    "minimum": 0
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Per-harness USD cap; null = no cap."
               },
               "toolsAllow": {
                 "type": "array",

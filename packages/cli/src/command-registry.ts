@@ -44,6 +44,7 @@ const RUN_FLAGS: readonly string[] = [
   "model",
   "effort",
   "portfolio",
+  "routing-goal",
   "in-place",
   "spec",
   "attach",
@@ -128,7 +129,9 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("model", "<id>", "Model hint forwarded to the selected harness route"),
   valueFlag("effort", "<level>", "Reasoning effort hint: low|medium|high|xhigh|max"),
   valueFlag("primary-harness", "<id>", "Bias single-route modes and first candidate choice"),
-  valueFlag("portfolio", "<id>", "Budget/routing portfolio (default: subscription-first)"),
+  valueFlag("portfolio", "<id>", "Removed in v2; always errors (use --routing-goal)"),
+  valueFlag("routing-goal", "<goal>", "Routing goal: auto|quality|economy"),
+  booleanFlag("refresh", "Refresh vendor-owned quota sources before reading"),
   booleanFlag(
     "in-place",
     "Run write turns against the live project tree (single-candidate\n                           in-place; best-of-N candidates stay isolated and the winner is adopted)\n                           instead of a throwaway envelope",
@@ -332,6 +335,14 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     recovery: true,
   },
   {
+    id: "quota",
+    usageArgs: "[--json] [--refresh]",
+    summary: "Show every vendor-owned quota window with provenance and freshness",
+    flags: ["json", "refresh"],
+    mutability: "ops",
+    stability: "stable",
+  },
+  {
     id: "settings",
     usageArgs: "show|set",
     summary: "Show/update user defaults",
@@ -486,13 +497,6 @@ export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(
   CLI_FLAGS.filter((f) => f.kind === "boolean").map((f) => f.name),
 );
 
-/**
- * Registry-enforced per-command flag scope: every command accepts exactly its
- * declared `flags` plus the global preflight affordances. A known-but-out-of-
- * scope flag (e.g. `spec --model`) must FAIL LOUDLY, never be silently
- * ignored — the same bug class as unknown flags, one data-driven owner.
- * Unknown verbs return null (dispatch owns unknown/renamed-verb errors).
- */
 export function commandFlagScopeError(
   commandId: string,
   flagNames: readonly string[],
@@ -505,10 +509,6 @@ export function commandFlagScopeError(
   return `claudexor: flag(s) not valid for the ${cmd.id} command: ${unexpected.map((flag) => `--${flag}`).join(", ")} (see \`claudexor help\`)`;
 }
 
-/**
- * Host-plugin CLI fallback examples, read-only routes first (agents should
- * reach for ask/plan before mutating runs), declaration order within a tier.
- */
 export function hostFallbackExamples(): readonly string[] {
   const tier = (m: CliMutability): number => (m === "read" ? 0 : 1);
   return CLI_COMMANDS.filter((c) => c.hostFallbackExample)

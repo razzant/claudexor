@@ -65,18 +65,6 @@
           ],
           "description": "New max convergence rounds; null clears it."
         },
-        "maxUsd": {
-          "anyOf": [
-            {
-              "type": "number",
-              "minimum": 0
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "New per-harness USD cap; null clears it."
-        },
         "toolsAllow": {
           "type": "array",
           "items": {

@@ -10,7 +10,7 @@ import {
   NonBlankString,
   SchemaVersion,
 } from "./primitives.js";
-import { Portfolio } from "./budget.js";
+import { PaidBudget, RoutingGoal } from "./budget.js";
 
 export const SuccessCriterion = z
   .object({
@@ -287,15 +287,11 @@ export const TaskContract = z
       .describe("Tool permission policy passed to harnesses that support allow/deny lists."),
     budget: z
       .object({
-        portfolio: Portfolio.default("subscription-first"),
-        max_usd: z
-          .number()
-          .nullable()
-          .default(null)
-          .describe("Hard USD cap for the run; null = no cap."),
+        routing_goal: RoutingGoal.default("auto"),
+        paid_budget: PaidBudget.default({ kind: "unlimited" }),
       })
       .default({})
-      .describe("Budget portfolio and spend cap for the run."),
+      .describe("Routing goal and explicit incremental-cash budget for the run."),
     /** Resolved harness-scoped model map for this run (harness id → model id),
      * after scalar→primary expansion. The contract is the SSOT the route spec
      * builder reads; empty = every route uses its per-harness settings default. */

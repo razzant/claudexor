@@ -29,19 +29,40 @@
           "enum": [
             "spend",
             "rate_limited",
-            "used_percent",
-            "cooldown",
-            "manual"
+            "quota_constraint",
+            "cooldown"
           ],
-          "description": "What was observed: spend, a rate-limit hit, a used-percent reading, a cooldown, or a manual entry."
+          "description": "What was observed: spend, a rate-limit hit, one independent quota constraint, or a cooldown."
         },
         "usd": {
           "type": "number",
           "description": "Observed spend in USD, for spend observations."
         },
-        "used_percent": {
-          "type": "number",
-          "description": "Consumed share of the rate window (0-100), for used_percent observations."
+        "constraint_id": {
+          "type": "string"
+        },
+        "used_ratio": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "window_seconds": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "resets_at": {
           "type": [

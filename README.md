@@ -165,6 +165,12 @@ evidence, terminal harness errors, failed apply/verify steps, and failed require
 gates remain blockers. `claudexor inspect
 <run_id>` is the CLI projection of the same run detail the macOS app renders.
 
+Paid budgets are explicit: the API accepts `{kind:"unlimited"}` or
+`{kind:"finite",maxUsd:N}`; CLI `--max-usd N` maps to the finite form, and zero
+means a real zero-cash cap. Unknown cost is never reported as `$0`: a finite run
+can end `cost_unverifiable`, while a late exact charge above its cap ends
+`exhausted_overshoot`.
+
 Deterministic gates use exact argv, never implicit shell parsing:
 
 ```bash
@@ -178,12 +184,13 @@ script bytes, project, or access profile changes.
 
 ## Routing, Auth, And Secrets
 
-Routing is `Pool + Primary + Portfolio`:
+Routing is `Pool + Primary + Routing Goal`:
 
 - selected harnesses are the eligible pool;
 - `--primary-harness <id>` biases single-route modes and the first candidate;
-- `--portfolio <id>` records the routing/budget portfolio, default
-  `subscription-first`.
+- `--routing-goal auto|quality|economy` selects transparent pacing, exact
+  user-declared quality tiers, or minimum incremental paid spend. The nine v1
+  portfolio ids and `--portfolio` are hard errors.
 
 Reviewer selection is also explicit when needed. `--reviewer-panel` accepts an
 ordered list of harness entries and preserves repeated harness ids, so one pass
@@ -269,7 +276,9 @@ claudexor auth login cursor   # cursor-agent login
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
 claudexor settings show
-claudexor settings set default_portfolio subscription-first
+claudexor settings set routing_goal auto
+claudexor settings set paid_fallback when_unavailable
+claudexor quota --refresh --json
 ```
 
 Managed secrets use the v2-owned `0600` file store. A disposable
@@ -386,6 +395,7 @@ final/plan.md?
 final/orchestration.md?            # human-readable orchestration summary (orchestrate)
 final/orchestration.yaml?          # the typed orchestration plan (orchestrate)
 final/orchestration_progress.yaml? # per-step executor progress (auto_safe/auto_full)
+final/orchestration_delivery_receipt_N.yaml? # immutable mutating-step receipt
 context/context_error.md?
 ```
 

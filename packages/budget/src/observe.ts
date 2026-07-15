@@ -31,16 +31,19 @@ export function observationsFromEvent(harnessId: string, ev: HarnessEvent): Budg
     });
   }
   if (ev.quota) {
-    // The CLI's own machine-readable window record (codex rollout
-    // token_count.rate_limits) -> "native" quality used_percent observation.
-    out.push({
-      harness_id: harnessId,
-      ts: nowIso(),
-      quality: "native",
-      kind: "used_percent",
-      used_percent: ev.quota.used_percent,
-      resets_at: ev.quota.resets_at ?? null,
-    });
+    for (const constraint of ev.quota.constraints) {
+      out.push({
+        harness_id: harnessId,
+        ts: nowIso(),
+        quality: "native",
+        kind: "quota_constraint",
+        constraint_id: constraint.id,
+        used_ratio: constraint.used_ratio,
+        window_seconds: constraint.window_seconds,
+        resets_at: constraint.resets_at,
+        cooldown_until: constraint.cooldown_until,
+      });
+    }
   }
   const single = singleObservationFromEvent(harnessId, ev);
   if (single) out.push(single);

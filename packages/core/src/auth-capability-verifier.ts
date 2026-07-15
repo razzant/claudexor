@@ -189,7 +189,6 @@ export class AuthCapabilityVerifier {
           tool_permission_policy: { web: "off", allow: [], deny: [] },
           model_hint: null,
           effort_hint: null,
-          max_usd: null,
           max_turns: 1,
           auth_preference: disclosure.requested,
           resume_session_id: null,

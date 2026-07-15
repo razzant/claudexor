@@ -46,7 +46,7 @@ public struct StartRunRequest: Codable, Sendable {
     public var execution: RunExecution
     public var harnesses: [String]?
     public var primaryHarness: String?
-    public var portfolio: String?
+    public var routingGoal: String?
     /// Scalar convenience: expands to the RESOLVED PRIMARY harness only (never
     /// the pool). Prefer `models` for anything multi-harness.
     public var model: String?
@@ -57,7 +57,7 @@ public struct StartRunRequest: Codable, Sendable {
     public var reviewerModels: [String: String]?
     public var reviewerEfforts: [String: String]?
     public var n: Int?
-    public var maxUsd: Double?
+    public var paidBudget: PaidBudget?
     public var access: String?
     public var web: String?
     public var tests: [TestCommandInvocation]?
@@ -73,11 +73,11 @@ public struct StartRunRequest: Codable, Sendable {
 
     public init(prompt: String, mode: String? = nil, scope: RunScope = .none,
                 execution: RunExecution = RunExecution(), harnesses: [String]? = nil,
-                primaryHarness: String? = nil, portfolio: String? = nil, model: String? = nil,
+                primaryHarness: String? = nil, routingGoal: String? = nil, model: String? = nil,
                 models: [String: String]? = nil,
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
-                n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
+                n: Int? = nil, paidBudget: PaidBudget? = nil, access: String? = nil,
                 web: String? = nil,
                 tests: [TestCommandInvocation]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
@@ -88,14 +88,14 @@ public struct StartRunRequest: Codable, Sendable {
         self.execution = execution
         self.harnesses = harnesses
         self.primaryHarness = primaryHarness
-        self.portfolio = portfolio
+        self.routingGoal = routingGoal
         self.model = model
         self.models = models
         self.reviewerPanel = reviewerPanel
         self.reviewerModels = reviewerModels
         self.reviewerEfforts = reviewerEfforts
         self.n = n
-        self.maxUsd = maxUsd
+        self.paidBudget = paidBudget
         self.access = access
         self.web = web
         self.tests = tests
@@ -434,12 +434,12 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let prompt: String?
     public let harnesses: [String]?
     public let primaryHarness: String?
-    public let portfolio: String?
+    public let routingGoal: String?
     public let model: String?
     public let reviewerPanel: [ReviewerPanelEntry]?
     public let protectedPathApprovals: [ProtectedPathApproval]?
     public let n: Int?
-    public let maxUsd: Double?
+    public let paidBudget: PaidBudget?
     public let spendUsd: Double?
     public let spendEstimated: Bool?
     public let access: String?
@@ -763,7 +763,6 @@ public struct HarnessModelsResponse: Codable, Sendable, Equatable {
 
 public struct SettingsSnapshot: Codable, Sendable, Equatable {
     public let sources: [String]
-    public let defaultPortfolio: String
     public let routing: RoutingSettings
     public let budget: BudgetSettings
     public let runtime: RuntimeSettings?
@@ -774,7 +773,9 @@ public struct SettingsSnapshot: Codable, Sendable, Equatable {
 }
 
 public struct RoutingSettings: Codable, Sendable, Equatable {
-    public let defaultPolicy: String
+    public let goal: String
+    public let paidFallback: String
+    public let qualityTiers: QualityTierSet
     public let primaryHarness: String?
     public let eligibleHarnesses: [String]
     public let envInheritance: String
@@ -783,7 +784,7 @@ public struct RoutingSettings: Codable, Sendable, Equatable {
 }
 
 public struct BudgetSettings: Codable, Sendable, Equatable {
-    public let maxUsdPerRun: Double?
+    public let paidBudgetPerRun: PaidBudget
 }
 
 public struct RuntimeSettings: Codable, Sendable, Equatable {
@@ -866,47 +867,48 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
 }
 
 public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
-    public var defaultPortfolio: String?
-    public var routingPolicy: String?
+    public var routingGoal: String?
+    public var paidFallback: String?
+    public var qualityTiers: QualityTierSet?
     /// Double-optional: `.some(nil)` encodes an explicit JSON null = CLEAR the
     /// primary (no `"__none"` sentinel — the server rejects magic strings).
     public var primaryHarness: String??
     public var eligibleHarnesses: [String]?
     public var envInheritance: String?
     public var authPreference: String?
-    public var maxUsdPerRun: Double?
-    public var clearMaxUsdPerRun: Bool
+    public var paidBudgetPerRun: PaidBudget?
     public var interactionTimeoutMs: Int?
     public var harnesses: [String: HarnessSettingsPatch]?
 
-    public init(defaultPortfolio: String? = nil, routingPolicy: String? = nil,
+    public init(routingGoal: String? = nil, paidFallback: String? = nil,
+                qualityTiers: QualityTierSet? = nil,
                 primaryHarness: String?? = nil,
                 eligibleHarnesses: [String]? = nil, envInheritance: String? = nil,
                 authPreference: String? = nil,
-                maxUsdPerRun: Double? = nil,
-                clearMaxUsdPerRun: Bool = false,
+                paidBudgetPerRun: PaidBudget? = nil,
                 interactionTimeoutMs: Int? = nil,
                 harnesses: [String: HarnessSettingsPatch]? = nil) {
-        self.defaultPortfolio = defaultPortfolio
-        self.routingPolicy = routingPolicy
+        self.routingGoal = routingGoal
+        self.paidFallback = paidFallback
+        self.qualityTiers = qualityTiers
         self.primaryHarness = primaryHarness
         self.eligibleHarnesses = eligibleHarnesses
         self.envInheritance = envInheritance
         self.authPreference = authPreference
-        self.maxUsdPerRun = maxUsdPerRun
-        self.clearMaxUsdPerRun = clearMaxUsdPerRun
+        self.paidBudgetPerRun = paidBudgetPerRun
         self.interactionTimeoutMs = interactionTimeoutMs
         self.harnesses = harnesses
     }
 
     enum CodingKeys: String, CodingKey {
-        case defaultPortfolio, routingPolicy, primaryHarness, eligibleHarnesses, envInheritance, authPreference, maxUsdPerRun, clearMaxUsdPerRun, interactionTimeoutMs, harnesses
+        case routingGoal, paidFallback, qualityTiers, primaryHarness, eligibleHarnesses, envInheritance, authPreference, paidBudgetPerRun, interactionTimeoutMs, harnesses
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(defaultPortfolio, forKey: .defaultPortfolio)
-        try c.encodeIfPresent(routingPolicy, forKey: .routingPolicy)
+        try c.encodeIfPresent(routingGoal, forKey: .routingGoal)
+        try c.encodeIfPresent(paidFallback, forKey: .paidFallback)
+        try c.encodeIfPresent(qualityTiers, forKey: .qualityTiers)
         if let outer = primaryHarness {
             if let value = outer { try c.encode(value, forKey: .primaryHarness) }
             else { try c.encodeNil(forKey: .primaryHarness) }
@@ -914,8 +916,7 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
         try c.encodeIfPresent(envInheritance, forKey: .envInheritance)
         try c.encodeIfPresent(authPreference, forKey: .authPreference)
-        try c.encodeIfPresent(maxUsdPerRun, forKey: .maxUsdPerRun)
-        if clearMaxUsdPerRun { try c.encode(true, forKey: .clearMaxUsdPerRun) }
+        try c.encodeIfPresent(paidBudgetPerRun, forKey: .paidBudgetPerRun)
         try c.encodeIfPresent(interactionTimeoutMs, forKey: .interactionTimeoutMs)
         try c.encodeIfPresent(harnesses, forKey: .harnesses)
     }

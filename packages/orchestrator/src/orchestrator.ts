@@ -13,7 +13,8 @@ import type {
   InteractionAnswerSet,
   InteractionRequest,
   ModeKind,
-  Portfolio,
+  PaidBudget,
+  RoutingGoal,
   ProtectedPathApproval,
   ProjectConfig,
   RequestRequirementResolution,
@@ -36,9 +37,6 @@ import {
   type OrchestrateAutonomy,
   type OrchestratePlan as OrchestratePlanT,
   type OrchestratePlanCall as OrchestratePlanCallT,
-  type OrchestratePlanProgress as OrchestratePlanProgressT,
-  type OrchestrateStepStatus,
-  toolRisk,
   DecisionRecord as DecisionRecordSchema,
   FinalVerifyRecord,
   WorkProduct as WorkProductSchema,
@@ -80,7 +78,6 @@ import {
   pushUniqueText,
   formatFindings,
   renderSummary,
-  readRunStatus,
   readRunPatch,
   observeBudgetSignals,
   rotateOnStall,
@@ -98,6 +95,12 @@ import {
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
+import { orchestrateFailureFor, readRunStatus } from "./outcomeReducer.js";
+import {
+  executeOrchestratePlan,
+  type OrchestrateApplyStepResult,
+  type OrchestrateSafeStepResult,
+} from "./orchestrateExecutor.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
   type AttemptTelemetry,
@@ -158,11 +161,16 @@ import {
 import { type CandidateEvidence, arbitrate } from "@claudexor/arbitration";
 import { type SynthesisMode, buildSynthesisPlan, decideSynthesis } from "@claudexor/synthesis";
 import {
+  attemptCostEvidence,
+  attemptUsageCostSettlement,
   BudgetLedger,
+  isBudgetTerminal,
   type RouterCandidate,
   loadHarnessMetrics,
   promptFingerprint,
-  selectHarness,
+  unknownCostSettlement,
+  usageCostSettlement,
+  rankHarnesses,
 } from "@claudexor/budget";
 import {
   classifyRisk,
@@ -188,8 +196,8 @@ import {
 export interface OrchestratorDeps {
   registry: AdapterRegistry;
   reviewers?: ReviewerSpec[];
-  portfolio?: Portfolio;
-  maxUsd?: number | null;
+  paidBudget?: PaidBudget;
+  routingGoal?: RoutingGoal;
   /** Ordered explicit reviewer panel. Unlike legacy per-family overrides this
    * preserves duplicate harness entries, so one provider can review through
    * multiple requested models in a single panel pass. */
@@ -225,7 +233,7 @@ export interface RunInput {
   contextMode?: "off" | "auto";
   harnesses?: string[];
   primaryHarness?: string;
-  portfolio?: Portfolio;
+  routingGoal?: RoutingGoal;
   n?: number;
   baseRef?: string;
   attempts?: number | null;
@@ -240,8 +248,8 @@ export interface RunInput {
   tests?: TestCommandInvocation[];
   /** Typed per-run approval for changing auto-protected gate/test paths. */
   protectedPathApprovals?: ProtectedPathApproval[];
-  /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
-  maxUsd?: number | null;
+  paidBudget?: PaidBudget;
+  budgetLedger?: BudgetLedger;
   /** Orchestrate executor: cap on plan tool calls. */
   maxToolCalls?: number | null;
   /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
@@ -397,7 +405,6 @@ interface HarnessRouteSettings {
   defaultModel: string | null;
   effort: EffortHint | null;
   web: ExternalContextPolicy | null;
-  maxUsd: number | null;
   maxTurns: number | null;
   maxRounds: number | null;
   toolsAllow: string[];
@@ -408,6 +415,7 @@ interface HarnessRouteSettings {
 /** A routed candidate adapter plus its manifest capabilities and user settings. */
 interface RoutedAdapter {
   adapter: HarnessAdapter;
+  adapterAccess: AccessProfile;
   webSupport: WebPolicySupport;
   providerFamily: ProviderFamily;
   supportsMaxTurns: boolean;
@@ -427,7 +435,6 @@ interface RoutedAdapter {
   implementationTransport: ImplementationTransport;
   settings: HarnessRouteSettings | null;
 }
-
 const LABELS = "ABCDEFGHIJ".split("");
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 /** Concurrency cap for parallel candidates/explorers (locked decision: min(n, 4)). */
@@ -883,12 +890,12 @@ export class Orchestrator {
       primaryHarness,
       model: undefined,
       models,
-      portfolio:
-        input.portfolio ??
-        this.deps.portfolio ??
-        cfg?.project.budget?.portfolio ??
-        cfg?.global.default_portfolio ??
-        "subscription-first",
+      routingGoal:
+        input.routingGoal ??
+        this.deps.routingGoal ??
+        cfg?.project.budget?.routing_goal ??
+        cfg?.global.routing.goal ??
+        "auto",
       web,
       externalContextPolicy: web,
     };
@@ -987,19 +994,18 @@ export class Orchestrator {
         intent === "explain" ||
         intent === "audit" ||
         intent === "orchestrate";
-      // Mirror buildContract: the trust-config default decides write-mode access
-      // when the run does not request a profile explicitly.
-      const requiredAccess = readOnlyIntent
-        ? "readonly"
-        : (input.access ?? this.config(input.repoRoot).trust.access_default);
+      const requiredAccess = this.requestRequirements.adapterAccess(
+        intent,
+        manifest.capabilities.implementation_transport,
+        readOnlyIntent
+          ? "readonly"
+          : (input.access ?? this.config(input.repoRoot).trust.access_default),
+      );
       const accessSupported =
         !requiredAccess || manifest.access_profiles_supported.includes(requiredAccess);
       const webSupport = manifest.capabilities.web_policy;
-      // The PER-ROUTE policy is what this harness will actually execute: a
-      // per-harness `web` default upgrades a run-level `auto` (routeSpecKnobs
-      // applies the same rule when building the spec), so the capability gate
-      // must judge that effective policy — not admit a route whose configured
-      // default it could never honor.
+      // Match routeSpecKnobs: a per-harness web default upgrades run-level auto,
+      // so judge the effective per-route policy.
       const routePolicy =
         policy === "auto" && cfgEntry?.web && cfgEntry.web !== "auto" ? cfgEntry.web : policy;
       const routeWebRequired = routePolicy === "cached" || routePolicy === "live";
@@ -1032,6 +1038,7 @@ export class Orchestrator {
       if (status.enabledIntents.includes(intent) && accessSupported) {
         pool.push({
           adapter,
+          adapterAccess: requiredAccess,
           webSupport,
           providerFamily: manifest.provider_family,
           supportsMaxTurns: manifest.capabilities.max_turns,
@@ -1053,7 +1060,6 @@ export class Orchestrator {
                 defaultModel: cfgEntry.default_model,
                 effort: cfgEntry.effort,
                 web: cfgEntry.web === "auto" ? null : cfgEntry.web,
-                maxUsd: cfgEntry.max_usd,
                 maxTurns: cfgEntry.max_turns,
                 maxRounds: cfgEntry.max_rounds,
                 toolsAllow: cfgEntry.tools_allow,
@@ -1072,7 +1078,7 @@ export class Orchestrator {
         `no harness can perform '${intent}' for this mode${dropped.length ? ` (skipped: ${dropped.join(", ")})` : ""}`,
       );
     }
-    const ordered = this.orderPool(pool, input, statusById, ledger);
+    const ordered = this.orderPool(pool, input, intent, statusById, ledger);
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
@@ -1086,31 +1092,29 @@ export class Orchestrator {
   }
 
   /**
-   * Order the eligible pool by portfolio routing utility (budget router): an
+   * Order the eligible pool by the selected routing goal (budget router): an
    * explicit user pool keeps the user's order; an explicit primary harness is
    * always pinned first. Cross-family diversity is encouraged for later slots.
    */
   private orderPool(
     pool: RoutedAdapter[],
     input: RunInput,
+    intent: Intent,
     statusById: Map<string, { manifest?: { auth_modes?: string[] } | null }>,
     ledger?: BudgetLedger,
   ): RoutedAdapter[] {
     let ordered = pool;
-    const explicitPool = Boolean(input.harnesses && input.harnesses.length > 0);
-    if (!explicitPool && pool.length > 1) {
+    if (pool.length > 0) {
       const routeLedger = ledger ?? new BudgetLedger();
-      const portfolio = input.portfolio ?? this.deps.portfolio ?? "subscription-first";
+      const config = this.config(input.repoRoot).global;
+      const goal = input.routingGoal ?? this.deps.routingGoal ?? config.routing.goal;
       const byId = new Map(pool.map((r) => [r.adapter.id, r]));
-      // real routing metrics — observed per-harness cost/latency averages
-      // (single producer: attempt settlement) and operator-declared per-family
-      // quality priors. Absent data rides the router's neutral defaults.
+      // Settled cost is evidence for economy routing, never a provider quality prior.
       const metrics = loadHarnessMetrics(globalConfigDir());
-      const priors = this.config(input.repoRoot).global.routing.quality_priors;
       const remaining: RouterCandidate[] = pool.map((r) => {
         const authModes = statusById.get(r.adapter.id)?.manifest?.auth_modes ?? [];
         const metric = metrics[r.adapter.id];
-        // Auth mode for portfolio weighting: prefer the ROUTE EVIDENCE from the
+        // Auth mode for routing: prefer the ROUTE EVIDENCE from the
         // last settled attempt (adapter-disclosed, persisted in metrics) over
         // the manifest capability guess — auth_modes lists what a harness CAN
         // use, not what it actually runs under.
@@ -1119,33 +1123,28 @@ export class Orchestrator {
           : authModes.includes("api_key")
             ? ("api_key" as const)
             : ("unknown" as const);
+        const authMode = metric?.last_auth_mode ?? guessedAuthMode;
         return {
           harnessId: r.adapter.id,
-          providerFamily: r.providerFamily,
           available: true,
-          authMode: metric?.last_auth_mode ?? guessedAuthMode,
-          qualityForIntent: priors[r.providerFamily],
-          costPerCall: metric?.avg_cost_usd ?? undefined,
-          latencyMs: metric?.avg_duration_ms ?? undefined,
+          model:
+            input.models?.[r.adapter.id] ??
+            config.harnesses[r.adapter.id]?.default_model ??
+            undefined,
+          effort: input.effort ?? config.harnesses[r.adapter.id]?.effort ?? undefined,
+          billingKnowledge: authMode === "api_key" ? "metered" : "unknown",
+          incrementalCostUsd: authMode === "api_key" ? (metric?.avg_cost_usd ?? null) : null,
         };
       });
-      const ranked: RoutedAdapter[] = [];
-      while (remaining.length > 0) {
-        const best = selectHarness(remaining, {
-          portfolio,
-          ledger: routeLedger,
-          diversityAgainst: ranked.map((r) => r.providerFamily),
-        });
-        if (!best) break; // cooldowns/zero-utility: keep residual pool order
-        const idx = remaining.findIndex((c) => c.harnessId === best.harnessId);
-        remaining.splice(idx, 1);
-        const routed = byId.get(best.harnessId);
-        if (routed) ranked.push(routed);
-      }
-      for (const c of remaining) {
-        const routed = byId.get(c.harnessId);
-        if (routed) ranked.push(routed);
-      }
+      const ranked = rankHarnesses(remaining, {
+        goal,
+        paidFallback: config.routing.paid_fallback,
+        intent,
+        qualityTiers: config.routing.quality_tiers,
+        ledger: routeLedger,
+      })
+        .map((candidate) => byId.get(candidate.harnessId))
+        .filter((candidate): candidate is RoutedAdapter => Boolean(candidate));
       ordered = ranked;
     }
     if (input.primaryHarness) {
@@ -1202,26 +1201,6 @@ export class Orchestrator {
       ...lines,
       "",
     ].join("\n");
-  }
-
-  /**
-   * Ledger a routed harness reserves from: harnesses with a configured
-   * `max_usd` get a child sub-ledger (spend rolls up to the run cap), so one
-   * harness exhausting its own budget cannot drain the whole run.
-   */
-  private harnessLedger(
-    map: Map<string, BudgetLedger>,
-    parent: BudgetLedger,
-    routed: RoutedAdapter,
-  ): BudgetLedger {
-    const cap = routed.settings?.maxUsd;
-    if (!cap || cap <= 0) return parent;
-    let child = map.get(routed.adapter.id);
-    if (!child) {
-      child = parent.child({ maxUsd: cap });
-      map.set(routed.adapter.id, child);
-    }
-    return child;
   }
 
   /**
@@ -1319,7 +1298,7 @@ export class Orchestrator {
           repoRoot: input.repoRoot,
           mode,
           baseRef: input.baseRef,
-          maxUsd: input.maxUsd,
+          paidBudget: input.paidBudget,
         });
         specFields = {
           success_criteria: fromSpec.success_criteria,
@@ -1405,12 +1384,9 @@ export class Orchestrator {
         deny: [],
       },
       budget: {
-        portfolio:
-          input.portfolio ?? this.deps.portfolio ?? cfg?.budget?.portfolio ?? "subscription-first",
-        // Run cap precedence: explicit run input > surface deps > the user's
-        // configured global per-run default. ($/day caps were removed; the budget
-        // priority is respecting harness-reported subscription/OAuth quota.)
-        max_usd: this.resolveMaxUsdCap(input.maxUsd, resolvedCfg),
+        routing_goal:
+          input.routingGoal ?? this.deps.routingGoal ?? cfg?.budget?.routing_goal ?? "auto",
+        paid_budget: this.resolvePaidBudget(input.paidBudget, resolvedCfg),
       },
       // The resolved harness-scoped model map (scalar already expanded to the
       // primary by resolveRunInput). The contract is what route spec building
@@ -1536,7 +1512,7 @@ export class Orchestrator {
         join(paths.root, "browser"),
       ),
       cwd: envelope.worktree_path,
-      access,
+      access: routed.adapterAccess,
       external_context_policy: knobs.webPolicy,
       tool_permission_policy: {
         web: knobs.webPolicy,
@@ -1546,7 +1522,6 @@ export class Orchestrator {
       model_hint: knobs.model,
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
-      max_usd: routed.settings?.maxUsd ?? null,
       env_inheritance: envInheritance(this.config(contract.repo.root)),
       ...(sessionFields ? { auth_preference: sessionFields.auth_preference } : {}),
       ...(inPlaceEnvelope && sessionFields?.resume_session_id
@@ -1663,7 +1638,7 @@ export class Orchestrator {
               });
               // Mid-flight cap enforcement: the guard raises this attempt's hold
               // to the streamed cost; a hard tier aborts NOW instead of letting a
-              // streaming candidate overshoot max_usd until settlement.
+              // streaming candidate overshoot the paid budget until settlement.
               if (budgetGuard?.(cost)) {
                 harnessErrored = true;
                 errors.push("budget hard cap reached mid-attempt; stream aborted");
@@ -2021,7 +1996,7 @@ export class Orchestrator {
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    const ledger = this.rootLedger(input, contract);
     announce?.({
       log,
       store,
@@ -2133,7 +2108,6 @@ export class Orchestrator {
     if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
     const reviewers = reviewersOutcome.reviewers;
     const reviewVerified = this.routeVerified(reviewers);
-    const harnessLedgers = new Map<string, BudgetLedger>();
 
     const reviewEnvelopes: WorkspaceEnvelope[] = [];
     const disposeReviewEnvelopes = async () => {
@@ -2142,9 +2116,6 @@ export class Orchestrator {
     };
     const candidateAccess = contract.access.effective_profile;
 
-    // Budget leases are reserved UPFRONT for every candidate; denied slots are
-    // never spawned. Granted candidates run in PARALLEL (bounded, isolated
-    // envelopes) — all run to completion and review picks the winner.
     interface CandidateSlot {
       routed: RoutedAdapter;
       attemptId: string;
@@ -2153,25 +2124,21 @@ export class Orchestrator {
     }
     let budgetStopped = false;
     let softWarned = false;
-    // The USER-requested race width, before any budget trimming.
     const requestedSingleCandidate = adapters.length === 1;
     const slots: CandidateSlot[] = [];
     for (let i = 0; i < adapters.length; i++) {
       const routed = adapters[i] as RoutedAdapter;
       const attemptId = `a${String(i + 1).padStart(2, "0")}`;
-      // Per-harness max_usd runs through a child ledger that rolls up to the run cap.
-      const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({
+      const lease = ledger.reserve({
         taskId,
         attemptId,
         intent: this.candidateIntent(input),
         harnessId: routed.adapter.id,
-        // wave guard: every slot AFTER the first holds the estimate
-        // floor at reservation, so concurrent candidates are visible to the
-        // breaker BEFORE any usage streams and a parallel wave cannot blow
-        // past the cap between settlements. The first slot holds nothing —
-        // a cap smaller than the floor must still run ONE candidate and stop
-        // on real usage, never zero.
-        ...(i > 0 ? { estimateUsd: this.estimateUsdFloor(input.repoRoot) } : {}),
+        cost: attemptCostEvidence(
+          routed.adapter.id,
+          attemptId,
+          i > 0 ? this.estimateUsdFloor(input.repoRoot) : undefined,
+        ),
       });
       log.emit("budget.lease.created", {
         granted: lease.granted,
@@ -2194,18 +2161,16 @@ export class Orchestrator {
     }
 
     const runsBySlot = new Array<CandidateRun | undefined>(slots.length);
-    const slotLedger = (slot: CandidateSlot) =>
-      this.harnessLedger(harnessLedgers, ledger, slot.routed);
     const runSlot = async (slot: CandidateSlot, slotIdx: number): Promise<void> => {
       if (input.signal?.aborted) {
-        slotLedger(slot).cancel(slot.leaseId);
+        ledger.cancel(slot.leaseId);
         return;
       }
       // Leases are granted upfront (before spend exists); a worker still
       // re-checks the circuit breaker so queued slots beyond the parallel wave
       // do not start after earlier candidates already blew the hard cap.
-      if (budgetStopped || slotLedger(slot).tier() === "hard") {
-        slotLedger(slot).cancel(slot.leaseId);
+      if (budgetStopped || ledger.tier() === "hard") {
+        ledger.cancel(slot.leaseId);
         log.emit("budget.lease.created", {
           granted: false,
           reason: "budget exhausted (hard cap reached)",
@@ -2220,7 +2185,7 @@ export class Orchestrator {
       // Soft + downgrade breaker (before the hard cap): soft = a one-time
       // warning; downgrade = run this attempt on the per-harness fallback_model
       // (cheaper) instead of hard-killing — gives fallback_model a real job.
-      const breakerTier = slotLedger(slot).tier();
+      const breakerTier = ledger.tier();
       if (breakerTier === "soft" && !softWarned) {
         softWarned = true;
         log.emit("budget.observation", {
@@ -2306,15 +2271,17 @@ export class Orchestrator {
             slot.routed.supportsInteractive,
           ),
           (streamedUsd) => {
-            const lg = slotLedger(slot);
-            lg.updateHold(slot.leaseId, streamedUsd);
-            if (lg.tier() !== "hard") return false;
+            ledger.updateHold(slot.leaseId, streamedUsd);
+            if (ledger.tier() !== "hard") return false;
             budgetStopped = true;
             return true;
           },
           input,
         );
-        slotLedger(slot).settle(slot.leaseId, run.cost);
+        ledger.settle(
+          slot.leaseId,
+          attemptUsageCostSettlement(run.cost, run.costEstimated, run.attemptId, run.harnessId),
+        );
         log.emit("harness.completed", {
           harness_id: adapter.id,
           attempt_id: slot.attemptId,
@@ -2335,7 +2302,7 @@ export class Orchestrator {
           typeof (err as { costUsd?: unknown })?.costUsd === "number"
             ? (err as { costUsd: number }).costUsd
             : 0;
-        slotLedger(slot).settle(slot.leaseId, carriedCost);
+        ledger.settle(slot.leaseId, unknownCostSettlement("post-stream-error", carriedCost));
         const message = safeErrorMessage(err);
         // envelope is still undefined when wsm.create() itself threw — that is
         // a workspace-phase infrastructure failure, not a harness error.
@@ -2432,7 +2399,7 @@ export class Orchestrator {
     }
 
     if (runs.length === 0) {
-      const status: RunStatus = budgetStopped ? "exhausted" : "failed";
+      const status: RunStatus = ledger.terminal() ?? (budgetStopped ? "exhausted" : "failed");
       const why = budgetStopped
         ? "budget exhausted before any candidate run"
         : "no candidates produced";
@@ -2451,7 +2418,7 @@ export class Orchestrator {
       );
       writeFailure(store, paths, {
         phase: "budget",
-        category: status === "exhausted" ? "budget" : "internal",
+        category: isBudgetTerminal(status) ? "budget" : "internal",
         safeMessage: why,
         runDir: paths.root,
       });
@@ -2623,14 +2590,12 @@ export class Orchestrator {
     log.emit("synthesis.started", { synthesize: synth.synthesize, reason: synth.reason });
     if (synth.synthesize && !budgetStopped) {
       const synthRouted = adapters[0] as RoutedAdapter;
-      // Per-harness child ledger: synthesis spend counts against the
-      // synthesizer harness's own cap, not only the run cap.
-      const synthLedger = this.harnessLedger(harnessLedgers, ledger, synthRouted);
-      const lease = synthLedger.reserve({
+      const lease = ledger.reserve({
         taskId,
         attemptId: "synth",
         intent: "synthesize",
         harnessId: synthRouted.adapter.id,
+        cost: attemptCostEvidence(synthRouted.adapter.id, "synth"),
       });
       if (lease.granted) {
         let envelope: WorkspaceEnvelope | undefined;
@@ -2667,7 +2632,7 @@ export class Orchestrator {
             store,
             paths,
             wsm,
-            synthLedger,
+            ledger,
             candidateAccess,
             (ev) => {
               const safeEv = redactHarnessEvent(ev);
@@ -2692,7 +2657,10 @@ export class Orchestrator {
             undefined,
             input,
           );
-          synthLedger.settle(lease.lease?.lease_id ?? "", run.cost);
+          ledger.settle(
+            lease.lease?.lease_id ?? "",
+            attemptUsageCostSettlement(run.cost, run.costEstimated, run.attemptId, run.harnessId),
+          );
           reviewEnvelopes.push(envelope);
           envelope = undefined;
           try {
@@ -2743,7 +2711,7 @@ export class Orchestrator {
           runs.push(run);
           workingRuns.push(run);
         } catch (err) {
-          synthLedger.settle(lease.lease?.lease_id ?? "", 0);
+          ledger.settle(lease.lease?.lease_id ?? "", unknownCostSettlement("synthesis-error"));
           log.emit("harness.completed", {
             attempt_id: "synth",
             status: "failed",
@@ -2822,6 +2790,7 @@ export class Orchestrator {
       : evidences.length > 0 && evidences.every((e) => e.reviewVerified);
     let status: RunStatus =
       needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
+    if (status === "success" && ledger.terminal() !== null) status = ledger.terminal()!;
     // FinalVerifier blocks adoption until the patch and gates pass on a fresh base.
     let finalVerify: FinalVerifyRecord | null = null;
     let finalVerifyFailed = false;
@@ -2945,10 +2914,7 @@ export class Orchestrator {
         deliveryFailureReason,
         deliveryReceiptPath: raceDeliveryReceipt ? "final/delivery_receipt.yaml" : null,
       });
-      if (
-        requestedSingleCandidate &&
-        (applyState === "applied" || applyState === "applied_review_blocked")
-      ) {
+      if (inPlaceWinner && requestedSingleCandidate && adopted === true) {
         revertAnchorId = await createRevertAnchorOrNull(execRoot, preTurnSha, postTurnSha);
       }
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
@@ -3047,7 +3013,7 @@ export class Orchestrator {
           ? "policy"
           : winnerRun?.errored
             ? "harness_error"
-            : status === "exhausted"
+            : isBudgetTerminal(status)
               ? "budget"
               : "internal",
         harnessId: winnerRun?.errored ? winnerRun.harnessId : undefined,
@@ -3362,6 +3328,7 @@ export class Orchestrator {
               attemptId: run.attemptId,
               intent: "review",
               harnessId: "review-panel",
+              cost: attemptCostEvidence("review-panel", run.attemptId),
             })
           : undefined;
         const result =
@@ -3390,7 +3357,15 @@ export class Orchestrator {
                 reviewSpendEstimated: false,
               };
         if (reviewLease?.granted) {
-          ledger?.settle(reviewLease.lease?.lease_id ?? "", result.reviewSpendUsd ?? 0);
+          ledger?.settle(
+            reviewLease.lease?.lease_id ?? "",
+            usageCostSettlement(
+              result.reviewSpendUsd,
+              result.reviewSpendEstimated,
+              "review-usage",
+              [`attempt:${run.attemptId}`, "review:panel"],
+            ),
+          );
           if ((result.reviewSpendUsd ?? 0) > 0) {
             log.emit("budget.observation", {
               harness_id: "review-panel",
@@ -3539,7 +3514,7 @@ export class Orchestrator {
     const execRoot = this.execRootOf(input);
     const wsm = new WorkspaceManager(execRoot);
     const readiness = new ReadinessLedger();
-    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    const ledger = this.rootLedger(input, contract);
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
@@ -3606,6 +3581,7 @@ export class Orchestrator {
         { ...input, n: undefined },
         this.candidateIntent(input),
       );
+      this.requestRequirements.assertConvergenceWorkspace(input.inPlace === true, adapterPool);
     } catch (err) {
       const message = safeErrorMessage(err);
       store.writeText(
@@ -3719,7 +3695,6 @@ export class Orchestrator {
       harnessId: string;
       telemetry: AttemptTelemetry;
     }[] = [];
-    const harnessLedgers = new Map<string, BudgetLedger>();
     let lastDiffStable = true;
     let reviewSpendEstimated = false;
 
@@ -3774,12 +3749,12 @@ export class Orchestrator {
           break;
         }
 
-        // Per-harness max_usd runs through a child ledger that rolls up to the run cap.
-        const lease = this.harnessLedger(harnessLedgers, ledger, routed).reserve({
+        const lease = ledger.reserve({
           taskId,
           attemptId,
           intent: "repair",
           harnessId: adapter.id,
+          cost: attemptCostEvidence(adapter.id, attemptId),
         });
         if (!lease.granted) {
           exhausted = true;
@@ -3829,15 +3804,14 @@ export class Orchestrator {
               routed.supportsInteractive,
             ),
             (streamedUsd) => {
-              const lg = this.harnessLedger(harnessLedgers, ledger, routed);
-              lg.updateHold(lease.lease?.lease_id ?? "", streamedUsd);
-              return lg.tier() === "hard";
+              ledger.updateHold(lease.lease?.lease_id ?? "", streamedUsd);
+              return ledger.tier() === "hard";
             },
             input,
           );
-          this.harnessLedger(harnessLedgers, ledger, routed).settle(
+          ledger.settle(
             lease.lease?.lease_id ?? "",
-            run.cost,
+            attemptUsageCostSettlement(run.cost, run.costEstimated, run.attemptId, run.harnessId),
           );
           log.emit("harness.completed", {
             harness_id: adapter.id,
@@ -3849,7 +3823,7 @@ export class Orchestrator {
         } catch (err) {
           // Envelope/setup failure before the stream; stream errors are absorbed
           // inside runCandidateInEnvelope with their real accumulated cost.
-          this.harnessLedger(harnessLedgers, ledger, routed).settle(lease.lease?.lease_id ?? "", 0);
+          ledger.settle(lease.lease?.lease_id ?? "", unknownCostSettlement("attempt-error"));
           log.emit("harness.completed", {
             harness_id: adapter.id,
             attempt_id: attemptId,
@@ -3912,6 +3886,7 @@ export class Orchestrator {
                       attemptId,
                       intent: "review",
                       harnessId: "review-panel",
+                      cost: attemptCostEvidence("review-panel", attemptId),
                     })
                   : null;
               const reviewResult =
@@ -3939,7 +3914,15 @@ export class Orchestrator {
                       reviewSpendEstimated: false,
                     };
               if (reviewLease?.granted) {
-                ledger.settle(reviewLease.lease?.lease_id ?? "", reviewResult.reviewSpendUsd ?? 0);
+                ledger.settle(
+                  reviewLease.lease?.lease_id ?? "",
+                  usageCostSettlement(
+                    reviewResult.reviewSpendUsd,
+                    reviewResult.reviewSpendEstimated,
+                    "review-usage",
+                    [`attempt:${attemptId}`, "review:panel"],
+                  ),
+                );
                 if ((reviewResult.reviewSpendUsd ?? 0) > 0) {
                   log.emit("budget.observation", {
                     harness_id: "review-panel",
@@ -4138,6 +4121,7 @@ export class Orchestrator {
           : exhausted
             ? "exhausted"
             : "not_converged";
+    if (status === "success" && ledger.terminal() !== null) status = ledger.terminal()!;
     let decision: ReturnType<typeof arbitrate>["decision"] | null = null;
     if (lastRun) {
       const arb = arbitrate(
@@ -4267,14 +4251,13 @@ export class Orchestrator {
     if (!converged) {
       writeFailure(store, paths, {
         phase: "convergence",
-        category:
-          status === "exhausted"
-            ? "budget"
-            : status === "cancelled"
-              ? "cancelled"
-              : status === "blocked"
-                ? "policy"
-                : "internal",
+        category: isBudgetTerminal(status)
+          ? "budget"
+          : status === "cancelled"
+            ? "cancelled"
+            : status === "blocked"
+              ? "policy"
+              : "internal",
         safeMessage:
           status === "blocked"
             ? `review escalated to a human decision after ${attempt} attempt(s)`
@@ -4394,7 +4377,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
-    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    const ledger = this.rootLedger(input, contract);
     announce?.({
       log,
       store,
@@ -4521,7 +4504,13 @@ export class Orchestrator {
         if (input.signal?.aborted) break;
         const adapter = routed.adapter;
         const attemptId = `p${String(idx + 1).padStart(2, "0")}`;
-        const lease = ledger.reserve({ taskId, attemptId, intent: "plan", harnessId: adapter.id });
+        const lease = ledger.reserve({
+          taskId,
+          attemptId,
+          intent: "plan",
+          harnessId: adapter.id,
+          cost: attemptCostEvidence(adapter.id, attemptId),
+        });
         if (!lease.granted) {
           log.emit("budget.lease.created", {
             granted: false,
@@ -4586,6 +4575,7 @@ export class Orchestrator {
           else input.signal.addEventListener("abort", onAbort, { once: true });
         }
         let cost = 0;
+        let costEstimated = false;
         let harnessError: string | null = null;
         const budgetSignalState = { quotaPressureDisclosed: false };
         try {
@@ -4628,6 +4618,7 @@ export class Orchestrator {
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
+                if (safeEv.usage.estimated) costEstimated = true;
                 log.emit("budget.observation", {
                   harness_id: adapter.id,
                   attempt_id: attemptId,
@@ -4653,7 +4644,13 @@ export class Orchestrator {
           harnessError = safeErrorMessage(err);
         } finally {
           input.signal?.removeEventListener("abort", onAbort);
-          ledger.settle(lease.lease?.lease_id ?? "", cost);
+          ledger.settle(
+            lease.lease?.lease_id ?? "",
+            usageCostSettlement(cost, costEstimated, "planner-usage", [
+              `attempt:${attemptId}`,
+              `harness:${adapter.id}`,
+            ]),
+          );
         }
         attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
         const unrecovered = unrecoveredToolErrors(telemetry);
@@ -4809,6 +4806,7 @@ export class Orchestrator {
         attemptId: "plan-review",
         intent: "review",
         harnessId: "review-panel",
+        cost: attemptCostEvidence("review-panel", "plan-review"),
       });
       if (lease.granted) {
         const res = await this.reviewScoped({
@@ -4834,7 +4832,13 @@ export class Orchestrator {
           route_proofs: res.routeProofs,
           reviewer_requests: res.reviewerRequests,
         });
-        ledger.settle(lease.lease?.lease_id ?? "", res.reviewSpendUsd ?? 0);
+        ledger.settle(
+          lease.lease?.lease_id ?? "",
+          usageCostSettlement(res.reviewSpendUsd, res.reviewSpendEstimated, "review-usage", [
+            "attempt:plan-review",
+            "review:panel",
+          ]),
+        );
         if ((res.reviewSpendUsd ?? 0) > 0) {
           log.emit("budget.observation", {
             harness_id: "review-panel",
@@ -5032,21 +5036,15 @@ export class Orchestrator {
     );
   }
 
-  /**
-   * orchestrate: the autonomous planner. NOT a privileged harness — the planner
-   * is routed like reviewers (doctor-ok + `orchestrate` capability + headroom)
-   * and runs READ-ONLY. With default `suggest` autonomy its work product is a
-   * typed orchestration plan over the 6-tool belt (start_run / race / status /
-   * answer_question / apply / review); execution happens as subsequent thread
-   * turns. Degradation contract: any 1 harness works (single-route plan); 2+
-   * harnesses unlock cross-family race/review in the plan space.
-   */
-  /** ONE owner of the per-run USD cap precedence: explicit input -> embedder deps -> operator config. */
-  private resolveMaxUsdCap(
-    inputMaxUsd: number | null | undefined,
+  private resolvePaidBudget(
+    inputBudget: PaidBudget | undefined,
     cfg: ReturnType<typeof loadConfig>,
-  ): number | null {
-    return inputMaxUsd ?? this.deps.maxUsd ?? cfg.global.budget.max_usd_per_run ?? null;
+  ): PaidBudget {
+    return inputBudget ?? this.deps.paidBudget ?? cfg.global.budget.paid_budget_per_run;
+  }
+
+  private rootLedger(input: RunInput, contract: TaskContract): BudgetLedger {
+    return input.budgetLedger ?? new BudgetLedger(contract.budget.paid_budget);
   }
 
   private async runOrchestrate(
@@ -5064,15 +5062,11 @@ export class Orchestrator {
     // the executor below is its consumer. Default `suggest` (plan-only) preserves
     // the read-only contract when no autonomy is requested.
     const autonomy: OrchestrateAutonomy = input.autonomy ?? "suggest";
-    // The aggregate cap resolves the SAME chain as run(): explicit input ->
-    // orchestrator deps -> operator config default. Without the fallback an
-    // operator's max_usd_per_run capped every sub-run individually but never
-    // the aggregate (R33 finding).
-    const aggregateMaxUsd = this.resolveMaxUsdCap(input.maxUsd, this.config(input.repoRoot));
+    const paidBudget = this.resolvePaidBudget(input.paidBudget, this.config(input.repoRoot));
     const orchestrateContract = OrchestrateContractSchema.parse({
       thread_id: input.threadId ?? newId("th"),
       goal,
-      budget: { max_usd: aggregateMaxUsd, max_tool_calls: input.maxToolCalls ?? null },
+      budget: { paid_budget: paidBudget, max_tool_calls: input.maxToolCalls ?? null },
       autonomy,
     });
     const plannerPrompt = buildOrchestratePlannerPrompt(
@@ -5137,7 +5131,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
-    const ledger = new BudgetLedger({ maxUsd: contract.budget.max_usd ?? null });
+    const ledger = this.rootLedger(input, contract);
     announce?.({
       log,
       store,
@@ -5296,6 +5290,7 @@ export class Orchestrator {
         attemptId,
         intent: opts.intent,
         harnessId: adapter.id,
+        cost: attemptCostEvidence(adapter.id, attemptId),
       });
       if (!lease.granted) {
         log.emit("budget.lease.created", {
@@ -5386,6 +5381,7 @@ export class Orchestrator {
         else input.signal.addEventListener("abort", onAbort, { once: true });
       }
       let cost = 0;
+      let costEstimated = false;
       let harnessError: string | null = null;
       try {
         for (let nativeTry = 0; !input.signal?.aborted; nativeTry += 1) {
@@ -5440,6 +5436,7 @@ export class Orchestrator {
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
+                if (safeEv.usage.estimated) costEstimated = true;
                 log.emit("budget.observation", {
                   harness_id: adapter.id,
                   attempt_id: attemptId,
@@ -5499,7 +5496,13 @@ export class Orchestrator {
         }
       } finally {
         input.signal?.removeEventListener("abort", onAbort);
-        ledger.settle(lease.lease?.lease_id ?? "", cost);
+        ledger.settle(
+          lease.lease?.lease_id ?? "",
+          usageCostSettlement(cost, costEstimated, "harness-usage", [
+            `attempt:${attemptId}`,
+            `harness:${adapter.id}`,
+          ]),
+        );
       }
       if (harnessError && telemetry.transientFailures.length > 0) {
         log.emit("route.transient.exhausted", {
@@ -5947,6 +5950,9 @@ export class Orchestrator {
     const autonomy: OrchestrateAutonomy =
       opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
     let terminal: RunStatus = "success";
+    let orchestrateReadOnly = true;
+    let orchestrateReceiptRefs: string[] = [];
+    if (ledger.terminal() !== null) terminal = ledger.terminal()!;
     // orchestrate's contract output IS the typed plan. If the planner failed to
     // produce a valid one, the run is NOT a clean success — disclose it honestly
     // (the markdown plan stays as a diagnostic artifact) rather than reporting
@@ -5956,19 +5962,23 @@ export class Orchestrator {
       // Thread the GENERATED runId onto input so the executor's answer_question
       // step keys the interaction registry by this orchestrate run's id (callers
       // often invoke run() without a preassigned runId).
-      const exec = await this.executeOrchestratePlan(
-        { ...input, runId },
-        orchestratePlan,
+      const executionInput = { ...input, runId };
+      const exec = await executeOrchestratePlan({
+        plan: orchestratePlan,
         autonomy,
-        opts.orchestrateContract ?? null,
+        maxToolCalls: opts.orchestrateContract?.budget.max_tool_calls ?? null,
+        signal: input.signal,
         store,
         paths,
         log,
-        // The PLANNER's own settled spend counts against the same cap: the
-        // aggregate must start from it, not from zero (completeness).
-        ledger.spend(),
-      );
+        ledger,
+        executeSafeStep: (call) =>
+          this.executeSafeStep(executionInput, call, log, store, paths, ledger),
+        executeApplyStep: (call) => this.executeApplyStep(executionInput, call, log),
+      });
       terminal = exec.terminal;
+      orchestrateReadOnly = exec.readOnly;
+      orchestrateReceiptRefs = exec.receiptRefs;
       typedPlanNote += `\n- Executor (${autonomy}): ${exec.note}`;
     }
     const harnessLabel = attempts
@@ -5983,70 +5993,31 @@ export class Orchestrator {
       kind: "report",
       source_task_id: taskId,
       producer_attempt_id: succeeded[0]?.attemptId ?? "a01",
-      files: { [opts.artifactName]: join(paths.finalDir, opts.artifactName) },
+      files: Object.fromEntries([
+        [opts.artifactName, join(paths.finalDir, opts.artifactName)],
+        ...orchestrateReceiptRefs.map((ref, index) => [`delivery_receipt_${index + 1}`, ref]),
+      ]),
       meta: {
         harnesses: attempts.map((a) => a.harnessId),
         mode: opts.mode,
         intent: opts.intent,
-        read_only: true,
+        read_only: orchestrateReadOnly,
       },
     });
     log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
-    if (terminal === "blocked") {
-      writeFailure(store, paths, {
-        phase: "executor",
-        category: "policy",
-        safeMessage:
-          "orchestrate executor stopped at a risky step (apply) under auto_safe; awaiting a human decision",
-        runDir: paths.root,
-        nextActions: [
-          "Review the proposed apply",
-          "Approve via the run decision endpoint",
-          "Re-run with auto_full to apply automatically",
-        ],
-      });
+    const orchestrateFailure = orchestrateFailureFor(terminal);
+    if (terminal === "blocked" && orchestrateFailure) {
+      writeFailure(store, paths, { ...orchestrateFailure, runDir: paths.root });
       log.emit("run.blocked", {
         status: terminal,
-        phase: "executor",
+        phase: orchestrateFailure.phase,
         failure_ref: "final/failure.yaml",
       });
-    } else if (terminal === "failed") {
-      writeFailure(store, paths, {
-        phase: "executor",
-        category: "internal",
-        safeMessage:
-          "orchestrate executor failed: a safe step errored fatally (see final/orchestration_progress.yaml)",
-        runDir: paths.root,
-        nextActions: [
-          "Inspect final/orchestration_progress.yaml",
-          "Open the failed sub-run",
-          "Re-run after the cause is fixed",
-        ],
-      });
+    } else if (orchestrateFailure) {
+      writeFailure(store, paths, { ...orchestrateFailure, runDir: paths.root });
       log.emit("run.failed", {
         status: terminal,
-        phase: "executor",
-        failure_ref: "final/failure.yaml",
-      });
-    } else if (terminal === "not_converged") {
-      // Orchestrate's typed-plan contract failed (the planner produced no valid
-      // plan): a failure-shaped terminal with artifacts, never run.completed —
-      // The command projection and events.jsonl must agree the run did not converge.
-      writeFailure(store, paths, {
-        phase: "plan",
-        category: "harness_error",
-        safeMessage:
-          "orchestrate planner produced no valid typed plan (see final/orchestration_parse_error.md); the markdown report is diagnostic only",
-        runDir: paths.root,
-        nextActions: [
-          "Inspect final/orchestration_parse_error.md",
-          "Re-run orchestrate",
-          "Check the planner harness doctor status",
-        ],
-      });
-      log.emit("run.failed", {
-        status: terminal,
-        phase: "plan",
+        phase: orchestrateFailure.phase,
         failure_ref: "final/failure.yaml",
       });
     } else if (terminal === "cancelled") {
@@ -6054,26 +6025,6 @@ export class Orchestrator {
       // terminal): tailers waiting for run.completed-as-success must not
       // mistake an operator abort for a clean report.
       log.emit("run.failed", { status: terminal });
-    } else if (terminal === "exhausted") {
-      // A budget-truncated plan is failure-shaped: skipped steps mean the
-      // goal was NOT met — `claudexor follow` and the command projection must not read a
-      // cut-short auto_full run as a clean success (exit 0).
-      writeFailure(store, paths, {
-        phase: "executor",
-        category: "budget",
-        safeMessage:
-          "orchestrate executor exhausted its budget before completing the plan (see final/orchestration_progress.yaml for the skipped steps)",
-        runDir: paths.root,
-        nextActions: [
-          "Inspect final/orchestration_progress.yaml",
-          "Re-run with a higher --max-usd / --max-tool-calls",
-        ],
-      });
-      log.emit("run.failed", {
-        status: terminal,
-        phase: "executor",
-        failure_ref: "final/failure.yaml",
-      });
     } else {
       log.emit("run.completed", { status: terminal });
     }
@@ -6096,193 +6047,6 @@ export class Orchestrator {
   }
 
   /**
-   * Execute a typed orchestration plan under auto_safe / auto_full. Runs the
-   * tool_calls IN ORDER, classifying each via toolRisk (FAIL-CLOSED). Persists
-   * final/orchestration_progress.yaml and emits progress events. Returns the
-   * executor's terminal status (success / blocked / failed) and a short note.
-   *
-   * SAFETY INVARIANTS (see CLAUDEXOR doctrine):
-   *  1. A SAFE step NEVER mutates the live tree: start_run/race run as isolated
-   *     ENVELOPE sub-runs (inPlace=false, asserted), review/status/answer are reads.
-   *  2. Risk is fail-closed (toolRisk): any unknown/undeclared tool is risky.
-   *  3. auto_safe STOPS at the first risky step (apply) without executing it; the
-   *     run ends `blocked` awaiting a human decision.
-   *  4. answer_question / status / review are read-only w.r.t. the tree.
-   */
-  private async executeOrchestratePlan(
-    input: RunInput,
-    plan: OrchestratePlanT,
-    autonomy: OrchestrateAutonomy,
-    contract: OrchestrateContractT | null,
-    store: ArtifactStore,
-    paths: ReturnType<ArtifactStore["runPaths"]>,
-    log: EventLog,
-    brainSpentUsd = 0,
-  ): Promise<{ terminal: RunStatus; note: string }> {
-    const maxToolCalls = contract?.budget.max_tool_calls ?? null;
-    // The RESOLVED aggregate cap (input -> deps -> operator config) rides the
-    // contract; raw input.maxUsd alone would ignore the config default.
-    const aggregateMaxUsd = contract?.budget.max_usd ?? input.maxUsd ?? null;
-    const steps: OrchestratePlanProgressT["steps"] = plan.tool_calls.map((call, index) => ({
-      index,
-      tool: call.tool,
-      risk: toolRisk(call.tool),
-      status: "pending" as OrchestrateStepStatus,
-      run_id: null,
-      detail: null,
-    }));
-    let stoppedReason: string | null = null;
-    let terminal: RunStatus = "success";
-    const persist = (): void => {
-      const progress: OrchestratePlanProgressT = { steps, autonomy, stopped_reason: stoppedReason };
-      store.writeYaml(join(paths.finalDir, "orchestration_progress.yaml"), progress);
-    };
-    persist();
-    log.emit("output.ready", { kind: "report", path: "final/orchestration_progress.yaml" });
-
-    let executed = 0;
-    // Aggregate budget: the planner's own spend plus every sub-run share
-    // ONE cap. Each sequential sub-run gets the REMAINING headroom (cap minus
-    // settled spend so far) — never the full cap again per step.
-    let aggregateSpentUsd = brainSpentUsd;
-    for (let i = 0; i < plan.tool_calls.length; i++) {
-      const call = plan.tool_calls[i]!;
-      const step = steps[i]!;
-      // Honor input.signal abort: stop, mark remaining steps skipped.
-      if (input.signal?.aborted) {
-        step.status = "skipped";
-        step.detail = "run cancelled before this step";
-        stoppedReason = "cancelled";
-        terminal = "cancelled";
-        persist();
-        break;
-      }
-      // Aggregate USD cap: stop before a step that has no headroom left.
-      if (aggregateMaxUsd !== null && aggregateSpentUsd >= aggregateMaxUsd) {
-        step.status = "skipped";
-        step.detail = `aggregate budget exhausted (${aggregateSpentUsd.toFixed(2)} of ${aggregateMaxUsd} USD spent)`;
-        stoppedReason = `aggregate budget exhausted after ${executed} step(s)`;
-        terminal = "exhausted";
-        persist();
-        break;
-      }
-      // Honor the budget cap on tool calls (count attempted executions).
-      // Same honesty as the USD cap: a plan cut short by a budget knob ends
-      // `exhausted`, never a quiet "success" whose note miscounts the steps.
-      if (maxToolCalls !== null && executed >= maxToolCalls) {
-        step.status = "skipped";
-        step.detail = `budget max_tool_calls=${maxToolCalls} reached`;
-        stoppedReason = `budget max_tool_calls=${maxToolCalls} reached after ${executed} step(s)`;
-        terminal = "exhausted";
-        persist();
-        break;
-      }
-      const risk = toolRisk(call.tool);
-      // RISKY step (apply, or any fail-closed-risky tool).
-      if (risk === "risky") {
-        if (autonomy === "auto_safe") {
-          // STOP: do not execute the risky step; block awaiting a human decision.
-          step.status = "blocked";
-          step.detail = "risky step requires human approval (auto_safe)";
-          stoppedReason = `blocked at risky step #${i} (${call.tool}) under auto_safe`;
-          terminal = "blocked";
-          log.emit("orchestrate.step.blocked", { index: i, tool: call.tool, autonomy });
-          persist();
-          break;
-        }
-        // auto_full: execute the risky step (apply) via the single gate.
-        step.status = "running";
-        persist();
-        executed++;
-        try {
-          const r = await this.executeApplyStep(
-            input,
-            call as Extract<OrchestratePlanCallT, { tool: "apply" }>,
-            log,
-          );
-          step.status = r.ok ? "done" : "failed";
-          step.run_id = r.runId;
-          step.detail = r.detail;
-          log.emit("orchestrate.step.done", {
-            index: i,
-            tool: call.tool,
-            ok: r.ok,
-            run_id: r.runId,
-          });
-          if (!r.ok) {
-            terminal = "failed";
-            stoppedReason = `apply step #${i} failed: ${r.detail}`;
-            persist();
-            break;
-          }
-        } catch (err) {
-          step.status = "failed";
-          step.detail = safeErrorMessage(err);
-          terminal = "failed";
-          stoppedReason = `apply step #${i} threw: ${safeErrorMessage(err)}`;
-          persist();
-          break;
-        }
-        persist();
-        continue;
-      }
-      // SAFE step: execute as an isolated sub-run / pure read.
-      step.status = "running";
-      persist();
-      executed++;
-      try {
-        const remainingUsd =
-          aggregateMaxUsd === null ? null : Math.max(0, aggregateMaxUsd - aggregateSpentUsd);
-        const r = await this.executeSafeStep(input, call, log, store, paths, remainingUsd);
-        aggregateSpentUsd += r.spendUsd ?? 0;
-        step.status = r.status;
-        step.run_id = r.runId;
-        step.detail = r.detail;
-        log.emit("orchestrate.step.done", {
-          index: i,
-          tool: call.tool,
-          status: r.status,
-          run_id: r.runId,
-        });
-        if (r.status === "failed") {
-          terminal = "failed";
-          stoppedReason = `safe step #${i} (${call.tool}) errored: ${r.detail}`;
-          persist();
-          break;
-        }
-      } catch (err) {
-        step.status = "failed";
-        step.detail = safeErrorMessage(err);
-        terminal = "failed";
-        stoppedReason = `safe step #${i} (${call.tool}) threw: ${safeErrorMessage(err)}`;
-        persist();
-        break;
-      }
-      persist();
-    }
-    // A FINAL step can overspend its remaining headroom (spend is charged
-    // after the step; no later pre-step check exists to trip). An overshot
-    // cap must not read "success — all steps done".
-    if (terminal === "success" && aggregateMaxUsd !== null && aggregateSpentUsd > aggregateMaxUsd) {
-      terminal = "exhausted";
-      stoppedReason = `aggregate budget overshot on the final step (${aggregateSpentUsd.toFixed(2)} of ${aggregateMaxUsd} USD)`;
-    }
-    persist();
-    const done = steps.filter((s) => s.status === "done").length;
-    const note =
-      terminal === "blocked"
-        ? `blocked at a risky step (${done}/${steps.length} safe steps done)`
-        : terminal === "failed"
-          ? `failed (${done}/${steps.length} steps done; ${stoppedReason ?? "see progress"})`
-          : terminal === "cancelled"
-            ? `cancelled (${done}/${steps.length} steps done)`
-            : terminal === "exhausted"
-              ? `budget exhausted (${done}/${steps.length} steps done; ${stoppedReason ?? "see progress"})`
-              : `all ${done}/${steps.length} steps done`;
-    return { terminal, note };
-  }
-
-  /**
    * Run one SAFE plan step. start_run/race spawn ISOLATED ENVELOPE sub-runs
    * (inPlace=false, ASSERTED); review/status/answer_question are pure reads /
    * answer delivery that never mutate the live tree.
@@ -6293,20 +6057,15 @@ export class Orchestrator {
     log: EventLog,
     store: ArtifactStore,
     paths: ReturnType<ArtifactStore["runPaths"]>,
-    remainingUsd: number | null,
-  ): Promise<{
-    status: OrchestrateStepStatus;
-    runId: string | null;
-    detail: string | null;
-    spendUsd?: number | null;
-  }> {
+    ledger: BudgetLedger,
+  ): Promise<OrchestrateSafeStepResult> {
     switch (call.tool) {
       case "start_run":
       case "race": {
         // Isolated envelope sub-run (construction owned by runSupport);
         // recursion guard via orchestrateDepth+1, may NOT orchestrate.
         const subInput: RunInput = {
-          ...buildEnvelopeSubInput(input, call, remainingUsd),
+          ...buildEnvelopeSubInput(input, call, ledger),
         } as RunInput;
         // SAFETY INVARIANT 1 (asserted, not convention): a safe sub-run is an
         // isolated envelope — never a live in-place turn.
@@ -6319,6 +6078,9 @@ export class Orchestrator {
         const res = await this.run(subInput);
         return {
           status: res.status === "failed" || res.status === "cancelled" ? "failed" : "done",
+          terminalStatus: res.status,
+          terminalSource: "subrun",
+          evidenceRefs: [`run:${res.runId}`],
           runId: res.runId,
           spendUsd: res.spendUsd ?? null,
           detail: `${call.tool} sub-run ${res.runId} -> ${res.status}`,
@@ -6329,8 +6091,11 @@ export class Orchestrator {
         const read = readRunStatus(input.repoRoot, call.run_id);
         return {
           status: read ? "done" : "skipped",
+          terminalStatus: read?.status ?? null,
+          terminalSource: "subrun",
+          evidenceRefs: read?.evidenceRefs ?? [],
           runId: call.run_id,
-          detail: read ?? `run ${call.run_id} has no readable status artifacts`,
+          detail: read?.detail ?? `run ${call.run_id} has no readable status artifacts`,
         };
       }
       case "review": {
@@ -6342,15 +6107,21 @@ export class Orchestrator {
         if (diff === null)
           return {
             status: "skipped",
+            terminalStatus: null,
+            terminalSource: "review",
+            evidenceRefs: [],
             runId: call.run_id,
             detail: `run ${call.run_id} has no patch.diff to review`,
           };
         // Aggregate honesty: reviewer panels spend real money on
         // API-keyed routes and the spend is charged AFTER the fact — with no
         // remaining headroom the review must not start at all.
-        if (remainingUsd !== null && remainingUsd <= 0) {
+        if (ledger.terminal() !== null) {
           return {
             status: "skipped",
+            terminalStatus: null,
+            terminalSource: "review",
+            evidenceRefs: [],
             runId: call.run_id,
             detail: "aggregate budget exhausted before the review step",
           };
@@ -6359,8 +6130,27 @@ export class Orchestrator {
         if (reviewers.length === 0)
           return {
             status: "skipped",
+            terminalStatus: null,
+            terminalSource: "review",
+            evidenceRefs: [],
             runId: call.run_id,
             detail: "no doctor-OK reviewers available",
+          };
+        const reviewLease = ledger.reserve({
+          taskId: input.taskId ?? "orchestrate",
+          attemptId: `review-${call.run_id}`,
+          intent: "review",
+          harnessId: "review-panel",
+          cost: attemptCostEvidence("review-panel", `review-${call.run_id}`),
+        });
+        if (!reviewLease.granted)
+          return {
+            status: "skipped",
+            terminalStatus: ledger.terminal(),
+            terminalSource: "review",
+            evidenceRefs: [],
+            runId: call.run_id,
+            detail: reviewLease.reason ?? "root paid budget refused the review step",
           };
         const evidenceDir = join(paths.reviewsDir, `orchestrate-${call.run_id}`, "evidence");
         writeEvidencePacket(evidenceDir, {
@@ -6381,7 +6171,16 @@ export class Orchestrator {
           envInheritance: envInheritance(this.config(input.repoRoot)),
           signal: input.signal,
           onReviewerEvent: (event) => log.emit(event.type, { ...event }),
+        }).catch((error: unknown) => {
+          ledger.settle(reviewLease.lease?.lease_id ?? "", unknownCostSettlement("review-error"));
+          throw error;
         });
+        ledger.settle(
+          reviewLease.lease?.lease_id ?? "",
+          usageCostSettlement(result.reviewSpendUsd, result.reviewSpendEstimated, "review-usage", [
+            `orchestrate:review:${call.run_id}`,
+          ]),
+        );
         const revalidated = await revalidateFindings(result.findings, {
           candidateRoot: input.repoRoot,
           evidenceDir,
@@ -6396,6 +6195,9 @@ export class Orchestrator {
         const blockers = revalidated.filter((f) => isBlocking(f)).length;
         return {
           status: "done",
+          terminalStatus: result.crossFamilyVerified && blockers === 0 ? "success" : "blocked",
+          terminalSource: "review",
+          evidenceRefs: [`reviews/orchestrate-${call.run_id}.yaml`],
           runId: call.run_id,
           detail: `reviewed ${call.run_id}: ${result.distinctProviders.length} family(ies), ${revalidated.length} finding(s), ${blockers} blocker(s)`,
           // Reviewer panels can spend real money on API-keyed routes; the
@@ -6405,7 +6207,13 @@ export class Orchestrator {
       }
       case "answer_question": {
         // Delivery + registry-keying rationale owned by runSupport.
-        return deliverPlanAnswer(input, call);
+        const answer = await deliverPlanAnswer(input, call);
+        return {
+          ...answer,
+          terminalStatus: answer.status === "done" ? "success" : null,
+          terminalSource: "executor",
+          evidenceRefs: [],
+        };
       }
       default: {
         // FAIL-CLOSED: a risky tool (apply) must never reach the safe executor;
@@ -6422,18 +6230,24 @@ export class Orchestrator {
     input: RunInput,
     call: Extract<OrchestratePlanCallT, { tool: "apply" }>,
     log: EventLog,
-  ): Promise<{ ok: boolean; runId: string; detail: string }> {
+  ): Promise<OrchestrateApplyStepResult> {
     const store = new ArtifactStore(input.repoRoot);
     const sub = store.runPaths(call.run_id);
     const patchPath = join(sub.finalDir, "patch.diff");
     const patchText = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : null;
     if (patchText === null)
-      return { ok: false, runId: call.run_id, detail: `run ${call.run_id} has no patch.diff` };
+      return {
+        ok: false,
+        runId: call.run_id,
+        detail: `run ${call.run_id} has no patch.diff`,
+        receipt: null,
+      };
     if (containsSecretLikeToken(patchText))
       return {
         ok: false,
         runId: call.run_id,
         detail: "patch contains a secret-like token; refusing apply",
+        receipt: null,
       };
     const decision = store.readYaml(join(sub.arbitrationDir, "decision.yaml"));
     const workProduct = store.readYaml(join(sub.finalDir, "work_product.yaml"));
@@ -6443,7 +6257,12 @@ export class Orchestrator {
     const parsedDecision = decision ? DecisionRecordSchema.safeParse(decision) : null;
     const parsedWp = workProduct ? WorkProductSchema.safeParse(workProduct) : null;
     if (!taskContract.success)
-      return { ok: false, runId: call.run_id, detail: "fresh verification contract is missing" };
+      return {
+        ok: false,
+        runId: call.run_id,
+        detail: "fresh verification contract is missing",
+        receipt: null,
+      };
     const applyGateInput = {
       state: null,
       decision: parsedDecision?.success ? parsedDecision.data : null,
@@ -6455,7 +6274,12 @@ export class Orchestrator {
     };
     const gateError = validateApplyGate(applyGateInput);
     if (gateError)
-      return { ok: false, runId: call.run_id, detail: `apply gate refused: ${gateError}` };
+      return {
+        ok: false,
+        runId: call.run_id,
+        detail: `apply gate refused: ${gateError}`,
+        receipt: null,
+      };
     const delivered = await verifyAndDeliver(
       input.repoRoot,
       patchText,
@@ -6470,6 +6294,7 @@ export class Orchestrator {
       detail: delivered.applied
         ? `applied (${call.mode})`
         : `deliver failed: ${delivered.detail ?? "unknown"}`,
+      receipt: delivered,
     };
   }
 }

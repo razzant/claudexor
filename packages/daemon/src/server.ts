@@ -18,10 +18,8 @@ import {
 } from "./command-authority.js";
 import { productCommandRecords, prunableCommandIds } from "./command-retention.js";
 
-/** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
   signal: AbortSignal;
-  /** Called by the runner once the run id/dir are known (lets a client tail events.jsonl). */
   onRunStart: (info: { runId: string; taskId: string; runDir: string }) => void;
 }
 
@@ -31,12 +29,9 @@ export interface DaemonOptions {
   socketPath: string;
   token: string;
   runner: RunnerFn;
-  /** Max concurrently-running jobs (parallel projects/runs). Default 4. */
   maxConcurrent?: number;
   commands: CommandAuthority;
-  /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
   maxHistory?: number;
-  /** Minimum age before a terminal command and its idempotency binding may be pruned. */
   idempotencyRetentionMs?: number;
   now?: () => Date;
   /** Called when a job reaches a terminal state (any path) with its runId —
@@ -52,8 +47,7 @@ export interface DaemonOptions {
   /** Composition-root shutdown hook. When present, RPC shutdown must drain
    * every daemon-owned subsystem, not only this socket queue. */
   onShutdownRequested?: () => Promise<void>;
-  /** Test-only deterministic barriers around command authority acquisition.
-   * Production callers leave this unset. */
+  /** Test-only barriers around command authority acquisition. */
   startupBarrier?: (
     barrier: "before_registry_load" | "after_registry_load",
   ) => void | Promise<void>;
@@ -70,6 +64,8 @@ export const JOB_STATES = [
   "failed",
   "cancelled",
   "interrupted_unknown",
+  "cost_unverifiable",
+  "exhausted_overshoot",
   "exhausted",
   "not_converged",
   "stuck_no_progress",
@@ -486,11 +482,10 @@ export class DaemonServer {
         },
       });
       const state = jobStateFromResult(result, controller.signal.aborted);
-      // Only failure-shaped terminals carry an error string. no_op / ungated /
-      // review_not_run / blocked are HONEST terminals: fabricating an error here
-      // would make the control facade render a failure that never happened.
       if (
         state === "failed" ||
+        state === "cost_unverifiable" ||
+        state === "exhausted_overshoot" ||
         state === "exhausted" ||
         state === "not_converged" ||
         state === "stuck_no_progress"
@@ -505,8 +500,6 @@ export class DaemonServer {
         rec = this.updateRecord(rec, { state, result, finishedAt: nowIso() });
       }
     } catch (err) {
-      // Preserve a typed throw's machine code (e.g. the trust gate) so
-      // consumers can key remedies on it instead of parsing the message.
       const code =
         err && typeof err === "object" && "code" in err
           ? (err as { code: unknown }).code
@@ -562,7 +555,9 @@ function jobStateFromResult(result: unknown, aborted: boolean): JobState {
     case "cancelled":
       return "cancelled";
     case "exhausted":
-      return "exhausted";
+    case "exhausted_overshoot":
+    case "cost_unverifiable":
+      return status;
     case "not_converged":
       return "not_converged";
     case "stuck_no_progress":

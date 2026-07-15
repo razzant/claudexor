@@ -104,7 +104,10 @@ data-driven, fail-closed risk classification — `apply` is the only mutating
 step) and BLOCKS at the risky apply for a human decision; `auto_full` also
 applies through the single shared delivery gate and can mutate the live project.
 Orchestrate is therefore not purely read-only — only its default `suggest` level
-is.
+is. Executor success requires every required step to succeed; required missing,
+skipped, ungated, or unreviewed work blocks the parent, while optional skipped
+work remains advisory. Actual delivery receipts decide whether the resulting
+report is read-only.
 
 A conversation must also be honest about turns that never ran. When a turn's
 run is refused before it starts — the canonical case is the trust gate
@@ -309,12 +312,12 @@ reads as a clean success.
 Quota and routing run on evidence, not vibes. A harness's own
 machine-readable rate-window record (codex's rollout `rate_limits`) becomes
 a typed quota event; a harness with no such surface honestly emits nothing.
-Quota burn is observed on every route, disclosed in the run log at
-pressure, and steers MID-RUN routing (a stalled convergence rotates to the
-harness with the most remaining window). Portfolio choices (cheapest/strongest/…) rank on
-REAL observed metrics — rolling per-harness cost and latency averages from
-settled attempts plus operator-declared quality priors — never invented
-benchmark numbers. Schema-capable harnesses are constrained to typed output
+Every vendor-owned quota window remains independent and carries provenance and
+freshness. Routing uses one of three explicit goals: `auto` paces expiring
+quota by the binding minimum slack; `quality` follows exact user-declared route
+tiers; `economy` minimizes incremental paid spend. Unknown quota stays unknown
+and available, expired snapshots become stale rather than locally resetting to
+zero, and no provider or benchmark prior is invented. Schema-capable harnesses are constrained to typed output
 where the deliverable IS the typed artifact (the orchestrate plan),
 and live plan checklists + per-candidate evidence cards ride typed events
 into the UI. This repository also gates its OWN commits: a staged diff is reviewed

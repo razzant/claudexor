@@ -53,7 +53,8 @@ describe("loadConfig", () => {
     withTempConfig(({ repo }) => {
       const cfg = loadConfig(repo);
       expect(cfg.sources).toEqual([]);
-      expect(cfg.global.default_portfolio).toBe("subscription-first");
+      expect(cfg.global.routing.goal).toBe("auto");
+      expect(cfg.global.routing.paid_fallback).toBe("when_unavailable");
       expect(cfg.global.runtime.reviewer_timeout_ms).toBe(600_000);
       expect(cfg.global.runtime.transient_retry.max_retries).toBe(2);
     });

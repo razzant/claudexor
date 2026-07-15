@@ -94,8 +94,10 @@ import {
   ControlRunResult,
   ControlPrimaryOutput,
   ControlBudgetSnapshot,
+  PaidBudget,
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
+  ControlQuotaResponse,
   ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
@@ -112,7 +114,7 @@ import {
   DecisionRecord,
   ModeKind,
   OrchestratePlanProgress,
-  Portfolio,
+  RoutingGoal,
   ReviewFinding,
   RunEventType,
   RunFailure,
@@ -223,6 +225,8 @@ export interface DaemonControlApiOptions {
       journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
       settings?: () => Promise<unknown>;
       updateSettings?: (patch: unknown) => Promise<unknown>;
+      quota?: () => Promise<unknown>;
+      refreshQuota?: () => Promise<unknown>;
       listSecrets?: () => Promise<unknown>;
       setSecret?: (input: unknown) => Promise<unknown>;
       deleteSecret?: (name: string) => Promise<unknown>;
@@ -1480,6 +1484,10 @@ export class DaemonControlApiServer {
       }
       return this.service(res, "updateSettings", body, ControlSettingsSnapshot);
     }
+    if (method === "GET" && path === "/quota")
+      return this.service(res, "quota", undefined, ControlQuotaResponse);
+    if (method === "POST" && path === "/quota")
+      return this.service(res, "refreshQuota", undefined, ControlQuotaResponse);
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
     const controlMatch = /^\/runs\/([^/]+)\/control$/.exec(path);
     if (method === "POST" && controlMatch) {
@@ -2208,7 +2216,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
   // must degrade to an unknown field, never 500 the whole run list forever.
   const parsedMode = ModeKind.safeParse(p["mode"]);
-  const parsedPortfolio = Portfolio.safeParse(p["portfolio"]);
+  const parsedRoutingGoal = RoutingGoal.safeParse(p["routingGoal"]);
   const parsedAccess = parseAccessMaybe(p["access"]);
   const task = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract);
   const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
@@ -2252,19 +2260,14 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
       ? p["harnesses"].filter((x): x is string => typeof x === "string")
       : undefined,
     primaryHarness: typeof p["primaryHarness"] === "string" ? p["primaryHarness"] : undefined,
-    portfolio: parsedPortfolio.success ? parsedPortfolio.data : undefined,
+    routingGoal: parsedRoutingGoal.success ? parsedRoutingGoal.data : undefined,
     model: typeof p["model"] === "string" ? p["model"] : undefined,
     reviewerPanel: parsedReviewerPanel?.success ? parsedReviewerPanel.data : undefined,
     protectedPathApprovals: parsedProtectedPathApprovals?.success
       ? parsedProtectedPathApprovals.data
       : undefined,
     n: typeof p["n"] === "number" ? p["n"] : undefined,
-    // Engine-effective cap: the contract carries config-defaulted caps that
-    // request params never knew about.
-    maxUsd:
-      typeof p["maxUsd"] === "number"
-        ? p["maxUsd"]
-        : (task?.budget.max_usd ?? (p["maxUsd"] === null ? null : undefined)),
+    paidBudget: PaidBudget.safeParse(p["paidBudget"]).data ?? task?.budget.paid_budget,
     spendUsd: budget.spendUsd,
     spendEstimated: budget.estimated,
     access: effectiveAccess ?? parsedAccess,
@@ -2455,9 +2458,10 @@ function budgetSnapshot(
   // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
   // surface default, or the configured global per-run default); request params
   // alone under-report a config-defaulted cap as "no cap".
-  const contractCap =
-    safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract)?.budget.max_usd ?? null;
-  const maxUsd = typeof p["maxUsd"] === "number" ? p["maxUsd"] : contractCap;
+  const contractBudget = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract)?.budget
+    .paid_budget;
+  const paidBudget = PaidBudget.safeParse(p["paidBudget"]).data ??
+    contractBudget ?? { kind: "unlimited" as const };
   let spendUsd = decision?.budget_summary?.spend_usd ?? null;
   let estimated = decision?.budget_summary?.estimated ?? false;
   let source: "decision" | "events" | "settings" | "unknown" =
@@ -2506,8 +2510,11 @@ function budgetSnapshot(
       source = "events";
     }
   }
-  const remainingUsd = maxUsd !== null && spendUsd !== null ? Math.max(0, maxUsd - spendUsd) : null;
-  return ControlBudgetSnapshot.parse({ maxUsd, spendUsd, remainingUsd, estimated, source });
+  const remainingUsd =
+    paidBudget.kind === "finite" && spendUsd !== null
+      ? Math.max(0, paidBudget.maxUsd - spendUsd)
+      : null;
+  return ControlBudgetSnapshot.parse({ paidBudget, spendUsd, remainingUsd, estimated, source });
 }
 
 function readStructured<T>(

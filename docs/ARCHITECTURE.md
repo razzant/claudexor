@@ -65,11 +65,11 @@ strategies became flags, not modes:
     delivery gate (`validateApplyGate` + `deliver`) — it can mutate the live
     project. Per-step progress is persisted to
     `final/orchestration_progress.yaml`.
-  The executor's budget is AGGREGATE and WHOLE-CAP: the orchestrator's own settled
-  spend seeds the aggregate, and sequential sub-runs AND review-step reviewer
-  panels all charge the same cap (each step gets the remaining headroom;
-  exhausted headroom ends the run with the failure-shaped `exhausted`
-  terminal — failure.yaml + run.failed, never a clean success), and
+  The executor uses the same root paid-budget ledger as planner, candidates,
+  synthesis, sub-runs, and review panels. There are no nested ledgers or scalar
+  spend rollups. Exhausted headroom ends the run with a failure-shaped
+  `exhausted`, `exhausted_overshoot`, or `cost_unverifiable` terminal
+  (`failure.yaml` + `run.failed`, never a clean success), and
   `--max-tool-calls` (control-api `maxToolCalls`) caps the plan
   steps. Both knobs apply only to `orchestrate` — any other mode refuses them
   loudly (CLI usage error / control-api 400) rather than carrying a silent
@@ -157,12 +157,13 @@ orchestration logic.
 
 ## 4. Routing
 
-Routing is `Pool + Primary + Portfolio`:
+Routing is `Pool + Primary + Routing Goal`:
 
 - selected harness ids are the eligible pool;
 - `primaryHarness` is a bias/ordering hint, not a privileged semantic role;
-- `portfolio` is recorded in the `TaskContract` budget (its `portfolio`
-  field), default `subscription-first`.
+- `routingGoal` is recorded as `TaskContract.budget.routing_goal`, default
+  `auto`; the other goals are `quality` and `economy`. The v1 portfolio ids
+  have no aliases and fail at every boundary.
 
 Single-route read-only modes (`ask`, `audit`) choose one route from the
 eligible pool, primary first. `Agent` is a one-candidate envelope run. `audit
@@ -238,7 +239,7 @@ repo config can never self-grant it, and the violation is a loud routing error
 naming the resolved trust path, not a silent downgrade. `claudexor trust` is
 the writer for that file (`--allow-full-access`, `--revoke-full-access`,
 `--access-default readonly|workspace_write`). Per-harness engine defaults
-(`harnesses.<id>.enabled/default_model/effort/web/max_usd/max_turns/max_rounds/
+(`harnesses.<id>.enabled/default_model/effort/web/max_turns/max_rounds/
 tools_allow/tools_deny/fallback_model` in the global config) gate pool
 membership and seed per-route run specs; knobs a manifest does not support are
 disclosed as `ignored_settings` on `harness.started`, never silently dropped.
@@ -477,6 +478,8 @@ files.
 - `POST /v2/projects`
 - `GET /v2/projects/:id/events`
 - `POST /v2/projects/:id/relink`
+- `GET /v2/quota`
+- `POST /v2/quota`
 - `GET /v2/recovery/partitions/:id`
 - `POST /v2/recovery/partitions/:id/export`
 - `POST /v2/recovery/partitions/:id/quarantine`
@@ -908,36 +911,33 @@ requires at least two distinct observed provider families. CLI
 send the same DTO but must not invent reviewer readiness outside doctor/status
 and declared intent.
 
-Budget caps: the engine enforces `max_usd` per run (explicit run input, then
-surface defaults, then the global `budget.max_usd_per_run`). There is no daily
-`$`/day cap — `budget.max_usd_per_day` was removed; the only enforced money cap
-is per-run. Subscription/quota pressure is respected through the harness-reported
-quota/rate-limit signals, not a `$`/day ledger. Parallel race waves reserve a
-per-candidate estimate floor (`budget.estimate_usd_floor`, default $0.05) for
-every slot after the first, so concurrent in-flight candidates count against
-the cap BEFORE usage streams; a slot whose estimate does not fit remaining
-headroom is a typed `estimate_headroom` lease denial (already-granted work
-continues — only a tripped hard cap stops everything).
+Paid budgets use an explicit tagged contract: `{kind: unlimited}` or
+`{kind: finite, maxUsd >= 0}`. CLI `--max-usd N` is syntax sugar for the finite
+form, including `--max-usd 0`; zero and null never mean unlimited. The default
+comes from `budget.paid_budget_per_run`. A single root ledger grants leases to
+planner, candidates, synthesis, nested orchestrate runs, and review, and settles
+observed spend even when work errors. Every route carries cost knowledge
+(`exact | estimated | unknown`), billing knowledge, source, and provenance.
+Subscription token valuation is telemetry, not a cash debit. `finite(0)` admits
+only proven-zero or subscription-entitlement work; a positive finite cap permits
+at most one unknown-cost paid unit in flight. A later exact charge above the cap
+is retained and ends `exhausted_overshoot`; permanently unknown cost ends
+`cost_unverifiable` rather than fabricating `$0`. Parallel race waves reserve a
+per-candidate estimate floor (`budget.estimate_usd_floor`, default $0.05) after
+the first slot, so concurrent estimated work counts against headroom before
+usage streams.
 
-Quota is a TYPED event, never scraped prose: codex reports its own
-rate-window record (`token_count.rate_limits` in the rollout transcript, the
-same native source route proof uses) as `HarnessEvent.quota{used_percent,
-resets_at}`; claude has no machine-readable subscription-quota surface, so it
-honestly emits nothing. The budget layer maps quota to a native-quality
-`used_percent` observation, observed in EVERY stream loop (agent, plan,
-read-only — the orchestrate planner included) and disclosed as
-`budget.quota_pressure` at >=50% window burn. Headroom consumers are the
-MID-RUN decisions where observations exist: convergence stall-rotation picks
-the harness with the most remaining window (initial pool ordering also
-multiplies by headroom, but a fresh run's ledger has no observations yet —
-quota is per-run by decided tradeoff, so ordering effects appear only once
-the run has streamed usage).
-Portfolio routing runs on REAL metrics: per-harness EMA averages of settled
-attempt cost/duration persisted under the config dir
-(`telemetry/harness-metrics.json`; one producer — attempt settlement) fill
-`costPerCall`/`latencyMs`, and operator-declared per-family priors
-(`routing.quality_priors`, 0..1) fill `qualityForIntent` — so
-cheapest/strongest/balanced genuinely differentiate.
+Quota is typed and vendor-owned, never scraped from prose. Codex rollout
+`token_count.rate_limits` preserves every reported window as an independent
+constraint with usage, duration, reset, provenance, and freshness. The global
+journal is authority; an elapsed reset marks a snapshot stale and requests a
+refresh, never locally invents zero usage. Unknown usage remains `null`.
+`auto` ranks by the binding `min(elapsed_fraction - used_ratio)` pacing slack,
+`quality` uses only exact user-declared `{harness,model,effort}` tiers, and
+`economy` minimizes known incremental cash spend with quality tiers only as a
+tie-breaker. Credential transport alone never proves a route free. Typed rate
+limits create cooldowns; unknown quota remains eligible and is never rendered
+as full headroom.
 
 Structured output: routes whose manifest declares `json_schema_output`
 receive `HarnessRunSpec.output_schema` — today the orchestrate PLANNER passes
@@ -1041,6 +1041,11 @@ attempts/aNN/events.jsonl?    (read-only modes)
 extracted from the fenced JSON block in the orchestrator's report and validated
 against the tool belt. A missing or invalid block writes
 `final/orchestration_parse_error.md` and is disclosed in the summary.
+Executed plans also persist required/optional, actual terminal source, and
+evidence references per step. The parent reducer applies one fixed precedence
+and reports success only when every required step succeeded; skipped optional
+steps do not become a generic partial terminal. Delivery receipts, rather than
+requested autonomy, determine the report WorkProduct's `read_only` value.
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,

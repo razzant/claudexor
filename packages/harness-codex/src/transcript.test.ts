@@ -61,7 +61,7 @@ describe("codexTranscriptModel", () => {
 });
 
 describe("codexTranscriptRateLimits (quota)", () => {
-  it("reads the LAST token_count rate_limits and picks the tighter window", async () => {
+  it("reads every window from the LAST token_count rate_limits record", async () => {
     const { codexTranscriptRateLimits } = await import("./transcript.js");
     const home = mkdtempSync(join(tmpdir(), "codex-home-"));
     const day = join(home, "sessions", "2026", "07", "03");
@@ -89,8 +89,12 @@ describe("codexTranscriptRateLimits (quota)", () => {
     );
     const rl = codexTranscriptRateLimits(home, threadId);
     expect(rl).not.toBeNull();
-    expect(rl!.used_percent).toBe(40); // secondary is the tighter window in the LAST record
-    expect(rl!.resets_at).toBe(new Date(1782387153 * 1000).toISOString());
+    expect(rl?.source).toBe("codex_rollout");
+    expect(rl?.constraints).toEqual([
+      expect.objectContaining({ id: "primary", used_ratio: 0.125, window_seconds: 18_000 }),
+      expect.objectContaining({ id: "secondary", used_ratio: 0.4, window_seconds: 604_800 }),
+    ]);
+    expect(rl?.constraints[1]?.resets_at).toBe(new Date(1782387153 * 1000).toISOString());
     // Missing rollout -> null (fail-honest, no signal).
     expect(codexTranscriptRateLimits(home, "unknown-thread")).toBeNull();
     rmSync(home, { recursive: true, force: true });

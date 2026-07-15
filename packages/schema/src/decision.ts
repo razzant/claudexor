@@ -25,14 +25,17 @@ export const RunStatus = z
     "ungated",
     "review_not_run",
     "blocked",
+    "failed",
+    "interrupted_unknown",
+    "cost_unverifiable",
+    "exhausted_overshoot",
+    "exhausted",
     "not_converged",
     "stuck_no_progress",
-    "failed",
-    "exhausted",
     "cancelled",
   ])
   .describe(
-    "Terminal status of a run: success, no_op (nothing to change), ungated (no gates configured), review_not_run, blocked (accepted blocking findings), not_converged, stuck_no_progress, failed, exhausted (attempt/budget caps), or cancelled.",
+    "Terminal status of a run, including truthful blocked, interrupted-unknown, cost-unverifiable, overshoot, exhaustion, non-convergence, failure, and cancellation outcomes.",
   );
 export type RunStatus = z.infer<typeof RunStatus>;
 

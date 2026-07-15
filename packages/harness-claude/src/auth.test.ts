@@ -92,7 +92,6 @@ function spec(over: Partial<HarnessRunSpec> = {}): HarnessRunSpec {
     tool_permission_policy: { web: "auto", allow: [], deny: [] },
     model_hint: null,
     effort_hint: null,
-    max_usd: null,
     max_turns: null,
     auth_preference: "auto",
     resume_session_id: null,

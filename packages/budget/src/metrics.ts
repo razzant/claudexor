@@ -16,8 +16,8 @@ export interface HarnessMetric {
   /**
    * Auth route the harness's LAST settled attempt actually ran under
    * (adapter-disclosed route evidence, not a manifest capability guess).
-   * Pool ordering consumes this so subscription-vs-API portfolio weights act
-   * on the live route; null until any attempt disclosed one.
+   * Economy routing may consume settled cost as evidence; no quality prior is
+   * inferred. Null until any attempt disclosed a route.
    */
   last_auth_mode: "local_session" | "api_key" | null;
 }

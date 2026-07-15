@@ -3,6 +3,8 @@ import type {
   Attachment,
   AttachmentInputClass,
   ExternalContextPolicy,
+  ImplementationTransport,
+  Intent,
   RequestRequirementResolution,
 } from "@claudexor/schema";
 import { HarnessUnavailableError } from "@claudexor/core";
@@ -28,6 +30,29 @@ export class RequestRequirementsError extends HarnessUnavailableError {
 
 /** One preflight owner for requested-vs-effective lane capability truth. */
 export class RequestRequirementsResolver {
+  /** Patch producers only read; the engine owns materialization and delivery. */
+  adapterAccess(
+    intent: Intent,
+    implementationTransport: ImplementationTransport,
+    requestedAccess: AccessProfile,
+  ): AccessProfile {
+    return implementationTransport === "git_patch_envelope" &&
+      (intent === "implement" || intent === "synthesize")
+      ? "readonly"
+      : requestedAccess;
+  }
+
+  assertConvergenceWorkspace(
+    inPlace: boolean,
+    routes: { implementationTransport: ImplementationTransport }[],
+  ): void {
+    if (inPlace && routes.some((route) => route.implementationTransport === "git_patch_envelope")) {
+      throw new HarnessUnavailableError(
+        "in-place convergence is unavailable for git_patch_envelope adapters; use an isolated run or a single agent attempt",
+      );
+    }
+  }
+
   attachmentRefusal(
     harnessId: string,
     attachments: Attachment[],

@@ -80,7 +80,11 @@ struct ThreadsScreen: View {
             web: webPolicy == "auto" ? nil : webPolicy,
             untilClean: untilClean,
             maxAttempts: maxAttempts == 3 ? nil : maxAttempts,
-            browser: browser && browserAvailableForCurrentTurn,
+            // Preserve the user's request even if the cached capability view
+            // changed after the toggle was armed. The engine owns the typed
+            // per-lane resolution/refusal; silently clearing it here would erase
+            // requested/effective evidence.
+            browser: browser,
             models: composerModels,
             reviewerPanel: reviewerPanelEntries.isEmpty ? nil : reviewerPanelEntries,
             protectedPathApprovals: protectedPathApprovals.isEmpty ? nil : protectedPathApprovals
@@ -177,7 +181,7 @@ struct ThreadsScreen: View {
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.leading, sidebarGap)
         }
-        .task { await model.refreshThreads() }
+        .task { await model.refreshThreads(); await model.refreshQuota() }
         .navigationTitle(navTitle)
         .navigationSubtitle(navSubtitle)
     }
@@ -216,9 +220,6 @@ struct ThreadsScreen: View {
 
     private var threadList: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            // No "New" button here — it lives in the toolbar (square.and.pencil); a
-            // second one in the sidebar was a duplicate. The header is just the
-            // section title.
             Text("Threads")
                 .font(.headline)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -243,6 +244,8 @@ struct ThreadsScreen: View {
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)   // let the Liquid Glass panel show through
             }
+
+            QuotaFooterView()
         }
         .padding(.top, Theme.Spacing.xs)
         .sheet(isPresented: Binding(
@@ -1167,7 +1170,7 @@ private struct TurnCard: View {
     /// (carry their own decision/apply affordances). Rendering any of those as a
     /// red "failed" card would be dishonest.
     private func isSilentFailure(_ run: TaskRun) -> Bool {
-        let failureShaped: Set<RunStatus> = [.failed, .interrupted, .exhausted, .notConverged, .stuckNoProgress]
+        let failureShaped: Set<RunStatus> = [.failed, .interrupted, .costUnverifiable, .exhaustedOvershoot, .exhausted, .notConverged, .stuckNoProgress]
         guard failureShaped.contains(run.status) else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty

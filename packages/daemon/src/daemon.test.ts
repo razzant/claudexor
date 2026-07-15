@@ -350,6 +350,8 @@ describe("DaemonServer", () => {
       "ungated",
       "review_not_run",
       "blocked",
+      "cost_unverifiable",
+      "exhausted_overshoot",
       "exhausted",
       "not_converged",
       "stuck_no_progress",

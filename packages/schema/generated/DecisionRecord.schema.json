@@ -25,13 +25,16 @@
             "ungated",
             "review_not_run",
             "blocked",
+            "failed",
+            "interrupted_unknown",
+            "cost_unverifiable",
+            "exhausted_overshoot",
+            "exhausted",
             "not_converged",
             "stuck_no_progress",
-            "failed",
-            "exhausted",
             "cancelled"
           ],
-          "description": "Terminal status of a run: success, no_op (nothing to change), ungated (no gates configured), review_not_run, blocked (accepted blocking findings), not_converged, stuck_no_progress, failed, exhausted (attempt/budget caps), or cancelled."
+          "description": "Terminal status of a run, including truthful blocked, interrupted-unknown, cost-unverifiable, overshoot, exhaustion, non-convergence, failure, and cancellation outcomes."
         },
         "outcome": {
           "type": "string",

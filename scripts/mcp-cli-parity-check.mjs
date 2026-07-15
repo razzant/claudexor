@@ -88,6 +88,7 @@ const BOOLEAN_FLAG_MAP = {
   },
   json: { mcp: null, reason: "CLI output shaping, not a run control" },
   all: { mcp: null, reason: "subcommand scope flag, not a run control" },
+  refresh: { mcp: null, reason: "quota subcommand operation, not a run control" },
   "dry-run": { mcp: null, reason: "subcommand plumbing" },
   force: { mcp: null, reason: "subcommand plumbing" },
   "allow-full-access": { mcp: null, reason: "trust subcommand flag" },
@@ -109,7 +110,8 @@ const CLI_ONLY_EXEMPT = {
   synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",
   "max-tool-calls": "orchestrate executor cap; MCP orchestrate is suggest-mode (plan only)",
   autonomy: "orchestrate executor autonomy; MCP orchestrate is suggest-mode (plan only)",
-  portfolio: "portfolio routing preset; MCP callers pick explicit harness/primaryHarness",
+  portfolio: "removed v2 flag retained only to emit a hard error",
+  "routing-goal": "MCP callers currently use the daemon default routing goal",
   answers: "spec-interview plumbing (CLI spec flow only)",
   spec: "spec-file attach (CLI spec flow only)",
   attach:

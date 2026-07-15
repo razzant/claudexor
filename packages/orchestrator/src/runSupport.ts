@@ -20,7 +20,7 @@ import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { redactSecrets } from "@claudexor/util";
-import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
+import { observationsFromEvent, recordHarnessMetric, type BudgetLedger } from "@claudexor/budget";
 import type { BudgetObservation, InteractionAnswerSet } from "@claudexor/schema";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -217,12 +217,16 @@ export function harnessEventPayload(
     harness_id: harnessId,
     attempt_id: attemptId,
     session_id: safe.session_id,
+    ts: safe.ts,
     type: safe.type,
     title: String(title).slice(0, 500),
     text: safe.text,
     error: safe.error,
     usage: safe.usage,
     observed_model: safe.observed_model,
+    credential_route: safe.credential_route,
+    quota: safe.quota,
+    rate_limit: safe.rate_limit,
     tool: safe.tool,
     interaction: safe.interaction,
     payload: safe.payload,
@@ -294,23 +298,6 @@ export function renderSummary(
   );
 }
 
-/** Pure read: a referenced run's decision/work_product status, or null. */
-export function readRunStatus(repoRoot: string, runId: string): string | null {
-  const store = new ArtifactStore(repoRoot);
-  const sub = store.runPaths(runId);
-  const decision = store.readYaml<{ status?: string; outcome?: string }>(
-    join(sub.arbitrationDir, "decision.yaml"),
-  );
-  const wp = store.readYaml<{ kind?: string; meta?: Record<string, unknown> }>(
-    join(sub.finalDir, "work_product.yaml"),
-  );
-  if (!decision && !wp) return null;
-  const parts: string[] = [];
-  if (decision?.status) parts.push(`decision=${decision.status}`);
-  if (wp?.meta?.["result_kind"]) parts.push(`result_kind=${String(wp.meta["result_kind"])}`);
-  if (wp?.meta?.["apply_state"]) parts.push(`apply_state=${String(wp.meta["apply_state"])}`);
-  return parts.length > 0 ? parts.join(", ") : `run ${runId}: artifacts present`;
-}
 /** Pure read: a referenced run's recorded patch diff, or null. */
 export function readRunPatch(repoRoot: string, runId: string): string | null {
   const store = new ArtifactStore(repoRoot);
@@ -383,10 +370,6 @@ export function observeAuthSwitch(
   }
 }
 
-/** Observe ALL budget/quota signals from one harness event and disclose
- * quota pressure ONCE per attempt (crossing semantics). One owner — the
- * agent, plan, and read-only loops all consume this instead of pasting the
- * loop (critic finding: triplicated logic drifts). */
 export function observeBudgetSignals(
   ledger: { observe(o: BudgetObservation): void },
   log: { emit(type: string, payload: Record<string, unknown>): unknown } | undefined,
@@ -398,15 +381,16 @@ export function observeBudgetSignals(
   for (const obs of observationsFromEvent(harnessId, ev)) {
     ledger.observe(obs);
     if (
-      obs.kind === "used_percent" &&
-      (obs.used_percent ?? 0) >= 50 &&
+      obs.kind === "quota_constraint" &&
+      (obs.used_ratio ?? 0) >= 0.5 &&
       !state.quotaPressureDisclosed
     ) {
       state.quotaPressureDisclosed = true;
       log?.emit("budget.quota_pressure", {
         harness_id: harnessId,
         attempt_id: attemptId,
-        used_percent: obs.used_percent,
+        constraint_id: obs.constraint_id,
+        used_ratio: obs.used_ratio,
         resets_at: obs.resets_at ?? null,
       });
     }
@@ -420,7 +404,7 @@ export function observeBudgetSignals(
 export function rotateOnStall(
   poolIds: string[],
   currentIdx: number,
-  ledger: { headroom(id: string): number; cooldownActive(id: string): boolean },
+  ledger: { bindingPaceSlack(id: string): number | null; cooldownActive(id: string): boolean },
   tried: ReadonlySet<string>,
   log: { emit(type: string, payload: Record<string, unknown>): unknown },
   fromHarness: string | null,
@@ -431,7 +415,7 @@ export function rotateOnStall(
       from_harness: fromHarness,
       to_harness: poolIds[pickedIdx],
       reason: "stall",
-      headroom: ledger.headroom(poolIds[pickedIdx] as string),
+      pace_slack: ledger.bindingPaceSlack(poolIds[pickedIdx] as string),
     });
   }
   return pickedIdx;
@@ -444,14 +428,15 @@ export function rotateOnStall(
 export function pickStallRotationIdx(
   poolIds: string[],
   currentIdx: number,
-  ledger: { headroom(id: string): number; cooldownActive(id: string): boolean },
+  ledger: { bindingPaceSlack(id: string): number | null; cooldownActive(id: string): boolean },
   tried: ReadonlySet<string> = new Set(),
 ): number {
   if (poolIds.length === 0) return currentIdx; // total: never NaN via %0
   const rank = (candidates: Array<{ id: string; idx: number }>) =>
     candidates.sort(
       (a, b) =>
-        ledger.headroom(b.id) - ledger.headroom(a.id) ||
+        (ledger.bindingPaceSlack(b.id) ?? Number.NEGATIVE_INFINITY) -
+          (ledger.bindingPaceSlack(a.id) ?? Number.NEGATIVE_INFINITY) ||
         ((a.idx - currentIdx + poolIds.length) % poolIds.length) -
           ((b.idx - currentIdx + poolIds.length) % poolIds.length),
     )[0];
@@ -499,7 +484,7 @@ export function recordCleanAttemptMetrics(
 export function buildEnvelopeSubInput<
   T extends {
     repoRoot: string;
-    portfolio?: unknown;
+    routingGoal?: unknown;
     web?: unknown;
     externalContextPolicy?: unknown;
     signal?: AbortSignal;
@@ -514,7 +499,7 @@ export function buildEnvelopeSubInput<
     n?: number;
     harness?: string | null;
   },
-  remainingUsd: number | null,
+  budgetLedger: BudgetLedger,
 ) {
   return {
     repoRoot: input.repoRoot,
@@ -527,9 +512,8 @@ export function buildEnvelopeSubInput<
       | "orchestrate",
     n: call.tool === "race" ? call.n : undefined,
     harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
-    portfolio: input.portfolio,
-    // Aggregate budget: the sub-run gets only the REMAINING headroom.
-    maxUsd: remainingUsd,
+    routingGoal: input.routingGoal,
+    budgetLedger,
     web: input.web,
     externalContextPolicy: input.externalContextPolicy,
     signal: input.signal,

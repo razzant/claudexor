@@ -11,6 +11,8 @@ describe("exitCodeForState", () => {
       "failed",
       "cancelled",
       "interrupted_unknown",
+      "cost_unverifiable",
+      "exhausted_overshoot",
       "exhausted",
       "not_converged",
       "stuck_no_progress",

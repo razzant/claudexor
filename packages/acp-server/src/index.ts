@@ -248,7 +248,7 @@ export class AcpServer {
               ...(params?.swarm === true ? { swarm: true } : {}),
               ...(params?.create === true ? { create: true } : {}),
               ...(params?.tests !== undefined ? { tests: params.tests } : {}),
-              ...(params?.maxUsd !== undefined ? { maxUsd: params.maxUsd } : {}),
+              ...(params?.paidBudget !== undefined ? { paidBudget: params.paidBudget } : {}),
               ...(params?.access !== undefined ? { access: params.access } : {}),
               ...(params?.protectedPathApprovals !== undefined
                 ? { protectedPathApprovals: params.protectedPathApprovals }

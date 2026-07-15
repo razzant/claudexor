@@ -99,6 +99,22 @@
     },
     {
       "method": "GET",
+      "path": "/v2/quota",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlQuotaResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/quota",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlQuotaResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
       "path": "/v2/recovery/partitions/:id",
       "mutating": false,
       "request_schema": null,

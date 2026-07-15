@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
+import paidBudgetSchemaRaw from "@claudexor/schema/generated/PaidBudget.schema.json" with { type: "json" };
 import testCommandInvocationSchemaRaw from "@claudexor/schema/generated/TestCommandInvocation.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
 import {
@@ -25,9 +26,7 @@ import {
 import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 import { journalRecoveryTools } from "./recovery-tools.js";
 
-// Generated schemas serve as tool outputSchema so results are validated shapes, not blobs.
-// zod-to-json-schema emits a `$ref`+`definitions` wrapper; the SDK's
-// fromJsonSchema wants a self-contained schema, so internal refs are inlined
+// The SDK wants self-contained schemas, so generated internal refs are inlined
 // once at load (cycle-safe: a cyclic ref degrades to a permissive subschema).
 function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, unknown> {
   // zod-to-json-schema dedupes with FULL JSON-pointer refs (e.g.
@@ -75,6 +74,7 @@ const mcpRunToolResultSchema = inlineJsonSchemaRefs(
   mcpRunToolResultSchemaRaw as Record<string, unknown>,
 );
 const testCommandInvocationSchema = inlineJsonSchemaRefs(testCommandInvocationSchemaRaw);
+const paidBudgetSchema = inlineJsonSchemaRefs(paidBudgetSchemaRaw);
 const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
   agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
 );
@@ -467,7 +467,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         items: testCommandInvocationSchema,
         description: "Typed-argv deterministic gate commands for this run.",
       },
-      maxUsd: { type: "number", minimum: 0, description: "Optional per-run budget ceiling." },
+      paidBudget: paidBudgetSchema,
       access: {
         type: "string",
         enum: ["readonly", "workspace_write", "full", "external_sandbox_full", "inherit_native"],

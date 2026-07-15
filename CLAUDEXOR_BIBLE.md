@@ -431,7 +431,7 @@ process below. Never paper over the conflict.
   verify: FinalVerifier tests + the final_verify apply-gate consumer tests
   (locked owner decision).
 - **INV-116** Terminal run state and output readiness are separate
-  (`succeeded|blocked|failed|not_converged` vs
+  (`succeeded|blocked|failed|interrupted_unknown|cost_unverifiable|exhausted_overshoot|exhausted|not_converged|stuck_no_progress|cancelled` vs
   `pending|finalizing|ready|diagnostic`), and every announced run reaches a
   terminal event on every path — crash, cancel, pre-loop failure — so no
   observer waits forever. CLI and UI show the distinction. verify: canaries

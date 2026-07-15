@@ -452,7 +452,7 @@ describe("DaemonControlApiServer", () => {
         mode: "agent",
         scope: { kind: "project", root: runDir, context: "auto" },
         harnesses: ["codex"],
-        portfolio: "subscription-first",
+        routingGoal: "auto",
       },
     };
     const cancelled: string[] = [];
@@ -678,7 +678,7 @@ describe("DaemonControlApiServer", () => {
     const request = apiFetch(`http://${host}:${port}/settings`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
-      body: JSON.stringify({ clearMaxUsdPerRun: true }),
+      body: JSON.stringify({ paidBudgetPerRun: { kind: "unlimited" } }),
       signal: controller.signal,
     }).then(
       () => "responded",
@@ -870,7 +870,7 @@ describe("DaemonControlApiServer", () => {
       workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1018,7 +1018,7 @@ describe("DaemonControlApiServer", () => {
       workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1111,7 +1111,7 @@ describe("DaemonControlApiServer", () => {
       workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1191,7 +1191,7 @@ describe("DaemonControlApiServer", () => {
       workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1260,7 +1260,7 @@ describe("DaemonControlApiServer", () => {
       workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1341,7 +1341,7 @@ describe("DaemonControlApiServer", () => {
       workspace: { mode: "in_place", worktree_path: null, base_sha: null },
       auth_preference: "auto",
       primary_harness: null,
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1637,7 +1637,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: "codex", // sticky primary
       eligible_harnesses: ["codex", "claude"], // sticky pool
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1787,7 +1787,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: null,
       eligible_harnesses: [],
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -1860,7 +1860,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: null,
       eligible_harnesses: [],
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -3805,7 +3805,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: null,
       eligible_harnesses: [],
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: ["run-blocked", "run-head"],
       head_run_id: "run-head",
       state: "active",
@@ -3938,7 +3938,7 @@ describe("DaemonControlApiServer", () => {
         auth_preference: "auto",
         primary_harness: null,
         eligible_harnesses: [],
-        portfolio: "subscription-first",
+        routingGoal: "auto",
         run_ids: [],
         head_run_id: null,
         state: "active",
@@ -4301,7 +4301,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: null,
       eligible_harnesses: [],
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: ["run-gone"],
       head_run_id: "run-gone",
       state: "active",
@@ -4484,7 +4484,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: null,
       eligible_harnesses: [],
-      portfolio: "subscription-first",
+      routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
       state: "active",
@@ -4645,7 +4645,7 @@ describe("DaemonControlApiServer", () => {
           auth_preference: "auto",
           primary_harness: null,
           eligible_harnesses: [],
-          portfolio: "subscription-first",
+          routingGoal: "auto",
           run_ids: [],
           head_run_id: null,
           state: "active",
@@ -5315,7 +5315,7 @@ describe("DaemonControlApiServer", () => {
   it("redacts prompts in summaries and refuses secret-like patch artifacts", async () => {
     const { daemon, record } = fakeDaemon();
     const secret = "sk-" + "a".repeat(24);
-    record.params = { prompt: `use ${secret}`, mode: "agent", portfolio: "subscription-first" };
+    record.params = { prompt: `use ${secret}`, mode: "agent", routingGoal: "auto" };
     writeFileSync(
       join(record.runDir as string, "final", "patch.diff"),
       `diff --git a/.env b/.env\n+OPENAI_API_KEY=${secret}\n`,
@@ -5444,14 +5444,16 @@ describe("DaemonControlApiServer", () => {
     const { daemon } = fakeDaemon();
     const snapshot = {
       sources: [],
-      defaultPortfolio: "subscription-first" as const,
       routing: {
         defaultPolicy: "auto" as const,
         primaryHarness: null,
         eligibleHarnesses: [],
         envInheritance: "mirror_native" as const,
+        goal: "auto" as const,
+        paidFallback: "when_unavailable" as const,
+        qualityTiers: {},
       },
-      budget: { maxUsdPerRun: null },
+      budget: { paidBudgetPerRun: { kind: "unlimited" as const } },
       runtime: {
         reviewerTimeoutMs: 2_400_000,
         transientRetry: { maxRetries: 3, initialDelayMs: 2_000, maxDelayMs: 20_000 },
@@ -5486,7 +5488,7 @@ describe("DaemonControlApiServer", () => {
       const okSettings = await apiFetch(`${base}/settings`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ clearMaxUsdPerRun: true }),
+        body: JSON.stringify({ paidBudgetPerRun: { kind: "unlimited" } }),
       });
       expect(okSettings.status).toBe(200);
       expect(await okSettings.json()).toMatchObject(snapshot);
@@ -5527,6 +5529,61 @@ describe("DaemonControlApiServer", () => {
     } finally {
       await server.stop();
     }
+  });
+
+  it("serves quota snapshots and refresh through the v2 operation catalog", async () => {
+    const { daemon } = fakeDaemon();
+    let refreshes = 0;
+    const response = {
+      snapshots: [
+        {
+          subject: {
+            harness: "codex",
+            credential_route: "vendor_native" as const,
+            plan_label: "Plus",
+            subject_id: null,
+          },
+          constraints: [
+            {
+              id: "weekly",
+              label: "Weekly",
+              used_ratio: 0.25,
+              window_seconds: 604800,
+              resets_at: "2026-07-20T00:00:00.000Z",
+              cooldown_until: null,
+            },
+          ],
+          source: "codex_app_server" as const,
+          observed_at: "2026-07-15T12:00:00.000Z",
+          freshness: "fresh" as const,
+        },
+      ],
+      refreshed_at: null,
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const read = await apiFetch(`${base}/quota`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(read.status).toBe(200);
+        expect(await read.json()).toEqual(response);
+        const refreshed = await apiFetch(`${base}/quota`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(refreshed.status).toBe(200);
+        expect(refreshes).toBe(1);
+      },
+      undefined,
+      {
+        quota: async () => response,
+        refreshQuota: async () => {
+          refreshes += 1;
+          return response;
+        },
+      },
+    );
   });
 
   it("uses the PERSISTED event seq as the SSE cursor (sparse-safe replay from Last-Event-ID)", async () => {

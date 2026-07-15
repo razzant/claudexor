@@ -320,26 +320,108 @@
         "quota": {
           "type": "object",
           "properties": {
-            "used_percent": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 100,
-              "description": "Consumed share of the binding rate window, 0-100."
+            "source": {
+              "type": "string",
+              "enum": [
+                "codex_app_server",
+                "codex_rollout",
+                "claude_statusline"
+              ],
+              "description": "Vendor-owned machine-readable source of a quota snapshot."
             },
-            "resets_at": {
+            "plan_label": {
               "type": [
                 "string",
                 "null"
               ],
-              "default": null,
-              "description": "Native reset moment for the window, when the CLI reports one."
+              "default": null
+            },
+            "subject_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Non-empty identifier string."
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "used_ratio": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "window_seconds": {
+                    "anyOf": [
+                      {
+                        "type": "number",
+                        "exclusiveMinimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "resets_at": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "cooldown_until": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "used_ratio",
+                  "window_seconds",
+                  "resets_at"
+                ],
+                "additionalProperties": false,
+                "description": "One independent vendor quota window; null usage stays unknown."
+              }
             }
           },
           "required": [
-            "used_percent"
+            "source",
+            "constraints"
           ],
           "additionalProperties": false,
-          "description": "Typed quota/usage-window signal from the harness CLI's own native machine-readable surface, never scraped from prose."
+          "description": "All quota windows from a vendor-owned machine-readable source; never scraped from prose or collapsed into a fake aggregate."
         },
         "plan_progress": {
           "type": "object",

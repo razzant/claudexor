@@ -21,7 +21,6 @@ export function settingsSnapshot(repoRoot: string) {
   const cfg = loadConfig(repoRoot);
   return {
     sources: cfg.sources,
-    defaultPortfolio: cfg.global.default_portfolio,
     interactionTimeoutMs: cfg.global.interaction_timeout_ms,
     routing: {
       defaultPolicy: cfg.global.routing.default_policy,
@@ -29,8 +28,11 @@ export function settingsSnapshot(repoRoot: string) {
       eligibleHarnesses: cfg.global.routing.eligible_harnesses,
       envInheritance: cfg.global.routing.env_inheritance,
       authPreference: cfg.global.routing.auth_preference,
+      goal: cfg.global.routing.goal,
+      paidFallback: cfg.global.routing.paid_fallback,
+      qualityTiers: cfg.global.routing.quality_tiers,
     },
-    budget: { maxUsdPerRun: cfg.global.budget.max_usd_per_run },
+    budget: { paidBudgetPerRun: cfg.global.budget.paid_budget_per_run },
     runtime: {
       reviewerTimeoutMs: cfg.global.runtime.reviewer_timeout_ms,
       harnessInactivityTimeoutMs: cfg.global.runtime.harness_inactivity_timeout_ms,
@@ -49,7 +51,6 @@ export function settingsSnapshot(repoRoot: string) {
           effort: h.effort,
           maxTurns: h.max_turns,
           maxRounds: h.max_rounds,
-          maxUsd: h.max_usd,
           toolsAllow: h.tools_allow,
           toolsDeny: h.tools_deny,
           fallbackModel: h.fallback_model,
@@ -80,6 +81,29 @@ export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest):
       badRequest(
         `eligibleHarnesses entry '${id}' is not a real registered harness (expected one of: ${realList})`,
       );
+    }
+  }
+  for (const [intent, tiers] of Object.entries(p.qualityTiers ?? {})) {
+    for (const tier of tiers) {
+      for (const route of tier) {
+        if (!realIds.has(route.harness)) {
+          badRequest(`quality tier for '${intent}' names unknown harness '${route.harness}'`);
+        }
+        const truth = await harnessModels(route.harness, process.cwd(), true);
+        const model = validateModel(
+          route.model,
+          truth.models.map((item) => item.id),
+          truth.source === "api" ? "api" : "manifest",
+        );
+        if (model.status !== "ok")
+          badRequest(model.message ?? `model '${route.model}' was refused`);
+        const manifest = await buildRegistry().get(route.harness)?.discover();
+        if (!manifest?.capabilities.effort_levels.includes(route.effort)) {
+          badRequest(
+            `quality tier route '${route.harness}/${route.model}' does not accept effort '${route.effort}'`,
+          );
+        }
+      }
     }
   }
   for (const [id, patch] of Object.entries(p.harnesses ?? {})) {
@@ -160,7 +184,6 @@ export function applyHarnessSettingsPatches(
       effort: patch.effort === undefined ? base.effort : patch.effort,
       max_turns: patch.maxTurns === undefined ? base.max_turns : patch.maxTurns,
       max_rounds: patch.maxRounds === undefined ? base.max_rounds : patch.maxRounds,
-      max_usd: patch.maxUsd === undefined ? base.max_usd : patch.maxUsd,
       tools_allow: patch.toolsAllow ?? base.tools_allow,
       tools_deny: patch.toolsDeny ?? base.tools_deny,
       fallback_model: patch.fallbackModel === undefined ? base.fallback_model : patch.fallbackModel,

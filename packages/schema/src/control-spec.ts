@@ -4,6 +4,7 @@ import { ExternalContextPolicy, NonBlankString, ProviderFamily } from "./primiti
 import { EffortHint } from "./harness.js";
 import { ControlReviewerPanelEntry } from "./control.js";
 import { RunScopeContext } from "./control-run-scope.js";
+import { PaidBudget } from "./budget.js";
 
 export const ControlSpecPriorDecision = z
   .object({
@@ -29,7 +30,7 @@ export const ControlSpecQuestionsRequest = z
       .describe("Harnesses eligible to generate the questions."),
     n: z.number().int().positive().optional(),
     effort: EffortHint.optional(),
-    maxUsd: z.number().nonnegative().optional(),
+    paidBudget: PaidBudget.optional(),
     web: ExternalContextPolicy.optional(),
     reviewerModels: z.record(ProviderFamily, NonBlankString).optional(),
     reviewerEfforts: z.record(ProviderFamily, EffortHint).optional(),

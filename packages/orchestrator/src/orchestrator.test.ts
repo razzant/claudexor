@@ -23,7 +23,7 @@ const frozenShellGate = (id: string, command: string) => ({
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
-import type { ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
+import type { AccessProfile, ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
@@ -68,6 +68,7 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
       const ts = new Date().toISOString();
       yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
       yield { type: "message", session_id: spec.session_id, ts, text: "```json\n[]\n```" };
+      yield { type: "usage", session_id: spec.session_id, ts, usage: { cost_usd: 0.001 } };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
@@ -193,7 +194,10 @@ function diffImplementer(
   };
 }
 
-function rawPatchImplementer(id: string): HarnessAdapter {
+function rawPatchImplementer(
+  id: string,
+  observeAccess?: (access: AccessProfile) => void,
+): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -206,7 +210,7 @@ function rawPatchImplementer(id: string): HarnessAdapter {
           implement: true,
           implementation_transport: "git_patch_envelope",
         },
-        access_profiles_supported: ["workspace_write"],
+        access_profiles_supported: ["readonly"],
       });
     },
     async doctor() {
@@ -217,6 +221,7 @@ function rawPatchImplementer(id: string): HarnessAdapter {
       });
     },
     async *run(spec) {
+      observeAccess?.(spec.access);
       const context = spec.raw_context_packet;
       if (!context) throw new Error("missing raw context packet");
       const readme = context.readable_files.find((file) => file.path === "README.md");
@@ -569,7 +574,11 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([
       ["fake-success", createFakeHarness("fake-success")],
     ]);
-    const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.005 });
+    const orch = new Orchestrator({
+      registry,
+      reviewers: reviewers(),
+      paidBudget: { kind: "finite", maxUsd: 0.005 },
+    });
     // Each fake streams 0.01 usage (> 0.005 cap). With amount-bearing holds the
     // FIRST usage event already drives the tier hard: in-flight candidates abort
     // mid-stream (no silent overshoot), pre-start wave slots are skipped, and the
@@ -589,24 +598,22 @@ describe("Orchestrator", () => {
     expect(events).toMatch(/hard cap/);
   });
 
-  it("wave-guard boundary: cap = 2×floor runs TWO candidates (never zero) and denies the rest as estimate_headroom", async () => {
-    // GPT-critic live repro (Phase 2): with the default 0.05 floor, a race
-    // whose cap is an exact multiple of the floor granted an estimate that
-    // consumed headroom to the boundary, tripped the hard tier with $0 spent,
-    // and cancelled EVERY candidate ("exhausted", zero candidates).
+  it("accounts for estimated parallel candidates without crossing reserved headroom", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
       ["fake-success", createFakeHarness("fake-success")],
     ]);
-    const orch = new Orchestrator({ registry, reviewers: reviewers(), maxUsd: 0.1 });
+    const orch = new Orchestrator({
+      registry,
+      reviewers: reviewers(),
+      paidBudget: { kind: "finite", maxUsd: 0.1 },
+    });
     const res = await withScopedConfigDir(async () =>
       orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-success"], n: 4 }),
     );
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
-    // Slot 1 holds nothing; slot 2 holds 0.05 (< 0.10 remaining); slot 3 would
-    // need 0.05 with exactly 0.05 remaining -> typed estimate_headroom denial.
     expect(primary.length).toBe(2);
-    expect(res.status).not.toBe("exhausted");
+    expect(res.status).not.toBe("exhausted_overshoot");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain("insufficient headroom for estimated cost");
   });
@@ -632,12 +639,12 @@ describe("Orchestrator", () => {
     expect(res.candidates.every((c) => c.harnessId !== "raw-ish")).toBe(true);
   });
 
-  it("applies configured eligible pool, primary harness, model, and portfolio defaults", async () => {
+  it("applies configured eligible pool, primary harness, model, and routing goal defaults", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
     writeFileSync(
       join(repo, ".claudexor", "config.yaml"),
-      ["version: 1", "budget:", "  portfolio: balanced", ""].join("\n"),
+      ["version: 1", "budget:", "  routing_goal: economy", ""].join("\n"),
     );
     const seen: { id: string; model: string | null }[] = [];
     const adapterA: HarnessAdapter = {
@@ -680,7 +687,7 @@ describe("Orchestrator", () => {
     // old crash class: one vendor's model forwarded to every harness).
     expect(seen.find((s) => s.id === "claude")?.model).toBe("model-x");
     expect(seen.find((s) => s.id === "codex")?.model).toBeNull();
-    expect(taskYaml).toContain("portfolio: balanced");
+    expect(taskYaml).toContain("routing_goal: economy");
     // The contract records the resolved harness-scoped map.
     expect(taskYaml).toContain("routing_models");
     expect(taskYaml).toContain("claude: model-x");
@@ -1726,7 +1733,7 @@ describe("Orchestrator", () => {
         harnesses: ["a", "b"],
         n: 2,
         inPlace: true,
-        maxUsd: 5, // floor 5: slot 1 holds nothing, slot 2's estimate (5) >= headroom (5) -> denied
+        paidBudget: { kind: "finite", maxUsd: 5 },
       });
       expect(res.candidates.length).toBe(1); // wave guard trimmed the wave
       const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
@@ -3263,10 +3270,22 @@ describe("Orchestrator", () => {
     expect(res.mode).toBe("agent");
   });
 
-  it("materializes a raw patch in isolation and delivers its canonical diff through the normal gate", async () => {
+  it("admits a production-style readonly raw patch adapter for default agent delivery", async () => {
     const repo = await initRepo();
-    const raw = rawPatchImplementer("raw-patch");
-    const orch = new Orchestrator({ registry: new Map([[raw.id, raw]]), reviewers: reviewers() });
+    const userBytes = Buffer.from("concurrent user edit\n", "utf8");
+    let observedAccess: AccessProfile | null = null;
+    const raw = rawPatchImplementer("raw-patch", (access) => {
+      observedAccess = access;
+    });
+    const orch = new Orchestrator({
+      registry: new Map([[raw.id, raw]]),
+      reviewers: [
+        cleanReviewerWithSideEffect("rev-openai", "openai", () => {
+          writeFileSync(join(repo, "USER.txt"), userBytes);
+        }),
+        cleanReviewer("rev-anthropic", "anthropic"),
+      ],
+    });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "edit README",
@@ -3277,10 +3296,21 @@ describe("Orchestrator", () => {
       tests: [shellGate('test "$(cat README.md)" = "# raw implemented"')],
     });
     expect(res.status).toBe("success");
+    expect(observedAccess).toBe("readonly");
     expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# raw implemented\n");
+    expect(readFileSync(join(res.runDir, "context", "task.yaml"), "utf8")).toContain(
+      "effective_profile: workspace_write",
+    );
     const finalPatch = readFileSync(join(res.runDir, "final", "patch.diff"), "utf8");
     expect(finalPatch).toContain("+# raw implemented");
     expect(finalPatch).not.toContain("RawGitPatchEnvelope");
+    const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    const anchorId = workProduct.match(/revert_anchor_id:\s+['"]?(sha256:[0-9a-f]{64})/)?.[1];
+    expect(anchorId).toBeDefined();
+    const { revertInPlaceFromAnchor } = await import("@claudexor/delivery");
+    expect(await revertInPlaceFromAnchor(repo, anchorId!)).toMatchObject({ reverted: true });
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+    expect(readFileSync(join(repo, "USER.txt"))).toEqual(userBytes);
   });
 
   it("race leaves an ungated winner as an artifact without mutating the live tree", async () => {
@@ -4076,6 +4106,30 @@ describe("Orchestrator", () => {
     expect(wp).toMatch(/post_turn_sha: ['"]?[0-9a-f]{6,}/);
   });
 
+  it("refuses in-place raw patch convergence before the first harness attempt", async () => {
+    const repo = await initRepo();
+    let runs = 0;
+    const raw = rawPatchImplementer("raw-patch", () => {
+      runs += 1;
+    });
+    const res = await new Orchestrator({
+      registry: new Map([[raw.id, raw]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "edit README",
+      mode: "agent",
+      harnesses: [raw.id],
+      attempts: 2,
+      inPlace: true,
+    });
+
+    expect(res.status).toBe("failed");
+    expect(runs).toBe(0);
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
+    expect(res.summary).toContain("in-place convergence is unavailable");
+  });
+
   it("refuses access=full without a user-level trust allow (loud, no silent downgrade)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-notrust-"));
@@ -4140,10 +4194,13 @@ describe("Orchestrator", () => {
     expect(blocked.summary).toContain("choose a web-capable/enforceable harness");
   });
 
-  it("applies the configured global max_usd_per_run as the default run cap", async () => {
+  it("applies the configured global paid_budget_per_run as the default run cap", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-budgetcfg-"));
-    writeFileSync(join(configDir, "config.yaml"), "budget:\n  max_usd_per_run: 0.005\n");
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      "budget:\n  paid_budget_per_run:\n    kind: finite\n    maxUsd: 0.005\n",
+    );
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
       const registry = new Map<string, HarnessAdapter>([
@@ -4161,7 +4218,8 @@ describe("Orchestrator", () => {
         n: 6,
       });
       const contract = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
-      expect(contract).toContain("max_usd: 0.005");
+      expect(contract).toContain("paid_budget:");
+      expect(contract).toContain("maxUsd: 0.005");
       const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
       expect(primary.length).toBeLessThan(6);
     } finally {
@@ -4176,6 +4234,7 @@ function plannerAdapter(
   id: string,
   plan: unknown,
   family: ProviderFamily = "anthropic",
+  usageCostUsd?: number,
 ): HarnessAdapter {
   return {
     id,
@@ -4210,6 +4269,14 @@ function plannerAdapter(
         ts,
         text: "Plan:\n\n```json\n" + JSON.stringify(plan) + "\n```\n",
       };
+      if (usageCostUsd !== undefined) {
+        yield {
+          type: "usage",
+          session_id: spec.session_id,
+          ts,
+          usage: { cost_usd: usageCostUsd },
+        };
+      }
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
@@ -4291,6 +4358,52 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     expect(types).toContain("orchestrate.subrun.started");
     // SAFETY: the live repo tree was NOT mutated by the safe envelope sub-run.
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("does not launder a skipped required step into parent success", async () => {
+    const repo = await initRepo();
+    const plan = {
+      tool_calls: [{ tool: "status", run_id: "run-missing", why: "required evidence" }],
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "inspect required run",
+      mode: "orchestrate",
+      harnesses: ["planner"],
+      autonomy: "auto_safe",
+    });
+    expect(res.status).toBe("blocked");
+    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
+    expect(progress).toContain("required: true");
+    expect(progress).toContain("status: skipped");
+  });
+
+  it("allows a skipped optional step without degrading required success", async () => {
+    const repo = await initRepo();
+    const plan = {
+      tool_calls: [
+        {
+          tool: "status",
+          run_id: "run-missing",
+          why: "best-effort context",
+          required: false,
+        },
+      ],
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "inspect optional run",
+      mode: "orchestrate",
+      harnesses: ["planner"],
+      autonomy: "auto_safe",
+    });
+    expect(res.status).toBe("success");
   });
 
   it("ENVELOPE ENFORCEMENT: a start_run sub-run executes in an isolated worktree, not the live repo root", async () => {
@@ -4383,6 +4496,11 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
     expect(progress).toContain("tool: apply");
     expect(progress).toContain("status: done");
+    expect(progress).toContain("terminal_source: delivery");
+    expect(progress).toContain("delivery_receipt");
+    const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(workProduct).toContain("read_only: false");
+    expect(workProduct).toContain("delivery_receipt");
     // The referenced patch wrote CHANGED.txt into the LIVE tree (auto_full applied).
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
   });
@@ -5206,7 +5324,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
       yield { type: "completed", session_id: sessionId, ts };
     });
     const registry = new Map<string, HarnessAdapter>([
-      ["planner", plannerAdapter("planner", plan)],
+      ["planner", plannerAdapter("planner", plan, "anthropic", 0.001)],
       ["spender", spender],
     ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
@@ -5216,16 +5334,15 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
       mode: "orchestrate",
       harnesses: ["planner"],
       autonomy: "auto_safe",
-      maxUsd: 0.015,
+      paidBudget: { kind: "finite", maxUsd: 0.015 },
     });
-    // Steps 1+2 spend 0.02 >= 0.015 -> step 3 must be SKIPPED and the run ends
-    // `exhausted` (pre-fix: ask sub-runs returned no spendUsd, aggregate stayed
-    // 0, and every step got the full cap again).
-    expect(res.status).toBe("exhausted");
+    // Steps 1+2 spend 0.02 > 0.015 -> step 3 must be skipped and the late
+    // exact charge is preserved as exhausted_overshoot.
+    expect(res.status).toBe("exhausted_overshoot");
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
-    expect(progress).toContain("aggregate budget exhausted");
+    expect(progress).toContain("root paid budget stopped");
     expect((progress.match(/status: skipped/g) ?? []).length).toBeGreaterThanOrEqual(1);
-    // Failure-shaped terminal (a cut-short plan is NOT a clean success):
+    // Failure-shaped terminal (a cut-short plan is not a clean success):
     // failure.yaml lands and the event log ends in run.failed, so `follow`
     // exits non-zero and the command projection agrees.
     expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
@@ -5448,26 +5565,26 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
   });
 });
 
-describe("stall rotation (headroom + coverage)", () => {
-  it("prefers UNTRIED candidates even when a tried one has more headroom", async () => {
+describe("stall rotation (pacing + coverage)", () => {
+  it("prefers UNTRIED candidates even when a tried one has more pacing slack", async () => {
     const { pickStallRotationIdx } = await import("./runSupport.js");
     const ledger = {
-      headroom: (id: string) => (id === "strong" ? 1 : 0.2),
+      bindingPaceSlack: (id: string) => (id === "strong" ? 1 : 0.2),
       cooldownActive: () => false,
     };
     const pool = ["strong", "current", "fresh"];
     // "strong" was already tried since progress; "fresh" was not.
     expect(pickStallRotationIdx(pool, 1, ledger, new Set(["strong", "current"]))).toBe(2);
-    // all tried -> falls back to best headroom among eligible.
+    // all tried -> falls back to best pacing slack among eligible.
     expect(pickStallRotationIdx(pool, 1, ledger, new Set(pool))).toBe(0);
     // total on degenerate pools: empty pool never NaN/undefined.
     expect(pickStallRotationIdx([], 0, ledger)).toBe(0);
     // every ALTERNATIVE cooling -> STAY on current (never hop onto a
     // known rate-limited harness just to rotate).
-    const allCooling = { headroom: () => 1, cooldownActive: () => true };
+    const allCooling = { bindingPaceSlack: () => 1, cooldownActive: () => true };
     expect(pickStallRotationIdx(pool, 1, allCooling)).toBe(1);
-    // equal headroom -> round-robin tiebreak: nearest clockwise neighbor.
-    const flat = { headroom: () => 1, cooldownActive: () => false };
+    // equal pacing -> round-robin tiebreak: nearest clockwise neighbor.
+    const flat = { bindingPaceSlack: () => 1, cooldownActive: () => false };
     expect(pickStallRotationIdx(pool, 1, flat)).toBe(2);
     expect(pickStallRotationIdx(pool, 2, flat)).toBe(0);
   });

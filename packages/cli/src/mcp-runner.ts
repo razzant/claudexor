@@ -46,7 +46,7 @@ export function mcpSurfaceRunner() {
           : {}),
       ...(p?.create === true ? { create: true } : {}),
       ...(Array.isArray(p?.tests) ? { tests: p.tests } : {}),
-      ...(typeof p?.maxUsd === "number" ? { maxUsd: p.maxUsd } : {}),
+      ...(p?.paidBudget ? { paidBudget: p.paidBudget } : {}),
       ...(p?.access ? { access: String(p.access) } : {}),
       // `externalContextPolicy` is the control-api-parity alias of `web`; the
       // validator already enforced equality when both are present. Honor the

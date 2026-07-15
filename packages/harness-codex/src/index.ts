@@ -740,10 +740,10 @@ async function* runCodex(
               observed_model_source: "unobserved",
             };
           }
-          if (ev.type === "started") {
-            ev.credential_route = credentialRoute;
-            ev.credential_source = credentialSource;
-          }
+          // The route is fixed before spawn; attach it to every event so a
+          // later usage/quota record remains independently attributable.
+          ev.credential_route = credentialRoute;
+          ev.credential_source = credentialSource;
           // codex's --json stream never carries the model, but the CLI
           // records it in its own session rollout. Try to recover it as soon as
           // the rollout's turn_context appears, then attach the transcript-sourced

@@ -124,13 +124,19 @@ import Testing
         #expect(harnessEffort.effort == "max")
     }
 
-    @Test func settingsUpdateCanClearBudgetCaps() throws {
-        let req = SettingsUpdateRequest(defaultPortfolio: "subscription-first", clearMaxUsdPerRun: true)
+    @Test func settingsUpdateEncodesRoutingAndTaggedBudget() throws {
+        let req = SettingsUpdateRequest(
+            routingGoal: "economy",
+            paidFallback: "allowed_within_cap",
+            paidBudgetPerRun: .finite(maxUsd: 0)
+        )
         let data = try JSONEncoder().encode(req)
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        #expect(obj?["defaultPortfolio"] as? String == "subscription-first")
-        #expect(obj?["maxUsdPerRun"] == nil)
-        #expect(obj?["clearMaxUsdPerRun"] as? Bool == true)
+        #expect(obj?["routingGoal"] as? String == "economy")
+        #expect(obj?["paidFallback"] as? String == "allowed_within_cap")
+        let budget = try #require(obj?["paidBudgetPerRun"] as? [String: Any])
+        #expect(budget["kind"] as? String == "finite")
+        #expect(budget["maxUsd"] as? Double == 0)
     }
 
     @Test func settingsUpdateEncodesInteractionTimeout() throws {
@@ -148,17 +154,18 @@ import Testing
         let data = Data("""
         {
           "sources": [],
-          "defaultPortfolio": "subscription-first",
           "interactionTimeoutMs": 900000,
           "routing": {
-            "defaultPolicy": "auto",
+            "goal": "auto",
+            "paidFallback": "when_unavailable",
+            "qualityTiers": {},
             "primaryHarness": null,
             "eligibleHarnesses": [],
             "defaultModel": null,
             "envInheritance": "mirror_native",
             "authPreference": "auto"
           },
-          "budget": { "maxUsdPerRun": null },
+          "budget": { "paidBudgetPerRun": { "kind": "unlimited" } },
           "runtime": {
             "reviewerTimeoutMs": 2400000,
             "transientRetry": {
@@ -734,7 +741,7 @@ import Testing
         let setObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(set)) as? [String: Any]
         #expect(setObj?["primaryHarness"] as? String == "codex")
         // Untouched: the key is absent entirely.
-        let untouched = SettingsUpdateRequest(defaultPortfolio: "balanced")
+        let untouched = SettingsUpdateRequest(routingGoal: "auto")
         let untouchedObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(untouched)) as? [String: Any]
         #expect(untouchedObj?["primaryHarness"] == nil)
     }

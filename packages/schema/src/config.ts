@@ -1,12 +1,7 @@
 import { z } from "zod";
-import {
-  AccessProfile,
-  AuthPreference,
-  ExternalContextPolicy,
-  ProviderFamily,
-} from "./primitives.js";
+import { AccessProfile, AuthPreference, ExternalContextPolicy } from "./primitives.js";
 import { EffortHint } from "./harness.js";
-import { Portfolio } from "./budget.js";
+import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 import { TestCommandGrant, TestCommandInvocation } from "./task.js";
 
 // The former "portfolio" value was deleted as a fake knob (it behaved
@@ -52,10 +47,10 @@ export const ProjectConfig = z
       .default({ commands: [] })
       .describe("Project-configured deterministic test gates."),
     budget: z
-      .object({ portfolio: Portfolio.default("subscription-first") })
+      .object({ routing_goal: RoutingGoal.optional() })
       .strict()
-      .default({ portfolio: "subscription-first" })
-      .describe("Project budget preferences."),
+      .default({})
+      .describe("Safe project routing preference; paid fallback remains user-global."),
   })
   .strict()
   .describe(
@@ -103,9 +98,6 @@ export type TrustConfig = z.infer<typeof TrustConfig>;
 export const GlobalConfig = z
   .object({
     version: z.literal(1).default(1).describe("Config format version."),
-    default_portfolio: Portfolio.default("subscription-first").describe(
-      "Budget portfolio used when a run does not specify one.",
-    ),
     /**
      * How long an interactive run waits for the user's answer to a harness
      * question (interaction.requested) before delivering a benign decline and
@@ -144,34 +136,21 @@ export const GlobalConfig = z
           ),
         /** Default auth route preference (subscription/api_key/auto). */
         auth_preference: AuthPreference.default("auto"),
-        /**
-         * Operator-tunable per-provider-family quality priors (0..1) feeding
-         * RouterCandidate.qualityForIntent. A DECLARED prior, not
-         * invented magic: unset families ride the router's neutral 0.5.
-         */
-        quality_priors: z
-          .record(ProviderFamily, z.number().min(0).max(1))
-          .default({})
-          .describe(
-            "Operator-tunable per-provider-family quality priors (0..1) feeding the router; unset families ride the neutral 0.5.",
-          ),
+        goal: RoutingGoal.default("auto"),
+        paid_fallback: PaidFallback.default("when_unavailable"),
+        quality_tiers: QualityTierSet,
       })
       .strict()
       .default({})
       .describe("Global routing defaults."),
     budget: z
       .object({
-        max_usd_per_run: z
-          .number()
-          .nonnegative()
-          .nullable()
-          .default(null)
-          .describe("Global USD cap per run; null = no cap."),
+        paid_budget_per_run: PaidBudget.default({ kind: "unlimited" }),
         /**
          * Per-candidate reservation floor (USD) held against the run cap for
          * every race-wave slot AFTER the first, BEFORE any usage streams.
          * Makes concurrent in-flight candidates visible to the budget breaker
-         * so a parallel wave cannot blow past `max_usd_per_run` between
+         * so a parallel wave cannot blow past the finite paid budget between
          * settlements. The first slot never holds it: a cap smaller than the
          * floor still runs one candidate and stops on real usage.
          */
@@ -278,12 +257,6 @@ export const GlobalConfig = z
               .nullable()
               .default(null)
               .describe("Default max convergence rounds; null = engine default."),
-            max_usd: z
-              .number()
-              .nonnegative()
-              .nullable()
-              .default(null)
-              .describe("Per-harness USD cap; null = no cap."),
             tools_allow: z
               .array(z.string())
               .default([])

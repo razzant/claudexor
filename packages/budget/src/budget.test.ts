@@ -1,22 +1,51 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderFamily } from "@claudexor/schema";
-import { BudgetLedger, promptFingerprint } from "./ledger.js";
+import { BudgetLedger, promptFingerprint, routeCostEvidence } from "./ledger.js";
 import { observationsFromEvent } from "./observe.js";
-import { type RouterCandidate, selectHarness } from "./router.js";
+import { RoutingPreflightError, type RouterCandidate, selectHarness } from "./router.js";
 
 describe("BudgetLedger", () => {
+  const metered = (estimatedUsd: number | null = null) =>
+    routeCostEvidence({
+      billing: "metered",
+      knowledge: estimatedUsd === null ? "unknown" : "estimated",
+      source: "test-pricing",
+      provenance: ["fixture:budget"],
+      estimatedUsd,
+    });
+  const exactSettlement = (cashUsd: number) => ({
+    knowledge: "exact" as const,
+    source: "test-usage",
+    provenance: ["fixture:usage"],
+    cashUsd,
+  });
+
   it("escalates circuit tiers with spend; hard cap denies reservation", () => {
-    const led = new BudgetLedger({ maxUsd: 1.0 });
-    const r1 = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
+    const led = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const r1 = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "codex",
+      cost: metered(),
+    });
     expect(r1.granted).toBe(true);
     expect(r1.tier).toBe("ok");
-    led.settle(r1.lease?.lease_id ?? "", 0.8);
+    led.settle(r1.lease?.lease_id ?? "", exactSettlement(0.8));
     expect(led.tier()).toBe("soft");
-    const r2 = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
-    led.settle(r2.lease?.lease_id ?? "", 0.15);
+    const r2 = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "codex",
+      cost: metered(),
+    });
+    led.settle(r2.lease?.lease_id ?? "", exactSettlement(0.15));
     expect(led.tier()).toBe("downgrade");
-    const r3 = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
-    led.settle(r3.lease?.lease_id ?? "", 0.1);
+    const r3 = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "codex",
+      cost: metered(),
+    });
+    led.settle(r3.lease?.lease_id ?? "", exactSettlement(0.1));
     expect(led.tier()).toBe("hard");
     expect(led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" }).granted).toBe(
       false,
@@ -24,29 +53,62 @@ describe("BudgetLedger", () => {
   });
 
   it("settle fails loudly on an unknown lease and never double-counts a re-settle", () => {
-    const led = new BudgetLedger({ maxUsd: 1.0 });
-    expect(() => led.settle("lease-never-granted", 0.5)).toThrow(/unknown lease/);
-    const r = led.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
-    led.settle(r.lease?.lease_id ?? "", 0.4);
-    led.settle(r.lease?.lease_id ?? "", 0.4); // duplicate settle: spend add is a no-op
-    expect(led.spend()).toBeCloseTo(0.4, 8);
-  });
-
-  it("rolls child spend up to the parent", () => {
-    const parent = new BudgetLedger({ maxUsd: 1.0 });
-    const child = parent.child({ maxUsd: 10 });
-    const r = child.reserve({ taskId: "t", intent: "implement", harnessId: "codex" });
-    child.settle(r.lease?.lease_id ?? "", 1.0);
-    expect(parent.tier()).toBe("hard");
-  });
-
-  it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {
-    const led = new BudgetLedger({ maxUsd: 1.0 });
+    const led = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    expect(() => led.settle("lease-never-granted", exactSettlement(0.5))).toThrow(/unknown lease/);
     const r = led.reserve({
       taskId: "t",
       intent: "implement",
       harnessId: "codex",
-      estimateUsd: 0.2,
+      cost: metered(),
+    });
+    led.settle(r.lease?.lease_id ?? "", exactSettlement(0.4));
+    led.settle(r.lease?.lease_id ?? "", exactSettlement(0.4));
+    expect(led.spend()).toBeCloseTo(0.4, 8);
+  });
+
+  it("distinguishes explicit unlimited from finite zero", () => {
+    const unlimited = new BudgetLedger({ kind: "unlimited" });
+    expect(unlimited.reserve({ taskId: "t", intent: "implement", harnessId: "paid" }).granted).toBe(
+      true,
+    );
+
+    const zero = new BudgetLedger({ kind: "finite", maxUsd: 0 });
+    expect(
+      zero.reserve({ taskId: "t", intent: "implement", harnessId: "paid", cost: metered() }),
+    ).toMatchObject({
+      granted: false,
+      denied: "finite_zero",
+    });
+    const entitled = zero.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "subscription",
+      cost: routeCostEvidence({
+        billing: "subscription_entitlement",
+        knowledge: "estimated",
+        source: "entitlement-receipt",
+        provenance: ["receipt:subscription"],
+        estimatedUsd: 3,
+      }),
+    });
+    expect(entitled.granted).toBe(true);
+    zero.settle(entitled.lease?.lease_id ?? "", {
+      knowledge: "estimated",
+      source: "token-valuation",
+      provenance: ["usage:tokens"],
+      cashUsd: 3,
+    });
+    expect(zero.spend()).toBe(0);
+    expect(zero.valuation()).toBe(3);
+  });
+
+  it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {
+    const led = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const r = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "codex",
+      cost: metered(0.2),
     });
     expect(r.granted).toBe(true);
     // Streamed cost raises the hold; the tier sees it BEFORE settlement.
@@ -58,28 +120,49 @@ describe("BudgetLedger", () => {
     led.updateHold(r.lease?.lease_id ?? "", 0.1);
     expect(led.tier()).toBe("hard");
     // Settling replaces the hold with the actual spend (no double count).
-    led.settle(r.lease?.lease_id ?? "", 0.5);
+    led.settle(r.lease?.lease_id ?? "", exactSettlement(0.5));
     expect(led.spend()).toBeCloseTo(0.5, 8);
     expect(led.tier()).toBe("ok");
   });
 
-  it("rolls child holds up to the parent and clears them on cancel", () => {
-    const parent = new BudgetLedger({ maxUsd: 1.0 });
-    const child = parent.child({ maxUsd: 10 });
-    // 0.95 fits under the parent cap (the wave guard denies estimates that
-    // would consume headroom to the boundary), and its hold is visible at the
-    // parent tier (0.95/1.0 ≥ downgrade threshold).
-    const r = child.reserve({
+  it("permits at most one unknown-cost paid unit in flight under a finite cap", () => {
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const first = ledger.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "one",
+      cost: metered(),
+    });
+    const second = ledger.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "two",
+      cost: metered(),
+    });
+    expect(first.granted).toBe(true);
+    expect(second).toMatchObject({ granted: false, denied: "unknown_paid_in_flight" });
+    ledger.settle(first.lease?.lease_id ?? "", {
+      knowledge: "unknown",
+      source: "missing-usage",
+      provenance: ["attempt:one"],
+    });
+    expect(ledger.terminal()).toBe("cost_unverifiable");
+  });
+
+  it("records late exact overshoot and blocks the next paid unit", () => {
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 0.1 });
+    const lease = ledger.reserve({
       taskId: "t",
       intent: "implement",
       harnessId: "codex",
-      estimateUsd: 0.95,
+      cost: metered(0.05),
     });
-    expect(r.granted).toBe(true);
-    expect(parent.tier()).toBe("downgrade");
-    child.cancel(r.lease?.lease_id ?? "");
-    expect(parent.tier()).toBe("ok");
-    expect(parent.spend()).toBe(0);
+    ledger.settle(lease.lease?.lease_id ?? "", exactSettlement(0.12));
+    expect(ledger.terminal()).toBe("exhausted_overshoot");
+    expect(
+      ledger.reserve({ taskId: "t", intent: "implement", harnessId: "next", cost: metered() })
+        .granted,
+    ).toBe(false);
   });
 
   it("detects prompt loops by fingerprint", () => {
@@ -94,56 +177,78 @@ describe("BudgetLedger", () => {
   });
 });
 
-function cand(
-  id: string,
-  fam: ProviderFamily,
-  over: Partial<RouterCandidate> = {},
-): RouterCandidate {
+function cand(id: string, over: Partial<RouterCandidate> = {}): RouterCandidate {
   return {
     harnessId: id,
-    providerFamily: fam,
     available: true,
-    authMode: "local_session",
-    qualityForIntent: 0.8,
-    costPerCall: 0.01,
-    latencyMs: 1000,
+    model: `${id}-model`,
+    effort: "high",
+    billingKnowledge: "unknown",
     ...over,
   };
 }
 
+const routeContext = (ledger: BudgetLedger, goal: "auto" | "quality" | "economy") => ({
+  goal,
+  paidFallback: "allowed_within_cap" as const,
+  intent: "implement" as const,
+  qualityTiers: {
+    implement: [
+      [{ harness: "claude", model: "claude-model", effort: "high" as const }],
+      [{ harness: "codex", model: "codex-model", effort: "high" as const }],
+    ],
+  },
+  ledger,
+});
+
 describe("router", () => {
-  it("selects the highest-utility available harness", () => {
+  it("quality uses only exact user-declared tiers", () => {
     const led = new BudgetLedger();
-    const best = selectHarness(
-      [cand("codex", "openai"), cand("claude", "anthropic", { qualityForIntent: 0.9 })],
-      {
-        portfolio: "daily-rich",
-        ledger: led,
-      },
-    );
+    const best = selectHarness([cand("codex"), cand("claude")], routeContext(led, "quality"));
     expect(best?.harnessId).toBe("claude");
+    expect(() => selectHarness([cand("other")], routeContext(led, "quality"))).toThrow(
+      RoutingPreflightError,
+    );
   });
 
   it("returns null when nothing is available", () => {
     const led = new BudgetLedger();
-    expect(
-      selectHarness([cand("x", "openai", { available: false })], {
-        portfolio: "daily-rich",
-        ledger: led,
-      }),
-    ).toBeNull();
+    expect(selectHarness([cand("x", { available: false })], routeContext(led, "auto"))).toBeNull();
   });
 
-  it("subscription-first prefers local_session over api_key", () => {
+  it("economy minimizes incremental paid spend and never assumes native means free", () => {
     const led = new BudgetLedger();
     const best = selectHarness(
       [
-        cand("api", "openai", { authMode: "api_key" }),
-        cand("sub", "anthropic", { authMode: "local_session" }),
+        cand("native", { billingKnowledge: "unknown", incrementalCostUsd: null }),
+        cand("sub", { billingKnowledge: "subscription_entitlement", incrementalCostUsd: 0 }),
       ],
-      { portfolio: "subscription-first", ledger: led },
+      routeContext(led, "economy"),
     );
     expect(best?.harnessId).toBe("sub");
+  });
+
+  it("auto spends the route with the larger positive expiring-quota slack", () => {
+    const led = new BudgetLedger();
+    const reset = new Date(Date.now() + 9_000_000).toISOString();
+    for (const [harness_id, used_ratio] of [
+      ["codex", 0.1],
+      ["claude", 0.45],
+    ] as const) {
+      led.observe({
+        harness_id,
+        ts: new Date().toISOString(),
+        quality: "native",
+        kind: "quota_constraint",
+        constraint_id: "five-hour",
+        used_ratio,
+        window_seconds: 18_000,
+        resets_at: reset,
+      });
+    }
+    expect(
+      selectHarness([cand("claude"), cand("codex")], routeContext(led, "auto"))?.harnessId,
+    ).toBe("codex");
   });
 
   it("excludes a rate-limited harness via the typed rate_limit signal", () => {
@@ -161,9 +266,7 @@ describe("router", () => {
     expect(obs?.kind).toBe("rate_limited");
     led.observe(obs as NonNullable<typeof obs>);
     expect(led.cooldownActive("codex")).toBe(true);
-    expect(
-      selectHarness([cand("codex", "openai")], { portfolio: "daily-rich", ledger: led }),
-    ).toBeNull();
+    expect(selectHarness([cand("codex")], routeContext(led, "auto"))).toBeNull();
   });
 
   it("only the typed rate_limit field trips a cooldown (no regex governance over prose)", () => {
@@ -200,16 +303,31 @@ describe("router", () => {
 });
 
 describe("wave guard (estimate holds)", () => {
+  const known = routeCostEvidence({
+    billing: "metered",
+    knowledge: "exact",
+    source: "test-pricing",
+    provenance: ["fixture:wave"],
+  });
+  const estimate = (estimatedUsd: number) =>
+    routeCostEvidence({
+      billing: "metered",
+      knowledge: "estimated",
+      source: "test-pricing",
+      provenance: ["fixture:wave"],
+      estimatedUsd,
+    });
+
   it("denies a wave slot whose estimate exceeds remaining headroom without poisoning granted work", () => {
-    const ledger = new BudgetLedger({ maxUsd: 0.1 });
-    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 0.1 });
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", cost: known });
     expect(first.granted).toBe(true);
     // Second slot holds the floor and fits (0.05 < 0.1 remaining).
     const second = ledger.reserve({
       taskId: "t",
       intent: "implement",
       harnessId: "h",
-      estimateUsd: 0.05,
+      cost: estimate(0.05),
     });
     expect(second.granted).toBe(true);
     // Third slot would need 0.06 but only 0.05 remains -> typed wave denial.
@@ -217,7 +335,7 @@ describe("wave guard (estimate holds)", () => {
       taskId: "t",
       intent: "implement",
       harnessId: "h",
-      estimateUsd: 0.06,
+      cost: estimate(0.06),
     });
     expect(third.granted).toBe(false);
     expect(third.denied).toBe("estimate_headroom");
@@ -229,14 +347,14 @@ describe("wave guard (estimate holds)", () => {
     // The GPT-critic live repro: floor 0.05, cap 0.05 — granting the equality
     // case pushed holds to exactly the hard threshold and cancelled EVERY
     // in-flight candidate with $0 real spend.
-    const ledger = new BudgetLedger({ maxUsd: 0.05 });
-    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 0.05 });
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", cost: known });
     expect(first.granted).toBe(true);
     const second = ledger.reserve({
       taskId: "t",
       intent: "implement",
       harnessId: "h",
-      estimateUsd: 0.05,
+      cost: estimate(0.05),
     });
     expect(second.granted).toBe(false);
     expect(second.denied).toBe("estimate_headroom");
@@ -245,9 +363,9 @@ describe("wave guard (estimate holds)", () => {
   });
 
   it("keeps hard-cap denials typed as hard_cap", () => {
-    const ledger = new BudgetLedger({ maxUsd: 0.01 });
+    const ledger = new BudgetLedger({ kind: "finite", maxUsd: 0.01 });
     // Real streamed usage (not an estimate) trips the hard tier...
-    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h" });
+    const first = ledger.reserve({ taskId: "t", intent: "implement", harnessId: "h", cost: known });
     expect(first.granted).toBe(true);
     ledger.updateHold(first.lease?.lease_id ?? "", 0.01);
     // ...and the NEXT reservation is a hard_cap denial, not a wave denial.
@@ -258,27 +376,50 @@ describe("wave guard (estimate holds)", () => {
 });
 
 describe("quota observation", () => {
-  it("maps a typed HarnessEvent.quota to a native used_percent observation that drives headroom()", async () => {
+  it("keeps every quota window and computes the binding minimum pacing slack", async () => {
     const { observationsFromEvent } = await import("./observe.js");
     const { BudgetLedger } = await import("./ledger.js");
     const ts = new Date().toISOString();
-    const [obs] = observationsFromEvent("codex", {
+    const obs = observationsFromEvent("codex", {
       type: "usage",
       session_id: "s",
       ts,
       usage: { input_tokens: 10 },
-      quota: { used_percent: 40, resets_at: null },
+      quota: {
+        source: "codex_rollout",
+        plan_label: null,
+        subject_id: null,
+        constraints: [
+          {
+            id: "five-hour",
+            label: "5 hour",
+            used_ratio: 0.4,
+            window_seconds: 18_000,
+            resets_at: new Date(Date.now() + 9_000_000).toISOString(),
+            cooldown_until: null,
+          },
+          {
+            id: "weekly",
+            label: "weekly",
+            used_ratio: 0.2,
+            window_seconds: 604_800,
+            resets_at: new Date(Date.now() + 453_600_000).toISOString(),
+            cooldown_until: null,
+          },
+        ],
+      },
     } as never);
-    expect(obs).toMatchObject({ kind: "used_percent", used_percent: 40, quality: "native" });
+    expect(obs).toHaveLength(2);
+    expect(obs[0]).toMatchObject({ kind: "quota_constraint", constraint_id: "five-hour" });
     const ledger = new BudgetLedger();
-    ledger.observe(obs!);
-    expect(ledger.headroom("codex")).toBeCloseTo(0.6, 5);
-    expect(ledger.headroom("claude")).toBe(1); // no signal -> honest unknown
+    for (const item of obs) ledger.observe(item);
+    expect(ledger.bindingPaceSlack("codex")).toBeCloseTo(0.05, 2);
+    expect(ledger.bindingPaceSlack("claude")).toBeNull();
   });
 });
 
-describe("portfolio metrics", () => {
-  it("EMA metrics store: records settled samples and orders cheapest by REAL cost spread", async () => {
+describe("routing telemetry", () => {
+  it("keeps EMA metrics as telemetry; economy consumes explicit incremental cost only", async () => {
     const { recordHarnessMetric, loadHarnessMetrics } = await import("./metrics.js");
     const { selectHarness } = await import("./router.js");
     const { BudgetLedger } = await import("./ledger.js");
@@ -292,30 +433,17 @@ describe("portfolio metrics", () => {
       const metrics = loadHarnessMetrics(dir);
       expect(metrics["codex"]!.avg_cost_usd).toBeCloseTo(0.02, 5);
       expect(metrics["claude"]!.samples).toBe(1);
-      const mk = (id: string, family: "openai" | "anthropic") => ({
+      const mk = (id: string) => ({
         harnessId: id,
-        providerFamily: family,
         available: true,
-        authMode: "local_session" as const,
-        costPerCall: metrics[id]!.avg_cost_usd ?? undefined,
-        latencyMs: metrics[id]!.avg_duration_ms ?? undefined,
+        model: `${id}-model`,
+        effort: "high" as const,
+        billingKnowledge: "metered" as const,
+        incrementalCostUsd: metrics[id]!.avg_cost_usd ?? undefined,
       });
       const ledger = new BudgetLedger();
-      // cheapest: the 20x cost spread must pick codex.
-      const cheap = selectHarness([mk("codex", "openai"), mk("claude", "anthropic")], {
-        portfolio: "cheapest",
-        ledger,
-      });
+      const cheap = selectHarness([mk("codex"), mk("claude")], routeContext(ledger, "economy"));
       expect(cheap?.harnessId).toBe("codex");
-      // strongest with a decisive quality prior: claude wins despite cost.
-      const strong = selectHarness(
-        [
-          { ...mk("codex", "openai"), qualityForIntent: 0.5 },
-          { ...mk("claude", "anthropic"), qualityForIntent: 0.95 },
-        ],
-        { portfolio: "strongest", ledger },
-      );
-      expect(strong?.harnessId).toBe("claude");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -363,13 +491,7 @@ describe("portfolio metrics", () => {
       kind: "rate_limited",
       cooldown_until: new Date(Date.now() + 60_000).toISOString(),
     });
-    const pick = selectHarness(
-      [
-        { harnessId: "codex", providerFamily: "openai", available: true },
-        { harnessId: "claude", providerFamily: "anthropic", available: true },
-      ],
-      { portfolio: "cheapest", ledger },
-    );
+    const pick = selectHarness([cand("codex"), cand("claude")], routeContext(ledger, "economy"));
     expect(pick?.harnessId).toBe("claude");
   });
 });

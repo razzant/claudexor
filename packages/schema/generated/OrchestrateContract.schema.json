@@ -39,18 +39,44 @@
         "budget": {
           "type": "object",
           "properties": {
-            "max_usd": {
+            "paid_budget": {
               "anyOf": [
                 {
-                  "type": "number",
-                  "minimum": 0
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "unlimited"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
                 },
                 {
-                  "type": "null"
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "finite"
+                    },
+                    "maxUsd": {
+                      "type": "number",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "maxUsd"
+                  ],
+                  "additionalProperties": false
                 }
               ],
-              "default": null,
-              "description": "USD cap for the whole orchestration; null = no cap."
+              "description": "Incremental-cash budget: explicitly unlimited or a finite non-negative USD cap.",
+              "default": {
+                "kind": "unlimited"
+              }
             },
             "max_tool_calls": {
               "anyOf": [

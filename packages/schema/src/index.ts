@@ -21,6 +21,7 @@ export * from "./harness.js";
 export * from "./review.js";
 export * from "./workproduct.js";
 export * from "./budget.js";
+export * from "./quota.js";
 export * from "./route.js";
 export * from "./decision.js";
 export * from "./delivery.js";

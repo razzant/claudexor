@@ -6,24 +6,18 @@ import ClaudexorKit
 
 struct SettingsScreen: View {
     @Environment(AppModel.self) private var model
-    @State private var defaultPortfolio = "subscription-first"
-    @State private var routingPolicy = "auto"
+    @State private var routingGoal = "auto"
+    @State private var paidFallback = "when_unavailable"
     @State private var primaryHarness = "__none"
     @State private var authPreference = "auto"
     @State private var envInheritance = "mirror_native"
     @State private var eligibleHarnesses: Set<HarnessFamily> = []
     @State private var maxUsdPerRun = ""
+    @State private var budgetUnlimited = true
     @State private var interactionTimeoutMinutes = ""
-    /// Anti-clobber (HarnessDefaultsRow.dirty pattern): set on user edits,
-    /// cleared when OUR save settles. While dirty, `syncFromModel()` refuses to
-    /// re-derive drafts, so a concurrent `refreshSettings()` re-sync (e.g.
-    /// after a per-harness row auto-save) cannot overwrite in-progress edits.
     @State private var engineDraftsDirty = false
-    /// Draft values as last written by `syncFromModel()`: edit detection is by
-    /// VALUE against this, because `.onChange` also fires for the programmatic
-    /// sync writes (mirrors HarnessDefaultsRow.syncedSnapshot).
     @State private var syncedSnapshot: [String] = []
-    private var runCapValid: Bool { parseOptionalDouble(maxUsdPerRun) != nil || maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var runCapValid: Bool { budgetUnlimited || parseOptionalDouble(maxUsdPerRun) != nil }
     private var interactionTimeoutValid: Bool {
         let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
@@ -49,31 +43,27 @@ struct SettingsScreen: View {
         .task { await refreshAll() }
         .onAppear { syncFromModel() }
         .onChange(of: model.settingsSnapshot) { _, _ in syncFromModel() }
-        .onChange(of: defaultPortfolio) { _, _ in markEngineDraftsEdited() }
-        .onChange(of: routingPolicy) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: routingGoal) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: paidFallback) { _, _ in markEngineDraftsEdited() }
         .onChange(of: primaryHarness) { _, _ in markEngineDraftsEdited() }
         .onChange(of: authPreference) { _, _ in markEngineDraftsEdited() }
         .onChange(of: envInheritance) { _, _ in markEngineDraftsEdited() }
         .onChange(of: eligibleHarnesses) { _, _ in markEngineDraftsEdited() }
         .onChange(of: maxUsdPerRun) { _, _ in markEngineDraftsEdited() }
+        .onChange(of: budgetUnlimited) { _, _ in markEngineDraftsEdited() }
         .onChange(of: interactionTimeoutMinutes) { _, _ in markEngineDraftsEdited() }
     }
 
-    /// Current draft values in a stable comparable shape.
     private var draftSnapshot: [String] {
-        [defaultPortfolio, routingPolicy, primaryHarness, authPreference, envInheritance,
+        [routingGoal, paidFallback, primaryHarness, authPreference, envInheritance,
          eligibleHarnesses.map(\.rawValue).sorted().joined(separator: ","),
-         maxUsdPerRun, interactionTimeoutMinutes]
+         budgetUnlimited ? "unlimited" : "finite", maxUsdPerRun, interactionTimeoutMinutes]
     }
 
-    /// Only a VALUE change relative to the last sync is a user edit (a sync
-    /// echo re-fires .onChange with the just-synced values).
     private func markEngineDraftsEdited() {
         if draftSnapshot != syncedSnapshot { engineDraftsDirty = true }
     }
 
-    /// Standard scrolling container for one settings tab (matte glass backdrop,
-    /// readable column). Each tab supplies its `settingsGroup(...)` sections.
     private func settingsTab<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
@@ -121,19 +111,22 @@ struct SettingsScreen: View {
 
     @ViewBuilder private var routingGroup: some View {
         settingsGroup("Agent & Routing", "point.3.connected.trianglepath.dotted") {
-                    Picker("Default portfolio", selection: $defaultPortfolio) {
-                        Text("Subscription-first").tag("subscription-first")
-                        Text("Balanced").tag("balanced")
-                        Text("Cheapest").tag("cheapest")
-                        Text("Strongest").tag("strongest")
-                        Text("API overflow").tag("api-overflow")
-                    }
-                    .help("Portfolio is a routing/budget policy, not a mode.")
-                    Picker("Routing policy", selection: $routingPolicy) {
+                    Picker("Routing goal", selection: $routingGoal) {
                         Text("Auto").tag("auto")
-                        Text("Primary").tag("primary")
+                        Text("Quality").tag("quality")
+                        Text("Economy").tag("economy")
                     }
-                    .help("Auto lets the route selector choose from the eligible pool. Primary biases a single harness.")
+                    .help("Auto paces expiring quota, Quality uses your highest comparable tier, and Economy minimizes incremental paid spend.")
+                    Picker("Paid fallback", selection: $paidFallback) {
+                        Text("Never").tag("never")
+                        Text("When unavailable").tag("when_unavailable")
+                        Text("Allowed within cap").tag("allowed_within_cap")
+                    }
+                    .help("Controls whether routing may leave subscription or proven-zero routes.")
+                    KeyValueRow(
+                        key: "Quality tiers",
+                        value: "\(model.settingsSnapshot?.routing.qualityTiers.values.reduce(0) { $0 + $1.count } ?? 0) configured"
+                    )
                     Picker("Primary harness", selection: $primaryHarness) {
                         Text("None").tag("__none")
                         ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
@@ -224,21 +217,27 @@ struct SettingsScreen: View {
 
     @ViewBuilder private var budgetGroup: some View {
         settingsGroup("Budget", "dollarsign.circle") {
+                    Toggle("Unlimited paid budget", isOn: $budgetUnlimited)
+                        .toggleStyle(.switch)
+                        .tint(Theme.accent)
+                        .help("Unlimited still records exact or estimated spend; it removes only the paid cap.")
                     HStack(spacing: Theme.Spacing.md) {
                         TextField("Max USD per run", text: $maxUsdPerRun)
                             .textFieldStyle(.roundedBorder)
-                            .help("Default cap for runs. Composer per-run cap can still override it.")
+                            .disabled(budgetUnlimited)
+                            .help("Finite paid cap. Zero admits only proven-zero or subscription-entitlement routes.")
                     }
                     if !runCapValid {
-                        Label("Use a non-negative USD number, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
+                        Label("Use a non-negative USD number for a finite budget.", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundStyle(Theme.status(.failed))
                     }
                     Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "checkmark.circle") }
                         .buttonStyle(.bordered)
                         .disabled(!runCapValid)
-                        .help("Save validated budget defaults. Empty fields clear the corresponding cap.")
-                    KeyValueRow(key: "Circuit breaker", value: "Per-run cap above")
+                        .help("Save the explicit unlimited or finite paid-budget contract.")
+                    QuotaDetailView()
+                        .frame(minHeight: 260)
                 }
     }
 
@@ -330,6 +329,7 @@ struct SettingsScreen: View {
 
     private func refreshAll() async {
         await model.refreshSettings()
+        await model.refreshQuota()
         await model.refreshSecrets()
         await model.refreshHarnesses()
         await model.refreshTrust()
@@ -337,16 +337,15 @@ struct SettingsScreen: View {
     }
 
     private func syncFromModel() {
-        // Mid-edit drafts win over a concurrent snapshot republish; the drafts
-        // re-derive after the user's own Save settles (which clears the flag).
         guard let s = model.settingsSnapshot, !engineDraftsDirty else { return }
-        defaultPortfolio = s.defaultPortfolio
-        routingPolicy = s.routing.defaultPolicy
+        routingGoal = s.routing.goal
+        paidFallback = s.routing.paidFallback
         primaryHarness = s.routing.primaryHarness ?? "__none"
         authPreference = s.routing.authPreference ?? "auto"
         envInheritance = s.routing.envInheritance
         eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
-        maxUsdPerRun = s.budget.maxUsdPerRun.map { String(format: "%.2f", $0) } ?? ""
+        budgetUnlimited = s.budget.paidBudgetPerRun == .unlimited
+        maxUsdPerRun = s.budget.paidBudgetPerRun.finiteMaxUsd.map { String(format: "%.2f", $0) } ?? ""
         interactionTimeoutMinutes = s.interactionTimeoutMs.map { String(max(1, $0 / 60_000)) } ?? ""
         syncedSnapshot = draftSnapshot
     }
@@ -379,19 +378,19 @@ struct SettingsScreen: View {
             model.settingsStatus = "Budget defaults were not saved: enter non-negative USD numbers or leave fields empty."
             return
         }
-        let runCap = parseOptionalDouble(maxUsdPerRun)
-        let clearRunCap = maxUsdPerRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let paidBudget: PaidBudget = budgetUnlimited
+            ? .unlimited
+            : .finite(maxUsd: parseOptionalDouble(maxUsdPerRun) ?? 0)
         let patch = SettingsUpdateRequest(
-            defaultPortfolio: defaultPortfolio,
-            routingPolicy: routingPolicy,
+            routingGoal: routingGoal,
+            paidFallback: paidFallback,
             // Explicit null clears the primary (no "__none" magic string —
             // the server validates ids against the real registry).
             primaryHarness: primaryHarness == "__none" ? .some(nil) : .some(primaryHarness),
             eligibleHarnesses: eligibleHarnesses.map(\.rawValue).sorted(),
             envInheritance: envInheritance,
             authPreference: authPreference,
-            maxUsdPerRun: runCap,
-            clearMaxUsdPerRun: clearRunCap
+            paidBudgetPerRun: paidBudget
         )
         if await model.saveSettings(patch) { releaseDraftsToSync() }
     }

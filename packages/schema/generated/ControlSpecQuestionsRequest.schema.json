@@ -61,9 +61,41 @@
           ],
           "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
         },
-        "maxUsd": {
-          "type": "number",
-          "minimum": 0
+        "paidBudget": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "unlimited"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "finite"
+                },
+                "maxUsd": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "kind",
+                "maxUsd"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "Incremental-cash budget: explicitly unlimited or a finite non-negative USD cap."
         },
         "web": {
           "type": "string",

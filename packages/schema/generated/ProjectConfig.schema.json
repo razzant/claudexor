@@ -99,28 +99,19 @@
         "budget": {
           "type": "object",
           "properties": {
-            "portfolio": {
+            "routing_goal": {
               "type": "string",
               "enum": [
-                "daily-rich",
-                "balanced",
-                "cheapest",
-                "strongest",
-                "burn",
-                "subscription-first",
-                "api-overflow",
-                "conserve-claude",
-                "conserve-codex"
+                "auto",
+                "quality",
+                "economy"
               ],
-              "description": "Budget portfolio weighting the harness router's quality/cost/latency and subscription-vs-API preferences (e.g. cheapest minimizes spend, burn maximizes quality, conserve-* deprioritizes one vendor).",
-              "default": "subscription-first"
+              "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend."
             }
           },
           "additionalProperties": false,
-          "default": {
-            "portfolio": "subscription-first"
-          },
-          "description": "Project budget preferences."
+          "default": {},
+          "description": "Safe project routing preference; paid fallback remains user-global."
         }
       },
       "additionalProperties": false,

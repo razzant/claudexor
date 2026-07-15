@@ -1,6 +1,7 @@
 import { AccessProfile, ExternalContextPolicy, ProviderFamily } from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { TestCommandInvocation } from "./task.js";
+import { PaidBudget } from "./budget.js";
 
 /**
  * ONE owner for the surface-level run-control argument validation shared by
@@ -50,11 +51,8 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
   ) {
     return "tests must be an array of typed argv command objects";
   }
-  if (
-    obj.maxUsd !== undefined &&
-    (typeof obj.maxUsd !== "number" || !Number.isFinite(obj.maxUsd) || obj.maxUsd < 0)
-  ) {
-    return "maxUsd must be a non-negative number";
+  if (obj.paidBudget !== undefined && !PaidBudget.safeParse(obj.paidBudget).success) {
+    return "paidBudget must be an unlimited or finite tagged budget";
   }
   if (
     obj.access !== undefined &&

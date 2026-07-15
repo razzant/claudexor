@@ -406,7 +406,7 @@ views in the shared design-system files; screens compose them.
     thread can choose `isolated` — turns accumulate in a persistent thread
     worktree — instead of the default in-place execution);
   - **repair strategies** (until-clean / max-attempts) for agent turns.
-  Portfolio and deterministic gate commands are engine/Settings concerns, not
+  Routing goal, paid fallback, quality tiers, and deterministic gate commands are engine/Settings concerns, not
   per-turn composer controls.
   Default intent is `Agent`; project intents need a project; a **no-project thread is
   `Ask`-only** — the `ProjectChip` remains visible as the choose-project CTA, the

@@ -1,86 +1,96 @@
-import type { Portfolio, ProviderFamily } from "@claudexor/schema";
+import type {
+  BillingKnowledge,
+  EffortHint,
+  Intent,
+  PaidFallback,
+  QualityTierSet,
+  RoutingGoal,
+} from "@claudexor/schema";
 import type { BudgetLedger } from "./ledger.js";
 
 export interface RouterCandidate {
   harnessId: string;
-  providerFamily: ProviderFamily;
   available: boolean;
-  authMode?: "local_session" | "api_key" | "unknown";
-  /** 0..1 expected quality for the target intent. */
-  qualityForIntent?: number;
-  costPerCall?: number;
-  latencyMs?: number;
+  model?: string;
+  effort?: EffortHint;
+  billingKnowledge?: BillingKnowledge;
+  incrementalCostUsd?: number | null;
 }
 
 export interface RouteContext {
-  portfolio: Portfolio;
+  goal: RoutingGoal;
+  paidFallback: PaidFallback;
+  intent: Intent;
+  qualityTiers: QualityTierSet;
   ledger: BudgetLedger;
-  /** Provider families already used (penalized, to encourage cross-family diversity). */
-  diversityAgainst?: ProviderFamily[];
 }
 
-interface PortfolioWeights {
-  quality: number;
-  cost: number;
-  latency: number;
-  preferSubscription: number;
-  preferApi: number;
+export class RoutingPreflightError extends Error {
+  readonly code = "routing_preflight_refused";
 }
 
-function weights(p: Portfolio): PortfolioWeights {
-  switch (p) {
-    case "cheapest":
-      return { quality: 0.5, cost: 2.0, latency: 1.0, preferSubscription: 1, preferApi: 1 };
-    case "strongest":
-      return { quality: 2.0, cost: 0.2, latency: 0.5, preferSubscription: 1, preferApi: 1 };
-    case "burn":
-      return { quality: 2.0, cost: 0.0, latency: 0.2, preferSubscription: 1, preferApi: 1 };
-    case "subscription-first":
-      return { quality: 1.0, cost: 0.5, latency: 0.5, preferSubscription: 1.6, preferApi: 0.6 };
-    case "api-overflow":
-      return { quality: 1.0, cost: 0.8, latency: 0.5, preferSubscription: 0.6, preferApi: 1.6 };
-    default:
-      return { quality: 1.0, cost: 0.7, latency: 0.5, preferSubscription: 1.1, preferApi: 1.0 };
+function tierIndex(candidate: RouterCandidate, ctx: RouteContext): number | null {
+  const tiers = ctx.qualityTiers[ctx.intent] ?? [];
+  const index = tiers.findIndex((tier) =>
+    tier.some(
+      (route) =>
+        route.harness === candidate.harnessId &&
+        route.model === candidate.model &&
+        route.effort === candidate.effort,
+    ),
+  );
+  return index < 0 ? null : index;
+}
+
+function isIncrementalPaid(candidate: RouterCandidate): boolean {
+  return !["proven_zero", "subscription_entitlement"].includes(
+    candidate.billingKnowledge ?? "unknown",
+  );
+}
+
+function eligible(candidates: RouterCandidate[], ctx: RouteContext): RouterCandidate[] {
+  const ready = candidates.filter(
+    (candidate) => candidate.available && !ctx.ledger.cooldownActive(candidate.harnessId),
+  );
+  const free = ready.filter((candidate) => !isIncrementalPaid(candidate));
+  if (ctx.paidFallback === "never") return free;
+  if (ctx.paidFallback === "when_unavailable" && free.length > 0) return free;
+  return ready;
+}
+
+/** Order candidates transparently; lower tuple values win. Unknown quota remains eligible. */
+export function rankHarnesses(candidates: RouterCandidate[], ctx: RouteContext): RouterCandidate[] {
+  const routes = eligible(candidates, ctx);
+  if (ctx.goal === "quality" && routes.every((candidate) => tierIndex(candidate, ctx) === null)) {
+    throw new RoutingPreflightError(
+      `quality routing requires a comparable user-declared tier for intent '${ctx.intent}'`,
+    );
   }
+  return routes.toSorted((a, b) => {
+    const aTier = tierIndex(a, ctx) ?? Number.MAX_SAFE_INTEGER;
+    const bTier = tierIndex(b, ctx) ?? Number.MAX_SAFE_INTEGER;
+    if (ctx.goal === "quality") return aTier - bTier;
+    if (ctx.goal === "economy") {
+      const aPaid = isIncrementalPaid(a) ? 1 : 0;
+      const bPaid = isIncrementalPaid(b) ? 1 : 0;
+      const paidOrder = aPaid - bPaid;
+      if (paidOrder !== 0) return paidOrder;
+      const aCost = a.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
+      const bCost = b.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
+      return aCost - bCost || aTier - bTier;
+    }
+    const aSlack = ctx.ledger.bindingPaceSlack(a.harnessId);
+    const bSlack = ctx.ledger.bindingPaceSlack(b.harnessId);
+    if (aSlack !== null || bSlack !== null) {
+      return (bSlack ?? Number.NEGATIVE_INFINITY) - (aSlack ?? Number.NEGATIVE_INFINITY);
+    }
+    return aTier - bTier;
+  });
 }
 
-export function routeUtility(c: RouterCandidate, ctx: RouteContext): number {
-  if (!c.available || ctx.ledger.cooldownActive(c.harnessId)) return 0;
-  const w = weights(ctx.portfolio);
-  const quality = (c.qualityForIntent ?? 0.5) ** w.quality;
-  const headroom = ctx.ledger.headroom(c.harnessId);
-  const diversity = ctx.diversityAgainst?.includes(c.providerFamily) ? 0.5 : 1;
-  const authPref =
-    c.authMode === "local_session"
-      ? w.preferSubscription
-      : c.authMode === "api_key"
-        ? w.preferApi
-        : 1;
-  const conserve =
-    (ctx.portfolio === "conserve-claude" && c.providerFamily === "anthropic") ||
-    (ctx.portfolio === "conserve-codex" && c.providerFamily === "openai")
-      ? 0.4
-      : 1;
-  const cost = Math.max(0.0001, c.costPerCall ?? 0.01);
-  const latency = Math.max(0.1, (c.latencyMs ?? 1000) / 1000);
-  const costFactor = cost ** w.cost;
-  const latencyFactor = latency ** w.latency;
-  return (quality * headroom * diversity * authPref * conserve) / (costFactor * latencyFactor);
-}
-
-/** Choose the highest-utility available harness, or null if none are usable. */
 export function selectHarness(
   candidates: RouterCandidate[],
   ctx: RouteContext,
 ): RouterCandidate | null {
-  let best: RouterCandidate | null = null;
-  let bestU = 0;
-  for (const c of candidates) {
-    const u = routeUtility(c, ctx);
-    if (u > bestU) {
-      bestU = u;
-      best = c;
-    }
-  }
-  return best;
+  return rankHarnesses(candidates, ctx)[0] ?? null;
 }

@@ -219,7 +219,11 @@ describe("Claudexor MCP server (SDK v2)", () => {
           reviewerPanel: [{ harness: "claude", authPreference: "api_key" }],
         },
       },
-      { id: 11, name: "claudexor_run", arguments: { prompt: "go", maxUsd: -1 } },
+      {
+        id: 11,
+        name: "claudexor_run",
+        arguments: { prompt: "go", paidBudget: { kind: "finite", maxUsd: -1 } },
+      },
       {
         id: 12,
         name: "claudexor_run",
@@ -487,7 +491,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(schema?.properties?.reviewerEfforts?.additionalProperties).toBe(false);
     expect(schema?.properties?.reviewerEfforts?.properties?.openai?.enum).toContain("xhigh");
     expect(schema?.properties?.tests?.type).toBe("array");
-    expect(schema?.properties?.maxUsd?.type).toBe("number");
+    expect(schema?.properties?.paidBudget?.anyOf).toHaveLength(2);
     expect(schema?.properties?.access?.enum).toContain("workspace_write");
     expect(schema?.properties?.protectedPathApprovals?.items?.required).toEqual(["path"]);
 
@@ -501,7 +505,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
         reviewerModels: { openai: "gpt-5.5" },
         reviewerEfforts: { openai: "xhigh" },
         tests: [{ program: "pnpm", args: ["test"] }],
-        maxUsd: 3,
+        paidBudget: { kind: "finite", maxUsd: 3 },
         access: "workspace_write",
         protectedPathApprovals: [{ path: "test/**" }],
       },
@@ -518,7 +522,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
       reviewerModels: { openai: "gpt-5.5" },
       reviewerEfforts: { openai: "xhigh" },
       tests: [{ program: "pnpm", args: ["test"] }],
-      maxUsd: 3,
+      paidBudget: { kind: "finite", maxUsd: 3 },
       access: "workspace_write",
       protectedPathApprovals: [{ path: "test/**" }],
     });

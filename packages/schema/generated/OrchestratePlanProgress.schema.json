@@ -46,6 +46,67 @@
                 ],
                 "description": "Executor status of one plan step: pending, running, done, skipped, blocked (risky step awaiting a human), or failed."
               },
+              "required": {
+                "type": "boolean",
+                "default": true
+              },
+              "terminal_status": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "success",
+                      "no_op",
+                      "ungated",
+                      "review_not_run",
+                      "blocked",
+                      "failed",
+                      "interrupted_unknown",
+                      "cost_unverifiable",
+                      "exhausted_overshoot",
+                      "exhausted",
+                      "not_converged",
+                      "stuck_no_progress",
+                      "cancelled"
+                    ],
+                    "description": "Terminal status of a run, including truthful blocked, interrupted-unknown, cost-unverifiable, overshoot, exhaustion, non-convergence, failure, and cancellation outcomes."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Actual child/delivery terminal used by the parent outcome reducer.",
+                "default": null
+              },
+              "terminal_source": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "executor",
+                      "subrun",
+                      "review",
+                      "delivery",
+                      "policy",
+                      "budget"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Authority that produced terminal_status."
+              },
+              "evidence_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "default": [],
+                "description": "Immutable run artifact or delivery receipt references."
+              },
               "run_id": {
                 "type": [
                   "string",

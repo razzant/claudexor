@@ -1,4 +1,4 @@
-import type { ModeKind, SpecPack, TaskContract } from "@claudexor/schema";
+import type { ModeKind, PaidBudget, SpecPack, TaskContract } from "@claudexor/schema";
 import {
   SCHEMA_VERSION,
   SpecPack as SpecPackSchema,
@@ -10,7 +10,7 @@ export interface SpecToContractOptions {
   repoRoot: string;
   mode?: ModeKind;
   baseRef?: string;
-  maxUsd?: number | null;
+  paidBudget?: PaidBudget;
 }
 
 /** Thrown when a non-frozen / ambiguous SpecPack is mapped to a runnable contract. */
@@ -97,7 +97,7 @@ export function specPackToTaskContract(spec: SpecPack, opts: SpecToContractOptio
       protected_path_approvals: [],
     },
     tests: { commands: spec.tests },
-    budget: { max_usd: opts.maxUsd ?? null },
+    budget: { paid_budget: opts.paidBudget ?? { kind: "unlimited" } },
   });
 }
 

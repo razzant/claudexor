@@ -40,7 +40,7 @@ export function validateRunControls(params: unknown): RunControlError | null {
     "swarm",
     "create",
     "tests",
-    "maxUsd",
+    "paidBudget",
     "access",
     "protectedPathApprovals",
     "reviewerPanel",

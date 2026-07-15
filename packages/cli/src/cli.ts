@@ -25,7 +25,8 @@ import {
   type ControlReviewerPanelEntry,
   ModeKind as ModeKindSchema,
   type OrchestrateAutonomy,
-  Portfolio,
+  type PaidBudget,
+  RoutingGoal,
   type ModeKind,
   type ProviderFamily,
   RunTelemetry,
@@ -84,6 +85,7 @@ import {
 import { buildRegistry } from "./registry.js";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
+import { quotaCommand } from "./quota-command.js";
 import { trustCommand } from "./trust-command.js";
 import { projectCommand } from "./project-command.js";
 import { loadFrozenSpec, readAnswers, resolveRunTestCommands } from "./spec.js";
@@ -341,9 +343,16 @@ async function orchestrate(
     return printUsageError(json, "claudexor: missing prompt");
   }
   const portfolioRaw = flagStr(args, "portfolio");
-  const portfolio = portfolioRaw !== undefined ? Portfolio.safeParse(portfolioRaw) : null;
-  if (portfolioRaw !== undefined && !portfolio?.success) {
-    return printUsageError(json, `claudexor: unknown --portfolio '${portfolioRaw}'`);
+  if (portfolioRaw !== undefined) {
+    return printUsageError(
+      json,
+      "claudexor: --portfolio was removed in v2; use --routing-goal auto|quality|economy",
+    );
+  }
+  const routingGoalRaw = flagStr(args, "routing-goal");
+  const routingGoal = routingGoalRaw !== undefined ? RoutingGoal.safeParse(routingGoalRaw) : null;
+  if (routingGoalRaw !== undefined && !routingGoal?.success) {
+    return printUsageError(json, `claudexor: unknown --routing-goal '${routingGoalRaw}'`);
   }
   let reviewerEffortOverrides: Partial<Record<ProviderFamily, EffortHint>> | undefined;
   let resolvedReviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
@@ -351,7 +360,7 @@ async function orchestrate(
   let resolvedWebPolicy: ReturnType<typeof webPolicy> = undefined;
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   let resolvedEffort: EffortHint | undefined;
-  let maxUsd: number | undefined;
+  let paidBudget: PaidBudget | undefined;
   let maxToolCalls: number | undefined;
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
@@ -372,7 +381,8 @@ async function orchestrate(
     resolvedHarnesses = harnessList(args);
     resolvedPrimaryHarness = flagStr(args, "primary-harness");
     resolvedModel = flagStr(args, "model");
-    maxUsd = floatFlag(args, "max-usd");
+    const maxUsd = floatFlag(args, "max-usd");
+    paidBudget = maxUsd === undefined ? undefined : { kind: "finite", maxUsd };
     maxToolCalls = intFlag(args, "max-tool-calls");
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
@@ -400,7 +410,7 @@ async function orchestrate(
       reviewerEfforts: reviewerEffortOverrides,
       tests,
       protectedPathApprovals: resolvedProtectedPathApprovals,
-      maxUsd,
+      paidBudget,
       access: resolvedAccess,
       web: resolvedWebPolicy,
       externalContextPolicy: resolvedWebPolicy,
@@ -414,18 +424,12 @@ async function orchestrate(
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // `--autonomy` only governs the orchestrate executor; on any other
-  // mode it would silently do nothing, so reject it loudly (a misplaced flag is
-  // an error, not a no-op).
   if (autonomy !== undefined && mode !== "orchestrate") {
     return printUsageError(
       json,
       `claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')`,
     );
   }
-
-  // --max-tool-calls caps the orchestrate EXECUTOR's plan steps; on any other
-  // mode it would be a silent no-op knob (INV-023) — refuse loudly.
   if (maxToolCalls !== undefined && mode !== "orchestrate") {
     return printUsageError(json, "claudexor: --max-tool-calls only applies to orchestrate runs");
   }
@@ -434,8 +438,8 @@ async function orchestrate(
     autonomy,
     prompt: prompt || "audit this repository",
     tests,
-    portfolio: portfolio?.success ? portfolio.data : undefined,
-    maxUsd,
+    paidBudget,
+    routingGoal: routingGoal?.success ? routingGoal.data : undefined,
     maxToolCalls,
     reviewerPanel: resolvedReviewerPanel,
     reviewerModels: resolvedReviewerModels,
@@ -460,12 +464,11 @@ async function orchestrate(
 
 interface DaemonRunParams {
   mode: ModeKind;
-  /** Orchestrate executor autonomy; only meaningful (and only sent) for mode=orchestrate. */
   autonomy: OrchestrateAutonomy | undefined;
   prompt: string;
   tests: TestCommandInvocation[] | undefined;
-  portfolio: ReturnType<typeof Portfolio.parse> | undefined;
-  maxUsd: number | undefined;
+  paidBudget: PaidBudget | undefined;
+  routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
   maxToolCalls?: number;
   reviewerPanel: ControlReviewerPanelEntry[] | undefined;
   reviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
@@ -492,8 +495,6 @@ interface DaemonRunParams {
  * `--json` prints one stable `{ runId, runDir, status }` machine envelope.
  */
 async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): Promise<number> {
-  // The run is always project-scoped (the cwd is its repo); execution is
-  // live in-place only under the explicit --in-place convergence path.
   const inPlace = flagBool(args, "in-place");
   let client: Awaited<ReturnType<typeof ensureDaemon>>["client"];
   let addr: Awaited<ReturnType<typeof ensureDaemon>>["addr"];
@@ -533,13 +534,12 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     prompt: p.prompt,
     ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
-    // Autonomy only governs the orchestrate executor; send it only for that mode.
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
     scope: { kind: "project", root: process.cwd() },
     execution: { isolation: inPlace ? "live" : "envelope" },
     ...(p.resolvedHarnesses ? { harnesses: p.resolvedHarnesses } : {}),
     ...(p.resolvedPrimaryHarness ? { primaryHarness: p.resolvedPrimaryHarness } : {}),
-    ...(p.portfolio ? { portfolio: p.portfolio } : {}),
+    ...(p.routingGoal ? { routingGoal: p.routingGoal } : {}),
     ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
     ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),
     ...(flagBool(args, "until-clean") ? { untilClean: true } : {}),
@@ -548,7 +548,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.resolvedSynthesis ? { synthesis: p.resolvedSynthesis } : {}),
     ...(p.tests ? { tests: p.tests } : {}),
     ...(p.protectedPathApprovals ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
-    ...(p.maxUsd !== undefined ? { maxUsd: p.maxUsd } : {}),
+    ...(p.paidBudget !== undefined ? { paidBudget: p.paidBudget } : {}),
     ...(p.mode === "orchestrate" && p.maxToolCalls !== undefined
       ? { maxToolCalls: p.maxToolCalls }
       : {}),
@@ -820,7 +820,10 @@ async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
             harnesses: groundingHarnesses,
             n: groundingN,
             effort: groundingEffort,
-            maxUsd: groundingMaxUsd,
+            paidBudget:
+              groundingMaxUsd === undefined
+                ? undefined
+                : { kind: "finite", maxUsd: groundingMaxUsd },
             web: groundingWeb,
             reviewerPanel: groundingReviewerPanel,
             reviewerModels: groundingReviewerModels,
@@ -1054,6 +1057,9 @@ async function main(): Promise<number> {
 
     case "settings":
       return settingsCommand(args, json);
+
+    case "quota":
+      return quotaCommand(args, json);
 
     case "trust":
       return trustCommand(args, json);

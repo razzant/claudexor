@@ -10,7 +10,7 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask, explore, agent, best-of, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask, explore, agent, best-of, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, plugin, daemon, auth, secrets, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
@@ -57,7 +57,13 @@ the source of truth; API responses are projections over daemon state and run
 files. Every product route is under `/v2`: clients first `POST /v2/handshake`,
 then send `X-Claudexor-Protocol-Major: 2`; incompatible or missing negotiation
 returns a typed `426`. `GET /v2/operations` is the runtime operation catalog,
-and unversioned product aliases do not exist. Native login commands are server allowlisted and use setup jobs with
+and unversioned product aliases do not exist.
+`GET /v2/quota` returns every independently reported vendor-owned quota window
+with provenance and freshness; `POST /v2/quota` requests a live refresh and
+fails explicitly when no official refresher is available. Missing usage stays
+unknown and an elapsed reset marks data stale rather than locally setting it to
+zero. The CLI projection is `claudexor quota [--refresh] --json`.
+Native login commands are server allowlisted and use setup jobs with
 typed phase/deadline/outcome,
 restart reconciliation, watchdog timeouts, and a polling-backed SSE lifecycle
 stream (`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
@@ -354,8 +360,9 @@ Deliberate limits of the external/host surfaces. Each is a designed boundary
 - opencode sources any configured provider key — opencode/openai/anthropic
   order — because the vendor CLI consumes provider keys directly.
 - Raw-api routes report token usage but no dollar cost — chat-completions
-  responses carry no price and Claudexor maintains no vendor price tables — so
-  the budget ledger records $0 spend for raw-api attempts.
+  responses carry no price and Claudexor maintains no vendor price tables.
+  Under a finite paid budget that missing cash cost remains `unknown` and can
+  end `cost_unverifiable`; Claudexor never fabricates `$0`.
 - Cursor native auth lives in the macOS Keychain, so scoped envelopes bridge
   the host keychain (declared `scoped_home_keychain_bridge` containment)
   rather than fully isolating HOME; the cursor doctor's paid smoke result is

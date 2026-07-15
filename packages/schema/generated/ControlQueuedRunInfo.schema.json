@@ -21,11 +21,13 @@
             "failed",
             "cancelled",
             "interrupted_unknown",
+            "cost_unverifiable",
+            "exhausted_overshoot",
             "exhausted",
             "not_converged",
             "stuck_no_progress"
           ],
-          "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted_unknown, exhausted, not_converged, stuck_no_progress)."
+          "description": "Control-plane run state: queued/running while live, then an honest success, block, failure, interruption, cost, exhaustion, non-convergence, or cancellation terminal."
         },
         "error": {
           "type": "string",

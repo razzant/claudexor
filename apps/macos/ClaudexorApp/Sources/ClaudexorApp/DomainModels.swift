@@ -92,13 +92,10 @@ enum HarnessFamily: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-// MARK: - Run status
-
 enum RunStatus: String, CaseIterable, Identifiable, Hashable {
-    case queued, running, needsReview, blocked, succeeded, noOp, ungated, reviewNotRun, failed, cancelled, interrupted, exhausted, notConverged, stuckNoProgress, unknown
+    case queued, running, needsReview, blocked, succeeded, noOp, ungated, reviewNotRun, failed, cancelled, interrupted, costUnverifiable, exhaustedOvershoot, exhausted, notConverged, stuckNoProgress, unknown
     var id: String { rawValue }
 
-    /// Map the control-api / daemon state strings onto a UI status.
     init(api: String) {
         switch api.lowercased() {
         case "queued", "pending": self = .queued
@@ -110,6 +107,8 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case "ungated": self = .ungated
         case "review_not_run", "review-not-run": self = .reviewNotRun
         case "failed", "error": self = .failed
+        case "cost_unverifiable": self = .costUnverifiable
+        case "exhausted_overshoot": self = .exhaustedOvershoot
         case "exhausted": self = .exhausted
         case "not_converged", "not-converged": self = .notConverged
         case "stuck_no_progress", "stuck-no-progress": self = .stuckNoProgress
@@ -130,6 +129,8 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case .ungated: return "Ungated"
         case .reviewNotRun: return "Review not run"
         case .failed: return "Failed"
+        case .costUnverifiable: return "Cost unverifiable"
+        case .exhaustedOvershoot: return "Budget overshot"
         case .cancelled: return "Cancelled"
         case .interrupted: return "Interrupted"
         case .exhausted: return "Exhausted"
@@ -149,6 +150,8 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         case .ungated: return "shield.slash"
         case .reviewNotRun: return "person.2.slash"
         case .failed: return "xmark.octagon.fill"
+        case .costUnverifiable: return "questionmark.circle"
+        case .exhaustedOvershoot: return "gauge.with.dots.needle.100percent"
         case .cancelled: return "slash.circle"
         case .interrupted: return "pause.circle"
         case .exhausted: return "gauge.with.dots.needle.100percent"
@@ -160,11 +163,8 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
     var color: Color { Theme.status(self) }
     var isActive: Bool { self == .running || self == .queued }
     var isTerminal: Bool { !isActive && self != .unknown }
-    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .exhausted || self == .notConverged || self == .stuckNoProgress || self == .unknown }
+    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .costUnverifiable || self == .exhaustedOvershoot || self == .exhausted || self == .notConverged || self == .stuckNoProgress || self == .unknown }
 }
-
-// MARK: - Run modes
-
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
     case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, spec, unknown
     var id: String { rawValue }

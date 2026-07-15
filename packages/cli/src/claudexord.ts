@@ -16,6 +16,8 @@ import {
   projectProjection,
   RunEventBus,
   ResourceStore,
+  QuotaRegistry,
+  quotaProjection,
   threadProjection,
   daemonDir,
   defaultSocketPath,
@@ -53,6 +55,7 @@ import { SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
 import { createRunRequirementsPreflight } from "./request-preflight.js";
+import { refreshCodexQuota } from "./codex-quota-source.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import {
   buildGroundingPrompt,
@@ -88,6 +91,7 @@ async function main(): Promise<void> {
     );
     const runEventStoreSlot = journalManager.registerProjection(runEventProjection());
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
+    const quotaStoreSlot = journalManager.registerProjection(quotaProjection([refreshCodexQuota]));
     const threadStoreSlot = journalManager.registerProjection(threadProjection());
     const setupStoreSlot = journalManager.registerProjection({
       name: "setup",
@@ -126,7 +130,7 @@ async function main(): Promise<void> {
         if (noProjectAsk) mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
         const orchestrator = new Orchestrator({
           registry: buildRegistry(),
-          portfolio: p.portfolio,
+          routingGoal: p.routingGoal,
           reviewerPanel: p.reviewerPanel,
           reviewerModels:
             p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
@@ -167,6 +171,12 @@ async function main(): Promise<void> {
         };
         return orchestrator.run({
           onEvent: (event) => {
+            if (event.type === "harness.event") {
+              const payload = event.payload as Record<string, unknown>;
+              const harnessId =
+                typeof payload["harness_id"] === "string" ? payload["harness_id"] : "";
+              if (harnessId) quotaStoreSlot.current().ingest(harnessId, payload);
+            }
             threads.recordRunEvent(p, event);
             bus.publish(event);
           },
@@ -197,14 +207,14 @@ async function main(): Promise<void> {
               : undefined,
           harnesses: p.harnesses,
           primaryHarness: p.primaryHarness,
-          portfolio: p.portfolio,
+          routingGoal: p.routingGoal,
           n: p.n,
           attempts: p.attempts ?? null,
           untilClean: p.untilClean === true,
           swarm: p.swarm === true,
           create: p.create === true,
           synthesis: p.synthesis,
-          maxUsd: p.maxUsd ?? null,
+          paidBudget: p.paidBudget,
           maxToolCalls: p.maxToolCalls ?? null,
           access: p.access,
           web: p.web ?? p.externalContextPolicy,
@@ -265,6 +275,7 @@ async function main(): Promise<void> {
               journalManager,
               authReadiness,
               resources,
+              () => quotaStoreSlot.current(),
             ),
           });
     // Arm signals before startup awaits; serialized lifecycle fences late listeners.
@@ -354,6 +365,7 @@ function controlServices(
   journalManager: JournalManager,
   authReadiness: AuthReadinessService,
   resources: ResourceStore,
+  quotaRegistry: () => QuotaRegistry,
 ) {
   const secretStore = new SecretStore();
   const journalPartition = (partition: string): JournalManager =>
@@ -401,7 +413,7 @@ function controlServices(
         harnesses: material.request.harnesses,
         n: material.request.n,
         effort: material.request.effort,
-        maxUsd: material.request.maxUsd ?? null,
+        paidBudget: material.request.paidBudget,
         web: material.request.web,
         signal: controller.signal,
         access: "readonly",
@@ -612,6 +624,8 @@ function controlServices(
       return setupBinding.replaceAfter(() => journalManager.quarantineAndStartFresh(request));
     },
     settings: async () => settingsSnapshot(NO_PROJECT_ROOT),
+    quota: async () => quotaRegistry().read(),
+    refreshQuota: async () => quotaRegistry().refresh(),
     updateSettings: async (patch: unknown) => {
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
       await assertSettingsPatchValid(p);
@@ -625,7 +639,6 @@ function controlServices(
       };
       updateGlobalConfig((cfg) => ({
         ...cfg,
-        default_portfolio: p.defaultPortfolio ?? cfg.default_portfolio,
         interaction_timeout_ms: p.interactionTimeoutMs ?? cfg.interaction_timeout_ms,
         routing: {
           ...cfg.routing,
@@ -634,11 +647,13 @@ function controlServices(
           env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
           eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
           auth_preference: p.authPreference ?? cfg.routing.auth_preference,
+          goal: p.routingGoal ?? cfg.routing.goal,
+          paid_fallback: p.paidFallback ?? cfg.routing.paid_fallback,
+          quality_tiers: p.qualityTiers ?? cfg.routing.quality_tiers,
         },
         budget: {
           ...cfg.budget,
-          max_usd_per_run:
-            p.clearMaxUsdPerRun === true ? null : (p.maxUsdPerRun ?? cfg.budget.max_usd_per_run),
+          paid_budget_per_run: p.paidBudgetPerRun ?? cfg.budget.paid_budget_per_run,
         },
         harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
       }));

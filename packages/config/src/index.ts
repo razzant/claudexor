@@ -99,29 +99,6 @@ const RETIRED_PROJECT_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = 
   },
 ];
 
-/**
- * Retired VALUES (not keys) older configs may pin. Same migration-debt
- * discipline as RETIRED_CONFIG_KEYS: rewritten before the strict parse, gone
- * from the file on the next config write. `routing.default_policy: portfolio`
- * was deleted as a fake knob (it behaved identically to `auto`).
- */
-function migrateRetiredValues(raw: unknown): unknown {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
-  const routing = (raw as Record<string, unknown>)["routing"];
-  if (routing && typeof routing === "object" && !Array.isArray(routing)) {
-    const r = routing as Record<string, unknown>;
-    if (r["default_policy"] === "portfolio") {
-      r["default_policy"] = "auto";
-      // Disclose the rewrite: a user who pinned the retired value must not
-      // find their setting silently changed.
-      process.stderr.write(
-        "claudexor: routing.default_policy 'portfolio' was retired (it behaved identically to 'auto'); using 'auto'\n",
-      );
-    }
-  }
-  return raw;
-}
-
 function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const strip = (node: Record<string, unknown>, segs: string[][]): void => {
@@ -179,9 +156,7 @@ export function loadConfig(repoRoot: string): ResolvedConfig {
   const sources: string[] = [];
 
   const globalPath = join(globalConfigDir(), "config.yaml");
-  const globalRaw = migrateRetiredValues(
-    stripRetiredKeys(readYaml(globalPath), RETIRED_CONFIG_KEYS),
-  );
+  const globalRaw = stripRetiredKeys(readYaml(globalPath), RETIRED_CONFIG_KEYS);
   if (globalRaw !== null) sources.push(globalPath);
   const global = applyEnvOverrides(parseStrict(GlobalConfig, globalRaw ?? {}, globalPath));
 
@@ -383,7 +358,7 @@ export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConf
   return withConfigLock(path, () => {
     const current = parseStrict(
       GlobalConfig,
-      migrateRetiredValues(stripRetiredKeys(readYaml(path), RETIRED_CONFIG_KEYS)) ?? {},
+      stripRetiredKeys(readYaml(path), RETIRED_CONFIG_KEYS) ?? {},
       path,
     );
     const next = GlobalConfig.parse(mutator(current));

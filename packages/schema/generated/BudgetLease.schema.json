@@ -49,13 +49,61 @@
           "default": null,
           "description": "Requested model for the reserved call; null = harness default."
         },
-        "max_usd": {
-          "type": [
-            "number",
-            "null"
+        "cost": {
+          "type": "object",
+          "properties": {
+            "knowledge": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "estimated",
+                "unknown"
+              ],
+              "description": "Quality of incremental-cash cost evidence for an operation."
+            },
+            "billing": {
+              "type": "string",
+              "enum": [
+                "proven_zero",
+                "subscription_entitlement",
+                "metered",
+                "unknown"
+              ],
+              "description": "What is actually known about incremental billing; a native credential route alone never proves entitlement or zero cost."
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "provenance": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            },
+            "estimatedUsd": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "knowledge",
+            "billing",
+            "source",
+            "provenance"
           ],
-          "default": null,
-          "description": "USD cap reserved for the call; null = no cap."
+          "additionalProperties": false,
+          "description": "Incremental-cash cost knowledge with its source and evidence provenance."
         },
         "reason": {
           "type": "array",
@@ -85,6 +133,7 @@
         "task_id",
         "intent",
         "harness_id",
+        "cost",
         "created_at"
       ],
       "additionalProperties": false,

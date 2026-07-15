@@ -1,28 +1,68 @@
 import { z } from "zod";
+import { BillingKnowledge, CostKnowledge } from "./auth.js";
 import { Id, Intent } from "./primitives.js";
-import { SignalQuality } from "./harness.js";
+import { EffortHint, SignalQuality } from "./harness.js";
+
+export const PaidBudget = z
+  .discriminatedUnion("kind", [
+    z.object({ kind: z.literal("unlimited") }).strict(),
+    z.object({ kind: z.literal("finite"), maxUsd: z.number().nonnegative() }).strict(),
+  ])
+  .describe("Incremental-cash budget: explicitly unlimited or a finite non-negative USD cap.");
+export type PaidBudget = z.infer<typeof PaidBudget>;
+
+export const CostEvidence = z
+  .object({
+    knowledge: CostKnowledge,
+    billing: BillingKnowledge,
+    source: z.string().min(1),
+    provenance: z.array(z.string().min(1)).min(1),
+    estimatedUsd: z.number().nonnegative().nullable().default(null),
+  })
+  .strict()
+  .describe("Incremental-cash cost knowledge with its source and evidence provenance.");
+export type CostEvidence = z.infer<typeof CostEvidence>;
 
 export const AuthMode = z
   .enum(["local_session", "api_key", "unknown"])
   .describe("Auth mode a route runs under: a native local session, an API key, or unknown.");
 export type AuthMode = z.infer<typeof AuthMode>;
 
-export const Portfolio = z
-  .enum([
-    "daily-rich",
-    "balanced",
-    "cheapest",
-    "strongest",
-    "burn",
-    "subscription-first",
-    "api-overflow",
-    "conserve-claude",
-    "conserve-codex",
-  ])
+export const RoutingGoal = z
+  .enum(["auto", "quality", "economy"])
   .describe(
-    "Budget portfolio weighting the harness router's quality/cost/latency and subscription-vs-API preferences (e.g. cheapest minimizes spend, burn maximizes quality, conserve-* deprioritizes one vendor).",
+    "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend.",
   );
-export type Portfolio = z.infer<typeof Portfolio>;
+export type RoutingGoal = z.infer<typeof RoutingGoal>;
+
+export const PaidFallback = z
+  .enum(["never", "when_unavailable", "allowed_within_cap"])
+  .describe("When a route with incremental paid spend may be used.");
+export type PaidFallback = z.infer<typeof PaidFallback>;
+
+export const QualityTierRoute = z
+  .object({
+    harness: Id,
+    model: z.string().min(1),
+    effort: EffortHint,
+  })
+  .strict()
+  .describe("An exact harness, model, and effort route declared by the user.");
+export type QualityTierRoute = z.infer<typeof QualityTierRoute>;
+
+export const QualityTier = z
+  .array(QualityTierRoute)
+  .min(1)
+  .describe("A group of comparable exact routes at one user-declared quality level.");
+export type QualityTier = z.infer<typeof QualityTier>;
+
+export const QualityTierSet = z
+  .record(Intent, z.array(QualityTier))
+  .default({})
+  .describe(
+    "Per-intent quality tiers ordered highest to lowest; no provider or benchmark priors are inferred.",
+  );
+export type QualityTierSet = z.infer<typeof QualityTierSet>;
 
 /** A pre-call reservation. Created before work; settled after. Never post-hoc only. */
 export const BudgetLease = z
@@ -37,11 +77,7 @@ export const BudgetLease = z
       .nullable()
       .default(null)
       .describe("Requested model for the reserved call; null = harness default."),
-    max_usd: z
-      .number()
-      .nullable()
-      .default(null)
-      .describe("USD cap reserved for the call; null = no cap."),
+    cost: CostEvidence,
     reason: z
       .array(z.string())
       .default([])
@@ -64,15 +100,14 @@ export const BudgetObservation = z
     ts: z.string().describe("When the signal was observed."),
     quality: SignalQuality,
     kind: z
-      .enum(["spend", "rate_limited", "used_percent", "cooldown", "manual"])
+      .enum(["spend", "rate_limited", "quota_constraint", "cooldown"])
       .describe(
-        "What was observed: spend, a rate-limit hit, a used-percent reading, a cooldown, or a manual entry.",
+        "What was observed: spend, a rate-limit hit, one independent quota constraint, or a cooldown.",
       ),
     usd: z.number().optional().describe("Observed spend in USD, for spend observations."),
-    used_percent: z
-      .number()
-      .optional()
-      .describe("Consumed share of the rate window (0-100), for used_percent observations."),
+    constraint_id: z.string().optional(),
+    used_ratio: z.number().min(0).max(1).nullable().optional(),
+    window_seconds: z.number().positive().nullable().optional(),
     resets_at: z
       .string()
       .nullable()

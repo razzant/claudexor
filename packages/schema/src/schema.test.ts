@@ -22,6 +22,9 @@ import {
   toolRisk,
   ReviewFinding,
   RouteProof,
+  RoutingGoal,
+  ProjectConfig,
+  GlobalConfig,
   Session,
   SessionReboundLineage,
   TaskContract,
@@ -80,7 +83,7 @@ describe("TaskContract", () => {
     expect(tc.access.requested_profile).toBe("workspace_write");
     expect(tc.access.effective_profile).toBe("workspace_write");
     expect(tc.external_context.effective_mode).toBe("auto");
-    expect(tc.budget.portfolio).toBe("subscription-first");
+    expect(tc.budget.routing_goal).toBe("auto");
     expect(tc.constraints.protected_path_approvals).toEqual([]);
     expect(tc.convergence.require_tests_pass).toBe(true);
   });
@@ -216,6 +219,15 @@ describe("RouteProof + HarnessManifest", () => {
 });
 
 describe("Control API schemas", () => {
+  it("hard-errors every removed portfolio boundary", () => {
+    expect(RoutingGoal.safeParse("subscription-first").success).toBe(false);
+    expect(() =>
+      ControlRunStartRequest.parse({ prompt: "x", mode: "agent", portfolio: "balanced" }),
+    ).toThrow();
+    expect(() => ProjectConfig.parse({ budget: { portfolio: "cheapest" } })).toThrow();
+    expect(() => GlobalConfig.parse({ default_portfolio: "daily-rich" })).toThrow();
+  });
+
   it("accepts reviewer effort overrides on run start requests", () => {
     const req = ControlRunStartRequest.parse({
       prompt: "review it",

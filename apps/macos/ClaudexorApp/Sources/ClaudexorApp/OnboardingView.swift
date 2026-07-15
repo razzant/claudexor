@@ -116,7 +116,7 @@ struct OnboardingView: View {
                             mode: .ask,
                             harnesses: harnesses,
                             primary: harnesses.first,
-                            portfolio: "subscription-first",
+                            routingGoal: "auto",
                             model: nil,
                             n: 1,
                             capUsd: 0.25,

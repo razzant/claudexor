@@ -2,7 +2,7 @@
   "name": "@claudexor/budget",
   "version": "1.0.1",
   "license": "MIT",
-  "description": "Budget governor: pre-call lease reservation, loop detection, 3-tier circuit breaker, portfolio routing, observed quota.",
+  "description": "Budget governor: pre-call leases, circuit breaker, evidence-based routing goals, and multi-window quota pacing.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

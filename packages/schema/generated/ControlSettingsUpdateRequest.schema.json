@@ -4,20 +4,83 @@
     "ControlSettingsUpdateRequest": {
       "type": "object",
       "properties": {
-        "defaultPortfolio": {
+        "routingGoal": {
           "type": "string",
           "enum": [
-            "daily-rich",
-            "balanced",
-            "cheapest",
-            "strongest",
-            "burn",
-            "subscription-first",
-            "api-overflow",
-            "conserve-claude",
-            "conserve-codex"
+            "auto",
+            "quality",
+            "economy"
           ],
-          "description": "Budget portfolio weighting the harness router's quality/cost/latency and subscription-vs-API preferences (e.g. cheapest minimizes spend, burn maximizes quality, conserve-* deprioritizes one vendor)."
+          "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend."
+        },
+        "paidFallback": {
+          "type": "string",
+          "enum": [
+            "never",
+            "when_unavailable",
+            "allowed_within_cap"
+          ],
+          "description": "When a route with incremental paid spend may be used."
+        },
+        "qualityTiers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "harness": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Non-empty identifier string."
+                  },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "effort": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "max"
+                    ],
+                    "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
+                  }
+                },
+                "required": [
+                  "harness",
+                  "model",
+                  "effort"
+                ],
+                "additionalProperties": false,
+                "description": "An exact harness, model, and effort route declared by the user."
+              },
+              "minItems": 1,
+              "description": "A group of comparable exact routes at one user-declared quality level."
+            }
+          },
+          "propertyNames": {
+            "enum": [
+              "plan",
+              "spec",
+              "implement",
+              "create_from_scratch",
+              "repair",
+              "review",
+              "verify",
+              "synthesize",
+              "explain",
+              "audit",
+              "orchestrate"
+            ]
+          },
+          "default": {},
+          "description": "Per-intent quality tiers ordered highest to lowest; no provider or benchmark priors are inferred."
         },
         "interactionTimeoutMs": {
           "type": "integer",
@@ -61,14 +124,41 @@
           ],
           "description": "New child harness env composition mode."
         },
-        "maxUsdPerRun": {
-          "type": "number",
-          "minimum": 0,
-          "description": "New global USD cap per run (mutually exclusive with clearMaxUsdPerRun)."
-        },
-        "clearMaxUsdPerRun": {
-          "type": "boolean",
-          "description": "Clear the global USD cap per run (mutually exclusive with maxUsdPerRun)."
+        "paidBudgetPerRun": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "unlimited"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "finite"
+                },
+                "maxUsd": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "kind",
+                "maxUsd"
+              ],
+              "additionalProperties": false
+            }
+          ],
+          "description": "New global incremental-cash budget per run."
         },
         "authPreference": {
           "type": "string",
@@ -102,15 +192,7 @@
               "effort": {
                 "anyOf": [
                   {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high",
-                      "xhigh",
-                      "max"
-                    ],
-                    "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
+                    "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/qualityTiers/additionalProperties/items/items/properties/effort"
                   },
                   {
                     "type": "null"
@@ -141,18 +223,6 @@
                   }
                 ],
                 "description": "New max convergence rounds; null clears it."
-              },
-              "maxUsd": {
-                "anyOf": [
-                  {
-                    "type": "number",
-                    "minimum": 0
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "New per-harness USD cap; null clears it."
               },
               "toolsAllow": {
                 "type": "array",

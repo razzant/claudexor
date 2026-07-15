@@ -1,0 +1,46 @@
+import { ControlQuotaResponse } from "@claudexor/schema";
+import type { ParsedArgs } from "./args.js";
+import { flagBool } from "./args.js";
+import { print, printJson } from "./cli-io.js";
+import { ensureDaemon } from "./daemon-run.js";
+import { controlApiFetch } from "./live.js";
+
+export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  try {
+    const { addr } = await ensureDaemon();
+    const refresh = flagBool(args, "refresh");
+    const response = await controlApiFetch(addr, "/quota", {
+      method: refresh ? "POST" : "GET",
+      headers: { Authorization: `Bearer ${addr.token}` },
+    });
+    const value = ControlQuotaResponse.parse(await response.json());
+    if (!response.ok) throw new Error(`quota request failed (HTTP ${response.status})`);
+    if (json) printJson(value);
+    else printQuota(value);
+    return 0;
+  } catch (error) {
+    const message = `claudexor quota: ${error instanceof Error ? error.message : String(error)}`;
+    if (json) printJson({ ok: false, exitCode: 1, error: message });
+    else process.stderr.write(`${message}\n`);
+    return 1;
+  }
+}
+
+function printQuota(value: ReturnType<typeof ControlQuotaResponse.parse>): void {
+  if (value.snapshots.length === 0) {
+    print("quota: unknown (no vendor-owned snapshot available)");
+    return;
+  }
+  for (const snapshot of value.snapshots) {
+    print(
+      `${snapshot.subject.harness}: source=${snapshot.source} freshness=${snapshot.freshness} observed=${snapshot.observed_at}`,
+    );
+    for (const constraint of snapshot.constraints) {
+      const used =
+        constraint.used_ratio === null ? "unknown" : `${(constraint.used_ratio * 100).toFixed(1)}%`;
+      print(
+        `  ${constraint.label}: used=${used} reset=${constraint.resets_at ?? "unknown"} cooldown=${constraint.cooldown_until ?? "none"}`,
+      );
+    }
+  }
+}

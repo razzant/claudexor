@@ -11,6 +11,11 @@
               {
                 "type": "object",
                 "properties": {
+                  "required": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Whether parent success requires this step to succeed."
+                  },
                   "tool": {
                     "type": "string",
                     "const": "start_run"
@@ -52,6 +57,9 @@
               {
                 "type": "object",
                 "properties": {
+                  "required": {
+                    "$ref": "#/definitions/OrchestratePlan/properties/tool_calls/items/anyOf/0/properties/required"
+                  },
                   "tool": {
                     "type": "string",
                     "const": "race"
@@ -83,6 +91,9 @@
               {
                 "type": "object",
                 "properties": {
+                  "required": {
+                    "$ref": "#/definitions/OrchestratePlan/properties/tool_calls/items/anyOf/0/properties/required"
+                  },
                   "tool": {
                     "type": "string",
                     "const": "review"
@@ -108,6 +119,9 @@
               {
                 "type": "object",
                 "properties": {
+                  "required": {
+                    "$ref": "#/definitions/OrchestratePlan/properties/tool_calls/items/anyOf/0/properties/required"
+                  },
                   "tool": {
                     "type": "string",
                     "const": "status"
@@ -133,6 +147,9 @@
               {
                 "type": "object",
                 "properties": {
+                  "required": {
+                    "$ref": "#/definitions/OrchestratePlan/properties/tool_calls/items/anyOf/0/properties/required"
+                  },
                   "tool": {
                     "type": "string",
                     "const": "answer_question"
@@ -193,6 +210,9 @@
               {
                 "type": "object",
                 "properties": {
+                  "required": {
+                    "$ref": "#/definitions/OrchestratePlan/properties/tool_calls/items/anyOf/0/properties/required"
+                  },
                   "tool": {
                     "type": "string",
                     "const": "apply"

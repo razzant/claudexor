@@ -15,6 +15,7 @@ import {
   RawGitPatchEnvelope,
   RawPatchRefusalCode,
 } from "./raw.js";
+import { QuotaConstraint, QuotaSource } from "./quota.js";
 
 /** Quality of a usage/quota signal a harness can emit. */
 export const SignalQuality = z
@@ -456,11 +457,6 @@ export const HarnessRunSpec = z
     effort_hint: EffortHint.nullable()
       .default(null)
       .describe("Requested reasoning effort; null = the harness's default."),
-    max_usd: z
-      .number()
-      .nullable()
-      .default(null)
-      .describe("USD spend cap for the attempt; null = no cap."),
     max_turns: z
       .number()
       .int()
@@ -737,32 +733,18 @@ export const HarnessEvent = z
     credential_source: AuthSourceKind.optional().describe(
       "Concrete credential source selected before spawn; exact native subscription requires native_session, never an OAuth token or API key.",
     ),
-    /**
-     * Typed quota/usage-window signal: the harness CLI's OWN record of how
-     * much of its subscription/rate window is consumed. Producers read native
-     * machine-readable surfaces only (codex rollout `token_count.rate_limits`);
-     * a harness with no native surface emits nothing (fail-honest, never
-     * scraped from prose). The budget layer maps this to a `used_percent`
-     * observation; `headroom()` and pool ordering consume it.
-     */
+    /** Vendor-owned quota windows. All reported windows remain independent. */
     quota: z
       .object({
-        /** 0-100: consumed share of the binding rate window. */
-        used_percent: z
-          .number()
-          .min(0)
-          .max(100)
-          .describe("Consumed share of the binding rate window, 0-100."),
-        /** Native reset moment for the window, when the CLI reports one. */
-        resets_at: z
-          .string()
-          .nullable()
-          .default(null)
-          .describe("Native reset moment for the window, when the CLI reports one."),
+        source: QuotaSource,
+        plan_label: z.string().nullable().default(null),
+        subject_id: z.string().nullable().default(null),
+        constraints: z.array(QuotaConstraint),
       })
+      .strict()
       .optional()
       .describe(
-        "Typed quota/usage-window signal from the harness CLI's own native machine-readable surface, never scraped from prose.",
+        "All quota windows from a vendor-owned machine-readable source; never scraped from prose or collapsed into a fake aggregate.",
       ),
     /**
      * Typed live plan/todo progress: adapters map their native plan tools

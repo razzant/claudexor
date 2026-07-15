@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import {
   BudgetLease,
+  PaidBudget,
   BudgetObservation,
   ControlApplyCheckRequest,
   ControlApplyRequest,
@@ -18,6 +19,7 @@ import {
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
   ControlPendingInteraction,
+  ControlQuotaResponse,
   ControlQueuedRunInfo,
   ControlRunDetail,
   ControlRunStartInfo,
@@ -138,6 +140,7 @@ const schemas = {
   ReviewFinding,
   WorkProduct,
   BudgetLease,
+  PaidBudget,
   BudgetObservation,
   RouteProof,
   DecisionRecord,
@@ -190,6 +193,7 @@ const schemas = {
   ControlHarnessSettingsPatch,
   ControlSettingsUpdateRequest,
   ControlPendingInteraction,
+  ControlQuotaResponse,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
   SecretMetadata,
