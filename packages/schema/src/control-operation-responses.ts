@@ -7,6 +7,7 @@ import {
   ControlRunSummary,
 } from "./control.js";
 import { Id } from "./primitives.js";
+import { FinalVerifyRecord } from "./decision.js";
 
 export const ControlRunStartResponse = z
   .union([ControlRunStartInfo, ControlQueuedRunInfo])
@@ -40,6 +41,8 @@ export const ControlDeliveryResponse = z
     prUrl: z.string().optional(),
     detail: z.string().optional(),
     treeMutated: z.boolean().optional(),
+    finalVerify: FinalVerifyRecord.describe("Fresh verifier evidence for this delivery attempt."),
+    targetPreimageSha: z.string().describe("Target snapshot verified immediately before delivery."),
   })
   .strict()
   .describe("Result of a manual run delivery attempt.");

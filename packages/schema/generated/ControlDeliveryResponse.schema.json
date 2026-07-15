@@ -31,11 +31,99 @@
         },
         "treeMutated": {
           "type": "boolean"
+        },
+        "finalVerify": {
+          "type": "object",
+          "properties": {
+            "attempted": {
+              "type": "boolean",
+              "description": "Whether the final verify was attempted."
+            },
+            "base_sha": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null,
+              "description": "Base SHA the verify tree was created from (the winner envelope's base)."
+            },
+            "applied_cleanly": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null,
+              "description": "Whether the patch applied cleanly onto the fresh tree; null when not attempted."
+            },
+            "gates_passed": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "default": null,
+              "description": "Whether the re-run deterministic gates passed; null when not attempted."
+            },
+            "gates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "description": "Gate id."
+                  },
+                  "status": {
+                    "type": "string",
+                    "description": "Gate status."
+                  }
+                },
+                "required": [
+                  "id",
+                  "status"
+                ],
+                "additionalProperties": false
+              },
+              "default": [],
+              "description": "Per-gate re-run results."
+            },
+            "duration_ms": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "How long the verify took, in milliseconds."
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null,
+              "description": "Typed reason when attempted=false (e.g. no_patch, no_base_sha) or a failure detail."
+            }
+          },
+          "required": [
+            "attempted"
+          ],
+          "additionalProperties": false,
+          "description": "Fresh verifier evidence for this delivery attempt."
+        },
+        "targetPreimageSha": {
+          "type": "string",
+          "description": "Target snapshot verified immediately before delivery."
         }
       },
       "required": [
         "mode",
-        "applied"
+        "applied",
+        "finalVerify",
+        "targetPreimageSha"
       ],
       "additionalProperties": false,
       "description": "Result of a manual run delivery attempt."

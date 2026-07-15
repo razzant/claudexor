@@ -7,7 +7,7 @@
  * that invariant.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -21,6 +21,8 @@ import {
 } from "./support.js";
 
 let sb: Sandbox;
+const PASS_GATE = JSON.stringify([process.execPath, "-e", "process.exit(0)"]);
+const SLOW_GATE = JSON.stringify(["sleep", "60"]);
 beforeEach(() => {
   sb = makeSandbox();
 });
@@ -206,7 +208,7 @@ describe("canary golden stories", () => {
       "--n",
       "2",
       "--test",
-      'node -e "process.exit(0)"',
+      PASS_GATE,
       "--json",
     ]);
     expect(r.code).toBe(1);
@@ -254,7 +256,7 @@ describe("canary golden stories", () => {
     // The terminal is a typed cancelled run.failed and telemetry still lands.
     const child = spawn(
       process.execPath,
-      [CLI, "agent", "cancel me", "--harness", "fake-success", "--test", "sleep 60", "--json"],
+      [CLI, "agent", "cancel me", "--harness", "fake-success", "--test", SLOW_GATE, "--json"],
       {
         cwd: sb.repo,
         env: sb.env,
@@ -295,7 +297,7 @@ describe("canary golden stories", () => {
     const events = readEvents(runDir as string);
     expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
     const out = JSON.parse(stdout.slice(stdout.indexOf("{"))) as { status: string };
-    expect(out.status).toBe("cancelled");
+    expect(out.status, JSON.stringify(events)).toBe("cancelled");
     expect(runFileExists(runDir as string, "final/telemetry.yaml")).toBe(true);
   }, 90_000);
 
@@ -316,10 +318,22 @@ describe("canary golden stories", () => {
       frozen: true,
       intent: { raw: "change the protected file" },
       constraints: { protected_paths: ["FAKE_CHANGE.txt"] },
-      tests: [{ id: "t1", command: 'node -e "process.exit(0)"' }],
+      tests: [
+        {
+          id: "t1",
+          program: process.execPath,
+          args: ["-e", "process.exit(0)"],
+          envAllowlist: [],
+          required: true,
+          trust_required: false,
+          trust_grant: null,
+        },
+      ],
     };
     const specPath = join(sb.repo, "spec.json");
     writeFileSync(specPath, JSON.stringify(spec));
+    execFileSync("git", ["-C", sb.repo, "add", "spec.json"]);
+    execFileSync("git", ["-C", sb.repo, "commit", "-qm", "add spec fixture"]);
     const r = cli(sb, [
       "best-of",
       "tamper the protected file",
@@ -343,8 +357,15 @@ describe("canary golden stories", () => {
     // unblocks apply for THIS patch.
     const decided = cli(sb, ["decision", out.runId, "--override", "--json"]);
     expect(decided.code).toBe(0);
-    const applied = cli(sb, ["apply", out.runId, "--dry-run"]);
-    expect(applied.code).toBe(0);
+    const applied = cli(sb, ["apply", out.runId, "--json"]);
+    expect(applied.code, applied.stdout + applied.stderr).toBe(0);
+    const receipt = applied.json() as {
+      finalVerify: { attempted: boolean };
+      targetPreimageSha: string;
+    };
+    expect(receipt.finalVerify.attempted).toBe(true);
+    expect(receipt.targetPreimageSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(readFileSync(join(sb.repo, "FAKE_CHANGE.txt"), "utf8")).not.toBe("protected original\n");
   }, 120_000);
 
   it("[INV-041:crlf-diff-fidelity] a candidate patch over CRLF content survives byte-faithfully and applies onto the live tree", () => {
@@ -363,7 +384,7 @@ describe("canary golden stories", () => {
       "--harness",
       "fake-implement",
       "--test",
-      'node -e "process.exit(0)"',
+      PASS_GATE,
       "--json",
     ]);
     const out = r.json() as { runId: string; runDir: string; status: string };
