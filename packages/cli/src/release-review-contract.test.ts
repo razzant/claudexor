@@ -365,6 +365,17 @@ describe("release review fail-closed contract", () => {
     expect(validateChecklistResponse(value, "model", TRIAD_ITEMS).status).not.toBe("responded");
   });
 
+  it.each([
+    ["a duplicate row", [...cleanRows().slice(0, -1), cleanRows()[0]]],
+    ["an extra row", [...cleanRows(), { ...cleanRows()[0], reason: "extra row" }]],
+    [
+      "an unknown row field",
+      cleanRows().map((row, index) => (index === 0 ? { ...row, unexpected: true } : row)),
+    ],
+  ])("makes a checklist with %s quorum-unusable", (_name, value) => {
+    expect(validateChecklistResponse(value, "model", TRIAD_ITEMS).status).toBe("parse_failure");
+  });
+
   it("makes a missing checklist item partial rather than silently clean", () => {
     const result = validateChecklistResponse(cleanRows().slice(0, 2), "model", TRIAD_ITEMS);
     expect(result.status).toBe("partial");

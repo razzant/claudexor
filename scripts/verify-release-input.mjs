@@ -35,6 +35,9 @@ if (mode === "candidate") {
   candidateSha = git("rev-parse", `${tag}^{commit}`);
   const main = git("rev-parse", "origin/main^{commit}");
   if (candidateSha !== main) fail(["publish tag does not point to the exact origin/main commit"]);
+  if (candidateSha !== (process.env.GITHUB_SHA ?? "")) {
+    fail(["publish SHA does not match the workflow-dispatch GITHUB_SHA"]);
+  }
 }
 
 const candidateTree = git("rev-parse", `${candidateSha}^{tree}`);

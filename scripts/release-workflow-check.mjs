@@ -91,6 +91,13 @@ const publishTarball = npmPublisher.indexOf('"publish"');
 if (verifyDarwinPackage < 0 || publishTarball < 0 || verifyDarwinPackage > publishTarball) {
   errors.push("publish-npm-release.mjs: Darwin package verification must precede npm publish");
 }
+for (const [label, pattern] of [
+  ["published provenance is bound to source identity", /validatePublishedProvenance/],
+  ["published latest dist-tag is verified", /dist-tags.*latest/s],
+  ["published package signatures are audited", /audit[",\s]+signatures/],
+]) {
+  if (!pattern.test(npmPublisher)) errors.push(`publish-npm-release.mjs: ${label}`);
+}
 
 const verifier = readFileSync("scripts/verify-release-input.mjs", "utf8");
 if (!/validateReleaseAttestation\(attestation, reviewAuthority/.test(verifier)) {

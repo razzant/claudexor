@@ -372,6 +372,14 @@ function makeFixture(
       triad,
       `triad-${REQUIRED_TRIAD_MODELS[0]!.replace(/[^a-z0-9.-]+/gi, "_")}.metadata.json`,
     ),
+    triadParsed: join(
+      triad,
+      `triad-${REQUIRED_TRIAD_MODELS[0]!.replace(/[^a-z0-9.-]+/gi, "_")}.parsed-json-blocks.json`,
+    ),
+    triadRaw: join(
+      triad,
+      `triad-${REQUIRED_TRIAD_MODELS[0]!.replace(/[^a-z0-9.-]+/gi, "_")}.raw.txt`,
+    ),
     triadSummary: join(triad, "summary.json"),
     tier1Metadata: REQUIRED_RELEASE_REVIEW_SLOTS.slice(0, 2).map((required, index) =>
       join(tier1, `${String(index + 1).padStart(2, "0")}-${required.route}`, "metadata.json"),
@@ -389,6 +397,26 @@ function makeFixture(
   };
 }
 
+function rewriteFirstTriadChecklist(
+  fixture: ReturnType<typeof makeFixture>,
+  rows: Array<Record<string, unknown>>,
+): void {
+  const metadata = JSON.parse(readFileSync(fixture.triadMetadata, "utf8"));
+  metadata.findings = rows.map((row) => ({
+    item: row.item,
+    verdict: row.verdict,
+    severity: row.severity,
+    reason: row.reason,
+    model: metadata.requested_model,
+  }));
+  writeJson(fixture.triadMetadata, metadata);
+  writeJson(fixture.triadParsed, rows);
+  writeFileSync(fixture.triadRaw, JSON.stringify(rows));
+  const summary = JSON.parse(readFileSync(fixture.triadSummary, "utf8"));
+  summary.triad.actors[0] = metadata;
+  writeJson(fixture.triadSummary, summary);
+}
+
 describe("signed release review attestation sealer", () => {
   it("seals only complete exact artifacts and produces verifiable schema v2", () => {
     const fixture = makeFixture();
@@ -403,6 +431,23 @@ describe("signed release review attestation sealer", () => {
       ok: true,
       reasons: [],
     });
+  });
+
+  it("refuses duplicate, extra, and unknown-field triad checklist rows", () => {
+    const mutations = [
+      (rows: Array<Record<string, unknown>>) => [...rows.slice(0, -1), rows[0]!],
+      (rows: Array<Record<string, unknown>>) => [...rows, { ...rows[0]!, reason: "extra row" }],
+      (rows: Array<Record<string, unknown>>) => [
+        { ...rows[0]!, unexpected: true },
+        ...rows.slice(1),
+      ],
+    ];
+    for (const mutate of mutations) {
+      const fixture = makeFixture();
+      const rows = JSON.parse(readFileSync(fixture.triadParsed, "utf8"));
+      rewriteFirstTriadChecklist(fixture, mutate(rows));
+      expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/checklist incomplete/);
+    }
   });
 
   it("refuses to seal an incomplete reviewer artifact set", () => {
