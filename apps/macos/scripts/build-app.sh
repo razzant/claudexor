@@ -246,6 +246,13 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
   # Inside-out signing (NOT --deep: --deep re-signs nested code with the
   # APP's entitlements, which strips the JIT entitlements the bundled Node
   # needs under hardened runtime — V8 would be killed at startup).
+  DEPLOYED_PROCESS_HELPER="$APP/Contents/Resources/browser-mcp-runtime/dist/native/claudexor-process-identity"
+  DEPLOYED_FSEVENTS="$APP/Contents/Resources/browser-mcp-runtime/node_modules/.pnpm/fsevents@2.3.2/node_modules/fsevents/fsevents.node"
+  for NESTED_CODE in "$DEPLOYED_PROCESS_HELPER" "$DEPLOYED_FSEVENTS"; do
+    [ -f "$NESTED_CODE" ] || { echo "ERROR: expected nested Browser MCP code is missing: $NESTED_CODE" >&2; exit 1; }
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$NESTED_CODE"
+    codesign --verify --strict --verbose=2 "$NESTED_CODE"
+  done
   if [ -x "$APP/Contents/Resources/node" ]; then
     codesign --force --options runtime --timestamp \
       --entitlements "$PACKAGING/NodeRuntime.entitlements" \
