@@ -167,7 +167,11 @@ export class SensitiveResourcePolicy {
           `credential-store path component: ${part}/${parts[index + 1]}`,
         );
       }
-      if (lower === "secrets") {
+      // A monorepo package may legitimately own secret-management source code
+      // (`packages/secrets/**`). Its files still pass the shared content scan;
+      // every other `secrets` container remains path-sensitive.
+      const sourcePackage = index > 0 && parts[index - 1]?.toLowerCase() === "packages";
+      if (lower === "secrets" && !sourcePackage) {
         return sensitivePath("secret_container", part, `secret-container path component: ${part}`);
       }
       if (

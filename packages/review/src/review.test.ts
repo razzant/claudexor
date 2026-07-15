@@ -2092,6 +2092,10 @@ describe("reviewEngine", () => {
     writeFileSync(join(candidateRoot, ".codex", "auth.json"), "{}\n");
     mkdirSync(join(candidateRoot, ".claude"), { recursive: true });
     writeFileSync(join(candidateRoot, ".claude", "session.json"), "{}\n");
+    mkdirSync(join(candidateRoot, "packages", "secrets", "src"), { recursive: true });
+    writeFileSync(join(candidateRoot, "packages", "secrets", "src", "index.ts"), "export {};\n");
+    mkdirSync(join(candidateRoot, "secrets"), { recursive: true });
+    writeFileSync(join(candidateRoot, "secrets", "service.json"), "{}\n");
     writeFileSync(join(candidateRoot, "README.md"), "candidate docs\n");
     writeMandatoryReviewEvidence(evidenceDir);
 
@@ -2109,6 +2113,8 @@ describe("reviewEngine", () => {
     let sawCursor = true;
     let sawCodex = true;
     let sawClaude = true;
+    let sawSecretPackage = false;
+    let sawSecretContainer = true;
     const adapter: HarnessAdapter = {
       id: "env-secret-reviewer",
       async discover() {
@@ -2142,6 +2148,8 @@ describe("reviewEngine", () => {
         sawCursor = existsSync(join(spec.cwd, ".cursor"));
         sawCodex = existsSync(join(spec.cwd, ".codex"));
         sawClaude = existsSync(join(spec.cwd, ".claude"));
+        sawSecretPackage = existsSync(join(spec.cwd, "packages", "secrets", "src", "index.ts"));
+        sawSecretContainer = existsSync(join(spec.cwd, "secrets", "service.json"));
         const ts = new Date().toISOString();
         yield { type: "message", session_id: spec.session_id, ts, text: "[]\n" };
       },
@@ -2171,6 +2179,8 @@ describe("reviewEngine", () => {
     expect(sawCursor).toBe(false);
     expect(sawCodex).toBe(false);
     expect(sawClaude).toBe(false);
+    expect(sawSecretPackage).toBe(true);
+    expect(sawSecretContainer).toBe(false);
   });
 
   it("isolates reviewer workspace setup failures to the failing reviewer", async () => {
