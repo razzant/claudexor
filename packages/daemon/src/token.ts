@@ -15,11 +15,7 @@ import {
   writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-  ensureCanonicalPrivateDirectory,
-  userConfigDir,
-  userHomeDir,
-} from "@claudexor/util";
+import { ensureCanonicalPrivateDirectory, userConfigDir, userHomeDir } from "@claudexor/util";
 
 export function daemonDir(): string {
   return join(userConfigDir(), "daemon");
