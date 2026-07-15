@@ -1833,67 +1833,6 @@ final class AppModel {
         }
     }
 
-    /// Minimal unified-diff parser for the Diff tab (paths, +/- counts, hunks).
-    static func parseUnifiedDiff(_ patch: String) -> [DiffFile] {
-        var files: [DiffFile] = []
-        var currentPath: String?
-        var currentHunks: [DiffHunk] = []
-        var currentLines: [DiffLine] = []
-        var currentHeader: String?
-        var added = 0
-        var removed = 0
-
-        func closeHunk() {
-            if let header = currentHeader {
-                currentHunks.append(DiffHunk(header: header, lines: currentLines))
-            }
-            currentHeader = nil
-            currentLines = []
-        }
-        func closeFile() {
-            closeHunk()
-            if let path = currentPath {
-                files.append(DiffFile(path: path, added: added, removed: removed, hunks: currentHunks))
-            }
-            currentPath = nil
-            currentHunks = []
-            added = 0
-            removed = 0
-        }
-
-        for line in patch.components(separatedBy: "\n") {
-            if line.hasPrefix("diff --git ") {
-                closeFile()
-                // "diff --git a/path b/path" -> take the b/ path
-                let parts = line.split(separator: " ")
-                if let bPart = parts.last, bPart.hasPrefix("b/") {
-                    currentPath = String(bPart.dropFirst(2))
-                } else {
-                    currentPath = parts.count > 2 ? String(parts[2].dropFirst(2)) : line
-                }
-                continue
-            }
-            guard currentPath != nil else { continue }
-            if line.hasPrefix("@@") {
-                closeHunk()
-                currentHeader = line
-                continue
-            }
-            guard currentHeader != nil else { continue }
-            if line.hasPrefix("+") && !line.hasPrefix("+++") {
-                added += 1
-                currentLines.append(DiffLine(kind: .add, text: String(line.dropFirst())))
-            } else if line.hasPrefix("-") && !line.hasPrefix("---") {
-                removed += 1
-                currentLines.append(DiffLine(kind: .remove, text: String(line.dropFirst())))
-            } else if line.hasPrefix(" ") {
-                currentLines.append(DiffLine(kind: .context, text: String(line.dropFirst())))
-            }
-        }
-        closeFile()
-        return files
-    }
-
     func storeSecret(name: String, value: String, for family: HarnessFamily) async -> (stored: Bool, readinessRefreshed: Bool) {
         guard let client else { return (false, false) }
         do {
