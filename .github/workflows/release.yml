@@ -216,7 +216,9 @@ jobs:
           mkdir -p "$assets"
           cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"
           cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"
-          pnpm licenses list --prod --json | node scripts/generate-release-sbom.mjs > "$assets/Claudexor-$VERSION.spdx.json"
+          pnpm licenses list --prod --json | node scripts/generate-release-sbom.mjs \
+            --app-bundle apps/macos/dist/Claudexor.app \
+            > "$assets/Claudexor-$VERSION.spdx.json"
           if [ "$RELEASE_MODE_INPUT" = publish ]; then
             cp "$RUNNER_TEMP/review-attestation.json" "$assets/REVIEW_ATTESTATION.json"
           fi

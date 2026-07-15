@@ -44,6 +44,10 @@ for (const [label, pattern] of [
   ["signing is fail-closed", /Signing and notarization secrets are required/],
   ["release assets use collision checks", /Release asset collision/],
   ["Darwin npm tarball is smoke-tested", /verify-npm-darwin-package\.mjs --tarball/],
+  [
+    "SBOM inventories the packaged app",
+    /generate-release-sbom\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/Claudexor\.app/,
+  ],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
 }
