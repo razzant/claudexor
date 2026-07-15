@@ -122,7 +122,13 @@ function fixture(): {
 function deps(): DiffReviewDeps {
   return {
     resolveReviewers: async () => [reviewer()],
-    reviewScoped: (input) => reviewCandidate(input),
+    reviewScoped: (input) =>
+      reviewCandidate({
+        ...input,
+        env: {
+          CLAUDEXOR_REVIEW_WAVE_ID: "00000000-0000-4000-8000-000000000001",
+        },
+      }),
     execRootOf: (root) => root,
     envInheritance: () => "clean",
   };
