@@ -210,6 +210,8 @@ export function validateReleaseAttestationPayload(payload, expected) {
   if (
     !gate ||
     !SHA256.test(gate.receiptSha256 ?? "") ||
+    gate.program !== "pnpm" ||
+    canonicalJson(gate.argv) !== canonicalJson(["pnpm", "release:verify"]) ||
     gate.exitCode !== 0 ||
     gate.candidateUnchanged !== true ||
     gate.beforeSha !== expected.candidateSha ||

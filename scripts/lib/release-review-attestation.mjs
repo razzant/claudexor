@@ -495,6 +495,16 @@ function validateFullGate(receiptPath, testResults, expected) {
   const receiptSha256 = sha256File(receiptPath);
   requireValue(testResults.receiptSha256 === receiptSha256, "full-gate receipt digest mismatch");
   const receipt = readJson(receiptPath);
+  const expectedArgv = ["pnpm", "release:verify"];
+  requireValue(
+    receipt.program === "pnpm" && canonicalJson(receipt.argv) === canonicalJson(expectedArgv),
+    "full-gate command must be pnpm release:verify",
+  );
+  requireValue(
+    testResults.program === receipt.program &&
+      canonicalJson(testResults.argv) === canonicalJson(receipt.argv),
+    "sealed TEST_RESULTS full-gate command mismatch",
+  );
   requireValue(receipt.exitCode === 0, "full deterministic gate did not pass");
   requireValue(receipt.candidateUnchanged === true, "full deterministic gate changed candidate");
   for (const side of ["before", "after"]) {
@@ -514,6 +524,8 @@ function validateFullGate(receiptPath, testResults, expected) {
   );
   return {
     receiptSha256,
+    program: receipt.program,
+    argv: receipt.argv,
     exitCode: 0,
     candidateUnchanged: true,
     beforeSha: receipt.before.head,

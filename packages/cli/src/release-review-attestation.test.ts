@@ -103,7 +103,10 @@ function writeAccessibilityFixture(
   ];
 }
 
-function makeFixture(accessibility: "valid" | "missing" | "forged" | "wrong_binding" = "valid") {
+function makeFixture(
+  accessibility: "valid" | "missing" | "forged" | "wrong_binding" = "valid",
+  gateCommand: "valid" | "missing" | "wrong" = "valid",
+) {
   const root = mkdtempSync(join(tmpdir(), "claudexor-signed-review-"));
   roots.push(root);
   const candidateSha = "a".repeat(40);
@@ -131,6 +134,11 @@ function makeFixture(accessibility: "valid" | "missing" | "forged" | "wrong_bind
   writeFileSync(stderrPath, "");
   const receiptPath = join(verification, "full-gate.receipt.json");
   const receipt = {
+    ...(gateCommand === "missing"
+      ? {}
+      : gateCommand === "wrong"
+        ? { program: "node", argv: ["node", "smoke.mjs"] }
+        : { program: "pnpm", argv: ["pnpm", "release:verify"] }),
     exitCode: 0,
     candidateUnchanged: true,
     before: { head: candidateSha, tree: candidateTree, status: "" },
@@ -146,6 +154,8 @@ function makeFixture(accessibility: "valid" | "missing" | "forged" | "wrong_bind
   });
   writeJson(join(packet, "FINGERPRINTS.json"), { candidateSha, candidateTree });
   writeJson(join(packet, "TEST_RESULTS.json"), {
+    program: receipt.program,
+    argv: receipt.argv,
     exitCode: 0,
     candidateUnchanged: true,
     receiptSha256: sha256File(receiptPath),
@@ -429,6 +439,16 @@ describe("signed release review attestation sealer", () => {
       /manual accessibility artifact is missing/,
     );
   });
+
+  it.each(["missing", "wrong"] as const)(
+    "refuses a self-consistent full-gate receipt with a %s command",
+    (gateCommand) => {
+      const fixture = makeFixture("valid", gateCommand);
+      expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+        /full-gate command must be pnpm release:verify/,
+      );
+    },
+  );
 
   it("refuses a manifest-sealed forged manual accessibility signature", () => {
     const fixture = makeFixture("forged");

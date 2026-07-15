@@ -55,6 +55,8 @@ describe("release review fail-closed contract", () => {
       evidenceManifestSha256: packetManifestSha256,
       fullGate: {
         receiptSha256: digest,
+        program: "pnpm",
+        argv: ["pnpm", "release:verify"],
         exitCode: 0,
         candidateUnchanged: true,
         beforeSha: candidateSha,
@@ -157,6 +159,14 @@ describe("release review fail-closed contract", () => {
     };
     const quorum = resign({ ...valid, payload: quorumPayload });
     expect(validateReleaseAttestation(quorum, authority, expected).ok).toBe(true);
+    const wrongGate = resign({
+      ...valid,
+      payload: {
+        ...valid.payload,
+        fullGate: { ...valid.payload.fullGate, program: "node", argv: ["node", "smoke.mjs"] },
+      },
+    });
+    expect(validateReleaseAttestation(wrongGate, authority, expected).ok).toBe(false);
     expect(
       validateReleaseAttestation(
         { ...valid, payload: { ...valid.payload, candidateTree: "d".repeat(40) } },
