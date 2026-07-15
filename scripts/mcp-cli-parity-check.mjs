@@ -69,7 +69,10 @@ const MCP_TO_CLI = {
     reason: "the CLI runs in its cwd; MCP hosts pass the project root explicitly",
   },
   tests: { cli: "test" },
-  maxUsd: { cli: "max-usd" },
+  paidBudget: {
+    cli: "max-usd",
+    reason: "the CLI scalar projects to PaidBudget.finite; omission preserves the configured tagged budget",
+  },
   access: { cli: "access" },
   reviewerPanel: { cli: "reviewer-panel" },
   reviewerModels: { cli: "reviewer-model" },
