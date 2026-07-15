@@ -80,6 +80,15 @@ function requireValue(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function requireExactKeys(value, allowed, label) {
+  requireValue(
+    value && typeof value === "object" && !Array.isArray(value),
+    `${label} is malformed`,
+  );
+  const extras = Object.keys(value).filter((key) => !allowed.includes(key));
+  requireValue(extras.length === 0, `${label} contains unsupported fields: ${extras.join(", ")}`);
+}
+
 function within(root, path) {
   const rel = relative(resolve(root), resolve(path));
   return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
@@ -133,9 +142,10 @@ function artifactDigests(root, names) {
 }
 
 function normalizeNativeFinding(finding, metadata, index) {
-  requireValue(
-    finding && typeof finding === "object" && !Array.isArray(finding),
-    `${metadata.harness_id} finding ${index + 1} is malformed`,
+  requireExactKeys(
+    finding,
+    ["severity", "category", "claim", "evidence", "proposed_fix"],
+    `${metadata.harness_id} finding ${index + 1}`,
   );
   return {
     id: finding.id ?? `${metadata.harness_id}-release-${index + 1}`,
@@ -171,11 +181,17 @@ function releaseNativeResponse(parsed, slot, metadata) {
     response && typeof response === "object" && !Array.isArray(response),
     `${slot} completion envelope is malformed`,
   );
+  requireExactKeys(response, ["completion", "findings"], `${slot} completion envelope`);
   const completion = response.completion;
   const findings = response.findings;
   requireValue(
     completion && typeof completion === "object" && !Array.isArray(completion),
     `${slot} completion record is missing`,
+  );
+  requireExactKeys(
+    completion,
+    ["verdict", "checklist", "findingCount"],
+    `${slot} completion record`,
   );
   requireValue(completion.verdict === "PASS", `${slot} completion verdict did not pass`);
   requireValue(Array.isArray(findings), `${slot} findings are missing`);
@@ -202,6 +218,7 @@ function releaseNativeResponse(parsed, slot, metadata) {
     `${slot} completion checklist is missing or incomplete`,
   );
   for (const [index, item] of RELEASE_NATIVE_CHECKLIST_ITEMS.entries()) {
+    requireExactKeys(checklist[index], ["item", "completed"], `${slot} checklist row ${index + 1}`);
     requireValue(
       checklist[index]?.item === item && checklist[index]?.completed === true,
       `${slot} completion checklist is missing or incomplete`,

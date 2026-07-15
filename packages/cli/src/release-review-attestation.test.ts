@@ -420,6 +420,39 @@ describe("signed release review attestation sealer", () => {
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/finding count/);
   });
 
+  it("refuses an unknown native envelope field before normalization", () => {
+    const fixture = makeFixture();
+    const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
+    parsed[0].unexpected = true;
+    writeJson(fixture.nativeParsed, parsed);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsupported fields/);
+  });
+
+  it("refuses an unknown native completion field before normalization", () => {
+    const fixture = makeFixture();
+    const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
+    parsed[0].completion.unexpected = true;
+    writeJson(fixture.nativeParsed, parsed);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsupported fields/);
+  });
+
+  it("refuses an unknown native checklist field before normalization", () => {
+    const fixture = makeFixture();
+    const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
+    parsed[0].completion.checklist[0].unexpected = true;
+    writeJson(fixture.nativeParsed, parsed);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsupported fields/);
+  });
+
+  it("refuses an unknown raw finding field before adding trusted metadata", () => {
+    const fixture = makeFixture();
+    const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
+    parsed[0].completion.findingCount = 1;
+    parsed[0].findings = [{ severity: "WARN", category: "test_gap", claim: "x", unexpected: true }];
+    writeJson(fixture.nativeParsed, parsed);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsupported fields/);
+  });
+
   it("accepts a prompt-shaped advisory and binds reviewer identity from telemetry", () => {
     const fixture = makeFixture();
     writeJson(fixture.nativeParsed, [
@@ -471,11 +504,9 @@ describe("signed release review attestation sealer", () => {
         },
         findings: [
           {
-            id: "finding-1",
             severity: "WARN",
             category: "release_protocol",
             claim: "The category is not part of the schema-owned review contract.",
-            linked_acceptance_criteria: ["QA-03"],
             evidence: {
               files: [{ path: "scripts/lib/release-review-attestation.mjs", lines: null }],
               diff_hunks: [],
@@ -483,14 +514,6 @@ describe("signed release review attestation sealer", () => {
               logs: [],
             },
             proposed_fix: null,
-            reviewer: {
-              harness_id: "codex",
-              requested_model: "gpt-5.6-sol",
-              requested_effort: "xhigh",
-              observed_model: "gpt-5.6-sol",
-              route_proof_status: "verified",
-            },
-            status: "proposed",
           },
         ],
       },
