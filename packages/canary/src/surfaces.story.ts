@@ -78,7 +78,7 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
       mcp.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
       const tools = await mcp.waitFor(1, 10_000);
       expect(tools.result?.tools?.map((t: { name: string }) => t.name)).toContain("claudexor_run");
-      expect(tools.result?.tools).toHaveLength(12);
+      expect(tools.result?.tools).toHaveLength(14);
 
       // The mutating verb: enqueue through the sandbox daemon (auto-started).
       mcp.send({

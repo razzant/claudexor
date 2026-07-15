@@ -203,8 +203,8 @@ export async function enqueueAndAwait(
   const start = startText ? (JSON.parse(startText) as Record<string, unknown>) : {};
   if (!startRes.ok) {
     throw new Error(
-      typeof start["error"] === "string"
-        ? (start["error"] as string)
+      typeof start["message"] === "string"
+        ? (start["message"] as string)
         : `run enqueue failed (HTTP ${startRes.status})`,
     );
   }
