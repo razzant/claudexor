@@ -189,6 +189,10 @@ final class AppModel {
     private var globalEventCursor: String?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     private var lastEventIds: [String: Int] = [:]
+    /// Highest sequence reflected by detail snapshots currently being merged.
+    /// This must stay separate from `lastEventIds`: the stream cursor may
+    /// advance past a still-in-flight snapshot when a newer event arrives.
+    private var snapshotReplayFences: [String: Int] = [:]
     /// Reentrancy depth of in-flight detail loads per run (see loadRunDetail).
     private var snapshotLoadDepth: [String: Int] = [:]
     /// Stream envelopes deferred while a snapshot load is in flight.
@@ -315,12 +319,51 @@ final class AppModel {
                 continue
             }
             guard generation == connectionGeneration else { return }
-            health = .offline
-            client = nil
-            quotaResponse = nil
-            cancelAllStreams()
+            enterHardOffline()
             try? await Task.sleep(for: .seconds(3))
         }
+    }
+
+    /// Drop every daemon-owned projection when the engine is unreachable. The
+    /// reconnect path repopulates these from `/v2`; user preferences and the
+    /// current composer draft remain local and are intentionally preserved.
+    func enterHardOffline() {
+        health = .offline
+        endpoint = ""
+        client = nil
+        authSheetHarness = nil
+        cancelAllStreams()
+
+        route = .threads
+        liveTasks.removeAll()
+        cancelledRunIds.removeAll()
+        transcripts.removeAll()
+        liveBoxes.removeAll()
+        snapshotLoadDepth.removeAll()
+        deferredEnvelopes.removeAll()
+        turnSubmitting = false
+
+        threads.removeAll()
+        selectedThreadId = nil
+        selectedThreadDetail = nil
+        threadStatus = nil
+        threadLoadGeneration += 1
+        specFlowByThread.removeAll()
+        specFlowGen.removeAll()
+        specPendingModel.removeAll()
+        specPendingOptions.removeAll()
+        specPrior.removeAll()
+
+        liveHarnesses.removeAll()
+        exactAuthSources.removeAll()
+        settingsSnapshot = nil
+        settingsStatus = nil
+        quotaResponse = nil
+        quotaStatus = nil
+        secretBackend = "unknown"
+        storedSecrets.removeAll()
+        trustEntries.removeAll()
+        trustStatus = nil
     }
 
     private func tryConnect() async -> Bool {
@@ -1647,7 +1690,7 @@ final class AppModel {
                 // merged reflects everything <= lastSeq; re-applying a
                 // deferred envelope from that range would double-count spend
                 // and duplicate timeline rows.
-                let fence = lastEventIds[id] ?? 0
+                let fence = snapshotReplayFences.removeValue(forKey: id) ?? 0
                 for env in deferred where !(env.seq > 0 && env.seq <= fence) { apply(env, to: id) }
             }
         }
@@ -1657,8 +1700,9 @@ final class AppModel {
             // have reordered liveTasks, and a stale index would merge this
             // snapshot into (and copy hydrated fields from) a DIFFERENT run.
             guard let baseIdx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
-            // Snapshot fence: everything with seq <= lastSeq is reflected in this
-            // snapshot, so the stream resumes from here without gaps or dupes.
+            // Snapshot truth and stream progress are related but distinct: the
+            // resume cursor may already be newer than this response.
+            snapshotReplayFences[id] = max(snapshotReplayFences[id] ?? 0, detail.lastSeq)
             lastEventIds[id] = max(lastEventIds[id] ?? 0, detail.lastSeq)
             var task = liveTasks[baseIdx]
             task.status = RunStatus(api: detail.summary.state)
@@ -1993,14 +2037,7 @@ final class AppModel {
                         // reconnect budget so a long run with occasional
                         // transient drops never falsely reports a lost stream.
                         attempt = 0
-                        // Snapshot fence: a concurrent detail load may already
-                        // reflect this event; never re-apply older sequence ids.
-                        if env.seq > 0, env.seq <= (self.lastEventIds[runId] ?? 0) { continue }
-                        if env.seq > 0 { self.lastEventIds[runId] = env.seq }
-                        // Buffer + coalesce: a 64ms flush applies a batch synchronously,
-                        // so SwiftUI does ONE re-render for the batch (not per event).
-                        self.eventBuffers[runId, default: []].append(env)
-                        self.scheduleFlush(runId)
+                        self.ingestStreamEnvelope(env, to: runId)
                     }
                     self.drainBuffer(runId) // flush the tail before terminal reconciliation
                     break // clean end frame: the run is terminal
@@ -2021,6 +2058,15 @@ final class AppModel {
             self?.streamTasks[runId] = nil
             self?.lastEventIds[runId] = nil
         }
+    }
+
+    /// Advance the resume cursor and enqueue one delivered SSE envelope. Kept
+    /// internal so the delayed snapshot/event ordering has a deterministic test.
+    func ingestStreamEnvelope(_ env: BusEnvelope, to runId: String) {
+        if env.seq > 0, env.seq <= (lastEventIds[runId] ?? 0) { return }
+        if env.seq > 0 { lastEventIds[runId] = env.seq }
+        eventBuffers[runId, default: []].append(env)
+        scheduleFlush(runId)
     }
 
     /// Schedule a coalesced flush of this run's buffered SSE events. The window

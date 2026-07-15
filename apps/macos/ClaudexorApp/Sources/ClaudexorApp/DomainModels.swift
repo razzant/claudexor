@@ -461,6 +461,8 @@ struct Candidate: Identifiable, Hashable {
     var gatesPassed: Int
     var gatesTotal: Int
     var reviewState: ReviewState
+    var reviewVerified: Bool = false
+    var finalReviewClean: Bool? = nil
     var summary: String
     var isSynthesis: Bool = false
     var filesChanged: Int = 0

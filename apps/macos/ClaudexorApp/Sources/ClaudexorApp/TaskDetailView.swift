@@ -406,7 +406,7 @@ struct TaskDetailView: View {
                     Panel(padding: Theme.Spacing.md) {
                         HStack(spacing: Theme.Spacing.sm) {
                             Image(systemName: "trophy.fill").foregroundStyle(Theme.accent)
-                            Text("Arbitration: \(winner.family.label) (\(winner.id)) selected on evidence — gates \(winner.gatesPassed)/\(winner.gatesTotal), clean final review.")
+                            Text(RunDetailMapping.winnerEvidenceText(winner))
                                 .font(.caption).foregroundStyle(.secondary)
                             Spacer()
                         }

@@ -220,4 +220,75 @@ describe("mcp daemon body mapping", () => {
       enqueueSpy.mockRestore();
     }
   });
+
+  it("returns the terminal primary output and artifact handles from __run_result", async () => {
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const connectSpy = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        expect(url).toBe("http://x/v2/runs/run-result");
+        return {
+          ok: true,
+          json: async () => ({
+            summary: {
+              runId: "run-result",
+              state: "succeeded",
+              runDir: "/tmp/run-result",
+              result: { kind: "plan", changed_files: [] },
+            },
+            finalSummary: "generic summary must not replace the plan",
+            primaryOutput: {
+              kind: "plan",
+              path: "final/plan.md",
+              text: "# Actual plan\n\nShip it.",
+            },
+            artifacts: [
+              { path: "final/plan.md", kind: "file" },
+              { path: "final/telemetry.yaml", kind: "file" },
+            ],
+            applyEligibility: {
+              eligible: false,
+              state: "no_op",
+              reason: "plan has no patch",
+              requiredAction: null,
+            },
+          }),
+        } as never;
+      }),
+    );
+    try {
+      const runner = mcpSurfaceRunner();
+      const result = (await runner({
+        mode: "__run_result",
+        runId: "run-result",
+      })) as Record<string, any>;
+      expect(result).toMatchObject({
+        summary: "# Actual plan\n\nShip it.",
+        runId: "run-result",
+        runDir: "/tmp/run-result",
+        status: "succeeded",
+        primaryOutput: { kind: "plan", path: "final/plan.md" },
+        artifacts: [
+          { path: "final/plan.md", kind: "file" },
+          { path: "final/telemetry.yaml", kind: "file" },
+        ],
+        result: { kind: "plan" },
+        applyEligibility: { eligible: false, state: "no_op" },
+      });
+      const inspect = (await runner({
+        mode: "__run_inspect",
+        runId: "run-result",
+      })) as Record<string, unknown>;
+      expect(inspect).not.toHaveProperty("primaryOutput");
+      expect(inspect).not.toHaveProperty("artifacts");
+    } finally {
+      connectSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
 });

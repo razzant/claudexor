@@ -190,13 +190,43 @@ async function recoveryQuery(
     const detail = await get(`/runs/${encodeURIComponent(runId)}`);
     const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
     const decision = (detail["decision"] ?? null) as Record<string, unknown> | null;
+    const status = summary["status"] ?? summary["state"] ?? null;
+    if (mode === "__run_result") {
+      const primaryOutput =
+        detail["primaryOutput"] && typeof detail["primaryOutput"] === "object"
+          ? (detail["primaryOutput"] as Record<string, unknown>)
+          : null;
+      const primaryText =
+        typeof primaryOutput?.["text"] === "string" ? primaryOutput["text"].trim() : "";
+      const primaryKind =
+        typeof primaryOutput?.["kind"] === "string" ? primaryOutput["kind"] : null;
+      const terminalSummary =
+        primaryText && primaryKind !== "patch"
+          ? primaryText
+          : typeof detail["finalSummary"] === "string" && detail["finalSummary"]
+            ? detail["finalSummary"]
+            : primaryKind === "patch"
+              ? "patch produced (see artifact handles)"
+              : `run ${runId}: ${String(status ?? "unknown")}`;
+      return {
+        summary: terminalSummary,
+        runId,
+        runDir: typeof summary["runDir"] === "string" ? summary["runDir"] : null,
+        status,
+        primaryOutput,
+        artifacts: Array.isArray(detail["artifacts"]) ? detail["artifacts"] : [],
+        result:
+          summary["result"] && typeof summary["result"] === "object" ? summary["result"] : null,
+        applyEligibility: detail["applyEligibility"] ?? null,
+      };
+    }
     return {
       summary:
         typeof detail["finalSummary"] === "string" && detail["finalSummary"]
           ? detail["finalSummary"]
-          : `run ${runId}: ${String(summary["status"] ?? "unknown")}`,
+          : `run ${runId}: ${String(status ?? "unknown")}`,
       runId,
-      status: summary["status"] ?? null,
+      status,
       decisionStatus: decision ? (decision["status"] ?? null) : null,
       applyEligibility: detail["applyEligibility"] ?? null,
       pendingInteractions: Array.isArray(detail["pendingInteractions"])

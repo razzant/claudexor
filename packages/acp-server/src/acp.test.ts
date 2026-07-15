@@ -179,6 +179,30 @@ describe("AcpServer official SDK projection", () => {
     );
   });
 
+  it("maps a daemon-cancelled terminal to cancelled without requiring a local abort", async () => {
+    const cwd = project();
+    await withClient(
+      async (params) =>
+        params.mode === "__acp_session_new"
+          ? { sessionId: "thread-daemon-cancelled", cwd }
+          : {
+              runId: "run-daemon-cancelled",
+              status: "cancelled",
+              summary: "cancelled by daemon policy",
+              applyEligibility: null,
+            },
+      async (agent) => {
+        const session = await agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+        const response = await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "go" }],
+        });
+        expect(response.stopReason).toBe("cancelled");
+        expect(response._meta?.["claudexor"]).toMatchObject({ status: "cancelled" });
+      },
+    );
+  });
+
   it("routes images and embedded resources through attachment descriptors, never inline paths", async () => {
     const cwd = project();
     let promptCall: any;

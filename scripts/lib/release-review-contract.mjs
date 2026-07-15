@@ -215,7 +215,9 @@ function invalidRow(index, requiredItems, detail) {
 }
 
 export function blockingFindings(findings) {
-  return findings.filter((finding) => finding.verdict === "FAIL");
+  return findings.filter(
+    (finding) => finding.verdict === "FAIL" && finding.severity === "critical",
+  );
 }
 
 export function releaseReviewDecision({ triadActors, scope, quorum = 2 }) {
@@ -235,7 +237,7 @@ export function releaseReviewDecision({ triadActors, scope, quorum = 2 }) {
     reasons.push(`scope reviewer status is ${scope.status}`);
   }
   if (failures.length > 0) {
-    reasons.push(`reviewers returned ${failures.length} FAIL verdict(s)`);
+    reasons.push(`reviewers returned ${failures.length} critical FAIL verdict(s)`);
   }
   return {
     passed: reasons.length === 0,

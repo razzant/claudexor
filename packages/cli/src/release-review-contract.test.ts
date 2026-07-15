@@ -178,7 +178,7 @@ describe("release review fail-closed contract", () => {
     ).toBe(true);
   });
 
-  it("fails closed on any FAIL verdict even when quorum and scope are healthy", () => {
+  it("preserves advisory FAIL verdicts without blocking a healthy panel", () => {
     const rows = cleanRows();
     rows[1] = { ...rows[1]!, verdict: "FAIL", severity: "advisory", reason: "concrete issue" };
     const findings = validateChecklistResponse(rows, "model", TRIAD_ITEMS).findings;
@@ -192,9 +192,48 @@ describe("release review fail-closed contract", () => {
       ],
       scope: { status: "responded", findings: [] },
     });
+    expect(findings).toContainEqual(
+      expect.objectContaining({ verdict: "FAIL", severity: "advisory" }),
+    );
+    expect(decision.passed).toBe(true);
+    expect(decision.blockingFindings).toEqual([]);
+    expect(decision.reasons).toEqual([]);
+  });
+
+  it("fails closed on a critical FAIL verdict even when quorum and scope are healthy", () => {
+    const rows = cleanRows();
+    rows[1] = { ...rows[1]!, verdict: "FAIL", severity: "critical", reason: "release blocker" };
+    const findings = validateChecklistResponse(rows, "model", TRIAD_ITEMS).findings;
+    const decision = releaseReviewDecision({
+      triadActors: [
+        { status: "responded", findings },
+        {
+          status: "responded",
+          findings: validateChecklistResponse(cleanRows(), "other", TRIAD_ITEMS).findings,
+        },
+      ],
+      scope: { status: "responded", findings: [] },
+    });
     expect(decision.passed).toBe(false);
-    expect(decision.blockingFindings).toHaveLength(1);
-    expect(decision.reasons[0]).toContain("FAIL");
+    expect(decision.blockingFindings).toEqual([
+      expect.objectContaining({ verdict: "FAIL", severity: "critical" }),
+    ]);
+    expect(decision.reasons[0]).toContain("critical FAIL");
+  });
+
+  it("fails closed when malformed output prevents quorum", () => {
+    const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
+    const malformed = validateChecklistResponse([], "malformed", TRIAD_ITEMS);
+    const decision = releaseReviewDecision({
+      triadActors: [
+        { status: "responded", findings },
+        { status: malformed.status, findings: malformed.findings },
+      ],
+      scope: { status: "responded", findings: [] },
+    });
+    expect(decision.passed).toBe(false);
+    expect(decision.responsiveTriad).toBe(1);
+    expect(decision.reasons).toContain("triad quorum not met: 1/2");
   });
 
   it("fails closed when the required scope slot is missing", () => {

@@ -6,6 +6,61 @@ import ClaudexorKit
 @Suite(.serialized)
 struct AppModelRefreshTests {
     @MainActor
+    @Test func hardOfflineDropsDaemonProjectionsAndKeepsLocalDraft() throws {
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test"
+        ), requestNotificationAuthorization: false)
+        model.demoMode = false
+        model.health = .connected
+        model.endpoint = "127.0.0.1:1234"
+        model.route = .task("stale-run")
+        model.liveTasks = [TaskRun(
+            id: "stale-run", title: "Stale", prompt: "", mode: .agent, status: .running,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+        let thread = try JSONDecoder().decode(ThreadSummary.self, from: Data(#"{"id":"stale-thread","title":"Stale","repoRoot":"/tmp/project","mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":["stale-run"],"headRunId":"stale-run","needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"}"#.utf8))
+        model.threads = [thread]
+        model.selectedThreadId = thread.id
+        model.selectedThreadDetail = ThreadDetailResponse(thread: thread, sessions: [], turns: [])
+        model.liveHarnesses = DemoData.harnesses
+        model.settingsSnapshot = try JSONDecoder().decode(SettingsSnapshot.self, from: Data(#"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":900000}"#.utf8))
+        model.quotaResponse = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"{"snapshots":[],"refreshed_at":"2026-07-15T00:00:00Z"}"#.utf8))
+        model.storedSecrets = [try JSONDecoder().decode(SecretInfo.self, from: Data(#"{"name":"stale","backend":"file","present":true}"#.utf8))]
+        model.trustEntries = [try JSONDecoder().decode(TrustEntry.self, from: Data(#"{"repoRoot":"/tmp/project","path":"/tmp/trust.json","allowFullAccess":true,"accessDefault":"full"}"#.utf8))]
+        model.draftPrimaryHarness = "claude"
+        model.draftEligiblePool = ["claude"]
+        model.draftIsolatedWorkspace = true
+        let preservedProjectRoot = model.projectRoot
+        let preservedAppearance = model.appearance
+
+        model.enterHardOffline()
+
+        #expect(model.health == .offline)
+        #expect(model.client == nil)
+        #expect(model.endpoint.isEmpty)
+        #expect(model.route == .threads)
+        #expect(model.liveTasks.isEmpty)
+        #expect(model.threads.isEmpty)
+        #expect(model.selectedThreadId == nil)
+        #expect(model.selectedThreadDetail == nil)
+        #expect(model.liveHarnesses.isEmpty)
+        #expect(model.settingsSnapshot == nil)
+        #expect(model.quotaResponse == nil)
+        #expect(model.storedSecrets.isEmpty)
+        #expect(model.trustEntries.isEmpty)
+        #expect(model.secretBackend == "unknown")
+        #expect(model.draftPrimaryHarness == "claude")
+        #expect(model.draftEligiblePool == ["claude"])
+        #expect(model.draftIsolatedWorkspace)
+        #expect(model.projectRoot == preservedProjectRoot)
+        #expect(model.appearance == preservedAppearance)
+    }
+
+    @MainActor
     @Test func runlessGlobalQuotaEventRefreshesQuotaProjection() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
@@ -331,6 +386,73 @@ struct AppModelRefreshTests {
         await first.value
         #expect(model.selectedThreadId == "B")
         #expect(model.selectedThreadDetail?.thread.id == "B")
+    }
+
+    @MainActor
+    @Test func eventNewerThanDelayedDetailSnapshotReplaysAfterSnapshotMerge() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.liveTasks = [TaskRun(
+            id: "run-delayed", title: "Run", prompt: "", mode: .agent, status: .running,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs/run-delayed" else {
+                throw AppRefreshTestError.badRequest
+            }
+            Thread.sleep(forTimeInterval: 0.18)
+            let json = #"{"summary":{"runId":"run-delayed","state":"running","mode":"agent","spendUsd":1},"lastSeq":10}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+
+        let load = Task { await model.loadRunDetail("run-delayed") }
+        try await Task.sleep(for: .milliseconds(20))
+        model.ingestStreamEnvelope(BusEnvelope(
+            seq: 11, kind: "budget",
+            event: .object([
+                "type": .string("budget.observation"),
+                "payload": .object(["usd": .number(2)])
+            ])
+        ), to: "run-delayed")
+        try await Task.sleep(for: .milliseconds(100))
+        await load.value
+
+        #expect(model.liveBoxes["run-delayed"]?.spendUsd == 3)
+        #expect(model.liveBoxes["run-delayed"]?.spendKnown == true)
+    }
+
+    @Test func winnerEvidenceSeparatesSelectionFromFinalReviewTruth() throws {
+        func candidate(reviewVerified: Bool, finalReviewClean: Bool?, blockers: Int = 0) throws -> Candidate {
+            let cleanField = finalReviewClean.map { ",\"finalReviewClean\":\($0)" } ?? ""
+            let json = """
+            {"attemptId":"a01","harnessId":"claude","gatesPassed":2,"gatesTotal":2,
+             "blockers":\(blockers),"reviewVerified":\(reviewVerified)\(cleanField),"winner":true}
+            """
+            let info = try JSONDecoder().decode(CandidateInfo.self, from: Data(json.utf8))
+            return try #require(RunDetailMapping.candidates([info], runStatus: blockers > 0 ? .blocked : .succeeded).first)
+        }
+
+        let clean = try candidate(reviewVerified: true, finalReviewClean: true)
+        #expect(RunDetailMapping.winnerEvidenceText(clean).contains("verified clean"))
+
+        let unverified = try candidate(reviewVerified: false, finalReviewClean: true)
+        #expect(RunDetailMapping.winnerEvidenceText(unverified).contains("unverified"))
+        #expect(!RunDetailMapping.winnerEvidenceText(unverified).contains("verified clean"))
+
+        let missing = try candidate(reviewVerified: true, finalReviewClean: nil)
+        #expect(RunDetailMapping.winnerEvidenceText(missing).contains("clean verdict is missing"))
+
+        let blocked = try candidate(reviewVerified: true, finalReviewClean: false, blockers: 1)
+        #expect(RunDetailMapping.winnerEvidenceText(blocked).contains("blocked or not clean"))
     }
 }
 

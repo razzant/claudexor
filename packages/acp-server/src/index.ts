@@ -147,11 +147,12 @@ export class AcpServer {
           const summary = summarizeResult(result);
           if (summary) await this.agentMessage(client, params.sessionId, summary);
           const status = typeof result.status === "string" ? result.status : "unknown";
-          const stopReason: acp.StopReason = controller.signal.aborted
-            ? "cancelled"
-            : status === "blocked" || status === "failed" || status === "interrupted_unknown"
-              ? "refusal"
-              : "end_turn";
+          const stopReason: acp.StopReason =
+            status === "cancelled" || controller.signal.aborted
+              ? "cancelled"
+              : status === "blocked" || status === "failed" || status === "interrupted_unknown"
+                ? "refusal"
+                : "end_turn";
           return {
             stopReason,
             _meta: {

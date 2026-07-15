@@ -73,6 +73,8 @@ enum RunDetailMapping {
                         : c.blockers > 0
                             ? .changesRequested
                             : c.finalReviewClean == true ? .clean : .pending,
+                reviewVerified: c.reviewVerified,
+                finalReviewClean: c.finalReviewClean,
                 // The verified chip: cross-family route-proof status is
                 // evidence the operator should SEE, not a hidden field.
                 summary: c.reviewVerified ? "\(c.harnessId) · \(c.attemptId) · verified" : "\(c.harnessId) · \(c.attemptId)",
@@ -81,5 +83,19 @@ enum RunDetailMapping {
                 removed: c.diffstat?.deletions ?? 0
             )
         }
+    }
+
+    static func winnerEvidenceText(_ candidate: Candidate) -> String {
+        let selection = "Arbitration: \(candidate.family.label) (\(candidate.id)) selected on evidence — gates \(candidate.gatesPassed)/\(candidate.gatesTotal)."
+        guard candidate.reviewVerified else {
+            return "\(selection) Final review is unverified; selection does not claim a clean review."
+        }
+        if candidate.status == .blocked || candidate.finalReviewClean == false {
+            return "\(selection) Final review is verified but blocked or not clean."
+        }
+        if candidate.finalReviewClean == true {
+            return "\(selection) Final review is verified clean."
+        }
+        return "\(selection) Final review verification is present, but the clean verdict is missing."
     }
 }
