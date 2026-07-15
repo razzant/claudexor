@@ -6,7 +6,7 @@ import type {
   RawGitPatchEnvelope,
   RawPatchRefusalCode,
 } from "@claudexor/schema";
-import { sha256 } from "@claudexor/util";
+import { sensitiveResourcePolicy, sha256 } from "@claudexor/util";
 import { applyPatchProtected, materializePatchTree, revParse } from "./git.js";
 
 export class RawPatchRefusalError extends Error {
@@ -32,6 +32,12 @@ function validatePath(path: string): void {
   ) {
     refuse("raw_patch_path_traversal", `invalid repo-relative path ${JSON.stringify(path)}`);
   }
+}
+
+function rootAllows(path: string, root: string): boolean {
+  if (root === ".") return true;
+  validatePath(root);
+  return path === root || path.startsWith(`${root}/`);
 }
 
 export function captureRawPatchEnvelope(
@@ -80,16 +86,30 @@ export async function consumeRawPatchEnvelope(input: {
     refuse("raw_patch_binary_unsupported", "binary patch payloads are not accepted by raw API");
   }
   const actualPaths = new Set<string>();
+  const expectedPresence = new Map<string, "present" | "absent">();
   for (const file of parsed.files) {
-    for (const path of [file.oldPath, file.newPath]) {
-      if (!path) continue;
-      validatePath(path);
-      actualPaths.add(path);
+    if (file.oldPath) {
+      validatePath(file.oldPath);
+      actualPaths.add(file.oldPath);
+      expectedPresence.set(file.oldPath, "present");
+    }
+    if (file.newPath) {
+      validatePath(file.newPath);
+      actualPaths.add(file.newPath);
+      const expected = file.oldPath === file.newPath ? "present" : "absent";
+      const prior = expectedPresence.get(file.newPath);
+      if (prior && prior !== expected) {
+        refuse(
+          "raw_patch_missing_evidence",
+          `conflicting base-tree operations for ${file.newPath}`,
+        );
+      }
+      expectedPresence.set(file.newPath, expected);
     }
   }
 
   const editable = new Map(context.readable_files.map((file) => [file.path, file]));
-  const declared = new Map<string, string>();
+  const declared = new Map<string, string | null>();
   for (const item of envelope.touched_paths) {
     validatePath(item.path);
     if (declared.has(item.path)) {
@@ -98,15 +118,28 @@ export async function consumeRawPatchEnvelope(input: {
     declared.set(item.path, item.expected_blob_oid);
   }
   for (const path of actualPaths) {
-    if (!context.editable_paths.includes(path)) {
+    if (sensitiveResourcePolicy.classifyPath(path).sensitive) {
       refuse("raw_patch_outside_scope", `${path} is outside the packet's exact editable scope`);
     }
+    const presence = expectedPresence.get(path);
     const file = editable.get(path);
     const expected = declared.get(path);
-    if (!file || !expected) {
+    if (expected === undefined || !presence) {
       refuse("raw_patch_missing_evidence", `missing preimage evidence for ${path}`);
     }
-    if (file.blob_oid !== expected) {
+    if (presence === "present") {
+      if (!context.editable_paths.includes(path) || !file) {
+        refuse("raw_patch_outside_scope", `${path} is outside the packet's exact editable scope`);
+      }
+      if (file.blob_oid !== expected) {
+        refuse("raw_patch_stale_preimage", `preimage oid for ${path} does not match the packet`);
+      }
+      continue;
+    }
+    if (!context.creatable_roots.some((root) => rootAllows(path, root))) {
+      refuse("raw_patch_outside_scope", `${path} is outside the packet's exact create scope`);
+    }
+    if (file || expected !== null) {
       refuse("raw_patch_stale_preimage", `preimage oid for ${path} does not match the packet`);
     }
   }

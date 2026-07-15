@@ -14,7 +14,11 @@ import * as runStart from "./run-start.js";
 
 type RetryServices = Pick<
   NonNullable<DaemonControlApiOptions["services"]>,
-  "createThreadTurn" | "setTurnEnqueueError" | "threadDetail" | "validateResources"
+  | "createThreadTurn"
+  | "setTurnEnqueueError"
+  | "threadDetail"
+  | "validateResources"
+  | "preflightRunRequirements"
 >;
 
 export interface RunRetryRouteContext {
@@ -71,6 +75,7 @@ async function exactRetry(
       retryOf: source.runId ?? source.id,
     });
     await ctx.services?.validateResources?.(params.attachments ?? []);
+    await ctx.services?.preflightRunRequirements?.(params);
   } catch (error) {
     return ctx.requestError(res, error);
   }

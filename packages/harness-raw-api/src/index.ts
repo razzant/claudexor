@@ -16,10 +16,11 @@ import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
   abortSignalFromSpec,
+  parseUnifiedDiff,
   readVerifiedAttachmentBytes,
 } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets, sha256 } from "@claudexor/util";
 import { parseChatCompletion, parseModelsList } from "./parse.js";
 
 /** A stalled remote endpoint must not hang a run forever. */
@@ -48,9 +49,9 @@ function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, 
     prompt = [
       prompt,
       "",
-      "Implement only by returning one JSON object matching RawGitPatchEnvelope.",
-      "The patch must be a complete textual git unified diff, touch only editable_paths, and bind every touched path to its supplied blob_oid.",
-      "Do not use Markdown fences or add prose. Binary patches and new paths are unsupported.",
+      'Implement only by returning one JSON object: {"patch":"<complete textual git unified diff>"}.',
+      "Touch existing files only from editable_paths. New paths are allowed only below creatable_roots.",
+      "Do not calculate hashes or preimage evidence; the trusted local adapter derives them. Do not use Markdown fences or add prose. Binary patches are unsupported.",
       "RAW_CONTEXT_PACKET:",
       JSON.stringify(spec.raw_context_packet),
     ].join("\n");
@@ -73,6 +74,40 @@ function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, 
     }
   }
   return parts.length > 1 ? parts : prompt;
+}
+
+function buildPatchEnvelope(
+  text: string,
+  context: NonNullable<HarnessRunSpec["raw_context_packet"]>,
+): RawGitPatchEnvelope {
+  const proposal = JSON.parse(text) as unknown;
+  if (
+    !proposal ||
+    typeof proposal !== "object" ||
+    typeof (proposal as Record<string, unknown>)["patch"] !== "string"
+  ) {
+    throw new Error("patch proposal must contain one string patch field");
+  }
+  const patch = (proposal as { patch: string }).patch;
+  const parsed = parseUnifiedDiff(patch);
+  if (parsed.files.length === 0) throw new Error("patch proposal has no complete file record");
+  const baseOids = new Map(context.readable_files.map((file) => [file.path, file.blob_oid]));
+  const evidence = new Map<string, string | null>();
+  for (const file of parsed.files) {
+    if (file.oldPath) evidence.set(file.oldPath, baseOids.get(file.oldPath) ?? null);
+    if (file.newPath && file.newPath !== file.oldPath) evidence.set(file.newPath, null);
+  }
+  return RawGitPatchEnvelopeSchema.parse({
+    schema_version: 1,
+    context_packet_hash: context.packet_hash,
+    base_tree_sha: context.base_tree_sha,
+    patch,
+    patch_hash: sha256(patch),
+    touched_paths: [...evidence].map(([path, expected_blob_oid]) => ({
+      path,
+      expected_blob_oid,
+    })),
+  });
 }
 
 export interface RawApiConfig {
@@ -353,14 +388,14 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           } else {
             let patchEnvelope: RawGitPatchEnvelope | null = null;
             try {
-              patchEnvelope = RawGitPatchEnvelopeSchema.parse(JSON.parse(parsed.text));
+              patchEnvelope = buildPatchEnvelope(parsed.text, spec.raw_context_packet);
             } catch {
               yield {
                 type: "error",
                 session_id: spec.session_id,
                 ts: nowIso(),
                 error:
-                  "raw-api implement response was not a complete RawGitPatchEnvelope JSON object",
+                  "raw-api implement response was not a complete Git patch proposal JSON object",
                 refusal_code: "raw_patch_truncated",
               };
             }

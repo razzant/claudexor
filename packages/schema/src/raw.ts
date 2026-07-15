@@ -25,6 +25,12 @@ export const RawContextPacket = z.object({
   base_tree_sha: z.string().min(1),
   readable_files: z.array(RawContextFile),
   editable_paths: z.array(z.string().min(1)),
+  creatable_roots: z
+    .array(z.string().min(1))
+    .default([])
+    .describe(
+      "Exact repo-relative roots where a patch may add a new path; '.' means the project root.",
+    ),
   file_manifest: z.array(ScopeAtlasEntry),
   omissions: z.array(OmissionEntry),
   evidence_refs: z.array(z.string().min(1)),
@@ -33,7 +39,11 @@ export type RawContextPacket = z.infer<typeof RawContextPacket>;
 
 export const RawPatchPathEvidence = z.object({
   path: z.string().min(1),
-  expected_blob_oid: z.string().min(1),
+  expected_blob_oid: z
+    .string()
+    .min(1)
+    .nullable()
+    .describe("Base-tree blob oid, or null only when the path is absent in the base tree."),
 });
 export type RawPatchPathEvidence = z.infer<typeof RawPatchPathEvidence>;
 

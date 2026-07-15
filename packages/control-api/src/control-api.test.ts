@@ -2025,17 +2025,63 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("refuses unsatisfied lane requirements before creating a daemon run", async () => {
+    const { daemon } = fakeDaemon();
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-pre-enqueue-requirements-"));
+    let enqueued = 0;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown) {
+        enqueued += 1;
+        return daemon.enqueue(params);
+      },
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const response = await apiFetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            prompt: "use attachment",
+            mode: "agent",
+            scope: { kind: "project", root: repo },
+            harnesses: ["cursor"],
+            attachments: [{ resourceId: "res-note" }],
+          }),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.text()).toContain("mandatory attachment");
+        expect(enqueued).toBe(0);
+      },
+      undefined,
+      {
+        preflightRunRequirements: async () => {
+          throw Object.assign(new Error("cursor cannot receive every mandatory attachment"), {
+            status: 400,
+            code: "attachment_pool_unsupported",
+          });
+        },
+      },
+    );
+  });
+
   it("streams upload bytes, exposes progress, supports finalize and cancel", async () => {
     const { daemon } = fakeDaemon();
     let bytes = Buffer.alloc(0);
     let cancelled = false;
+    let createKey: string | undefined;
+    let finalizeKey: string | undefined;
     const services: DaemonControlApiOptions["services"] = {
-      createUpload: async () => ({
-        uploadId: "upl-1",
-        state: "open",
-        receivedBytes: 0,
-        expectedBytes: 5,
-      }),
+      createUpload: async (_input, key) => {
+        createKey = key;
+        return {
+          uploadId: "upl-1",
+          state: "open",
+          receivedBytes: 0,
+          expectedBytes: 5,
+        };
+      },
       writeUpload: async (_id, chunks) => {
         for await (const chunk of chunks) bytes = Buffer.concat([bytes, Buffer.from(chunk)]);
         return { uploadId: "upl-1", state: "uploaded", receivedBytes: 5, expectedBytes: 5 };
@@ -2046,16 +2092,19 @@ describe("DaemonControlApiServer", () => {
         receivedBytes: bytes.length,
         expectedBytes: 5,
       }),
-      finalizeUpload: async () => ({
-        resourceId: "res-1",
-        kind: "file",
-        mime: "text/plain",
-        name: "note.txt",
-        sha256: `sha256:${"1".repeat(64)}`,
-        sizeBytes: 5,
-        createdAt: new Date().toISOString(),
-        deduplicated: false,
-      }),
+      finalizeUpload: async (_id, _digest, key) => {
+        finalizeKey = key;
+        return {
+          resourceId: "res-1",
+          kind: "file",
+          mime: "text/plain",
+          name: "note.txt",
+          sha256: `sha256:${"1".repeat(64)}`,
+          sizeBytes: 5,
+          createdAt: new Date().toISOString(),
+          deduplicated: false,
+        };
+      },
       cancelUpload: async () => {
         cancelled = true;
         return { uploadId: "upl-1", state: "cancelled", receivedBytes: 5, expectedBytes: 5 };
@@ -2068,7 +2117,7 @@ describe("DaemonControlApiServer", () => {
           (
             await apiFetch(`${base}/uploads`, {
               method: "POST",
-              headers: { authorization: `Bearer ${token}` },
+              headers: { authorization: `Bearer ${token}`, "idempotency-key": "create-upload" },
               body: JSON.stringify({
                 kind: "file",
                 mime: "text/plain",
@@ -2078,6 +2127,7 @@ describe("DaemonControlApiServer", () => {
             })
           ).status,
         ).toBe(201);
+        expect(createKey).toBe("create-upload");
         expect(
           (
             await apiFetch(`${base}/uploads/upl-1/bytes`, {
@@ -2102,11 +2152,15 @@ describe("DaemonControlApiServer", () => {
           (
             await apiFetch(`${base}/uploads/upl-1/finalize`, {
               method: "POST",
-              headers: { authorization: `Bearer ${token}` },
+              headers: {
+                authorization: `Bearer ${token}`,
+                "idempotency-key": "finalize-upload",
+              },
               body: "{}",
             })
           ).status,
         ).toBe(201);
+        expect(finalizeKey).toBe("finalize-upload");
         expect(
           (
             await apiFetch(`${base}/uploads/upl-1`, {

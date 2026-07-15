@@ -21,6 +21,7 @@ export interface ThreadTurnRouteCtx {
   readRunArtifactText(runId: string, relPath: string): Promise<string | null>;
   /** The server's single run-start normalizer (scope/prompt/policy validation). */
   normalizeStart(parsed: ControlRunStartRequest): ControlRunStartRequest;
+  preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
   /** True for terminal job states (the server's TERMINAL_STATES set). */
   isTerminalState(state: string): boolean;
   daemon: DaemonFacadeClient;
@@ -264,6 +265,7 @@ export function handleThreadTurnCreate(
             : {}),
         }),
       );
+      await ctx.preflightRunRequirements?.(params);
       // Single-writer: create the turn (run_id=null) BEFORE enqueue and pass
       // its id in the params; the daemon runner binds the started run to it.
       // This means a queued-but-not-yet-started turn is still recorded, so we

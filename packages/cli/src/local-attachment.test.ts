@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { resolveLocalAttachment } from "./local-attachment.js";
+import { openLocalAttachment, resolveLocalAttachment } from "./local-attachment.js";
 
 describe("resolveLocalAttachment", () => {
   it("accepts a regular text file", () => {
@@ -26,5 +26,16 @@ describe("resolveLocalAttachment", () => {
     mkdirSync(dir);
     expect(() => resolveLocalAttachment(link, false)).toThrow(/regular non-symlink/);
     expect(() => resolveLocalAttachment(dir, false)).toThrow(/regular non-symlink/);
+  });
+
+  it("refuses a same-sized pathname replacement after selection", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-local-attachment-swap-"));
+    const path = join(root, "note.txt");
+    const moved = join(root, "original.txt");
+    writeFileSync(path, "original");
+    const selected = resolveLocalAttachment(path, false);
+    renameSync(path, moved);
+    writeFileSync(path, "replaced");
+    expect(() => openLocalAttachment(selected)).toThrow(/changed before upload/);
   });
 });

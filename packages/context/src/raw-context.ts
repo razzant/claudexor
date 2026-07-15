@@ -102,6 +102,7 @@ export async function buildRawContextPacket(
     base_tree_sha: treeSha,
     readable_files: readableFiles,
     editable_paths: readableFiles.map((file) => file.path),
+    creatable_roots: ["."],
     file_manifest: atlas.atlas,
     omissions,
     evidence_refs: readableFiles.map((file) => `git:${treeSha}:${file.path}:${file.blob_oid}`),

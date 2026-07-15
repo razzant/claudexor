@@ -34,8 +34,16 @@
                 "minLength": 1
               },
               "expected_blob_oid": {
-                "type": "string",
-                "minLength": 1
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Base-tree blob oid, or null only when the path is absent in the base tree."
               }
             },
             "required": [

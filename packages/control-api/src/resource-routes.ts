@@ -2,11 +2,15 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ControlUploadFinalizeRequest } from "@claudexor/schema";
 
 export interface ResourceRouteServices {
-  createUpload(input: unknown): Promise<unknown>;
+  createUpload(input: unknown, idempotencyKey: string): Promise<unknown>;
   writeUpload(uploadId: string, chunks: AsyncIterable<Uint8Array>): Promise<unknown>;
   uploadStatus(uploadId: string): Promise<unknown>;
   cancelUpload(uploadId: string): Promise<unknown>;
-  finalizeUpload(uploadId: string, expectedSha256?: string): Promise<unknown>;
+  finalizeUpload(
+    uploadId: string,
+    expectedSha256: string | undefined,
+    idempotencyKey: string,
+  ): Promise<unknown>;
   validateResources(refs: import("@claudexor/schema").ResourceAttachmentRef[]): Promise<void>;
 }
 
@@ -28,7 +32,11 @@ export async function handleResourceRoute(
   if (method === "POST" && path === "/uploads") {
     if (!services?.createUpload) return false;
     try {
-      ctx.json(res, 201, await services.createUpload(await ctx.readBody(req)));
+      ctx.json(
+        res,
+        201,
+        await services.createUpload(await ctx.readBody(req), requiredIdempotencyKey(req)),
+      );
     } catch (error) {
       ctx.requestError(res, error);
     }
@@ -46,7 +54,11 @@ export async function handleResourceRoute(
     if (method === "POST" && uploadFinalizeMatch && services?.finalizeUpload) {
       const uploadId = decodeURIComponent(uploadFinalizeMatch[1] as string);
       const body = ControlUploadFinalizeRequest.parse(await ctx.readBody(req));
-      ctx.json(res, 201, await services.finalizeUpload(uploadId, body.expectedSha256));
+      ctx.json(
+        res,
+        201,
+        await services.finalizeUpload(uploadId, body.expectedSha256, requiredIdempotencyKey(req)),
+      );
       return true;
     }
     if (method === "GET" && uploadMatch && services?.uploadStatus) {
@@ -64,4 +76,16 @@ export async function handleResourceRoute(
     return true;
   }
   return false;
+}
+
+function requiredIdempotencyKey(req: IncomingMessage): string {
+  const raw = req.headers["idempotency-key"];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value || value.length > 256) {
+    throw Object.assign(new Error("Idempotency-Key is required for this create operation"), {
+      status: 400,
+      code: value ? "invalid_idempotency_key" : "idempotency_key_required",
+    });
+  }
+  return value;
 }

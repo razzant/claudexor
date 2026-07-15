@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -39,6 +39,7 @@ function fixture() {
       },
     ],
     editable_paths: ["a.txt"],
+    creatable_roots: ["."],
     file_manifest: [{ path: "a.txt", disposition: "full", bytes: 4, hash: sha256("old\n") }],
     omissions: [],
     evidence_refs: [`git:${baseTreeSha}:a.txt:${blobOid}`],
@@ -91,6 +92,85 @@ describe("raw patch envelope consumer", () => {
     expect(result.materializedTreeSha).toMatch(/^[0-9a-f]{40}$/);
     expect(readFileSync(join(input.worktreePath, "a.txt"), "utf8")).toBe("new\n");
     expect(readFileSync(join(input.repo, "a.txt"), "utf8")).toBe("old\n");
+  });
+
+  it("binds create, delete, and rename operations to absent/present base evidence", async () => {
+    const created = fixture();
+    const createPatch = [
+      "diff --git a/new.txt b/new.txt",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/new.txt",
+      "@@ -0,0 +1 @@",
+      "+new",
+      "",
+    ].join("\n");
+    created.envelope = RawGitPatchEnvelope.parse({
+      ...created.envelope,
+      patch: createPatch,
+      patch_hash: sha256(createPatch),
+      touched_paths: [{ path: "new.txt", expected_blob_oid: null }],
+    });
+    await consumeRawPatchEnvelope({
+      repoRoot: created.repo,
+      worktreePath: created.worktreePath,
+      baseCommitSha: created.baseCommitSha,
+      context: created.context,
+      envelope: created.envelope,
+    });
+    expect(readFileSync(join(created.worktreePath, "new.txt"), "utf8")).toBe("new\n");
+
+    const deleted = fixture();
+    const deletePatch = [
+      "diff --git a/a.txt b/a.txt",
+      "deleted file mode 100644",
+      "--- a/a.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-old",
+      "",
+    ].join("\n");
+    deleted.envelope = RawGitPatchEnvelope.parse({
+      ...deleted.envelope,
+      patch: deletePatch,
+      patch_hash: sha256(deletePatch),
+      touched_paths: [{ path: "a.txt", expected_blob_oid: deleted.blobOid }],
+    });
+    await consumeRawPatchEnvelope({
+      repoRoot: deleted.repo,
+      worktreePath: deleted.worktreePath,
+      baseCommitSha: deleted.baseCommitSha,
+      context: deleted.context,
+      envelope: deleted.envelope,
+    });
+    expect(existsSync(join(deleted.worktreePath, "a.txt"))).toBe(false);
+
+    const renamed = fixture();
+    const renamePatch = [
+      "diff --git a/a.txt b/b.txt",
+      "similarity index 100%",
+      "rename from a.txt",
+      "rename to b.txt",
+      "",
+    ].join("\n");
+    renamed.envelope = RawGitPatchEnvelope.parse({
+      ...renamed.envelope,
+      patch: renamePatch,
+      patch_hash: sha256(renamePatch),
+      touched_paths: [
+        { path: "a.txt", expected_blob_oid: renamed.blobOid },
+        { path: "b.txt", expected_blob_oid: null },
+      ],
+    });
+    await consumeRawPatchEnvelope({
+      repoRoot: renamed.repo,
+      worktreePath: renamed.worktreePath,
+      baseCommitSha: renamed.baseCommitSha,
+      context: renamed.context,
+      envelope: renamed.envelope,
+    });
+    expect(existsSync(join(renamed.worktreePath, "a.txt"))).toBe(false);
+    expect(readFileSync(join(renamed.worktreePath, "b.txt"), "utf8")).toBe("old\n");
   });
 
   it("refuses stale, missing, outside-scope, traversal, binary, truncated, and live-tree patches", async () => {

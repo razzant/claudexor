@@ -124,6 +124,7 @@ export interface RunCreateRouteContext {
   ) => void;
   chainThreadMutation?: (threadId: string, work: () => Promise<void>) => Promise<void>;
   validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
+  preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
 }
 
 /** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle. */
@@ -140,6 +141,7 @@ export async function handleRunCreate(
     assertNoInlineSecretValues(body);
     params = normalizeRunStart(ControlRunStartRequest.parse(body));
     await ctx.validateResources?.(params.attachments ?? []);
+    await ctx.preflightRunRequirements?.(params);
   } catch (error) {
     return ctx.requestError(res, error);
   }

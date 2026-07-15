@@ -147,7 +147,7 @@ describe("raw-api immutable attachments", () => {
         ),
     );
     vi.stubGlobal("fetch", fetchMock);
-    await collect(
+    const events = await collect(
       createRawApiAdapter().run(
         HarnessRunSpec.parse({
           session_id: "attachment-run",
@@ -169,6 +169,7 @@ describe("raw-api immutable attachments", () => {
         }),
       ),
     );
+    expect(events.filter((event) => event.type === "error")).toEqual([]);
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(String(init.body)).toContain("generic sentinel");
   });
@@ -303,14 +304,7 @@ describe("raw-api typed patch producer", () => {
               choices: [
                 {
                   message: {
-                    content: JSON.stringify({
-                      schema_version: 1,
-                      context_packet_hash: "sha256:packet",
-                      base_tree_sha: "tree",
-                      patch,
-                      patch_hash: `sha256:${"a".repeat(64)}`,
-                      touched_paths: [{ path: "a.txt", expected_blob_oid: "blob" }],
-                    }),
+                    content: JSON.stringify({ patch }),
                   },
                 },
               ],
@@ -358,6 +352,12 @@ describe("raw-api typed patch producer", () => {
     expect(events.find((event) => event.type === "patch_produced")?.patch_envelope?.patch).toBe(
       patch,
     );
+    expect(events.find((event) => event.type === "patch_produced")?.patch_envelope).toMatchObject({
+      context_packet_hash: "sha256:packet",
+      base_tree_sha: "tree",
+      patch_hash: `sha256:${createHash("sha256").update(patch).digest("hex")}`,
+      touched_paths: [{ path: "a.txt", expected_blob_oid: "blob" }],
+    });
     expect(events.some((event) => event.type === "message")).toBe(false);
   });
 

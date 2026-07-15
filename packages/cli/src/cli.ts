@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { createReadStream, existsSync, lstatSync, readdirSync } from "node:fs";
-import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
+import { Readable, Transform } from "node:stream";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
@@ -55,7 +56,11 @@ import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
 import { retryCommand, runAgainCommand } from "./retry-command.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
-import { resolveLocalAttachment, type LocalAttachment } from "./local-attachment.js";
+import {
+  openLocalAttachment,
+  resolveLocalAttachment,
+  type LocalAttachment,
+} from "./local-attachment.js";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
@@ -227,14 +232,25 @@ async function uploadLocalAttachment(
     }),
   })) as { uploadId: string };
   try {
-    const source = createReadStream(attachment.path);
+    const source = createReadStream(attachment.path, {
+      fd: openLocalAttachment(attachment),
+      autoClose: true,
+    });
+    const hash = createHash("sha256");
+    const hashingStream = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    });
+    source.pipe(hashingStream);
     const response = await controlApiFetch(
       addr,
       `/uploads/${encodeURIComponent(created.uploadId)}/bytes`,
       {
         method: "PUT",
         headers: { "content-type": "application/octet-stream" },
-        body: Readable.toWeb(source) as unknown as RequestInit["body"],
+        body: Readable.toWeb(hashingStream) as unknown as RequestInit["body"],
         duplex: "half",
       } as RequestInit & { duplex: "half" },
     );
@@ -242,10 +258,15 @@ async function uploadLocalAttachment(
       const detail = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       throw new Error(String(detail["message"] ?? detail["error"] ?? `HTTP ${response.status}`));
     }
+    const expectedSha256 = `sha256:${hash.digest("hex")}`;
     const resource = (await controlJson(
       addr,
       `/uploads/${encodeURIComponent(created.uploadId)}/finalize`,
-      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedSha256 }),
+      },
     )) as { resourceId: string };
     return { resourceId: resource.resourceId };
   } catch (error) {

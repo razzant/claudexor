@@ -82,6 +82,7 @@ import {
   ControlSetupJobListFilter,
   ControlSetupJobListResponse,
   ControlRunStartInfo,
+  type ControlRunStartRequest,
   ControlQueuedRunInfo,
   ControlRunControlRequest,
   ControlRunControlResponse,
@@ -197,6 +198,7 @@ export interface DaemonControlApiOptions {
         harnessIds?: string[];
       }) => Promise<unknown>;
       agentCapabilities?: () => Promise<unknown>;
+      preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
       harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
       authReadiness?: (input: {
         harnessId: string;
@@ -703,6 +705,7 @@ export class DaemonControlApiServer {
           chainThreadMutation: (threadId, work) =>
             chainThreadMutation(this.threadTurnRouteCtx(), threadId, work),
           validateResources: this.opts.services?.validateResources,
+          preflightRunRequirements: this.opts.services?.preflightRunRequirements,
         },
         req,
         res,
@@ -1842,6 +1845,7 @@ export class DaemonControlApiServer {
       waitForRunStart: (jobId) => this.waitForRunStart(jobId),
       readRunArtifactText: (runId, rel) => this.readRunArtifactText(runId, rel),
       normalizeStart: runStart.normalizeRunStart,
+      preflightRunRequirements: services.preflightRunRequirements,
       isTerminalState: (state) => TERMINAL_STATES.has(state),
       daemon: this.opts.daemon,
       threadDetail: services.threadDetail as NonNullable<typeof services.threadDetail>,
