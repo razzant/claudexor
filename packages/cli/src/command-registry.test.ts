@@ -81,7 +81,14 @@ describe("command registry — the one owner of the CLI surface", () => {
       'claudexor agent "..."',
       'claudexor best-of "..." --n 4',
     ]);
-    expect(recoveryVerbs()).toEqual(["inspect", "follow", "apply", "decision"]);
+    expect(recoveryVerbs()).toEqual([
+      "inspect",
+      "follow",
+      "retry",
+      "run-again",
+      "apply",
+      "decision",
+    ]);
   });
 
   it("advertises the complete frozen review packet contract and rejects partial or mixed input", async () => {
