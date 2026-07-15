@@ -27,6 +27,7 @@ export function mcpSurfaceRunner() {
     if (p?.mode === "__runs_list" || p?.mode === "__run_inspect" || p?.mode === "__apply_check") {
       return recoveryQuery(p.mode, typeof p?.runId === "string" ? p.runId : "");
     }
+    if (p?.mode === "__journal_recovery") return journalRecoveryQuery(p);
     const mode = ModeKind.parse(p?.mode ?? "agent");
     const { client, addr } = await ensureDaemon();
     const repoRoot =
@@ -141,8 +142,8 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
     const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok)
       throw new Error(
-        typeof body["error"] === "string"
-          ? (body["error"] as string)
+        typeof body["message"] === "string"
+          ? (body["message"] as string)
           : `HTTP ${res.status} for ${path}`,
       );
     return body;
@@ -188,7 +189,7 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     return {
-      summary: `apply check refused: ${typeof body["error"] === "string" ? body["error"] : `HTTP ${res.status}`}`,
+      summary: `apply check refused: ${typeof body["message"] === "string" ? body["message"] : `HTTP ${res.status}`}`,
       runId,
       eligible: false,
     };
@@ -213,6 +214,44 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
     eligible: true,
     check: body,
   };
+}
+
+async function journalRecoveryQuery(input: Record<string, unknown>): Promise<unknown> {
+  const conn = await connectDaemonIfRunning();
+  if (!conn) throw new Error("the Claudexor daemon is not running");
+  const action = String(input["action"] ?? "inspect");
+  const partition = String(input["partition"] ?? "");
+  if (!partition) throw new Error("partition is required");
+  const base = `/recovery/partitions/${encodeURIComponent(partition)}`;
+  const suffix =
+    action === "inspect"
+      ? ""
+      : action === "validate" || action === "export" || action === "quarantine"
+        ? `/${action}`
+        : null;
+  if (suffix === null) throw new Error(`unknown journal recovery action '${action}'`);
+  const body =
+    action === "quarantine"
+      ? {
+          expectedFingerprint: String(input["expectedFingerprint"] ?? ""),
+          confirmation: String(input["confirmation"] ?? ""),
+        }
+      : undefined;
+  const response = await controlApiFetch(conn.addr, `${base}${suffix}`, {
+    method: action === "inspect" ? "GET" : "POST",
+    ...(body
+      ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+      : {}),
+  });
+  const result = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    throw new Error(
+      typeof result["message"] === "string"
+        ? (result["message"] as string)
+        : `journal recovery failed (HTTP ${response.status})`,
+    );
+  }
+  return result;
 }
 
 /**

@@ -37,7 +37,7 @@ live surface disagree, trust the live surface.
   runs in suggest autonomy only: it PRODUCES a typed plan and never executes
   plan steps itself.
 - **Control API** is the daemon's loopback HTTP surface (bearer token from
-  `~/.claudexor/daemon/token`, address from `~/.claudexor/daemon/control-api.json`).
+  `~/.claudexor/v2/daemon/token`, address from `~/.claudexor/v2/daemon/control-api.json`).
   The endpoint map with request/response schema names lives at
   `docs/reference/endpoints.json`; field semantics are in the generated JSON
   Schemas under `packages/schema/generated/`.
@@ -48,7 +48,7 @@ live surface disagree, trust the live surface.
   tree. `orchestrate` in the default suggest autonomy only plans.
 - `agent`, `best-of`, `create` produce tree changes — by default in an
   ISOLATED envelope under the external per-project runtime namespace
-  `~/.claudexor/projects/<project-sha256>/workspaces/`, never the live tree.
+  `~/.claudexor/v2/projects/<project-sha256>/workspaces/`, never the live tree.
   The live tree changes only through `apply` (or an in-place turn you asked
   for explicitly).
 - A secret-like value inside a prompt is hard-blocked at every ingress with
@@ -92,8 +92,8 @@ complexity ratchet, canary stories, and the Bible invariants
 The full env reference is in `docs/INTEGRATIONS.md` (§ Environment
 reference). The ones agents most often need:
 
-- `CLAUDEXOR_CONFIG_DIR` — relocate `~/.claudexor` (tests/CI hermeticity).
-- `CLAUDEXOR_DISABLE_STORED_SECRETS=1` — ignore Keychain/file-stored keys
+- `CLAUDEXOR_CONFIG_DIR` — relocate the v2 root (default `~/.claudexor/v2`; tests/CI hermeticity).
+- `CLAUDEXOR_DISABLE_STORED_SECRETS=1` — ignore v2 file-stored keys
   (hermetic runs; native CLI sessions still work).
 - `CLAUDEXOR_<HARNESS>_BIN` (`CODEX`/`CLAUDE`/`CURSOR`/`OPENCODE`) — explicit
   vendor CLI binaries when PATH discovery is not enough.

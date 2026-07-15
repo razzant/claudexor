@@ -195,7 +195,7 @@ process below. Never paper over the conflict.
   tests.
 - **INV-051** Run artifacts live in two honest planes that are never
   conflated: the run tree under the external per-project runtime namespace
-  (`~/.claudexor/projects/<project-sha256>/runs/<id>/`) is Claudexor's
+  (`~/.claudexor/v2/projects/<project-sha256>/runs/<id>/`) is Claudexor's
   internal orchestration evidence, while the project's produced outputs (the
   repo `artifacts/` dir served via `/runs/:id/produced`) are user
   deliverables. Surfaces label which plane they show. verify: control-api
@@ -262,7 +262,7 @@ process below. Never paper over the conflict.
   `[INV-071:project-context-explicit]`; app no-project tests.
 - **INV-072** Ordinary project runs (and Best-of candidates) execute in
   isolated envelopes under the external per-project runtime namespace
-  (`~/.claudexor/projects/<project-sha256>/workspaces/.../tree`), with the
+  (`~/.claudexor/v2/projects/<project-sha256>/workspaces/.../tree`), with the
   harness cwd at the envelope worktree. The repository's `.claudexor/`
   remains user-owned versioned config. verify: workspace manager tests.
 - **INV-073** Chat thread WRITE turns run IN-PLACE in the thread's

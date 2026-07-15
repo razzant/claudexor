@@ -126,7 +126,7 @@ struct TrustSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionLabel("Trust — full project access", systemImage: "shield.lefthalf.filled")
-            Text("Projects allowed to run without a sandbox (access: full). Stored user-level in ~/.claudexor/trust — never inside the repo, so versioned config can't self-grant it.")
+            Text("Projects allowed to run without a sandbox (access: full). Stored user-level in ~/.claudexor/v2/trust — never inside the repo, so versioned config can't self-grant it.")
                 .font(.caption).foregroundStyle(.secondary)
             if let status = model.trustStatus {
                 Label(status, systemImage: "exclamationmark.triangle.fill")

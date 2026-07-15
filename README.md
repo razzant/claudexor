@@ -210,8 +210,8 @@ unauthenticated, degraded, or intent-incompatible harnesses are shown with the
 reason and are gated out of launch.
 
 Claudexor mirrors native harness auth where that route is readiness-proven; API
-keys are fallback secret refs and live in the OS Keychain where available,
-otherwise a `0600` file. `auto` is native-first for Codex, Claude, and Cursor in
+keys are fallback secret refs and live only in the v2-owned `0600` file store.
+`auto` is native-first for Codex, Claude, and Cursor in
 both host and scoped/envelope runs; it reaches an API-key fallback only when the
 native route is not ready (and, for Claude, no verified setup-token source is
 ready). A typed auth-route disclosure makes that paid-route switch visible. Run
@@ -261,9 +261,8 @@ claudexor settings show
 claudexor settings set default_portfolio subscription-first
 ```
 
-Secrets default to the OS Keychain (or a `0600` file).
-`CLAUDEXOR_SECRETS_BACKEND=file` selects the file store for sandboxed tests so
-they never touch the real login Keychain; an invalid value fails loudly. The
+Managed secrets use the v2-owned `0600` file store. A disposable
+`CLAUDEXOR_CONFIG_DIR` therefore contains every managed-secret operation. The
 public CLI cannot select a storage backend.
 
 `auth status` prints both typed readiness axes. Manifest auth sources say only
@@ -348,11 +347,11 @@ claudexor daemon stop
 ## Artifact Layout
 
 Every project run creates files under the external per-project namespace
-`~/.claudexor/projects/<project-sha256>/runs/<run_id>/`; the repository's
+`~/.claudexor/v2/projects/<project-sha256>/runs/<run_id>/`; the repository's
 `.claudexor/` directory remains user-owned versioned config. App-launched Ask
 without a project uses an empty synthetic cwd at
 `~/.cache/claudexor/no-project` and writes artifacts to
-`~/.claudexor/runs/<run_id>/`:
+`~/.claudexor/v2/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -385,7 +384,7 @@ directly from these artifacts/events, so successful answers and failed runs are
 inspectable instead of disappearing into logs.
 
 Project runs execute in isolated envelopes under the same external project
-namespace at `~/.claudexor/projects/<project-sha256>/workspaces/.../tree`;
+namespace at `~/.claudexor/v2/projects/<project-sha256>/workspaces/.../tree`;
 harness `cwd` is that envelope worktree.
 Proven work product means a git diff in the envelope, a declared run artifact,
 or an explicitly verified host side-effect. Absolute `/tmp/...` writes are host
@@ -534,7 +533,7 @@ What 1.0 means here, per surface:
   `docs/reference/endpoints.json` + `packages/schema/generated/`
   (loopback + bearer token, add-only fields); the MCP tool set with their
   input/output schemas; external run artifact layout under
-  `~/.claudexor/projects/<project-sha256>/runs/`
+  `~/.claudexor/v2/projects/<project-sha256>/runs/`
   (`final/`, `arbitration/`, `events.jsonl`).
 - **Experimental** (may change in minors, disclosed in the CHANGELOG):
   the ACP surface, the `release check-name` verb, host-plugin file layout
@@ -573,7 +572,7 @@ Claudexor collects **no telemetry**: no analytics, no crash reporting, no
 auto-update pings. The only outbound network traffic is what you configure —
 the vendor harness CLIs and model APIs your runs use (plus the user-invoked
 `claudexor release check-name`, which queries public package registries when
-YOU run it). The `telemetry/` names you may see under `~/.claudexor/` and in
+YOU run it). The `telemetry/` names you may see under `~/.claudexor/v2/` and in
 run artifacts are **local files only** (per-harness cost/latency averages and
 per-run evidence); nothing is transmitted.
 
@@ -581,17 +580,15 @@ per-run evidence); nothing is transmitted.
 
 Claudexor owns these locations:
 
-- `~/.claudexor/` — global config (`config.yaml`), per-repo trust grants
-  (`trust/`), the file-backend secret store (`secrets.json`, when the OS
-  keychain is unavailable), daemon state (`daemon/`: token, socket, log, job
-  and thread registries), local harness metrics (`telemetry/`), host-plugin
+- `~/.claudexor/v2/` — v2 global config (`config.yaml`), per-repo trust grants
+  (`trust/`), the file-only secret store (`secrets.json`), daemon global journal
+  and process state (`daemon/`: token, socket, log), local harness metrics (`telemetry/`), host-plugin
   ownership state (`plugins/`), and user-level runs for no-project asks.
-- macOS Keychain items under the service name `claudexor` (secret values
-  stored via `claudexor secrets set`) — delete them in Keychain Access if you
-  remove the file tree.
+- Existing v1 files directly under `~/.claudexor/` are legacy user bytes. v2
+  neither imports nor mutates them.
 - `~/Library/LaunchAgents/com.claudexor.claudexord.plist` — only if you opted
   into the launchd autostart.
-- `~/.claudexor/projects/<project-sha256>/` — daemon-owned project journals,
+- `~/.claudexor/v2/projects/<project-sha256>/` — daemon-owned project journals,
   run artifacts, and isolated-thread worktrees. Isolated worktrees may hold
   unapplied work; apply or export it before removing this external namespace.
 - A repository's `.claudexor/` directory is user-owned versioned configuration.

@@ -463,6 +463,7 @@ describe("DaemonControlApiServer", () => {
           path: string;
           responseKind: string;
           responseSchema: string | null;
+          errorSchema: string;
         }[];
       };
       expect(body.protocolMajor).toBe(2);
@@ -475,6 +476,9 @@ describe("DaemonControlApiServer", () => {
           (operation) => operation.responseKind === "json" && operation.responseSchema === null,
         ),
       ).toEqual([]);
+      expect(body.operations.every((operation) => operation.errorSchema === "ControlProblem")).toBe(
+        true,
+      );
       expect(body.operations).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ path: "/v2/runs" }),
@@ -650,7 +654,7 @@ describe("DaemonControlApiServer", () => {
         params: { scope: { kind: "project", root: "/Users/x/proj" } },
       }),
     ).toBe("/Users/x/proj");
-    // The CRITICAL fix: a no-project run's runDir is ~/.claudexor/runs/<id>; path-
+    // The CRITICAL fix: a no-project run's runDir is ~/.claudexor/v2/runs/<id>; path-
     // slicing would yield the HOME and let /produced serve ~/artifacts. scope
     // `none` must resolve to null => no produced outputs, never the home dir.
     expect(
@@ -972,12 +976,16 @@ describe("DaemonControlApiServer", () => {
         });
         // Untyped enqueue throws are INFRA failures — 500 (matching POST /runs).
         expect(res.status).toBe(500);
-        const body = (await res.json()) as { error: string; turnId?: string; retryable?: boolean };
+        const body = (await res.json()) as {
+          message: string;
+          context: { turnId?: string };
+          retryable?: boolean;
+        };
         // The error response names the recorded turn (no silent orphan) and
         // discloses that retry has nothing to replay (no job was recorded).
-        expect(body.turnId).toBe("tn-refused");
+        expect(body.context.turnId).toBe("tn-refused");
         expect(body.retryable).toBe(false);
-        expect(body.error).toContain("daemon socket is gone");
+        expect(body.message).toContain("daemon socket is gone");
         // The projection renders the refusal so a reloading client sees it.
         const detail = (await (
           await apiFetch(`${base}/threads/th-r`, { headers: { authorization: `Bearer ${token}` } })
@@ -1069,10 +1077,13 @@ describe("DaemonControlApiServer", () => {
         // (the daemon hook persists the refusal on the turn), NOT a 202 that
         // the client would render as an accepted queued turn.
         expect(res.status).toBe(500);
-        const body = (await res.json()) as { turnId: string; state: string; error?: string };
-        expect(body.turnId).toBe("tn-t");
-        expect(body.state).toBe("failed");
-        expect(body.error).toContain("allow_full_access");
+        const body = (await res.json()) as {
+          message: string;
+          context: { turnId: string; state: string };
+        };
+        expect(body.context.turnId).toBe("tn-t");
+        expect(body.context.state).toBe("failed");
+        expect(body.message).toContain("allow_full_access");
       },
       undefined,
       services,
@@ -1140,7 +1151,7 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(res.status).toBe(409);
-        expect(((await res.json()) as { error: string }).error).toContain("send a new message");
+        expect(((await res.json()) as { message: string }).message).toContain("send a new message");
         expect(listCalls).toBe(0); // short-circuited before the registry lookup
       },
       undefined,
@@ -1213,8 +1224,12 @@ describe("DaemonControlApiServer", () => {
         expect(res.status).toBe(500);
         // The body mirrors the recorded refusal: clients keep the draft for a
         // retryable:false turn (nothing to replay).
-        const body = (await res.json()) as { error: string; turnId?: string; retryable?: boolean };
-        expect(body.turnId).toBe("tn-direct");
+        const body = (await res.json()) as {
+          message: string;
+          context: { turnId?: string };
+          retryable?: boolean;
+        };
+        expect(body.context.turnId).toBe("tn-direct");
         expect(body.retryable).toBe(false);
         const err = turns[0]?.["enqueue_error"] as { message: string; retryable: boolean } | null;
         expect(err?.message).toContain("daemon socket is gone");
@@ -1372,7 +1387,7 @@ describe("DaemonControlApiServer", () => {
         expect((await retry("tn-bound")).status).toBe(409);
         const older = await retry("tn-old-refused");
         expect(older.status).toBe(409);
-        expect(((await older.json()) as { error: string }).error).toContain("not the latest");
+        expect(((await older.json()) as { message: string }).message).toContain("not the latest");
         // First replay: refused AGAIN — the fresh refusal (message + typed
         // code) must be PERSISTED on the turn, not just returned once. The
         // typed trust throw carries no HTTP status -> infra default 500.
@@ -1407,7 +1422,7 @@ describe("DaemonControlApiServer", () => {
         });
         const pending = await retry("tn-queued");
         expect(pending.status).toBe(409);
-        expect(((await pending.json()) as { error: string }).error).toContain(
+        expect(((await pending.json()) as { message: string }).message).toContain(
           "no recorded refusal",
         );
       },
@@ -1893,9 +1908,9 @@ describe("DaemonControlApiServer", () => {
           ],
         }),
       });
-      const body = (await start.json()) as { error?: string };
+      const body = (await start.json()) as { message?: string };
       expect(start.status).toBe(400);
-      expect(body.error).toMatch(/inline attachment data/);
+      expect(body.message).toMatch(/inline attachment data/);
       expect(enqueued).toBe(0);
     });
   });
@@ -1979,9 +1994,9 @@ describe("DaemonControlApiServer", () => {
             attachments: [attachment],
           }),
         });
-        const body = (await start.json()) as { error?: string };
+        const body = (await start.json()) as { message?: string };
         expect(start.status).toBe(400);
-        expect(body.error).toMatch(/attachment/);
+        expect(body.message).toMatch(/attachment/);
       }
       expect(enqueued).toBe(0);
     });
@@ -2816,6 +2831,7 @@ describe("DaemonControlApiServer", () => {
           fieldErrors: {},
           requiredActions: ["resnapshot"],
           evidenceRefs: [],
+          context: {},
         });
       },
       undefined,
@@ -2979,6 +2995,7 @@ describe("DaemonControlApiServer", () => {
           fieldErrors: {},
           requiredActions: ["inspect_recovery", "export_recovery", "quarantine_partition"],
           evidenceRefs: ["recovery:global:abc"],
+          context: {},
         });
 
         const invalidOutput = await apiFetch(`${base}/harnesses`, { headers });
@@ -2991,6 +3008,7 @@ describe("DaemonControlApiServer", () => {
           fieldErrors: {},
           requiredActions: [],
           evidenceRefs: [],
+          context: {},
         });
       },
       undefined,
@@ -3140,6 +3158,7 @@ describe("DaemonControlApiServer", () => {
           fieldErrors: {},
           requiredActions: ["retry_auth_readiness_refresh"],
           evidenceRefs: ["doctor:claude:native_session"],
+          context: {},
         });
       },
       undefined,
@@ -3179,6 +3198,7 @@ describe("DaemonControlApiServer", () => {
           fieldErrors: {},
           requiredActions: [],
           evidenceRefs: [],
+          context: {},
         });
       },
       undefined,
@@ -3600,7 +3620,7 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(blockedRes.status).toBe(409);
-      expect(((await blockedRes.json()) as { error: string }).error).toContain(
+      expect(((await blockedRes.json()) as { message: string }).message).toContain(
         "typed operator decision",
       );
       expect(applied).toBe(0);
@@ -3686,7 +3706,7 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(res.status).toBe(409);
-      expect(((await res.json()) as { error: string }).error).toContain(
+      expect(((await res.json()) as { message: string }).message).toContain(
         "no longer in the daemon history",
       );
       expect(applied).toBe(0);
@@ -4957,7 +4977,7 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("streams the global live-only multiplex from the bus and 501s without one", async () => {
+  it("hard-errors the removed live-only /v2/events compatibility alias", async () => {
     const { daemon } = fakeDaemon();
     const listeners = new Set<(event: { run_id: string }) => void>();
     const bus = {
@@ -4975,30 +4995,8 @@ describe("DaemonControlApiServer", () => {
         const res = await apiFetch(`${base}/events`, {
           headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
         });
-        expect(res.status).toBe(200);
-        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
-        // Wait until the subscription is registered, then push one event.
-        const deadline = Date.now() + 2_000;
-        while (listeners.size === 0 && Date.now() < deadline)
-          await new Promise((r) => setTimeout(r, 5));
-        bus.publish({
-          run_id: "run-d1",
-          seq: 7,
-          type: "harness.event",
-          payload: { type: "message", title: "hi" },
-        } as never);
-        let buffer = "";
-        const decoder = new TextDecoder();
-        while (!buffer.includes("\n\n") || !buffer.includes("data:")) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          if (Date.now() > deadline) break;
-        }
-        await reader.cancel();
-        expect(buffer).toContain("id: 7");
-        expect(buffer).toContain("event: harness.event");
-        expect(buffer).toContain("run-d1");
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { code: string }).code).toBe("http_404");
       },
       undefined,
       undefined,
@@ -5009,7 +5007,7 @@ describe("DaemonControlApiServer", () => {
       const res = await apiFetch(`${base}/events`, {
         headers: { authorization: `Bearer ${token}` },
       });
-      expect(res.status).toBe(501);
+      expect(res.status).toBe(404);
     });
   });
 
@@ -5152,7 +5150,7 @@ describe("DaemonControlApiServer", () => {
         }),
       });
       expect(withTurn.status).toBe(400);
-      expect(((await withTurn.json()) as { error: string }).error).toContain(
+      expect(((await withTurn.json()) as { message: string }).message).toContain(
         "turnId is not accepted",
       );
 
@@ -5167,7 +5165,7 @@ describe("DaemonControlApiServer", () => {
         }),
       });
       expect(withPlan.status).toBe(400);
-      expect(((await withPlan.json()) as { error: string }).error).toContain(
+      expect(((await withPlan.json()) as { message: string }).message).toContain(
         "planRunId is not accepted on POST /runs",
       );
     } finally {

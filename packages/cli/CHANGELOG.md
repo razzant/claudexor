@@ -72,7 +72,7 @@ See the root CHANGELOG.md v0.15.0 entry (stabilization program release: concept 
 ### Patch Changes
 
 - Harness-agnostic CLI flow hardening: uniform mandatory-context preflight across
-  all modes, sandbox-safe secrets backend (`CLAUDEXOR_SECRETS_BACKEND`/`--backend`),
+  all modes and sandbox-safe secret storage,
   deterministic `fake-implement` fixture (offline create/apply/orchestrate coverage),
   one honest CLI machine surface (JSON failure reason on both run paths; `--json` on
   inspect/apply error+gate paths), read-only run lookups that never auto-start the

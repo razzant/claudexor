@@ -306,7 +306,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Global user config (~/.claudexor/config.yaml): portfolio, routing, budget, runtime, and per-harness settings."
+      "description": "Claudexor v2 global user config (~/.claudexor/v2/config.yaml): routing, budget, runtime, and per-harness settings."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -44,6 +44,10 @@
             }
           ]
         },
+        "errorSchema": {
+          "type": "string",
+          "const": "ControlProblem"
+        },
         "mutability": {
           "type": "string",
           "enum": [
@@ -91,6 +95,7 @@
         "path",
         "requestSchema",
         "responseSchema",
+        "errorSchema",
         "mutability",
         "idempotency",
         "applicability",

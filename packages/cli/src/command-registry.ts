@@ -1,4 +1,3 @@
-/** CLI command/flag SSOT; help, parsing, plugins, docs and parity are projections. */
 import { RETRY_COMMAND_SPECS } from "./retry-command-specs.js";
 
 export type CliFlagKind = "boolean" | "value";
@@ -6,31 +5,22 @@ export type CliFlagKind = "boolean" | "value";
 export interface CliFlagSpec {
   readonly name: string;
   readonly kind: CliFlagKind;
-  /** Placeholder shown in help for value flags, e.g. `<id[,id...]>`. */
   readonly valueHint?: string;
-  /** Options-block help line. Null = documented inline under a command's usage instead. */
   readonly help: string | null;
 }
 
 export type CliMutability = "read" | "write" | "delivery" | "ops";
 
 export interface CliCommandSpec {
-  /** Dispatch verb (`args._[0]`). */
   readonly id: string;
   readonly aliases?: readonly string[];
-  /** Arguments part of the usage line (after `claudexor <id>`). */
   readonly usageArgs?: string;
   readonly summary: string;
-  /** Indented follow-up usage lines (e.g. the trust sub-flags). */
   readonly extraUsageLines?: readonly { readonly text: string; readonly help: string }[];
-  /** Flag names (from CLI_FLAGS) this command meaningfully consumes; every
-   * command rejects flags outside this set (commandFlagScopeError). */
   readonly flags: readonly string[];
   readonly mutability: CliMutability;
   readonly stability: "stable" | "experimental";
-  /** Post-run recovery verb (inspect/follow/apply/decision). */
   readonly recovery?: boolean;
-  /** Exact CLI example line for host plugin fallback instructions. */
   readonly hostFallbackExample?: string;
 }
 
@@ -375,8 +365,17 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   {
     id: "secrets",
     usageArgs: "list|set|delete",
-    summary: "Manage stored API-key refs (Keychain/0600 file)",
+    summary: "Manage stored API-key refs (v2 0600 file store)",
     flags: ["from-env", "json"],
+    mutability: "ops",
+    stability: "stable",
+  },
+  {
+    id: "recovery",
+    usageArgs:
+      "inspect|validate|export <partition> | quarantine <partition> <fingerprint> quarantine_and_start_fresh",
+    summary: "Inspect or recover a durable journal partition",
+    flags: ["json"],
     mutability: "ops",
     stability: "stable",
   },

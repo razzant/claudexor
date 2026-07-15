@@ -76,6 +76,7 @@ describe("recovery and control problem contracts", () => {
       fieldErrors: {},
       requiredActions: [],
       evidenceRefs: [],
+      context: {},
     });
     expect(
       ControlProblem.safeParse({

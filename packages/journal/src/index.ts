@@ -210,9 +210,9 @@ export class DurableJournal {
       data: compressed.toString("base64"),
     };
     const payloadBytes = encodeJson(payload);
-    if (payloadBytes.length > MAX_PAYLOAD_BYTES) {
-      throw new Error("journal compaction snapshot exceeds the maximum frame payload");
-    }
+    // Oversized history stays readable in its existing frames; compaction is
+    // an optimization, not a corruption or recovery boundary.
+    if (payloadBytes.length > MAX_PAYLOAD_BYTES) return null;
     const epoch = randomUUID();
     const header: FrameHeader = {
       partition: this.options.partition,

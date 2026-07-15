@@ -76,7 +76,6 @@ export function makeSandbox(): Sandbox {
     ...process.env,
     HOME: home,
     CLAUDEXOR_CONFIG_DIR: configDir,
-    CLAUDEXOR_SECRETS_BACKEND: "file",
     CLAUDEXOR_DISABLE_STORED_SECRETS: "1",
     CLAUDEXOR_CODEX_BIN: codexStub,
     // Keep daemon state inside the sandbox too (config dir owns it).

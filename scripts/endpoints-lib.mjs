@@ -70,7 +70,9 @@ export function implementedEndpoints(input) {
 }
 
 /**
- * Endpoint detail map: [{method, path, mutating, requestSchema, responseSchema}].
+ * Endpoint detail map: [{method, path, mutating, requestSchema, responseSchema,
+ * errorSchema}]. Every product route has the same generated ControlProblem
+ * error envelope; only the unversioned health probe has no product error body.
  * Schema names are extracted from the handler slice between this guard and the
  * next one: `<Name>.parse(` on the body (request) and `this.service(res, "...",
  * ..., <Name>)` (response). Handlers that hand-build JSON have null schema
@@ -182,6 +184,7 @@ export function endpointDetails(input) {
           : serviceMatch
             ? serviceMatch[1]
             : null,
+        errorSchema: "ControlProblem",
       };
     });
   });
@@ -191,6 +194,7 @@ export function endpointDetails(input) {
     mutating: false,
     requestSchema: "ControlHandshakeRequest",
     responseSchema: "ControlHandshakeResponse",
+    errorSchema: "ControlProblem",
   });
   details.push({
     method: "GET",
@@ -198,6 +202,7 @@ export function endpointDetails(input) {
     mutating: false,
     requestSchema: null,
     responseSchema: "ControlOperationCatalog",
+    errorSchema: "ControlProblem",
   });
   details.push({
     method: "GET",
@@ -205,6 +210,7 @@ export function endpointDetails(input) {
     mutating: false,
     requestSchema: null,
     responseSchema: null,
+    errorSchema: null,
   });
   const seen = new Set();
   return details
@@ -232,6 +238,7 @@ export function renderEndpointsJson(details) {
           mutating: d.mutating,
           request_schema: d.requestSchema,
           response_schema: d.responseSchema,
+          error_schema: d.errorSchema,
         })),
       },
       null,

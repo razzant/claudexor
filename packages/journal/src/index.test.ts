@@ -7,6 +7,7 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,6 +45,21 @@ function overwrite(path: string, mutate: (bytes: Buffer) => void): Buffer {
 }
 
 describe("DurableJournal", () => {
+  it("keeps a healthy partition readable when a compacted snapshot cannot fit one frame", () => {
+    const journal = openJournal();
+    const internals = journal as unknown as {
+      entries: Array<{ time: string; type: string; payload: unknown }>;
+    };
+    internals.entries.push({
+      time: "2026-01-01T00:00:00.000Z",
+      type: "large.logical.history",
+      payload: { bytes: randomBytes(18 * 1024 * 1024).toString("base64") },
+    });
+    expect(journal.compact()).toBeNull();
+    expect(journal.state().status).toBe("ready");
+    journal.close();
+  });
+
   it("replays an fsynced hash chain and resumes an epoch-bound cursor at N+1", () => {
     const journal = openJournal();
     const first = journal.append("setup.job.saved", { id: "one" });

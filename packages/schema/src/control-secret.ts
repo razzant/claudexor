@@ -3,7 +3,7 @@ import { z } from "zod";
 export const SecretMetadata = z
   .object({
     name: z.string().describe("Secret name/label."),
-    backend: z.enum(["keychain", "file"]).describe("Secret storage backend."),
+    backend: z.literal("file").describe("Claudexor v2 file secret store."),
     present: z.boolean().default(true).describe("Whether a value is stored."),
   })
   .describe("Secret metadata; never the value.");
@@ -11,7 +11,7 @@ export type SecretMetadata = z.infer<typeof SecretMetadata>;
 
 export const ControlSecretListResponse = z
   .object({
-    backend: z.enum(["keychain", "file"]).describe("Active secret store backend."),
+    backend: z.literal("file").describe("Active Claudexor v2 file secret store."),
     secrets: z.array(SecretMetadata).default([]).describe("Stored secret metadata."),
   })
   .describe("Metadata-only response for listing stored secrets.");
@@ -29,7 +29,7 @@ export type ControlSecretSetRequest = z.infer<typeof ControlSecretSetRequest>;
 export const ControlSecretMutationResponse = z
   .object({
     name: z.string(),
-    backend: z.enum(["keychain", "file"]).optional(),
+    backend: z.literal("file").optional(),
     stored: z.boolean().optional(),
     deleted: z.boolean().optional(),
     warning: z.string().optional(),

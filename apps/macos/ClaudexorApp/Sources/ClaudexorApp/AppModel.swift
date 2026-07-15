@@ -184,7 +184,7 @@ final class AppModel {
 
     private(set) var client: GatewayClient?
     private var streamTasks: [String: Task<Void, Never>] = [:]
-    /// Global live-only multiplex subscription (list liveness).
+    /// Durable global journal subscription (list liveness).
     private var globalStreamTask: Task<Void, Never>?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     private var lastEventIds: [String: Int] = [:]
@@ -2131,7 +2131,7 @@ final class AppModel {
         }
     }
 
-    /// Global live-only multiplex: keeps the run LIST alive (new runs from the
+    /// Durable global journal stream: keeps the run LIST alive (new runs from the
     /// CLI, terminal flips for rows without an attached detail stream). Per-run
     /// streams remain the gap-free source for open rows.
     private func startGlobalStream() {

@@ -6,427 +6,480 @@
       "path": "/healthz",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": null
     },
     {
       "method": "GET",
       "path": "/v2/agent-capabilities",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "AgentCapabilityCatalog"
-    },
-    {
-      "method": "GET",
-      "path": "/v2/events",
-      "mutating": false,
-      "request_schema": null,
-      "response_schema": null
+      "response_schema": "AgentCapabilityCatalog",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/global/events",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/handshake",
       "mutating": false,
       "request_schema": "ControlHandshakeRequest",
-      "response_schema": "ControlHandshakeResponse"
+      "response_schema": "ControlHandshakeResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/harnesses",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlHarnessListResponse"
+      "response_schema": "ControlHarnessListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/harnesses/:id/auth-readiness",
       "mutating": false,
       "request_schema": "ControlAuthReadinessRefreshRequest",
-      "response_schema": "ControlAuthReadinessRefreshResponse"
+      "response_schema": "ControlAuthReadinessRefreshResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/harnesses/:id/models",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlHarnessModelsResponse"
+      "response_schema": "ControlHarnessModelsResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/operations",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlOperationCatalog"
+      "response_schema": "ControlOperationCatalog",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/projects",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlProjectListResponse"
+      "response_schema": "ControlProjectListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/projects",
       "mutating": true,
       "request_schema": "ControlProjectRegisterRequest",
-      "response_schema": "ControlProject"
+      "response_schema": "ControlProject",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/projects/:id/events",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/projects/:id/relink",
       "mutating": true,
       "request_schema": "ControlProjectRelinkRequest",
-      "response_schema": "ControlProject"
+      "response_schema": "ControlProject",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/recovery/partitions/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlJournalInspection"
+      "response_schema": "ControlJournalInspection",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/recovery/partitions/:id/export",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlJournalExportReceipt"
+      "response_schema": "ControlJournalExportReceipt",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/recovery/partitions/:id/quarantine",
       "mutating": true,
       "request_schema": "ControlJournalQuarantineRequest",
-      "response_schema": "ControlJournalQuarantineReceipt"
+      "response_schema": "ControlJournalQuarantineReceipt",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/recovery/partitions/:id/validate",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlJournalValidation"
+      "response_schema": "ControlJournalValidation",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlRunListResponse"
+      "response_schema": "ControlRunListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs",
       "mutating": true,
       "request_schema": "ControlRunStartRequest",
-      "response_schema": "ControlRunStartResponse"
+      "response_schema": "ControlRunStartResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlRunDetail"
+      "response_schema": "ControlRunDetail",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/apply",
       "mutating": true,
       "request_schema": "ControlApplyRequest",
-      "response_schema": "ControlDeliveryResponse"
+      "response_schema": "ControlDeliveryResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/apply/check",
       "mutating": false,
       "request_schema": "ControlApplyCheckRequest",
-      "response_schema": "ControlApplyCheckResponse"
+      "response_schema": "ControlApplyCheckResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/artifacts",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlArtifactListResponse"
+      "response_schema": "ControlArtifactListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/artifacts/<path>",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/control",
       "mutating": true,
       "request_schema": "ControlRunControlRequest",
-      "response_schema": "ControlRunControlResponse"
+      "response_schema": "ControlRunControlResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "request_schema": "ControlRunDecisionRequest",
-      "response_schema": "ControlRunDecisionResponse"
+      "response_schema": "ControlRunDecisionResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/events",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/interactions/:id/answer",
       "mutating": true,
       "request_schema": "ControlInteractionAnswerRequest",
-      "response_schema": "ControlInteractionAnswerResponse"
+      "response_schema": "ControlInteractionAnswerResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/produced",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlArtifactListResponse"
+      "response_schema": "ControlArtifactListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/produced/<path>",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/retry",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlRunRetryResponse"
+      "response_schema": "ControlRunRetryResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/run-again",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlRunAgainDraft"
+      "response_schema": "ControlRunAgainDraft",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/secrets",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSecretListResponse"
+      "response_schema": "ControlSecretListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/secrets",
       "mutating": true,
       "request_schema": "ControlSecretSetRequest",
-      "response_schema": "ControlSecretMutationResponse"
+      "response_schema": "ControlSecretMutationResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "DELETE",
       "path": "/v2/secrets/:id",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSecretMutationResponse"
+      "response_schema": "ControlSecretMutationResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/settings",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSettingsSnapshot"
+      "response_schema": "ControlSettingsSnapshot",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/settings",
       "mutating": true,
       "request_schema": "ControlSettingsUpdateRequest",
-      "response_schema": "ControlSettingsSnapshot"
+      "response_schema": "ControlSettingsSnapshot",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/setup/jobs",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSetupJobListResponse"
+      "response_schema": "ControlSetupJobListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/setup/jobs",
       "mutating": true,
       "request_schema": "ControlSetupJobCreateRequest",
-      "response_schema": "ControlSetupJob"
+      "response_schema": "ControlSetupJob",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/setup/jobs/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSetupJob"
+      "response_schema": "ControlSetupJob",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/setup/jobs/:id/cancel",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSetupJob"
+      "response_schema": "ControlSetupJob",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/setup/jobs/:id/events",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": null,
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/setup/jobs/:id/extend",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSetupJob"
+      "response_schema": "ControlSetupJob",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/setup/jobs/:id/reconcile",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSetupJob"
+      "response_schema": "ControlSetupJob",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/setup/jobs/:id/snapshot",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSetupJobSnapshot"
+      "response_schema": "ControlSetupJobSnapshot",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/spec/sessions",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSpecSessionListResponse"
+      "response_schema": "ControlSpecSessionListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/spec/sessions",
       "mutating": true,
       "request_schema": "ControlSpecQuestionsRequest",
-      "response_schema": "ControlSpecSession"
+      "response_schema": "ControlSpecSession",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/spec/sessions/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlSpecSession"
+      "response_schema": "ControlSpecSession",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/spec/sessions/:id/answers",
       "mutating": true,
       "request_schema": "ControlSpecAnswersRequest",
-      "response_schema": "ControlSpecSession"
+      "response_schema": "ControlSpecSession",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/spec/sessions/:id/cancel",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSpecSession"
+      "response_schema": "ControlSpecSession",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/spec/sessions/:id/freeze",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSpecSession"
+      "response_schema": "ControlSpecSession",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/spec/sessions/:id/resume",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlSpecSession"
+      "response_schema": "ControlSpecSession",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/threads",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlThreadListResponse"
+      "response_schema": "ControlThreadListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/threads",
       "mutating": true,
       "request_schema": "ControlThreadCreateRequest",
-      "response_schema": "ControlThread"
+      "response_schema": "ControlThread",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/threads/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlThreadDetail"
+      "response_schema": "ControlThreadDetail",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "PATCH",
       "path": "/v2/threads/:id",
       "mutating": true,
       "request_schema": "ControlThreadUpdateRequest",
-      "response_schema": "ControlThread"
+      "response_schema": "ControlThread",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/threads/:id/apply",
       "mutating": true,
       "request_schema": "ControlThreadApplyRequest",
-      "response_schema": "ControlThreadApplyResponse"
+      "response_schema": "ControlThreadApplyResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/threads/:id/turns",
       "mutating": true,
       "request_schema": "ControlThreadTurnRequest",
-      "response_schema": "ControlThreadTurnResponse"
+      "response_schema": "ControlThreadTurnResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/threads/:id/turns/:id/retry",
       "mutating": true,
       "request_schema": null,
-      "response_schema": "ControlThreadTurnResponse"
+      "response_schema": "ControlThreadTurnResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "GET",
       "path": "/v2/trust",
       "mutating": false,
       "request_schema": null,
-      "response_schema": "ControlTrustListResponse"
+      "response_schema": "ControlTrustListResponse",
+      "error_schema": "ControlProblem"
     },
     {
       "method": "POST",
       "path": "/v2/trust",
       "mutating": true,
       "request_schema": "ControlTrustUpdateRequest",
-      "response_schema": "ControlTrustState"
+      "response_schema": "ControlTrustState",
+      "error_schema": "ControlProblem"
     }
   ]
 }

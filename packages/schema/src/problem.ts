@@ -9,6 +9,10 @@ export const ControlProblem = z
     fieldErrors: z.record(z.string(), z.array(z.string())).default({}),
     requiredActions: z.array(z.string().min(1)).default([]),
     evidenceRefs: z.array(z.string().min(1)).default([]),
+    context: z
+      .record(z.string(), z.unknown())
+      .default({})
+      .describe("Typed route-specific recovery context; never a duplicate error message."),
   })
   .strict();
 export type ControlProblem = z.infer<typeof ControlProblem>;

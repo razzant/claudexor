@@ -1,7 +1,7 @@
 import Foundation
 
 /// Discovery document written by `claudexord` when it starts the HTTP/SSE facade:
-/// `~/.claudexor/daemon/control-api.json` (or `$CLAUDEXOR_CONFIG_DIR/daemon/...`).
+/// `~/.claudexor/v2/daemon/control-api.json` (or `$CLAUDEXOR_CONFIG_DIR/daemon/...`).
 public struct ControlApiDiscovery: Codable, Sendable, Equatable {
     public let host: String
     public let port: Int
@@ -30,7 +30,7 @@ public struct ControlApiDiscovery: Codable, Sendable, Equatable {
         if let override = ProcessInfo.processInfo.environment["CLAUDEXOR_CONFIG_DIR"], !override.isEmpty {
             return URL(fileURLWithPath: override).appendingPathComponent("daemon/control-api.json")
         }
-        return home.appendingPathComponent(".claudexor/daemon/control-api.json")
+        return home.appendingPathComponent(".claudexor/v2/daemon/control-api.json")
     }
 
     public static func load(from path: URL = defaultPath()) throws -> ControlApiDiscovery {
@@ -45,7 +45,7 @@ public enum ControlApiDiscoveryError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .invalidHost(host, port):
-            return "control-api discovery file carries an invalid host/port ('\(host)':\(port)) — delete ~/.claudexor/daemon/control-api.json and restart the daemon"
+            return "control-api discovery file carries an invalid host/port ('\(host)':\(port)) — delete ~/.claudexor/v2/daemon/control-api.json and restart the daemon"
         }
     }
 }

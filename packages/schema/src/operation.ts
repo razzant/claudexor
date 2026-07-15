@@ -28,6 +28,7 @@ export const ControlOperationDescriptor = z
     path: z.string().startsWith("/v2/"),
     requestSchema: z.string().min(1).nullable(),
     responseSchema: z.string().min(1).nullable(),
+    errorSchema: z.literal("ControlProblem"),
     mutability: z.enum(["read_only", "mutating"]),
     idempotency: z.enum(["none", "natural", "key_required"]),
     applicability: z.enum(["global", "project", "thread", "run"]),

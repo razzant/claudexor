@@ -127,7 +127,7 @@ try {
       );
     }
     for (const d of details) {
-      for (const ref of [d.requestSchema, d.responseSchema]) {
+      for (const ref of [d.requestSchema, d.responseSchema, d.errorSchema]) {
         if (ref && !existsSync(`packages/schema/generated/${ref}.schema.json`)) {
           failures.push(
             `endpoints.json references schema '${ref}' but packages/schema/generated/${ref}.schema.json does not exist`,
@@ -549,7 +549,10 @@ function collectSourceHaystack() {
     }
   }
 
-  const mcpSrc = readFileSync("packages/mcp-server/src/index.ts", "utf8");
+  const mcpSrc = readdirSync("packages/mcp-server/src")
+    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
+    .map((name) => readFileSync(`packages/mcp-server/src/${name}`, "utf8"))
+    .join("\n");
   const tools = new Set([...mcpSrc.matchAll(/"(claudexor_[a-z_]+)"/g)].map((m) => m[1]));
   const integrations = readFileSync("docs/INTEGRATIONS.md", "utf8");
   for (const tool of tools) {

@@ -1,15 +1,9 @@
-import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { platform } from "node:os";
 import { join } from "node:path";
 
 import { userConfigDir } from "@claudexor/util";
 
 export { redactSecrets } from "@claudexor/util";
-
-export type SecretBackend = "auto" | "keychain" | "file";
-
-const SERVICE = "claudexor";
 
 function configDir(): string {
   return userConfigDir();
@@ -19,122 +13,38 @@ function fileStorePath(): string {
   return join(configDir(), "secrets.json");
 }
 
-function keychainAvailable(): boolean {
-  if (platform() !== "darwin") return false;
-  try {
-    execFileSync("security", ["help"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Secret store mirroring how Codex/Claude store credentials: OS keychain where
- * available (macOS), otherwise a 0600 file under the config dir. (Adapters read
- * their own provider env vars directly; the env-var/helper-command indirection
- * was retired.) Subscriptions are NOT stored here — Claudexor reuses each
- * harness's own native login.
+ * Claudexor v2's file-only 0600 secret store. Vendor-native subscriptions stay
+ * in the vendor's own login and are never copied here. The v2 control plane
+ * intentionally has no System Keychain code path: a data-root override must be
+ * sufficient to prove that every managed-secret read/write/delete is scoped.
  */
 export class SecretStore {
-  constructor(private readonly backend: SecretBackend = "auto") {}
-
-  resolvedBackend(): "keychain" | "file" {
-    if (this.backend === "keychain") return "keychain";
-    if (this.backend === "file") return "file";
-    // backend === "auto": an explicit env override lets a sandboxed run/test
-    // (CLAUDEXOR_CONFIG_DIR + CLAUDEXOR_SECRETS_BACKEND=file) keep ALL secret I/O
-    // in the 0600 file store and never read/mutate the real OS login Keychain
-    // (which is not path-scoped, so CLAUDEXOR_CONFIG_DIR alone can't redirect it).
-    // Precedence: explicit constructor arg > env > platform default. A non-empty
-    // env typo FAILS LOUDLY rather than silently falling back to the Keychain
-    // (e.g. CLAUDEXOR_SECRETS_BACKEND=fil must not quietly hit the real Keychain).
-    const envBackend = process.env.CLAUDEXOR_SECRETS_BACKEND;
-    if (
-      envBackend !== undefined &&
-      envBackend !== "" &&
-      envBackend !== "file" &&
-      envBackend !== "keychain" &&
-      envBackend !== "auto"
-    ) {
-      throw new Error(`CLAUDEXOR_SECRETS_BACKEND must be file|keychain|auto (got '${envBackend}')`);
-    }
-    if (envBackend === "file") return "file";
-    if (envBackend === "keychain") return "keychain";
-    return keychainAvailable() ? "keychain" : "file";
+  resolvedBackend(): "file" {
+    return "file";
   }
 
   /** Why the last `set` landed in the file store despite a keychain backend. */
   lastFallbackReason: string | null = null;
 
-  set(name: string, value: string): "keychain" | "file" {
+  set(name: string, value: string): "file" {
     this.lastFallbackReason = null;
-    if (this.resolvedBackend() === "keychain") {
-      try {
-        execFileSync(
-          "security",
-          ["add-generic-password", "-U", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
-          { input: `${value}\n${value}\n`, stdio: ["pipe", "ignore", "ignore"] },
-        );
-        return "keychain";
-      } catch (err) {
-        // SURFACED degradation (not silent): callers report this to the UI/CLI.
-        this.lastFallbackReason = `keychain write failed (${err instanceof Error ? err.message.split("\n")[0] : "error"}); stored in 0600 file instead`;
-      }
-    }
     this.fileSet(name, value);
     return "file";
   }
 
   get(name: string): string | null {
-    if (this.resolvedBackend() === "keychain") {
-      try {
-        const out = execFileSync(
-          "security",
-          ["find-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-        );
-        const v = out.trim();
-        if (v) return v;
-      } catch {
-        /* not in keychain; try file */
-      }
-    }
     return this.fileGet(name);
   }
 
   delete(name: string): void {
-    if (this.resolvedBackend() === "keychain") {
-      try {
-        execFileSync(
-          "security",
-          ["delete-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`],
-          {
-            stdio: "ignore",
-          },
-        );
-      } catch {
-        /* ignore */
-      }
-    }
     this.fileDelete(name);
   }
 
-  list(): { name: string; backend: "keychain" | "file"; present: true }[] {
-    const backend = this.resolvedBackend();
-    if (backend === "file") {
-      return Object.keys(this.fileStore())
-        .sort()
-        .map((name) => ({ name, backend: "file" as const, present: true as const }));
-    }
-    const names = new Set<string>();
-    for (const name of this.keychainNames()) names.add(name);
-    for (const name of Object.keys(this.fileStore())) names.add(name);
-    return [...names].sort().map((name) => ({
-      name,
-      backend: this.getKeychain(name) !== null ? ("keychain" as const) : ("file" as const),
-      present: true as const,
-    }));
+  list(): { name: string; backend: "file"; present: true }[] {
+    return Object.keys(this.fileStore())
+      .sort()
+      .map((name) => ({ name, backend: "file" as const, present: true as const }));
   }
 
   private fileStore(): Record<string, string> {
@@ -183,38 +93,6 @@ export class SecretStore {
     const store = this.fileStore();
     delete store[name];
     this.writeFileStore(store);
-  }
-
-  private getKeychain(name: string): string | null {
-    try {
-      const out = execFileSync(
-        "security",
-        ["find-generic-password", "-a", SERVICE, "-s", `${SERVICE}:${name}`, "-w"],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-      );
-      const v = out.trim();
-      return v || null;
-    } catch {
-      return null;
-    }
-  }
-
-  private keychainNames(): string[] {
-    if (platform() !== "darwin") return [];
-    try {
-      const out = execFileSync("security", ["dump-keychain"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      const re = new RegExp(`"svce"<blob>="${SERVICE}:([^"]+)"`, "g");
-      const names: string[] = [];
-      for (let m = re.exec(out); m !== null; m = re.exec(out)) {
-        if (m[1]) names.push(m[1]);
-      }
-      return names;
-    } catch {
-      return [];
-    }
   }
 }
 

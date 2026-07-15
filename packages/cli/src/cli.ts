@@ -55,13 +55,7 @@ import {
   renderHelp,
 } from "./command-registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import {
-  authCommand,
-  daemonCommand,
-  doctorCommand,
-  modelsCommand,
-  secretsCommand,
-} from "./ops-commands.js";
+import { dispatchOpsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
 import { retryCommand, runAgainCommand } from "./retry-command.js";
@@ -635,7 +629,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
  * Resolve the ArtifactStore that owns a given run, regardless of the cwd the
  * CLI is invoked from. Order:
  *   1. the project store rooted at the current cwd (the common case);
- *   2. the user-level store (~/.claudexor/runs) used by no-project Ask runs;
+ *   2. the v2 user store (~/.claudexor/v2/runs) used by no-project Ask runs;
  *   3. a daemon-tracked run that started in ANOTHER project — agent/race/create
  *      runs live under that project's external runtime namespace, so we ask
  *      the daemon for the run's absolute runDir (GET /runs/:id ->
@@ -896,6 +890,8 @@ async function main(): Promise<number> {
     return runRepl(process.cwd());
   }
   const cwd = process.cwd();
+  const opsCommand = dispatchOpsCommand(cmd, args, json);
+  if (opsCommand) return opsCommand;
 
   switch (cmd) {
     case "init": {
@@ -907,9 +903,6 @@ async function main(): Promise<number> {
         );
       return 0;
     }
-
-    case "doctor":
-      return doctorCommand(args, json);
 
     case "project":
       return projectCommand(args, json);
@@ -993,23 +986,11 @@ async function main(): Promise<number> {
     case "map":
       return orchestrate(args, "audit", json);
 
-    case "daemon":
-      return daemonCommand(args, json);
-
     case "settings":
       return settingsCommand(args, json);
 
     case "trust":
       return trustCommand(args, json);
-
-    case "auth":
-      return authCommand(args, json);
-
-    case "models":
-      return modelsCommand(args, json);
-
-    case "secrets":
-      return secretsCommand(args, json);
 
     case "mcp": {
       if (args._[1] === "serve") {

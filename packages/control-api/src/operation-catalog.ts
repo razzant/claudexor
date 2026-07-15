@@ -86,7 +86,7 @@ export async function resolveControlProtocol(input: {
 
 type Draft = Omit<
   ControlOperationDescriptor,
-  "id" | "applicability" | "idempotency" | "completion"
+  "id" | "applicability" | "idempotency" | "completion" | "errorSchema"
 > &
   Partial<Pick<ControlOperationDescriptor, "applicability" | "idempotency" | "completion">>;
 
@@ -99,6 +99,7 @@ function descriptor(input: Draft): ControlOperationDescriptor {
         : "global";
   return {
     ...input,
+    errorSchema: "ControlProblem",
     id: `${input.method.toLowerCase()}:${input.path.slice(4).replaceAll(/[:/<>]+/g, ".")}`,
     applicability: input.applicability ?? applicability,
     idempotency: input.idempotency ?? (input.mutability === "read_only" ? "natural" : "none"),
@@ -129,7 +130,6 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse"),
   j("GET", "/v2/operations", "read_only", null, "ControlOperationCatalog"),
   j("GET", "/v2/agent-capabilities", "read_only", null, "AgentCapabilityCatalog"),
-  j("GET", "/v2/events", "read_only", null, null, { responseKind: "stream" }),
   j("GET", "/v2/global/events", "read_only", null, null, { responseKind: "stream" }),
   j("GET", "/v2/harnesses", "read_only", null, "ControlHarnessListResponse"),
   j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),

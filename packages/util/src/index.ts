@@ -210,7 +210,12 @@ export function userConfigDir(): string {
     if (!safe) throw new Error("CLAUDEXOR_CONFIG_DIR must be a safe absolute path");
     return safe;
   }
-  return join(userHomeDir(), ".claudexor");
+  // v2 is an intentionally empty, non-migrating namespace. Keeping the
+  // version boundary in the default root prevents the daemon from even
+  // probing v1 config, trust, secret, token, or journal bytes. An explicit
+  // CLAUDEXOR_CONFIG_DIR remains the hermetic test/operator override and is
+  // already treated as the complete v2 root.
+  return join(userHomeDir(), ".claudexor", "v2");
 }
 
 /**

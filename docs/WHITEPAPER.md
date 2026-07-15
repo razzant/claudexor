@@ -78,10 +78,9 @@ when the key route is not smoke-proven and never borrows native readiness.
 Doctor exposes source availability and verification as separate typed facts:
 absent is `unavailable + not_run`, probe failure is `unknown + not_run`, and
 present-but-unusable is `available + failed`, so a credential string cannot
-impersonate a working route. Secret I/O defaults to
-the OS Keychain (or a `0600` file); `CLAUDEXOR_SECRETS_BACKEND=file` forces the
-file store so a sandboxed run or test never touches the real login Keychain, and
-an invalid value fails loudly. That API-key store, and Claude's separately
+impersonate a working route. Managed secret I/O is confined to the v2 `0600`
+file store under its external data root; the control plane has no System
+Keychain code path. That API-key store, and Claude's separately
 stored setup-token route, are not the native-login state. Native login itself
 remains a vendor-CLI/browser ceremony: Claudexor observes an identity-fenced
 official process, journals its hash-bound result, verifies the fresh native
@@ -271,7 +270,7 @@ delivers the accumulated diff to the project).
 
 Direct non-thread runs and race candidates keep the envelope default: they run
 in isolated envelopes under the external per-project runtime namespace
-`~/.claudexor/projects/<project-sha256>/workspaces/.../tree`, and the harness
+`~/.claudexor/v2/projects/<project-sha256>/workspaces/.../tree`, and the harness
 `cwd` is the envelope worktree. Diffs come from git in the execution tree —
 envelope or in-place — never from model edit narration.
 
@@ -337,7 +336,7 @@ vendor credentials remain outside those disposable envelopes.
 ## Observability
 
 Run artifacts live in two honest planes that are never conflated. The run tree
-under `~/.claudexor/projects/<project-sha256>/runs/<id>/` is Claudexor's
+under `~/.claudexor/v2/projects/<project-sha256>/runs/<id>/` is Claudexor's
 internal orchestration evidence —
 contracts, events, attempts, reviews, decisions. The project's produced
 outputs — the repo `artifacts/` directory a run actually delivered, served
@@ -351,9 +350,9 @@ every event carries a monotonic per-run `seq` stamped at emit time. Live
 clients follow a snapshot-then-subscribe contract: fetch the run detail (whose
 `lastSeq` fences everything the snapshot already reflects), then subscribe to
 the per-run SSE stream from that cursor (`Last-Event-ID`); reconnects resume
-without gaps or duplicates instead of replaying or guessing. A global
-live-only `/events` multiplex keeps run lists fresh; it is explicitly not
-gap-free, so clients re-snapshot the list after a drop. Timeline and
+without gaps or duplicates instead of replaying or guessing. Durable global,
+project, and run streams keep lists fresh with partition-scoped cursors; clients
+resnapshot only the affected scope after a stale cursor. Timeline and
 Diagnostics expose tool calls, targets, permission policy, error summaries,
 harness/attempt ids, fallback routes, first output, last event, budget
 observations, and artifact paths.

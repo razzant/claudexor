@@ -36,8 +36,8 @@
     <key>ProcessType</key>
     <string>Background</string>
     <key>StandardOutPath</key>
-    <string>__HOME__/.claudexor/daemon/claudexord.log</string>
+    <string>__HOME__/.claudexor/v2/daemon/claudexord.log</string>
     <key>StandardErrorPath</key>
-    <string>__HOME__/.claudexor/daemon/claudexord.log</string>
+    <string>__HOME__/.claudexor/v2/daemon/claudexord.log</string>
 </dict>
 </plist>

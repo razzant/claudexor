@@ -37,8 +37,9 @@ export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
-import { handleJournalEventRoute, streamLiveRunEvents } from "./journal-event-routes.js";
+import { handleJournalEventRoute } from "./journal-event-routes.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
+import { controlProblemError } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import { handleSpecRoute, type SpecRouteServices } from "./spec-routes.js";
 import {
@@ -335,6 +336,10 @@ function problemBody(
     fieldErrors: fieldErrorsProperty(error),
     requiredActions: stringArrayProperty(error, "requiredActions"),
     evidenceRefs: stringArrayProperty(error, "evidenceRefs"),
+    context:
+      error && typeof error === "object" && "context" in error
+        ? ((error as { context: Record<string, unknown> }).context ?? {})
+        : {},
   });
 }
 
@@ -516,6 +521,10 @@ export class DaemonControlApiServer {
     body: unknown,
     contentType = "application/json",
   ): void {
+    if (status >= 400 && contentType === "application/json") {
+      const error = controlProblemError(status, body);
+      return this.problem(res, status, error, error.code, false, error.message);
+    }
     const text = JSON.stringify(body);
     res.writeHead(status, {
       "content-type": contentType,
@@ -744,18 +753,6 @@ export class DaemonControlApiServer {
       );
     }
 
-    if (method === "GET" && path === "/events") {
-      return streamLiveRunEvents(
-        {
-          bus: this.opts.bus,
-          heartbeatMs: this.opts.heartbeatMs,
-          sseClients: this.sseClients,
-          json: (response, status, body) => this.json(response, status, body),
-        },
-        req,
-        res,
-      );
-    }
     if (
       await handleJournalEventRoute(
         {
@@ -2577,7 +2574,7 @@ function listArtifacts(root: string): ControlArtifactInfo[] {
 
 /** A run's project root, taken from its TYPED scope — NOT by path-slicing the
  *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
- *  is `~/.claudexor/runs/<id>`) to the user's HOME and let /produced list
+ *  is `~/.claudexor/v2/runs/<id>`) to the user's HOME and let /produced list
  *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs. */
 export function producedRepoRoot(rec: DaemonRunRecord): string | null {
   const scope = (rec.params as { scope?: { kind?: string; root?: string } } | undefined)?.scope;

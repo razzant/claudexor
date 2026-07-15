@@ -75,4 +75,15 @@ describe("util", () => {
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;
     }
   });
+
+  it("uses an empty v2 namespace without probing the legacy root", () => {
+    const config = process.env.CLAUDEXOR_CONFIG_DIR;
+    try {
+      delete process.env.CLAUDEXOR_CONFIG_DIR;
+      expect(userConfigDir()).toMatch(/\.claudexor\/v2$/);
+    } finally {
+      if (config === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = config;
+    }
+  });
 });

@@ -64,7 +64,7 @@ function readYaml(path: string): unknown | null {
  * matcher over segments ("*" matches one segment).
  */
 const RETIRED_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
-  { path: ["secrets"], retired: "secret refs moved to the SecretStore (Keychain / 0600 store)" },
+  { path: ["secrets"], retired: "secret refs moved to the v2 file-only SecretStore" },
   {
     path: ["budget", "max_usd_per_day"],
     retired: "per-day caps were removed; quota respect + per-run caps remain",
@@ -371,7 +371,7 @@ function withConfigLock<T>(path: string, fn: () => T): T {
 }
 
 /**
- * Update ~/.claudexor/config.yaml with validated global settings. Sensitive
+ * Update ~/.claudexor/v2/config.yaml with validated global settings. Sensitive
  * values are not accepted here. Locked + atomic (see withConfigLock).
  */
 export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): {
@@ -412,7 +412,7 @@ export function initProjectConfig(repoRoot: string): InitResult {
   const header =
     "# Claudexor project config (versioned). Safe settings only.\n" +
     "# Sensitive settings (full access, secrets, budget-above-cap, plugin install,\n" +
-    "# MCP trust) live in ~/.claudexor/config.yaml or ~/.claudexor/trust/<hash>.yaml.\n" +
+    "# MCP trust) live in ~/.claudexor/v2/config.yaml or ~/.claudexor/v2/trust/<hash>.yaml.\n" +
     "#\n" +
     "# Optional: require files as mandatory run context (fail-closed if missing,\n" +
     "# enforced uniformly across every mode). Empty by default; uncomment to opt in:\n" +

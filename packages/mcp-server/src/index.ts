@@ -1,7 +1,5 @@
 import { isAbsolute } from "node:path";
-// Static JSON imports (NOT createRequire): esbuild inlines these into the
-// single-file app bundle, while createRequire(import.meta.url) resolved at
-// RUNTIME relative to the bundle location and crashed the shipped daemon.
+// Static JSON imports let esbuild inline schemas into the shipped app bundle.
 import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
@@ -25,6 +23,7 @@ import {
   type InteractionQuestion,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
+import { journalRecoveryTools } from "./recovery-tools.js";
 
 // Generated JSON Schemas from @claudexor/schema (the SSOT): declared to hosts
 // as tool outputSchema so structured results are validated shapes, not blobs.
@@ -694,5 +693,6 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         };
       },
     },
+    ...journalRecoveryTools(runner, formatRunResult),
   ];
 }

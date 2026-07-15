@@ -3,7 +3,6 @@ import { ControlJournalEvent, type ControlJournalEvent as JournalEvent } from "@
 import { redactedSseLine } from "./sse-shared.js";
 
 export interface JournalEventRouteContext {
-  bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: {
     journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
   };
@@ -12,45 +11,6 @@ export interface JournalEventRouteContext {
   sseClients: Set<ServerResponse>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
-}
-
-export function streamLiveRunEvents(
-  ctx: Pick<JournalEventRouteContext, "bus" | "heartbeatMs" | "sseClients" | "json">,
-  req: IncomingMessage,
-  res: ServerResponse,
-): void {
-  if (!ctx.bus)
-    return ctx.json(res, 501, { error: "global event stream requires the daemon event bus" });
-  res.writeHead(200, {
-    "content-type": "text/event-stream",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive",
-  });
-  res.write(": connected\n\n");
-  ctx.sseClients.add(res);
-  let closed = false;
-  const heartbeat = setInterval(() => {
-    if (!closed) res.write(`: ping ${Date.now()}\n\n`);
-  }, ctx.heartbeatMs ?? 15_000);
-  heartbeat.unref?.();
-  const unsubscribe = ctx.bus.subscribe((event) => {
-    if (closed) return;
-    try {
-      const type = String((event as { type?: string }).type ?? "run");
-      const seq = (event as { seq?: number }).seq;
-      res.write(
-        `${typeof seq === "number" ? `id: ${seq}\n` : ""}event: ${type}\ndata: ${redactedSseLine(JSON.stringify(event))}\n\n`,
-      );
-    } catch {}
-  });
-  const cleanup = () => {
-    closed = true;
-    clearInterval(heartbeat);
-    unsubscribe();
-    ctx.sseClients.delete(res);
-  };
-  req.on("close", cleanup);
-  res.on("close", cleanup);
 }
 
 export async function handleJournalEventRoute(

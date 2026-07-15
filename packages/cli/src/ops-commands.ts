@@ -20,6 +20,11 @@ import {
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlHarnessSetupHarness,
+  ControlJournalExportReceipt,
+  ControlJournalInspection,
+  ControlJournalQuarantineReceipt,
+  ControlJournalQuarantineRequest,
+  ControlJournalValidation,
   ControlSecretListResponse,
   ControlSecretMutationResponse,
   ControlSecretSetRequest,
@@ -37,6 +42,29 @@ import {
 } from "./cli-io.js";
 import { ensureDaemon, waitForDaemonReady } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
+
+export function dispatchOpsCommand(
+  command: string,
+  args: ParsedArgs,
+  json: boolean,
+): Promise<number> | undefined {
+  switch (command) {
+    case "auth":
+      return authCommand(args, json);
+    case "daemon":
+      return daemonCommand(args, json);
+    case "doctor":
+      return doctorCommand(args, json);
+    case "models":
+      return modelsCommand(args, json);
+    case "recovery":
+      return recoveryCommand(args, json);
+    case "secrets":
+      return secretsCommand(args, json);
+    default:
+      return undefined;
+  }
+}
 
 export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
@@ -434,4 +462,53 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
     return 0;
   }
   return printUsageError(json, "usage: claudexor secrets list|set|delete");
+}
+
+export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const action = args._[1] ?? "inspect";
+  const partition = args._[2];
+  if (!partition) {
+    return printUsageError(
+      json,
+      "usage: claudexor recovery inspect|validate|export <partition> | quarantine <partition> <fingerprint> quarantine_and_start_fresh",
+    );
+  }
+  const { addr } = await ensureDaemon();
+  const base = `/recovery/partitions/${encodeURIComponent(partition)}`;
+  const request = async (path: string, init?: RequestInit): Promise<unknown> => {
+    const response = await controlApiFetch(addr, path, init);
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail =
+        body && typeof body === "object" && "message" in body
+          ? String((body as { message: unknown }).message)
+          : `HTTP ${response.status}`;
+      throw new Error(`journal recovery request failed: ${detail}`);
+    }
+    return body;
+  };
+  let result: unknown;
+  if (action === "inspect") {
+    result = ControlJournalInspection.parse(await request(base));
+  } else if (action === "validate") {
+    result = ControlJournalValidation.parse(await request(`${base}/validate`, { method: "POST" }));
+  } else if (action === "export") {
+    result = ControlJournalExportReceipt.parse(await request(`${base}/export`, { method: "POST" }));
+  } else if (action === "quarantine") {
+    const expectedFingerprint = args._[3];
+    const confirmation = args._[4];
+    const body = ControlJournalQuarantineRequest.parse({ expectedFingerprint, confirmation });
+    result = ControlJournalQuarantineReceipt.parse(
+      await request(`${base}/quarantine`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    );
+  } else {
+    return printUsageError(json, `unknown recovery action '${action}'`);
+  }
+  if (json) printJson(result);
+  else print(JSON.stringify(result, null, 2));
+  return 0;
 }

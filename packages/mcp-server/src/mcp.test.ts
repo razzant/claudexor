@@ -47,7 +47,7 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 12 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 14 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -84,7 +84,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(12);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(14);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });

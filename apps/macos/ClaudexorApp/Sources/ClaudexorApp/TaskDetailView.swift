@@ -407,12 +407,12 @@ struct TaskDetailView: View {
                 .disabled(task.runDir == nil)
                 .help(task.runDir ?? "Run folder is not available yet.")
                 Button {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claudexor/daemon/claudexord.log"))
+                    NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claudexor/v2/daemon/claudexord.log"))
                 } label: {
                     Label("Open Daemon Log", systemImage: "terminal")
                 }
                 .buttonStyle(.bordered)
-                .help("Open ~/.claudexor/daemon/claudexord.log.")
+                .help("Open ~/.claudexor/v2/daemon/claudexord.log.")
                 Button {
                     Task {
                         // Retry preserves the ORIGINAL run's policy contract

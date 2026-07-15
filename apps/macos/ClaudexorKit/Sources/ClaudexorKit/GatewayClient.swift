@@ -532,10 +532,10 @@ public final class GatewayClient: Sendable {
         sseStream(path: "runs/\(runId)/events", lastEventId: lastEventId)
     }
 
-    /// Global LIVE-ONLY run-event multiplex (`GET /events`, no replay): every
-    /// run's events tagged with run_id. Reconnect = re-snapshot `/runs` first.
+    /// Durable global journal stream. Project and run streams remain scoped;
+    /// callers resnapshot the corresponding scope after a stale cursor.
     public func globalEvents() -> AsyncThrowingStream<BusEnvelope, Error> {
-        sseStream(path: "events", lastEventId: nil)
+        sseStream(path: "v2/global/events", lastEventId: nil)
     }
 
     /// Full-snapshot setup lifecycle stream. Unknown names, malformed payloads,

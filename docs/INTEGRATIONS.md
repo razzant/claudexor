@@ -149,14 +149,17 @@ the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
 the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
-MCP is one-shot: a host receives the final Claudexor output from the twelve
+MCP is one-shot: a host receives the final Claudexor output from the fourteen
 implemented tools — `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
 `claudexor_orchestrate`, `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
-`claudexor_runs`, `claudexor_inspect`, and `claudexor_apply_check` — not
-live thread parity.
+`claudexor_runs`, `claudexor_inspect`, `claudexor_apply_check`, and
+`claudexor_journal_recovery`. The destructive
+`claudexor_quarantine_journal` requires an exact partition fingerprint and
+explicit `quarantine_and_start_fresh` confirmation. MCP does not claim live
+thread parity.
 
 Tools declare MCP behavior annotations (readOnlyHint for every non-agent
 route — MCP orchestrate is suggest-autonomy only) and, for run tools and
@@ -205,7 +208,7 @@ missing/partial/installed/registered hosts exit 0, and the JSON carries the
 per-host state either way.
 
 Lifecycle state lives under the user Claudexor config directory
-(`~/.claudexor/plugins/state.json` by default). Generated files carry Claudexor
+(`~/.claudexor/v2/plugins/state.json` by default). Generated files carry Claudexor
 ownership markers, and uninstall removes only owned files or owned scoped config
 entries. Unknown user files fail loudly instead of being overwritten.
 
@@ -316,9 +319,9 @@ evidence rather than relying on final-answer claims.
 ## Storage
 
 Project runs write under the external per-project namespace
-`~/.claudexor/projects/<project-sha256>/runs/<run_id>/`; the target repository's
+`~/.claudexor/v2/projects/<project-sha256>/runs/<run_id>/`; the target repository's
 `.claudexor/` remains user-owned config. No-project Ask runs use a synthetic cwd
-and write artifacts under `~/.claudexor/runs/`. See `docs/ARCHITECTURE.md` for
+and write artifacts under `~/.claudexor/v2/runs/`. See `docs/ARCHITECTURE.md` for
 the full current layout.
 
 ## Stability Rules
@@ -374,9 +377,8 @@ always preferred.
 
 | Variable | Owner | Effect |
 |---|---|---|
-| `CLAUDEXOR_CONFIG_DIR` | util | Relocates the whole `~/.claudexor` config/state root (tests, CI hermeticity). |
-| `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore Keychain/file-stored secret refs entirely (hermetic runs; native sessions still work). |
-| `CLAUDEXOR_SECRETS_BACKEND` | secrets | Force the secrets backend: `keychain` or `file` (default `auto`). |
+| `CLAUDEXOR_CONFIG_DIR` | util | Relocates the whole v2 config/state root (default `~/.claudexor/v2`; tests and CI use a disposable absolute path). |
+| `CLAUDEXOR_DISABLE_STORED_SECRETS` | secrets | Ignore v2 file-stored secret refs entirely (hermetic runs; native sessions still work). |
 | `CLAUDEXOR_CODEX_BIN` / `CLAUDEXOR_CLAUDE_BIN` / `CLAUDEXOR_CURSOR_BIN` / `CLAUDEXOR_OPENCODE_BIN` | adapters | Explicit vendor CLI binary when PATH discovery is not enough. |
 | `CLAUDEXOR_CODEX_API_KEY` / `CLAUDEXOR_ANTHROPIC_API_KEY` / `CLAUDEXOR_CURSOR_API_KEY` | adapters | Claudexor-scoped API-key overrides (take precedence over provider env names). |
 | `CLAUDEXOR_CODEX_MODEL` | codex adapter | Default model override for the codex route. |

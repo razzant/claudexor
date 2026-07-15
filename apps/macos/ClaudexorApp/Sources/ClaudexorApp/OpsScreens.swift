@@ -185,7 +185,7 @@ struct SettingsScreen: View {
 
     @ViewBuilder private var secretsGroup: some View {
         settingsGroup("Secrets", "key") {
-                    Text("Secret values live in Keychain or a 0600 store. Run params and artifacts store refs/metadata only.")
+                    Text("Secret values live in the v2 0600 file store. Run params and artifacts store refs/metadata only.")
                         .font(.caption).foregroundStyle(.secondary)
                     KeyValueRow(key: "Secret backend", value: model.secretBackend)
                     if !model.storedSecrets.isEmpty {
@@ -213,7 +213,7 @@ struct SettingsScreen: View {
 
     @ViewBuilder private var perHarnessGroup: some View {
         settingsGroup("Per-Harness Defaults", "slider.horizontal.3") {
-                    Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/config.yaml.")
+                    Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/v2/config.yaml.")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
                         HarnessDefaultsRow(family: family,

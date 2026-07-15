@@ -39,6 +39,12 @@
             "minLength": 1
           },
           "default": []
+        },
+        "context": {
+          "type": "object",
+          "additionalProperties": {},
+          "default": {},
+          "description": "Typed route-specific recovery context; never a duplicate error message."
         }
       },
       "required": [

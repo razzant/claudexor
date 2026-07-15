@@ -114,7 +114,7 @@ are NOT aliases: they hard-error at every wire boundary.
   rules, workspace path guard.
 - `packages/context`: scope atlas + lazy ContextPack for read-only modes.
 - `packages/config`: layered config loading (global, project, user-level trust).
-- `packages/secrets`: OS Keychain/file-backed secret store and secret resolution.
+- `packages/secrets`: v2 file-only 0600 secret store and secret resolution.
 - `packages/delivery`: patch check/apply/commit/branch/PR delivery and the
   single-owner apply gate.
 - `packages/artifact-store`, `packages/event-log`: run artifact tree and
@@ -233,7 +233,7 @@ explicit `WebSearch`/`WebFetch` allow/deny arguments, while Codex gets
 `web_search` config. Command/network sandboxing remains separate.
 
 `access=full` (unsandboxed) additionally requires `allow_full_access: true` in
-the USER-LEVEL trust config (`~/.claudexor/trust/<repo-hash>.yaml`); versioned
+the USER-LEVEL trust config (`~/.claudexor/v2/trust/<repo-hash>.yaml`); versioned
 repo config can never self-grant it, and the violation is a loud routing error
 naming the resolved trust path, not a silent downgrade. `claudexor trust` is
 the writer for that file (`--allow-full-access`, `--revoke-full-access`,
@@ -273,11 +273,9 @@ fallback to another eligible harness and emits `route.fallback.started`,
 
 ## 5. Auth And Secrets
 
-Native harness auth is preferred. API-key fallback uses `packages/secrets`:
-Keychain where available, otherwise a `0600` file under the user config dir.
-`CLAUDEXOR_SECRETS_BACKEND` (`file|keychain|auto`) overrides the platform default
-and an invalid value fails loudly, so a sandboxed run/test can force the `0600`
-file store and never touch the real login Keychain (which is not path-scoped).
+Native harness auth is preferred. API-key fallback uses the v2-owned `0600`
+file store in `packages/secrets`. There is no System Keychain branch in this
+store, so a disposable data root contains every managed-secret operation.
 The routing/auth policy is subscription/native first where that route is
 readiness-proven; API-key refs are fallback secret refs. `auto` probes the native
 route first for Codex, Claude, and Cursor in host and scoped/envelope contexts;
@@ -344,7 +342,7 @@ Creates a run directory, writes a `TaskContract`, runs one adapter with
 `final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
 In the macOS app, Ask may run with no project selected. The harness cwd is an
 empty synthetic directory at `~/.cache/claudexor/no-project`, while artifacts live
-in the user-level store `~/.claudexor/runs/<run_id>/`. If routing or the harness
+in the user-level store `~/.claudexor/v2/runs/<run_id>/`. If routing or the harness
 fails, the run still writes inspectable failure artifacts
 (`context/context_error.md`, `final/failure.yaml`, `final/summary.md`) and emits
 `run.failed`.
@@ -375,7 +373,7 @@ emits artifacts, and live project mutation happens only through explicit
 delivery/apply.
 
 Envelope semantics are strict. Project runs execute under
-`~/.claudexor/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
+`~/.claudexor/v2/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
 the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
 declared run artifact, or an explicitly verified host side-effect. Absolute
 `/tmp/...` writes are host side effects and are not project diffs; project tmp
@@ -457,7 +455,7 @@ from the control-api server source (`node scripts/gen-endpoints-doc.mjs`);
 README and INTEGRATIONS link here instead of maintaining duplicates. The same
 generator emits the machine-readable endpoint map for external agents at
 `docs/reference/endpoints.json` — method, path, mutating flag, and
-request/response schema names referencing the generated JSON Schemas in
+request/response/error schema names referencing the generated JSON Schemas in
 `packages/schema/generated/` (null when a handler hand-builds its JSON).
 Field-level semantics live in the schemas themselves: every control DTO
 carries `.describe()` documentation that lands in the generated JSON Schema
@@ -466,7 +464,6 @@ files.
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /healthz`
 - `GET /v2/agent-capabilities`
-- `GET /v2/events`
 - `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`
@@ -567,7 +564,7 @@ Endpoint semantics beyond the inventory:
   lists server-owned fields omitted from that draft. The CLI projects these as
   `claudexor retry` and `claudexor run-again`.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
-  enumerates per-repo trust files (`~/.claudexor/trust/<repo-hash>.yaml`, each
+  enumerates per-repo trust files (`~/.claudexor/v2/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
   pre-provenance files show a null root), and the POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
@@ -585,8 +582,6 @@ Endpoint semantics beyond the inventory:
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS Canvas
   source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
-- `GET /v2/events` is the global live-only run-event multiplex (see the streaming
-  contract below).
 - `claudexor settings show|set` is a thin client of `GET|POST /v2/settings`.
   Validation, persistence, cache invalidation, and the returned effective
   `ControlSettingsSnapshot` come from the daemon; the CLI has no second config
@@ -628,24 +623,20 @@ failure fails the producer/run instead of being swallowed as a live-only gap.
 `GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
 already reflected in that snapshot — so a client subscribes to
 `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
-no gaps and no duplicates. During the Phase 1 compatibility window, the
-per-run stream replays from the run artifact projection `events.jsonl` (legacy
-pre-seq lines fall back to line-number ids) and is
+no gaps and no duplicates. The per-run stream replays from the rebuildable run
+artifact projection `events.jsonl` (old pre-seq fixture lines fall back to
+line-number ids) and is
 push-driven by the daemon's in-process run-event bus, with a file-tail poll as
 fallback; `output.ready` is guaranteed to precede the terminal
 `run.completed|run.failed|run.blocked` event in every mode, so a client that
-has applied the terminal event provably has the output. `GET /v2/events` is the
-global LIVE-ONLY multiplex (events tagged with `run_id`, no replay): on
-reconnect a client re-snapshots `/runs` first and uses per-run streams where it
-needs gap-free state.
+has applied the terminal event provably has the output.
 
 `GET /v2/global/events` and `GET /v2/projects/:id/events` replay the durable
 global or project journal partition and then tail it. Their `Last-Event-ID`
 values are opaque, partition-scoped cursors: a cursor from another partition or
 epoch is rejected so the client can re-snapshot that scope. The API does not
-claim a total order across partitions. The older `/v2/events` live run
-multiplex remains available to existing clients while surfaces move to the
-durable scoped streams.
+claim a total order across partitions. There is no live-only compatibility
+multiplex in v2.
 
 A QUEUED job's per-run stream does not 404: `GET /v2/runs/:id/events` opens the
 SSE response immediately, heartbeats while the job waits for a slot, and binds
@@ -990,8 +981,8 @@ raw event reference, and are capped with an explicit truncation marker.
 ## 8. Artifact Layout
 
 Canonical project output lives under
-`~/.claudexor/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
-`~/.claudexor/runs/<run_id>/`:
+`~/.claudexor/v2/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
+`~/.claudexor/v2/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -1071,13 +1062,14 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
 - The app is a thin native control surface over the control API (§7). It
   consumes: threads and turns (`/v2/threads`, `/v2/threads/:id`, `/v2/threads/:id/turns`,
   `/v2/threads/:id/apply`), runs and events (`/v2/runs`, `/v2/runs/:id`,
-  `/v2/runs/:id/events`, `/v2/events`), run-internal artifacts (`/v2/runs/:id/artifacts`)
+  `/v2/runs/:id/events`, `/v2/global/events`), run-internal artifacts (`/v2/runs/:id/artifacts`)
   and produced project outputs (`/v2/runs/:id/produced` — the Canvas source),
   delivery, decisions, and control (`/v2/runs/:id/apply/check`, `/v2/runs/:id/apply`,
   `/v2/runs/:id/decision`, `/v2/runs/:id/control`,
   `/v2/runs/:id/interactions/:id/answer`), harness status (`/v2/harnesses`,
   `/v2/harnesses/:id/models`), setup jobs (`/v2/setup/jobs`), settings and secrets
-  (`/v2/settings`, `/v2/secrets`), and the server-owned spec flow
+  (`/v2/settings`, `/v2/secrets`), journal recovery
+  (`/v2/recovery/partitions/:id` and validate/export/quarantine actions), and the server-owned spec flow
   (`/v2/spec/sessions` and its answers/freeze/cancel/resume actions; the app's Spec intent is a thin driver
   over these endpoints, not a new `ModeKind`).
 - The app must not invent server state: delivery, decisions, review verdicts,
