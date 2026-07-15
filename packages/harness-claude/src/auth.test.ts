@@ -413,6 +413,20 @@ describe("Claude transport-aware source selection", () => {
     expect(cliOptions?.env?.CLAUDE_CONFIG_DIR).toBe(defaultNativeClaudeConfigDir());
     expect(cliOptions?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBeNull();
     expect(cliOptions?.env?.ANTHROPIC_API_KEY).toBeNull();
+    const retry = cliOptions?.parseEvent?.(
+      {
+        type: "system",
+        subtype: "api_retry",
+        error: "rate limit",
+        retry_delay_ms: 1_000,
+      },
+      "session-retry",
+    );
+    expect(retry?.find((event) => event.rate_limit)).toMatchObject({
+      credential_route: "vendor_native",
+      credential_source: "native_session",
+      payload: { api_retry: true },
+    });
   });
 
   it("selects the OAuth-token subscription source only after native is unavailable", async () => {

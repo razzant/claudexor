@@ -102,6 +102,46 @@ describe("BudgetLedger", () => {
     expect(zero.valuation()).toBe(3);
   });
 
+  it("settles native token estimates as valuation while API-key estimates remain cash", async () => {
+    const { attemptUsageCostSettlement } = await import("./ledger.js");
+    const native = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const nativeLease = native.reserve({
+      taskId: "native-task",
+      attemptId: "native-attempt",
+      intent: "implement",
+      harnessId: "codex",
+    });
+    native.settle(
+      nativeLease.lease!.lease_id,
+      attemptUsageCostSettlement(0.25, true, "native-attempt", "codex", "local_session"),
+    );
+    expect(native.spend()).toBe(0);
+    expect(native.valuation()).toBe(0.25);
+    expect(native.terminal()).toBe("cost_unverifiable");
+
+    const api = new BudgetLedger({ kind: "finite", maxUsd: 1 });
+    const apiLease = api.reserve({
+      taskId: "api-task",
+      attemptId: "api-attempt",
+      intent: "implement",
+      harnessId: "codex",
+      cost: routeCostEvidence({
+        billing: "metered",
+        knowledge: "estimated",
+        source: "route-preflight",
+        provenance: ["route:api_key"],
+        estimatedUsd: 0.1,
+      }),
+    });
+    api.settle(
+      apiLease.lease!.lease_id,
+      attemptUsageCostSettlement(0.25, true, "api-attempt", "codex", "api_key"),
+    );
+    expect(api.spend()).toBe(0.25);
+    expect(api.valuation()).toBe(0);
+    expect(api.terminal()).toBeNull();
+  });
+
   it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {
     const led = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     const r = led.reserve({
@@ -249,6 +289,63 @@ describe("router", () => {
     expect(
       selectHarness([cand("claude"), cand("codex")], routeContext(led, "auto"))?.harnessId,
     ).toBe("codex");
+  });
+
+  it("routes from durable quota snapshots without crossing credential identities", () => {
+    const led = new BudgetLedger();
+    const observedAt = new Date().toISOString();
+    const resetsAt = new Date(Date.now() + 9_000_000).toISOString();
+    led.observeQuotaSnapshot({
+      subject: {
+        harness: "codex",
+        credential_route: "vendor_native",
+        plan_label: "Plus",
+        subject_id: "native-subject",
+      },
+      constraints: [
+        {
+          id: "five-hour",
+          label: "5 hour",
+          used_ratio: 0.1,
+          window_seconds: 18_000,
+          resets_at: resetsAt,
+          cooldown_until: null,
+        },
+      ],
+      source: "codex_app_server",
+      observed_at: observedAt,
+      freshness: "fresh",
+    });
+    led.observeQuotaSnapshot({
+      subject: {
+        harness: "codex",
+        credential_route: "managed_api_key",
+        plan_label: null,
+        subject_id: "paid-subject",
+      },
+      constraints: [
+        {
+          id: "cooldown",
+          label: "Cooldown",
+          used_ratio: null,
+          window_seconds: null,
+          resets_at: null,
+          cooldown_until: new Date(Date.now() + 60_000).toISOString(),
+        },
+      ],
+      source: "codex_rollout",
+      observed_at: observedAt,
+      freshness: "fresh",
+    });
+
+    const native = cand("codex", { credentialRoute: "vendor_native" });
+    expect(selectHarness([cand("claude"), native], routeContext(led, "auto"))).toBe(native);
+    expect(
+      selectHarness(
+        [cand("claude"), cand("codex", { credentialRoute: "managed_api_key" })],
+        routeContext(led, "auto"),
+      )?.harnessId,
+    ).toBe("claude");
   });
 
   it("excludes a rate-limited harness via the typed rate_limit signal", () => {

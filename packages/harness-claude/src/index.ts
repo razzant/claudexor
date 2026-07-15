@@ -1011,10 +1011,10 @@ async function* runClaude(
       const out = baseParser(obj, sessionId);
       if (out) {
         for (const ev of out) {
-          if (ev.type === "started") {
-            ev.credential_route = credentialRoute;
-            ev.credential_source = credentialSource;
-          }
+          // The auth route is fixed before spawn. Carry it on every event so
+          // a later api_retry/quota record remains independently attributable.
+          ev.credential_route = credentialRoute;
+          ev.credential_source = credentialSource;
         }
       }
       return out;

@@ -1,43 +1,85 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { providerScrubEnv } from "@claudexor/core";
+import { CODEX_FILE_AUTH_ARGS, defaultNativeCodexHome } from "@claudexor/harness-codex";
 import type { QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
 
 const CODEX_BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
-export async function refreshCodexQuota(): Promise<QuotaSnapshot[]> {
-  const child = spawn(CODEX_BIN, ["app-server", "--stdio"], {
+export async function refreshCodexQuota(
+  options: { bin?: string; baseEnv?: NodeJS.ProcessEnv } = {},
+): Promise<QuotaSnapshot[]> {
+  const invocation = codexQuotaInvocation(options.baseEnv);
+  const child = spawn(options.bin ?? CODEX_BIN, invocation.args, {
     stdio: ["pipe", "pipe", "pipe"],
-    env: nativeSessionEnv(),
+    env: invocation.env,
   });
   const lines = createInterface({ input: child.stdout });
   const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
   child.stderr.resume();
-  const responses = new Map<number, (value: Record<string, unknown>) => void>();
+  const responses = new Map<
+    number,
+    {
+      resolve: (value: Record<string, unknown>) => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }
+  >();
+  let processFailure: Error | null = null;
+  const failPending = (value: unknown) => {
+    processFailure ??=
+      value instanceof Error ? value : new Error(`Codex app-server exited: ${String(value)}`);
+    for (const pending of responses.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(processFailure);
+    }
+    responses.clear();
+  };
+  child.once("error", failPending);
+  child.once("exit", (code, signal) => {
+    failPending(`code=${String(code)} signal=${String(signal)}`);
+  });
+  child.stdin.on("error", failPending);
   lines.on("line", (line) => {
     try {
       const value = JSON.parse(line) as Record<string, unknown>;
-      if (typeof value["id"] === "number") responses.get(value["id"])?.(value);
+      if (typeof value["id"] === "number") {
+        const pending = responses.get(value["id"]);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        responses.delete(value["id"]);
+        if (value["error"]) pending.reject(new Error("request was refused by Codex app-server"));
+        else pending.resolve(value);
+      }
     } catch {
       // Vendor diagnostics are not protocol authority.
     }
   });
   const request = (id: number, method: string, params: unknown) =>
     new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${method} timed out`)), 8_000);
-      responses.set(id, (value) => {
-        clearTimeout(timer);
+      if (processFailure) {
+        reject(processFailure);
+        return;
+      }
+      const timer = setTimeout(() => {
         responses.delete(id);
-        if (value["error"]) reject(new Error(`${method} was refused by Codex app-server`));
-        else resolve(value);
+        reject(new Error(`${method} timed out`));
+      }, 8_000);
+      responses.set(id, { resolve, reject, timer });
+      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`, (error) => {
+        if (error) failPending(error);
       });
-      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     });
   try {
     await request(1, "initialize", {
       clientInfo: { name: "claudexor", version: "2" },
       capabilities: { optOutNotificationMethods: ["account/rateLimits/updated"] },
     });
-    child.stdin.write(`${JSON.stringify({ method: "initialized", params: null })}\n`);
+    await new Promise<void>((resolve, reject) => {
+      child.stdin.write(`${JSON.stringify({ method: "initialized", params: null })}\n`, (error) =>
+        error ? reject(error) : resolve(),
+      );
+    });
     const response = await request(2, "account/rateLimits/read", null);
     const result = response["result"];
     if (!result || typeof result !== "object") throw new Error("Codex quota response is missing");
@@ -49,7 +91,7 @@ export async function refreshCodexQuota(): Promise<QuotaSnapshot[]> {
   } finally {
     clearTimeout(timeout);
     lines.close();
-    child.stdin.end();
+    child.stdin.destroy();
     child.kill("SIGTERM");
   }
 }
@@ -71,9 +113,9 @@ export function parseCodexRateLimitsResponse(value: unknown, observedAt: Date): 
   for (const [fallbackId, bucket] of buckets) {
     const bucketId = textOrNull(bucket["limitId"]) ?? fallbackId;
     const bucketLabel = textOrNull(bucket["limitName"]) ?? bucketId;
-    for (const windowName of ["primary", "secondary"] as const) {
-      const window = objectOrNull(bucket[windowName]);
-      if (!window) continue;
+    for (const [windowName, candidate] of Object.entries(bucket)) {
+      const window = objectOrNull(candidate);
+      if (!window || !isRateLimitWindow(window)) continue;
       const usedPercent = finiteNumber(window["usedPercent"]);
       const durationMins = finiteNumber(window["windowDurationMins"]);
       const resetSeconds = finiteNumber(window["resetsAt"]);
@@ -104,10 +146,23 @@ export function parseCodexRateLimitsResponse(value: unknown, observedAt: Date): 
   ];
 }
 
-function nativeSessionEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "CLAUDEXOR_CODEX_API_KEY"]) delete env[key];
-  return env;
+export function codexQuotaInvocation(baseEnv: NodeJS.ProcessEnv = process.env): {
+  args: string[];
+  env: NodeJS.ProcessEnv;
+} {
+  const env = { ...baseEnv };
+  for (const key of Object.keys(providerScrubEnv())) delete env[key];
+  env["CODEX_HOME"] = defaultNativeCodexHome();
+  return {
+    args: [...CODEX_FILE_AUTH_ARGS, "app-server", "--stdio"],
+    env,
+  };
+}
+
+function isRateLimitWindow(value: Record<string, unknown>): boolean {
+  return ["usedPercent", "windowDurationMins", "resetsAt"].some((key) =>
+    Object.prototype.hasOwnProperty.call(value, key),
+  );
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

@@ -4,8 +4,10 @@ import type {
   BudgetObservation,
   CostEvidence,
   CostKnowledge,
+  CredentialRoute,
   Intent,
   PaidBudget,
+  QuotaSnapshot,
 } from "@claudexor/schema";
 import {
   BudgetLease as BudgetLeaseSchema,
@@ -67,6 +69,7 @@ export class BudgetLedger {
   private readonly holds = new Map<string, number>();
   private readonly unknownPaidInFlight = new Set<string>();
   private readonly observations: BudgetObservation[] = [];
+  private readonly quotaSnapshots = new Map<string, QuotaSnapshot>();
   private readonly promptCounts = new Map<string, number>();
   private spendUsd = 0;
   private valuationUsd = 0;
@@ -212,20 +215,48 @@ export class BudgetLedger {
     this.observations.push(observation);
   }
 
+  /** Seed durable quota projection without collapsing credential identities. */
+  observeQuotaSnapshot(snapshot: QuotaSnapshot): void {
+    const subject = snapshot.subject;
+    const key = [
+      subject.harness,
+      subject.credential_route,
+      subject.subject_id ?? "",
+      snapshot.source,
+    ].join("\0");
+    this.quotaSnapshots.set(key, snapshot);
+  }
+
   observationsFor(harnessId: string): BudgetObservation[] {
     return this.observations.filter((observation) => observation.harness_id === harnessId);
   }
 
-  cooldownActive(harnessId: string, now: number = Date.now()): boolean {
-    return this.observationsFor(harnessId).some((observation) => {
+  cooldownActive(
+    harnessId: string,
+    credentialRoute?: CredentialRoute,
+    now: number = Date.now(),
+  ): boolean {
+    const liveObservation = this.observationsFor(harnessId).some((observation) => {
       if (!observation.cooldown_until) return false;
       const time = Date.parse(observation.cooldown_until);
       return Number.isFinite(time) && time > now;
     });
+    if (liveObservation) return true;
+    if (!credentialRoute) return false;
+    return this.snapshotsFor(harnessId, credentialRoute).some((snapshot) =>
+      snapshot.constraints.some((constraint) => {
+        const time = constraint.cooldown_until ? Date.parse(constraint.cooldown_until) : Number.NaN;
+        return Number.isFinite(time) && time > now;
+      }),
+    );
   }
 
   /** Binding pacing slack across applicable windows; null means honestly unknown. */
-  bindingPaceSlack(harnessId: string, now: number = Date.now()): number | null {
+  bindingPaceSlack(
+    harnessId: string,
+    credentialRoute?: CredentialRoute,
+    now: number = Date.now(),
+  ): number | null {
     const latest = new Map<string, BudgetObservation>();
     for (const observation of this.observationsFor(harnessId)) {
       if (observation.kind !== "quota_constraint" || !observation.constraint_id) continue;
@@ -248,7 +279,35 @@ export class BudgetLedger {
       const elapsedFraction = 1 - remaining;
       slacks.push(elapsedFraction - observation.used_ratio);
     }
+    if (credentialRoute) {
+      for (const snapshot of this.snapshotsFor(harnessId, credentialRoute)) {
+        for (const constraint of snapshot.constraints) {
+          if (
+            typeof constraint.used_ratio !== "number" ||
+            typeof constraint.window_seconds !== "number" ||
+            !constraint.resets_at
+          )
+            continue;
+          const resetMs = Date.parse(constraint.resets_at);
+          if (!Number.isFinite(resetMs) || resetMs <= now) continue;
+          const remaining = Math.min(
+            1,
+            Math.max(0, (resetMs - now) / 1000 / constraint.window_seconds),
+          );
+          slacks.push(1 - remaining - constraint.used_ratio);
+        }
+      }
+    }
     return slacks.length > 0 ? Math.min(...slacks) : null;
+  }
+
+  private snapshotsFor(harnessId: string, credentialRoute: CredentialRoute): QuotaSnapshot[] {
+    return [...this.quotaSnapshots.values()].filter(
+      (snapshot) =>
+        snapshot.freshness === "fresh" &&
+        snapshot.subject.harness === harnessId &&
+        snapshot.subject.credential_route === credentialRoute,
+    );
   }
 
   recordPrompt(fingerprint: string): number {
@@ -282,10 +341,12 @@ export function attemptCostEvidence(
   harnessId: string,
   attemptId: string,
   estimatedUsd?: number,
+  billing: BillingKnowledge = "unknown",
 ): CostEvidence {
   return routeCostEvidence({
     source: "route-preflight",
-    provenance: [`harness:${harnessId}`, `attempt:${attemptId}`],
+    provenance: [`harness:${harnessId}`, `attempt:${attemptId}`, `billing:${billing}`],
+    billing,
     knowledge: estimatedUsd === undefined ? "unknown" : "estimated",
     estimatedUsd: estimatedUsd ?? null,
   });
@@ -307,10 +368,20 @@ export function attemptUsageCostSettlement(
   estimated: boolean,
   attemptId: string,
   harnessId: string,
+  authMode?: "local_session" | "api_key" | null,
 ): BudgetSettlement {
+  if (authMode === "local_session" && estimated) {
+    return {
+      knowledge: "unknown",
+      source: "harness-token-valuation",
+      provenance: [`attempt:${attemptId}`, `harness:${harnessId}`, "route:vendor_native"],
+      valuationUsd: cashUsd,
+    };
+  }
   return usageCostSettlement(cashUsd, estimated, "harness-usage", [
     `attempt:${attemptId}`,
     `harness:${harnessId}`,
+    ...(authMode ? [`route:${authMode}`] : []),
   ]);
 }
 

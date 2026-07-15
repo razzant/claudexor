@@ -5156,6 +5156,112 @@ describe("auth-route attempt telemetry (route evidence)", () => {
   });
 });
 
+describe("durable quota projection routing (QP3)", () => {
+  it("seeds a new root ledger before initial route ordering", async () => {
+    await withScopedConfigDir(async () => {
+      const repo = await initRepo();
+      const quotaAdapter = (id: string): HarnessAdapter => ({
+        id,
+        async discover() {
+          return HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "local_cli",
+            provider_family: id === "codex" ? "openai" : "anthropic",
+            capabilities: { read_files: true },
+            access_profiles_supported: ["readonly"],
+            auth_modes: ["local_session"],
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: id,
+            status: "ok",
+            enabled_intents: ["explain"],
+          });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            credential_route: "vendor_native",
+          };
+          yield { type: "message", session_id: spec.session_id, ts, text: `from ${id}` };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      });
+      const reset = new Date(Date.now() + 9_000_000).toISOString();
+      const observed = new Date().toISOString();
+      const snapshots = [
+        {
+          subject: {
+            harness: "codex",
+            credential_route: "vendor_native" as const,
+            plan_label: "Plus",
+            subject_id: "codex-native",
+          },
+          constraints: [
+            {
+              id: "five-hour",
+              label: "5 hour",
+              used_ratio: 0.1,
+              window_seconds: 18_000,
+              resets_at: reset,
+              cooldown_until: null,
+            },
+          ],
+          source: "codex_app_server" as const,
+          observed_at: observed,
+          freshness: "fresh" as const,
+        },
+        {
+          subject: {
+            harness: "claude",
+            credential_route: "vendor_native" as const,
+            plan_label: null,
+            subject_id: "claude-native",
+          },
+          constraints: [
+            {
+              id: "five-hour",
+              label: "5 hour",
+              used_ratio: 0.8,
+              window_seconds: 18_000,
+              resets_at: reset,
+              cooldown_until: null,
+            },
+          ],
+          source: "claude_api_retry" as const,
+          observed_at: observed,
+          freshness: "fresh" as const,
+        },
+      ];
+      const result = await new Orchestrator({
+        registry: new Map([
+          ["claude", quotaAdapter("claude")],
+          ["codex", quotaAdapter("codex")],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => snapshots,
+      }).run({
+        repoRoot: repo,
+        prompt: "route by durable quota",
+        mode: "ask",
+        harnesses: ["claude", "codex"],
+        authPreference: "subscription",
+        web: "off",
+      });
+
+      expect(result.status, result.summary).toBe("success");
+      expect(result.candidates).toEqual([
+        expect.objectContaining({ harnessId: "codex", status: "success" }),
+      ]);
+    });
+  });
+});
+
 describe("web evidence recovery keying (INV-043)", () => {
   it("keeps the failure DISCLOSED when an unrelated-target web success satisfies the evidence gate", async () => {
     const { createAttemptTelemetry, observeAttemptTelemetry, webUnsatisfied } =

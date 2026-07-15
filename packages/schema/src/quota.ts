@@ -2,7 +2,7 @@ import { z } from "zod";
 import { Id } from "./primitives.js";
 
 export const QuotaSource = z
-  .enum(["codex_app_server", "codex_rollout", "claude_statusline"])
+  .enum(["codex_app_server", "codex_rollout", "claude_api_retry"])
   .describe("Vendor-owned machine-readable source of a quota snapshot.");
 export type QuotaSource = z.infer<typeof QuotaSource>;
 

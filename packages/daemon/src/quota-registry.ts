@@ -8,12 +8,16 @@ import {
 } from "@claudexor/schema";
 
 const UPSERTED = "quota.snapshot.upserted";
+const POLL_BACKOFF_MS = 60_000;
+const MAX_POLL_BACKOFF_MS = 15 * 60_000;
 
 export type QuotaRefresher = () => Promise<QuotaSnapshot[]>;
 
 /** Global-journal authority for vendor-owned quota snapshots. */
 export class QuotaRegistry {
   private readonly snapshots = new Map<string, QuotaSnapshot>();
+  private pollFailures = 0;
+  private pollNotBefore = 0;
 
   constructor(
     private readonly journal: DurableJournal,
@@ -50,6 +54,26 @@ export class QuotaRegistry {
       ),
       refreshed_at: this.now().toISOString(),
     });
+  }
+
+  /** Background official-source refresh for empty/stale projections with bounded backoff. */
+  async pollStale(): Promise<boolean> {
+    const now = this.now().getTime();
+    const snapshots = [...this.snapshots.values()].map((snapshot) => staleAt(snapshot, now));
+    if (snapshots.length > 0 && snapshots.every((snapshot) => snapshot.freshness === "fresh"))
+      return false;
+    if (now < this.pollNotBefore) return false;
+    try {
+      await this.refresh();
+      this.pollFailures = 0;
+      this.pollNotBefore = now + POLL_BACKOFF_MS;
+      return true;
+    } catch {
+      this.pollFailures += 1;
+      this.pollNotBefore =
+        now + Math.min(POLL_BACKOFF_MS * 2 ** (this.pollFailures - 1), MAX_POLL_BACKOFF_MS);
+      return false;
+    }
   }
 
   ingest(harnessId: string, value: unknown): void {
@@ -98,7 +122,7 @@ export class QuotaRegistry {
       new Date(
         this.now().getTime() + (typeof delay === "number" ? delay : 5 * 60_000),
       ).toISOString();
-    const source = harness === "claude" ? "claude_statusline" : "codex_rollout";
+    const source = harness === "claude" ? "claude_api_retry" : "codex_rollout";
     const existing = [...this.snapshots.values()].find(
       (snapshot) =>
         snapshot.subject.harness === harness &&

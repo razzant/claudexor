@@ -1,5 +1,6 @@
 import type {
   BillingKnowledge,
+  CredentialRoute,
   EffortHint,
   Intent,
   PaidFallback,
@@ -15,6 +16,7 @@ export interface RouterCandidate {
   effort?: EffortHint;
   billingKnowledge?: BillingKnowledge;
   incrementalCostUsd?: number | null;
+  credentialRoute?: CredentialRoute;
 }
 
 export interface RouteContext {
@@ -50,7 +52,9 @@ function isIncrementalPaid(candidate: RouterCandidate): boolean {
 
 function eligible(candidates: RouterCandidate[], ctx: RouteContext): RouterCandidate[] {
   const ready = candidates.filter(
-    (candidate) => candidate.available && !ctx.ledger.cooldownActive(candidate.harnessId),
+    (candidate) =>
+      candidate.available &&
+      !ctx.ledger.cooldownActive(candidate.harnessId, candidate.credentialRoute),
   );
   const free = ready.filter((candidate) => !isIncrementalPaid(candidate));
   if (ctx.paidFallback === "never") return free;
@@ -79,8 +83,8 @@ export function rankHarnesses(candidates: RouterCandidate[], ctx: RouteContext):
       const bCost = b.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
       return aCost - bCost || aTier - bTier;
     }
-    const aSlack = ctx.ledger.bindingPaceSlack(a.harnessId);
-    const bSlack = ctx.ledger.bindingPaceSlack(b.harnessId);
+    const aSlack = ctx.ledger.bindingPaceSlack(a.harnessId, a.credentialRoute);
+    const bSlack = ctx.ledger.bindingPaceSlack(b.harnessId, b.credentialRoute);
     if (aSlack !== null || bSlack !== null) {
       return (bSlack ?? Number.NEGATIVE_INFINITY) - (aSlack ?? Number.NEGATIVE_INFINITY);
     }

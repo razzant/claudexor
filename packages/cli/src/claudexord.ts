@@ -71,6 +71,7 @@ async function main(): Promise<void> {
   const writerLease = acquireDaemonWriterLease(socketPath);
   let shutdownRuntime: DaemonRuntimeShutdown | null = null;
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
+  let quotaPollTimer: NodeJS.Timeout | null = null;
   try {
     const token = ensureToken();
     let requestRootShutdown: () => Promise<void> = async () => {
@@ -99,6 +100,16 @@ async function main(): Promise<void> {
       validate: (store) => store.validateProjection(),
     });
     journalManager.start();
+    const pollQuota = () => {
+      try {
+        void quotaStoreSlot.current().pollStale();
+      } catch {
+        // A partition recovery fence remains authoritative; the next tick retries.
+      }
+    };
+    quotaPollTimer = setInterval(pollQuota, 60_000);
+    quotaPollTimer.unref();
+    pollQuota();
     const threads = new ProjectPartitions(
       daemonDir(),
       projectStoreSlot,
@@ -131,6 +142,8 @@ async function main(): Promise<void> {
         const orchestrator = new Orchestrator({
           registry: buildRegistry(),
           routingGoal: p.routingGoal,
+          quotaSnapshots: () => quotaStoreSlot.current().read().snapshots,
+          quotaEventSink: (harnessId, event) => quotaStoreSlot.current().ingest(harnessId, event),
           reviewerPanel: p.reviewerPanel,
           reviewerModels:
             p.reviewerModels && typeof p.reviewerModels === "object" ? p.reviewerModels : undefined,
@@ -253,6 +266,8 @@ async function main(): Promise<void> {
       control: () => control,
       journal: {
         close: () => {
+          if (quotaPollTimer) clearInterval(quotaPollTimer);
+          quotaPollTimer = null;
           threads.close();
           journalManager.close();
         },
@@ -351,6 +366,7 @@ async function main(): Promise<void> {
     }
     throw error;
   } finally {
+    if (quotaPollTimer) clearInterval(quotaPollTimer);
     writerLease.release();
   }
 }
@@ -400,6 +416,8 @@ function controlServices(
     try {
       const plan = await new Orchestrator({
         registry: buildRegistry(),
+        quotaSnapshots: () => quotaRegistry().read().snapshots,
+        quotaEventSink: (harnessId, event) => quotaRegistry().ingest(harnessId, event),
         reviewerPanel: material.request.reviewerPanel,
         reviewerModels: material.request.reviewerModels,
         reviewerEfforts: material.request.reviewerEfforts,

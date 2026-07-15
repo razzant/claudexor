@@ -14,6 +14,7 @@ import type {
   InteractionRequest,
   ModeKind,
   PaidBudget,
+  QuotaSnapshot,
   RoutingGoal,
   ProtectedPathApproval,
   ProjectConfig,
@@ -198,6 +199,10 @@ export interface OrchestratorDeps {
   reviewers?: ReviewerSpec[];
   paidBudget?: PaidBudget;
   routingGoal?: RoutingGoal;
+  /** Durable global quota projection, injected by the daemon boundary. */
+  quotaSnapshots?: () => readonly QuotaSnapshot[];
+  /** Persist typed live quota/cooldown events into that same projection. */
+  quotaEventSink?: (harnessId: string, event: HarnessEvent) => void;
   /** Ordered explicit reviewer panel. Unlike legacy per-family overrides this
    * preserves duplicate harness entries, so one provider can review through
    * multiple requested models in a single panel pass. */
@@ -1123,7 +1128,12 @@ export class Orchestrator {
           : authModes.includes("api_key")
             ? ("api_key" as const)
             : ("unknown" as const);
-        const authMode = metric?.last_auth_mode ?? guessedAuthMode;
+        const authMode =
+          input.authPreference === "api_key"
+            ? ("api_key" as const)
+            : input.authPreference === "subscription"
+              ? ("local_session" as const)
+              : (metric?.last_auth_mode ?? guessedAuthMode);
         return {
           harnessId: r.adapter.id,
           available: true,
@@ -1134,6 +1144,12 @@ export class Orchestrator {
           effort: input.effort ?? config.harnesses[r.adapter.id]?.effort ?? undefined,
           billingKnowledge: authMode === "api_key" ? "metered" : "unknown",
           incrementalCostUsd: authMode === "api_key" ? (metric?.avg_cost_usd ?? null) : null,
+          credentialRoute:
+            authMode === "api_key"
+              ? "managed_api_key"
+              : authMode === "local_session"
+                ? "vendor_native"
+                : undefined,
         };
       });
       const ranked = rankHarnesses(remaining, {
@@ -1639,7 +1655,9 @@ export class Orchestrator {
               // Mid-flight cap enforcement: the guard raises this attempt's hold
               // to the streamed cost; a hard tier aborts NOW instead of letting a
               // streaming candidate overshoot the paid budget until settlement.
-              if (budgetGuard?.(cost)) {
+              const valuationOnly =
+                safeEv.usage.estimated === true && telemetry.authMode === "local_session";
+              if (!valuationOnly && budgetGuard?.(cost)) {
                 harnessErrored = true;
                 errors.push("budget hard cap reached mid-attempt; stream aborted");
                 log?.emit("budget.observation", {
@@ -1668,6 +1686,7 @@ export class Orchestrator {
             // Observe ALL budget/quota signals (one codex usage event carries
             // BOTH spend and quota); pressure disclosed once per attempt.
             observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
+            this.deps.quotaEventSink?.(adapter.id, safeEv);
           }
           if (rawContextPacket && !harnessErrored)
             await consumeRawPatchEnvelope({
@@ -2138,6 +2157,7 @@ export class Orchestrator {
           routed.adapter.id,
           attemptId,
           i > 0 ? this.estimateUsdFloor(input.repoRoot) : undefined,
+          this.routeBillingKnowledge(input, routed.adapter.id),
         ),
       });
       log.emit("budget.lease.created", {
@@ -2280,7 +2300,13 @@ export class Orchestrator {
         );
         ledger.settle(
           slot.leaseId,
-          attemptUsageCostSettlement(run.cost, run.costEstimated, run.attemptId, run.harnessId),
+          attemptUsageCostSettlement(
+            run.cost,
+            run.costEstimated,
+            run.attemptId,
+            run.harnessId,
+            run.telemetry.authMode,
+          ),
         );
         log.emit("harness.completed", {
           harness_id: adapter.id,
@@ -2595,7 +2621,12 @@ export class Orchestrator {
         attemptId: "synth",
         intent: "synthesize",
         harnessId: synthRouted.adapter.id,
-        cost: attemptCostEvidence(synthRouted.adapter.id, "synth"),
+        cost: attemptCostEvidence(
+          synthRouted.adapter.id,
+          "synth",
+          undefined,
+          this.routeBillingKnowledge(input, synthRouted.adapter.id),
+        ),
       });
       if (lease.granted) {
         let envelope: WorkspaceEnvelope | undefined;
@@ -2659,7 +2690,13 @@ export class Orchestrator {
           );
           ledger.settle(
             lease.lease?.lease_id ?? "",
-            attemptUsageCostSettlement(run.cost, run.costEstimated, run.attemptId, run.harnessId),
+            attemptUsageCostSettlement(
+              run.cost,
+              run.costEstimated,
+              run.attemptId,
+              run.harnessId,
+              run.telemetry.authMode,
+            ),
           );
           reviewEnvelopes.push(envelope);
           envelope = undefined;
@@ -3580,6 +3617,7 @@ export class Orchestrator {
       adapterPool = await this.resolveCandidateAdapters(
         { ...input, n: undefined },
         this.candidateIntent(input),
+        ledger,
       );
       this.requestRequirements.assertConvergenceWorkspace(input.inPlace === true, adapterPool);
     } catch (err) {
@@ -3754,7 +3792,12 @@ export class Orchestrator {
           attemptId,
           intent: "repair",
           harnessId: adapter.id,
-          cost: attemptCostEvidence(adapter.id, attemptId),
+          cost: attemptCostEvidence(
+            adapter.id,
+            attemptId,
+            undefined,
+            this.routeBillingKnowledge(input, adapter.id),
+          ),
         });
         if (!lease.granted) {
           exhausted = true;
@@ -3811,7 +3854,13 @@ export class Orchestrator {
           );
           ledger.settle(
             lease.lease?.lease_id ?? "",
-            attemptUsageCostSettlement(run.cost, run.costEstimated, run.attemptId, run.harnessId),
+            attemptUsageCostSettlement(
+              run.cost,
+              run.costEstimated,
+              run.attemptId,
+              run.harnessId,
+              run.telemetry.authMode,
+            ),
           );
           log.emit("harness.completed", {
             harness_id: adapter.id,
@@ -4406,7 +4455,7 @@ export class Orchestrator {
 
     let adapters: RoutedAdapter[];
     try {
-      adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan");
+      adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan", ledger);
     } catch (err) {
       const message = safeErrorMessage(err);
       store.writeText(
@@ -4509,7 +4558,12 @@ export class Orchestrator {
           attemptId,
           intent: "plan",
           harnessId: adapter.id,
-          cost: attemptCostEvidence(adapter.id, attemptId),
+          cost: attemptCostEvidence(
+            adapter.id,
+            attemptId,
+            undefined,
+            this.routeBillingKnowledge(input, adapter.id),
+          ),
         });
         if (!lease.granted) {
           log.emit("budget.lease.created", {
@@ -4616,6 +4670,7 @@ export class Orchestrator {
               // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
+              this.deps.quotaEventSink?.(adapter.id, safeEv);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
                 if (safeEv.usage.estimated) costEstimated = true;
@@ -4646,10 +4701,13 @@ export class Orchestrator {
           input.signal?.removeEventListener("abort", onAbort);
           ledger.settle(
             lease.lease?.lease_id ?? "",
-            usageCostSettlement(cost, costEstimated, "planner-usage", [
-              `attempt:${attemptId}`,
-              `harness:${adapter.id}`,
-            ]),
+            attemptUsageCostSettlement(
+              cost,
+              costEstimated,
+              attemptId,
+              adapter.id,
+              telemetry.authMode,
+            ),
           );
         }
         attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
@@ -5044,7 +5102,19 @@ export class Orchestrator {
   }
 
   private rootLedger(input: RunInput, contract: TaskContract): BudgetLedger {
-    return input.budgetLedger ?? new BudgetLedger(contract.budget.paid_budget);
+    const ledger = input.budgetLedger ?? new BudgetLedger(contract.budget.paid_budget);
+    for (const snapshot of this.deps.quotaSnapshots?.() ?? []) {
+      ledger.observeQuotaSnapshot(snapshot);
+    }
+    return ledger;
+  }
+
+  private routeBillingKnowledge(input: RunInput, harnessId: string): "metered" | "unknown" {
+    if (input.authPreference === "api_key") return "metered";
+    if (input.authPreference === "subscription") return "unknown";
+    return loadHarnessMetrics(globalConfigDir())[harnessId]?.last_auth_mode === "api_key"
+      ? "metered"
+      : "unknown";
   }
 
   private async runOrchestrate(
@@ -5205,7 +5275,11 @@ export class Orchestrator {
         : Math.min(Math.max(input.n ?? 2, 1), 3);
     let adapters: RoutedAdapter[];
     try {
-      adapters = await this.resolveCandidateAdapters({ ...input, prompt, n: width }, opts.intent);
+      adapters = await this.resolveCandidateAdapters(
+        { ...input, prompt, n: width },
+        opts.intent,
+        ledger,
+      );
       if (!opts.swarm) {
         const seen = new Set<string>();
         adapters = adapters.filter((routed) => {
@@ -5290,7 +5364,12 @@ export class Orchestrator {
         attemptId,
         intent: opts.intent,
         harnessId: adapter.id,
-        cost: attemptCostEvidence(adapter.id, attemptId),
+        cost: attemptCostEvidence(
+          adapter.id,
+          attemptId,
+          undefined,
+          this.routeBillingKnowledge(input, adapter.id),
+        ),
       });
       if (!lease.granted) {
         log.emit("budget.lease.created", {
@@ -5434,6 +5513,7 @@ export class Orchestrator {
               // read-only routes burn quota too (the orchestrate PLANNER is
               // the loudest) — same single owner as the agent loop.
               observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
+              this.deps.quotaEventSink?.(adapter.id, safeEv);
               if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
                 cost += safeEv.usage.cost_usd;
                 if (safeEv.usage.estimated) costEstimated = true;
@@ -5498,10 +5578,13 @@ export class Orchestrator {
         input.signal?.removeEventListener("abort", onAbort);
         ledger.settle(
           lease.lease?.lease_id ?? "",
-          usageCostSettlement(cost, costEstimated, "harness-usage", [
-            `attempt:${attemptId}`,
-            `harness:${adapter.id}`,
-          ]),
+          attemptUsageCostSettlement(
+            cost,
+            costEstimated,
+            attemptId,
+            adapter.id,
+            telemetry.authMode,
+          ),
         );
       }
       if (harnessError && telemetry.transientFailures.length > 0) {
