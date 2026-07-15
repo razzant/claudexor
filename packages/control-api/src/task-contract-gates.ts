@@ -1,4 +1,4 @@
-import { TaskContract } from "@claudexor/schema";
+import { FrozenTaskContractArtifact, type TaskContract } from "@claudexor/schema";
 import type { verifyAndDeliver } from "@claudexor/delivery";
 import { parse as parseYaml } from "yaml";
 
@@ -12,7 +12,7 @@ export function requiredGateSpecsFromTaskArtifact(
   if (raw === null) throw unverifiable("run is missing its required task contract");
   let task: TaskContract;
   try {
-    task = TaskContract.parse(parseYaml(raw));
+    task = FrozenTaskContractArtifact.parse(parseYaml(raw));
   } catch {
     throw unverifiable("run task contract is malformed or unverifiable");
   }

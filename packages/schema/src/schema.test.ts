@@ -10,6 +10,7 @@ import {
   ControlSpecQuestionsRequest,
   ControlThread,
   ConformanceReport,
+  FrozenTaskContractArtifact,
   HarnessManifest,
   HarnessStatusDto,
   HarnessRunSpec,
@@ -82,6 +83,23 @@ describe("TaskContract", () => {
     expect(tc.budget.portfolio).toBe("subscription-first");
     expect(tc.constraints.protected_path_approvals).toEqual([]);
     expect(tc.convergence.require_tests_pass).toBe(true);
+  });
+
+  it("requires an explicit gate list only when decoding frozen task authority", () => {
+    const minimal = {
+      task_id: "t-1",
+      created_at: "2026-06-05T00:00:00Z",
+      repo: { root: "/repo", base_ref: "main" },
+      schema_version: 2,
+      mode: { kind: "agent" },
+      user_intent: { raw: "do the thing" },
+    };
+    expect(TaskContract.parse(minimal).tests.commands).toEqual([]);
+    expect(FrozenTaskContractArtifact.safeParse(minimal).success).toBe(false);
+    expect(FrozenTaskContractArtifact.safeParse({ ...minimal, tests: {} }).success).toBe(false);
+    expect(
+      FrozenTaskContractArtifact.parse({ ...minimal, tests: { commands: [] } }).tests.commands,
+    ).toEqual([]);
   });
 });
 

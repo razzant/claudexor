@@ -23,6 +23,7 @@ import { connect } from "node:net";
 import { execFileSync } from "node:child_process";
 import { sha256 } from "@claudexor/util";
 import type { ControlSetupJob } from "@claudexor/schema";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
   if (input instanceof Request) return globalThis.fetch(input, init);
@@ -3972,12 +3973,23 @@ describe("DaemonControlApiServer", () => {
     }
   }
 
-  for (const taskContractState of ["missing", "malformed"] as const) {
+  for (const taskContractState of [
+    "missing",
+    "malformed",
+    "omitted_tests",
+    "omitted_commands",
+  ] as const) {
     it(`refuses manual apply when the task contract is ${taskContractState}`, async () => {
       const { daemon, record } = fakeDaemon();
       const taskPath = join(record.runDir as string, "context", "task.yaml");
       if (taskContractState === "missing") rmSync(taskPath, { force: true });
-      else writeFileSync(taskPath, "schema_version: [\n");
+      else if (taskContractState === "malformed") writeFileSync(taskPath, "schema_version: [\n");
+      else {
+        const task = parseYaml(readFileSync(taskPath, "utf8")) as Record<string, unknown>;
+        if (taskContractState === "omitted_tests") delete task["tests"];
+        else delete (task["tests"] as Record<string, unknown>)["commands"];
+        writeFileSync(taskPath, stringifyYaml(task));
+      }
       await withDaemonServer(
         daemon,
         async (base) => {

@@ -309,3 +309,18 @@ export const TaskContract = z
   })
   .describe("Immutable contract describing a single run; built once, hashed, never mutated.");
 export type TaskContract = z.infer<typeof TaskContract>;
+
+/**
+ * Decoder for the persisted, frozen task artifact used to authorize delivery.
+ * Runtime construction keeps TaskContract defaults for callers building a new
+ * contract, but an existing authority must state its gate set explicitly: an
+ * omitted/typoed field must never become a trustworthy empty list via defaults.
+ */
+export const FrozenTaskContractArtifact = z
+  .object({
+    tests: z.object({ commands: z.array(TestCommand) }).passthrough(),
+  })
+  .passthrough()
+  .pipe(TaskContract)
+  .describe("Persisted TaskContract with an explicit deterministic-gate authority.");
+export type FrozenTaskContractArtifact = z.infer<typeof FrozenTaskContractArtifact>;

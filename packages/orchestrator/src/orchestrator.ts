@@ -46,7 +46,7 @@ import {
   RunTelemetry as RunTelemetrySchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
-  TaskContract as TaskContractSchema,
+  FrozenTaskContractArtifact as TaskContractSchema,
   isBlocking,
   orchestratePlanJsonSchema,
 } from "@claudexor/schema";

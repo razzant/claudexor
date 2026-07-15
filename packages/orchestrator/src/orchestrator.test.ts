@@ -4,6 +4,7 @@ import { repoHash } from "@claudexor/config";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ArtifactStore } from "@claudexor/artifact-store";
 
 const shellGate = (command: string) => ({
   program: "sh",
@@ -4310,6 +4311,46 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
     ).toContain("final verify: deterministic gates failed");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
+  it("auto_full refuses a frozen task artifact whose gate authority was omitted", async () => {
+    const repo = await initRepo();
+    const seed = await new Orchestrator({
+      registry: new Map([["impl", diffImplementer("impl", "local")]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+      tests: [shellGate("true")],
+    });
+    const taskPath = join(seed.runDir, "context", "task.yaml");
+    const store = new ArtifactStore(repo);
+    const task = store.readYaml<Record<string, unknown>>(taskPath);
+    expect(task).not.toBeNull();
+    if (!task) throw new Error("seed task contract is missing");
+    delete task["tests"];
+    store.writeYaml(taskPath, task);
+    const plan = {
+      tool_calls: [{ tool: "apply", run_id: seed.runId, mode: "apply", why: "land it" }],
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "land the work",
+      mode: "orchestrate",
+      harnesses: ["planner"],
+      autonomy: "auto_full",
+    });
+    expect(res.status).toBe("failed");
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+    expect(
+      readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
+    ).toContain("fresh verification contract is missing");
   });
 
   it("suggest autonomy never executes: the plan is the work product (read-only)", async () => {
