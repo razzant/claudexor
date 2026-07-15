@@ -18,7 +18,7 @@
  *     --packet-manifest-digest <sha256> # expected identity of MANIFEST.sha256
  *     --candidate-sha <sha>   # exact full commit SHA checked out in cwd
  *     --candidate-tree <sha>  # exact full tree SHA checked out in cwd
- *     --panel-lock <path>     # panel lock outside the candidate worktree
+ *     --panel-lock <path>     # pre-created panel lock outside the candidate worktree
  *     --round <n>             # round number for the output dir
  *     --out <dir>             # output root outside candidate and sealed packet
  *
@@ -27,7 +27,9 @@
  *          google/gemini-3.5-flash
  *   scope: anthropic/claude-fable-5
  *   route: OpenRouter only
- * A matching external panel lock is written after the first responsive run.
+ * Prepare the immutable lock in a separate no-network invocation by adding
+ * `--prepare-panel-lock`; a review invocation refuses a missing lock before it
+ * creates its output directory or calls a reviewer.
  * Environment overrides, substitutions, direct-provider routes, and
  * --skip-scope fail before evidence leaves the machine.
  *
@@ -66,10 +68,12 @@ import {
   completionTermination,
   parseChecklistJson,
   pathIsWithin,
+  panelLockText,
   releaseReviewDecision,
   validateChecklistResponse,
   validateFrozenReviewBinding,
   validateNewReviewOutput,
+  validatePanelLock,
 } from "./lib/release-review-contract.mjs";
 
 function arg(name, fallback = null) {
@@ -600,20 +604,39 @@ async function main() {
   if (pathIsWithin(frozen.packet, panelLockPath)) {
     throw new Error("panel lock must not mutate the sealed packet");
   }
-  const panelLockExists = existsSync(panelLockPath);
-  const panelLock = readPanelLock(panelLockPath);
-  if (
-    panelLockExists &&
-    (panelLock.triad?.trim() !== expectedTriad ||
-      panelLock.scope?.trim() !== SCOPE_MODEL ||
-      panelLock.candidate_sha?.trim() !== candidateSha ||
-      panelLock.candidate_tree?.trim() !== candidateTree ||
-      panelLock.packet_manifest_sha256?.trim() !== frozen.manifestSha256)
-  ) {
-    throw new Error(`${panelLockPath} does not contain the exact frozen v2 reviewer panel.`);
+  if (arg("prepare-panel-lock") !== null) {
+    if (existsSync(panelLockPath)) {
+      const existing = validatePanelLock(readPanelLock(panelLockPath), {
+        candidateSha,
+        candidateTree,
+        packetManifestSha256: frozen.manifestSha256,
+      });
+      if (!existing.ok) throw new Error(`invalid panel lock: ${existing.reasons.join("; ")}`);
+      return;
+    }
+    mkdirSync(dirname(panelLockPath), { recursive: true });
+    writeFileSync(
+      panelLockPath,
+      panelLockText({
+        candidateSha,
+        candidateTree,
+        packetManifestSha256: frozen.manifestSha256,
+      }),
+      { flag: "wx", mode: 0o600 },
+    );
+    return;
   }
-  const panelPinPending = !panelLockExists;
-  let panelPinnedNow = false;
+  const panelLock = validatePanelLock(
+    existsSync(panelLockPath) ? readPanelLock(panelLockPath) : null,
+    {
+      candidateSha,
+      candidateTree,
+      packetManifestSha256: frozen.manifestSha256,
+    },
+  );
+  if (!panelLock.ok) {
+    throw new Error(`invalid panel lock: ${panelLock.reasons.join("; ")}`);
+  }
   const round = String(arg("round", "1"));
   if (!/^[1-9]\d*$/.test(round)) throw new Error("--round must be a positive integer");
   const outDir = resolve(requiredArg("out"), `round-${round}`);
@@ -864,27 +887,6 @@ async function main() {
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
   }
 
-  // "responded" only: a partial/parse-failed scope pass exits this run FAILED
-  // (missing items are release-blocking), and a failed first run must never
-  // freeze its panel into the gate config.
-  if (panelPinPending && quorumMet && scope?.status === "responded") {
-    mkdirSync(dirname(panelLockPath), { recursive: true });
-    writeFileSync(
-      panelLockPath,
-      [
-        `triad: ${TRIAD_MODELS.join(",")}`,
-        `scope: ${SCOPE_MODEL}`,
-        `candidate_sha: ${candidateSha}`,
-        `candidate_tree: ${candidateTree}`,
-        `packet_manifest_sha256: ${frozen.manifestSha256}`,
-        "",
-      ].join("\n"),
-      { flag: "wx", mode: 0o600 },
-    );
-    panelPinnedNow = true;
-    console.error(`panel pinned: wrote the exact immutable v2 reviewer panel to ${panelLockPath}.`);
-  }
-
   const decision = releaseReviewDecision({ triadActors: actorRecords, scope, quorum: 2 });
   const summary = {
     round: Number(round),
@@ -895,7 +897,7 @@ async function main() {
     generated_at: new Date().toISOString(),
     panel: { triad: TRIAD_MODELS, scope: SCOPE_MODEL },
     panel_source: "built_in_exact",
-    panel_pinned_now: panelPinnedNow,
+    panel_pinned_now: false,
     panel_override_active: false,
     triad: {
       models: TRIAD_MODELS,

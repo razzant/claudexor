@@ -269,6 +269,7 @@ struct BudgetMini: View {
     let cap: Double
     var spendKnown: Bool = true
     var capKnown: Bool = true
+    var capUnlimited: Bool = false
     var spendEstimated: Bool = false
     var tint: Color = Theme.accent
     var body: some View {
@@ -276,7 +277,7 @@ struct BudgetMini: View {
             HStack(spacing: 3) {
                 Text(spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spend))" : "Unknown").font(.system(.caption, design: .monospaced))
                 Text("/").foregroundStyle(.tertiary)
-                Text(capKnown ? String(format: "$%.2f", cap) : "Unknown").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                Text(capUnlimited ? "Unlimited" : capKnown ? String(format: "$%.2f", cap) : "Unknown").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }
             MeterBar(fraction: spendKnown && capKnown && cap > 0 ? spend / cap : 0, tint: tint).frame(width: 130)
         }
@@ -285,7 +286,7 @@ struct BudgetMini: View {
 
     private var helpText: String {
         let spendText = spendKnown ? "\(spendEstimated ? "Estimated " : "")spend \(String(format: "$%.4f", spend))" : "Spend is not verified yet"
-        let capText = capKnown ? "cap \(String(format: "$%.2f", cap))" : "cap is unknown"
+        let capText = capUnlimited ? "paid budget is unlimited" : capKnown ? "cap \(String(format: "$%.2f", cap))" : "cap is unknown"
         return "\(spendText); \(capText). Native provider quota is shown only when verified."
     }
 }

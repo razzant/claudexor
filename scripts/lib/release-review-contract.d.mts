@@ -19,6 +19,23 @@ export interface ChecklistValidation {
 }
 
 export function exactPanelMatch(triadModels: readonly string[], scopeModel: string): boolean;
+export interface PanelLockBinding {
+  candidateSha: string;
+  candidateTree: string;
+  packetManifestSha256: string;
+}
+export interface ParsedPanelLock {
+  triad?: string;
+  scope?: string;
+  candidate_sha?: string;
+  candidate_tree?: string;
+  packet_manifest_sha256?: string;
+}
+export function panelLockText(binding: PanelLockBinding): string;
+export function validatePanelLock(
+  lock: ParsedPanelLock | null,
+  binding: PanelLockBinding,
+): { ok: boolean; reasons: string[] };
 export function pathIsWithin(root: string, target: string): boolean;
 export function validateNewReviewOutput(
   candidateRoot: string,

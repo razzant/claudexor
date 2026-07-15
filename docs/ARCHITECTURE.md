@@ -1152,10 +1152,10 @@ code touching one of these areas must honor it or change it explicitly here.
 - `--json` mode guarantees exactly one JSON object on stdout for run/ops
   verbs; interactive TTY question prompts (follow/agent Q&A) remain human-text
   affordances by design.
-- Quota observations (used-percent, rate-limit cooldowns) live in the per-run
-  budget ledger only; nothing persists them across runs, so each run
-  rediscovers vendor quota pressure (cost/latency metrics, by contrast,
-  persist via harness metrics).
+- Vendor-owned quota snapshots and typed rate-limit cooldowns persist in the
+  checksummed global journal through `QuotaRegistry`; routing reads that
+  cross-run authority rather than rediscovering pressure independently in each
+  run. Per-run budget observations remain run evidence, not quota authority.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path
   requests verify-intent routing; the value stays for a future model-backed

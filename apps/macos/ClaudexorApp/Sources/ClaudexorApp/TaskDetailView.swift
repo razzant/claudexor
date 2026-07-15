@@ -171,7 +171,7 @@ struct TaskDetailView: View {
                 // Live-first spend: the streaming box while the run is live
                 // (per-run invalidation), the task snapshot once terminal.
                 let spend = model.spendDisplay(task)
-                BudgetMini(spend: spend.usd, cap: task.capUsd, spendKnown: spend.known, capKnown: task.capKnown, spendEstimated: spend.estimated)
+                BudgetMini(spend: spend.usd, cap: task.capUsd, spendKnown: spend.known, capKnown: task.capKnown, capUnlimited: task.budgetUnlimited, spendEstimated: spend.estimated)
                 if task.isLive && task.status.isActive {
                     Button(role: .destructive) { Task { await model.cancel(task.id) } } label: {
                         Label("Cancel", systemImage: "stop.circle")

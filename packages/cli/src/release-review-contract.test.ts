@@ -12,9 +12,11 @@ import {
   exactPanelMatch,
   parseChecklistJson,
   pathIsWithin,
+  panelLockText,
   releaseReviewDecision,
   validateFrozenReviewBinding,
   validateNewReviewOutput,
+  validatePanelLock,
   validateChecklistResponse,
 } from "../../../scripts/lib/release-review-contract.mjs";
 
@@ -33,6 +35,29 @@ describe("release review fail-closed contract", () => {
     expect(exactPanelMatch([...REQUIRED_TRIAD_MODELS].reverse(), REQUIRED_SCOPE_MODEL)).toBe(false);
     expect(exactPanelMatch(REQUIRED_TRIAD_MODELS, "anthropic/nearest-model")).toBe(false);
     expect(exactPanelMatch(REQUIRED_TRIAD_MODELS.slice(0, 2), REQUIRED_SCOPE_MODEL)).toBe(false);
+  });
+
+  it("requires a pre-created panel lock bound to the exact frozen candidate", () => {
+    const expected = {
+      candidateSha: "a".repeat(40),
+      candidateTree: "b".repeat(40),
+      packetManifestSha256: "c".repeat(64),
+    };
+    expect(validatePanelLock(null, expected)).toEqual({
+      ok: false,
+      reasons: ["panel lock is missing"],
+    });
+    const parsed = Object.fromEntries(
+      panelLockText(expected)
+        .trim()
+        .split("\n")
+        .map((line) => line.split(/:\s+/, 2)),
+    );
+    expect(validatePanelLock(parsed, expected)).toEqual({ ok: true, reasons: [] });
+    expect(validatePanelLock({ ...parsed, candidate_tree: "d".repeat(40) }, expected)).toEqual({
+      ok: false,
+      reasons: ["candidate tree is not locked"],
+    });
   });
 
   it("distinguishes candidate/packet descendants from external review artifacts", () => {

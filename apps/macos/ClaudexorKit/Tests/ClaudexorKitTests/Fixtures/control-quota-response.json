@@ -1,0 +1,34 @@
+{
+  "snapshots": [
+    {
+      "subject": {
+        "harness": "codex",
+        "credential_route": "vendor_native",
+        "plan_label": "Plus",
+        "subject_id": null
+      },
+      "constraints": [
+        {
+          "id": "five-hour",
+          "label": "5 hour",
+          "used_ratio": 0.4,
+          "window_seconds": 18000,
+          "resets_at": "2026-07-15T12:00:00.000Z",
+          "cooldown_until": null
+        },
+        {
+          "id": "weekly",
+          "label": "Weekly",
+          "used_ratio": null,
+          "window_seconds": 604800,
+          "resets_at": null,
+          "cooldown_until": null
+        }
+      ],
+      "source": "codex_app_server",
+      "observed_at": "2026-07-15T10:00:00.000Z",
+      "freshness": "fresh"
+    }
+  ],
+  "refreshed_at": "2026-07-15T10:00:01.000Z"
+}

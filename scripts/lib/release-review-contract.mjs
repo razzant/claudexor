@@ -41,6 +41,36 @@ export function exactPanelMatch(triadModels, scopeModel) {
   );
 }
 
+/** Canonical external lock for one exact frozen reviewer panel. */
+export function panelLockText({ candidateSha, candidateTree, packetManifestSha256 }) {
+  return [
+    `triad: ${REQUIRED_TRIAD_MODELS.join(",")}`,
+    `scope: ${REQUIRED_SCOPE_MODEL}`,
+    `candidate_sha: ${candidateSha}`,
+    `candidate_tree: ${candidateTree}`,
+    `packet_manifest_sha256: ${packetManifestSha256}`,
+    "",
+  ].join("\n");
+}
+
+/** A release review may start only with a pre-created lock bound to its freeze. */
+export function validatePanelLock(lock, { candidateSha, candidateTree, packetManifestSha256 }) {
+  const reasons = [];
+  if (!lock) return { ok: false, reasons: ["panel lock is missing"] };
+  if (lock.triad?.trim() !== REQUIRED_TRIAD_MODELS.join(",")) {
+    reasons.push("triad panel does not match the exact ordered release panel");
+  }
+  if (lock.scope?.trim() !== REQUIRED_SCOPE_MODEL) {
+    reasons.push("scope reviewer does not match the exact release model");
+  }
+  if (lock.candidate_sha?.trim() !== candidateSha) reasons.push("candidate SHA is not locked");
+  if (lock.candidate_tree?.trim() !== candidateTree) reasons.push("candidate tree is not locked");
+  if (lock.packet_manifest_sha256?.trim() !== packetManifestSha256) {
+    reasons.push("packet manifest digest is not locked");
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
 export function pathIsWithin(root, target) {
   const rel = relative(resolve(root), resolve(target));
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`));

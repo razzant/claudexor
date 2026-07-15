@@ -273,9 +273,11 @@ pnpm test
 - Bind both tiers to the same external sealed packet (`FREEZE.json` plus the
   expected digest of a complete `MANIFEST.sha256`) and exact clean candidate SHA/tree. Tier 1
   consumes that packet read-only and starts its required critics concurrently;
-  Tier 2 additionally requires an external panel lock and starts the three exact
-  triad slots plus required scope slot at one concurrency boundary. A packet,
-  worktree, or lock mismatch fails before any reviewer request. Each attempt
+  Tier 2 additionally requires an external panel lock prepared in a separate
+  no-network `--prepare-panel-lock` invocation, then starts the three exact
+  triad slots plus required scope slot at one concurrency boundary. A missing
+  lock, packet, worktree, or lock mismatch fails before output-directory
+  creation or any reviewer request. Each attempt
   uses a new external output directory; existing reviewer artifacts are never
   overwritten.
 - Emit reviewer progress events (`reviewer.started`, `reviewer.first_event`,

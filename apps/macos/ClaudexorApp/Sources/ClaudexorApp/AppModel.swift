@@ -633,6 +633,7 @@ final class AppModel {
         task.effectiveAccess = s.effectiveAccess
         task.externalContextPolicy = s.externalContextPolicy
         task.tests = s.tests ?? []
+        task.applyPaidBudget(s.paidBudget)
         task.reviewerPanel = s.reviewerPanel
         task.protectedPathApprovals = s.protectedPathApprovals
         task.browserRequirementDetail = browserRequirementDetail(s.requestRequirements)
@@ -1700,8 +1701,7 @@ final class AppModel {
             task.project = detail.summary.project?.projectName ?? detail.summary.project?.root.map { URL(fileURLWithPath: $0).lastPathComponent } ?? task.project
             task.repoRoot = detail.summary.project?.root ?? task.repoRoot
             task.harnesses = (detail.summary.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
-            task.capUsd = detail.summary.paidBudget?.finiteMaxUsd ?? task.capUsd
-            task.capKnown = detail.summary.paidBudget?.finiteMaxUsd != nil || task.capKnown
+            task.applyPaidBudget(detail.summary.paidBudget)
             task.spendUsd = detail.summary.spendUsd ?? task.spendUsd
             task.spendKnown = detail.summary.spendUsd != nil || task.spendKnown
             task.spendEstimated = detail.summary.spendEstimated ?? task.spendEstimated
@@ -2144,24 +2144,7 @@ final class AppModel {
                 do {
                     for try await event in client.globalEvents(lastEventId: self.globalEventCursor) {
                         self.globalEventCursor = event.cursor
-                        let runId = event.payload["run_id"]?.stringValue ?? ""
-                        guard !runId.isEmpty else { continue }
-                        let type = event.payload["type"]?.stringValue ?? ""
-                        let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
-                        if let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty {
-                            if threadId == self.selectedThreadId, (type == "run.created" || isTerminalEvent) {
-                                await self.openThread(threadId)
-                                if type == "run.created", self.streamTasks[runId] == nil { self.stream(runId: runId) }
-                            }
-                            if isTerminalEvent { await self.refreshThreads() }
-                        }
-                        if !self.liveTasks.contains(where: { $0.id == runId }) {
-                            await self.refreshRuns()
-                            continue
-                        }
-                        if self.streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" {
-                            await self.loadRunDetail(runId)
-                        }
+                        await self.handleGlobalEvent(event)
                     }
                 } catch let GatewayError.http(status, _) where status == 400 || status == 409 || status == 410 {
                     // Stale opaque cursor: resnapshot, then restart the partition stream.
@@ -2179,6 +2162,33 @@ final class AppModel {
                 guard !Task.isCancelled else { break }
                 try? await Task.sleep(for: .seconds(3))
             }
+        }
+    }
+
+    /// Apply one durable global event. Global authorities such as quota have no
+    /// run id and must be handled before the run-event projection guard.
+    func handleGlobalEvent(_ event: JournalEvent) async {
+        if event.type == "quota.snapshot.upserted" {
+            await refreshQuota()
+            return
+        }
+        let runId = event.payload["run_id"]?.stringValue ?? ""
+        guard !runId.isEmpty else { return }
+        let type = event.payload["type"]?.stringValue ?? ""
+        let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
+        if let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty {
+            if threadId == selectedThreadId, (type == "run.created" || isTerminalEvent) {
+                await openThread(threadId)
+                if type == "run.created", streamTasks[runId] == nil { stream(runId: runId) }
+            }
+            if isTerminalEvent { await refreshThreads() }
+        }
+        if !liveTasks.contains(where: { $0.id == runId }) {
+            await refreshRuns()
+            return
+        }
+        if streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" {
+            await loadRunDetail(runId)
         }
     }
 

@@ -5534,32 +5534,15 @@ describe("DaemonControlApiServer", () => {
   it("serves quota snapshots and refresh through the v2 operation catalog", async () => {
     const { daemon } = fakeDaemon();
     let refreshes = 0;
-    const response = {
-      snapshots: [
-        {
-          subject: {
-            harness: "codex",
-            credential_route: "vendor_native" as const,
-            plan_label: "Plus",
-            subject_id: null,
-          },
-          constraints: [
-            {
-              id: "weekly",
-              label: "Weekly",
-              used_ratio: 0.25,
-              window_seconds: 604800,
-              resets_at: "2026-07-20T00:00:00.000Z",
-              cooldown_until: null,
-            },
-          ],
-          source: "codex_app_server" as const,
-          observed_at: "2026-07-15T12:00:00.000Z",
-          freshness: "fresh" as const,
-        },
-      ],
-      refreshed_at: null,
-    };
+    const response = JSON.parse(
+      readFileSync(
+        join(
+          process.cwd(),
+          "apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/control-quota-response.json",
+        ),
+        "utf8",
+      ),
+    ) as unknown;
     await withDaemonServer(
       daemon,
       async (base) => {

@@ -63,6 +63,13 @@ public struct QuotaSubject: Codable, Sendable, Equatable, Hashable {
     public let credentialRoute: String
     public let planLabel: String?
     public let subjectId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case harness
+        case credentialRoute = "credential_route"
+        case planLabel = "plan_label"
+        case subjectId = "subject_id"
+    }
 }
 
 public struct QuotaConstraint: Codable, Sendable, Equatable, Identifiable {
@@ -72,6 +79,14 @@ public struct QuotaConstraint: Codable, Sendable, Equatable, Identifiable {
     public let windowSeconds: Double?
     public let resetsAt: String?
     public let cooldownUntil: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label
+        case usedRatio = "used_ratio"
+        case windowSeconds = "window_seconds"
+        case resetsAt = "resets_at"
+        case cooldownUntil = "cooldown_until"
+    }
 }
 
 public struct QuotaSnapshot: Codable, Sendable, Equatable, Identifiable {
@@ -81,6 +96,11 @@ public struct QuotaSnapshot: Codable, Sendable, Equatable, Identifiable {
     public let observedAt: String
     public let freshness: String
 
+    private enum CodingKeys: String, CodingKey {
+        case subject, constraints, source, freshness
+        case observedAt = "observed_at"
+    }
+
     public var id: String {
         [subject.harness, subject.credentialRoute, subject.subjectId ?? "", source].joined(separator: ":")
     }
@@ -89,4 +109,9 @@ public struct QuotaSnapshot: Codable, Sendable, Equatable, Identifiable {
 public struct ControlQuotaResponse: Codable, Sendable, Equatable {
     public let snapshots: [QuotaSnapshot]
     public let refreshedAt: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case snapshots
+        case refreshedAt = "refreshed_at"
+    }
 }

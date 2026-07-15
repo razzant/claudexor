@@ -14,6 +14,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "ClaudexorKit"),
-        .testTarget(name: "ClaudexorKitTests", dependencies: ["ClaudexorKit"]),
+        .testTarget(
+            name: "ClaudexorKitTests",
+            dependencies: ["ClaudexorKit"],
+            resources: [.copy("Fixtures")]
+        ),
     ]
 )

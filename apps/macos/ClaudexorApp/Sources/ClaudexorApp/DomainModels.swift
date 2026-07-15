@@ -661,6 +661,7 @@ struct TaskRun: Identifiable, Hashable {
     var capUsd: Double
     var spendKnown: Bool = true
     var capKnown: Bool = true
+    var budgetUnlimited: Bool = false
     var spendEstimated: Bool = false
     var routeProof: RouteProof
     var attentionNote: String?
@@ -714,8 +715,21 @@ struct TaskRun: Identifiable, Hashable {
     var spendFraction: Double { spendKnown && capKnown && capUsd > 0 ? min(spendUsd / capUsd, 1) : 0 }
     var budgetLabel: String {
         let spend = spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spendUsd))" : "Unknown"
-        let cap = capKnown ? String(format: "$%.2f", capUsd) : "Unknown"
+        let cap = budgetUnlimited ? "Unlimited" : capKnown ? String(format: "$%.2f", capUsd) : "Unknown"
         return "\(spend) / \(cap)"
+    }
+
+    mutating func applyPaidBudget(_ budget: PaidBudget?) {
+        guard let budget else { return }
+        switch budget {
+        case .unlimited:
+            budgetUnlimited = true
+            capKnown = false
+        case .finite(let maxUsd):
+            budgetUnlimited = false
+            capUsd = maxUsd
+            capKnown = true
+        }
     }
 
     /// State-machine invariant: a terminal status may only be PRESENTED with

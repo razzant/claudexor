@@ -6,6 +6,50 @@ import ClaudexorKit
 @Suite(.serialized)
 struct AppModelRefreshTests {
     @MainActor
+    @Test func runlessGlobalQuotaEventRefreshesQuotaProjection() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!,
+            token: "test",
+            session: URLSession(configuration: config)
+        )
+        let model = AppModel(client: client, requestNotificationAuthorization: false)
+        model.health = .connected
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/quota" else { throw AppRefreshTestError.badRequest }
+            return (appResponse(for: request), Data(#"{"snapshots":[],"refreshed_at":null}"#.utf8))
+        }
+
+        await model.handleGlobalEvent(JournalEvent(
+            cursor: "epoch:2",
+            partition: "global",
+            type: "quota.snapshot.upserted",
+            observedAt: "2026-07-15T00:00:00Z",
+            payload: .object([:])
+        ))
+
+        #expect(model.quotaResponse?.snapshots.isEmpty == true)
+        #expect(model.quotaStatus == nil)
+    }
+
+    @Test func taggedUnlimitedBudgetRendersUnlimitedInsteadOfUnknown() {
+        var task = TaskRun(
+            id: "run", title: "Run", prompt: "", mode: .agent, status: .running,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now, activePhase: .budget,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )
+        task.applyPaidBudget(.unlimited)
+
+        #expect(task.budgetUnlimited)
+        #expect(task.budgetLabel == "Unknown / Unlimited")
+    }
+
+    @MainActor
     @Test func freshHarnessRefreshReportsFailureAndKeepsLastKnownRows() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral

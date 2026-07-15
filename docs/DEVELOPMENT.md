@@ -123,8 +123,11 @@ tag-driven.
 The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` with the
 exact source-pinned models. It requires the sealed packet, full candidate SHA
 and tree, the packet manifest's expected SHA-256 digest, and a panel-lock path
-outside the candidate worktree; the three triad slots and required scope slot
-start concurrently. `TRIAD_MAX_PACK_BYTES` may reduce supplemental context
+outside the candidate worktree. Create and validate that lock first with a
+separate `--prepare-panel-lock` invocation; a normal review refuses a missing
+or mismatched lock before creating output or making network calls. The three
+triad slots and required scope slot then start concurrently.
+`TRIAD_MAX_PACK_BYTES` may reduce supplemental context
 only. It never authorizes a model substitution or a scoped/truncated cumulative
 diff.
 
