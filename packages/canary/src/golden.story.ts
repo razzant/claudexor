@@ -209,10 +209,11 @@ describe("canary golden stories", () => {
       'node -e "process.exit(0)"',
       "--json",
     ]);
-    expect(r.code).toBe(0);
+    expect(r.code).toBe(1);
     const out = r.json() as { runId: string; runDir: string; status: string };
     // Offline fakes cannot produce a cross-family verified review; the honest
-    // terminal is review_not_run — never a green "succeeded" over an
+    // terminal and process status are review_not_run/nonzero — never a green
+    // "succeeded" or exit 0 over an
     // unreviewed patch (Bible: verification basis is disclosed, gates alone
     // do not make a patch applyable).
     expect(out.status).toBe("review_not_run");
