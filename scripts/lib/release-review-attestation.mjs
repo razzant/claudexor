@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import Ajv from "ajv";
 import {
   RELEASE_REVIEW_ATTESTATION_ALGORITHM,
   RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION,
@@ -23,15 +24,15 @@ import {
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TIER1_BLOCKING = new Set(["BLOCK", "FIX_FIRST", "NEEDS_HUMAN", "INSUFFICIENT_EVIDENCE"]);
-const TIER1_SEVERITIES = new Set([
-  "BLOCK",
-  "FIX_FIRST",
-  "WARN",
-  "NIT",
-  "OUT_OF_SCOPE",
-  "INSUFFICIENT_EVIDENCE",
-  "NEEDS_HUMAN",
-]);
+const reviewFindingSchema = JSON.parse(
+  readFileSync(
+    new URL("../../packages/schema/generated/ReviewFinding.schema.json", import.meta.url),
+    "utf8",
+  ),
+);
+const validateReviewFinding = new Ajv({ allErrors: true, strict: false }).compile(
+  reviewFindingSchema,
+);
 
 export function sha256Bytes(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -52,6 +53,16 @@ function assertRegularFile(path) {
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new Error(`review artifact is not a regular file: ${path}`);
   }
+}
+
+function assertArtifactAbsent(path, label) {
+  try {
+    lstatSync(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new Error(`could not inspect ${label}: ${path}: ${String(error)}`);
+  }
+  throw new Error(`${label} must be absent: ${path}`);
 }
 
 function readJson(path) {
@@ -121,10 +132,15 @@ function artifactDigests(root, names) {
 
 function releaseNativeResponse(parsed, slot) {
   requireValue(
-    Array.isArray(parsed) && parsed.length === 1,
+    Array.isArray(parsed) && parsed.length >= 1,
     `${slot} completion envelope is missing`,
   );
   const response = parsed[0];
+  const canonicalResponse = canonicalJson(response);
+  requireValue(
+    parsed.every((candidate) => canonicalJson(candidate) === canonicalResponse),
+    `${slot} completion envelopes contain conflicting duplicates`,
+  );
   requireValue(
     response && typeof response === "object" && !Array.isArray(response),
     `${slot} completion envelope is malformed`,
@@ -137,20 +153,16 @@ function releaseNativeResponse(parsed, slot) {
   );
   requireValue(completion.verdict === "PASS", `${slot} completion verdict did not pass`);
   requireValue(Array.isArray(findings), `${slot} findings are missing`);
-  requireValue(
-    findings.every(
-      (finding) =>
-        finding &&
-        typeof finding === "object" &&
-        !Array.isArray(finding) &&
-        TIER1_SEVERITIES.has(finding.severity) &&
-        typeof finding.category === "string" &&
-        finding.category.length > 0 &&
-        typeof (finding.claim ?? finding.message) === "string" &&
-        String(finding.claim ?? finding.message).trim().length > 0,
-    ),
-    `${slot} findings contain a malformed finding`,
-  );
+  for (const [index, finding] of findings.entries()) {
+    const valid = validateReviewFinding(finding);
+    const reasons = (validateReviewFinding.errors ?? [])
+      .map((error) => `${error.instancePath || "/"} ${error.message ?? error.keyword}`)
+      .join("; ");
+    requireValue(
+      valid,
+      `${slot} finding ${index + 1} violates ReviewFinding contract${reasons ? `: ${reasons}` : ""}`,
+    );
+  }
   requireValue(
     completion.findingCount === findings.length,
     `${slot} completion finding count mismatch`,
@@ -222,6 +234,7 @@ function tier1Slot(root, required, index, expected) {
     requireValue(typeof metadata[field] === "string", `${required.slot} ${field} is missing`);
   }
   requireValue(Number.isFinite(metadata.duration_ms), `${required.slot} duration is missing`);
+  assertArtifactAbsent(join(dir, "parse-error.json"), `${required.slot} parse-error artifact`);
   const parsed = readJson(join(dir, "parsed-json-blocks.json"));
   const findings = releaseNativeResponse(parsed, required.slot);
   const blockers = findings.filter((finding) => TIER1_BLOCKING.has(finding.severity));

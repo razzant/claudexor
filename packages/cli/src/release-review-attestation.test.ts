@@ -272,6 +272,7 @@ function makeFixture() {
     authority,
     missingArtifact: join(tier1, "01-codex", "transcript.md"),
     nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
+    nativeParseError: join(tier1, "01-codex", "parse-error.json"),
     tier1Progress: join(tier1, "reviewer-progress.jsonl"),
     triadPrompt: join(triad, "triad-prompt.md"),
     triadMetadata: join(
@@ -361,6 +362,26 @@ describe("signed release review attestation sealer", () => {
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/completion/);
   });
 
+  it("accepts byte-identical duplicate native PASS envelopes", () => {
+    const fixture = makeFixture();
+    const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
+    writeJson(fixture.nativeParsed, [parsed[0], parsed[0]]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).not.toThrow();
+  });
+
+  it("refuses conflicting duplicate native completion envelopes", () => {
+    const fixture = makeFixture();
+    const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
+    writeJson(fixture.nativeParsed, [
+      parsed[0],
+      {
+        ...parsed[0],
+        completion: { ...parsed[0].completion, verdict: "FAIL" },
+      },
+    ]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/conflicting duplicates/);
+  });
+
   it("refuses a native completion whose finding count does not match findings", () => {
     const fixture = makeFixture();
     writeJson(fixture.nativeParsed, [
@@ -388,7 +409,57 @@ describe("signed release review attestation sealer", () => {
         findings: [{}],
       },
     ]);
-    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/malformed finding/);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /violates ReviewFinding contract/,
+    );
+  });
+
+  it("refuses a native finding outside the exact ReviewFinding category contract", () => {
+    const fixture = makeFixture();
+    writeJson(fixture.nativeParsed, [
+      {
+        completion: {
+          verdict: "PASS",
+          checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+          findingCount: 1,
+        },
+        findings: [
+          {
+            id: "finding-1",
+            severity: "WARN",
+            category: "release_protocol",
+            claim: "The category is not part of the schema-owned review contract.",
+            linked_acceptance_criteria: ["QA-03"],
+            evidence: {
+              files: [{ path: "scripts/lib/release-review-attestation.mjs", lines: null }],
+              diff_hunks: [],
+              commands: [],
+              logs: [],
+            },
+            proposed_fix: null,
+            reviewer: {
+              harness_id: "codex",
+              requested_model: "gpt-5.6-sol",
+              requested_effort: "xhigh",
+              observed_model: "gpt-5.6-sol",
+              route_proof_status: "verified",
+            },
+            status: "proposed",
+          },
+        ],
+      },
+    ]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /violates ReviewFinding contract/,
+    );
+  });
+
+  it("refuses a Tier 1 parse-error artifact beside an otherwise valid response", () => {
+    const fixture = makeFixture();
+    writeJson(fixture.nativeParseError, { error: "review output contained a malformed block" });
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /parse-error artifact must be absent/,
+    );
   });
 
   it("refuses sequential reviewer starts split across directories", () => {
