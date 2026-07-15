@@ -114,7 +114,11 @@ export function mcpSurfaceRunner() {
           (primary?.kind === "patch" ? "patch produced (see artifacts)" : `run ${out.status}`));
     // The derived apply verdict rides the result (single producer: the run
     // detail endpoint). Soft-fail: a detail hiccup never eats the run result.
-    const applyEligibility = await fetchApplyEligibility(addr, out.runId);
+    // A deferred MCP call intentionally returns while the run is still live.
+    // Apply eligibility is a terminal projection, so querying it here would
+    // delay the durable handle on a result that cannot be actionable yet.
+    const applyEligibility =
+      p?.deferred === true ? null : await fetchApplyEligibility(addr, out.runId);
     return { runId: out.runId, runDir: out.runDir, status: out.status, summary, applyEligibility };
   };
 }
