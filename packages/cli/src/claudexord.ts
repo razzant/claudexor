@@ -103,12 +103,9 @@ async function main(): Promise<void> {
     const pollQuota = () => {
       try {
         void quotaStoreSlot.current().pollStale();
-      } catch {
-        // A partition recovery fence remains authoritative; the next tick retries.
-      }
+      } catch {}
     };
-    quotaPollTimer = setInterval(pollQuota, 60_000);
-    quotaPollTimer.unref();
+    quotaPollTimer = setInterval(pollQuota, 60_000).unref();
     pollQuota();
     const threads = new ProjectPartitions(
       daemonDir(),
@@ -267,7 +264,6 @@ async function main(): Promise<void> {
       journal: {
         close: () => {
           if (quotaPollTimer) clearInterval(quotaPollTimer);
-          quotaPollTimer = null;
           threads.close();
           journalManager.close();
         },

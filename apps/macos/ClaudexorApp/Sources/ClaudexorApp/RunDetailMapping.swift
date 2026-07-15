@@ -1,6 +1,21 @@
 import Foundation
 import ClaudexorKit
 
+extension TaskRun {
+    mutating func applyPaidBudget(_ budget: PaidBudget?) {
+        guard let budget else { return }
+        switch budget {
+        case .unlimited:
+            budgetUnlimited = true
+            capKnown = false
+        case .finite(let maxUsd):
+            budgetUnlimited = false
+            capUsd = maxUsd
+            capKnown = true
+        }
+    }
+}
+
 /// Server-projection → domain-model mapping for the run inspector (one owner):
 /// candidate evidence cards and the live plan checklist.
 enum RunDetailMapping {

@@ -2165,15 +2165,9 @@ final class AppModel {
         }
     }
 
-    /// Apply one durable global event. Global authorities such as quota have no
-    /// run id and must be handled before the run-event projection guard.
     func handleGlobalEvent(_ event: JournalEvent) async {
-        if event.type == "quota.snapshot.upserted" {
-            await refreshQuota()
-            return
-        }
-        let runId = event.payload["run_id"]?.stringValue ?? ""
-        guard !runId.isEmpty else { return }
+        if event.type == "quota.snapshot.upserted" { await refreshQuota(); return }
+        guard let runId = event.payload["run_id"]?.stringValue, !runId.isEmpty else { return }
         let type = event.payload["type"]?.stringValue ?? ""
         let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"
         if let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty {
@@ -2183,13 +2177,8 @@ final class AppModel {
             }
             if isTerminalEvent { await refreshThreads() }
         }
-        if !liveTasks.contains(where: { $0.id == runId }) {
-            await refreshRuns()
-            return
-        }
-        if streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" {
-            await loadRunDetail(runId)
-        }
+        if !liveTasks.contains(where: { $0.id == runId }) { await refreshRuns(); return }
+        if streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" { await loadRunDetail(runId) }
     }
 
     /// Native notification when a live run reaches a state that wants the user's attention.

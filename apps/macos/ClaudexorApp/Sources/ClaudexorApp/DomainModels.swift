@@ -719,19 +719,6 @@ struct TaskRun: Identifiable, Hashable {
         return "\(spend) / \(cap)"
     }
 
-    mutating func applyPaidBudget(_ budget: PaidBudget?) {
-        guard let budget else { return }
-        switch budget {
-        case .unlimited:
-            budgetUnlimited = true
-            capKnown = false
-        case .finite(let maxUsd):
-            budgetUnlimited = false
-            capUsd = maxUsd
-            capKnown = true
-        }
-    }
-
     /// State-machine invariant: a terminal status may only be PRESENTED with
     /// its final content. Until the snapshot lands, the run is "Finalizing" —
     /// never a green Succeeded badge next to an empty Outcome.
