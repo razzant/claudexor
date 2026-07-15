@@ -221,6 +221,8 @@ const MUTATING_TOOLS = new Set([
   "claudexor_run",
   "claudexor_best_of",
   "claudexor_create",
+  "claudexor_run_cancel",
+  "claudexor_answer_interaction",
   "claudexor_quarantine_journal",
 ]);
 for (const tool of tools) {
@@ -241,7 +243,16 @@ for (const tool of tools) {
     );
   }
 }
-for (const recovery of ["claudexor_runs", "claudexor_inspect", "claudexor_apply_check"]) {
+for (const recovery of [
+  "claudexor_runs",
+  "claudexor_inspect",
+  "claudexor_run_status",
+  "claudexor_run_result",
+  "claudexor_run_cancel",
+  "claudexor_run_interactions",
+  "claudexor_answer_interaction",
+  "claudexor_apply_check",
+]) {
   if (!tools.some((t) => t.name === recovery)) {
     failures.push(`recovery tool '${recovery}' is missing from defaultClaudexorTools`);
   }

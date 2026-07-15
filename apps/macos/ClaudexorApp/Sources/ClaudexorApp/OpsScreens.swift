@@ -129,7 +129,7 @@ struct SettingsScreen: View {
                     )
                     Picker("Primary harness", selection: $primaryHarness) {
                         Text("None").tag("__none")
-                        ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                        ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
                             Label(family.label, systemImage: family.glyph).tag(family.rawValue)
                         }
                     }
@@ -146,7 +146,7 @@ struct SettingsScreen: View {
                     }
                     .help("Which credential route harness runs prefer. Auto seeds the native subscription session and falls back to a stored API key; an explicit route discloses any fallback in the run events.")
                     FlowLayout(spacing: Theme.Spacing.sm) {
-                        ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                        ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
                             FilterChip(label: family.label, systemImage: family.glyph,
                                        isActive: eligibleHarnesses.contains(family), tint: family.color) {
                                 if eligibleHarnesses.contains(family) { eligibleHarnesses.remove(family) }
@@ -170,7 +170,7 @@ struct SettingsScreen: View {
                     Text("Claudexor mirrors native harness auth first, with API-key fallback through stored secret refs.")
                         .font(.caption).foregroundStyle(.secondary)
                     KeyValueRow(key: "Control API", value: model.endpoint.isEmpty ? "—" : "http://\(model.endpoint)", mono: true)
-                    ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                    ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
                         nativeAuthRow(family)
                     }
                 }
@@ -193,7 +193,7 @@ struct SettingsScreen: View {
                         }
                     }
                     FlowLayout(spacing: Theme.Spacing.sm) {
-                        ForEach(HarnessFamily.allCases.filter { $0 != .fake }) { family in
+                        ForEach(model.selectableHarnesses) { family in
                             Button { model.authSheetHarness = family } label: {
                                 Label("Open \(family.label) Auth", systemImage: family.glyph)
                             }
@@ -208,7 +208,7 @@ struct SettingsScreen: View {
         settingsGroup("Per-Harness Defaults", "slider.horizontal.3") {
                     Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/v2/config.yaml.")
                         .font(.caption).foregroundStyle(.secondary)
-                    ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                    ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
                         HarnessDefaultsRow(family: family,
                                            settings: model.settingsSnapshot?.harnesses?[family.rawValue])
                     }
@@ -343,7 +343,7 @@ struct SettingsScreen: View {
         primaryHarness = s.routing.primaryHarness ?? "__none"
         authPreference = s.routing.authPreference ?? "auto"
         envInheritance = s.routing.envInheritance
-        eligibleHarnesses = Set(s.routing.eligibleHarnesses.compactMap { HarnessFamily(rawValue: $0) })
+        eligibleHarnesses = Set(s.routing.eligibleHarnesses.map { HarnessFamily(rawValue: $0) })
         budgetUnlimited = s.budget.paidBudgetPerRun == .unlimited
         maxUsdPerRun = s.budget.paidBudgetPerRun.finiteMaxUsd.map { String(format: "%.2f", $0) } ?? ""
         interactionTimeoutMinutes = s.interactionTimeoutMs.map { String(max(1, $0 / 60_000)) } ?? ""

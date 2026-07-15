@@ -46,6 +46,14 @@ import Testing
         #expect(roundTrip.request == draft.request)
     }
 
+    @Test func deliveryResponseKeepsVerifierAndTargetReceipt() throws {
+        let json = #"{"mode":"apply","applied":true,"treeMutated":true,"finalVerify":{"attempted":true,"base_sha":"base","applied_cleanly":true,"gates_passed":true,"gates":[{"id":"test","status":"passed"}],"duration_ms":12,"reason":null},"targetPreimageSha":"target"}"#
+        let receipt = try JSONDecoder().decode(ApplyResultInfo.self, from: Data(json.utf8))
+        #expect(receipt.applied)
+        #expect(receipt.finalVerify.gatesPassed == true)
+        #expect(receipt.targetPreimageSha == "target")
+    }
+
     @Test func startRunRequestEncodesPromptAndMode() throws {
         let req = StartRunRequest(
             prompt: "fix bug",
@@ -99,29 +107,33 @@ import Testing
     @Test func composerOptionParserRejectsEmptyReviewerPanelEntries() throws {
         let middleEmpty = ComposerOptionParser.splitOptionTokens("claude,,cursor=gpt-5.5")
         #expect(middleEmpty == ["claude", "", "cursor=gpt-5.5"])
-        let middleEntries = middleEmpty.compactMap(ComposerOptionParser.parseReviewerPanelEntry)
+        let middleEntries = middleEmpty.compactMap { ComposerOptionParser.parseReviewerPanelEntry($0) }
         #expect(middleEntries.count == 2)
         #expect(middleEntries.count != middleEmpty.count)
 
         let trailingEmpty = ComposerOptionParser.splitOptionTokens("claude,")
         #expect(trailingEmpty == ["claude", ""])
-        let trailingEntries = trailingEmpty.compactMap(ComposerOptionParser.parseReviewerPanelEntry)
+        let trailingEntries = trailingEmpty.compactMap { ComposerOptionParser.parseReviewerPanelEntry($0) }
         #expect(trailingEntries.count == 1)
         #expect(trailingEntries.count != trailingEmpty.count)
     }
 
     @Test func composerOptionParserPreservesModelColonsAndEffortSuffixes() throws {
         let entry = try #require(
-            ComposerOptionParser.parseReviewerPanelEntry("cursor=openai/gpt-5.5:extra-high:max")
+            ComposerOptionParser.parseReviewerPanelEntry(
+                "cursor=openai/gpt-5.5:extra-high:deep", effortLevels: ["deep"]
+            )
         )
         #expect(entry.harness == "cursor")
         #expect(entry.model == "openai/gpt-5.5:extra-high")
-        #expect(entry.effort == "max")
+        #expect(entry.effort == "deep")
 
-        let harnessEffort = try #require(ComposerOptionParser.parseReviewerPanelEntry("claude:max"))
+        let harnessEffort = try #require(ComposerOptionParser.parseReviewerPanelEntry(
+            "claude:deep", effortLevels: ["deep"]
+        ))
         #expect(harnessEffort.harness == "claude")
         #expect(harnessEffort.model == nil)
-        #expect(harnessEffort.effort == "max")
+        #expect(harnessEffort.effort == "deep")
     }
 
     @Test func settingsUpdateEncodesRoutingAndTaggedBudget() throws {

@@ -28,31 +28,36 @@ enum Health: Equatable {
 
 // MARK: - Harness families
 
-enum HarnessFamily: String, CaseIterable, Identifiable, Hashable {
-    case codex, claude, cursor, opencode
-    case raw = "raw-api"
-    case fake
+struct HarnessFamily: RawRepresentable, Identifiable, Hashable {
+    let rawValue: String
+    init(rawValue: String) { self.rawValue = rawValue }
+
+    static let codex = Self(rawValue: "codex")
+    static let claude = Self(rawValue: "claude")
+    static let cursor = Self(rawValue: "cursor")
+    static let opencode = Self(rawValue: "opencode")
+    static let raw = Self(rawValue: "raw-api")
+    static let fake = Self(rawValue: "fake")
+    static let builtIns: [Self] = [.codex, .claude, .cursor, .opencode, .raw]
     var id: String { rawValue }
 
     var label: String {
-        switch self {
-        case .codex: return "Codex"
-        case .claude: return "Claude"
-        case .cursor: return "Cursor"
-        case .opencode: return "OpenCode"
-        case .raw: return "Raw API"
-        case .fake: return "Fake"
-        }
+        if self == .codex { return "Codex" }
+        if self == .claude { return "Claude" }
+        if self == .cursor { return "Cursor" }
+        if self == .opencode { return "OpenCode" }
+        if self == .raw { return "Raw API" }
+        if self == .fake { return "Fake" }
+        return rawValue.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
     }
     var glyph: String {
-        switch self {
-        case .codex: return "chevron.left.forwardslash.chevron.right"
-        case .claude: return "sparkles"
-        case .cursor: return "cursorarrow.rays"
-        case .opencode: return "curlybraces"
-        case .raw: return "bolt.horizontal"
-        case .fake: return "testtube.2"
-        }
+        if self == .codex { return "chevron.left.forwardslash.chevron.right" }
+        if self == .claude { return "sparkles" }
+        if self == .cursor { return "cursorarrow.rays" }
+        if self == .opencode { return "curlybraces" }
+        if self == .raw { return "bolt.horizontal" }
+        if self == .fake { return "testtube.2" }
+        return "cpu"
     }
     var color: Color { Theme.harness(rawValue) }
     /// Setup and runtime use the same canonical harness id. The retired `raw`
@@ -60,23 +65,21 @@ enum HarnessFamily: String, CaseIterable, Identifiable, Hashable {
     var setupHarnessId: String { rawValue }
 
     var defaultAuthReadinessRequest: AuthReadinessRefreshRequest? {
-        switch self {
-        case .codex, .claude, .cursor:
+        if self == .codex || self == .claude || self == .cursor {
             AuthReadinessRefreshRequest(authRequest: .subscription, source: .nativeSession)
-        case .opencode, .raw:
+        } else if self == .opencode || self == .raw {
             AuthReadinessRefreshRequest(authRequest: .apiKey, source: .apiKeyEnvironment)
-        case .fake:
+        } else {
             nil
         }
     }
 
     var apiKeyAuthReadinessRequest: AuthReadinessRefreshRequest? {
-        switch self {
-        case .codex:
+        if self == .codex {
             AuthReadinessRefreshRequest(authRequest: .apiKey, source: .providerAuthFile)
-        case .claude, .cursor, .opencode, .raw:
+        } else if self == .claude || self == .cursor || self == .opencode || self == .raw {
             AuthReadinessRefreshRequest(authRequest: .apiKey, source: .apiKeyEnvironment)
-        case .fake:
+        } else {
             nil
         }
     }
@@ -346,41 +349,6 @@ struct TurnOptions: Equatable {
     var protectedPathApprovals: [ProtectedPathApproval]? = nil
 }
 
-// MARK: - Phase pipeline
-
-enum Phase: Int, CaseIterable, Identifiable {
-    case contract, context, risk, budget, envelope, gates, review, synthesis, arbitration, final
-    var id: Int { rawValue }
-    var label: String {
-        switch self {
-        case .contract: return "Contract"
-        case .context: return "Context"
-        case .risk: return "Risk"
-        case .budget: return "Budget"
-        case .envelope: return "Envelope"
-        case .gates: return "Gates"
-        case .review: return "Review"
-        case .synthesis: return "Synthesis"
-        case .arbitration: return "Arbitration"
-        case .final: return "Final"
-        }
-    }
-    var glyph: String {
-        switch self {
-        case .contract: return "doc.text"
-        case .context: return "books.vertical"
-        case .risk: return "shield.lefthalf.filled"
-        case .budget: return "dollarsign.circle"
-        case .envelope: return "shippingbox"
-        case .gates: return "checklist"
-        case .review: return "person.2.badge.gearshape"
-        case .synthesis: return "wand.and.stars"
-        case .arbitration: return "scale.3d"
-        case .final: return "flag.checkered"
-        }
-    }
-}
-
 // MARK: - Agent plan / todo list (the "task list" Codex & Claude Code surface)
 
 enum PlanItemState: String, Hashable {
@@ -616,6 +584,28 @@ struct Finding: Identifiable, Hashable {
     var hasEvidence: Bool { evidenceFile != nil }
 }
 
+enum ReviewVerdict: String, Hashable {
+    case notRun = "not_run"
+    case running
+    case clean
+    case findings
+    case failed
+    case error
+    case ungated
+
+    var label: String {
+        switch self {
+        case .notRun: return "Not run"
+        case .running: return "Running"
+        case .clean: return "Clean"
+        case .findings: return "Findings"
+        case .failed: return "Failed"
+        case .error: return "Error"
+        case .ungated: return "Ungated"
+        }
+    }
+}
+
 // MARK: - Diff
 
 enum DiffLineKind { case context, add, remove, hunk }
@@ -656,7 +646,9 @@ struct TaskRun: Identifiable, Hashable {
     var n: Int
     var createdAt: Date
     var updatedAt: Date
-    var activePhase: Phase
+    /// Explicit review truth. Empty findings are never interpreted as clean;
+    /// `.clean` requires the engine's verified decision/candidate evidence.
+    var reviewVerdict: ReviewVerdict = .notRun
     var spendUsd: Double
     var capUsd: Double
     var spendKnown: Bool = true
@@ -702,6 +694,8 @@ struct TaskRun: Identifiable, Hashable {
     var applyState: String = "not_applied"
     /// True when this turn's in-place mutation can still be safely reverted (server-owned).
     var revertable: Bool = false
+    /// Last immutable delivery receipt returned by the server for this run.
+    var deliveryReceipt: ApplyResultInfo?
 
     /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
     var accessLabel: String? {
@@ -792,6 +786,8 @@ struct HarnessInfo: Identifiable, Hashable {
     /// drives the composer's agent-browser toggle (honest: only offered where the
     /// adapter can inject Playwright MCP).
     var acceptsBrowser: Bool = false
+    /// Adapter-declared effort ladder. Empty means the control must stay hidden.
+    var effortLevels: [String] = []
     /// The doctor's strict verdict on the user's configured default model
     /// (nil = no model configured or check ok): the actionable refusal text.
     var configuredModelIssue: String? = nil

@@ -50,9 +50,7 @@ struct ThreadsScreen: View {
     private let minThreadW: CGFloat = 240
     private let maxThreadW: CGFloat = 360
 
-    /// The harness families offered as a per-thread pool / primary (raw + fake are
-    /// never user-routable in chat — they stay CLI-only, mirroring Settings).
-    static let poolFamilies: [HarnessFamily] = [.codex, .claude, .cursor, .opencode]
+    private var poolFamilies: [HarnessFamily] { model.selectableHarnesses.filter { $0 != .fake && $0 != .raw } }
 
     /// Project-aware intents need a project scope. A selected thread uses its own
     /// repo; in the DRAFT state (no thread selected yet) the first turn will be
@@ -70,7 +68,7 @@ struct ThreadsScreen: View {
     }
     /// The eligible pool (Best-of runs this); resolved from thread sticky > global.
     private var resolvedPoolFamilies: [HarnessFamily] {
-        model.effectiveEligiblePool.compactMap { HarnessFamily(rawValue: $0) }
+        model.effectiveEligiblePool.map { HarnessFamily(rawValue: $0) }
     }
     /// Per-turn options the "⋯" panel collects, mapped onto engine run-start fields.
     private var currentOptions: TurnOptions {
@@ -98,8 +96,8 @@ struct ThreadsScreen: View {
         guard !composerMode.isReadOnly else { return false }
         let eligible = Set(model.effectiveEligiblePool)
         let candidates = eligible.isEmpty
-            ? Self.poolFamilies
-            : Self.poolFamilies.filter { eligible.contains($0.rawValue) }
+            ? poolFamilies
+            : poolFamilies.filter { eligible.contains($0.rawValue) }
         return candidates.contains { family in
             model.availability(for: family, mode: composerMode).available &&
                 model.harnessInfo(for: family)?.acceptsBrowser == true
@@ -120,7 +118,10 @@ struct ThreadsScreen: View {
     }
 
     private var reviewerPanelEntries: [ReviewerPanelEntry] {
-        reviewerPanelTokens.compactMap(ComposerOptionParser.parseReviewerPanelEntry)
+        let efforts = Set(model.liveHarnesses.flatMap(\.effortLevels))
+        return reviewerPanelTokens.compactMap {
+            ComposerOptionParser.parseReviewerPanelEntry($0, effortLevels: efforts)
+        }
     }
 
     private var reviewerPanelInvalid: Bool {
@@ -615,7 +616,7 @@ struct ThreadsScreen: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             OptionSection(title: "Harness pool — Best-of runs these; the primary answers in chat") {
                 FlowLayout(spacing: Theme.Spacing.sm) {
-                    ForEach(Self.poolFamilies) { family in
+                    ForEach(poolFamilies) { family in
                         let avail = model.availability(for: family, mode: composerMode)
                         FilterChip(label: family.label,
                                    systemImage: avail.available ? family.glyph : "\(family.glyph).slash",
@@ -683,7 +684,7 @@ struct ThreadsScreen: View {
                         if reviewerPanelInvalid {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange).font(.caption)
-                                .help("Reviewer entries need harness[=model[:effort]] or harness[:effort], effort low|medium|high|xhigh|max")
+                                .help("Reviewer entries need harness[=model[:effort]] or harness[:effort]; supported effort values come from each harness manifest.")
                         }
                     }
                 }
@@ -834,7 +835,7 @@ struct ThreadsScreen: View {
     /// image input. Best-of is pool-wide: every available raced harness must accept
     /// images because each candidate receives the same attachment set.
     private var primaryAcceptsImages: Bool {
-        let configuredPool = resolvedPoolFamilies.isEmpty ? Self.poolFamilies : resolvedPoolFamilies
+        let configuredPool = resolvedPoolFamilies.isEmpty ? poolFamilies : resolvedPoolFamilies
         let availablePool = configuredPool.filter { family in
             model.availability(for: family, mode: composerMode).available
         }
@@ -1471,16 +1472,15 @@ private struct TranscriptView: View {
 }
 
 /// The PRIMARY harness chip: shows which harness answers in chat (logo + name)
-/// and switches it from the eligible pool. "Auto" lets the engine pick. A bias
-/// hint only — the engine owns routing (orderPool pins primary first).
 struct PrimaryHarnessChip: View {
+    @Environment(AppModel.self) private var model
     let current: HarnessFamily?
     let pool: [HarnessFamily]
     var compact: Bool = false
     let onPick: (HarnessFamily?) -> Void
 
     private var tint: Color { current?.color ?? .secondary }
-    private var options: [HarnessFamily] { pool.isEmpty ? ThreadsScreen.poolFamilies : pool }
+    private var options: [HarnessFamily] { pool.isEmpty ? model.selectableHarnesses.filter { $0 != .fake && $0 != .raw } : pool }
 
     var body: some View {
         Menu {

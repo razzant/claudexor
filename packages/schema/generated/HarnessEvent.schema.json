@@ -325,6 +325,7 @@
               "enum": [
                 "codex_app_server",
                 "codex_rollout",
+                "claude_statusline",
                 "claude_api_retry"
               ],
               "description": "Vendor-owned machine-readable source of a quota snapshot."

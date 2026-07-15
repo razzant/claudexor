@@ -134,12 +134,13 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/mcp-server`, `packages/acp-server`: thin protocol surfaces. The
   MCP server rides the official TypeScript SDK v2 (concurrent dispatch, era
   negotiation down to 2024-10-07, schema-validated arguments, elicitation);
-  all five run modes enqueue through the daemon `/v2` control API — MCP and ACP
-  runs appear in `GET /v2/runs`, mutating runs are cancellable/unblockable, and
-  every result carries a runId/artifacts trailer. Engine questions bridge to MCP elicitation when the
-  host declares the capability; otherwise the timeout-decline fallback holds.
-  ACP replies `authMethods: []`, tolerates the protocol's `_meta` envelope,
-  and announces a `tool_call` before every `session/request_permission`.
+  all five run modes enqueue through the daemon `/v2` control API. Until MCP
+  Tasks stabilize, MCP returns a durable run handle and exposes explicit
+  status/result/cancel/interaction tools; it does not hold a tool call open or
+  advertise Tasks. ACP uses the official TypeScript SDK at stable protocol v1;
+  its session IDs are daemon thread IDs and list/load/resume/close/prompt/cancel
+  all project the same `/v2` thread authority. ACP images and embedded resources
+  are finalized through the daemon attachment pipeline before a turn enqueues.
 - `packages/canary`: canary golden stories — user-level E2E smokes over the
   BUILT CLI with offline fake harnesses, each pinned to a Bible invariant
   tag (`pnpm canary`; runs in CI on every PR).
@@ -1155,7 +1156,11 @@ code touching one of these areas must honor it or change it explicitly here.
 - Vendor-owned quota snapshots and typed rate-limit cooldowns persist in the
   checksummed global journal through `QuotaRegistry`; routing reads that
   cross-run authority rather than rediscovering pressure independently in each
-  run. Per-run budget observations remain run evidence, not quota authority.
+  run. Codex uses its app-server; Claude subscription windows arrive only from
+  the documented user-scoped status-line payload installed explicitly by the
+  Claude host-plugin lifecycle. That collector stores only allowlisted windows
+  in the external v2 root and composes/restores any existing display command.
+  Per-run budget observations remain run evidence, not quota authority.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path
   requests verify-intent routing; the value stays for a future model-backed

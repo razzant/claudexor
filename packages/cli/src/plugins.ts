@@ -13,6 +13,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostFallbackExamples, recoveryVerbs } from "./command-registry.js";
+import { manageClaudeStatusline } from "./claude-statusline.js";
 import {
   CLAUDEXOR_VERSION,
   ensureDir,
@@ -151,10 +152,6 @@ function jsonText(value: unknown): string {
 function generatedMcpEnv(runtime: RuntimePaths): Record<string, string> {
   return {
     CLAUDEXOR_CONFIG_DIR: runtime.configDir,
-    // MANAGED is drift-detection CONTENT (versions the generated artifact
-    // text for status/doctor). PLUGIN_VERSION is ALSO read at runtime:
-    // `mcp serve` compares it with the CLI version and warns on stderr when
-    // the installed artifacts are stale (repair + host reload fixes it).
     CLAUDEXOR_MANAGED: MARKER,
     CLAUDEXOR_PLUGIN_VERSION: CLAUDEXOR_VERSION,
   };
@@ -178,11 +175,6 @@ function opencodeMcpEntry(runtime: RuntimePaths): Record<string, unknown> {
     command: [runtime.nodePath, runtime.cliPath, "mcp", "serve"],
     environment: generatedMcpEnv(runtime),
     enabled: true,
-    // Tool-DISCOVERY timeout only (OpenCode semantics). Tool EXECUTION time
-    // is governed by OpenCode's global MCP execution timeout — long verbs
-    // (agent/best-of) can exceed it; the generated README and INTEGRATIONS.md
-    // carry the guidance (raise experimental.mcp_timeout, or prefer the CLI
-    // for long runs). The runId trailer keeps abandoned calls recoverable.
     timeout: 5000,
   };
 }
@@ -1508,10 +1500,7 @@ function removeArtifacts(
   return true;
 }
 
-function pruneEmptyDirs(_root: string): void {
-  // Deliberately conservative: removing files is enough for uninstall; avoid
-  // recursive directory cleanup in user config roots.
-}
+function pruneEmptyDirs(_root: string): void {}
 
 function removeVerifiedLegacy(
   def: HostDefinition,
@@ -1704,8 +1693,10 @@ async function runHost(
   try {
     if (verb === "status" || verb === "doctor") {
       const art = checkArtifacts(def, artifacts, state, res);
-      const configOk = checkConfig(def.host, state, res, runtime);
-      const hasConfig = def.config !== undefined;
+      const configOk =
+        checkConfig(def.host, state, res, runtime) &&
+        (def.host !== "claude" || manageClaudeStatusline(verb, { ...runtime, dryRun }, res));
+      const hasConfig = def.config !== undefined || def.host === "claude";
       if (res.errors.length > 0 || art.blocked) res.state = "blocked";
       else if (art.all && configOk) res.state = def.installState;
       else if (art.drift) res.state = "drifted";
@@ -1731,6 +1722,10 @@ async function runHost(
     }
 
     if (verb === "uninstall") {
+      if (def.host === "claude" && !manageClaudeStatusline(verb, { ...runtime, dryRun }, res)) {
+        res.state = "blocked";
+        return res;
+      }
       if (!removeVerifiedLegacy(def, dryRun, res)) {
         res.state = "blocked";
         return res;
@@ -1771,6 +1766,10 @@ async function runHost(
       def.config === "opencode-mcp" &&
       !mergeOpenCodeMcp(state, dryRun, force, def, runtime, res)
     ) {
+      res.state = "blocked";
+      return res;
+    }
+    if (def.host === "claude" && !manageClaudeStatusline(verb, { ...runtime, dryRun }, res)) {
       res.state = "blocked";
       return res;
     }

@@ -45,8 +45,21 @@ export class QuotaRegistry {
         status: 503,
       });
     }
+    let successfulSources = 0;
+    const failures: string[] = [];
     for (const refresher of this.refreshers) {
-      for (const snapshot of await refresher()) this.upsert(snapshot);
+      try {
+        for (const snapshot of await refresher()) this.upsert(snapshot);
+        successfulSources += 1;
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    if (successfulSources === 0) {
+      throw Object.assign(new Error(`quota refresh failed: ${failures.join("; ")}`), {
+        code: "quota_refresh_unavailable",
+        status: 503,
+      });
     }
     return ControlQuotaResponse.parse({
       snapshots: [...this.snapshots.values()].map((snapshot) =>

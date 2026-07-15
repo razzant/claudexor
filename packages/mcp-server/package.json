@@ -2,7 +2,7 @@
   "name": "@claudexor/mcp-server",
   "version": "1.0.1",
   "license": "MIT",
-  "description": "MCP server (official SDK, stdio) exposing Claudexor run/status tools with elicitation-backed interactive questions.",
+  "description": "MCP server exposing durable Claudexor run, status, cancel, result, and interaction tools.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

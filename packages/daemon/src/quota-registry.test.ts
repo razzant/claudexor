@@ -175,4 +175,45 @@ describe("QuotaRegistry", () => {
     journal.close();
     rmSync(root, { recursive: true, force: true });
   });
+
+  it("keeps official quota sources independent when one refresher is unavailable", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-sources-")));
+    const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
+    const registry = new QuotaRegistry(journal, [
+      async () => {
+        throw new Error("Codex unavailable");
+      },
+      async () => [
+        {
+          subject: {
+            harness: "claude",
+            credential_route: "vendor_native",
+            plan_label: null,
+            subject_id: null,
+          },
+          constraints: [
+            {
+              id: "five_hour",
+              label: "5 hour",
+              used_ratio: 0.2,
+              window_seconds: 18_000,
+              resets_at: null,
+              cooldown_until: null,
+            },
+          ],
+          source: "claude_statusline",
+          observed_at: "2026-07-15T12:00:00.000Z",
+          freshness: "fresh",
+        },
+      ],
+    ]);
+
+    await expect(registry.refresh()).resolves.toMatchObject({
+      snapshots: [expect.objectContaining({ source: "claude_statusline" })],
+    });
+    expect(registry.read().snapshots[0]?.subject.harness).toBe("claude");
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
 });

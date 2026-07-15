@@ -20,7 +20,20 @@ struct RootView: View {
         ZStack {
             GlassBackground()
                 .ignoresSafeArea()
-            ThreadsScreen()
+            Group {
+                if model.health == .connected {
+                    ThreadsScreen()
+                } else {
+                    ContentUnavailableView(
+                        model.health == .connecting ? "Connecting to engine" : "Engine offline",
+                        systemImage: model.health == .connecting ? "dot.radiowaves.left.and.right" : "wifi.slash",
+                        description: Text(model.health == .connecting
+                            ? "Operational data will appear after the local engine handshake completes."
+                            : "Claudexor is reconnecting automatically. Run and thread mutations stay unavailable while offline.")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
                 .inspector(isPresented: $inspectorPresented) {
                     runInspector
                         .inspectorColumnWidth(min: 320, ideal: 420, max: 560)

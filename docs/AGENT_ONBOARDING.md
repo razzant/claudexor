@@ -16,7 +16,7 @@ live surface disagree, trust the live surface.
    derived AgentCapabilityCatalog: per-harness doctor status and intents,
    model truth, the mutability matrix, run-control keys, MCP tool names, and
    the run-apply-state vocabulary (runApplyStates). The same catalog is served at
-   `GET /agent-capabilities` on the daemon and by the MCP
+   `GET /v2/agent-capabilities` on the daemon and by the MCP
    `claudexor_capabilities` tool.
 4. **Check harness health.** `claudexor doctor` (human) or
    `claudexor doctor --json`. A harness is usable when its doctor status is
@@ -30,12 +30,19 @@ live surface disagree, trust the live surface.
   error}` on stdout; a run that STARTED always reports its terminal as
   `{runId, runDir, status, ...}` even when the status is a failure — a
   non-success terminal is a result, not an error envelope.
-- **MCP** (`claudexor mcp serve`, stdio) is one-shot: every tool returns
-  the final output plus a `runId:` trailer. Run tools declare `outputSchema`
-  and return `structuredContent` `{summary, runId, runDir, status,
-  applyEligibility}`. Read-only tools carry `readOnlyHint`. MCP orchestrate
-  runs in suggest autonomy only: it PRODUCES a typed plan and never executes
-  plan steps itself.
+- **MCP** (`claudexor mcp serve`, stdio) uses durable handles while MCP Tasks
+  remain experimental. A run tool returns `{runId, runDir, status}` after the
+  daemon binds the run; use `claudexor_run_status`, `claudexor_run_result`,
+  `claudexor_run_cancel`, `claudexor_run_interactions`, and
+  `claudexor_answer_interaction` to continue. A cancel or answer is successful
+  only after the `/v2` control API acknowledges it. MCP orchestrate remains
+  suggest-only.
+- **ACP** (`claudexor acp serve`, stdio) uses stable protocol version 1 through
+  the official TypeScript SDK. ACP session IDs are daemon thread IDs, so
+  `session/list`, `session/load`, `session/resume`, `session/close`, prompts,
+  cancellation, and attachments share the same `/v2` authority as the app and
+  CLI. A blocked run returns ACP `refusal` with typed Claudexor metadata, never
+  a normal `end_turn`.
 - **Control API** is the daemon's loopback HTTP surface (bearer token from
   `~/.claudexor/v2/daemon/token`, address from `~/.claudexor/v2/daemon/control-api.json`).
   The endpoint map with request/response schema names lives at
@@ -46,11 +53,10 @@ live surface disagree, trust the live surface.
 
 - `ask`, `plan`, `audit` (and `explore` = `audit --swarm`) never mutate the
   tree. `orchestrate` in the default suggest autonomy only plans.
-- `agent`, `best-of`, `create` produce tree changes — by default in an
-  ISOLATED envelope under the external per-project runtime namespace
-  `~/.claudexor/v2/projects/<project-sha256>/workspaces/`, never the live tree.
-  The live tree changes only through `apply` (or an in-place turn you asked
-  for explicitly).
+- New project threads (including ACP sessions) default to `in_place`: their
+  turns can change the live project tree. Choose `isolated` explicitly when you
+  want a persistent thread worktree and a later Apply step. Standalone CLI/MCP
+  candidate runs still use external isolated envelopes.
 - A secret-like value inside a prompt is hard-blocked at every ingress with
   the typed `inline_secret_rejected` error. Store credentials with
   `claudexor secrets set` and reference them; there is no bypass flag.
@@ -69,8 +75,8 @@ Every mutating result carries a `runId`. The decision tree:
    `claudexor decision <runId> --accept-risk | --override | --revert |
    --rerun --feedback "..."`. Do NOT auto-accept risk on a user's behalf.
 4. Lost the handle? `claudexor inspect <runId>`, `claudexor follow <runId>`,
-   or the MCP recovery tools `claudexor_runs` / `claudexor_inspect` /
-   `claudexor_apply_check`.
+   or the MCP durable tools `claudexor_runs` / `claudexor_run_status` /
+   `claudexor_run_result` / `claudexor_apply_check`.
 
 ## When to ask the human
 

@@ -19,6 +19,25 @@ extension TaskRun {
 /// Server-projection → domain-model mapping for the run inspector (one owner):
 /// candidate evidence cards and the live plan checklist.
 enum RunDetailMapping {
+    static func reviewVerdict(
+        decision: JSONValue?, candidates: [CandidateInfo], findings: [Finding],
+        failure: RunFailureInfo?, status: RunStatus
+    ) -> ReviewVerdict {
+        if !findings.isEmpty { return .findings }
+        if status == .ungated { return .ungated }
+        if status == .reviewNotRun { return .notRun }
+        if failure?.phase == "review" { return .error }
+        let outcome = decision?["outcome"]?.stringValue
+        let basis = decision?["verification_basis"]?.stringValue
+        if outcome == "ready" && (basis == "cross_family_review" || basis == "both") {
+            return .clean
+        }
+        if candidates.contains(where: { $0.winner && $0.reviewVerified && $0.finalReviewClean == true }) {
+            return .clean
+        }
+        return status.isActive ? .running : .notRun
+    }
+
     /// Live plan checklist: nil when the run never emitted plan.progress
     /// (callers keep their existing plan, e.g. the plan.md fallback row).
     static func planItems(_ progress: PlanProgress?) -> [PlanItem]? {
@@ -38,7 +57,7 @@ enum RunDetailMapping {
         cards.map { c in
             Candidate(
                 id: c.label ?? c.attemptId,
-                family: HarnessFamily(rawValue: c.harnessId) ?? (c.harnessId.hasPrefix("fake") ? .fake : .raw),
+                family: HarnessFamily(rawValue: c.harnessId),
                 // Errored → failed; review blockers → blocked; otherwise the
                 // candidate INHERITS the run terminal — a clean loser card in
                 // a failed/cancelled run must not render green.

@@ -160,6 +160,13 @@ final class AppModel {
 
     var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
     var harnesses: [HarnessInfo] { demoMode ? DemoData.harnesses : liveHarnesses }
+    /// Controls enumerate doctor truth, not a compiled enum. Built-ins remain
+    /// available before the first successful refresh; any adapter returned by
+    /// the daemon appears without a Swift patch.
+    var selectableHarnesses: [HarnessFamily] {
+        let live = liveHarnesses.map(\.family).filter { $0 != .fake }
+        return live.isEmpty ? HarnessFamily.builtIns : live
+    }
 
     /// Live runs grouped into a light project tree for the sidebar.
     private var liveProjects: [Project] {
@@ -175,6 +182,8 @@ final class AppModel {
     var defaultMaxUsdPerRun: Double? { settingsSnapshot?.budget.paidBudgetPerRun.finiteMaxUsd }
 
     private(set) var client: GatewayClient?
+    private var connectionGeneration = 0
+    var threadLoadGeneration = 0
     private var streamTasks: [String: Task<Void, Never>] = [:]
     private var globalStreamTask: Task<Void, Never>?
     private var globalEventCursor: String?
@@ -280,26 +289,38 @@ final class AppModel {
     }
 
     func availableHarnesses(for mode: RunMode, selected: Set<HarnessFamily>) -> [HarnessFamily] {
-        HarnessFamily.allCases
-            .filter { $0 != .fake && $0 != .raw && selected.contains($0) }
+        selectableHarnesses
+            .filter { selected.contains($0) }
             .filter { availability(for: $0, mode: mode).available }
     }
 
     // MARK: Connection
 
     func connect() async {
-        health = .connecting
-        // Streams hold the OLD client's connections; cancel before replacing it.
-        cancelAllStreams()
-        if await tryConnect() { return }
-        // Offline: if a bundled engine ships in this .app, start it and retry once.
-        if DaemonLauncher.startIfNeeded() {
+        connectionGeneration += 1
+        let generation = connectionGeneration
+        var attemptedLaunch = false
+        while !Task.isCancelled, generation == connectionGeneration {
+            health = .connecting
+            cancelAllStreams()
+            if await tryConnect() {
+                while !Task.isCancelled, generation == connectionGeneration {
+                    try? await Task.sleep(for: .seconds(3))
+                    guard generation == connectionGeneration, let current = client else { break }
+                    if (try? await current.health()) != true { break }
+                }
+            } else if !attemptedLaunch, DaemonLauncher.startIfNeeded() {
+                attemptedLaunch = true
+                try? await Task.sleep(for: .seconds(3))
+                continue
+            }
+            guard generation == connectionGeneration else { return }
+            health = .offline
+            client = nil
+            quotaResponse = nil
+            cancelAllStreams()
             try? await Task.sleep(for: .seconds(3))
-            if await tryConnect() { return }
         }
-        health = .offline
-        client = nil
-        quotaResponse = nil
     }
 
     private func tryConnect() async -> Bool {
@@ -341,6 +362,7 @@ final class AppModel {
                         if !existing.activity.isEmpty { task.activity = existing.activity }
                         if !existing.diff.isEmpty { task.diff = existing.diff }
                         if !existing.findings.isEmpty { task.findings = existing.findings }
+                        task.reviewVerdict = existing.reviewVerdict
                         if !existing.plan.isEmpty { task.plan = existing.plan }
                         task.answerText = existing.answerText ?? task.answerText
                         task.diagnosticText = existing.diagnosticText ?? task.diagnosticText
@@ -376,14 +398,18 @@ final class AppModel {
     func refreshHarnesses(fresh: Bool = false) async -> Bool {
         guard let client else { return false }
         do {
-            liveHarnesses = try await client.listHarnesses(fresh: fresh).compactMap { status in
-                guard let family = HarnessFamily(rawValue: status.id) else { return nil }
+            liveHarnesses = try await client.listHarnesses(fresh: fresh).map { status in
+                let family = HarnessFamily(rawValue: status.id)
                 let health = HarnessHealth(rawValue: status.status) ?? .unavailable
                 let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
                 let auth = Self.harnessReadinessText(status: status, health: health)
                 let checks = status.checks.map { "\($0.id): \($0.status)" }
                 let acceptsImages = Self.acceptsImages(manifest: status.manifest)
                 let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
+                let effortLevels: [String] = {
+                    guard case .array(let values) = status.manifest?["capability_profile"]?["effort_levels"] else { return [] }
+                    return values.compactMap(\.stringValue)
+                }()
                 // The doctor's configured-model verdict rides the DTO —
                 // surface a rejection so a doomed default is visible in Settings.
                 let modelIssue: String? = {
@@ -395,6 +421,7 @@ final class AppModel {
                                    authSources: status.authSources,
                                    intents: status.enabledIntents, reasons: status.reasons ?? [], checks: checks,
                                    acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
+                                   effortLevels: effortLevels,
                                    configuredModelIssue: modelIssue)
             }
             return true
@@ -598,7 +625,7 @@ final class AppModel {
     private static func liveTask(from s: RunSummary) -> TaskRun {
         let prompt = s.prompt ?? ""
         let title = prompt.isEmpty ? prettyTitle(s.runId) : String(prompt.prefix(64))
-        let families = (s.harnesses ?? []).compactMap { HarnessFamily(rawValue: $0) }
+        let families = (s.harnesses ?? []).map { HarnessFamily(rawValue: $0) }
         let projectName = s.project?.projectName ?? s.project?.root.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "No project"
         var task = TaskRun(
             id: s.runId,
@@ -611,7 +638,6 @@ final class AppModel {
             harnesses: families,
             n: s.n ?? max(1, families.count),
             createdAt: .now, updatedAt: .now,
-            activePhase: .review,
             spendUsd: s.spendUsd ?? 0, capUsd: s.paidBudget?.finiteMaxUsd ?? 0,
             spendKnown: s.spendUsd != nil, capKnown: s.paidBudget?.finiteMaxUsd != nil,
             spendEstimated: s.spendEstimated ?? false,
@@ -697,7 +723,6 @@ final class AppModel {
             harnesses: harnesses,
             n: n,
             createdAt: .now, updatedAt: .now,
-            activePhase: .contract,
             spendUsd: 0, capUsd: capUsd ?? 0,
             spendKnown: false, capKnown: hasExplicitCap,
             routeProof: .unverified,
@@ -760,7 +785,7 @@ final class AppModel {
                     var started = TaskRun(
                         id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
-                        n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .context,
+                        n: prev.n, createdAt: prev.createdAt, updatedAt: .now,
                         spendUsd: prev.spendUsd, capUsd: prev.capUsd,
                         spendKnown: false, capKnown: prev.capKnown,
                         routeProof: .unverified, attentionNote: nil,
@@ -783,7 +808,7 @@ final class AppModel {
                     var row = TaskRun(
                         id: info.jobId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
                         status: .queued, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
-                        n: prev.n, createdAt: prev.createdAt, updatedAt: .now, activePhase: .contract,
+                        n: prev.n, createdAt: prev.createdAt, updatedAt: .now,
                         spendUsd: prev.spendUsd, capUsd: prev.capUsd,
                         spendKnown: false, capKnown: prev.capKnown,
                         routeProof: .unverified, attentionNote: nil,
@@ -856,48 +881,6 @@ final class AppModel {
             // last-known rows and surface the error.
             threadStatus = "Could not refresh threads: \(userMessage(for: error))"
         }
-    }
-
-    func openThread(_ id: String) async {
-        guard let client else { return }
-        selectedThreadId = id
-        do {
-            let detail = try await client.threadDetail(id: id)
-            // The user may have switched threads (or hit New) during the await —
-            // don't let a stale load overwrite the now-current selection/draft.
-            guard selectedThreadId == id else { return }
-            selectedThreadDetail = detail
-            // Thread switch is the other P3 eviction point: terminal runs of
-            // the thread we just left release their heavy arrays.
-            evictBackgroundRunData()
-            // Hydrate run details for the most recent turns so the conversation
-            // can offer decision/apply actions (diff/findings) without requiring
-            // a manual visit to each run's detail screen first.
-            for turn in detail.turns.suffix(5) {
-                guard selectedThreadId == id else { return }
-                if let runId = turn.runId, liveTasks.contains(where: { $0.id == runId }) {
-                    await loadRunDetail(runId)
-                }
-            }
-        } catch {
-            guard selectedThreadId == id else { return }  // don't surface a stale error on another thread
-            threadStatus = "Could not load thread: \(userMessage(for: error))"
-        }
-    }
-
-    /// Enter the DRAFT state: no thread selected, so the composer's first message
-    /// materializes a fresh thread (on the Current Project). This is "New Thread".
-    func startDraftThread() {
-        selectedThreadId = nil
-        selectedThreadDetail = nil
-        threadStatus = nil
-        // Clear the inspector route — a fresh draft has no run, so the inspector
-        // must not keep showing the previous thread's run.
-        if case .task = route { route = .threads }
-        // Reset draft routing back to "inherit global default".
-        draftPrimaryHarness = nil
-        draftEligiblePool = []
-        draftIsolatedWorkspace = false
     }
 
     /// The thread the conversation is currently showing (detail preferred — it is
@@ -1222,7 +1205,7 @@ final class AppModel {
         var racePool: [String] = []
         if mode == .bestOfN {
             let available = effectiveEligiblePool.filter { id in
-                guard let family = HarnessFamily(rawValue: id) else { return false }
+                let family = HarnessFamily(rawValue: id)
                 return availability(for: family, mode: mode).available
             }
             racePool = available.isEmpty ? effectiveEligiblePool : available
@@ -1591,17 +1574,6 @@ final class AppModel {
         }
     }
 
-    /// Apply a run's reviewed patch through the server-owned gate.
-    func applyRun(runId: String, mode: String = "apply") async -> String? {
-        guard let client else { return "Engine offline." }
-        do {
-            let res = try await client.apply(runId: runId, body: ApplyRunRequest(mode: mode))
-            return res.applied ? nil : (res.detail ?? "Apply was refused.")
-        } catch {
-            return "Apply failed: \(error)"
-        }
-    }
-
     /// Apply PRE-FLIGHT: dry-run the apply gate BEFORE the user presses Apply, so the
     /// UI shows WHY apply would be refused (the gate reason) up front instead of only
     /// on press. Returns nil when apply would proceed cleanly, or the server's honest
@@ -1792,6 +1764,10 @@ final class AppModel {
             if !persistedFindings.isEmpty {
                 task.findings = persistedFindings
             }
+            task.reviewVerdict = RunDetailMapping.reviewVerdict(
+                decision: detail.decision, candidates: detail.candidates,
+                findings: task.findings, failure: failure, status: task.status
+            )
             if !detail.artifacts.isEmpty, task.plan.isEmpty, task.mode == .plan {
                 // Only the actual SpecPack artifact is a "plan" row; arbitrary
                 // nested paths must not be synthesized into plan steps.
@@ -2240,11 +2216,6 @@ final class AppModel {
         if type == "end" {
             return
         }
-        if let phase = Self.phase(for: type), phase != t.activePhase {
-            t.activePhase = phase
-            taskChanged = true
-        }
-
         if type.hasPrefix("run.") {
             if type == "run.completed" {
                 if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue {
@@ -2282,14 +2253,35 @@ final class AppModel {
                 taskChanged = true
             }
             box.appendActivity(ActivityEvent(kind, harness: h, Self.title(payload) ?? Self.pretty(type), detail: payload["text"]?.stringValue ?? payload["error"]?.stringValue, code: payload["rawRef"]?.stringValue, at: .now))
+            if type == "harness.completed" { shouldLoadDetail = true }
         } else if type.hasPrefix("gate.") {
             box.appendActivity(ActivityEvent(.gate, Self.title(payload) ?? Self.pretty(type), at: .now))
-        } else if type.hasPrefix("review.") || type.hasPrefix("finding.") {
-            box.appendActivity(ActivityEvent(.review, Self.title(payload) ?? Self.pretty(type), at: .now))
-            if type == "review.finding.proposed", let f = Self.finding(from: payload, taskTitle: t.title) {
-                t.findings.append(f)
+            if type == "gate.completed" { shouldLoadDetail = true }
+        } else if type == "plan.progress" {
+            if let items = Self.planItems(from: payload) {
+                t.plan = items
                 taskChanged = true
             }
+            box.appendActivity(ActivityEvent(.system, "Plan updated", at: .now))
+        } else if type.hasPrefix("review.") || type.hasPrefix("reviewer.") || type.hasPrefix("finding.") {
+            box.appendActivity(ActivityEvent(.review, Self.title(payload) ?? Self.pretty(type), at: .now))
+            if type == "review.started" {
+                t.reviewVerdict = .running
+                taskChanged = true
+            } else if type == "review.finding.proposed", let f = Self.finding(from: payload, taskTitle: t.title) {
+                t.findings.append(f)
+                t.reviewVerdict = .findings
+                taskChanged = true
+            } else if type == "reviewer.failed" || type == "reviewer.timed_out" {
+                t.reviewVerdict = type == "reviewer.failed" ? .failed : .error
+                taskChanged = true
+                shouldLoadDetail = true
+            } else if type == "reviewer.completed" || type == "finding.revalidated" {
+                shouldLoadDetail = true
+            }
+        } else if type == "arbitration.completed" {
+            box.appendActivity(ActivityEvent(.system, Self.pretty(type), at: .now))
+            shouldLoadDetail = true
         } else if type.hasPrefix("budget.") {
             if type == "budget.observation", let usd = payload["usd"]?.doubleValue {
                 // Observations are per-event INCREMENTS (live spend ticks up mid-run).

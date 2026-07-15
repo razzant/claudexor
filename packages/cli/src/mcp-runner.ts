@@ -8,6 +8,7 @@ import {
 } from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
+import { acpSessionQuery } from "./acp-surface-runner.js";
 
 export interface SurfaceRunnerHooks {
   onEvent?: (event: any) => void;
@@ -24,10 +25,25 @@ export function mcpSurfaceRunner() {
     if (p?.mode === "__status" || p?.mode === "__capabilities") {
       return catalogQuery(p.mode);
     }
-    if (p?.mode === "__runs_list" || p?.mode === "__run_inspect" || p?.mode === "__apply_check") {
-      return recoveryQuery(p.mode, typeof p?.runId === "string" ? p.runId : "");
+    if (
+      p?.mode === "__runs_list" ||
+      p?.mode === "__run_inspect" ||
+      p?.mode === "__run_status" ||
+      p?.mode === "__run_result" ||
+      p?.mode === "__run_cancel" ||
+      p?.mode === "__run_interactions" ||
+      p?.mode === "__run_answer" ||
+      p?.mode === "__apply_check"
+    ) {
+      return recoveryQuery(p.mode, typeof p?.runId === "string" ? p.runId : "", p);
     }
     if (p?.mode === "__journal_recovery") return journalRecoveryQuery(p);
+    if (typeof p?.mode === "string" && p.mode.startsWith("__acp_session_")) {
+      return acpSessionQuery(p, hooks, {
+        cancel: makeCancelBridge,
+        interactions: makeInteractionBridge,
+      });
+    }
     const mode = ModeKind.parse(p?.mode ?? "agent");
     const { client, addr } = await ensureDaemon();
     const repoRoot =
@@ -84,7 +100,7 @@ export function mcpSurfaceRunner() {
           }
         : undefined;
     const out = await enqueueAndAwait(client, addr, body, {
-      waitForTerminal: true,
+      waitForTerminal: p?.deferred !== true,
       ...(onPollTick ? { onPollTick } : {}),
     });
     // The MCP result: the run's primary output as the summary (the daemon
@@ -124,7 +140,11 @@ async function catalogQuery(mode: "__status" | "__capabilities"): Promise<unknow
  * (auto-starting it like every daemon-tracked path). A host that lost a run
  * handle finds it again without shelling out to the CLI.
  */
-async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
+async function recoveryQuery(
+  mode: string,
+  runId: string,
+  input: Record<string, unknown> = {},
+): Promise<unknown> {
   // Read-only recovery must not BOOT a daemon: with no daemon there are no
   // daemon-tracked runs to recover — say so instead of spawning one.
   const conn = await connectDaemonIfRunning();
@@ -162,7 +182,7 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
     };
   }
   if (!runId) throw new Error("runId is required");
-  if (mode === "__run_inspect") {
+  if (mode === "__run_inspect" || mode === "__run_status" || mode === "__run_result") {
     const detail = await get(`/runs/${encodeURIComponent(runId)}`);
     const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
     const decision = (detail["decision"] ?? null) as Record<string, unknown> | null;
@@ -178,6 +198,61 @@ async function recoveryQuery(mode: string, runId: string): Promise<unknown> {
       pendingInteractions: Array.isArray(detail["pendingInteractions"])
         ? (detail["pendingInteractions"] as unknown[]).length
         : 0,
+    };
+  }
+  if (mode === "__run_cancel") {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        control: { kind: "cancel", reason: "MCP host requested durable run cancellation" },
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      throw new Error(
+        typeof body["message"] === "string"
+          ? (body["message"] as string)
+          : `run cancel failed (HTTP ${res.status})`,
+      );
+    }
+    return { summary: `cancellation acknowledged for run ${runId}`, runId, acknowledged: true };
+  }
+  if (mode === "__run_interactions") {
+    const detail = await get(`/runs/${encodeURIComponent(runId)}`);
+    const interactions = Array.isArray(detail["pendingInteractions"])
+      ? detail["pendingInteractions"]
+      : [];
+    return {
+      summary: `${interactions.length} pending interaction(s) for run ${runId}`,
+      runId,
+      interactions,
+    };
+  }
+  if (mode === "__run_answer") {
+    const interactionId = String(input["interactionId"] ?? "");
+    if (!interactionId) throw new Error("interactionId is required");
+    const res = await controlApiFetch(
+      addr,
+      `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(interactionId)}/answer`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ answers: input["answers"] }),
+      },
+    );
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) {
+      throw new Error(
+        typeof body["message"] === "string"
+          ? (body["message"] as string)
+          : `interaction answer failed (HTTP ${res.status})`,
+      );
+    }
+    return {
+      summary: `answer acknowledged for interaction ${interactionId}`,
+      runId,
+      interactionId,
     };
   }
   // __apply_check: the server-side dry gate + patch check (no mutation).
@@ -262,20 +337,26 @@ async function journalRecoveryQuery(input: Record<string, unknown>): Promise<unk
 export function makeCancelBridge(
   addr: ControlApiAddress,
   signal: AbortSignal,
-): (info: { runId: string }) => void {
+): (info: { runId: string }) => Promise<void> {
   let posted = false;
-  return ({ runId }) => {
-    if (posted || !signal.aborted || !runId) return;
-    posted = true;
-    void controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        control: { kind: "cancel", reason: "mcp host cancelled the tool call" },
-      }),
-    }).catch(() => {
-      posted = false; // transient failure: retry on the next tick
-    });
+  let inFlight = false;
+  return async ({ runId }) => {
+    if (posted || inFlight || !signal.aborted || !runId) return;
+    inFlight = true;
+    try {
+      const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/control`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          control: { kind: "cancel", reason: "mcp host cancelled the tool call" },
+        }),
+      });
+      posted = response.ok;
+    } catch {
+      posted = false;
+    } finally {
+      inFlight = false;
+    }
   };
 }
 
@@ -290,7 +371,8 @@ export function makeInteractionBridge(
   addr: ControlApiAddress,
   onInteraction: (ctx: any) => Promise<any | null>,
 ): (info: { runId: string }) => Promise<void> {
-  const seen = new Set<string>();
+  const delivered = new Set<string>();
+  const answerCache = new Map<string, any | null>();
   let lastCheck = 0;
   let handling = false;
   return async ({ runId }) => {
@@ -314,20 +396,22 @@ export function makeInteractionBridge(
     }
     for (const pi of pending) {
       const id = typeof pi.interactionId === "string" ? pi.interactionId : "";
-      if (!id || seen.has(id)) continue;
-      seen.add(id);
+      if (!id || delivered.has(id)) continue;
       handling = true;
       try {
-        const result = await onInteraction({
-          request: {
-            interaction_id: id,
-            questions: Array.isArray(pi.questions) ? pi.questions : [],
-          },
-          timeoutAt: pi.timeoutAt ?? undefined,
-        });
+        const result = answerCache.has(id)
+          ? answerCache.get(id)
+          : await onInteraction({
+              request: {
+                interaction_id: id,
+                questions: Array.isArray(pi.questions) ? pi.questions : [],
+              },
+              timeoutAt: pi.timeoutAt ?? undefined,
+            });
+        answerCache.set(id, result);
         const answers = result && Array.isArray(result.answers) ? result.answers : null;
         if (answers) {
-          await controlApiFetch(
+          const response = await controlApiFetch(
             addr,
             `/runs/${encodeURIComponent(runId)}/interactions/${encodeURIComponent(id)}/answer`,
             {
@@ -344,9 +428,15 @@ export function makeInteractionBridge(
                 })),
               }),
             },
-          ).catch(() => {
-            /* stale/failed answers surface as engine timeout-decline; never crash the wait loop */
-          });
+          ).catch(() => null);
+          if (response?.ok) {
+            delivered.add(id);
+            answerCache.delete(id);
+          }
+        } else {
+          // A deliberate decline has no answer mutation to acknowledge.
+          delivered.add(id);
+          answerCache.delete(id);
         }
       } finally {
         handling = false;

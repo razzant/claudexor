@@ -20,6 +20,12 @@ struct TaskDetailView: View {
     @State private var reverting = false
     /// Honest revert refusal (e.g. the tree diverged since the turn). nil => none.
     @State private var revertError: String?
+    @State private var actionError: String?
+    @State private var retrying = false
+    @State private var runAgainDraft: RunAgainDraft?
+    @State private var runAgainPrompt = ""
+    @State private var showRunAgain = false
+    @State private var runningAgain = false
 
     enum Tab: String, CaseIterable, Identifiable {
         case answer, plan, activity, candidates, diff, review, artifacts, diagnostics
@@ -103,6 +109,7 @@ struct TaskDetailView: View {
             // P3 eviction drops off-screen terminal feeds, and this is the
             // reload that restores them from the server timeline.
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
+            .sheet(isPresented: $showRunAgain) { runAgainSheet }
         } else {
             EmptyStateView(title: "Run not found", message: "This run is no longer available.", systemImage: "questionmark.folder")
         }
@@ -181,7 +188,6 @@ struct TaskDetailView: View {
                 }
             }
 
-            Panel(padding: Theme.Spacing.md) { PhasePipelineView(active: task.activePhase, status: task.status) }
         }
         .padding(.horizontal, Theme.Spacing.xxl)
         .padding(.top, Theme.Spacing.xl)
@@ -296,6 +302,25 @@ struct TaskDetailView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            if let receipt = task.deliveryReceipt {
+                Panel {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        Label("Delivery receipt", systemImage: receipt.applied ? "checkmark.seal.fill" : "xmark.seal")
+                            .font(.headline)
+                            .foregroundStyle(receipt.applied ? Theme.status(.succeeded) : Theme.status(.failed))
+                        Text("Target \(String(receipt.targetPreimageSha.prefix(12))) · verifier \(receipt.finalVerify.attempted ? "ran" : "not run") · gates \(receipt.finalVerify.gatesPassed == true ? "passed" : "not passed")")
+                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                        Button {
+                            tab = .diff
+                            userSelectedTab = true
+                        } label: {
+                            Label("Open Diff", systemImage: "plusminus.circle")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(task.diff.isEmpty)
+                    }
+                }
+            }
         }
     }
 
@@ -394,11 +419,46 @@ struct TaskDetailView: View {
     private func reviewContent(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionLabel("Cross-family review", systemImage: "person.2.badge.gearshape")
-            if task.findings.isEmpty {
-                Panel { Label("No findings — final review clean.", systemImage: "checkmark.seal.fill").foregroundStyle(Theme.status(.succeeded)) }
-            } else {
+            Panel {
+                Label(reviewVerdictText(task.reviewVerdict), systemImage: reviewVerdictGlyph(task.reviewVerdict))
+                    .foregroundStyle(reviewVerdictColor(task.reviewVerdict))
+            }
+            if !task.findings.isEmpty {
                 ForEach(task.findings) { FindingCard(finding: $0) }
             }
+        }
+    }
+
+    private func reviewVerdictText(_ verdict: ReviewVerdict) -> String {
+        switch verdict {
+        case .clean: return "Verified final review clean."
+        case .findings: return "Review produced findings."
+        case .running: return "Review is running."
+        case .failed: return "Review failed."
+        case .error: return "Review ended with an error."
+        case .ungated: return "Run is ungated; no clean-review claim is available."
+        case .notRun: return "Final review was not run."
+        }
+    }
+
+    private func reviewVerdictGlyph(_ verdict: ReviewVerdict) -> String {
+        switch verdict {
+        case .clean: return "checkmark.seal.fill"
+        case .findings: return "exclamationmark.bubble.fill"
+        case .running: return "circle.dotted"
+        case .failed, .error: return "xmark.octagon.fill"
+        case .ungated: return "shield.slash"
+        case .notRun: return "person.2.slash"
+        }
+    }
+
+    private func reviewVerdictColor(_ verdict: ReviewVerdict) -> Color {
+        switch verdict {
+        case .clean: return Theme.status(.succeeded)
+        case .findings, .ungated: return Theme.status(.blocked)
+        case .running: return Theme.status(.running)
+        case .failed, .error: return Theme.status(.failed)
+        case .notRun: return .secondary
         }
     }
 
@@ -429,33 +489,32 @@ struct TaskDetailView: View {
                 .buttonStyle(.bordered)
                 .help("Open ~/.claudexor/v2/daemon/claudexord.log.")
                 Button {
+                    retrying = true
                     Task {
-                        // Retry preserves the ORIGINAL run's policy contract
-                        // (access + web); silently resetting to defaults would
-                        // change privacy/safety semantics between attempts.
-                        await model.startRun(
-                            prompt: task.prompt,
-                            mode: task.mode,
-                            harnesses: task.harnesses,
-                            primary: task.harnesses.first,
-                            routingGoal: model.defaultRoutingGoal,
-                            model: nil,
-                            n: task.n,
-                            capUsd: task.capKnown ? task.capUsd : model.defaultMaxUsdPerRun,
-                            access: task.requestedAccess ?? (task.mode.isReadOnly ? "readonly" : "workspace_write"),
-                            web: task.externalContextPolicy ?? "auto",
-                            tests: task.tests,
-                            reviewerPanel: task.reviewerPanel,
-                            protectedPathApprovals: task.protectedPathApprovals,
-                            repoRootOverride: task.repoRoot
-                        )
+                        actionError = await model.retryRunExact(task.id)
+                        retrying = false
                     }
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                }
+                } label: { Label(retrying ? "Retrying…" : "Retry Exact", systemImage: "arrow.clockwise") }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .help("Start a new run with the same prompt, mode, harness pool, budget, tests, reviewer panel, protected-path approvals, access, and web policy.")
+                .disabled(retrying)
+                .help("Create a new attempt from the immutable original request and run a fresh preflight.")
+                Button {
+                    Task {
+                        guard let draft = await model.loadRunAgainDraft(task.id) else {
+                            actionError = "Could not load the editable run draft."
+                            return
+                        }
+                        runAgainDraft = draft
+                        runAgainPrompt = draft.request["prompt"]?.stringValue ?? task.prompt
+                        showRunAgain = true
+                    }
+                } label: { Label("Run Again…", systemImage: "square.and.pencil") }
+                .buttonStyle(.bordered)
+                .help("Open a new editable draft; this is not an exact retry.")
+            }
+            if let actionError {
+                Text(actionError).font(.caption).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
             }
             if let error = task.engineError, !error.isEmpty {
                 Panel(padding: Theme.Spacing.md) {
@@ -485,6 +544,42 @@ struct TaskDetailView: View {
                 }
             }
         }
+    }
+
+    private var runAgainSheet: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            Text("Run Again").font(.title2.bold())
+            Text("This creates a new editable run. Exact Retry is the immutable replay action.")
+                .font(.callout).foregroundStyle(.secondary)
+            TextEditor(text: $runAgainPrompt)
+                .font(.body)
+                .frame(minHeight: 180)
+                .padding(Theme.Spacing.sm)
+                .background(Theme.surfaceRaisedHi, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+            if let draft = runAgainDraft, !draft.differences.isEmpty {
+                ForEach(Array(draft.differences.enumerated()), id: \.offset) { _, difference in
+                    Text("\(difference.field): \(difference.change) — \(difference.reason)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showRunAgain = false }
+                Button(runningAgain ? "Starting…" : "Start New Run") {
+                    guard let draft = runAgainDraft else { return }
+                    runningAgain = true
+                    Task {
+                        actionError = await model.startRunAgain(draft, prompt: runAgainPrompt)
+                        runningAgain = false
+                        if actionError == nil { showRunAgain = false }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(runningAgain || runAgainPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(Theme.Spacing.xl)
+        .frame(width: 560)
     }
 
     private func copyDiagnostics(_ task: TaskRun) {

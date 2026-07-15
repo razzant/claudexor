@@ -61,7 +61,11 @@ struct HarnessDefaultsRow: View {
     /// enough that a blur/commit feels immediate.
     private static let debounceMs: UInt64 = 600
 
-    private static let efforts = ["__default", "low", "medium", "high", "xhigh", "max"]
+    private var effortLevels: [String] {
+        var levels = model.harnessInfo(for: family)?.effortLevels ?? []
+        if effort != "__default", !levels.contains(effort) { levels.insert(effort, at: 0) }
+        return levels
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
@@ -78,13 +82,15 @@ struct HarnessDefaultsRow: View {
             }
             HStack(spacing: Theme.Spacing.sm) {
                 HarnessModelOverrideField(family: family, modelDraft: $modelDraft, fetch: model.harnessModels(for:), models: $models)
-                Picker("Effort", selection: $effort) {
-                    Text("Default").tag("__default")
-                    ForEach(Self.efforts.dropFirst(), id: \.self) { Text($0).tag($0) }
+                if !effortLevels.isEmpty {
+                    Picker("Effort", selection: $effort) {
+                        Text("Default").tag("__default")
+                        ForEach(effortLevels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .fixedSize()
+                    .help("Adapter-declared reasoning effort for \(family.label).")
+                    .onChange(of: effort) { _, _ in scheduleSave(immediate: true) }
                 }
-                .fixedSize()
-                .help("Reasoning effort hint, where the harness supports one.")
-                .onChange(of: effort) { _, _ in scheduleSave(immediate: true) }
                 Picker("Web", selection: $web) {
                     Text("Auto").tag("auto")
                     Text("Off").tag("off")

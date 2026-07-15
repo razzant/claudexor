@@ -2,7 +2,7 @@
   "name": "@claudexor/acp-server",
   "version": "1.0.1",
   "license": "MIT",
-  "description": "Minimal ACP server (stdio JSON-RPC) exposing Claudexor as a meta-agent to editors. Runner injected.",
+  "description": "Official-SDK ACP projection over daemon-owned Claudexor threads and runs.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +16,7 @@
     "dist"
   ],
   "dependencies": {
+    "@agentclientprotocol/sdk": "1.2.1",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"
   },

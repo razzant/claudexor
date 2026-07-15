@@ -300,16 +300,6 @@ public struct RunDecisionResponse: Codable, Sendable, Equatable {
     public let message: String?
 }
 
-/// Result of POST /runs/:id/apply (delivery DeliverResult projection).
-public struct ApplyResultInfo: Codable, Sendable, Equatable {
-    public let mode: String
-    public let applied: Bool
-    public let branch: String?
-    public let commit: String?
-    public let prUrl: String?
-    public let detail: String?
-}
-
 public struct ApplyRunRequest: Codable, Sendable {
     public var target: ApplyTarget
     public var mode: String

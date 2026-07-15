@@ -1,8 +1,6 @@
 import Foundation
 
 public enum ComposerOptionParser {
-    private static let efforts: Set<String> = ["low", "medium", "high", "xhigh", "max"]
-
     public static func splitOptionTokens(_ text: String) -> [String] {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         return text
@@ -17,7 +15,9 @@ public enum ComposerOptionParser {
         return value
     }
 
-    public static func parseReviewerPanelEntry(_ raw: String) -> ReviewerPanelEntry? {
+    public static func parseReviewerPanelEntry(
+        _ raw: String, effortLevels: Set<String> = []
+    ) -> ReviewerPanelEntry? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let eq = trimmed.firstIndex(of: "=")
@@ -32,7 +32,7 @@ public enum ComposerOptionParser {
         } else if let colon = harness.lastIndex(of: ":") {
             let suffix = String(harness[harness.index(after: colon)...])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard efforts.contains(suffix) else { return nil }
+            guard effortLevels.contains(suffix) else { return nil }
             effort = suffix
             harness = String(harness[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -42,7 +42,7 @@ public enum ComposerOptionParser {
         if let currentModel = model, let colon = currentModel.lastIndex(of: ":") {
             let suffix = String(currentModel[currentModel.index(after: colon)...])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if efforts.contains(suffix) {
+            if effortLevels.contains(suffix) {
                 effort = suffix
                 let stripped = String(currentModel[..<colon])
                     .trimmingCharacters(in: .whitespacesAndNewlines)

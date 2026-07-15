@@ -78,6 +78,35 @@ describe("makeInteractionBridge (MCP daemon-run interaction plumbing)", () => {
     expect(detailCalls).toBe(2); // re-polled after the throttle window...
     expect(asks).toBe(1); // ...but the same interaction is never re-asked
   });
+
+  it("retries a cached answer after a non-2xx response without asking the user twice", async () => {
+    let posts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: { method?: string }) => {
+        if (init?.method === "POST") {
+          posts += 1;
+          return { ok: posts > 1, json: async () => ({}) } as never;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            pendingInteractions: [{ interactionId: "int-retry", questions: [], timeoutAt: null }],
+          }),
+        } as never;
+      }),
+    );
+    let asks = 0;
+    const bridge = makeInteractionBridge(addr, async () => {
+      asks += 1;
+      return { answers: [{ question_id: "q", selected_labels: ["A"], free_text: null }] };
+    });
+    await bridge({ runId: "run-retry" });
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await bridge({ runId: "run-retry" });
+    expect(asks).toBe(1);
+    expect(posts).toBe(2);
+  });
 });
 
 describe("makeCancelBridge (host cancel -> typed daemon cancel)", () => {
@@ -106,6 +135,24 @@ describe("makeCancelBridge (host cancel -> typed daemon cancel)", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toContain("/runs/run-9/control");
     expect(posts[0]).toContain('"kind":"cancel"');
+  });
+
+  it("does not mark a failed cancel delivery as acknowledged and retries", async () => {
+    let posts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        posts += 1;
+        return { ok: posts > 1, json: async () => ({}) } as never;
+      }),
+    );
+    const { makeCancelBridge } = await import("./mcp-runner.js");
+    const controller = new AbortController();
+    controller.abort();
+    const bridge = makeCancelBridge(addr, controller.signal);
+    await bridge({ runId: "run-retry" });
+    await bridge({ runId: "run-retry" });
+    expect(posts).toBe(2);
   });
 });
 
@@ -142,6 +189,35 @@ describe("mcp daemon body mapping", () => {
       ensureSpy.mockRestore();
       enqueueSpy.mockRestore();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("requests a durable handle instead of waiting for terminal when MCP marks a run deferred", async () => {
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const ensureSpy = vi.spyOn(daemonRun, "ensureDaemon").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+    });
+    const enqueueSpy = vi.spyOn(daemonRun, "enqueueAndAwait").mockResolvedValue({
+      runId: "run-durable",
+      runDir: "/tmp/run-durable",
+      status: "running",
+      jobId: "job-durable",
+    });
+    try {
+      const result = await mcpSurfaceRunner()({ mode: "agent", prompt: "go", deferred: true });
+      expect(enqueueSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ waitForTerminal: false }),
+      );
+      expect(result).toMatchObject({ runId: "run-durable", status: "running" });
+      expect(ensureSpy).toHaveBeenCalledOnce();
+    } finally {
+      ensureSpy.mockRestore();
+      enqueueSpy.mockRestore();
     }
   });
 });

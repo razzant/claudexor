@@ -152,6 +152,52 @@ describe("plugin lifecycle", () => {
     });
   });
 
+  it("composes and restores an existing Claude statusLine without overwriting drift", async () => {
+    await withTempHome(async ({ home }) => {
+      const settingsPath = join(home, ".claude", "settings.json");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      const existing = { type: "command", command: "printf existing", padding: 2 };
+      writeFileSync(settingsPath, JSON.stringify({ theme: "dark", statusLine: existing }));
+
+      const install = await runPluginCommand("install", "claude");
+      expect(install.exitCode).toBe(0);
+      const installed = readJson(settingsPath);
+      expect(installed.theme).toBe("dark");
+      expect(installed.statusLine.padding).toBe(2);
+      expect(installed.statusLine.command).toContain("quota ingest-claude-statusline managed-v2");
+      expect(installed.statusLine.command).not.toBe(existing.command);
+      expect((await runPluginCommand("status", "claude")).results[0]?.state).toBe("installed");
+
+      const managedStatusLine = { ...installed.statusLine };
+      installed.statusLine.command = "printf user-changed";
+      writeFileSync(settingsPath, JSON.stringify(installed));
+      const refused = await runPluginCommand("repair", "claude");
+      expect(refused.results[0]?.state).toBe("blocked");
+      expect(readJson(settingsPath).statusLine.command).toBe("printf user-changed");
+
+      writeFileSync(settingsPath, JSON.stringify({ theme: "dark", statusLine: managedStatusLine }));
+      const uninstall = await runPluginCommand("uninstall", "claude");
+      expect(uninstall.exitCode).toBe(0);
+      expect(readJson(settingsPath)).toEqual({ theme: "dark", statusLine: existing });
+    });
+  });
+
+  it("reports Claude statusline quota unavailable when hooks are disabled", async () => {
+    await withTempHome(async ({ home }) => {
+      const settingsPath = join(home, ".claude", "settings.json");
+      mkdirSync(dirname(settingsPath), { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({ disableAllHooks: true }));
+
+      const result = await runPluginCommand("install", "claude");
+
+      expect(result.results[0]?.state).toBe("blocked");
+      expect(result.results[0]?.errors.join(" ")).toContain(
+        "subscription quota remains unavailable",
+      );
+      expect(readJson(settingsPath).statusLine).toBeUndefined();
+    });
+  });
+
   it("installs all host integrations in a temp HOME and passes status/doctor", async () => {
     await withTempHome(async ({ home, config, cli }) => {
       const install = await runPluginCommand("install", "all");

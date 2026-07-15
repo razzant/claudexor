@@ -56,18 +56,16 @@ extension AppModel {
         )
     }
 
-    static func phase(for type: String) -> Phase? {
-        switch type {
-        case "run.created", "task.contract.created": return .contract
-        case "context.pack.created": return .context
-        case "budget.lease.created", "budget.observation": return .budget
-        case "harness.started", "harness.event", "harness.completed": return .envelope
-        case "gate.started", "gate.completed": return .gates
-        case "review.started", "review.finding.proposed", "finding.revalidated": return .review
-        case "synthesis.started": return .synthesis
-        case "arbitration.completed": return .arbitration
-        case "work_product.emitted", "run.completed", "run.failed": return .final
-        default: return nil
+    static func planItems(from payload: JSONValue) -> [PlanItem]? {
+        guard case .array(let items) = payload["items"] else { return nil }
+        return items.compactMap { item in
+            guard let id = item["id"]?.stringValue,
+                  let title = item["title"]?.stringValue,
+                  let status = item["status"]?.stringValue else { return nil }
+            let state: PlanItemState = status == "completed" ? .done
+                : status == "in_progress" ? .active
+                : status == "blocked" ? .blocked : .pending
+            return PlanItem(id: id, title, state)
         }
     }
 

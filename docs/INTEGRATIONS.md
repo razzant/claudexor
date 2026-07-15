@@ -63,6 +63,13 @@ with provenance and freshness; `POST /v2/quota` requests a live refresh and
 fails explicitly when no official refresher is available. Missing usage stays
 unknown and an elapsed reset marks data stale rather than locally setting it to
 zero. The CLI projection is `claudexor quota [--refresh] --json`.
+Codex refreshes through the vendor app-server. Claude subscription windows use
+Claude Code's documented `rate_limits` status-line input: an explicit
+`claudexor plugin install claude` composes the collector with an existing user
+`statusLine` command and restores it on uninstall. The collector persists only
+the two documented windows and provenance in the Claudexor-owned v2 root; it
+does not read Claude credential or session files. See the official
+[Claude Code status-line contract](https://code.claude.com/docs/en/statusline).
 Native login commands are server allowlisted and use setup jobs with
 typed phase/deadline/outcome,
 restart reconciliation, watchdog timeouts, and a polling-backed SSE lifecycle
@@ -155,13 +162,17 @@ the declared JSON Schemas. Claudexor's semantic checks (absolute `repoPath`,
 the inline-secret fence, reviewer-panel shapes) run inside the tool handlers
 and surface as `isError` tool results.
 
-MCP is one-shot: a host receives the final Claudexor output from the fourteen
-implemented tools — `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
+MCP Tasks remain experimental and are not advertised. Run tools return a
+daemon-bound durable handle instead of holding a tool call open until terminal.
+The implemented tools include `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
 `claudexor_orchestrate`, `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
-`claudexor_runs`, `claudexor_inspect`, `claudexor_apply_check`, and
+`claudexor_runs`, `claudexor_inspect`, `claudexor_run_status`,
+`claudexor_run_result`, `claudexor_run_cancel`,
+`claudexor_run_interactions`, `claudexor_answer_interaction`,
+`claudexor_apply_check`, and
 `claudexor_journal_recovery`. The destructive
 `claudexor_quarantine_journal` requires an exact partition fingerprint and
 explicit `quarantine_and_start_fresh` confirmation. MCP does not claim live
@@ -180,18 +191,15 @@ Current operational behavior:
   the local daemon and enqueues through the control API. `GET /v2/runs` lists
   every MCP-started run, including ask/plan/audit/orchestrate, while mutating
   runs remain cancellable and operator-unblockable through the same authority.
-- Every run result ends with a `runId:`/`artifacts:`/`status:` trailer — the
-  host has a handle for `claudexor inspect`, `follow`, `apply`, `decision`.
-- Mid-run harness questions bridge to MCP ELICITATION when the host declares
-  the capability (Cursor does): each engine question becomes one
-  `elicitation/create` round-trip. Hosts without elicitation keep the honest
-  fallback — the question declines benignly after `interaction_timeout_ms`.
+- Every run start returns a `runId:`/`artifacts:`/`status:` trailer. Status,
+  terminal result, cancellation, pending questions, and answers are separate
+  stable tools; cancel/answer success means the `/v2` journal mutation was
+  acknowledged.
 - A version skew between installed plugin artifacts
   (`CLAUDEXOR_PLUGIN_VERSION`) and the running CLI is disclosed on stderr at
   serve time; run `claudexor plugin repair all` and reload the host.
-- Long blocking calls remain subject to HOST tool timeouts (a race can run
-  many minutes). The runId trailer plus daemon tracking make the run
-  recoverable even if the host abandons the call.
+- Long work no longer depends on the host's tool-call timeout; the daemon keeps
+  running after the durable handle is returned.
 
 ## Host Plugins
 
@@ -221,7 +229,10 @@ entries. Unknown user files fail loudly instead of being overwritten.
 Current host layouts:
 
 - Claude Code: `~/.claude/skills/claudexor/` with plugin manifest, skill,
-  command, and bundled `.mcp.json`.
+  command, and bundled `.mcp.json`. The same explicit install composes the
+  official subscription-quota collector into user `~/.claude/settings.json`;
+  an existing status-line command remains the display owner and is restored on
+  uninstall. Drift is blocked rather than overwritten.
 - Codex: source under `~/.codex/plugins/claudexor` plus a personal marketplace
   entry in `~/.agents/plugins/marketplace.json`; this registers a plugin with
   bundled skill and MCP config, but does not prove it is enabled in Codex.
@@ -285,12 +296,14 @@ For Zed, register Claudexor as an agent server in `settings.json`:
 }
 ```
 
-`session/new` must provide `params.cwd` as a non-empty absolute path to an
-existing directory; missing, relative, blank, non-string, or non-directory values
-are rejected before a session is created. `session/prompt` must use the returned
-session id, which anchors the run scope to that cwd rather than the ACP server
-process cwd. Treat ACP as experimental and verify the exact behavior against the
-current package before building a hard dependency.
+The server uses `@agentclientprotocol/sdk` and stable ACP protocol version 1.
+`session/new` creates a daemon thread (default `in_place`) and returns that
+thread id. `session/list`, `session/load`, `session/resume`, `session/close`,
+`session/prompt`, and `session/cancel` all resolve through the same `/v2`
+authority; no second in-memory session catalog exists. Images and embedded
+resources are uploaded/finalized into immutable daemon resource IDs before the
+turn enqueues. Blocked/failed daemon outcomes return ACP `refusal` plus typed
+`_meta.claudexor` run/status/apply evidence rather than a false `end_turn`.
 
 ## External Harness Adapters
 

@@ -4,8 +4,19 @@ import { flagBool } from "./args.js";
 import { print, printJson } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
+import {
+  CLAUDE_STATUSLINE_MANAGED_ARG,
+  runClaudeStatuslineCollector,
+} from "./claude-statusline.js";
 
 export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  if (args._[1] === "ingest-claude-statusline") {
+    if (args._[2] !== CLAUDE_STATUSLINE_MANAGED_ARG || args._.length > 4) return 2;
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
+    await runClaudeStatuslineCollector(Buffer.concat(chunks).toString("utf8"), args._[3]);
+    return 0;
+  }
   try {
     const { addr } = await ensureDaemon();
     const refresh = flagBool(args, "refresh");

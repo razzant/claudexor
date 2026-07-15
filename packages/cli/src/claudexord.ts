@@ -56,6 +56,7 @@ import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
 import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { refreshCodexQuota } from "./codex-quota-source.js";
+import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import {
   buildGroundingPrompt,
@@ -92,7 +93,9 @@ async function main(): Promise<void> {
     );
     const runEventStoreSlot = journalManager.registerProjection(runEventProjection());
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
-    const quotaStoreSlot = journalManager.registerProjection(quotaProjection([refreshCodexQuota]));
+    const quotaStoreSlot = journalManager.registerProjection(
+      quotaProjection([refreshCodexQuota, refreshClaudeStatuslineQuota]),
+    );
     const threadStoreSlot = journalManager.registerProjection(threadProjection());
     const setupStoreSlot = journalManager.registerProjection({
       name: "setup",
@@ -150,7 +153,6 @@ async function main(): Promise<void> {
               : undefined,
         });
         const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
-        // Isolated threads use their persistent worktree; other runs use the project root.
         let executionRoot: string | undefined;
         let inPlace = p.execution.isolation === "live";
         if (threadId && repoRoot !== NO_PROJECT_ROOT) {
@@ -289,7 +291,6 @@ async function main(): Promise<void> {
               () => quotaStoreSlot.current(),
             ),
           });
-    // Arm signals before startup awaits; serialized lifecycle fences late listeners.
     lifecycle = armDaemonLifecycle({
       daemonDir: daemonDir(),
       logPath: logPath(),
@@ -694,7 +695,6 @@ function controlServices(
     },
     deleteSecret: async (name: string) => {
       secretStore.delete(name);
-      // A removed key changes auth readiness immediately: drop the doctor cache.
       invalidateDoctorCache();
       return { name, deleted: true };
     },

@@ -38,7 +38,7 @@ struct AppModelRefreshTests {
         var task = TaskRun(
             id: "run", title: "Run", prompt: "", mode: .agent, status: .running,
             project: "Project", specTitle: nil, harnesses: [], n: 1,
-            createdAt: .now, updatedAt: .now, activePhase: .budget,
+            createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
             candidates: [], findings: [], diff: []
@@ -55,7 +55,7 @@ struct AppModelRefreshTests {
         model.liveTasks = [TaskRun(
             id: "run-zero", title: "Run", prompt: "", mode: .agent, status: .running,
             project: "Project", specTitle: nil, harnesses: [], n: 1,
-            createdAt: .now, updatedAt: .now, activePhase: .budget,
+            createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 1, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
             candidates: [], findings: [], diff: []
@@ -277,6 +277,60 @@ struct AppModelRefreshTests {
             job: safe, connection: .terminal,
             actionInFlight: false
         ))
+    }
+
+    @MainActor
+    @Test func emptyFindingsNeverBecomeCleanWithoutEngineEvidence() {
+        #expect(RunDetailMapping.reviewVerdict(
+            decision: nil, candidates: [], findings: [], failure: nil, status: .succeeded
+        ) == .notRun)
+        let decision = JSONValue.object([
+            "outcome": .string("ready"),
+            "verification_basis": .string("cross_family_review")
+        ])
+        #expect(RunDetailMapping.reviewVerdict(
+            decision: decision, candidates: [], findings: [], failure: nil, status: .succeeded
+        ) == .clean)
+    }
+
+    @MainActor
+    @Test func doctorAddsUnknownHarnessAndDeclaredEffortLevelsWithoutAppPatch() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            (appResponse(for: request), Data(#"{"harnesses":[{"id":"future-agent","status":"ok","manifest":{"capability_profile":{"effort_levels":["fast","deep"]}}}]}"#.utf8))
+        }
+        #expect(await model.refreshHarnesses())
+        #expect(model.selectableHarnesses.map(\.rawValue) == ["future-agent"])
+        #expect(model.harnessInfo(for: HarnessFamily(rawValue: "future-agent"))?.effortLevels == ["fast", "deep"])
+    }
+
+    @MainActor
+    @Test func delayedThreadAResponseCannotReplaceSelectedThreadB() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            let id = request.url!.lastPathComponent
+            if id == "A" { Thread.sleep(forTimeInterval: 0.15) }
+            let json = #"{"thread":{"id":"\#(id)","title":"\#(id)","repoRoot":null,"mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"},"sessions":[],"turns":[]}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+        let first = Task { await model.openThread("A") }
+        try await Task.sleep(for: .milliseconds(20))
+        await model.openThread("B")
+        await first.value
+        #expect(model.selectedThreadId == "B")
+        #expect(model.selectedThreadDetail?.thread.id == "B")
     }
 }
 

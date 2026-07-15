@@ -17,14 +17,12 @@ struct AuthSheet: View {
     @State private var lastRefreshedTerminalJobId: String?
 
     private var secretName: String? {
-        switch family {
-        case .codex: return "openai"
-        case .claude: return "anthropic"
-        case .cursor: return "cursor"
-        case .opencode: return "opencode"
-        case .raw: return "raw"
-        case .fake: return nil
-        }
+        if family == .codex { return "openai" }
+        if family == .claude { return "anthropic" }
+        if family == .cursor { return "cursor" }
+        if family == .opencode { return "opencode" }
+        if family == .raw { return "raw" }
+        return nil
     }
 
     private var currentInfo: HarnessInfo? { model.harnessInfo(for: family) }

@@ -4,11 +4,7 @@ import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolRes
 import paidBudgetSchemaRaw from "@claudexor/schema/generated/PaidBudget.schema.json" with { type: "json" };
 import testCommandInvocationSchemaRaw from "@claudexor/schema/generated/TestCommandInvocation.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
-import {
-  McpServer as SdkMcpServer,
-  MissingRequiredClientCapabilityError,
-  fromJsonSchema,
-} from "@modelcontextprotocol/server";
+import { McpServer as SdkMcpServer, fromJsonSchema } from "@modelcontextprotocol/server";
 import {
   StdioServerTransport,
   serveStdio,
@@ -20,18 +16,13 @@ import {
   ProviderFamily,
   validateOptionalNonEmptyString,
   validateSurfaceRunControls,
-  type InteractionAnswer,
-  type InteractionQuestion,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 import { journalRecoveryTools } from "./recovery-tools.js";
 
-// The SDK wants self-contained schemas, so generated internal refs are inlined
-// once at load (cycle-safe: a cyclic ref degrades to a permissive subschema).
+// The SDK wants self-contained schemas, so inline generated internal refs once at load.
 function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, unknown> {
-  // zod-to-json-schema dedupes with FULL JSON-pointer refs (e.g.
-  // "#/definitions/X/properties/y/items"), so resolution walks pointers over
-  // the whole document, not just top-level definition names.
+  // Resolve full JSON-pointer refs, not just top-level definition names.
   const resolvePointer = (pointer: string): unknown => {
     let node: unknown = schema;
     for (const rawSegment of pointer.split("/").slice(1)) {
@@ -48,9 +39,7 @@ function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, u
     const obj = node as Record<string, unknown>;
     const ref = obj["$ref"];
     if (typeof ref === "string" && ref.startsWith("#/")) {
-      // Claudexor's generated schemas are trees; a cycle would mean a schema
-      // refactor introduced recursion — fail LOUDLY at server start rather
-      // than silently degrading validation to permissive.
+      // Generated schemas are trees; fail loudly if a refactor introduces recursion.
       if (stack.includes(ref))
         throw new Error(
           `cyclic $ref '${ref}' in a generated tool schema — flatten the schema or drop its outputSchema`,
@@ -86,24 +75,13 @@ const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
  * 2024-10-07 — Cursor's 2025-06-18 handshake keeps working), CONCURRENT
  * request dispatch (a multi-minute race no longer blocks ping/tools/list —
  * the old hand-rolled loop awaited every call inline), structural argument
- * validation against the declared JSON Schemas, and elicitation round-trips.
+ * validation against the declared JSON Schemas.
  * This module stays a THIN surface: tool descriptors, Claudexor's semantic
  * argument checks (the parts a JSON Schema cannot express), and translation
- * between runner results/interactions and MCP shapes. No business logic.
+ * between runner results and MCP shapes. No business logic.
  */
 
 export interface McpToolContext {
-  /**
-   * Ask the user the engine's interactive questions through MCP elicitation.
-   * Resolves null when the host lacks the elicitation capability or declines
-   * — the engine's timeout-decline fallback stays the honest default.
-   */
-  elicit:
-    | ((request: {
-        interaction_id: string;
-        questions: InteractionQuestion[];
-      }) => Promise<InteractionAnswer[] | null>)
-    | null;
   /**
    * The request's cancellation signal (`notifications/cancelled` from the
    * host) — runners abort the underlying run with it, exactly like Ctrl-C
@@ -176,13 +154,7 @@ export function buildMcpServer(opts: {
           // there. The old hand-rolled -32602 contract is retired with it.
           throw new Error(validation);
         }
-        // Offer the elicitation bridge ONLY when the client declared the
-        // capability — otherwise the ENGINE must not think an interactive
-        // channel exists (it would offer the harness a channel whose every
-        // question dies as a decline).
-        const canElicit = Boolean(server.server.getClientCapabilities()?.elicitation);
         const out = await tool.handler(provided, {
-          elicit: canElicit ? elicitBridge(ctx) : null,
           signal: ctx?.mcpReq?.signal,
         });
         const text = typeof out === "string" ? out : out.text;
@@ -231,68 +203,6 @@ function warnOnPluginVersionSkew(serverVersion: string | undefined): void {
         `run \`claudexor plugin repair all\` and reload the host to refresh cached tool schemas\n`,
     );
   }
-}
-
-/**
- * Map the SDK's server-initiated elicitation onto the engine's typed
- * interaction questions. One elicitation per QUESTION (MCP forms are flat);
- * a missing client capability resolves null so the engine's timeout-decline
- * fallback applies — never a fake answer.
- */
-function elicitBridge(ctx: any): McpToolContext["elicit"] {
-  const elicitInput = ctx?.mcpReq?.elicitInput;
-  if (typeof elicitInput !== "function") return null;
-  return async ({ questions }) => {
-    const answers: InteractionAnswer[] = [];
-    for (const q of questions) {
-      const hasOptions = q.options.length > 0;
-      const property: Record<string, unknown> = hasOptions
-        ? q.multi_select
-          ? {
-              type: "array",
-              items: { type: "string", enum: q.options.map((o) => o.label) },
-              description: optionLegend(q),
-            }
-          : { type: "string", enum: q.options.map((o) => o.label), description: optionLegend(q) }
-        : { type: "string", description: "Free-text answer" };
-      let result: any;
-      try {
-        result = await ctx.mcpReq.elicitInput({
-          message: q.header ? `${q.header}: ${q.question}` : q.question,
-          requestedSchema: {
-            type: "object",
-            properties: { answer: property },
-            required: ["answer"],
-          },
-        });
-      } catch (err) {
-        if (err instanceof MissingRequiredClientCapabilityError) return null;
-        throw err;
-      }
-      if (result?.action !== "accept" || !result?.content || typeof result.content !== "object") {
-        // Decline/cancel any single question = decline the whole interaction
-        // (the engine treats partial answer sets as declines anyway).
-        return null;
-      }
-      const answer = (result.content as Record<string, unknown>)["answer"];
-      if (hasOptions && q.multi_select && Array.isArray(answer)) {
-        answers.push({ question_id: q.id, selected_labels: answer.map(String), free_text: null });
-      } else if (hasOptions && typeof answer === "string") {
-        answers.push({ question_id: q.id, selected_labels: [answer], free_text: null });
-      } else if (typeof answer === "string" && answer.trim()) {
-        answers.push({ question_id: q.id, selected_labels: [], free_text: answer });
-      } else {
-        return null;
-      }
-    }
-    return answers;
-  };
-}
-
-function optionLegend(q: InteractionQuestion): string {
-  const withDetail = q.options.filter((o) => o.description);
-  if (withDetail.length === 0) return "Choose from the listed options";
-  return withDetail.map((o) => `${o.label}: ${o.description}`).join("; ");
 }
 
 function validateToolArguments(tool: McpTool, args: unknown): string | null {
@@ -517,8 +427,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     required: ["prompt"],
   });
   // Behavior hints derive from the tool's MODE (data, not per-name hardcode):
-  // ask/audit/plan are read-only by construction, and MCP orchestrate is
-  // suggest-autonomy only (a read-only plan). Only agent-mode tools mutate.
+  // ask/audit/plan and suggest-only orchestrate are read-only; agent tools mutate.
   const annotationsFor = (params: Record<string, unknown>): McpToolAnnotations =>
     params["mode"] === "agent"
       ? { readOnlyHint: false, destructiveHint: false }
@@ -536,30 +445,13 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     annotations: annotationsFor(params),
     // Summary first, then the runId/artifacts trailer (hosts get a handle);
     // the structured mirror carries the same facts machine-readably.
-    // The elicitation bridge rides the hooks: the runner surfaces the engine's
-    // interactive questions and this tool answers them via the host.
     handler: async (args, ctx) => {
       const result = await runner(
-        { ...args, ...params },
-        {
-          ...(ctx.signal ? { signal: ctx.signal } : {}),
-          ...(ctx.elicit
-            ? {
-                onInteraction: async (ictx: any) => {
-                  const interactionId = ictx?.request?.interaction_id ?? "";
-                  const answers = await ctx.elicit!({
-                    interaction_id: interactionId,
-                    questions: Array.isArray(ictx?.request?.questions)
-                      ? ictx.request.questions
-                      : [],
-                  });
-                  // The TYPED InteractionAnswerSet carries the interaction id
-                  // (ACP/daemon parity; the engine keys the set to the request).
-                  return answers ? { interaction_id: interactionId, answers } : null;
-                },
-              }
-            : {}),
-        },
+        // MCP Tasks are still experimental. Start daemon-owned work and return
+        // its durable handle instead of holding one JSON-RPC request open for
+        // the entire run; status/cancel/result are explicit stable tools below.
+        { ...args, ...params, deferred: true },
+        ctx.signal ? { signal: ctx.signal } : {},
       );
       return { text: formatRunResult(result), structured: structuredRunResult(result) };
     },
@@ -575,6 +467,29 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       },
     },
     required: ["runId"],
+  };
+  const interactionAnswerSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      runId: { type: "string", minLength: 1 },
+      interactionId: { type: "string", minLength: 1 },
+      answers: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            questionId: { type: "string", minLength: 1 },
+            selectedLabels: { type: "array", items: { type: "string" } },
+            freeText: { type: "string" },
+          },
+          required: ["questionId", "selectedLabels"],
+        },
+      },
+    },
+    required: ["runId", "interactionId", "answers"],
   };
   return [
     mk(
@@ -641,8 +556,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         };
       },
     },
-    // Recovery tools — thin read-only wrappers over the daemon control API,
-    // so a host that lost a run handle (timeout, restart) can find it again.
+    // Read-only daemon projections let hosts recover lost run handles.
     {
       name: "claudexor_runs",
       description: "List recent daemon-tracked Claudexor runs (recovery: find a lost runId).",
@@ -667,6 +581,92 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       annotations: { readOnlyHint: true },
       handler: async (args) => {
         const result = await runner({ mode: "__run_inspect", runId: String(args?.runId ?? "") });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
+        };
+      },
+    },
+    {
+      name: "claudexor_run_status",
+      description: "Read the current daemon-acknowledged state of a durable Claudexor run.",
+      inputSchema: runIdSchema,
+      annotations: { readOnlyHint: true },
+      handler: async (args) => {
+        const result = await runner({ mode: "__run_status", runId: String(args?.runId ?? "") });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
+        };
+      },
+    },
+    {
+      name: "claudexor_run_result",
+      description:
+        "Read a durable run's terminal result and apply eligibility; non-terminal runs report their current state without pretending to be complete.",
+      inputSchema: runIdSchema,
+      annotations: { readOnlyHint: true },
+      handler: async (args) => {
+        const result = await runner({ mode: "__run_result", runId: String(args?.runId ?? "") });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
+        };
+      },
+    },
+    {
+      name: "claudexor_run_cancel",
+      description:
+        "Request cancellation of a daemon-owned run; success is returned only after the control API acknowledges the durable command.",
+      inputSchema: runIdSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      handler: async (args) => {
+        const result = await runner({ mode: "__run_cancel", runId: String(args?.runId ?? "") });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
+        };
+      },
+    },
+    {
+      name: "claudexor_run_interactions",
+      description: "List daemon-persisted questions that are still awaiting answers for a run.",
+      inputSchema: runIdSchema,
+      annotations: { readOnlyHint: true },
+      handler: async (args) => {
+        const result = await runner({
+          mode: "__run_interactions",
+          runId: String(args?.runId ?? ""),
+        });
+        return {
+          text: formatRunResult(result),
+          structured: (result && typeof result === "object" ? result : {}) as Record<
+            string,
+            unknown
+          >,
+        };
+      },
+    },
+    {
+      name: "claudexor_answer_interaction",
+      description:
+        "Answer a daemon-persisted run interaction; success is reported only after the control API acknowledges the journal mutation.",
+      inputSchema: interactionAnswerSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false },
+      handler: async (args) => {
+        const result = await runner({ mode: "__run_answer", ...args });
         return {
           text: formatRunResult(result),
           structured: (result && typeof result === "object" ? result : {}) as Record<

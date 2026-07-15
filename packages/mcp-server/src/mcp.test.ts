@@ -47,7 +47,7 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 14 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 19 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -84,7 +84,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(14);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(19);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
@@ -340,94 +340,14 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(byName["claudexor_orchestrate"]?.annotations?.readOnlyHint).toBe(true); // MCP orchestrate is suggest-only
     expect(byName["claudexor_run"]?.annotations?.readOnlyHint).toBe(false);
     expect(byName["claudexor_apply_check"]?.annotations?.readOnlyHint).toBe(true);
+    expect(byName["claudexor_run_status"]?.annotations?.readOnlyHint).toBe(true);
+    expect(byName["claudexor_run_result"]?.annotations?.readOnlyHint).toBe(true);
+    expect(byName["claudexor_run_cancel"]?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    });
     expect(byName["claudexor_run"]?.outputSchema).toBeTruthy();
-  });
-
-  it("bridges engine interactions to MCP elicitation and maps answers back", async () => {
-    let receivedAnswers: any = null;
-    const runner: RunnerFn = async (_p, hooks) => {
-      receivedAnswers = await hooks?.onInteraction?.({
-        request: {
-          interaction_id: "int-1",
-          questions: [
-            {
-              id: "q1",
-              question: "Pick one",
-              header: null,
-              options: [
-                { label: "A", description: null },
-                { label: "B", description: "second" },
-              ],
-              multi_select: false,
-            },
-            { id: "q2", question: "Say more", header: "Detail", options: [], multi_select: false },
-          ],
-        },
-        timeoutAt: new Date(Date.now() + 60_000).toISOString(),
-      });
-      return { summary: "asked and answered" };
-    };
-    const tools = defaultClaudexorTools(runner);
-    const w = wire(tools);
-    // Declare the elicitation capability so the SDK allows elicitInput.
-    await w.initialize({ elicitation: {} });
-    w.send({
-      jsonrpc: "2.0",
-      id: 9,
-      method: "tools/call",
-      params: { name: "claudexor_run", arguments: { prompt: "go" } },
-    });
-    // Answer each incoming elicitation/create server request over the wire.
-    const answered = new Set<string>();
-    for (let i = 0; i < 60; i += 1) {
-      await sleep(50);
-      for (const req of w.requests) {
-        if (req.method === "elicitation/create" && !answered.has(String(req.id))) {
-          answered.add(String(req.id));
-          const isChoice = JSON.stringify(req.params).includes("Pick one");
-          w.send({
-            jsonrpc: "2.0",
-            id: req.id,
-            result: { action: "accept", content: { answer: isChoice ? "B" : "because reasons" } },
-          });
-        }
-      }
-      if (w.responses.some((r) => r.id === 9)) break;
-    }
-    await w.close();
-
-    expect(w.responses.find((r) => r.id === 9)?.result?.content?.[0]?.text).toContain(
-      "asked and answered",
-    );
-    expect(receivedAnswers).toEqual({
-      interaction_id: "int-1", // typed InteractionAnswerSet parity with ACP/daemon
-      answers: [
-        { question_id: "q1", selected_labels: ["B"], free_text: null },
-        { question_id: "q2", selected_labels: [], free_text: "because reasons" },
-      ],
-    });
-  });
-
-  it("resolves interactions as DECLINED (null) when the host lacks the elicitation capability", async () => {
-    let sawHooks: unknown = "unset";
-    const runner: RunnerFn = async (_p, hooks) => {
-      sawHooks = hooks?.onInteraction ?? null;
-      return { summary: "ok" };
-    };
-    const tools = defaultClaudexorTools(runner);
-    const w = wire(tools);
-    await w.initialize(); // no elicitation capability
-    w.send({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: "claudexor_run", arguments: { prompt: "go" } },
-    });
-    await sleep(150);
-    await w.close();
-    // No capability -> no bridge is offered at all; the engine's own
-    // timeout-decline fallback stays in charge (never a fake answer).
-    expect(sawHooks).toBeNull();
   });
 
   it("host notifications/cancelled aborts the runner's signal (typed cancel, like Ctrl-C)", async () => {
@@ -509,7 +429,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
         access: "workspace_write",
         protectedPathApprovals: [{ path: "test/**" }],
       },
-      { elicit: null },
+      {},
     );
 
     expect(received).toMatchObject({

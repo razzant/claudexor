@@ -48,4 +48,27 @@ public extension GatewayClient {
         }
         return try Self.decoder.decode(RunAgainDraft.self, from: data)
     }
+
+    /// Submit the schema-owned editable draft without narrowing it through a
+    /// hand-maintained Swift request mirror. Only the user-edited prompt is
+    /// replaced; future nested controls survive byte-for-shape.
+    func startRunAgain(request draft: JSONValue, prompt: String) async throws -> RunStartResult {
+        let encoded = try Self.encoder.encode(draft)
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            throw GatewayError.decoding("run-again draft is not an object")
+        }
+        object["prompt"] = prompt
+        var req = request("runs", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: object)
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse,
+              http.statusCode == 200 || http.statusCode == 202 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return http.statusCode == 202
+            ? .queued(try Self.decoder.decode(QueuedRunInfo.self, from: data))
+            : .started(try Self.decoder.decode(RunStartInfo.self, from: data))
+    }
 }

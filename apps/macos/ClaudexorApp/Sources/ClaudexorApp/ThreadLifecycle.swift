@@ -4,6 +4,88 @@ import ClaudexorKit
 /// Thread lifecycle actions (rename / archive / reopen) — server-owned via
 /// the one PATCH /threads/:id endpoint; the app never invents thread state.
 extension AppModel {
+    func openThread(_ id: String) async {
+        guard let client else { return }
+        threadLoadGeneration += 1
+        let generation = threadLoadGeneration
+        selectedThreadId = id
+        selectedThreadDetail = nil
+        threadStatus = nil
+        do {
+            let detail = try await client.threadDetail(id: id)
+            guard selectedThreadId == id, threadLoadGeneration == generation else { return }
+            selectedThreadDetail = detail
+            evictBackgroundRunData()
+            for turn in detail.turns.suffix(5) {
+                guard selectedThreadId == id, threadLoadGeneration == generation else { return }
+                if let runId = turn.runId, liveTasks.contains(where: { $0.id == runId }) {
+                    await loadRunDetail(runId)
+                }
+            }
+        } catch {
+            guard selectedThreadId == id, threadLoadGeneration == generation else { return }
+            threadStatus = "Could not load thread: \(userMessage(for: error))"
+        }
+    }
+
+    func startDraftThread() {
+        threadLoadGeneration += 1
+        selectedThreadId = nil
+        selectedThreadDetail = nil
+        threadStatus = nil
+        if case .task = route { route = .threads }
+        draftPrimaryHarness = nil
+        draftEligiblePool = []
+        draftIsolatedWorkspace = false
+    }
+
+    /// Apply a run's reviewed patch through the server-owned delivery gate.
+    func applyRun(runId: String, mode: String = "apply") async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let result = try await client.apply(runId: runId, body: ApplyRunRequest(mode: mode))
+            if let index = liveTasks.firstIndex(where: { $0.id == runId }) {
+                liveTasks[index].deliveryReceipt = result
+            }
+            guard result.applied else { return result.detail ?? "Apply was refused." }
+            await loadRunDetail(runId)
+            route = .task(runId)
+            return nil
+        } catch { return "Apply failed: \(error)" }
+    }
+
+    func retryRunExact(_ runId: String) async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let retry = try await client.retryRun(runId: runId)
+            await refreshRuns()
+            if let id = retry.runId {
+                route = .task(id)
+                stream(runId: id)
+            }
+            if let threadId = selectedThreadId { await openThread(threadId) }
+            return nil
+        } catch { return "Retry failed: \(userMessage(for: error))" }
+    }
+
+    func loadRunAgainDraft(_ runId: String) async -> RunAgainDraft? {
+        guard let client else { return nil }
+        return try? await client.runAgainDraft(runId: runId)
+    }
+
+    func startRunAgain(_ draft: RunAgainDraft, prompt: String) async -> String? {
+        guard let client else { return "Engine offline." }
+        do {
+            let result = try await client.startRunAgain(request: draft.request, prompt: prompt)
+            await refreshRuns()
+            if case .started(let info) = result {
+                route = .task(info.runId)
+                stream(runId: info.runId)
+            }
+            return nil
+        } catch { return "Run Again failed: \(userMessage(for: error))" }
+    }
+
     /// Rename a thread: server-owned title via the existing PATCH.
     func renameThread(_ id: String, title: String) async {
         guard let client else { threadStatus = "Engine offline — reconnect to rename."; return }

@@ -3,6 +3,10 @@ import SwiftUI
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @Binding var completed: Bool
+
+    private var routableHarnesses: Set<HarnessFamily> {
+        Set(model.selectableHarnesses.filter { $0 != .fake && $0 != .raw })
+    }
     @State private var step = 0
 
     var body: some View {
@@ -58,7 +62,7 @@ struct OnboardingView: View {
             Text("Claudexor does not broker SaaS OAuth. It reuses each CLI's native login/subscription session first, then API-key refs only as fallback.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                ForEach(HarnessFamily.allCases.filter { $0 != .fake && $0 != .raw }) { family in
+                ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
                     nativeAuthRow(family)
                 }
             }
@@ -77,7 +81,7 @@ struct OnboardingView: View {
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 FlowLayout(spacing: Theme.Spacing.sm) {
-                    ForEach(HarnessFamily.allCases.filter { $0 != .fake }) { family in
+                    ForEach(model.selectableHarnesses) { family in
                         Button { model.authSheetHarness = family } label: {
                             Label(family.label, systemImage: family.glyph)
                         }
@@ -110,7 +114,7 @@ struct OnboardingView: View {
                 KeyValueRow(key: "Review & apply", value: "On each chat turn")
                 Button {
                     Task {
-                        let harnesses = model.availableHarnesses(for: .ask, selected: [.codex, .claude, .cursor, .opencode])
+                        let harnesses = model.availableHarnesses(for: .ask, selected: routableHarnesses)
                         await model.startRun(
                             prompt: "2+2?",
                             mode: .ask,
@@ -129,7 +133,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .disabled(model.availableHarnesses(for: .ask, selected: [.codex, .claude, .cursor, .opencode]).isEmpty)
+                .disabled(model.availableHarnesses(for: .ask, selected: routableHarnesses).isEmpty)
                 .help("Run a no-project read-only Ask smoke test with the first ready harness.")
             }
             .padding(Theme.Spacing.lg)

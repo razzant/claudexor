@@ -460,6 +460,12 @@ personal marketplace, so tell me to open Codex Plugins and enable Claudexor
 manually.
 ```
 
+The explicit Claude install also enables the official subscription-quota
+status-line source. If `~/.claude/settings.json` already has a `statusLine`
+command, Claudexor composes with it and restores it on uninstall; later user
+drift is refused rather than overwritten. Only the documented five-hour and
+seven-day usage/reset fields are retained in Claudexor's v2 data root.
+
 Once enabled, ask the host to use Claudexor for work where orchestration,
 review, or evidence is useful. Examples:
 
