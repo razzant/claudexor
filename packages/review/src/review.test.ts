@@ -818,6 +818,10 @@ describe("reviewEngine", () => {
   it("runs reviewers concurrently while preserving input-ordered results and telemetry", async () => {
     let active = 0;
     let maxActive = 0;
+    let releaseReviewers!: () => void;
+    const reviewersStarted = new Promise<void>((resolve) => {
+      releaseReviewers = resolve;
+    });
     const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
     const concurrentReviewer = (
       id: string,
@@ -835,6 +839,7 @@ describe("reviewEngine", () => {
         async *run(spec) {
           active++;
           maxActive = Math.max(maxActive, active);
+          if (active === 2) releaseReviewers();
           try {
             const ts = new Date().toISOString();
             yield {
@@ -843,6 +848,7 @@ describe("reviewEngine", () => {
               ts,
               observed_model: `${id}-model`,
             };
+            await reviewersStarted;
             await new Promise((resolve) => setTimeout(resolve, delayMs));
             yield {
               type: "message",
