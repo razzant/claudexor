@@ -73,7 +73,9 @@ export async function applyThreadDiff(
       : mode === "commit"
         ? "committed"
         : mode === "pr"
-          ? "pr_opened"
+          ? delivered.prUrl
+            ? "pr_opened"
+            : "branched"
           : "applied";
   return { applied: delivered.applied, status, headMoved, detail: delivered.detail ?? null };
 }

@@ -1,4 +1,5 @@
 import { runCapture, runCaptureRaw } from "@claudexor/core";
+import { realpath } from "node:fs/promises";
 import {
   applyPatchAndIndexProtected,
   applyPatchProtected,
@@ -10,7 +11,7 @@ import {
   snapshotTree,
   statusPorcelainMeaningful,
 } from "@claudexor/workspace";
-import { newId } from "@claudexor/util";
+import { newId, redactSecrets } from "@claudexor/util";
 import type { FinalVerifyRecord } from "@claudexor/schema";
 import type { GateSpec } from "@claudexor/review";
 import { finalVerifyBlocks, finalVerifyPatch, type VerifyEventLog } from "./final-verifier.js";
@@ -18,14 +19,34 @@ import { finalVerifyBlocks, finalVerifyPatch, type VerifyEventLog } from "./fina
 export * from "./gate.js";
 export * from "./final-verifier.js";
 
-// Server-owned in-place revert (restore the live tree to a run's pre-turn
-// snapshot, refusing if the tree diverged). Co-located with apply; control-api
-// calls it for the revert_run operator decision.
-export { revertWorkingTreeTo as revertInPlace, type RevertResult } from "@claudexor/workspace";
+const repositoryMutationTails = new Map<string, Promise<void>>();
+
+async function withRepositoryMutationLease<T>(
+  repoRoot: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const key = await realpath(repoRoot);
+  const previous = repositoryMutationTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => held);
+  repositoryMutationTails.set(key, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await work();
+  } finally {
+    release();
+    if (repositoryMutationTails.get(key) === tail) repositoryMutationTails.delete(key);
+  }
+}
 
 /** GC-independent in-place revert from the external immutable anchor. */
 export async function revertInPlaceFromAnchor(repo: string, anchorId: string) {
-  return revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId));
+  return withRepositoryMutationLease(repo, () =>
+    revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId)),
+  );
 }
 
 async function git(repo: string, args: string[], input?: string) {
@@ -91,6 +112,19 @@ export async function verifyAndDeliver(
   authorize?: (finalVerify: FinalVerifyRecord) => string | null,
   log: VerifyEventLog = { emit: () => undefined },
 ): Promise<VerifiedDeliverResult> {
+  return withRepositoryMutationLease(repoRoot, () =>
+    verifyAndDeliverUnlocked(repoRoot, patch, options, gates, authorize, log),
+  );
+}
+
+async function verifyAndDeliverUnlocked(
+  repoRoot: string,
+  patch: string,
+  options: DeliverOptions & { protectedApply?: boolean },
+  gates: GateSpec[],
+  authorize: ((finalVerify: FinalVerifyRecord) => string | null) | undefined,
+  log: VerifyEventLog,
+): Promise<VerifiedDeliverResult> {
   const targetPreimageSha = await snapshotTree(repoRoot);
   const targetPreimageTree = await revParse(repoRoot, `${targetPreimageSha}^{tree}`);
   const finalVerify = await finalVerifyPatch(
@@ -148,7 +182,7 @@ export async function verifyAndDeliver(
       targetPreimageSha,
     };
   }
-  const delivered = await deliver(repoRoot, patch, options);
+  const delivered = await deliverUnlocked(repoRoot, patch, options);
   return { ...delivered, finalVerify, targetPreimageSha };
 }
 
@@ -160,6 +194,14 @@ export async function verifyAndDeliver(
  * itself fails — never a clean-looking result over a conflicted tree.
  */
 export async function deliver(
+  repoRoot: string,
+  patch: string,
+  opts: DeliverOptions,
+): Promise<DeliverResult> {
+  return withRepositoryMutationLease(repoRoot, () => deliverUnlocked(repoRoot, patch, opts));
+}
+
+async function deliverUnlocked(
   repoRoot: string,
   patch: string,
   opts: DeliverOptions,
@@ -378,10 +420,15 @@ export async function deliver(
   const prUrl = pr && pr.code === 0 ? pr.stdout.trim() : undefined;
   return {
     mode: "pr",
-    applied: Boolean(prUrl),
+    // The commit and remote branch are already durable at this point. A PR
+    // creation failure is a partial delivery, not a clean refusal that callers
+    // may safely retry as if nothing happened.
+    applied: true,
     branch,
     commit,
     prUrl,
-    detail: prUrl ? undefined : "gh pr create unavailable",
+    detail: prUrl
+      ? undefined
+      : `branch pushed; PR was not opened${pr ? `: ${redactSecrets(pr.stderr.trim()) || `gh exited ${pr.code}`}` : ": gh unavailable"}`,
   };
 }

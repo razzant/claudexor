@@ -129,7 +129,6 @@ import {
 } from "@claudexor/workspace";
 import {
   blockedDecisionOverride,
-  deliver,
   finalVerifyBlocks,
   finalVerifyPatch,
   validateApplyGate,
@@ -6196,6 +6195,7 @@ export class Orchestrator {
           const r = await this.executeApplyStep(
             input,
             call as Extract<OrchestratePlanCallT, { tool: "apply" }>,
+            log,
           );
           step.status = r.ok ? "done" : "failed";
           step.run_id = r.runId;
@@ -6414,26 +6414,18 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Execute a RISKY `apply` step (auto_full only) through the SINGLE existing
-   * apply gate (`validateApplyGate`) + `deliver` — the same path
-   * accept_clean_patch uses. Reads the referenced run's patch + work_product +
-   * decision artifacts; refuses unless the gate passes.
-   */
+  /** Execute an auto_full apply through the shared fresh-verification gate. */
   private async executeApplyStep(
     input: RunInput,
     call: Extract<OrchestratePlanCallT, { tool: "apply" }>,
+    log: EventLog,
   ): Promise<{ ok: boolean; runId: string; detail: string }> {
     const store = new ArtifactStore(input.repoRoot);
     const sub = store.runPaths(call.run_id);
     const patchPath = join(sub.finalDir, "patch.diff");
     const patchText = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : null;
     if (patchText === null)
-      return {
-        ok: false,
-        runId: call.run_id,
-        detail: `run ${call.run_id} has no patch.diff to apply`,
-      };
+      return { ok: false, runId: call.run_id, detail: `run ${call.run_id} has no patch.diff` };
     if (containsSecretLikeToken(patchText))
       return {
         ok: false,
@@ -6442,15 +6434,14 @@ export class Orchestrator {
       };
     const decision = store.readYaml(join(sub.arbitrationDir, "decision.yaml"));
     const workProduct = store.readYaml(join(sub.finalDir, "work_product.yaml"));
+    const taskContract = TaskContractSchema.safeParse(
+      store.readYaml(join(sub.contextDir, "task.yaml")),
+    );
     const parsedDecision = decision ? DecisionRecordSchema.safeParse(decision) : null;
     const parsedWp = workProduct ? WorkProductSchema.safeParse(workProduct) : null;
-    // The referenced run's recorded original project IS this orchestrate run's
-    // repoRoot (sub-runs were spawned against it); the gate re-verifies identity.
-    const gateError = validateApplyGate({
-      // Artifact-only path (we read the referenced run's decision/work_product
-      // from disk, not a live daemon job): pass state=null and let the gate's
-      // decision.status check be the terminal-state guard. Hardcoding "succeeded"
-      // would silently bypass that check if it were ever relaxed.
+    if (!taskContract.success)
+      return { ok: false, runId: call.run_id, detail: "fresh verification contract is missing" };
+    const applyGateInput = {
       state: null,
       decision: parsedDecision?.success ? parsedDecision.data : null,
       workProduct: parsedWp?.success ? parsedWp.data : null,
@@ -6458,10 +6449,18 @@ export class Orchestrator {
       originalRepoRoot: input.repoRoot,
       targetRepoRoot: input.repoRoot,
       operatorDecision: null,
-    });
+    };
+    const gateError = validateApplyGate(applyGateInput);
     if (gateError)
       return { ok: false, runId: call.run_id, detail: `apply gate refused: ${gateError}` };
-    const delivered = await deliver(input.repoRoot, patchText, { mode: call.mode });
+    const delivered = await verifyAndDeliver(
+      input.repoRoot,
+      patchText,
+      { mode: call.mode },
+      gateSpecsFromContract(taskContract.data),
+      (finalVerify) => validateApplyGate({ ...applyGateInput, finalVerify }),
+      log,
+    );
     return {
       ok: delivered.applied,
       runId: call.run_id,

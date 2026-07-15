@@ -98,6 +98,52 @@ describe("delivery", () => {
     expect(readFileSync(join(repo, "concurrent.txt"), "utf8")).toBe("user edit\n");
   });
 
+  it("serializes fresh verification and mutation for independent deliveries to one repository", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-delivery-lease-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    writeFileSync(join(repo, "b.txt"), "one\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=t", "commit", "-m", "init"]);
+    writeFileSync(join(repo, "a.txt"), "two\n");
+    const patchA = (await git(repo, ["diff", "--", "a.txt"])).stdout;
+    await git(repo, ["checkout", "--", "a.txt"]);
+    writeFileSync(join(repo, "b.txt"), "two\n");
+    const patchB = (await git(repo, ["diff", "--", "b.txt"])).stdout;
+    await git(repo, ["checkout", "--", "b.txt"]);
+
+    const markerDir = mkdtempSync(join(tmpdir(), "claudexor-delivery-lease-marker-"));
+    const started = join(markerDir, "started");
+    const release = join(markerDir, "release");
+    const waitGate = [
+      "const fs=require('fs')",
+      `fs.writeFileSync(${JSON.stringify(started)},'started')`,
+      `while(!fs.existsSync(${JSON.stringify(release)})){Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10)}`,
+    ].join(";");
+    const first = verifyAndDeliver(repo, patchA, { mode: "apply", protectedApply: true }, [
+      { id: "hold-first", program: process.execPath, args: ["-e", waitGate] },
+    ]);
+    for (let attempt = 0; attempt < 200 && !existsSync(started); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(existsSync(started)).toBe(true);
+    const second = verifyAndDeliver(repo, patchB, { mode: "apply", protectedApply: true }, [
+      {
+        id: "observe-first",
+        program: process.execPath,
+        args: [
+          "-e",
+          "const fs=require('fs');process.exit(fs.readFileSync('a.txt','utf8')==='two\\n'?0:9)",
+        ],
+      },
+    ]);
+    writeFileSync(release, "release\n");
+    await expect(first).resolves.toMatchObject({ applied: true });
+    await expect(second).resolves.toMatchObject({ applied: true });
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+    expect(readFileSync(join(repo, "b.txt"), "utf8")).toBe("two\n");
+  });
+
   it("checkPatch validates a clean patch and commit mode applies + commits", async () => {
     const { repo, patch } = await makePatchRepo();
     expect((await checkPatch(repo, patch)).ok).toBe(true);
@@ -200,6 +246,30 @@ describe("delivery", () => {
     expect(res.applied).toBe(false);
     expect(res.commit).toBeTruthy();
     expect(res.detail).toContain("push failed");
+  });
+
+  it("reports a pushed branch as applied when PR creation fails", async () => {
+    const { repo, patch } = await makePatchRepo();
+    const remote = mkdtempSync(join(tmpdir(), "claudexor-delivery-remote-"));
+    execFileSync("git", ["init", "--bare", remote], { stdio: "pipe" });
+    await git(repo, ["remote", "add", "origin", remote]);
+    const res = await deliver(repo, patch, {
+      mode: "pr",
+      branch: "claudexor/pr-failure-receipt",
+      message: "open pr",
+    });
+    expect(res).toMatchObject({
+      applied: true,
+      branch: "claudexor/pr-failure-receipt",
+      prUrl: undefined,
+    });
+    expect(res.detail).toContain("branch pushed; PR was not opened");
+    const remoteTip = execFileSync(
+      "git",
+      ["--git-dir", remote, "rev-parse", "refs/heads/claudexor/pr-failure-receipt"],
+      { encoding: "utf8" },
+    ).trim();
+    expect(remoteTip).toBe(res.commit);
   });
 
   // CLI/daemon parity: the artifact-only CLI apply feeds work_product.meta.status

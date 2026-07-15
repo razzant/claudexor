@@ -4147,6 +4147,41 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
   });
 
+  it("auto_full reruns the referenced run's deterministic gates immediately before apply", async () => {
+    const repo = await initRepo();
+    const seed = await new Orchestrator({
+      registry: new Map([["impl", diffImplementer("impl", "local")]]),
+      reviewers: reviewers(),
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+      tests: [shellGate("test ! -e BLOCK_APPLY")],
+    });
+    expect(seed.status).toBe("success");
+    writeFileSync(join(repo, "BLOCK_APPLY"), "fresh gate must observe this\n");
+    const plan = {
+      tool_calls: [{ tool: "apply", run_id: seed.runId, mode: "apply", why: "land it" }],
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "land the work",
+      mode: "orchestrate",
+      harnesses: ["planner"],
+      autonomy: "auto_full",
+    });
+    expect(res.status).toBe("failed");
+    expect(
+      readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
+    ).toContain("final verify: deterministic gates failed");
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+  });
+
   it("suggest autonomy never executes: the plan is the work product (read-only)", async () => {
     const repo = await initRepo();
     const plan = { tool_calls: [{ tool: "apply", run_id: "run-x", why: "would mutate" }] };
