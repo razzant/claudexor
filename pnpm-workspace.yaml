@@ -2,7 +2,7 @@ packages:
   - "packages/*"
   - "benchmarks/runner"
 
-# Supply-chain fence: NO dependency runs install scripts. pnpm 11 allowBuilds
+# Supply-chain fence: NO dependency runs install scripts. allowBuilds
 # is the single build-script policy: a package with scripts that is NOT listed
 # here has its scripts SKIPPED and pnpm prints an ERR_PNPM_IGNORED_BUILDS
 # notice (strictDepBuilds default) — scripts never run silently. esbuild
@@ -14,6 +14,6 @@ packages:
 allowBuilds:
   esbuild: false
 
-# pnpm 11 runs an implicit deps-status check before every `pnpm run` that
+# pnpm can run an implicit deps-status check before every `pnpm run` that
 # auto-installs; disable it and rely on explicit installs.
 verifyDepsBeforeRun: false
