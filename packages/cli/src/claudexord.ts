@@ -720,8 +720,8 @@ function controlServices(
       const store = requireSpecStore(id);
       const session = store.get(id)!;
       if (session.state !== "interrupted_unknown" && session.state !== "failed") return session;
-      store.restart(id);
-      return groundSpec(id);
+      const resumed = store.restart(id);
+      return resumed.action === "freezing" ? freezeSpecSession(id) : groundSpec(id);
     },
   };
 }

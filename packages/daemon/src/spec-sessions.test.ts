@@ -76,7 +76,56 @@ describe("SpecSessionStore", () => {
       state: "interrupted_unknown",
       error: expect.stringContaining("restarted"),
     });
-    expect(second.store.restart(session.session.sessionId).state).toBe("grounding");
+    expect(second.store.restart(session.session.sessionId)).toMatchObject({
+      action: "grounding",
+      session: { state: "grounding" },
+    });
+    second.journal.close();
+  });
+
+  it("resumes an interrupted freeze without discarding journaled interview state", () => {
+    const first = fixture();
+    const created = first.store.create({
+      request,
+      idempotencyKey: "freeze-resume",
+      clientId: "test",
+    });
+    const id = created.session.sessionId;
+    first.store.completeGrounding(id, {
+      planRunId: "run-plan",
+      planText: "## Open Questions\n- [text] Name?",
+      questions: [
+        {
+          id: "q1",
+          tier: 0,
+          prompt: "Name?",
+          kind: "text",
+          options: [],
+          allow_text: true,
+          rationale: "Choose the product name.",
+        },
+      ],
+    });
+    first.store.recordAnswers(id, {
+      answers: [{ question_id: "q1", option_ids: [], text: "Claudexor" }],
+    });
+    first.store.beginFreeze(id);
+    first.journal.close();
+
+    const second = fixture(first.dir);
+    expect(second.store.get(id)).toMatchObject({ state: "interrupted_unknown" });
+    expect(second.store.restart(id)).toMatchObject({
+      action: "freezing",
+      session: {
+        state: "answered",
+        planRunId: "run-plan",
+        answers: [{ question_id: "q1", text: "Claudexor" }],
+      },
+    });
+    expect(second.store.material(id)).toMatchObject({
+      planText: "## Open Questions\n- [text] Name?",
+      answers: { answers: [{ question_id: "q1", text: "Claudexor" }] },
+    });
     second.journal.close();
   });
 

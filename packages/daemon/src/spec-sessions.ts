@@ -12,6 +12,12 @@ interface SpecSessionRecord extends ControlSpecSession {
   request: QuestionsRequest;
   planText: string;
   changes: unknown[];
+  interruptedFrom?: "grounding" | "freezing" | null;
+}
+
+interface SpecSessionRestart {
+  action: "grounding" | "freezing";
+  session: ControlSpecSession;
 }
 
 interface FrozenSpecResult {
@@ -95,6 +101,7 @@ export class SpecSessionStore {
       planText: "",
       specDir: null,
       changes: [],
+      interruptedFrom: null,
     };
     this.commit({
       record,
@@ -115,6 +122,7 @@ export class SpecSessionStore {
       planText: input.planText,
       questions: input.questions,
       error: null,
+      interruptedFrom: null,
     });
   }
 
@@ -126,12 +134,18 @@ export class SpecSessionStore {
       answers: structuredClone(input.answers),
       priorDecisions: structuredClone(input.priorDecisions ?? current.priorDecisions),
       error: null,
+      interruptedFrom: null,
     });
   }
 
   beginFreeze(id: string): SpecSessionRecord {
     const current = this.requireState(id, ["answered", "questions"]);
-    const next = { ...current, state: "freezing" as const, updatedAt: nowIso() };
+    const next = {
+      ...current,
+      state: "freezing" as const,
+      interruptedFrom: null,
+      updatedAt: nowIso(),
+    };
     this.commit({ record: next });
     return structuredClone(next);
   }
@@ -147,6 +161,7 @@ export class SpecSessionStore {
       specHash: result.specHash,
       changes: structuredClone(result.changes),
       error: null,
+      interruptedFrom: null,
     });
   }
 
@@ -156,31 +171,47 @@ export class SpecSessionStore {
       ...current,
       state: current.answers.length > 0 ? "answered" : "questions",
       error,
+      interruptedFrom: null,
     });
   }
 
   cancel(id: string): ControlSpecSession {
     const current = this.requireRecord(id);
     if (["frozen", "cancelled", "failed"].includes(current.state)) return publicSession(current);
-    return this.update({ ...current, state: "cancelled", error: null });
+    return this.update({ ...current, state: "cancelled", error: null, interruptedFrom: null });
   }
 
   fail(id: string, error: string): ControlSpecSession {
     const current = this.requireRecord(id);
-    return this.update({ ...current, state: "failed", error });
+    return this.update({ ...current, state: "failed", error, interruptedFrom: null });
   }
 
-  restart(id: string): ControlSpecSession {
+  restart(id: string): SpecSessionRestart {
     const current = this.requireState(id, ["interrupted_unknown", "failed"]);
-    return this.update({
-      ...current,
-      state: "grounding",
-      planRunId: null,
-      planText: "",
-      questions: [],
-      answers: [],
-      error: null,
-    });
+    if (current.interruptedFrom === "freezing") {
+      return {
+        action: "freezing",
+        session: this.update({
+          ...current,
+          state: current.answers.length > 0 ? "answered" : "questions",
+          error: null,
+          interruptedFrom: null,
+        }),
+      };
+    }
+    return {
+      action: "grounding",
+      session: this.update({
+        ...current,
+        state: "grounding",
+        planRunId: null,
+        planText: "",
+        questions: [],
+        answers: [],
+        error: null,
+        interruptedFrom: null,
+      }),
+    };
   }
 
   material(id: string): {
@@ -243,6 +274,7 @@ export class SpecSessionStore {
         ...record,
         state: "interrupted_unknown",
         error: "daemon restarted before the spec operation completed",
+        interruptedFrom: record.state,
       });
     }
   }
@@ -300,14 +332,24 @@ export function specSessionProjection() {
 }
 
 function publicSession(record: SpecSessionRecord): ControlSpecSession {
-  const { request: _request, planText: _planText, changes: _changes, ...value } = record;
+  const {
+    request: _request,
+    planText: _planText,
+    changes: _changes,
+    interruptedFrom: _interruptedFrom,
+    ...value
+  } = record;
   return SessionSchema.parse(structuredClone(value));
 }
 
 function validateRecord(record: SpecSessionRecord): void {
   publicSession(record);
   ControlSpecQuestionsRequest.parse(record.request);
-  if (typeof record.planText !== "string" || !Array.isArray(record.changes)) {
+  if (
+    typeof record.planText !== "string" ||
+    !Array.isArray(record.changes) ||
+    ![undefined, null, "grounding", "freezing"].includes(record.interruptedFrom)
+  ) {
     throw new Error("invalid spec session material");
   }
 }

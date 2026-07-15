@@ -324,12 +324,7 @@ async function ensureRunProject(
 
 /** Daemon job state -> CLI exit code (success terminals are 0; everything else 1). */
 export function exitCodeForState(state: string): number {
-  return state === "succeeded" ||
-    state === "no_op" ||
-    state === "ungated" ||
-    state === "review_not_run"
-    ? 0
-    : 1;
+  return state === "succeeded" || state === "no_op" ? 0 : 1;
 }
 
 /** Keep internal command-state spelling out of the public run-result envelope. */
