@@ -210,7 +210,10 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   # the bundle shipped in v1.0.0 and survived every gate because nothing
   # executed the bundle). Scratch HOME so the smoke never touches real state.
   echo "==> Bundle boot smoke"
-  SMOKE_HOME="$(cd "$(mktemp -d)" && pwd -P)"
+  # Darwin limits Unix-domain socket paths to roughly 100 bytes. Keep the
+  # disposable HOME short so this smoke tests daemon boot, not mktemp's long
+  # /private/var/folders spelling.
+  SMOKE_HOME="$(cd "$(mktemp -d /tmp/claudexor-smoke.XXXXXX)" && pwd -P)"
   ( HOME="$SMOKE_HOME" "$APP/Contents/Resources/node" "$ENGINE_JS" >/dev/null 2>"$SMOKE_HOME/smoke.err" & echo $! > "$SMOKE_HOME/pid" )
   SMOKE_OK=0
   for _ in $(seq 1 20); do

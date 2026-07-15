@@ -15,7 +15,11 @@ import {
   writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
-import { ensureCanonicalPrivateDirectory, userConfigDir } from "@claudexor/util";
+import {
+  ensureCanonicalPrivateDirectory,
+  userConfigDir,
+  userHomeDir,
+} from "@claudexor/util";
 
 export function daemonDir(): string {
   return join(userConfigDir(), "daemon");
@@ -23,10 +27,15 @@ export function daemonDir(): string {
 
 /**
  * Prove every daemon-owned root component before any token/log/lock writer is
- * allowed to touch it. The default config root is one level below the already
- * existing canonical home; a custom root must likewise have a canonical parent.
+ * allowed to touch it. On first launch the default `~/.claudexor` parent may
+ * not exist yet, so create that one owned root before proving the v2 subtree.
+ * A custom root must still have a canonical parent supplied by its operator.
  */
 export function ensureDaemonRuntimeRoot(): string {
+  if (!process.env.CLAUDEXOR_CONFIG_DIR?.trim()) {
+    const defaultParent = join(userHomeDir(), ".claudexor");
+    if (!existsSync(defaultParent)) ensureCanonicalPrivateDirectory(defaultParent);
+  }
   const configRoot = ensureCanonicalPrivateDirectory(userConfigDir());
   const root = ensureCanonicalPrivateDirectory(join(configRoot, "daemon"));
   if (root !== resolve(daemonDir())) throw new Error("daemon runtime root is not canonical");
