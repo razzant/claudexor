@@ -2,6 +2,7 @@ import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto
 import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import Ajv from "ajv";
+import { verifySealedEvidencePacket } from "@claudexor/context";
 import {
   RELEASE_REVIEW_ATTESTATION_ALGORITHM,
   RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION,
@@ -22,6 +23,7 @@ import {
 } from "./release-review-contract.mjs";
 
 const SHA256 = /^[0-9a-f]{64}$/;
+const GIT_OID = /^[0-9a-f]{40}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TIER1_BLOCKING = new Set(["BLOCK", "FIX_FIRST", "NEEDS_HUMAN", "INSUFFICIENT_EVIDENCE"]);
 const reviewFindingSchema = JSON.parse(
@@ -494,12 +496,17 @@ function validateFullGate(receiptPath, testResults, expected) {
 }
 
 export function sealReleaseReviewAttestation(input) {
-  const evidence = verifyEvidenceManifest(input.packetDir);
-  requireValue(
-    !input.packetManifestSha256 || input.packetManifestSha256 === evidence.manifestSha256,
-    "packet manifest digest differs from expected digest",
-  );
   const freeze = readJson(join(input.packetDir, "FREEZE.json"));
+  requireValue(GIT_OID.test(freeze.candidateSha ?? ""), "packet candidate SHA is invalid");
+  requireValue(GIT_OID.test(freeze.candidateTree ?? ""), "packet candidate tree is invalid");
+  requireValue(SHA256.test(input.packetManifestSha256 ?? ""), "packet manifest digest is required");
+  verifySealedEvidencePacket({
+    evidenceDir: input.packetDir,
+    candidateSha: freeze.candidateSha,
+    candidateTree: freeze.candidateTree,
+    expectedManifestSha256: input.packetManifestSha256,
+  });
+  const evidence = verifyEvidenceManifest(input.packetDir);
   const fingerprints = readJson(join(input.packetDir, "FINGERPRINTS.json"));
   const testResults = readJson(join(input.packetDir, "TEST_RESULTS.json"));
   const expected = {
@@ -513,7 +520,14 @@ export function sealReleaseReviewAttestation(input) {
   requireValue(testResults.candidateUnchanged === true, "sealed TEST_RESULTS changed candidate");
   const fullGate = validateFullGate(input.fullGateReceipt, testResults, expected);
 
-  const tier1Evidence = verifyEvidenceManifest(join(input.tier1Dir, "evidence"));
+  const tier1PacketDir = join(input.tier1Dir, "evidence");
+  verifySealedEvidencePacket({
+    evidenceDir: tier1PacketDir,
+    candidateSha: expected.candidateSha,
+    candidateTree: expected.candidateTree,
+    expectedManifestSha256: evidence.manifestSha256,
+  });
+  const tier1Evidence = verifyEvidenceManifest(tier1PacketDir);
   requireValue(
     tier1Evidence.manifestSha256 === evidence.manifestSha256,
     "Tier 1 evidence copy does not match sealed packet",

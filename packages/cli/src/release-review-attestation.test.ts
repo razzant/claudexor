@@ -3,6 +3,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { FROZEN_REVIEW_EVIDENCE_FILES } from "@claudexor/context";
 import {
   REQUIRED_RELEASE_REVIEW_SLOTS,
   RELEASE_NATIVE_CHECKLIST_ITEMS,
@@ -68,20 +69,24 @@ function makeFixture() {
     stderr: { path: stderrPath, sha256: sha256File(stderrPath) },
   };
   writeJson(receiptPath, receipt);
-  writeJson(join(packet, "FREEZE.json"), { candidateSha, candidateTree });
+  writeJson(join(packet, "FREEZE.json"), {
+    baseSha: "c".repeat(40),
+    candidateSha,
+    candidateTree,
+  });
   writeJson(join(packet, "FINGERPRINTS.json"), { candidateSha, candidateTree });
   writeJson(join(packet, "TEST_RESULTS.json"), {
     exitCode: 0,
     candidateUnchanged: true,
     receiptSha256: sha256File(receiptPath),
   });
+  const structuredFiles = new Set(["FREEZE.json", "FINGERPRINTS.json", "TEST_RESULTS.json"]);
+  for (const name of FROZEN_REVIEW_EVIDENCE_FILES) {
+    if (!structuredFiles.has(name)) writeFileSync(join(packet, name), `${name} sealed\n`);
+  }
   writeFileSync(join(packet, "EVIDENCE.txt"), "sealed\n");
-  const packetManifestSha256 = writeManifest(packet, [
-    "EVIDENCE.txt",
-    "FINGERPRINTS.json",
-    "FREEZE.json",
-    "TEST_RESULTS.json",
-  ]);
+  const packetFiles = [...FROZEN_REVIEW_EVIDENCE_FILES, "EVIDENCE.txt"];
+  const packetManifestSha256 = writeManifest(packet, packetFiles);
 
   cpSync(packet, join(tier1, "evidence"), { recursive: true });
   const tier1Progress: unknown[] = [];
@@ -270,6 +275,8 @@ function makeFixture() {
   return {
     expected: { candidateSha, candidateTree },
     authority,
+    packet,
+    packetFiles,
     missingArtifact: join(tier1, "01-codex", "transcript.md"),
     nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
     nativeParseError: join(tier1, "01-codex", "parse-error.json"),
@@ -321,7 +328,23 @@ describe("signed release review attestation sealer", () => {
   it("refuses packet bytes changed after the evidence manifest was sealed", () => {
     const fixture = makeFixture();
     writeFileSync(join(fixture.input.packetDir, "EVIDENCE.txt"), "changed\n");
-    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/evidence digest mismatch/);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/manifest digest mismatch/);
+  });
+
+  it("refuses a manifest and packet that omit a mandatory frozen evidence file", () => {
+    const fixture = makeFixture();
+    rmSync(join(fixture.packet, "USER_INTENT.md"));
+    fixture.input.packetManifestSha256 = writeManifest(
+      fixture.packet,
+      fixture.packetFiles.filter((name) => name !== "USER_INTENT.md"),
+    );
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/sealed packet is missing/);
+  });
+
+  it("refuses an unsealed extra file beside an otherwise complete packet", () => {
+    const fixture = makeFixture();
+    writeFileSync(join(fixture.packet, "UNSEALED.txt"), "not in manifest\n");
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsealed packet file/);
   });
 
   it.each([
