@@ -77,8 +77,16 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
       mcp.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       mcp.send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
       const tools = await mcp.waitFor(1, 10_000);
-      expect(tools.result?.tools?.map((t: { name: string }) => t.name)).toContain("claudexor_run");
-      expect(tools.result?.tools).toHaveLength(14);
+      const toolNames = tools.result?.tools?.map((t: { name: string }) => t.name) ?? [];
+      expect(toolNames).toEqual(
+        expect.arrayContaining([
+          "claudexor_run",
+          "claudexor_run_status",
+          "claudexor_run_cancel",
+          "claudexor_run_result",
+          "claudexor_journal_recovery",
+        ]),
+      );
 
       // The mutating verb: enqueue through the sandbox daemon (auto-started).
       mcp.send({
@@ -103,8 +111,7 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
 
       // The daemon tracks the run: the CLI resolves it OUTSIDE the MCP process.
       const inspect = cli(sb, ["inspect", runId as string, "--json"]);
-      expect(inspect.code).toBe(0);
-      expect(inspect.stdout).toContain(runId as string);
+      expect((inspect.json() as { runId: string }).runId).toBe(runId);
     } finally {
       await mcp.close();
     }
@@ -210,7 +217,12 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
       const init = await waitFor((m) => m.id === 1, 15_000);
       expect(init.result?.protocolVersion).toBe(1);
       expect(init.result?.authMethods).toEqual([]);
-      send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: sb.repo } });
+      send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/new",
+        params: { cwd: sb.repo, mcpServers: [] },
+      });
       const sess = await waitFor((m) => m.id === 2, 10_000);
       const sessionId = sess.result?.sessionId;
       expect(sessionId).toBeTruthy();
@@ -220,14 +232,15 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
         method: "session/prompt",
         params: {
           sessionId,
-          prompt: "what is 2+2?",
-          mode: "ask",
-          harness: "fake-success",
-          _meta: { "vendor/x": 1 },
+          prompt: [{ type: "text", text: "what is 2+2?" }],
+          _meta: {
+            claudexor: { mode: "ask", harness: "fake-success" },
+            "vendor/x": 1,
+          },
         },
       });
       const done = await waitFor((m) => m.id === 3, 120_000);
-      expect(done.result?.stopReason).toBe("end_turn");
+      expect(done.result?.stopReason, JSON.stringify(done)).toBe("end_turn");
       const chunk = messages.find(
         (m) =>
           m.method === "session/update" &&

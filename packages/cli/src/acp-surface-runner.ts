@@ -120,6 +120,10 @@ export async function acpSessionQuery(
     controls["mode"] = controls["runMode"];
     delete controls["runMode"];
   }
+  if (typeof controls["harness"] === "string") {
+    controls["harnesses"] = [controls["harness"]];
+    delete controls["harness"];
+  }
   const started = await request(`/threads/${encodeURIComponent(sessionId)}/turns`, {
     method: "POST",
     headers: { "content-type": "application/json", "Idempotency-Key": randomUUID() },
