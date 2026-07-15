@@ -16,4 +16,4 @@ context:
 tests:
   commands: []
 budget:
-  portfolio: subscription-first
+  routing_goal: auto
