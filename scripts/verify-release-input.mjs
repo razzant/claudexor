@@ -24,6 +24,9 @@ if (mode === "candidate") {
   candidateSha = git("rev-parse", `${ref}^{commit}`);
   if (candidateSha !== ref)
     fail(["candidate ref did not resolve to the exact requested commit SHA"]);
+  if (candidateSha !== (process.env.GITHUB_SHA ?? "")) {
+    fail(["candidate SHA does not match the workflow-dispatch GITHUB_SHA"]);
+  }
 } else {
   tag = ref;
   if (git("cat-file", "-t", `refs/tags/${tag}`) !== "tag") {
