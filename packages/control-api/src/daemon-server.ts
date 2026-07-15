@@ -30,6 +30,7 @@ import {
   handleThreadTurnRetry,
   type ThreadTurnRouteCtx,
 } from "./thread-turn-routes.js";
+import { assertThreadIdle, threadIdOfRun } from "./thread-mutation.js";
 import {
   handleThreadLifecycleRoutes,
   type ThreadLifecycleRouteCtx,
@@ -1801,10 +1802,8 @@ export class DaemonControlApiServer {
     }
     return record(rec.runId ?? rec.id, rec.params, decision, idempotency);
   }
-
   private chainRunMutation<T>(rec: DaemonRunRecord, work: () => Promise<T>): Promise<T> {
-    const params = paramsRecord(rec);
-    const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
+    const threadId = threadIdOfRun(rec);
     return threadId ? chainThreadMutation(this.threadTurnRouteCtx(), threadId, work) : work();
   }
 
@@ -1837,6 +1836,7 @@ export class DaemonControlApiServer {
         applyGateError(record, patch, root, this.operatorDecisionFor(record), finalVerify),
       gateSpecs: gateSpecsForRun,
       chainMutation: (record, work) => this.chainRunMutation(record, work),
+      assertThreadIdle: (record) => assertThreadIdle(record, () => this.opts.daemon.list()),
       appendAudit: appendRunAuditEvent,
     };
   }

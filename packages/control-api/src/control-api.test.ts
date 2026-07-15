@@ -3625,6 +3625,20 @@ describe("DaemonControlApiServer", () => {
     seedRun(blockedRunDir, "blocked");
     seedRun(headRunDir, "success");
     const now = new Date().toISOString();
+    const threadDelivery = {
+      mode: "apply" as const,
+      applied: true,
+      finalVerify: {
+        attempted: true,
+        base_sha: "target-preimage-1",
+        applied_cleanly: true,
+        gates_passed: true,
+        gates: [{ id: "thread-gate", status: "pass" }],
+        duration_ms: 7,
+        reason: null,
+      },
+      targetPreimageSha: "target-preimage-1",
+    };
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
       id: "th-gate",
@@ -3680,7 +3694,13 @@ describe("DaemonControlApiServer", () => {
         threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
         applyThread: async () => {
           applied += 1;
-          return { applied: true, status: "applied" };
+          return {
+            applied: true,
+            status: "applied",
+            headMoved: false,
+            detail: null,
+            delivery: threadDelivery,
+          };
         },
       },
     });
@@ -3711,6 +3731,14 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(okRes.status).toBe(200);
+      const okBody = (await okRes.json()) as {
+        delivery: {
+          finalVerify: unknown;
+          targetPreimageSha: string;
+        };
+      };
+      expect(okBody.delivery.finalVerify).toEqual(threadDelivery.finalVerify);
+      expect(okBody.delivery.targetPreimageSha).toBe(threadDelivery.targetPreimageSha);
       expect(applied).toBe(1);
 
       const replay = await apiFetch(`${base}/threads/th-gate/apply`, {
@@ -3719,6 +3747,9 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(replay.status).toBe(200);
+      const replayBody = (await replay.json()) as typeof okBody;
+      expect(replayBody.delivery.finalVerify).toEqual(okBody.delivery.finalVerify);
+      expect(replayBody.delivery.targetPreimageSha).toBe(okBody.delivery.targetPreimageSha);
       expect(applied).toBe(1);
 
       // Once the prefix is durably delivered, it is not re-gated on a later
@@ -3803,6 +3834,60 @@ describe("DaemonControlApiServer", () => {
         expect(applied).toBe(0);
       } finally {
         await server.stop();
+      }
+    });
+  }
+
+  for (const activeState of ["queued", "running"] as const) {
+    it(`refuses manual run apply with thread_busy while a mutating turn is ${activeState}`, async () => {
+      const { daemon, record } = fakeDaemon();
+      record.params = {
+        ...(record.params as Record<string, unknown>),
+        threadId: "th-run-apply-busy",
+      };
+      const sentinel = join(record.runDir as string, "x");
+      writeFileSync(sentinel, "user state\n");
+      const before = readFileSync(sentinel, "utf8");
+      let deliveryBegun = 0;
+      const busyDaemon: DaemonFacadeClient = {
+        ...daemon,
+        async list() {
+          return [
+            record,
+            {
+              id: `job-active-${activeState}`,
+              state: activeState,
+              params: { threadId: "th-run-apply-busy", mode: "agent" },
+            },
+          ];
+        },
+      };
+      try {
+        await withDaemonServer(
+          busyDaemon,
+          async (base) => {
+            const response = await apiFetch(`${base}/runs/run-d1/apply`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}` },
+              body: JSON.stringify({ mode: "apply" }),
+            });
+            expect(response.status).toBe(409);
+            expect(((await response.json()) as { code: string }).code).toBe("thread_busy");
+            expect(deliveryBegun).toBe(0);
+            expect(readFileSync(sentinel, "utf8")).toBe(before);
+          },
+          undefined,
+          {
+            beginDelivery: async () => {
+              deliveryBegun += 1;
+              return { id: "unexpected-delivery", state: "running", reused: false };
+            },
+            completeDelivery: async () => undefined,
+            failDelivery: async () => undefined,
+          },
+        );
+      } finally {
+        rmSync(record.runDir as string, { recursive: true, force: true });
       }
     });
   }

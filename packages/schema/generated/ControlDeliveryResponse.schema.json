@@ -32,6 +32,9 @@
         "treeMutated": {
           "type": "boolean"
         },
+        "refused": {
+          "type": "boolean"
+        },
         "finalVerify": {
           "type": "object",
           "properties": {

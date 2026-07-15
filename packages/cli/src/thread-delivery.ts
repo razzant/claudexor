@@ -2,6 +2,7 @@ import type { ProjectPartitions } from "@claudexor/daemon";
 import { verifyAndDeliver } from "@claudexor/delivery";
 import { advanceThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
 import { containsSecretLikeToken } from "@claudexor/util";
+import type { ControlDeliveryResponse } from "@claudexor/schema";
 
 export interface ThreadApplyOptions {
   mode: string;
@@ -15,7 +16,13 @@ export async function applyThreadDiff(
   threads: ProjectPartitions,
   id: string,
   opts: ThreadApplyOptions,
-): Promise<{ applied: boolean; status: string; headMoved: boolean; detail: string | null }> {
+): Promise<{
+  applied: boolean;
+  status: string;
+  headMoved: boolean;
+  detail: string | null;
+  delivery: ControlDeliveryResponse | null;
+}> {
   const thread = threads.getThread(id);
   if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
   const ws = thread.workspace;
@@ -29,13 +36,20 @@ export async function applyThreadDiff(
   const base = ws.base_sha ?? "HEAD";
   const patch = await diffStaged(ws.worktree_path, base);
   if (!patch.trim())
-    return { applied: false, status: "empty", headMoved: false, detail: "no changes to apply" };
+    return {
+      applied: false,
+      status: "empty",
+      headMoved: false,
+      detail: "no changes to apply",
+      delivery: null,
+    };
   if (containsSecretLikeToken(patch)) {
     return {
       applied: false,
       status: "rejected",
       headMoved: false,
       detail: "patch contains a secret-like token; refusing apply",
+      delivery: null,
     };
   }
   let headMoved = false;
@@ -77,5 +91,11 @@ export async function applyThreadDiff(
             ? "pr_opened"
             : "branched"
           : "applied";
-  return { applied: delivered.applied, status, headMoved, detail: delivered.detail ?? null };
+  return {
+    applied: delivered.applied,
+    status,
+    headMoved,
+    detail: delivered.detail ?? null,
+    delivery: delivered,
+  };
 }

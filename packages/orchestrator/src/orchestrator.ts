@@ -123,6 +123,7 @@ import {
 } from "@claudexor/context";
 import {
   WorkspaceManager,
+  createRevertAnchorFromPatchOrNull,
   createRevertAnchorOrNull,
   ensureGitRepository,
   snapshotTree,
@@ -2903,8 +2904,7 @@ export class Orchestrator {
           // edits made during review/arbitration are not folded into the target.
           postTurnSha = earlyPostTurnSha;
         } else if (adoptable) {
-          // Protected path: --check first, restore on 3way failure —
-          // adopted:false MUST mean the live tree is byte-identical (INV-114);
+          // Protected path: adopted:false MUST mean the live tree is byte-identical (INV-114);
           // a failed restore is disclosed as tree_mutated, never hidden.
           const applied = await verifyAndDeliver(
             execRoot,
@@ -2919,6 +2919,7 @@ export class Orchestrator {
             },
             log,
           );
+          finalVerify = applied.finalVerify;
           if (applied.applied) {
             adopted = true;
             applyState = "applied";
@@ -2927,12 +2928,12 @@ export class Orchestrator {
               patch_sha256: patchSha256,
               winner: winnerRun.attemptId,
             });
-            // Race winner: snapshot immediately after applying (minimal window).
             try {
               postTurnSha = await snapshotTree(execRoot);
             } catch {
               postTurnSha = null;
             }
+            revertAnchorId = createRevertAnchorFromPatchOrNull(execRoot, winnerRun.diff);
           } else {
             adopted = false;
             applyState = "not_applied";
@@ -2955,7 +2956,10 @@ export class Orchestrator {
           }
         }
       }
-      if (applyState === "applied" || applyState === "applied_review_blocked") {
+      if (
+        requestedSingleCandidate &&
+        (applyState === "applied" || applyState === "applied_review_blocked")
+      ) {
         revertAnchorId = await createRevertAnchorOrNull(execRoot, preTurnSha, postTurnSha);
       }
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {

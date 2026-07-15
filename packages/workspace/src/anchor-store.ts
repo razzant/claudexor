@@ -29,6 +29,23 @@ export async function createRevertAnchor(
   postTurnSha: string,
 ): Promise<string> {
   const patch = await diffTrees(repo, preTurnSha, postTurnSha);
+  return persistRevertAnchor(repo, patch);
+}
+
+/** Persist the exact canonical patch written by a protected delivery. */
+function createRevertAnchorFromPatch(repo: string, patch: string): string {
+  return persistRevertAnchor(repo, patch);
+}
+
+export function createRevertAnchorFromPatchOrNull(repo: string, patch: string): string | null {
+  try {
+    return createRevertAnchorFromPatch(repo, patch);
+  } catch {
+    return null;
+  }
+}
+
+function persistRevertAnchor(repo: string, patch: string): string {
   const id = sha256(patch);
   const target = objectPath(repo, id);
   const targetDir = dirname(target);

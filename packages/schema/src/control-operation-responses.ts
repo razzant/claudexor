@@ -7,7 +7,7 @@ import {
   ControlRunSummary,
 } from "./control.js";
 import { Id } from "./primitives.js";
-import { FinalVerifyRecord } from "./decision.js";
+import { DeliveryReceipt } from "./delivery.js";
 
 export const ControlRunStartResponse = z
   .union([ControlRunStartInfo, ControlQueuedRunInfo])
@@ -32,20 +32,9 @@ export const ControlApplyCheckResponse = z
   .describe("Mechanical git apply --check result.");
 export type ControlApplyCheckResponse = z.infer<typeof ControlApplyCheckResponse>;
 
-export const ControlDeliveryResponse = z
-  .object({
-    mode: z.enum(["artifact_only", "apply", "branch", "commit", "pr"]),
-    applied: z.boolean(),
-    branch: z.string().optional(),
-    commit: z.string().optional(),
-    prUrl: z.string().optional(),
-    detail: z.string().optional(),
-    treeMutated: z.boolean().optional(),
-    finalVerify: FinalVerifyRecord.describe("Fresh verifier evidence for this delivery attempt."),
-    targetPreimageSha: z.string().describe("Target snapshot verified immediately before delivery."),
-  })
-  .strict()
-  .describe("Result of a manual run delivery attempt.");
+export const ControlDeliveryResponse = DeliveryReceipt.describe(
+  "Result of a manual run delivery attempt.",
+);
 export type ControlDeliveryResponse = z.infer<typeof ControlDeliveryResponse>;
 
 export const ControlThreadTurnRequest = ControlRunStartRequest.omit({

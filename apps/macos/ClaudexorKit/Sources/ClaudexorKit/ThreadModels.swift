@@ -287,6 +287,7 @@ public struct ThreadApplyResponse: Codable, Sendable {
     public let status: String
     public let headMoved: Bool
     public let detail: String?
+    public let delivery: JSONValue?
 }
 
 /// Body for POST /threads/:id/turns — a reduced run start anchored by the thread.

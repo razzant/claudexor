@@ -72,6 +72,23 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
   return { adapter, providerFamily: family };
 }
 
+function cleanReviewerWithSideEffect(
+  id: string,
+  family: ProviderFamily,
+  sideEffect: () => void,
+): ReviewerSpec {
+  const reviewer = cleanReviewer(id, family);
+  const run = reviewer.adapter.run.bind(reviewer.adapter);
+  const adapter: HarnessAdapter = {
+    ...reviewer.adapter,
+    async *run(spec) {
+      sideEffect();
+      yield* run(spec);
+    },
+  };
+  return { adapter, providerFamily: family };
+}
+
 /** Run a block with CLAUDEXOR_CONFIG_DIR pointed at a fresh empty dir, so the
  * developer's real ~/.claudexor config can never leak into fixtures. */
 async function withScopedConfigDir<T>(fn: () => Promise<T>): Promise<T> {
@@ -3201,6 +3218,81 @@ describe("Orchestrator", () => {
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("adopted: true");
+  });
+
+  it("race revert removes only the adopted winner patch and preserves a concurrent user edit", async () => {
+    const repo = await initRepo();
+    const userBytes = Buffer.from("user-owned bytes\n", "utf8");
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["a", diffImplementer("a", "local")],
+        ["b", diffImplementer("b", "openai")],
+      ]),
+      reviewers: [
+        cleanReviewerWithSideEffect("rev-openai", "openai", () => {
+          writeFileSync(join(repo, "USER.txt"), userBytes);
+        }),
+        cleanReviewer("rev-anthropic", "anthropic"),
+      ],
+    });
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["a", "b"],
+      n: 2,
+      inPlace: true,
+      tests: [shellGate("true")],
+    });
+
+    expect(res.status).toBe("success");
+    expect(readFileSync(join(repo, "USER.txt"))).toEqual(userBytes);
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    const anchorId = wp.match(/revert_anchor_id:\s+['"]?(sha256:[0-9a-f]{64})/)?.[1];
+    expect(anchorId).toBeDefined();
+
+    const { revertInPlaceFromAnchor } = await import("@claudexor/delivery");
+    const reverted = await revertInPlaceFromAnchor(repo, anchorId!);
+    expect(reverted.reverted).toBe(true);
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+    expect(readFileSync(join(repo, "USER.txt"))).toEqual(userBytes);
+  });
+
+  it("race blocks instead of claiming adoption when a reviewer-side user edit conflicts", async () => {
+    const repo = await initRepo();
+    const userBytes = Buffer.from("user conflict\n", "utf8");
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["a", diffImplementer("a", "local")],
+        ["b", diffImplementer("b", "openai")],
+      ]),
+      reviewers: [
+        cleanReviewerWithSideEffect("rev-openai", "openai", () => {
+          writeFileSync(join(repo, "CHANGED.txt"), userBytes);
+        }),
+        cleanReviewer("rev-anthropic", "anthropic"),
+      ],
+    });
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["a", "b"],
+      n: 2,
+      inPlace: true,
+      tests: [shellGate("true")],
+    });
+
+    expect(res.status).toBe("blocked");
+    expect(readFileSync(join(repo, "CHANGED.txt"))).toEqual(userBytes);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("adopted: false");
+    const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(decision).toContain("final_verify:");
+    expect(decision).toContain("applied_cleanly: false");
   });
 
   it("plan mode writes an honest plan (no SpecPack) that surfaces review findings", async () => {

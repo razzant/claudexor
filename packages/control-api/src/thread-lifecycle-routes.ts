@@ -9,6 +9,7 @@ import type { DaemonControlApiOptions, DaemonRunRecord } from "./daemon-server.j
 import { projectThread } from "./thread-projection.js";
 import { chainThreadMutation, type ThreadTurnRouteCtx } from "./thread-turn-routes.js";
 import type { verifyAndDeliver } from "@claudexor/delivery";
+import { findActiveMutatingThreadRun } from "./thread-mutation.js";
 
 export interface ThreadLifecycleRouteCtx {
   turnCtx: ThreadTurnRouteCtx;
@@ -116,19 +117,7 @@ export async function handleThreadLifecycleRoutes(
         workspace?: { delivered_through_run_id?: string | null };
       };
       const records = await ctx.listRuns();
-      const active = records.find((record) => {
-        if (record.state !== "queued" && record.state !== "running") return false;
-        const params =
-          record.params && typeof record.params === "object"
-            ? (record.params as Record<string, unknown>)
-            : {};
-        return (
-          params["threadId"] === threadId &&
-          (params["mode"] === "agent" ||
-            (params["mode"] === "orchestrate" &&
-              (params["autonomy"] === "auto_safe" || params["autonomy"] === "auto_full")))
-        );
-      });
+      const active = findActiveMutatingThreadRun(records, threadId);
       if (active) {
         throw Object.assign(
           new Error(`thread ${threadId} has an active mutating turn (${active.state})`),

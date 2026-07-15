@@ -459,10 +459,12 @@ import Testing
     }
 
     @Test func threadApplyResponseDecodes() throws {
-        let json = #"{"applied":true,"status":"applied","headMoved":false,"detail":null}"#
+        let json = #"{"applied":true,"status":"applied","headMoved":false,"detail":null,"delivery":{"mode":"apply","applied":true,"finalVerify":{"attempted":true,"base_sha":"target-preimage-1","applied_cleanly":true,"gates_passed":true,"gates":[{"id":"thread-gate","status":"pass"}],"duration_ms":7,"reason":null},"targetPreimageSha":"target-preimage-1"}}"#
         let r = try JSONDecoder().decode(ThreadApplyResponse.self, from: Data(json.utf8))
         #expect(r.applied)
         #expect(r.status == "applied")
+        #expect(r.delivery?["targetPreimageSha"]?.stringValue == "target-preimage-1")
+        #expect(r.delivery?["finalVerify"]?["applied_cleanly"]?.boolValue == true)
     }
 
     @Test func createThreadRequestEncodesEligiblePool() throws {
