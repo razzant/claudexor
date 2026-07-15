@@ -165,6 +165,17 @@ evidence, terminal harness errors, failed apply/verify steps, and failed require
 gates remain blockers. `claudexor inspect
 <run_id>` is the CLI projection of the same run detail the macOS app renders.
 
+Deterministic gates use exact argv, never implicit shell parsing:
+
+```bash
+claudexor agent "fix the parser" --test '["pnpm","test"]'
+claudexor trust --repo /path/to/project --grant-test '["pnpm","test"]'
+```
+
+The second command is required only for a test declared by versioned project
+config; the external grant is invalidated when the config, argv, executable,
+script bytes, project, or access profile changes.
+
 ## Routing, Auth, And Secrets
 
 Routing is `Pool + Primary + Portfolio`:

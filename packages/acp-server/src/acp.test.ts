@@ -99,7 +99,7 @@ describe("AcpServer", () => {
           mode: "agent",
           harness: "codex",
           primaryHarness: "codex",
-          tests: ["pnpm test"],
+          tests: [{ program: "pnpm", args: ["test"] }],
           maxUsd: 5,
           access: "workspace_write",
           reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
@@ -119,7 +119,7 @@ describe("AcpServer", () => {
       repoPath: projectDir,
       harness: "codex",
       primaryHarness: "codex",
-      tests: ["pnpm test"],
+      tests: [{ program: "pnpm", args: ["test"] }],
       maxUsd: 5,
       access: "workspace_write",
       reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8" }],
@@ -421,7 +421,10 @@ describe("AcpServer", () => {
         jsonrpc: "2.0",
         id: 16,
         method: "session/prompt",
-        params: withSession({ prompt: "go", tests: [`echo ${secretLike}`] }),
+        params: withSession({
+          prompt: "go",
+          tests: [{ program: "echo", args: [secretLike] }],
+        }),
       }) + "\n",
     );
     c2s.write(

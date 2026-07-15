@@ -7,6 +7,7 @@ import {
 import type { ParsedArgs } from "./args.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
+import { parseTestCommandFlags } from "./run-options.js";
 
 function output(value: unknown, json: boolean): void {
   if (json) process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -29,6 +30,8 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
   const allow = args.flags["allow-full-access"];
   const revoke = args.flags["revoke-full-access"];
   const accessDefault = args.flags["access-default"];
+  const grantTest = args.flags["grant-test"];
+  const revokeTest = args.flags["revoke-test"];
   try {
     if (allow !== undefined && revoke !== undefined) {
       throw new Error("--allow-full-access and --revoke-full-access are mutually exclusive");
@@ -40,13 +43,28 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
     ) {
       throw new Error("--access-default must be readonly|workspace_write");
     }
+    if (grantTest !== undefined && revokeTest !== undefined) {
+      throw new Error("--grant-test and --revoke-test are mutually exclusive");
+    }
+    const grantValues =
+      grantTest === undefined ? [] : Array.isArray(grantTest) ? grantTest : [grantTest];
+    if (grantValues.length > 1) throw new Error("--grant-test accepts one command per invocation");
+    const grantInvocation = parseTestCommandFlags(grantValues)?.[0];
     let state: ControlTrustState;
-    if (allow !== undefined || revoke !== undefined || accessDefault !== undefined) {
+    if (
+      allow !== undefined ||
+      revoke !== undefined ||
+      accessDefault !== undefined ||
+      grantInvocation !== undefined ||
+      revokeTest !== undefined
+    ) {
       const body = ControlTrustUpdateRequest.parse({
         repoRoot,
         ...(allow !== undefined ? { allowFullAccess: true } : {}),
         ...(revoke !== undefined ? { allowFullAccess: false } : {}),
         ...(accessDefault === undefined ? {} : { accessDefault }),
+        ...(grantInvocation === undefined ? {} : { grantTestCommand: grantInvocation }),
+        ...(typeof revokeTest === "string" ? { revokeTestCommandDigest: revokeTest } : {}),
       });
       state = ControlTrustState.parse(
         await request("/trust", {
@@ -66,6 +84,7 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
       output(`trust file: ${state.path}`, false);
       output(`allow_full_access: ${state.allowFullAccess}`, false);
       output(`access_default: ${state.accessDefault}`, false);
+      output(`test_command_grants: ${state.testCommandGrantCount}`, false);
     }
     return 0;
   } catch (error) {

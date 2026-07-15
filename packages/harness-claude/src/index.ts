@@ -19,14 +19,13 @@ import {
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
   abortSignalFromSpec,
+  browserMcpCommand,
   HarnessUnavailableError,
   interactionChannelFromSpec,
   labelStreams,
   normalizeEffort,
-  playwrightMcpArgs,
   providerScrubEnv,
   resolveHarnessBinary,
-  resolveNpxBin,
   runCapture,
   runCliHarness,
   PROVIDER_SECRET_ENV,
@@ -866,8 +865,9 @@ function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: S
  */
 function claudeBrowserArgs(spec: HarnessRunSpec): string[] {
   if (!spec.browser || spec.external_context_policy === "off") return [];
+  const mcp = browserMcpCommand(spec.browser);
   const cfg = JSON.stringify({
-    mcpServers: { browser: { command: resolveNpxBin(), args: playwrightMcpArgs(spec.browser) } },
+    mcpServers: { browser: mcp },
   });
   return ["--mcp-config", cfg];
 }

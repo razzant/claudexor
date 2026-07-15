@@ -451,6 +451,30 @@
     },
     {
       "method": "POST",
+      "path": "/v2/threads/:id/purge",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlThread",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/restore",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlThread",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/threads/:id/trash",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlThread",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
       "path": "/v2/threads/:id/turns",
       "mutating": true,
       "request_schema": "ControlThreadTurnRequest",

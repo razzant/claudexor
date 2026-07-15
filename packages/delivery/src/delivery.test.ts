@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { runCapture } from "@claudexor/core";
 import { sha256 } from "@claudexor/util";
 import { DecisionRecord } from "@claudexor/schema";
-import { checkPatch, deliver, validateApplyGate } from "./index.js";
+import { checkPatch, deliver, validateApplyGate, verifyAndDeliver } from "./index.js";
 
 async function git(repo: string, args: string[]) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 30_000 });
@@ -47,6 +47,42 @@ async function makeModifyDeletePatchRepo(): Promise<{ repo: string; patch: strin
 }
 
 describe("delivery", () => {
+  it("fresh-verifies immediately before a protected mutation", async () => {
+    const { repo, patch } = await makePatchRepo();
+    const result = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+    expect(result.applied).toBe(true);
+    expect(result.finalVerify).toMatchObject({ attempted: true, applied_cleanly: true });
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("refuses mutation when a fresh deterministic gate fails", async () => {
+    const { repo, patch } = await makePatchRepo();
+    const result = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true }, [
+      { id: "fresh-fail", program: process.execPath, args: ["-e", "process.exit(9)"] },
+    ]);
+    expect(result).toMatchObject({ applied: false, refused: true, treeMutated: false });
+    expect(result.finalVerify).toMatchObject({ attempted: true, gates_passed: false });
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
+  });
+
+  it("refuses when the target changes between fresh verification and mutation", async () => {
+    const { repo, patch } = await makePatchRepo();
+    const result = await verifyAndDeliver(
+      repo,
+      patch,
+      { mode: "apply", protectedApply: true },
+      [],
+      () => {
+        writeFileSync(join(repo, "concurrent.txt"), "user edit\n");
+        return null;
+      },
+    );
+    expect(result).toMatchObject({ applied: false, refused: true, treeMutated: false });
+    expect(result.detail).toContain("target changed");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
+    expect(readFileSync(join(repo, "concurrent.txt"), "utf8")).toBe("user edit\n");
+  });
+
   it("checkPatch validates a clean patch and commit mode applies + commits", async () => {
     const { repo, patch } = await makePatchRepo();
     expect((await checkPatch(repo, patch)).ok).toBe(true);
@@ -180,7 +216,7 @@ describe("delivery", () => {
       originalRepoRoot: "/x",
       targetRepoRoot: "/x",
     });
-    expect(err).toBe("work product is required before apply");
+    expect(err).toBe("fresh final verify is required before apply");
   });
 });
 
@@ -319,10 +355,10 @@ describe("final_verify apply-gate consumer (INV-115)", () => {
     expect(err).toContain("deterministic gates failed");
   });
 
-  it("passes when the final verify is green or honestly not attempted", () => {
+  it("passes only when final verify is green; missing or unattempted verification fails closed", () => {
     expect(gateWith({ attempted: true, applied_cleanly: true, gates_passed: true })).toBeNull();
-    expect(gateWith({ attempted: false, reason: "no base sha" })).toBeNull();
-    expect(gateWith(null)).toBeNull();
+    expect(gateWith({ attempted: false, reason: "no base sha" })).toContain("fresh final verify");
+    expect(gateWith(null)).toContain("fresh final verify");
   });
 
   it("FAILS CLOSED when the verifier ERRORED (applied_cleanly=null): refuses without an override, allows with accept_risk on the BLOCKED run", () => {

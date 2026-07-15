@@ -672,7 +672,7 @@ final class AppModel {
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
                   portfolio: String, model: String?, n: Int, capUsd: Double?,
                   access: String = "workspace_write", web: String = "auto",
-                  tests: [String] = [], reviewerPanel: [ReviewerPanelEntry]? = nil,
+                  tests: [TestCommandInvocation] = [], reviewerPanel: [ReviewerPanelEntry]? = nil,
                   protectedPathApprovals: [ProtectedPathApproval]? = nil,
                   repoRootOverride: String? = nil) async {
         guard mode != .unknown else {

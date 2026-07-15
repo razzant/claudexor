@@ -23,7 +23,7 @@ import {
 } from "@claudexor/schema";
 import { evaluateConvergence } from "./convergence.js";
 import { dedupeFindings, extractJsonBlocks, parseFindingsDetailed } from "./findings.js";
-import { gatesPassed, runGate } from "./gates.js";
+import { buildTestCommandGrant, gatesPassed, runGate } from "./gates.js";
 import { ReadinessLedger, failureSignature } from "./readiness.js";
 import { revalidateFindings } from "./revalidate.js";
 import { type ReviewerProgressEvent, type ReviewerSpec, reviewCandidate } from "./reviewEngine.js";
@@ -130,9 +130,19 @@ function sameObservedModelReviewer(
 describe("gates", () => {
   it("passes on exit 0, fails on non-zero", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-"));
-    const passed = await runGate({ id: "a", command: "printf 'ok\\n'" }, { cwd });
+    const passed = await runGate(
+      { id: "a", program: process.execPath, args: ["-e", "process.stdout.write('ok\\n')"] },
+      { cwd },
+    );
     const failed = await runGate(
-      { id: "b", command: "printf 'out\\n'; printf 'err\\n' >&2; exit 3" },
+      {
+        id: "b",
+        program: process.execPath,
+        args: [
+          "-e",
+          "process.stdout.write('out\\n'); process.stderr.write('err\\n'); process.exit(3)",
+        ],
+      },
       { cwd },
     );
     expect(passed.status).toBe("passed");
@@ -141,7 +151,14 @@ describe("gates", () => {
     expect(failed.stdout_tail).toBe("out");
     expect(failed.stderr_tail).toBe("err");
     expect(failed.output_truncated).toBe(false);
-    expect(gatesPassed([await runGate({ id: "a", command: "exit 0" }, { cwd })])).toBe(true);
+    expect(
+      gatesPassed([
+        await runGate(
+          { id: "a", program: process.execPath, args: ["-e", "process.exit(0)"] },
+          { cwd },
+        ),
+      ]),
+    ).toBe(true);
   });
 
   it("marks gate output truncated only when the stored redacted tail is sliced", async () => {
@@ -149,13 +166,91 @@ describe("gates", () => {
     const failed = await runGate(
       {
         id: "trimmed",
-        command: "printf 'kept'; printf '%13000s' ''; exit 3",
+        program: process.execPath,
+        args: ["-e", "process.stdout.write('kept' + ' '.repeat(13000)); process.exit(3)"],
       },
       { cwd },
     );
     expect(failed.status).toBe("failed");
     expect(failed.stdout_tail).toBe("kept");
     expect(failed.output_truncated).toBe(false);
+  });
+
+  it("requires an exact external grant for versioned project commands", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-trust-"));
+    writeFileSync(join(cwd, "gate.js"), "require('node:fs').writeFileSync('ran.txt', 'yes')\n");
+    const invocation = { program: process.execPath, args: ["gate.js"], envAllowlist: [] };
+    const context = {
+      projectDigest: `sha256:${"1".repeat(64)}`,
+      configDigest: `sha256:${"2".repeat(64)}`,
+      accessProfile: "workspace_write" as const,
+    };
+    const ungranted = await runGate(
+      { id: "ungranted", ...invocation, trustRequired: true, ...context },
+      { cwd },
+    );
+    expect(ungranted.status).toBe("failed");
+    expect(existsSync(join(cwd, "ran.txt"))).toBe(false);
+
+    const grant = buildTestCommandGrant(invocation, cwd, context);
+    const trusted = await runGate(
+      {
+        id: "trusted",
+        ...invocation,
+        trustRequired: true,
+        trustGrant: grant,
+        ...context,
+      },
+      { cwd },
+    );
+    expect(trusted.status).toBe("passed");
+    expect(readFileSync(join(cwd, "ran.txt"), "utf8")).toBe("yes");
+
+    const verifyCwd = mkdtempSync(join(tmpdir(), "claudexor-gate-verify-tree-"));
+    writeFileSync(
+      join(verifyCwd, "gate.js"),
+      "require('node:fs').writeFileSync('ran.txt', 'yes')\n",
+    );
+    const relocated = await runGate(
+      {
+        id: "relocated-fresh-tree",
+        ...invocation,
+        trustRequired: true,
+        trustGrant: grant,
+        ...context,
+      },
+      { cwd: verifyCwd },
+    );
+    expect(relocated.status).toBe("passed");
+    expect(readFileSync(join(verifyCwd, "ran.txt"), "utf8")).toBe("yes");
+
+    rmSync(join(cwd, "ran.txt"));
+    const changedArg = await runGate(
+      {
+        id: "changed",
+        ...invocation,
+        args: ["other.js"],
+        trustRequired: true,
+        trustGrant: grant,
+        ...context,
+      },
+      { cwd },
+    );
+    expect(changedArg.status).toBe("failed");
+    expect(existsSync(join(cwd, "ran.txt"))).toBe(false);
+
+    writeFileSync(join(cwd, "gate.js"), "process.exit(0)\n");
+    const changedScript = await runGate(
+      {
+        id: "changed-script",
+        ...invocation,
+        trustRequired: true,
+        trustGrant: grant,
+        ...context,
+      },
+      { cwd },
+    );
+    expect(changedScript.status).toBe("failed");
   });
 });
 

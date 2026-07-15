@@ -63,8 +63,8 @@ export function transientRetryDelayMs(
   return Math.min(delay, policy.maxDelayMs);
 }
 
-export function gateProtectedPaths(commands: string[]): string[] {
-  if (commands.length === 0) return [];
+export function gateProtectedPaths(commandTokens: string[]): string[] {
+  if (commandTokens.length === 0) return [];
   const paths = new Set([
     "package.json",
     "**/package.json",
@@ -74,28 +74,26 @@ export function gateProtectedPaths(commands: string[]): string[] {
     "**/*.test.*",
     "**/*.spec.*",
   ]);
-  for (const command of commands) {
-    for (const raw of command.split(/\s+/)) {
-      const token = raw.trim().replace(/^['"]|['"]$/g, "");
-      if (
-        !token ||
-        token.startsWith("-") ||
-        token.includes("=") ||
-        token.includes("://") ||
-        token.startsWith("/")
-      )
-        continue;
-      if (!token.includes("/") && !token.includes(".")) continue;
-      const clean = token.replace(/^[./]+/, "").replace(/[),;]+$/g, "");
-      if (!clean || clean === "package.json") continue;
-      const testish =
-        clean.startsWith("test/") ||
-        clean.startsWith("tests/") ||
-        clean.startsWith("__tests__/") ||
-        clean.includes(".test.") ||
-        clean.includes(".spec.");
-      if (testish) paths.add(clean.endsWith("/") ? `${clean}**` : clean);
-    }
+  for (const raw of commandTokens) {
+    const token = raw.trim();
+    if (
+      !token ||
+      token.startsWith("-") ||
+      token.includes("=") ||
+      token.includes("://") ||
+      token.startsWith("/")
+    )
+      continue;
+    if (!token.includes("/") && !token.includes(".")) continue;
+    const clean = token.replace(/^[./]+/, "").replace(/[),;]+$/g, "");
+    if (!clean || clean === "package.json") continue;
+    const testish =
+      clean.startsWith("test/") ||
+      clean.startsWith("tests/") ||
+      clean.startsWith("__tests__/") ||
+      clean.includes(".test.") ||
+      clean.includes(".spec.");
+    if (testish) paths.add(clean.endsWith("/") ? `${clean}**` : clean);
   }
   return [...paths];
 }

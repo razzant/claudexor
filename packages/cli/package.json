@@ -27,6 +27,7 @@
     "@claudexor/interview": "workspace:*",
     "@claudexor/journal": "workspace:*",
     "@claudexor/orchestrator": "workspace:*",
+    "@claudexor/review": "workspace:*",
     "@claudexor/harness-claude": "workspace:*",
     "@claudexor/harness-codex": "workspace:*",
     "@claudexor/harness-cursor": "workspace:*",

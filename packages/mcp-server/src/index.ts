@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
-// Static JSON imports let esbuild inline schemas into the shipped app bundle.
 import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
+import testCommandInvocationSchemaRaw from "@claudexor/schema/generated/TestCommandInvocation.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
 import {
   McpServer as SdkMcpServer,
@@ -25,8 +25,7 @@ import {
 import { assertNoInlineSecretValues, errorCode } from "@claudexor/util";
 import { journalRecoveryTools } from "./recovery-tools.js";
 
-// Generated JSON Schemas from @claudexor/schema (the SSOT): declared to hosts
-// as tool outputSchema so structured results are validated shapes, not blobs.
+// Generated schemas serve as tool outputSchema so results are validated shapes, not blobs.
 // zod-to-json-schema emits a `$ref`+`definitions` wrapper; the SDK's
 // fromJsonSchema wants a self-contained schema, so internal refs are inlined
 // once at load (cycle-safe: a cyclic ref degrades to a permissive subschema).
@@ -75,6 +74,7 @@ function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, u
 const mcpRunToolResultSchema = inlineJsonSchemaRefs(
   mcpRunToolResultSchemaRaw as Record<string, unknown>,
 );
+const testCommandInvocationSchema = inlineJsonSchemaRefs(testCommandInvocationSchemaRaw);
 const agentCapabilityCatalogSchema = inlineJsonSchemaRefs(
   agentCapabilityCatalogSchemaRaw as Record<string, unknown>,
 );
@@ -464,8 +464,8 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       },
       tests: {
         type: "array",
-        items: { type: "string", minLength: 1 },
-        description: "Deterministic gate commands for this run.",
+        items: testCommandInvocationSchema,
+        description: "Typed-argv deterministic gate commands for this run.",
       },
       maxUsd: { type: "number", minimum: 0, description: "Optional per-run budget ceiling." },
       access: {

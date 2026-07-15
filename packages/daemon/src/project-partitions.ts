@@ -172,8 +172,25 @@ export class ProjectPartitions implements CommandAuthority {
     return this.requireThreadStore(id).updateThread(id, patch);
   }
 
-  setThreadWorktree(id: string, path: string, baseSha: string): void {
-    this.requireThreadStore(id).setThreadWorktree(id, path, baseSha);
+  trashThread(id: string): Thread {
+    return this.requireThreadStore(id).trashThread(id);
+  }
+
+  restoreThread(id: string): Thread {
+    return this.requireThreadStore(id).restoreThread(id);
+  }
+
+  purgeThread(id: string): Thread {
+    return this.requireThreadStore(id).purgeThread(id);
+  }
+
+  setThreadWorktree(
+    id: string,
+    path: string,
+    baseSha: string,
+    deliveredThroughRunId?: string,
+  ): void {
+    this.requireThreadStore(id).setThreadWorktree(id, path, baseSha, deliveredThroughRunId);
   }
 
   assertKnownIds(threadId: unknown, turnId: unknown): { threadId?: string; turnId?: string } {

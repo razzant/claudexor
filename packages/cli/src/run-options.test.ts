@@ -33,20 +33,18 @@ describe("run option parsing", () => {
     );
   });
 
-  it("parses repeated and ;;-separated deterministic test commands", () => {
-    expect(parseTestCommandFlags(["pnpm build;; pnpm test", "pnpm docs:check"])).toEqual([
-      "pnpm build",
-      "pnpm test",
-      "pnpm docs:check",
+  it("parses repeated JSON argv deterministic test commands", () => {
+    expect(parseTestCommandFlags(['["pnpm","build"]', '["pnpm","test"]', "true"])).toEqual([
+      { program: "pnpm", args: ["build"], envAllowlist: [] },
+      { program: "pnpm", args: ["test"], envAllowlist: [] },
+      { program: "true", args: [], envAllowlist: [] },
     ]);
   });
 
-  it("fails loudly on empty ;;-separated deterministic test command entries", () => {
-    expect(() => parseTestCommandFlags([";;pnpm test"])).toThrow(/empty ;;-separated entry/);
-    expect(() => parseTestCommandFlags(["pnpm test;;"])).toThrow(/empty ;;-separated entry/);
-    expect(() => parseTestCommandFlags(["pnpm test;;;;pnpm build"])).toThrow(
-      /empty ;;-separated entry/,
-    );
+  it("fails loudly on implicit shell syntax", () => {
+    expect(() => parseTestCommandFlags(["pnpm test"])).toThrow(/implicit shell syntax/);
+    expect(() => parseTestCommandFlags(["pnpm test;;pnpm build"])).toThrow(/implicit shell syntax/);
+    expect(() => parseTestCommandFlags(["[]"])).toThrow(/non-empty JSON/);
   });
 
   it("aggregates repeated reviewer-panel flags in order", () => {

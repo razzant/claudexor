@@ -244,9 +244,11 @@ process below. Never paper over the conflict.
   is treated like one: it is injected only when the run opted in, the
   harness declares `browser_tool`, web policy is not `off`, and the access
   profile allows it; the injection is disclosed, and navigation evidence
-  lands in the run artifact tree. Harnesses without a wired injector
-  honestly declare `browser_tool: false`. verify: browser-gate orchestrator
-  tests; adapter manifest review.
+  lands in the run artifact tree. The Browser MCP is an exact lockfile-pinned
+  local runtime, ships with the app, never downloads through `npx`, and runs
+  without provider credentials. Harnesses without a wired injector honestly
+  declare `browser_tool: false`. verify: browser-gate adapter tests; packaged
+  offline help smoke; adapter manifest review.
 
 ## 7. Project Context Is Explicit
 
@@ -398,21 +400,26 @@ process below. Never paper over the conflict.
   arbitration verification_basis tests.
 - **INV-113** Every path that can mutate the live project tree is
   enumerated in ARCHITECTURE with its fence, and each has one: envelope
-  delivery and orchestrate-apply go through the single `validateApplyGate`;
-  race adoption applies only on a clean terminal; `revert_run` is
-  divergence-fenced; thread apply requires the thread's HEAD run to be
-  non-blocked/non-failed or covered by a typed operator decision. An
+  delivery, manual apply, orchestrate-apply, race adoption, and thread apply
+  go through the delivery-owned fresh verifier immediately before mutation;
+  race adoption applies only on a verified clean terminal; `revert_run` is
+  content/preimage-fenced; thread apply considers every run not yet recorded
+  as delivered and is serialized against active turns. An
   unlisted mutation path is a release blocker. verify: mutation-path
-  inventory in ARCHITECTURE; thread-apply head-run gate test (locked
-  owner decision).
-- **INV-114** A failed apply/adoption leaves the target tree restored, or —
-  when restoration itself fails — reports the mutation honestly;
-  `adopted:false`/`not_applied` must mean the tree is unchanged. verify:
-  protected-apply conflict tests (byte-identical restore).
+  inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
+  tests (locked owner decision).
+- **INV-114** Apply/adoption captures and rechecks the exact target preimage
+  immediately around the mutation; stale or conflicting targets are refused
+  without destructive rollback. `adopted:false`/`not_applied` means the tree
+  is unchanged. Revert changes only the Claudexor-recorded postimage and
+  refuses overlap with later user edits. verify: protected-apply conflict and
+  concurrent-edit tests (byte-identical index/worktree preservation).
 - **INV-115** Before an envelope-produced patch is applied or adopted —
-  race winner or convergence result — it is re-verified in a fresh
+  manual apply, race winner, thread delivery, or convergence result — it is
+  re-verified by the delivery owner in a fresh
   envelope (`git apply` to a clean base + configured deterministic gates
-  there); the result is recorded in the decision, and a verifier
+  there) immediately before the target preimage check; the result is recorded
+  in the decision/receipt, and a missing, stale, or failed verifier
   infrastructure error blocks fail-closed exactly like a proven failure.
   A patch that cannot survive a clean base does not touch the live tree.
   In-place turns are exempt: their diff is produced against the LIVE tree,

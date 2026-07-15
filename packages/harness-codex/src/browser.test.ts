@@ -57,7 +57,9 @@ describe("codexBrowserArgs", () => {
     const joined = args.join(" ");
     expect(joined).toContain("mcp_servers.browser.command=");
     expect(joined).toContain("mcp_servers.browser.args=");
-    expect(joined).toContain("@playwright/mcp@latest");
+    expect(joined).toContain("browser-mcp-launcher");
+    expect(joined).not.toContain("@latest");
+    expect(joined).not.toContain("npx");
     // Headed by default (no --headless), and the output dir rides the args array.
     expect(joined).not.toContain("--headless");
     expect(joined).toContain("--output-dir=/runs/r1/browser");

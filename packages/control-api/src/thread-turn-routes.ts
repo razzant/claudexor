@@ -49,7 +49,7 @@ export interface ThreadTurnRouteCtx {
  * Chain `work` onto the thread's serialization chain and drop the entry once
  * settled so the Map cannot grow unbounded across a thread's lifetime.
  */
-function chainOnThread(
+export function chainThreadMutation(
   ctx: ThreadTurnRouteCtx,
   threadId: string,
   work: () => Promise<void>,
@@ -174,7 +174,7 @@ export function handleThreadTurnCreate(
   body: import("@claudexor/schema").ControlThreadTurnRequest,
   idempotencyKey: string,
 ): Promise<void> {
-  return chainOnThread(ctx, threadId, async () => {
+  return chainThreadMutation(ctx, threadId, async () => {
     // Once the turn record exists, any later failure in this handler must
     // land ON the turn (honest inline refusal) — not only in one HTTP
     // response that a reloading client never sees.
@@ -351,7 +351,7 @@ export function handleThreadTurnRetry(
 ): Promise<void> {
   // Same per-thread serialization as turn creation: a retry racing a new
   // turn would otherwise interleave lineage bookkeeping.
-  return chainOnThread(ctx, threadId, async () => {
+  return chainThreadMutation(ctx, threadId, async () => {
     try {
       const detail = await ctx.threadDetail(threadId);
       const turns = detail.turns as Array<Record<string, unknown>>;

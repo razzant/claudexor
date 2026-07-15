@@ -406,7 +406,10 @@ winner through the shared preimage-bound protected apply path. It first runs
 targets leave `adopted:false` without destructive rollback. Blockers
 (NEEDS_HUMAN / non-clean terminal) stop
 adoption. An isolated thread's accumulated worktree diff is delivered to the
-project on demand via `POST /v2/threads/:id/apply`.
+project on demand via `POST /v2/threads/:id/apply`. The isolated workspace is
+pinned by a persistent `claudexor/thread-*` branch (not a dangling commit);
+successful delivery advances that branch. Trash retains the thread and its
+branch for 30 days and exposes explicit restore/purge routes.
 
 ### Agent --n (race) / --create
 
@@ -518,6 +521,9 @@ files.
 - `GET /v2/threads/:id`
 - `PATCH /v2/threads/:id`
 - `POST /v2/threads/:id/apply`
+- `POST /v2/threads/:id/purge`
+- `POST /v2/threads/:id/restore`
+- `POST /v2/threads/:id/trash`
 - `POST /v2/threads/:id/turns`
 - `POST /v2/threads/:id/turns/:id/retry`
 - `GET /v2/trust`
@@ -568,7 +574,11 @@ Endpoint semantics beyond the inventory:
   stamped with its `repo_root` provenance so the list is human-readable; legacy
   pre-provenance files show a null root), and the POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
-  update one repo. CLI trust commands use this same boundary. This backs the macOS one-click remedy on a
+  update one repo. Versioned project test commands are canonical typed argv,
+  never implicit shell text. Their external grant binds the project/config/
+  command digests, resolved executable/script bytes, and access profile;
+  changing any component prevents spawn. CLI trust commands use this same
+  boundary (`trust --grant-test '["pnpm","test"]'`). This backs the macOS one-click remedy on a
   trust-refused turn and the Settings trust section (list + revoke).
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` append an auditable patch-hash-bound
@@ -576,9 +586,10 @@ Endpoint semantics beyond the inventory:
   `arbitration/operator_decision.yaml` is only a compatibility projection for
   artifact-only CLI reads; the apply gate reads journal authority;
   `accept_clean_patch` delivers; `rerun_with_feedback` enqueues a follow-up;
-  `revert_run` restores the live in-place tree to the turn's pre-turn snapshot —
-  a server-owned, tree-SHA divergence-fenced revert that refuses (fail loud) if
-  the tree has diverged from the recorded post-turn state.
+  `revert_run` uses an immutable external content-addressed anchor and restores
+  only recorded postimage bytes that still match; overlapping later user edits
+  are refused instead of overwritten. The anchor remains reachable independently
+  of Git garbage collection.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS Canvas
   source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
@@ -778,8 +789,8 @@ separate Review Queue screen). Since v0.9 the human decision is a TYPED server a
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
 auditable, patch-hash-bound record in the owning journal. The single-owner
 Control API apply gate reads that authority; the mirrored
-`arbitration/operator_decision.yaml` keeps artifact-only `claudexor apply`
-compatible until delivery consolidation. `accept_clean_patch` delivers through the gate and
+`arbitration/operator_decision.yaml` remains a compatibility projection for
+artifact readers. `accept_clean_patch` delivers through `verifyAndDeliver` and
 `rerun_with_feedback` enqueues a follow-up run. A mutated patch invalidates the
 override. UI must not fake local accept/unblock state. The CLI resolves a run from
 any cwd (project store, user Ask store, or — only when a daemon is already running —
@@ -791,9 +802,9 @@ unblocked by the typed override above). A clean CROSS-FAMILY VERIFIED review is
 sufficient verification even without a deterministic test gate;
 `DecisionRecord.verification_basis` (`cross_family_review | both`)
 discloses what backed an applyable outcome, so a no-test run adopted on review
-evidence never reads as "tests passed". Before adoption/apply eligibility, an
-otherwise-adoptable ENVELOPE-produced patch — race winner or convergence
-result — also passes the FINAL VERIFIER: the patch is applied onto a
+evidence never reads as "tests passed". Immediately before any envelope patch
+mutation, the delivery-owned `verifyAndDeliver` service runs the FINAL
+VERIFIER: the patch is applied onto a
 FRESH worktree at its own base sha and the deterministic gates re-run there,
 recorded as `DecisionRecord.final_verify`
 (attempted/applied_cleanly/gates_passed/reason). In-place turns are exempt
@@ -834,43 +845,42 @@ Every path that can mutate the live project tree is enumerated here with its
 fence (Bible INV-113); an unlisted mutation path is a release blocker:
 
 1. **Envelope delivery/apply** — `POST /v2/runs/:id/apply` and CLI
-   `claudexor apply` both go through the single-owner apply gate
-   (`validateApplyGate` in `packages/delivery`): terminal success or a typed
-   patch-hash-bound operator decision, a patch WorkProduct, and the original
-   verified repo root are required before `deliver` touches the tree.
+   `claudexor apply` both go through the delivery-owned `verifyAndDeliver`:
+   the shared apply gate authorizes the run, a fresh verifier checks the exact
+   patch, and an unchanged target preimage is required before mutation.
 2. **Orchestrate `auto_full` apply step** — the executor's only RISKY tool call
-   sends the referenced run's patch through the SAME `validateApplyGate` +
-   `deliver` path (plus a secret-like-token scan on the patch); the gate
+   sends the referenced run's patch through the SAME `verifyAndDeliver` path
+   (plus a secret-like-token scan on the patch); the gate
    refusing means no mutation.
 3. **In-place thread turns** — a write turn executes directly in the thread's
    execution tree. Fences: a pre-turn snapshot is taken at turn start and a
    post-turn snapshot at turn end (the per-turn diff base, so prior dirty state
    is never attributed to the turn), and the server-owned `revert_run` decision
-   can restore the pre-turn state while the tree still matches the recorded
-   post-turn snapshot (divergence-fenced, below).
+   uses an external content-addressed pre/post anchor (overlapping later user
+   edits are refused, below).
 4. **Best-of winner adoption** — a best-of-N thread race runs candidates in
-   isolated envelopes and applies the winner's patch to the execution tree ONLY
-   on a clean terminal (success or ungated); blockers stop adoption. Adoption
+   isolated envelopes and applies the winner's patch to the execution tree only
+   on a fully verified `success`; `ungated`, `review_not_run`, blocked,
+   and failed results remain inspectable artifacts and never auto-adopt. Adoption
    runs the PROTECTED apply path (`git apply --check` first, then a plain
    all-or-nothing apply). A stale or concurrent target is refused and no
    destructive rollback is attempted; `adopted:false` reports whether the
    observed target remained unchanged (INV-114).
 5. **Thread apply** — `POST /v2/threads/:id/apply` delivers an isolated thread's
-   accumulated worktree diff. Fences: a HEAD-RUN STATE GATE (a thread whose
-   head run is blocked or failed 409s unless a typed operator decision covers
-   that run — the audited `control.rejected` event records the refusal),
-   a secret-like-token scan refuses the patch, a project-HEAD-moved check is
-   disclosed as an advisory, and delivery reuses the shared protected
-   `deliver` path (`--check` first, preimage-bound plain apply, no destructive
-   rollback, honest `treeMutated`).
+   accumulated worktree diff. Fences: one per-thread mutation queue refuses
+   apply as `thread_busy` while a mutating turn is queued/running; every run
+   after the durable delivered-prefix watermark must be applyable (a later
+   success cannot launder an earlier blocked contribution); a secret-like-token
+   scan refuses the patch; delivery reuses `verifyAndDeliver` with a fresh
+   verifier and exact target preimage. Success advances the persistent thread
+   branch and watermark with journaled thread state.
 6. **Automatic git init** — a NON-GIT project folder is initialized before any
    write candidate spawns (`git init`,
    deterministic baseline commit). Fence: the mutation is announced via a typed
    `project.git.initialized` run event — never silent.
-7. **`revert_run`** — the server-owned in-place revert restores a turn's
-   pre-turn snapshot ONLY when the current tree's content-stable tree SHA still
-   matches the recorded post-turn snapshot; a diverged tree is refused loudly
-   and left untouched.
+7. **`revert_run`** — the server-owned in-place revert reads the immutable
+   external patch anchor and reverses only bytes still equal to the recorded
+   Claudexor postimage; a conflicting user edit is refused and left untouched.
 
 Reviewer selection is schema-owned. The automatic selector uses provider-family
 diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.
@@ -1087,14 +1097,16 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   for attachments; inline base64 is accepted only through thread/composer turn
   creation.
 - The agent-driven browser is an engine capability the app merely arms: the
-  adapter injects Microsoft's Playwright MCP (codex via stateless
+  adapter injects the exact lockfile-pinned Microsoft Playwright MCP (codex via stateless
   `-c mcp_servers.browser.*` overrides, claude via `--mcp-config` inline JSON —
   the agent gets the Playwright navigate / screenshot / snapshot browser
   tools) only when the run opted in, the harness declares
   `browser_tool`, web policy is not `off`, and the run has **full access**
   (codex's workspace-write sandbox cancels the navigation — live-verified).
-  The injection is disclosed, the browser runs HEADED, and navigation
-  snapshots land in the run artifact tree. Cursor/OpenCode/raw-api report
+  The runtime is deployed inside the DMG/ZIP and its offline entrypoint is
+  build-smoked; no `npx`, runtime package download, or provider credential is
+  available to the browser child. The injection is disclosed, the browser runs
+  HEADED, and navigation snapshots land in the run artifact tree. Cursor/OpenCode/raw-api report
   `browser_tool: false` (honest — no injector wired).
 
 ## 10. Change Rules
@@ -1162,8 +1174,9 @@ code touching one of these areas must honor it or change it explicitly here.
   baseline copy or the `diff` tool fails, the run's diff is empty and
   reviewers read the live tree (diff output capped at 200 kB with an in-band
   truncation marker).
-- Isolated-thread worktrees assume turns leave work uncommitted; the persisted
-  thread base, not worktree HEAD, is the apply base.
+- Isolated-thread worktrees are pinned by persistent `claudexor/thread-*`
+  branches. Journal SHA is a checked cache; successful apply advances the
+  branch, and explicit trash/restore/purge owns its retention lifecycle.
 - Explicit reviewer panels accept only doctor-OK routes: a degraded route (key
   present but unproven by isolated smoke) is refused even when the user names
   it — reviewer verdicts must ride proven routes, unlike candidates where

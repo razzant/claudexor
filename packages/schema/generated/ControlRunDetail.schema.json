@@ -567,6 +567,14 @@
                   "default": null,
                   "description": "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since."
                 },
+                "revertAnchorId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "GC-independent revert anchor."
+                },
                 "revertable": {
                   "type": "boolean",
                   "default": false,
@@ -630,9 +638,42 @@
             "tests": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "object",
+                "properties": {
+                  "program": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S",
+                    "description": "Executable invoked directly without an implicit shell."
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": [],
+                    "description": "Exact argv passed to the executable."
+                  },
+                  "cwd": {
+                    "type": "string",
+                    "description": "Optional project-relative working directory for the command."
+                  },
+                  "envAllowlist": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/reviewerPanel/items/properties/model"
+                    },
+                    "default": [],
+                    "description": "Non-secret parent environment names explicitly forwarded to the command."
+                  }
+                },
+                "required": [
+                  "program"
+                ],
+                "additionalProperties": false,
+                "description": "Canonical deterministic command invocation; no implicit shell parsing."
               },
-              "description": "Test commands configured as gates."
+              "description": "Typed argv gates."
             },
             "specId": {
               "type": "string",

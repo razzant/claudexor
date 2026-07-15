@@ -124,6 +124,20 @@
               ],
               "default": null,
               "description": "Snapshot SHA the isolated worktree (or last apply) is based on."
+            },
+            "delivered_through_run_id": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Non-empty identifier string."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Last run in the lineage prefix already delivered from this isolated thread.",
+              "default": null
             }
           },
           "additionalProperties": false,
@@ -133,9 +147,7 @@
         "run_ids": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Non-empty identifier string."
+            "$ref": "#/definitions/Thread/properties/workspace/properties/delivered_through_run_id/anyOf/0"
           },
           "default": [],
           "description": "Ordered run lineage (each run is a turn move)."
@@ -143,7 +155,7 @@
         "head_run_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Thread/properties/run_ids/items"
+              "$ref": "#/definitions/Thread/properties/workspace/properties/delivered_through_run_id/anyOf/0"
             },
             {
               "type": "null"
@@ -156,10 +168,54 @@
           "type": "string",
           "enum": [
             "active",
-            "closed"
+            "closed",
+            "trashed",
+            "purged"
           ],
-          "description": "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
+          "description": "Thread lifecycle state: active, closed, trashed for recovery, or terminally purged.",
           "default": "active"
+        },
+        "trashed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "ISO-8601 timestamp string."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the thread entered recoverable trash.",
+          "default": null
+        },
+        "purge_after": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Thread/properties/trashed_at/anyOf/0"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Earliest automatic purge time; 30 days after trash.",
+          "default": null
+        },
+        "pre_trash_state": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "active",
+                "closed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lifecycle state restored while the trash retention window remains open."
         }
       },
       "required": [

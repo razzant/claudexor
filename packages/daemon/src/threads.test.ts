@@ -63,6 +63,25 @@ describe("ThreadStore", () => {
     expect(t2.parent_run_id).toBe("run-1");
   });
 
+  it("persists the delivered lineage watermark across a journal restart", () => {
+    const { root, journal, s } = store();
+    const thread = s.createThread({ repoRoot: "/tmp/proj", workspace: "isolated" });
+    const first = s.createTurn(thread.id, "first");
+    s.bindTurnRun(first.id, "run-1");
+    const second = s.createTurn(thread.id, "second");
+    s.bindTurnRun(second.id, "run-2");
+
+    s.setThreadWorktree(thread.id, "/tmp/thread-tree", "base-2", "run-1");
+    const reloaded = reload(root, journal).getThread(thread.id);
+
+    expect(reloaded?.workspace).toMatchObject({
+      worktree_path: "/tmp/thread-tree",
+      base_sha: "base-2",
+      delivered_through_run_id: "run-1",
+    });
+    expect(reloaded?.run_ids).toEqual(["run-1", "run-2"]);
+  });
+
   it("deduplicates turn creation by request and preserves the key across restart", () => {
     const { root, journal, s } = store();
     const thread = s.createThread({ repoRoot: "/tmp/proj" });
@@ -145,6 +164,27 @@ describe("ThreadStore", () => {
     expect(s.getThread(t.id)?.title).toBe("Renamed");
     s.updateThread(t.id, { state: "closed" });
     expect(s.getThread(t.id)?.state).toBe("closed");
+  });
+
+  it("keeps trashed threads restorable for 30 days and leaves a purge tombstone", () => {
+    const { root, journal, s } = store();
+    const thread = s.createThread({ repoRoot: "/tmp/proj", workspace: "isolated" });
+    s.updateThread(thread.id, { state: "closed" });
+    s.setThreadWorktree(thread.id, "/tmp/thread-tree", "base-1");
+
+    const trashed = s.trashThread(thread.id);
+    expect(trashed.state).toBe("trashed");
+    expect(trashed.pre_trash_state).toBe("closed");
+    expect(Date.parse(trashed.purge_after ?? "")).toBeGreaterThan(Date.now());
+    const restoredStore = reload(root, journal);
+    expect(restoredStore.getThread(thread.id)?.state).toBe("trashed");
+    expect(restoredStore.restoreThread(thread.id).state).toBe("closed");
+    restoredStore.trashThread(thread.id);
+    const purged = restoredStore.purgeThread(thread.id);
+    expect(purged.state).toBe("purged");
+    expect(purged.workspace.worktree_path).toBeNull();
+    expect(restoredStore.listThreads().some((item) => item.id === thread.id)).toBe(false);
+    expect(() => restoredStore.restoreThread(thread.id)).toThrow(/purged/);
   });
 
   it("persists a sticky eligible pool and primary, and survives a reload", () => {

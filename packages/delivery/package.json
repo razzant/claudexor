@@ -24,6 +24,7 @@
     "@claudexor/util": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/policy": "workspace:*",
+    "@claudexor/review": "workspace:*",
     "@claudexor/workspace": "workspace:*"
   },
   "repository": {

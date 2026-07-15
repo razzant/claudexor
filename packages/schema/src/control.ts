@@ -23,7 +23,7 @@ import {
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy } from "./orchestrate.js";
 import { AttachmentInput } from "./attachment.js";
-import { ProtectedPathApproval } from "./task.js";
+import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 
@@ -164,9 +164,9 @@ export const ControlRunStartRequest = z
         "Opt this run into the agent-driven browser; honored only for browser-capable harnesses when web policy is not off.",
       ),
     tests: z
-      .array(NonBlankString)
+      .array(TestCommandInvocation)
       .optional()
-      .describe("Test commands to run as deterministic gates."),
+      .describe("Typed-argv commands to run as deterministic gates."),
     /** Typed per-run approval for changing auto-protected gate/test paths. This
      * does not bypass built-in critical/security path human gates. */
     protectedPathApprovals: z
@@ -470,14 +470,11 @@ export const ControlRunResult = z
       ),
     /** Honest application state (decoupled from clean-terminal). */
     applyState: RunApplyState.default("not_applied"),
-    /** Tree SHA before this turn mutated the in-place tree (revert restore target). */
     preTurnSha: z
       .string()
       .nullable()
       .default(null)
       .describe("Tree SHA before this turn mutated the in-place tree (revert restore target)."),
-    /** Tree SHA right after this turn's mutation (revert divergence fence: refuse
-     * to revert if the working tree has diverged from this since). */
     postTurnSha: z
       .string()
       .nullable()
@@ -485,8 +482,9 @@ export const ControlRunResult = z
       .describe(
         "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since.",
       ),
+    revertAnchorId: z.string().nullable().default(null).describe("GC-independent revert anchor."),
     /** Revert metadata is available (the turn mutated the live tree in place and
-     * pre/post-turn snapshots were recorded), so a Revert affordance may be offered.
+     * an external patch anchor was recorded), so a Revert affordance may be offered.
      * This is NOT a live-safe guarantee: the server re-checks tree divergence at
      * revert time and refuses (fail loud) if the working tree changed since. */
     revertable: z
@@ -580,7 +578,7 @@ export const ControlRunSummary = z
     route: ControlRouteInfo.nullable()
       .default(null)
       .describe("Route evidence from telemetry; null when no telemetry exists (legacy runs)."),
-    tests: z.array(z.string()).optional().describe("Test commands configured as gates."),
+    tests: z.array(TestCommandInvocation).optional().describe("Typed argv gates."),
     specId: z.string().optional().describe("SpecPack id the run was held to."),
     specHash: ContentHash.optional().describe("Content hash of the SpecPack the run was held to."),
     createdAt: z.string().optional().describe("When the run was created."),
@@ -917,6 +915,8 @@ export const ControlThread = z
       .default([])
       .describe("Sticky eligible harness pool; empty = the engine auto-pools."),
     state: ThreadState.default("active"),
+    trashedAt: z.string().nullable().default(null).describe("When the thread entered trash."),
+    purgeAfter: z.string().nullable().default(null).describe("When trash retention expires."),
     runIds: z.array(Id).default([]).describe("Ordered run lineage of the thread."),
     headRunId: Id.nullable()
       .default(null)
@@ -1060,7 +1060,7 @@ export type ControlThreadCreateRequest = z.infer<typeof ControlThreadCreateReque
 export const ControlThreadUpdateRequest = z
   .object({
     title: z.string().optional().describe("New thread title."),
-    state: ThreadState.optional().describe("New thread state (active/closed)."),
+    state: z.enum(["active", "closed"]).optional().describe("New open/archive state."),
     primaryHarness: NonBlankString.nullable()
       .optional()
       .describe("New sticky primary harness; null clears back to engine routing."),

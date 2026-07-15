@@ -111,6 +111,8 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   # suffix explicit so Node does not inherit the repository's type=module
   # package scope during local/package smoke runs.
   SETUP_RUNNER_JS="$APP/Contents/Resources/setup-login-runner.cjs"
+  BROWSER_MCP_DIR="$APP/Contents/Resources/browser-mcp-runtime"
+  BROWSER_MCP_JS="$BROWSER_MCP_DIR/dist/browser-mcp-launcher.js"
   echo "==> Building engine workspace (pnpm -w build)"
   ( cd "$REPO_ROOT" && pnpm -w build >/dev/null )
   echo "==> Bundling claudexord (esbuild single-file)"
@@ -137,6 +139,14 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     echo "    setup-login-runner.cjs $(wc -c < "$SETUP_RUNNER_JS" | tr -d ' ') bytes"
   else
     echo "ERROR: setup-login runner bundle failed; native subscription login would be broken" >&2
+    exit 1
+  fi
+  echo "==> Deploying pinned Browser MCP runtime"
+  rm -rf "$BROWSER_MCP_DIR"
+  if ( cd "$REPO_ROOT" && pnpm --filter @claudexor/core deploy --legacy --prod "$BROWSER_MCP_DIR" >/dev/null ); then
+    echo "    browser-mcp-runtime $(du -sh "$BROWSER_MCP_DIR" | cut -f1 | tr -d ' ')"
+  else
+    echo "ERROR: Browser MCP deploy failed; packaged browser requests would be unavailable" >&2
     exit 1
   fi
   PROCESS_IDENTITY_HELPER="$APP/Contents/Resources/native/claudexor-process-identity"
@@ -179,6 +189,22 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   fi
   rm -f "$APP/Contents/Resources/setup-runner-smoke.out"
   echo "    bundled setup-login runner launches"
+
+  # No network/package-manager access participates in the packaged Browser MCP.
+  BROWSER_SMOKE_HOME="$(mktemp -d)"
+  env -i HOME="$BROWSER_SMOKE_HOME" PATH="/usr/bin:/bin" \
+    "$APP/Contents/Resources/node" "$BROWSER_MCP_JS" --help \
+    >"$APP/Contents/Resources/browser-mcp-smoke.out" 2>&1
+  if ! grep -q "Playwright MCP" "$APP/Contents/Resources/browser-mcp-smoke.out"; then
+    echo "ERROR: bundled Browser MCP did not execute its offline help entrypoint" >&2
+    cat "$APP/Contents/Resources/browser-mcp-smoke.out" >&2
+    rm -f "$APP/Contents/Resources/browser-mcp-smoke.out"
+    rm -rf "$BROWSER_SMOKE_HOME"
+    exit 1
+  fi
+  rm -f "$APP/Contents/Resources/browser-mcp-smoke.out"
+  rm -rf "$BROWSER_SMOKE_HOME"
+  echo "    bundled Browser MCP launches offline"
 
   # Boot smoke: the bundled daemon must actually START (a load-time crash in
   # the bundle shipped in v1.0.0 and survived every gate because nothing

@@ -25,6 +25,8 @@ export function projectThread(raw: unknown, needsHuman: boolean): ControlThread 
     primaryHarness: t["primary_harness"] ?? null,
     eligibleHarnesses: t["eligible_harnesses"] ?? [],
     state: t["state"] ?? "active",
+    trashedAt: t["trashed_at"] ?? null,
+    purgeAfter: t["purge_after"] ?? null,
     runIds: t["run_ids"] ?? [],
     headRunId: t["head_run_id"] ?? null,
     needsHuman,

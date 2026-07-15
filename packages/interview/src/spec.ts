@@ -140,8 +140,8 @@ export function diffSpecPacks(a: SpecPack, b: SpecPack): SpecFieldChange[] {
   );
   diffList(
     "tests",
-    a.tests.map((t) => t.command),
-    b.tests.map((t) => t.command),
+    a.tests.map((test) => JSON.stringify([test.program, ...test.args])),
+    b.tests.map((test) => JSON.stringify([test.program, ...test.args])),
   );
   diffList(
     "tasks",

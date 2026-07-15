@@ -22,7 +22,10 @@ describe("claude browser injection (via claudeArgsForSpec)", () => {
     const i = args.indexOf("--mcp-config");
     expect(i).toBeGreaterThanOrEqual(0);
     const cfg = JSON.parse(args[i + 1] ?? "{}");
-    expect(cfg.mcpServers?.browser?.args).toContain("@playwright/mcp@latest");
+    expect(cfg.mcpServers?.browser?.command).toBe(process.execPath);
+    expect(cfg.mcpServers?.browser?.args.join(" ")).toContain("browser-mcp-launcher");
+    expect(cfg.mcpServers?.browser?.args.join(" ")).not.toContain("@latest");
+    expect(cfg.mcpServers?.browser?.args.join(" ")).not.toContain("npx");
     const allowIdx = args.indexOf("--allowedTools");
     expect(allowIdx).toBeGreaterThanOrEqual(0);
     expect(args[allowIdx + 1]).toContain("mcp__browser");

@@ -19,11 +19,14 @@ import {
   ensureGitRepository,
   git,
   isGitRepo,
+  revParse,
+  revertWorkingTreePatch,
   revertWorkingTreeTo,
   snapshotTree,
 } from "./git.js";
+import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
 import { WorkspaceManager } from "./manager.js";
-import { ensureThreadWorktree } from "./thread-tree.js";
+import { advanceThreadWorktree, ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
 
 describe("revertWorkingTreeTo", () => {
   it("restores a modified file, removes a turn-added file, and refuses when the tree diverged", async () => {
@@ -359,6 +362,54 @@ describe("WorkspaceManager", () => {
     // Runtime is external: no project `.claudexor` or ignore file is created.
     expect(first.path.startsWith(projectRuntimeDir(repo))).toBe(true);
     expect(existsSync(join(repo, ".claudexor"))).toBe(false);
+  });
+
+  it("advances the persistent thread branch so its delivered base survives git gc", async () => {
+    const repo = await initRepo();
+    const wt = await ensureThreadWorktree(repo, "th-gc");
+    writeFileSync(join(wt.path, "delivered.txt"), "delivered\n");
+    writeFileSync(join(repo, "delivered.txt"), "delivered\n");
+    const target = await snapshotTree(repo);
+
+    expect(await advanceThreadWorktree(repo, "th-gc", wt.path, target)).toBe(target);
+    expect((await git(wt.path, ["status", "--porcelain"])).stdout).toBe("");
+    expect(await revParse(repo, "claudexor/thread-th-gc")).toBe(target);
+
+    await git(repo, ["worktree", "remove", "--force", wt.path]);
+    await git(repo, ["reflog", "expire", "--expire=now", "--all"]);
+    await git(repo, ["gc", "--prune=now"]);
+    const restored = await ensureThreadWorktree(repo, "th-gc");
+    expect(restored.baseSha).toBe(target);
+    expect(readFileSync(join(restored.path, "delivered.txt"), "utf8")).toBe("delivered\n");
+  });
+
+  it("reverts from an external content-addressed anchor after snapshot GC", async () => {
+    const repo = await initRepo();
+    const pre = await snapshotTree(repo);
+    writeFileSync(join(repo, "README.md"), "# changed by turn\n");
+    const post = await snapshotTree(repo);
+    const anchorId = await createRevertAnchor(repo, pre, post);
+
+    await git(repo, ["reflog", "expire", "--expire=now", "--all"]);
+    await git(repo, ["gc", "--prune=now"]);
+    const reverted = await revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId));
+
+    expect(reverted.reverted).toBe(true);
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# test\n");
+  });
+
+  it("purges only the owned isolated worktree and persistent branch", async () => {
+    const repo = await initRepo();
+    const wt = await ensureThreadWorktree(repo, "th-purge");
+    expect(await revParse(repo, "claudexor/thread-th-purge")).toBe(wt.baseSha);
+
+    await purgeThreadWorktree(repo, "th-purge");
+
+    expect(existsSync(wt.path)).toBe(false);
+    expect((await git(repo, ["rev-parse", "--verify", "claudexor/thread-th-purge"])).code).not.toBe(
+      0,
+    );
+    expect(existsSync(join(repo, "README.md"))).toBe(true);
   });
 
   it("snapshotTree + applyPatch work INSIDE a linked worktree (.git is a file there)", async () => {

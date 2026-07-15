@@ -14,10 +14,10 @@ import { basename, extname, join, relative, sep } from "node:path";
 import {
   type ApplyGateInput,
   checkPatch,
-  deliver,
   deriveApplyEligibility,
-  revertInPlace,
+  revertInPlaceFromAnchor,
   validateApplyGate,
+  verifyAndDeliver,
 } from "@claudexor/delivery";
 import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
@@ -30,6 +30,10 @@ import {
   handleThreadTurnRetry,
   type ThreadTurnRouteCtx,
 } from "./thread-turn-routes.js";
+import {
+  handleThreadLifecycleRoutes,
+  type ThreadLifecycleRouteCtx,
+} from "./thread-lifecycle-routes.js";
 import * as runStart from "./run-start.js";
 import { handleRunRetryRoute } from "./run-retry-routes.js";
 import { rerunWithFeedback } from "./decision-rerun.js";
@@ -89,8 +93,6 @@ import {
   ControlThreadCreateRequest,
   ControlThreadTurnRequest,
   ControlThreadUpdateRequest,
-  ControlThreadApplyRequest,
-  ControlThreadApplyResponse,
   ControlThreadDetail,
   ControlThreadListResponse,
   ControlTurnRunCard,
@@ -104,6 +106,8 @@ import {
   RunTelemetry,
   TaskContract,
   ProtectedPathApproval,
+  type FinalVerifyRecord,
+  TestCommandInvocation,
   WorkProduct,
 } from "@claudexor/schema";
 import { resolveControlProtocol } from "./operation-catalog.js";
@@ -252,9 +256,17 @@ export interface DaemonControlApiOptions {
         eligibleHarnesses?: string[];
       },
     ) => Promise<unknown>;
+    trashThread?: (id: string) => Promise<unknown>;
+    restoreThread?: (id: string) => Promise<unknown>;
+    purgeThread?: (id: string) => Promise<unknown>;
     applyThread?: (
       id: string,
-      opts: { mode: string; branch?: string; message?: string },
+      opts: {
+        mode: string;
+        branch?: string;
+        message?: string;
+        gates?: NonNullable<Parameters<typeof verifyAndDeliver>[3]>;
+      },
     ) => Promise<unknown>;
     setTurnEnqueueError?: (
       turnId: string,
@@ -780,8 +792,6 @@ export class DaemonControlApiServer {
         assertNoInlineSecretValues(body);
         const parsed = ControlThreadCreateRequest.parse(body);
         const idempotencyKey = runStart.requiredIdempotencyKey(req);
-        // Same project-root boundary validation as run start: a durable thread
-        // with a relative/nonexistent root would only fail at its first turn.
         let repoRoot: string | null = null;
         if (parsed.scope.kind === "project") {
           repoRoot = parsed.scope.root.trim();
@@ -820,8 +830,6 @@ export class DaemonControlApiServer {
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
       const { threads } = await svc();
       const runs = await this.opts.daemon.list();
-      // needs-human clears once the operator has decided: a blocked run with a
-      // persisted operator_decision is no longer in the "needs me" inbox.
       const blocked = new Set(
         runs
           .filter((r) => r.state === "blocked" && this.validOperatorDecisionFor(r) === null)
@@ -848,8 +856,6 @@ export class DaemonControlApiServer {
         const runs = await this.opts.daemon.list();
         const byRun = new Map(runs.map((r) => [r.runId ?? r.id, r]));
         const thread = detail.thread as { head_run_id?: string | null };
-        // Build a run card per turn so the chat renders the conversation (state +
-        // honest outcome) from this one response — no N+1 run-detail fetch.
         const cards = new Map<string, ControlTurnRunCard>();
         for (const turn of detail.turns as { run_id?: string | null }[]) {
           const runId = turn.run_id ?? null;
@@ -895,59 +901,8 @@ export class DaemonControlApiServer {
       }
     }
 
-    const threadApplyMatch = /^\/threads\/([^/]+)\/apply$/.exec(path);
-    if (method === "POST" && threadApplyMatch) {
-      const detailSvc = this.opts.services?.threadDetail;
-      const applySvc = this.opts.services?.applyThread;
-      if (!detailSvc || !applySvc)
-        return this.json(res, 501, { error: "threads are not supported by this engine build" });
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        const body = ControlThreadApplyRequest.parse(raw);
-        const threadId = decodeURIComponent(threadApplyMatch[1] as string);
-        // INV-113: blocked or failed thread heads require a typed decision before delivery.
-        const detail = await detailSvc(threadId);
-        const headRunId = (detail.thread as { head_run_id?: string | null }).head_run_id ?? null;
-        if (headRunId) {
-          const headRec = (await this.opts.daemon.list()).find(
-            (r) => (r.runId ?? r.id) === headRunId,
-          );
-          // A recorded head run whose command record was pruned
-          // (maxHistory) has an unknowable state — the gate must fail closed,
-          // not silently wave the apply through.
-          if (!headRec) {
-            return this.json(res, 409, {
-              error: `thread head run ${headRunId} is no longer in the daemon history; its state cannot be verified — rerun the turn before applying the thread diff`,
-            });
-          }
-          if (headRec.state === "blocked" || headRec.state === "failed") {
-            const decision = this.validOperatorDecisionFor(headRec);
-            if (!decision) {
-              appendRunAuditEvent(headRec, "control.rejected", {
-                control: "thread_apply",
-                thread_id: threadId,
-                reason: `head run is ${headRec.state} without a typed operator decision`,
-              });
-              return this.json(res, 409, {
-                error:
-                  headRec.state === "blocked"
-                    ? `thread head run ${headRunId} is blocked; apply requires a typed operator decision first (POST /runs/${headRunId}/decision)`
-                    : `thread head run ${headRunId} failed; rerun the turn (rerun_with_feedback) or fix the failure before applying the thread diff`,
-              });
-            }
-          }
-        }
-        const result = await applySvc(threadId, {
-          mode: body.mode,
-          branch: body.branch,
-          message: body.message,
-        });
-        return this.json(res, 200, ControlThreadApplyResponse.parse(result));
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-    }
+    if (await handleThreadLifecycleRoutes(this.threadLifecycleRouteCtx(), method, path, req, res))
+      return;
 
     const threadTurnMatch = /^\/threads\/([^/]+)\/turns$/.exec(path);
     if (method === "POST" && threadTurnMatch) {
@@ -1008,10 +963,6 @@ export class DaemonControlApiServer {
       );
       if (!target || !existsSync(target) || lstatSync(target).isDirectory())
         return this.json(res, 404, { error: "no such artifact" });
-      // Size cap: a multi-MB events.jsonl must not block the event loop or the
-      // client; refuse loudly with the real size so callers can range/tail it.
-      // Binary artifacts (images) are naturally bounded and get a larger cap —
-      // the small cap only ever protected the event loop from huge text logs.
       const stats = lstatSync(target);
       const isText = isTextArtifact(target);
       const cap = isText ? MAX_ARTIFACT_FETCH_BYTES : MAX_ARTIFACT_BINARY_FETCH_BYTES;
@@ -1132,23 +1083,24 @@ export class DaemonControlApiServer {
       if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
       const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
-      if (gateError) return this.json(res, 409, { error: gateError });
-      return this.json(
-        res,
-        200,
-        ControlDeliveryResponse.parse(
-          await deliver(repoRoot, patch, {
-            mode: body.mode,
-            branch: body.branch,
-            message: body.message,
-          }),
-        ),
+      const delivered = await verifyAndDeliver(
+        repoRoot,
+        patch,
+        { mode: body.mode, branch: body.branch, message: body.message },
+        gateSpecsForRun(rec),
+        (freshVerify) =>
+          applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec), freshVerify),
       );
+      if (delivered.refused) return this.json(res, 409, { error: delivered.detail });
+      if (!delivered.applied && delivered.detail?.includes("refusing")) {
+        appendRunAuditEvent(rec, "control.rejected", {
+          control: "apply",
+          reason: delivered.detail,
+        });
+      }
+      return this.json(res, 200, ControlDeliveryResponse.parse(delivered));
     }
 
-    // Operator decision on a NEEDS_HUMAN-blocked run (review queue actions):
-    // a typed, auditable unblock path instead of a read-only dead end.
     const decisionMatch = /^\/runs\/([^/]+)\/decision$/.exec(path);
     if (method === "POST" && decisionMatch) {
       const rec = await this.findRun(decodeURIComponent(decisionMatch[1] as string));
@@ -1222,7 +1174,7 @@ export class DaemonControlApiServer {
         // tree to the recorded pre-turn snapshot, refusing (fail loud) if the tree
         // has diverged from the recorded post-turn state (the user edited since).
         const result = controlRunResult(rec);
-        if (!result.revertable || !result.preTurnSha || !result.postTurnSha) {
+        if (!result.revertable || !result.revertAnchorId) {
           return this.json(res, 409, { error: "this run produced no revertable in-place change" });
         }
         const repoRoot = applyTargetRoot({ kind: "original_project" }, rec);
@@ -1234,7 +1186,7 @@ export class DaemonControlApiServer {
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
         let revert;
         try {
-          revert = await revertInPlace(repoRoot, result.preTurnSha, result.postTurnSha);
+          revert = await revertInPlaceFromAnchor(repoRoot, result.revertAnchorId);
         } catch (err) {
           return this.json(res, 500, {
             error: `revert failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1280,9 +1232,15 @@ export class DaemonControlApiServer {
         if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
         const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-        const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
-        if (gateError) return this.json(res, 409, { error: gateError });
-        const delivered = await deliver(repoRoot, patch, { mode: body.applyMode ?? "apply" });
+        const delivered = await verifyAndDeliver(
+          repoRoot,
+          patch,
+          { mode: body.applyMode ?? "apply" },
+          gateSpecsForRun(rec),
+          (freshVerify) =>
+            applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec), freshVerify),
+        );
+        if (delivered.refused) return this.json(res, 409, { error: delivered.detail });
         appendRunAuditEvent(rec, "control.applied", {
           decision: body.action,
           mode: body.applyMode ?? "apply",
@@ -1883,6 +1841,22 @@ export class DaemonControlApiServer {
     };
   }
 
+  private threadLifecycleRouteCtx(): ThreadLifecycleRouteCtx {
+    return {
+      turnCtx: this.threadTurnRouteCtx(),
+      services: this.opts.services,
+      listRuns: () => this.opts.daemon.list(),
+      readBody: (req) => this.readBody(req),
+      json: (res, status, body) => this.json(res, status, body),
+      requestError: (res, error) => this.requestError(res, error),
+      readPatch,
+      applyGateError: (record, patch, projectRoot) =>
+        applyGateError(record, patch, projectRoot, this.operatorDecisionFor(record)),
+      appendAudit: appendRunAuditEvent,
+      gateSpecs: gateSpecsForRun,
+    };
+  }
+
   private async readRunArtifactText(runId: string, rel: string): Promise<string | null> {
     const rec = await this.findRun(runId);
     if (!rec) return null;
@@ -2150,13 +2124,11 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
       : "not_applied";
   const preTurnSha = typeof meta["pre_turn_sha"] === "string" ? meta["pre_turn_sha"] : null;
   const postTurnSha = typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null;
-  // A run is revertable when it actually mutated the live tree this turn and the
-  // pre/post snapshots needed for a safe restore exist. The daemon revert handler
-  // still re-checks the tree hasn't diverged from post_turn_sha before acting.
+  const revertAnchorId =
+    typeof meta["revert_anchor_id"] === "string" ? meta["revert_anchor_id"] : null;
   const revertable =
     (applyState === "applied" || applyState === "applied_review_blocked") &&
-    preTurnSha !== null &&
-    postTurnSha !== null;
+    revertAnchorId !== null;
   return ControlRunResult.parse({
     kind,
     diffStat,
@@ -2165,6 +2137,7 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
     applyState,
     preTurnSha,
     postTurnSha,
+    revertAnchorId,
     revertable,
   });
 }
@@ -2222,11 +2195,14 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     ? ProtectedPathApproval.array().safeParse(p["protectedPathApprovals"])
     : null;
   const requestTests = Array.isArray(p["tests"])
-    ? p["tests"].filter((x): x is string => typeof x === "string")
+    ? TestCommandInvocation.array().safeParse(p["tests"]).data
     : undefined;
-  const contractTests = task?.tests.commands
-    .map((command) => command.command)
-    .filter((command) => command.trim().length > 0);
+  const contractTests = task?.tests.commands.map(({ program, args, cwd, envAllowlist }) => ({
+    program,
+    args,
+    ...(cwd === undefined ? {} : { cwd }),
+    envAllowlist,
+  }));
   return ControlRunSummary.parse({
     jobId: rec.id,
     runId: rec.runId ?? rec.id,
@@ -2627,8 +2603,12 @@ function applyGateError(
   patch: string,
   targetRepoRoot: string,
   operatorDecision: ControlOperatorDecisionRecord | null,
+  finalVerify?: FinalVerifyRecord,
 ): string | null {
-  return validateApplyGate(applyGateInputFor(rec, patch, targetRepoRoot, operatorDecision));
+  return validateApplyGate({
+    ...applyGateInputFor(rec, patch, targetRepoRoot, operatorDecision),
+    ...(finalVerify ? { finalVerify } : {}),
+  });
 }
 
 function applyGateInputFor(
@@ -2697,6 +2677,25 @@ function safeReadStructuredArtifact<T>(
   } catch {
     return null;
   }
+}
+
+function gateSpecsForRun(
+  rec: DaemonRunRecord,
+): NonNullable<Parameters<typeof verifyAndDeliver>[3]> {
+  const task = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract);
+  return (task?.tests.commands ?? []).map((command) => ({
+    id: command.id,
+    program: command.program,
+    args: command.args,
+    cwd: command.cwd,
+    envAllowlist: command.envAllowlist,
+    trustRequired: command.trust_required,
+    trustGrant: command.trust_grant,
+    projectDigest: command.trust_grant?.projectDigest,
+    configDigest: command.trust_grant?.configDigest,
+    accessProfile: command.trust_grant?.accessProfile,
+    required: command.required,
+  }));
 }
 
 function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {

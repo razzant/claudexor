@@ -685,7 +685,7 @@ struct TaskRun: Identifiable, Hashable {
     /** Run-level external web policy (off|auto|cached|live), for honest Retry. */
     var externalContextPolicy: String?
     /** Deterministic gate commands attached to this run, for honest Retry parity. */
-    var tests: [String] = []
+    var tests: [TestCommandInvocation] = []
     var reviewerPanel: [ReviewerPanelEntry]?
     var protectedPathApprovals: [ProtectedPathApproval]?
     /// Model identity the harness stream actually reported (route evidence).

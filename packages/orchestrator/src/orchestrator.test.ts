@@ -4,6 +4,20 @@ import { repoHash } from "@claudexor/config";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+
+const shellGate = (command: string) => ({
+  program: "sh",
+  args: ["-c", command],
+  envAllowlist: [] as string[],
+});
+
+const frozenShellGate = (id: string, command: string) => ({
+  id,
+  ...shellGate(command),
+  required: true,
+  trust_required: false,
+  trust_grant: null,
+});
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
@@ -403,7 +417,7 @@ describe("Orchestrator", () => {
       mode: "agent",
       untilClean: true,
       harnesses: ["fake-implement"],
-      tests: ["false"],
+      tests: [shellGate("false")],
     });
     expect(res.status).toBe("stuck_no_progress");
     const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
@@ -654,7 +668,7 @@ describe("Orchestrator", () => {
       prompt: "x",
       mode: "agent",
       harnesses: ["fake-success"],
-      tests: ["node --test test/*.test.js"],
+      tests: [shellGate("node --test test/*.test.js")],
     });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(taskYaml).toContain("auto_protected_paths");
@@ -701,7 +715,7 @@ describe("Orchestrator", () => {
       prompt: "fix implementation only",
       mode: "agent",
       harnesses: [adapter.id],
-      tests: ["true"],
+      tests: [shellGate("true")],
       n: 1,
     });
     expect(res.status).toBe("blocked");
@@ -755,7 +769,7 @@ describe("Orchestrator", () => {
       prompt: "update the tests",
       mode: "agent",
       harnesses: [adapter.id],
-      tests: ["true"],
+      tests: [shellGate("true")],
       protectedPathApprovals: [{ path: "test/**", reason: "test authoring requested" }],
       n: 1,
     });
@@ -813,7 +827,7 @@ describe("Orchestrator", () => {
       prompt: "update workflow",
       mode: "agent",
       harnesses: [adapter.id],
-      tests: ["true"],
+      tests: [shellGate("true")],
       protectedPathApprovals: [
         { path: ".github/workflows/**", reason: "operator approved test path changes" },
       ],
@@ -952,7 +966,7 @@ describe("Orchestrator", () => {
       prompt: "move workflow",
       mode: "agent",
       harnesses: [adapter.id],
-      tests: ["true"],
+      tests: [shellGate("true")],
       n: 1,
     });
     expect(res.status).toBe("blocked");
@@ -993,7 +1007,7 @@ describe("Orchestrator", () => {
       prompt: "create test scaffold",
       mode: "agent",
       harnesses: [adapter.id],
-      tests: ["true"],
+      tests: [shellGate("true")],
       n: 1,
     });
     expect(res.status).not.toBe("blocked");
@@ -1043,7 +1057,7 @@ describe("Orchestrator", () => {
       prompt: "do not edit tests",
       mode: "agent",
       harnesses: [adapter.id],
-      tests: ["true"],
+      tests: [shellGate("true")],
       n: 1,
     });
     expect(res.status).toBe("blocked");
@@ -1057,7 +1071,7 @@ describe("Orchestrator", () => {
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
     writeFileSync(
       join(repo, ".claudexor", "config.yaml"),
-      'tests:\n  commands:\n    - \'node -e "console.log(\\"project gate\\")"\'\n',
+      'tests:\n  commands:\n    - program: node\n      args: ["-e", "console.log(\\"project gate\\")"]\n      envAllowlist: []\n',
     );
     const specPath = join(repo, "spec.json");
     const specGate = "node -e \"console.log('spec gate')\"";
@@ -1076,7 +1090,7 @@ describe("Orchestrator", () => {
         forbidden_approaches: ["no global state"],
         decided_tradeoffs: [],
         constraints: { protected_paths: [] },
-        tests: [{ id: "spec-gate", command: specGate, required: true }],
+        tests: [frozenShellGate("spec-gate", specGate)],
         tasks: [
           { id: "t1", title: "scaffold", depends_on: [] },
           { id: "t2", title: "wire", depends_on: ["t1"] },
@@ -1102,7 +1116,7 @@ describe("Orchestrator", () => {
       specId: "spec-123",
       specHash: realHash,
       specPath,
-      tests: [specGate, explicitGate],
+      tests: [shellGate(specGate), shellGate(explicitGate)],
     });
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(taskYaml).toContain("id: spec-123");
@@ -1640,7 +1654,7 @@ describe("Orchestrator", () => {
       mode: "agent",
       harnesses: ["a", "b"],
       n: 2,
-      tests: ["test -f CHANGED.txt"],
+      tests: [shellGate("test -f CHANGED.txt")],
     });
     expect(["success", "ungated"]).toContain(green.status);
     const greenDecision = readFileSync(join(green.runDir, "arbitration", "decision.yaml"), "utf8");
@@ -1649,7 +1663,7 @@ describe("Orchestrator", () => {
     expect(greenDecision).toContain("gates_passed: true");
 
     // Direct verdict coverage on the same repo (private method, cast):
-    const { finalVerifyPatch } = await import("./finalVerifier.js");
+    const { finalVerifyPatch } = await import("@claudexor/delivery");
     const noopVerifyLog = { emit: () => undefined };
     const baseSha = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: repo,
@@ -1664,7 +1678,7 @@ describe("Orchestrator", () => {
       "+verified",
       "",
     ].join("\n");
-    const failingGates = [{ id: "g1", command: "exit 3", required: true }];
+    const failingGates = [{ id: "g1", ...shellGate("exit 3"), required: true }];
     const gatesFail = await finalVerifyPatch(
       repo,
       { baseSha, diff: goodPatch },
@@ -1701,7 +1715,7 @@ describe("Orchestrator", () => {
     const noBase = await finalVerifyPatch(repo, { diff: goodPatch }, failingGates, noopVerifyLog);
     expect(noBase.attempted).toBe(true);
     expect(noBase.applied_cleanly).toBeNull();
-    const { finalVerifyBlocks } = await import("./finalVerifier.js");
+    const { finalVerifyBlocks } = await import("@claudexor/delivery");
     expect(finalVerifyBlocks(noBase)).toBe(true);
   });
 
@@ -2154,7 +2168,7 @@ describe("Orchestrator", () => {
       mode: "agent",
       harnesses: ["fake-success"],
       n: 1,
-      tests: ["exit 1"],
+      tests: [shellGate("exit 1")],
     });
     expect(failed.candidates[0]?.status).toBe("red");
 
@@ -2165,7 +2179,7 @@ describe("Orchestrator", () => {
       mode: "agent",
       harnesses: ["fake-success"],
       n: 1,
-      tests: ["true"],
+      tests: [shellGate("true")],
     });
     expect(passed.candidates[0]?.status).toBe("green");
   });
@@ -3066,7 +3080,7 @@ describe("Orchestrator", () => {
       mode: "agent",
       harnesses: ["fake-success"],
       attempts: 1,
-      tests: ["true"],
+      tests: [shellGate("true")],
     });
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).toContain("reviewer_requests:");
@@ -3079,7 +3093,7 @@ describe("Orchestrator", () => {
     );
     expect(testsEvidence).toContain("Gate results:");
     expect(testsEvidence).toContain("- gate-1: passed");
-    expect(testsEvidence).toContain("command: true");
+    expect(testsEvidence).toContain('command: ["sh","-c","true"]');
   });
 
   it("in-place agent turn runs in the LIVE tree and resumes the native session (v0.10 chat)", async () => {
@@ -3142,7 +3156,30 @@ describe("Orchestrator", () => {
     expect(res.mode).toBe("agent");
   });
 
-  it("race auto-adopts the winner's patch into the live in-place tree", async () => {
+  it("race leaves an ungated winner as an artifact without mutating the live tree", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["a", diffImplementer("a", "local")],
+        ["b", diffImplementer("b", "openai")],
+      ]),
+      reviewers: [cleanReviewer("rev-openai", "openai")],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["a", "b"],
+      n: 2,
+      inPlace: true,
+    });
+    expect(res.status).toBe("ungated");
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+    const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
+    expect(wp).toContain("adopted: null");
+  });
+
+  it("race auto-adopts a verified successful winner into the live in-place tree", async () => {
     const repo = await initRepo();
     const orch = new Orchestrator({
       registry: new Map([
@@ -3158,12 +3195,9 @@ describe("Orchestrator", () => {
       harnesses: ["a", "b"],
       n: 2,
       inPlace: true,
+      tests: [shellGate("true")],
     });
-    // No test gates configured -> a clean candidate terminates "ungated"; it is
-    // still adopted into the live tree (review passed, nothing to certify).
-    expect(["success", "ungated"]).toContain(res.status);
-    // Candidates ran in ISOLATED envelopes (n>1); the winner was adopted into the
-    // LIVE tree so the next turn sees it.
+    expect(res.status).toBe("success");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("adopted: true");
@@ -3409,7 +3443,7 @@ describe("Orchestrator", () => {
       mode: "agent",
       harnesses: ["writer"],
       n: 1,
-      tests: ["grep -qx OK README.md"],
+      tests: [shellGate("grep -qx OK README.md")],
     });
     expect(res.status).toBe("success");
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
@@ -4085,7 +4119,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       mode: "agent",
       harnesses: ["impl"],
       n: 1,
-      tests: ["true"],
+      tests: [shellGate("true")],
     });
     expect(existsSync(join(seed.runDir, "final", "patch.diff"))).toBe(true);
     const seedRunId = seed.runId;
@@ -4806,7 +4840,7 @@ describe("web evidence recovery keying (INV-043)", () => {
 describe("final verify fail-closed + spend accounting (exit-gate criticals)", () => {
   it("verifier infra error yields applied_cleanly=null (attempted), never a silent pass", async () => {
     const repo = await initRepo();
-    const { finalVerifyPatch } = await import("./finalVerifier.js");
+    const { finalVerifyPatch } = await import("@claudexor/delivery");
     const rec = await finalVerifyPatch(
       repo,
       { baseSha: "0000000000000000000000000000000000000000", diff: "diff --git a/x b/x\n" },
@@ -4935,7 +4969,7 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
       mode: "agent",
       harnesses: ["impl"],
       inPlace: true,
-      tests: ['node -e "process.exit(0)"'],
+      tests: [shellGate('node -e "process.exit(0)"')],
     });
     // The turn mutated the live tree; a fresh snapshot worktree would lack
     // gitignored deps — verification must NOT have been attempted.
@@ -4956,7 +4990,7 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
       mode: "agent",
       harnesses: ["a"],
       attempts: 2,
-      tests: ['node -e "process.exit(0)"'],
+      tests: [shellGate('node -e "process.exit(0)"')],
     });
     expect(res.status).toBe("success");
     const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");

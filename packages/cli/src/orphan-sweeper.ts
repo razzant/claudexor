@@ -34,13 +34,12 @@ interface SweepInput {
 export async function sweepOrphanWorkspaces(input: SweepInput): Promise<string[]> {
   const actions: string[] = [];
   const roots = knownProjectRoots(input.journalRoot);
-  const liveThreadIds = knownThreadIds(input.journalRoot);
 
   for (const root of roots) {
     const trees = [root, ...threadTreesUnder(root)];
     for (const tree of trees) {
       actions.push(...(await sweepEnvelopesUnder(tree)));
-      actions.push(...(await sweepAttemptBranches(tree, liveThreadIds)));
+      actions.push(...(await sweepAttemptBranches(tree)));
     }
   }
   actions.push(...sweepReadOnlyHomes());
@@ -74,24 +73,6 @@ function knownProjectRoots(journalRoot: string): string[] {
     journal?.close();
   }
   return [...roots];
-}
-
-function knownThreadIds(journalRoot: string): Set<string> {
-  let journal: DurableJournal | null = null;
-  try {
-    journal = new DurableJournal({ rootDir: journalRoot, partition: "global" });
-    const ids = new Set<string>();
-    for (const entry of journal.records()) {
-      if (entry.type !== "thread.entities_upserted") continue;
-      const threads = (entry.payload as { threads?: Array<{ id?: unknown }> }).threads ?? [];
-      for (const thread of threads) if (typeof thread.id === "string") ids.add(thread.id);
-    }
-    return ids;
-  } catch {
-    return new Set();
-  } finally {
-    journal?.close();
-  }
 }
 
 /** Isolated-thread worktrees live in the external per-project runtime namespace. */
@@ -196,14 +177,10 @@ function envelopeOwner(envelopeBase: string): number | null {
 /**
  * Per-attempt branches whose envelope is gone are debris (disposeOrphan
  * removes its own branch; this catches branches whose envelope dir was
- * deleted out-of-band). Thread branches (`claudexor/thread-<tid>`) are
- * PERSISTENT for live threads and only deleted when the thread is gone from
- * the store.
+ * deleted out-of-band). Persistent thread branches are lifecycle-owned and
+ * are removed only by explicit purge, never by this generic debris sweep.
  */
-async function sweepAttemptBranches(
-  execRoot: string,
-  liveThreadIds: Set<string>,
-): Promise<string[]> {
+async function sweepAttemptBranches(execRoot: string): Promise<string[]> {
   const actions: string[] = [];
   const branches = await git(execRoot, [
     "branch",
@@ -226,18 +203,6 @@ async function sweepAttemptBranches(
       continue;
     }
     if (rest.startsWith("thread-")) {
-      const tid = rest.slice("thread-".length);
-      if (liveThreadIds.has(tid)) continue;
-      // Dead thread branch: its worktree dir decides — an existing tree means
-      // the thread store lost the record but the work is still there; keep it
-      // (evidence beats cleanup) and only note it.
-      const threadTree = join(projectRuntimeDir(execRoot), "threads", tid, "tree");
-      if (existsSync(threadTree)) {
-        actions.push(`kept branch ${branch}: thread tree still on disk (store record missing)`);
-        continue;
-      }
-      const del = await git(execRoot, ["branch", "-D", branch]);
-      if (del.code === 0) actions.push(`deleted dead thread branch ${branch} under ${execRoot}`);
       continue;
     }
     const [taskId, attemptId] = rest.split("/");

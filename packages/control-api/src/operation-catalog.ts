@@ -227,6 +227,15 @@ const operations: ControlOperationDescriptor[] = [
   j("PATCH", "/v2/threads/:id", "mutating", "ControlThreadUpdateRequest", "ControlThread", {
     idempotency: "natural",
   }),
+  j("POST", "/v2/threads/:id/trash", "mutating", null, "ControlThread", {
+    idempotency: "natural",
+  }),
+  j("POST", "/v2/threads/:id/restore", "mutating", null, "ControlThread", {
+    idempotency: "natural",
+  }),
+  j("POST", "/v2/threads/:id/purge", "mutating", null, "ControlThread", {
+    idempotency: "natural",
+  }),
   j(
     "POST",
     "/v2/threads/:id/apply",

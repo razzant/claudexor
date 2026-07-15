@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AccessProfile,
+  ContentHash,
   DirtyPolicy,
   ExternalContextPolicy,
   Id,
@@ -23,13 +24,51 @@ export const SuccessCriterion = z
   .describe("A single success criterion the run is held to.");
 export type SuccessCriterion = z.infer<typeof SuccessCriterion>;
 
-export const TestCommand = z
+export const TestCommandInvocation = z
   .object({
-    id: Id.describe("Test command id."),
-    command: z.string().describe("Shell command executed as a deterministic gate."),
-    required: z.boolean().default(true).describe("Whether this test must pass (vs advisory)."),
+    program: NonBlankString.describe("Executable invoked directly without an implicit shell."),
+    args: z.array(z.string()).default([]).describe("Exact argv passed to the executable."),
+    cwd: z
+      .string()
+      .optional()
+      .describe("Optional project-relative working directory for the command."),
+    envAllowlist: z
+      .array(NonBlankString)
+      .default([])
+      .describe("Non-secret parent environment names explicitly forwarded to the command."),
   })
-  .describe("A deterministic test command used as a verification gate.");
+  .strict()
+  .describe("Canonical deterministic command invocation; no implicit shell parsing.");
+export type TestCommandInvocation = z.infer<typeof TestCommandInvocation>;
+
+export const TestCommandGrant = z
+  .object({
+    projectDigest: ContentHash.describe("Digest of the canonical project identity."),
+    configDigest: ContentHash.describe("Digest of the parsed versioned project config blob."),
+    commandDigest: ContentHash.describe("Digest of the canonical command invocation."),
+    executablePath: z.string().describe("Resolved executable path approved by the operator."),
+    executableDigest: ContentHash.describe("Digest of the resolved executable bytes."),
+    scriptPath: z.string().nullable().default(null).describe("Resolved script path, when any."),
+    scriptDigest: ContentHash.nullable().default(null).describe("Digest of the script bytes."),
+    accessProfile: AccessProfile.describe("Effective access profile covered by this grant."),
+  })
+  .strict()
+  .describe("External exact grant for one versioned project test command.");
+export type TestCommandGrant = z.infer<typeof TestCommandGrant>;
+
+export const TestCommand = TestCommandInvocation.extend({
+  id: Id.describe("Test command id."),
+  required: z.boolean().default(true).describe("Whether this test must pass (vs advisory)."),
+  trust_required: z
+    .boolean()
+    .default(false)
+    .describe("Whether this command originated in versioned project config."),
+  trust_grant: TestCommandGrant.nullable()
+    .default(null)
+    .describe("Matching external grant; null when none was found."),
+})
+  .strict()
+  .describe("A deterministic typed-argv test command used as a verification gate.");
 export type TestCommand = z.infer<typeof TestCommand>;
 
 export const ProtectedPathApproval = z

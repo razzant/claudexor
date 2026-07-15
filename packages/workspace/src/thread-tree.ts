@@ -4,11 +4,13 @@ import { WorkspaceError } from "@claudexor/core";
 import { ensureDir, projectRuntimeDir } from "@claudexor/util";
 import {
   branchDelete,
+  git,
   isGitRepo,
   revParse,
   snapshotTree,
   worktreeAdd,
   worktreeAddExisting,
+  worktreeRemove,
 } from "./git.js";
 
 export interface ThreadWorktreeResult {
@@ -78,4 +80,50 @@ export async function ensureThreadWorktree(
     throw err;
   }
   return { path, baseSha, created: true };
+}
+
+/** Advance the persistent thread branch to the project state just delivered,
+ * then realign its daemon-owned worktree. The branch ref makes snapshot
+ * commits survive aggressive Git GC; the returned SHA is the journal base. */
+export async function advanceThreadWorktree(
+  projectRoot: string,
+  threadId: string,
+  worktreePath: string,
+  targetSha: string,
+): Promise<string> {
+  if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId === "." || threadId === "..") {
+    throw new WorkspaceError(`threadId '${threadId}' is not a safe path segment`);
+  }
+  const branch = `refs/heads/claudexor/thread-${threadId}`;
+  const oldTip = await revParse(projectRoot, branch);
+  const update = await git(projectRoot, ["update-ref", branch, targetSha, oldTip]);
+  if (update.code !== 0) {
+    throw new WorkspaceError(`thread branch advanced concurrently: ${update.stderr.trim()}`);
+  }
+  const reset = await git(worktreePath, ["reset", "--hard", targetSha]);
+  if (reset.code !== 0) {
+    throw new WorkspaceError(`thread worktree realignment failed: ${reset.stderr.trim()}`);
+  }
+  const clean = await git(worktreePath, ["clean", "-fd"]);
+  if (clean.code !== 0) {
+    throw new WorkspaceError(`thread worktree cleanup failed: ${clean.stderr.trim()}`);
+  }
+  const observed = await revParse(worktreePath, "HEAD");
+  if (observed !== targetSha) {
+    throw new WorkspaceError("thread branch and worktree did not converge on the delivered SHA");
+  }
+  return targetSha;
+}
+
+/** Explicit purge of daemon-owned isolated-thread resources. Lifecycle
+ * authority lives in the journal; the generic orphan sweeper never guesses. */
+export async function purgeThreadWorktree(projectRoot: string, threadId: string): Promise<void> {
+  if (!/^[A-Za-z0-9._-]+$/.test(threadId) || threadId === "." || threadId === "..") {
+    throw new WorkspaceError(`threadId '${threadId}' is not a safe path segment`);
+  }
+  const threadDir = join(projectRuntimeDir(projectRoot), "threads", threadId);
+  const path = join(threadDir, "tree");
+  if (existsSync(join(path, ".git"))) await worktreeRemove(projectRoot, path);
+  rmSync(threadDir, { recursive: true, force: true });
+  await branchDelete(projectRoot, `claudexor/thread-${threadId}`).catch(() => {});
 }

@@ -36,28 +36,6 @@ public struct RunExecution: Codable, Sendable, Equatable {
     }
 }
 
-public struct ReviewerPanelEntry: Codable, Sendable, Equatable, Hashable {
-    public var harness: String
-    public var model: String?
-    public var effort: String?
-
-    public init(harness: String, model: String? = nil, effort: String? = nil) {
-        self.harness = harness
-        self.model = model
-        self.effort = effort
-    }
-}
-
-public struct ProtectedPathApproval: Codable, Sendable, Equatable, Hashable {
-    public var path: String
-    public var reason: String?
-
-    public init(path: String, reason: String? = nil) {
-        self.path = path
-        self.reason = reason
-    }
-}
-
 /// Command to start a run (POST /runs). Mirrors the public control-api DTO a client
 /// supplies; the server fills the rest. Policy fields flow through `daemon.enqueue`
 /// to `orchestrator.run` so the composer's controls are actually applied.
@@ -82,7 +60,7 @@ public struct StartRunRequest: Codable, Sendable {
     public var maxUsd: Double?
     public var access: String?
     public var web: String?
-    public var tests: [String]?
+    public var tests: [TestCommandInvocation]?
     public var protectedPathApprovals: [ProtectedPathApproval]?
     /// v0.9 strategy flags (modes collapsed to 5; strategies ride as flags).
     public var attempts: Int?
@@ -101,7 +79,7 @@ public struct StartRunRequest: Codable, Sendable {
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 n: Int? = nil, maxUsd: Double? = nil, access: String? = nil,
                 web: String? = nil,
-                tests: [String]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
+                tests: [TestCommandInvocation]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
                 threadId: String? = nil, authPreference: String? = nil) {
         self.prompt = prompt
@@ -478,7 +456,7 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     /// True while at least one harness question awaits the user's answer.
     public let waitingOnUser: Bool?
     public let route: RouteInfo?
-    public let tests: [String]?
+    public let tests: [TestCommandInvocation]?
     public let specId: String?
     public let specHash: String?
     public let createdAt: String?

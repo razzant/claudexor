@@ -70,6 +70,7 @@ import {
   SessionReboundLineage,
   SpecPack,
   TaskContract,
+  TestCommandInvocation,
   Thread,
   ThreadTurn,
   TrustConfig,
@@ -122,6 +123,7 @@ for (const name of readdirSync(outDir)) {
 
 const schemas = {
   TaskContract,
+  TestCommandInvocation,
   ContextPack,
   HarnessManifest,
   ConformanceReport,

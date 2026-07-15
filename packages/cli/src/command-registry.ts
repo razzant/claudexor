@@ -96,7 +96,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "<level>",
     "Orchestrate: how much the orchestrator may act without confirmation:\n                           suggest (default, read-only plan) | auto_safe | auto_full",
   ),
-  valueFlag("test", '"<cmd>"', "Deterministic gate command(s); repeat flag or separate with ';;'"),
+  valueFlag("test", "'<json-argv>'", 'Deterministic gate argv; repeat, e.g. \'["pnpm","test"]\''),
   valueFlag(
     "allow-protected-path",
     "<glob[,glob...]>",
@@ -149,11 +149,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "Reapply verified Claudexor-owned plugin drift; never overwrites unowned files",
   ),
   valueFlag("from-env", "<VAR>", null),
-  // trust sub-flags: documented inline under the trust usage entry.
   booleanFlag("allow-full-access", null),
   booleanFlag("revoke-full-access", null),
   valueFlag("access-default", "<profile>", null),
-  // decision action/option flags (subcommand-scoped; documented in the decision usage line).
+  valueFlag("grant-test", "'<json-argv>'", null),
+  valueFlag("revoke-test", "<sha256:digest>", null),
   booleanFlag("accept-risk", null),
   booleanFlag("override", null),
   booleanFlag("revert", null),
@@ -349,8 +349,12 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
         text: "--access-default <profile>",
         help: "readonly|workspace_write default for write modes",
       },
+      { text: "--grant-test '<json-argv>'", help: "Grant one exact typed-argv project gate" },
+      { text: "--revoke-test <digest>", help: "Revoke an exact project gate grant" },
     ],
-    flags: ["allow-full-access", "revoke-full-access", "access-default", "json"],
+    flags: "allow-full-access,revoke-full-access,access-default,grant-test,revoke-test,json".split(
+      ",",
+    ),
     mutability: "ops",
     stability: "stable",
   },
@@ -469,8 +473,6 @@ export const REPL_COMMANDS: readonly {
   { name: "/quit", help: "exit" },
 ];
 
-// Derived projections (the old hand-maintained sets).
-
 /** Every flag the CLI accepts anywhere (the unknown-flag preflight set). */
 export const KNOWN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.map((f) => f.name));
 
@@ -519,8 +521,6 @@ export function hostFallbackExamples(): readonly string[] {
 export function recoveryVerbs(): readonly string[] {
   return CLI_COMMANDS.filter((c) => c.recovery).map((c) => c.id);
 }
-
-// Rendered views.
 
 const USAGE_COLUMN = 42;
 

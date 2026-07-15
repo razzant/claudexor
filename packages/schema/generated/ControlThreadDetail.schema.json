@@ -78,10 +78,28 @@
               "type": "string",
               "enum": [
                 "active",
-                "closed"
+                "closed",
+                "trashed",
+                "purged"
               ],
-              "description": "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
+              "description": "Thread lifecycle state: active, closed, trashed for recovery, or terminally purged.",
               "default": "active"
+            },
+            "trashedAt": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null,
+              "description": "When the thread entered trash."
+            },
+            "purgeAfter": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null,
+              "description": "When trash retention expires."
             },
             "runIds": {
               "type": "array",
@@ -391,6 +409,14 @@
                             ],
                             "default": null,
                             "description": "Tree SHA right after this turn's mutation; revert refuses if the working tree has diverged from this since."
+                          },
+                          "revertAnchorId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null,
+                            "description": "GC-independent revert anchor."
                           },
                           "revertable": {
                             "type": "boolean",

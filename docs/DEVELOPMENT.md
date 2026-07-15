@@ -231,6 +231,11 @@ Do not fork contracts in UI code, CLI parsing, adapter output, or docs.
   credential files/tokens into Claudexor state or an envelope. API keys and the
   Claude setup-token are separate secret-store/env routes with separate typed
   source evidence.
+- Browser MCP is an exact production dependency of `@claudexor/core`. App
+  packaging uses `pnpm deploy --legacy --prod` to place that pinned runtime
+  beside the daemon and runs its help entrypoint under the app's bundled Node
+  with an empty environment. Do not restore runtime `npx`, `@latest`, or a
+  package-manager override.
 - Diffs come from git in the target workspace or envelope.
 - Files and typed artifacts are the source of truth; terminal text and UI rows
   are projections.

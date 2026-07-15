@@ -296,6 +296,13 @@ export async function revertWorkingTreeTo(
   // overlaps those hunks makes --check fail; unrelated user edits, staged state,
   // and untracked files remain outside the mutation surface.
   const patch = await diffTrees(repo, preTurnSha, expectedPostSha);
+  return revertWorkingTreePatch(repo, patch);
+}
+
+/** Reverse an immutable turn patch. This is the GC-independent production
+ * path used by external revert anchors; the SHA-based wrapper remains useful
+ * while capturing and testing snapshots. */
+export async function revertWorkingTreePatch(repo: string, patch: string): Promise<RevertResult> {
   if (!patch.trim()) return { reverted: true, removed: [] };
   const removed = parseUnifiedDiff(patch)
     .files.filter((file) => file.added && file.newPath)

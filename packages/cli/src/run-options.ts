@@ -3,6 +3,7 @@ import type {
   EffortHint,
   ProtectedPathApproval,
   ProviderFamily,
+  TestCommandInvocation,
 } from "@claudexor/schema";
 import {
   parseReviewerEffortMap,
@@ -34,16 +35,43 @@ export function parseProtectedPathApprovalFlags(
   return paths.map((path) => ({ path, reason: "explicit CLI --allow-protected-path" }));
 }
 
-export function parseTestCommandFlags(values: Array<string | boolean>): string[] | undefined {
+export function parseTestCommandFlags(
+  values: Array<string | boolean>,
+): TestCommandInvocation[] | undefined {
   const strings = stringFlagValues(values, "test");
   if (strings.length === 0) return undefined;
-  const commands: string[] = [];
+  const commands: TestCommandInvocation[] = [];
   for (const value of strings) {
-    for (const part of value.split(";;")) {
-      const command = part.trim();
-      if (!command) throw new Error("invalid --test value (empty ;;-separated entry)");
-      commands.push(command);
+    const command = value.trim();
+    if (!command) throw new Error("invalid --test value (empty command)");
+    if (command.startsWith("[")) {
+      let argv: unknown;
+      try {
+        argv = JSON.parse(command);
+      } catch {
+        throw new Error("invalid --test value (expected a JSON argv array)");
+      }
+      if (
+        !Array.isArray(argv) ||
+        argv.length === 0 ||
+        !argv.every((part) => typeof part === "string") ||
+        !(argv[0] as string).trim()
+      ) {
+        throw new Error("invalid --test value (expected a non-empty JSON string argv array)");
+      }
+      commands.push({
+        program: argv[0] as string,
+        args: argv.slice(1) as string[],
+        envAllowlist: [],
+      });
+      continue;
     }
+    if (/\s|[;&|<>$`()]/.test(command)) {
+      throw new Error(
+        'invalid --test value (implicit shell syntax is forbidden; use JSON argv, e.g. --test \'["pnpm","test"]\')',
+      );
+    }
+    commands.push({ program: command, args: [], envAllowlist: [] });
   }
   return commands;
 }

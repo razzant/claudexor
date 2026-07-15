@@ -1,0 +1,45 @@
+{
+  "$ref": "#/definitions/TestCommandInvocation",
+  "definitions": {
+    "TestCommandInvocation": {
+      "type": "object",
+      "properties": {
+        "program": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Executable invoked directly without an implicit shell."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Exact argv passed to the executable."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Optional project-relative working directory for the command."
+        },
+        "envAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "description": "User-supplied string that must contain visible content, not just whitespace."
+          },
+          "default": [],
+          "description": "Non-secret parent environment names explicitly forwarded to the command."
+        }
+      },
+      "required": [
+        "program"
+      ],
+      "additionalProperties": false,
+      "description": "Canonical deterministic command invocation; no implicit shell parsing."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -7,6 +7,7 @@ import {
 } from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { Portfolio } from "./budget.js";
+import { TestCommandGrant, TestCommandInvocation } from "./task.js";
 
 // The former "portfolio" value was deleted as a fake knob (it behaved
 // identically to "auto"); the config loader migrates it to "auto".
@@ -43,9 +44,9 @@ export const ProjectConfig = z
     tests: z
       .object({
         commands: z
-          .array(z.string())
+          .array(TestCommandInvocation)
           .default([])
-          .describe("Test commands run as deterministic gates."),
+          .describe("Typed-argv test commands run as deterministic gates."),
       })
       .strict()
       .default({ commands: [] })
@@ -87,6 +88,10 @@ export const TrustConfig = z
       .describe(
         "Provenance only: repo root this trust file was written for; never gates anything. Null on legacy files written before this field.",
       ),
+    test_command_grants: z
+      .array(TestCommandGrant)
+      .default([])
+      .describe("External exact grants for versioned project test commands."),
   })
   .strict()
   .describe(

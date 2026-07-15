@@ -4,6 +4,10 @@
     "packages/cli": {
       "project": ["src/**/*.ts"]
     },
+    "packages/core": {
+      "entry": ["src/browser-mcp-launcher.ts"],
+      "project": ["src/**/*.ts"]
+    },
     "packages/schema": {
       "project": ["src/**/*.ts", "scripts/**/*.ts"]
     },

@@ -12,6 +12,16 @@ import {
   specPackToTaskContract,
 } from "./index.js";
 
+const testCommand = (id: string, program: string, ...args: string[]) => ({
+  id,
+  program,
+  args,
+  envAllowlist: [] as string[],
+  required: true,
+  trust_required: false,
+  trust_grant: null,
+});
+
 // A two-tier deterministic generator: tier 0 asks one question, tier 1 converges.
 const twoTierGenerator: QuestionGenerator = async (state) => {
   if (state.tier === 0) {
@@ -38,7 +48,7 @@ const cleanAssembler: SpecAssembler = async (state) => ({
     { id: "ac1", behavior: "WHEN a record is saved, THE SYSTEM SHALL persist it", required: true },
   ],
   tasks: [{ id: "t1", title: "Implement storage", depends_on: [], done: false }],
-  tests: [{ id: "g1", command: "pnpm test", required: true }],
+  tests: [testCommand("g1", "pnpm", "test")],
 });
 
 describe("InterviewEngine", () => {
@@ -61,7 +71,7 @@ describe("InterviewEngine", () => {
     const contract = specPackToTaskContract(spec, { repoRoot: "/tmp/repo", mode: "agent" });
     expect(contract.user_intent.raw).toBe("add storage");
     expect(contract.success_criteria[0]?.text).toContain("THE SYSTEM SHALL");
-    expect(contract.tests.commands[0]?.command).toBe("pnpm test");
+    expect(contract.tests.commands[0]).toMatchObject({ program: "pnpm", args: ["test"] });
   });
 
   it("refuses to freeze while a clarification is open (no silent guessing)", async () => {
@@ -199,7 +209,7 @@ describe("InterviewEngine", () => {
           { id: "t1", title: "Implement storage", depends_on: [], done: false },
           { id: "t2", title: "Add cache", depends_on: ["t1"], done: false },
         ],
-        tests: [{ id: "g1", command: "pnpm test", required: true }],
+        tests: [testCommand("g1", "pnpm", "test")],
       }),
     });
     await v2Engine.runToConvergence((qs) =>

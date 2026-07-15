@@ -11,6 +11,7 @@ import {
   type InterviewAnswer,
   type InterviewQuestion,
   type SpecPack,
+  type TestCommandInvocation,
   SpecPack as SpecPackSchema,
 } from "@claudexor/schema";
 import {
@@ -34,7 +35,7 @@ export interface SpecAnswersFile {
   non_goals?: string[];
   forbidden_approaches?: string[];
   decided_tradeoffs?: string[];
-  tests?: string[];
+  tests?: TestCommandInvocation[];
 }
 
 export interface LoadedFrozenSpec {
@@ -85,11 +86,17 @@ export function loadFrozenSpec(path: string): LoadedFrozenSpec {
 }
 
 export function resolveRunTestCommands(
-  cliTests: string[] | undefined,
+  cliTests: TestCommandInvocation[] | undefined,
   spec: SpecPack | null,
-): string[] | undefined {
+): TestCommandInvocation[] | undefined {
   if (cliTests && cliTests.length > 0) return cliTests;
-  const specTests = spec?.tests.map((test) => test.command) ?? [];
+  const specTests =
+    spec?.tests.map(({ program, args, cwd, envAllowlist }) => ({
+      program,
+      args,
+      ...(cwd === undefined ? {} : { cwd }),
+      envAllowlist,
+    })) ?? [];
   return specTests.length > 0 ? specTests : undefined;
 }
 
@@ -383,8 +390,10 @@ export function draftFromPlanAndAnswers(
     ],
     tests: (file.tests ?? []).map((command, i) => ({
       id: `gate-${i + 1}`,
-      command,
+      ...command,
       required: true,
+      trust_required: false,
+      trust_grant: null,
     })),
     tasks: [
       { id: "task-1", title: "Implement against the frozen SpecPack", depends_on: [], done: false },
@@ -484,7 +493,9 @@ function renderNativePlanProjection(spec: SpecPack, plan: string, specHash: stri
       : ["- (none)"]),
     "",
     "## Tests",
-    ...(spec.tests.length ? spec.tests.map((t) => `- ${t.command}`) : ["- (none configured)"]),
+    ...(spec.tests.length
+      ? spec.tests.map((test) => `- ${JSON.stringify([test.program, ...test.args])}`)
+      : ["- (none configured)"]),
     "",
     "## Non-goals",
     ...(spec.non_goals.length ? spec.non_goals.map((x) => `- ${x}`) : ["- (none)"]),

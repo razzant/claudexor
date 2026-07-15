@@ -310,9 +310,42 @@
         "tests": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+            "type": "object",
+            "properties": {
+              "program": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "Executable invoked directly without an implicit shell."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Exact argv passed to the executable."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Optional project-relative working directory for the command."
+              },
+              "envAllowlist": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items"
+                },
+                "default": [],
+                "description": "Non-secret parent environment names explicitly forwarded to the command."
+              }
+            },
+            "required": [
+              "program"
+            ],
+            "additionalProperties": false,
+            "description": "Canonical deterministic command invocation; no implicit shell parsing."
           },
-          "description": "Test commands to run as deterministic gates."
+          "description": "Typed-argv commands to run as deterministic gates."
         },
         "protectedPathApprovals": {
           "type": "array",

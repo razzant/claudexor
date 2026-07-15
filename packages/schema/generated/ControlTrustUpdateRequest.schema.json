@@ -20,6 +20,61 @@
             "workspace_write"
           ],
           "description": "Default access profile for runs in the repo."
+        },
+        "grantTestCommand": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "Executable invoked directly without an implicit shell."
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Exact argv passed to the executable."
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Optional project-relative working directory for the command."
+            },
+            "envAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "User-supplied string that must contain visible content, not just whitespace."
+              },
+              "default": [],
+              "description": "Non-secret parent environment names explicitly forwarded to the command."
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "additionalProperties": false,
+          "description": "Typed command to grant against the current project config and executable/script bytes."
+        },
+        "grantAccessProfile": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ],
+          "description": "Effective access profile covered by grantTestCommand; defaults to the trust default."
+        },
+        "revokeTestCommandDigest": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revoke grants for this canonical command digest."
         }
       },
       "required": [

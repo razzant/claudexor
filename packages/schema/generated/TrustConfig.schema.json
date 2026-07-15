@@ -34,6 +34,83 @@
           ],
           "default": null,
           "description": "Provenance only: repo root this trust file was written for; never gates anything. Null on legacy files written before this field."
+        },
+        "test_command_grants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "projectDigest": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Digest of the canonical project identity."
+              },
+              "configDigest": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Digest of the parsed versioned project config blob."
+              },
+              "commandDigest": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Digest of the canonical command invocation."
+              },
+              "executablePath": {
+                "type": "string",
+                "description": "Resolved executable path approved by the operator."
+              },
+              "executableDigest": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Digest of the resolved executable bytes."
+              },
+              "scriptPath": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Resolved script path, when any."
+              },
+              "scriptDigest": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Digest of the script bytes.",
+                "default": null
+              },
+              "accessProfile": {
+                "type": "string",
+                "enum": [
+                  "readonly",
+                  "workspace_write",
+                  "full",
+                  "external_sandbox_full",
+                  "inherit_native"
+                ],
+                "description": "Effective access profile covered by this grant."
+              }
+            },
+            "required": [
+              "projectDigest",
+              "configDigest",
+              "commandDigest",
+              "executablePath",
+              "executableDigest",
+              "accessProfile"
+            ],
+            "additionalProperties": false,
+            "description": "External exact grant for one versioned project test command."
+          },
+          "default": [],
+          "description": "External exact grants for versioned project test commands."
         }
       },
       "additionalProperties": false,

@@ -3,7 +3,8 @@
  * per-repo trust files. Split from control.ts (INV-124 ratchet).
  */
 import { z } from "zod";
-import { AccessProfile } from "./primitives.js";
+import { AccessProfile, ContentHash } from "./primitives.js";
+import { TestCommandInvocation } from "./task.js";
 
 /** User-level trust update; versioned repo config cannot grant either field. */
 export const ControlTrustUpdateRequest = z
@@ -17,11 +18,25 @@ export const ControlTrustUpdateRequest = z
       .enum(["readonly", "workspace_write"])
       .optional()
       .describe("Default access profile for runs in the repo."),
+    grantTestCommand: TestCommandInvocation.optional().describe(
+      "Typed command to grant against the current project config and executable/script bytes.",
+    ),
+    grantAccessProfile: AccessProfile.optional().describe(
+      "Effective access profile covered by grantTestCommand; defaults to the trust default.",
+    ),
+    revokeTestCommandDigest: ContentHash.optional().describe(
+      "Revoke grants for this canonical command digest.",
+    ),
   })
   .strict()
-  .refine((value) => value.allowFullAccess !== undefined || value.accessDefault !== undefined, {
-    message: "allowFullAccess or accessDefault is required",
-  })
+  .refine(
+    (value) =>
+      value.allowFullAccess !== undefined ||
+      value.accessDefault !== undefined ||
+      value.grantTestCommand !== undefined ||
+      value.revokeTestCommandDigest !== undefined,
+    { message: "a trust mutation is required" },
+  )
   .describe(
     "User-level trust update: grant/revoke full access and/or set the readonly/workspace-write default.",
   );
@@ -45,6 +60,12 @@ export const ControlTrustState = z
       .boolean()
       .describe("Whether unsandboxed full access is allowed for the repo."),
     accessDefault: AccessProfile.describe("Default access profile for runs in the repo."),
+    testCommandGrantCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Number of exact external test-command grants for this repo."),
   })
   .describe("Trust state of one repo from its user-level trust file.");
 export type ControlTrustState = z.infer<typeof ControlTrustState>;

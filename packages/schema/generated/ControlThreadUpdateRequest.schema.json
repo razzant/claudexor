@@ -14,7 +14,7 @@
             "active",
             "closed"
           ],
-          "description": "New thread state (active/closed)."
+          "description": "New open/archive state."
         },
         "primaryHarness": {
           "anyOf": [

@@ -302,7 +302,10 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
-        tests: ["pnpm test", "   "],
+        tests: [
+          { program: "pnpm", args: ["test"] },
+          { program: "   ", args: [] },
+        ],
       }),
     ).toThrow();
     expect(() =>

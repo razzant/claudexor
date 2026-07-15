@@ -1,5 +1,6 @@
 import { AccessProfile, ExternalContextPolicy, ProviderFamily } from "./primitives.js";
 import { EffortHint } from "./harness.js";
+import { TestCommandInvocation } from "./task.js";
 
 /**
  * ONE owner for the surface-level run-control argument validation shared by
@@ -43,8 +44,12 @@ export function validateSurfaceRunControls(obj: Record<string, unknown>): string
   ) {
     return "effort must be a valid effort value";
   }
-  const testsError = validateStringArray(obj.tests, "tests");
-  if (testsError) return testsError;
+  if (
+    obj.tests !== undefined &&
+    (!Array.isArray(obj.tests) || !TestCommandInvocation.array().safeParse(obj.tests).success)
+  ) {
+    return "tests must be an array of typed argv command objects";
+  }
   if (
     obj.maxUsd !== undefined &&
     (typeof obj.maxUsd !== "number" || !Number.isFinite(obj.maxUsd) || obj.maxUsd < 0)
@@ -119,14 +124,6 @@ export function validateOptionalNonEmptyString(value: unknown, name: string): st
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function validateStringArray(value: unknown, name: string): string | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || v.trim() === "")) {
-    return `${name} must be an array of non-empty strings`;
-  }
-  return null;
 }
 
 function validateFamilyStringMap(value: unknown, name: string): string | null {

@@ -7,6 +7,7 @@ import {
   ThreadTurn as ThreadTurnSchema,
 } from "@claudexor/schema";
 import { hashJson, newId, nowIso, redactSecrets } from "@claudexor/util";
+import { reduceThreadLifecycle, type ThreadLifecycleAction } from "./thread-lifecycle.js";
 
 interface ThreadStoreState {
   threads: Thread[];
@@ -49,7 +50,7 @@ export interface CreateTurnInput {
 
 export interface UpdateThreadInput {
   title?: string;
-  state?: Thread["state"];
+  state?: "active" | "closed";
   /** Switch the sticky primary harness (null => clear back to auto). */
   primaryHarness?: string | null;
   /** Replace the sticky eligible harness pool. */
@@ -178,6 +179,12 @@ export class ThreadStore {
   updateThread(id: string, patch: UpdateThreadInput): Thread {
     const thread = this.getThread(id);
     if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+    if (thread.state === "trashed" || thread.state === "purged") {
+      throw Object.assign(new Error(`thread ${id} is ${thread.state}`), {
+        status: 409,
+        code: `thread_${thread.state}`,
+      });
+    }
     const next = ThreadSchema.parse({
       ...thread,
       ...(patch.title !== undefined ? { title: patch.title } : {}),
@@ -198,20 +205,54 @@ export class ThreadStore {
     return next;
   }
 
+  trashThread(id: string): Thread {
+    return this.changeLifecycle(id, "trash");
+  }
+
+  restoreThread(id: string): Thread {
+    return this.changeLifecycle(id, "restore");
+  }
+
+  purgeThread(id: string): Thread {
+    return this.changeLifecycle(id, "purge");
+  }
+
+  private changeLifecycle(id: string, action: ThreadLifecycleAction): Thread {
+    const thread = this.getThread(id);
+    if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+    const next = reduceThreadLifecycle(thread, action);
+    if (next !== thread) this.commit({ threads: [next] });
+    return next;
+  }
+
   /** Persist the resolved isolated worktree path + base sha for a thread. */
-  setThreadWorktree(id: string, worktreePath: string, baseSha: string): void {
+  setThreadWorktree(
+    id: string,
+    worktreePath: string,
+    baseSha: string,
+    deliveredThroughRunId?: string,
+  ): void {
     const thread = this.getThread(id);
     if (!thread) return;
     const next = ThreadSchema.parse({
       ...thread,
-      workspace: { ...thread.workspace, worktree_path: worktreePath, base_sha: baseSha },
+      workspace: {
+        ...thread.workspace,
+        worktree_path: worktreePath,
+        base_sha: baseSha,
+        ...(deliveredThroughRunId !== undefined
+          ? { delivered_through_run_id: deliveredThroughRunId }
+          : {}),
+      },
       updated_at: nowIso(),
     });
     this.commit({ threads: [next] });
   }
 
   listThreads(): Thread[] {
-    return [...this.state.threads].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+    return this.state.threads
+      .filter((thread) => thread.state !== "purged")
+      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
   }
 
   getThread(id: string): Thread | undefined {
@@ -299,6 +340,12 @@ export class ThreadStore {
     }
     const thread = this.getThread(threadId);
     if (!thread) throw Object.assign(new Error(`no such thread: ${threadId}`), { status: 404 });
+    if (thread.state === "trashed" || thread.state === "purged") {
+      throw Object.assign(new Error(`thread ${threadId} is ${thread.state}`), {
+        status: 409,
+        code: `thread_${thread.state}`,
+      });
+    }
     // Count TURNS, not run_ids: run_ids is only filled at bindTurnRun (which lags
     // the runner), so a second turn created before the first binds would also see
     // an empty run_ids and wrongly claim "initial" (review #5).

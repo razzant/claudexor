@@ -21,13 +21,11 @@ import { Attachment } from "./attachment.js";
  * event (honest, lossy disclosure — never silent).
  */
 
-/** A thread is open or explicitly closed (archived). "Blocked" is not a thread
- * state — it is a live projection of whether the head turn's run needs a human. */
+/** A thread is open, archived, in 30-day trash, or terminally purged.
+ * "Blocked" is not a thread state — it is a live run projection. */
 export const ThreadState = z
-  .enum(["active", "closed"])
-  .describe(
-    "Thread lifecycle state: active or explicitly closed (archived). Blocked is a live projection, not a thread state.",
-  );
+  .enum(["active", "closed", "trashed", "purged"])
+  .describe("Thread lifecycle state: active, closed, trashed for recovery, or terminally purged.");
 export type ThreadState = z.infer<typeof ThreadState>;
 
 export const SessionState = z
@@ -83,6 +81,9 @@ export const ThreadWorkspace = z
       .nullable()
       .default(null)
       .describe("Snapshot SHA the isolated worktree (or last apply) is based on."),
+    delivered_through_run_id: Id.nullable()
+      .default(null)
+      .describe("Last run in the lineage prefix already delivered from this isolated thread."),
   })
   .describe("How the thread's turns touch files (in-place live tree vs isolated worktree).");
 export type ThreadWorkspace = z.infer<typeof ThreadWorkspace>;
@@ -136,6 +137,17 @@ export const Thread = z
       .default(null)
       .describe("Most recent run of the thread; null before the first turn runs."),
     state: ThreadState.default("active"),
+    trashed_at: IsoTimestamp.nullable()
+      .default(null)
+      .describe("When the thread entered recoverable trash."),
+    purge_after: IsoTimestamp.nullable()
+      .default(null)
+      .describe("Earliest automatic purge time; 30 days after trash."),
+    pre_trash_state: z
+      .enum(["active", "closed"])
+      .nullable()
+      .default(null)
+      .describe("Lifecycle state restored while the trash retention window remains open."),
   })
   .describe(
     "The Claudexor-owned conversation about a project; runs are turns inside it. SSOT for lineage; vendor sessions are caches.",

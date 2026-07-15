@@ -194,7 +194,7 @@ describe("DaemonControlApiServer", () => {
     );
     writeFileSync(
       join(runDir, "arbitration", "decision.yaml"),
-      "winner: a01\nstatus: success\noutcome: ready\n",
+      "winner: a01\nstatus: success\noutcome: ready\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
     );
     mkdirSync(join(runDir, "attempts", "a01"), { recursive: true });
     mkdirSync(join(runDir, "attempts", "a02"), { recursive: true });
@@ -1825,7 +1825,7 @@ describe("DaemonControlApiServer", () => {
             reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8", effort: "max" }],
             reviewerModels: { openai: "gpt-5.5" },
             reviewerEfforts: { openai: "xhigh" },
-            tests: ["pnpm test"],
+            tests: [{ program: "pnpm", args: ["test"], envAllowlist: [] }],
             protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "requested" }],
           }),
         });
@@ -1837,7 +1837,7 @@ describe("DaemonControlApiServer", () => {
           reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8", effort: "max" }],
           reviewerModels: { openai: "gpt-5.5" },
           reviewerEfforts: { openai: "xhigh" },
-          tests: ["pnpm test"],
+          tests: [{ program: "pnpm", args: ["test"], envAllowlist: [] }],
           protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: "requested" }],
           threadId: "th-11",
         });
@@ -2101,10 +2101,14 @@ describe("DaemonControlApiServer", () => {
         "tests:",
         "  commands:",
         "    - id: gate-1",
-        "      command: pnpm test",
+        "      program: pnpm",
+        "      args: [test]",
+        "      envAllowlist: []",
         "      required: true",
         "    - id: gate-2",
-        "      command: pnpm build",
+        "      program: pnpm",
+        "      args: [build]",
+        "      envAllowlist: []",
         "      required: true",
         "",
       ].join("\n"),
@@ -2112,8 +2116,13 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(daemon, async (base) => {
       const detail = (await (
         await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
-      ).json()) as { summary: { tests?: string[] } };
-      expect(detail.summary.tests).toEqual(["pnpm test", "pnpm build"]);
+      ).json()) as {
+        summary: { tests?: Array<{ program: string; args: string[]; envAllowlist: string[] }> };
+      };
+      expect(detail.summary.tests).toEqual([
+        { program: "pnpm", args: ["test"], envAllowlist: [] },
+        { program: "pnpm", args: ["build"], envAllowlist: [] },
+      ]);
     });
   });
 
@@ -2328,7 +2337,7 @@ describe("DaemonControlApiServer", () => {
         { reviewerPanel: [{ harness: "claude", model: " " }] },
         { reviewerModels: { openai: " " } },
         { harnesses: ["codex", " "] },
-        { tests: [" "] },
+        { tests: [{ program: " ", args: [] }] },
         { protectedPathApprovals: [{ path: " " }] },
         { protectedPathApprovals: [{ path: "packages/**/*.test.ts", reason: " " }] },
       ];
@@ -3555,11 +3564,32 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
-  it("thread apply 409s while the HEAD run is blocked without a typed decision, and passes once decided (INV-113)", async () => {
+  it("thread apply gates every undelivered contribution, so a later success cannot launder a blocked run (INV-113)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-thread-gate-"));
-    const runDir = join(dir, "run-head");
+    const blockedRunDir = join(dir, "run-blocked");
+    const headRunDir = join(dir, "run-head");
     const { mkdirSync: mkd } = await import("node:fs");
-    mkd(join(runDir, "arbitration"), { recursive: true });
+    const patchText = "diff --git a/x b/x\n";
+    const seedRun = (runDir: string, status: "blocked" | "success") => {
+      mkd(join(runDir, "arbitration"), { recursive: true });
+      mkd(join(runDir, "context"), { recursive: true });
+      mkd(join(runDir, "final"), { recursive: true });
+      writeFileSync(join(runDir, "final", "patch.diff"), patchText);
+      writeFileSync(
+        join(runDir, "final", "work_product.yaml"),
+        `id: wp-${status}\nkind: patch\nsource_task_id: task-${status}\nmeta:\n  patch_sha256: ${sha256(patchText)}\n`,
+      );
+      writeFileSync(
+        join(runDir, "context", "task.yaml"),
+        `task_id: task-${status}\nrepo:\n  root: ${JSON.stringify(dir)}\n  base_ref: HEAD\n`,
+      );
+      writeFileSync(
+        join(runDir, "arbitration", "decision.yaml"),
+        `winner: a01\nstatus: ${status}\noutcome: ${status === "success" ? "ready" : "blocked"}\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n`,
+      );
+    };
+    seedRun(blockedRunDir, "blocked");
+    seedRun(headRunDir, "success");
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -3574,7 +3604,7 @@ describe("DaemonControlApiServer", () => {
       primary_harness: null,
       eligible_harnesses: [],
       portfolio: "subscription-first",
-      run_ids: ["run-head"],
+      run_ids: ["run-blocked", "run-head"],
       head_run_id: "run-head",
       state: "active",
     };
@@ -3585,10 +3615,18 @@ describe("DaemonControlApiServer", () => {
         return { id: "j", state: "queued" };
       },
       async status() {
-        return { id: "job-head", state: "blocked", runId: "run-head", runDir };
+        return { id: "job-head", state: "succeeded", runId: "run-head", runDir: headRunDir };
       },
       async list() {
-        return [{ id: "job-head", state: "blocked", runId: "run-head", runDir }];
+        return [
+          {
+            id: "job-blocked",
+            state: "blocked",
+            runId: "run-blocked",
+            runDir: blockedRunDir,
+          },
+          { id: "job-head", state: "succeeded", runId: "run-head", runDir: headRunDir },
+        ];
       },
       async cancel() {
         return { ok: true };
@@ -3620,17 +3658,12 @@ describe("DaemonControlApiServer", () => {
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(blockedRes.status).toBe(409);
-      expect(((await blockedRes.json()) as { message: string }).message).toContain(
-        "typed operator decision",
-      );
+      expect(((await blockedRes.json()) as { code: string }).code).toBe("thread_run_unverified");
       expect(applied).toBe(0);
 
-      // A typed operator decision unblocks the gate (hash-bound to the patch).
-      const { sha256 } = await import("@claudexor/util");
-      mkd(join(runDir, "final"), { recursive: true });
-      const patchText = "diff --git a/x b/x\n";
-      writeFileSync(join(runDir, "final", "patch.diff"), patchText);
-      operatorDecisions.set("run-head", {
+      // A typed decision for the earlier blocked contribution unblocks the
+      // accumulated delivery; deciding only the successful HEAD would not.
+      operatorDecisions.set("run-blocked", {
         action: "accept_risk",
         findingIds: [],
         acceptedRisks: ["test owner accepted"],
@@ -3644,11 +3677,92 @@ describe("DaemonControlApiServer", () => {
       });
       expect(okRes.status).toBe(200);
       expect(applied).toBe(1);
+
+      // Once the prefix is durably delivered, it is not re-gated on a later
+      // apply. Only the suffix after this watermark remains eligible work.
+      (threadObj.workspace as Record<string, unknown>).delivered_through_run_id = "run-blocked";
+      operatorDecisions.clear();
+      const watermarkRes = await apiFetch(`${base}/threads/th-gate/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(watermarkRes.status).toBe(200);
+      expect(applied).toBe(2);
     } finally {
       await server.stop();
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  for (const activeState of ["queued", "running"] as const) {
+    it(`refuses thread apply with thread_busy while a mutating turn is ${activeState}`, async () => {
+      const now = new Date().toISOString();
+      const threadObj = {
+        schema_version: 2,
+        id: "th-busy",
+        created_at: now,
+        updated_at: now,
+        repo: { root: tmpdir(), base_ref: "HEAD" },
+        title: "busy thread",
+        mode: "agent",
+        workspace: { mode: "isolated", worktree_path: "/tmp/tree", base_sha: "abc" },
+        auth_preference: "auto",
+        primary_harness: null,
+        eligible_harnesses: [],
+        portfolio: "subscription-first",
+        run_ids: [],
+        head_run_id: null,
+        state: "active",
+      };
+      let applied = 0;
+      const daemon: DaemonFacadeClient = {
+        async enqueue() {
+          return { id: "job-active", state: activeState };
+        },
+        async status() {
+          return { id: "job-active", state: activeState };
+        },
+        async list() {
+          return [
+            {
+              id: "job-active",
+              state: activeState,
+              params: { threadId: "th-busy", mode: "agent" },
+            },
+          ];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      const server = new DaemonControlApiServer({
+        ...readyIdentity,
+        token,
+        daemon,
+        services: {
+          threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
+          applyThread: async () => {
+            applied += 1;
+            return { applied: true, status: "applied" };
+          },
+        },
+      });
+      const { host, port } = await server.start();
+      try {
+        const response = await apiFetch(`http://${host}:${port}/threads/th-busy/apply`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ mode: "apply" }),
+        });
+        expect(response.status).toBe(409);
+        expect(((await response.json()) as { code: string }).code).toBe("thread_busy");
+        expect(applied).toBe(0);
+      } finally {
+        await server.stop();
+      }
+    });
+  }
 
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-capi-prune-"));

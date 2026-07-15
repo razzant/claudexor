@@ -19,6 +19,8 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     /// Sticky eligible pool for the thread (absent on legacy payloads => nil).
     public let eligibleHarnesses: [String]?
     public let state: String?
+    public let trashedAt: String?
+    public let purgeAfter: String?
     public let runIds: [String]
     public let headRunId: String?
     public let needsHuman: Bool
@@ -48,16 +50,18 @@ public struct RunResult: Codable, Sendable, Equatable {
     public let preTurnSha: String?
     /// Tree SHA right after this turn's mutation (revert divergence fence).
     public let postTurnSha: String?
+    /// Immutable external content-addressed revert anchor (survives git gc).
+    public let revertAnchorId: String?
     /// True when the in-place mutation can still be safely reverted.
     public let revertable: Bool
 
     enum CodingKeys: String, CodingKey {
-        case kind, diffStat, blockers, adopted, applyState, preTurnSha, postTurnSha, revertable
+        case kind, diffStat, blockers, adopted, applyState, preTurnSha, postTurnSha, revertAnchorId, revertable
     }
 
     public init(kind: String, diffStat: DiffStat?, blockers: Int, adopted: Bool?,
                 applyState: String = "not_applied", preTurnSha: String? = nil,
-                postTurnSha: String? = nil, revertable: Bool = false) {
+                postTurnSha: String? = nil, revertAnchorId: String? = nil, revertable: Bool = false) {
         self.kind = kind
         self.diffStat = diffStat
         self.blockers = blockers
@@ -65,6 +69,7 @@ public struct RunResult: Codable, Sendable, Equatable {
         self.applyState = applyState
         self.preTurnSha = preTurnSha
         self.postTurnSha = postTurnSha
+        self.revertAnchorId = revertAnchorId
         self.revertable = revertable
     }
 
@@ -79,6 +84,7 @@ public struct RunResult: Codable, Sendable, Equatable {
         applyState = try c.decodeIfPresent(String.self, forKey: .applyState) ?? "not_applied"
         preTurnSha = try c.decodeIfPresent(String.self, forKey: .preTurnSha)
         postTurnSha = try c.decodeIfPresent(String.self, forKey: .postTurnSha)
+        revertAnchorId = try c.decodeIfPresent(String.self, forKey: .revertAnchorId)
         revertable = try c.decodeIfPresent(Bool.self, forKey: .revertable) ?? false
     }
 }
@@ -346,7 +352,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
     /// AttachmentInput.data; the daemon resolves them to scoped paths).
     public var attachments: [AttachmentInput]?
     /// Optional per-turn gate/test command list; mirrors ControlRunStartRequest.
-    public var tests: [String]?
+    public var tests: [TestCommandInvocation]?
     /// Typed approvals for protected gate/test path changes; never inferred from prompt text.
     public var protectedPathApprovals: [ProtectedPathApproval]?
     /// Per-turn auth route override; nil inherits the thread setting/server default.
@@ -360,7 +366,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
                 specPath: String? = nil, attachments: [AttachmentInput]? = nil,
-                tests: [String]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
+                tests: [TestCommandInvocation]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
                 authPreference: String? = nil) {
         self.prompt = prompt
         self.mode = mode
@@ -388,4 +394,3 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.authPreference = authPreference
     }
 }
-

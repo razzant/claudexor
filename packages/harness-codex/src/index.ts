@@ -18,12 +18,11 @@ import {
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   abortSignalFromSpec,
+  browserMcpCommand,
   HarnessUnavailableError,
   normalizeEffort,
-  playwrightMcpArgs,
   providerScrubEnv,
   resolveHarnessBinary,
-  resolveNpxBin,
   runCapture,
   runCliHarness,
   selectStrictAuthRoute,
@@ -218,11 +217,12 @@ export function codexBrowserArgs(
   externalContextPolicy?: HarnessRunSpec["external_context_policy"],
 ): string[] {
   if (!browser || externalContextPolicy === "off") return [];
+  const mcp = browserMcpCommand(browser);
   return [
     "-c",
-    `mcp_servers.browser.command=${JSON.stringify(resolveNpxBin())}`,
+    `mcp_servers.browser.command=${JSON.stringify(mcp.command)}`,
     "-c",
-    `mcp_servers.browser.args=${JSON.stringify(playwrightMcpArgs(browser))}`,
+    `mcp_servers.browser.args=${JSON.stringify(mcp.args)}`,
     "-c",
     "mcp_servers.browser.startup_timeout_sec=90",
     "-c",

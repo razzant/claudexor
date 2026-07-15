@@ -29,6 +29,12 @@
             "inherit_native"
           ],
           "description": "Default access profile for runs in the repo."
+        },
+        "testCommandGrantCount": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Number of exact external test-command grants for this repo."
         }
       },
       "required": [

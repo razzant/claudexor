@@ -45,7 +45,7 @@ export function mcpSurfaceRunner() {
           ? { n: p.n }
           : {}),
       ...(p?.create === true ? { create: true } : {}),
-      ...(Array.isArray(p?.tests) ? { tests: p.tests.map(String) } : {}),
+      ...(Array.isArray(p?.tests) ? { tests: p.tests } : {}),
       ...(typeof p?.maxUsd === "number" ? { maxUsd: p.maxUsd } : {}),
       ...(p?.access ? { access: String(p.access) } : {}),
       // `externalContextPolicy` is the control-api-parity alias of `web`; the

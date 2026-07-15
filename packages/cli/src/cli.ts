@@ -4,13 +4,6 @@ import { existsSync, lstatSync, readdirSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
-  DELIVER_MODES,
-  type DeliverMode,
-  checkPatch,
-  deliver,
-  validateApplyGate,
-} from "@claudexor/delivery";
-import {
   CLAUDEXOR_VERSION,
   containsSecretLikeToken,
   noProjectRepoRoot,
@@ -35,7 +28,7 @@ import {
   type ProviderFamily,
   RunTelemetry,
   TaskContract,
-  WorkProduct,
+  type TestCommandInvocation,
 } from "@claudexor/schema";
 import {
   flagBool,
@@ -134,8 +127,8 @@ function floatFlag(args: ParsedArgs, key: string): number | undefined {
   return n;
 }
 
-/** Deterministic gate commands from `--test "<cmd>"`; repeat flag or separate with `;;`. */
-function testCommands(args: ParsedArgs): string[] | undefined {
+/** Deterministic typed-argv gates from repeated `--test '["program","arg"]'`. */
+function testCommands(args: ParsedArgs): TestCommandInvocation[] | undefined {
   return parseTestCommandFlags(flagValues(args, "test"));
 }
 
@@ -350,7 +343,7 @@ async function orchestrate(
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
-  let tests: string[] | undefined;
+  let tests: TestCommandInvocation[] | undefined;
   try {
     const cliTests = testCommands(args) ?? [];
     tests = resolveRunTestCommands(cliTests, spec);
@@ -430,7 +423,7 @@ interface DaemonRunParams {
   /** Orchestrate executor autonomy; only meaningful (and only sent) for mode=orchestrate. */
   autonomy: OrchestrateAutonomy | undefined;
   prompt: string;
-  tests: string[] | undefined;
+  tests: TestCommandInvocation[] | undefined;
   portfolio: ReturnType<typeof Portfolio.parse> | undefined;
   maxUsd: number | undefined;
   maxToolCalls?: number;
@@ -1186,124 +1179,47 @@ async function main(): Promise<number> {
           "usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]",
         );
       }
-      // Resolve the owning store from any cwd (project / user Ask / daemon-tracked
-      // run in another project) before reading the patch artifact.
-      const resolved = await resolveRunStore(runId);
-      if (!resolved) {
-        if (json) printJson({ runId, error: `no such run ${runId}` });
-        else print(`no such run ${runId}`);
-        return 1;
-      }
-      const store = resolved.store;
-      const paths = store.runPaths(runId);
-      const patch = readTextSafe(join(paths.finalDir, "patch.diff"));
-      if (!patch || patch.trim().length === 0) {
-        if (json) printJson({ runId, error: `no patch found for run ${runId}` });
-        else print(`no patch found for run ${runId}`);
-        return 1;
-      }
-      if (containsSecretLikeToken(patch)) {
-        if (json) printJson({ runId, error: "patch contains secret-like token; refusing apply" });
-        else print("patch contains secret-like token; refusing apply");
-        return 1;
-      }
-      // Apply policy has ONE owner (delivery.validateApplyGate) shared with the
-      // Control API; the CLI only adapts artifact reads into it. No duplicated
-      // pre-checks here: a NEEDS_HUMAN run unblocked through the typed decision
-      // endpoint is journal authority; its hash-bound artifact projection keeps
-      // this artifact-only path aligned until delivery consolidation.
-      const applyDecision = DecisionRecord.safeParse(
-        store.readYaml(join(paths.arbitrationDir, "decision.yaml")),
-      );
-      const workProduct = WorkProduct.safeParse(
-        store.readYaml(join(paths.finalDir, "work_product.yaml")),
-      );
-      const contract = TaskContract.safeParse(store.readYaml(join(paths.contextDir, "task.yaml")));
-      const operatorDecisionRaw = store.readYaml(
-        join(paths.arbitrationDir, "operator_decision.yaml"),
-      ) as Record<string, unknown> | null;
-      const operatorDecision =
-        operatorDecisionRaw && typeof operatorDecisionRaw["action"] === "string"
-          ? {
-              action: operatorDecisionRaw["action"] as string,
-              patch_sha256:
-                typeof operatorDecisionRaw["patch_sha256"] === "string"
-                  ? (operatorDecisionRaw["patch_sha256"] as string)
-                  : undefined,
-            }
-          : null;
-      // The default apply target is the run's ORIGINAL project (from its contract),
-      // not the current working directory — so a daemon-tracked run resolved via
-      // the registry applies correctly from any cwd (namespace unification).
-      // Fall back to cwd only for a legacy run with no readable contract.
-      const applyRoot = contract.success ? contract.data.repo.root : process.cwd();
-      // Artifact-only path: the live daemon job state is unavailable, but the
-      // orchestrator records the terminal run status in work_product.meta.status.
-      // Feed it (mapped to daemon-state vocab) into the shared gate so the CLI
-      // enforces the SAME terminal-state bar the Control API does — e.g. a
-      // convergence run that persists decision.status=success but terminal
-      // not_converged (stale diff after a required review) is refused identically.
-      const recordedStatus = workProduct.success
-        ? (workProduct.data.meta?.["status"] as string | undefined)
-        : undefined;
-      const recordedState = recordedStatus
-        ? recordedStatus === "success"
-          ? "succeeded"
-          : recordedStatus
-        : null;
-      const gateError = validateApplyGate({
-        state: recordedState,
-        decision: applyDecision.success ? applyDecision.data : null,
-        workProduct: workProduct.success ? workProduct.data : null,
-        patch,
-        originalRepoRoot: contract.success ? contract.data.repo.root : null,
-        targetRepoRoot: applyRoot,
-        operatorDecision,
-      });
-      if (gateError) {
-        if (json) printJson({ runId, error: gateError });
-        else print(gateError);
-        return 1;
-      }
-      if (flagBool(args, "dry-run")) {
-        const r = await checkPatch(applyRoot, patch);
-        if (json)
-          printJson({
-            runId,
-            dryRun: true,
-            applies: r.ok,
-            ...(r.ok ? {} : { error: r.stderr.trim() }),
-          });
-        else print(r.ok ? "patch applies cleanly" : `patch does not apply: ${r.stderr.trim()}`);
-        return r.ok ? 0 : 1;
-      }
       const rawMode = flagStr(args, "mode") ?? "apply";
-      if (!DELIVER_MODES.has(rawMode as DeliverMode)) {
+      if (!["apply", "commit", "branch", "pr"].includes(rawMode)) {
         if (json) printJson({ runId, error: `unsupported apply mode: ${rawMode}` });
         else print(`unsupported apply mode: ${rawMode}`);
         return 2;
       }
-      // `apply` mutates the tree; `artifact_only` produces no mutation and the
-      // patch artifact was already emitted by the run — reject it here (it stays
-      // valid on the control-api for clients that want a dry materialization).
-      if (rawMode === "artifact_only") {
-        const msg =
-          "apply --mode artifact_only is a no-op (the patch artifact already exists at <runDir>/final/patch.diff); use apply|branch|commit|pr to mutate, or read the artifact directly";
-        if (json) printJson({ runId, error: msg });
-        else print(msg);
-        return 2;
-      }
-      const mode = rawMode as DeliverMode;
-      const res = await deliver(applyRoot, patch, { mode, message: `claudexor: apply ${runId}` });
-      if (json) printJson(res);
+      const { addr } = await ensureDaemon();
+      const dryRun = flagBool(args, "dry-run");
+      const response = await controlApiFetch(
+        addr,
+        `/runs/${encodeURIComponent(runId)}/apply${dryRun ? "/check" : ""}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(
+            dryRun
+              ? { target: { kind: "original_project" } }
+              : {
+                  target: { kind: "original_project" },
+                  mode: rawMode,
+                  message: `claudexor: apply ${runId}`,
+                },
+          ),
+        },
+      );
+      const text = await response.text();
+      const result = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+      if (json) printJson({ runId, ...(dryRun ? { dryRun: true } : {}), ...result });
+      else if (!response.ok) print(String(result["message"] ?? result["error"] ?? text));
+      else if (dryRun)
+        print(result["ok"] === true ? "patch applies cleanly" : "patch does not apply");
       else
         print(
-          `${res.mode}: applied=${res.applied}` +
-            (res.commit ? ` commit=${res.commit.slice(0, 8)}` : "") +
-            (res.branch ? ` branch=${res.branch}` : "") +
-            (res.detail ? ` (${res.detail})` : ""),
+          `${String(result["mode"] ?? rawMode)}: applied=${String(result["applied"] ?? false)}` +
+            (typeof result["commit"] === "string"
+              ? ` commit=${result["commit"].slice(0, 8)}`
+              : "") +
+            (typeof result["branch"] === "string" ? ` branch=${result["branch"]}` : "") +
+            (typeof result["detail"] === "string" ? ` (${result["detail"]})` : ""),
         );
-      return res.applied ? 0 : 1;
+      return response.ok && (dryRun ? result["ok"] === true : result["applied"] === true) ? 0 : 1;
     }
 
     case "decision":

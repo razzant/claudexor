@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+
+const command = (program: string, ...args: string[]) => ({ program, args, envAllowlist: [] });
 import {
   draftFromPlanAndAnswers,
   extractQuestionsFromPlan,
@@ -290,7 +292,7 @@ Review blocked on evidence.
       ],
       summary: "Fix auth link/session behavior",
       success_criteria: ["WHEN a magic link is used, THE SYSTEM SHALL invalidate it"],
-      tests: ["node test.js"],
+      tests: [command("node", "test.js")],
     });
     const persisted = persistSpec(repo, spec, PLAN);
     // This is exactly the `specPath` the durable freeze response returns and an
@@ -327,11 +329,16 @@ Review blocked on evidence.
         { question_id: "q1", option_ids: [], text: "single-use" },
         { question_id: "q2", option_ids: [], text: "sessions" },
       ],
-      tests: ["node test.js", "pnpm verify"],
+      tests: [command("node", "test.js"), command("pnpm", "verify")],
     });
 
-    expect(resolveRunTestCommands([], spec)).toEqual(["node test.js", "pnpm verify"]);
-    expect(resolveRunTestCommands(["pnpm explicit"], spec)).toEqual(["pnpm explicit"]);
+    expect(resolveRunTestCommands([], spec)).toEqual([
+      command("node", "test.js"),
+      command("pnpm", "verify"),
+    ]);
+    expect(resolveRunTestCommands([command("pnpm", "explicit")], spec)).toEqual([
+      command("pnpm", "explicit"),
+    ]);
     expect(resolveRunTestCommands([], null)).toBeUndefined();
   });
 

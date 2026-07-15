@@ -51,7 +51,7 @@ import Testing
             reviewerModels: ["openai": "gpt-5.5"],
             reviewerEfforts: ["openai": "xhigh", "anthropic": "high"],
             n: 2,
-            tests: ["pnpm test"],
+            tests: [TestCommandInvocation(program: "pnpm", args: ["test"])],
             protectedPathApprovals: [ProtectedPathApproval(path: "packages/**/*.test.ts", reason: "test authoring requested")]
         )
         let data = try JSONEncoder().encode(req)
@@ -75,7 +75,10 @@ import Testing
         #expect(decoded["reviewerEfforts"]?["openai"]?.stringValue == "xhigh")
         #expect(decoded["reviewerEfforts"]?["anthropic"]?.stringValue == "high")
         if case .array(let tests)? = decoded["tests"] {
-            #expect(tests[0].stringValue == "pnpm test")
+            #expect(tests[0]["program"]?.stringValue == "pnpm")
+            if case .array(let args)? = tests[0]["args"] {
+                #expect(args[0].stringValue == "test")
+            } else { Issue.record("expected test args") }
         } else { Issue.record("expected tests array") }
         if case .array(let approvals)? = decoded["protectedPathApprovals"] {
             #expect(approvals[0]["path"]?.stringValue == "packages/**/*.test.ts")
@@ -266,7 +269,7 @@ import Testing
     @Test func runDetailDecodesNewProjectionFieldsAndOldPayloadDefaults() throws {
         let rich = """
         {
-          "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true,"tests":["pnpm test"]},
+          "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true,"tests":[{"program":"pnpm","args":["test"],"envAllowlist":[]}]},
           "primaryOutput": {"kind":"answer","path":"final/answer.md","text":"4","bytes":1},
           "timeline": [{"type":"harness.event","title":"Codex answered","detail":"done","rawRef":"events.jsonl"}],
           "budget": {"maxUsd":0.50,"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events"},
@@ -276,7 +279,7 @@ import Testing
         let detail = try JSONDecoder().decode(RunDetail.self, from: Data(rich.utf8))
         #expect(detail.summary.runId == "run-1")
         #expect(detail.summary.spendUsd == 0.12)
-        #expect(detail.summary.tests == ["pnpm test"])
+        #expect(detail.summary.tests == [TestCommandInvocation(program: "pnpm", args: ["test"])])
         #expect(detail.primaryOutput?.text == "4")
         #expect(detail.timeline.first?.type == "harness.event")
         #expect(detail.budget?.source == "events")
@@ -481,7 +484,7 @@ import Testing
                                     reviewerModels: ["openai": "gpt-5.5"],
                                     reviewerEfforts: ["anthropic": "max"],
                                     access: "readonly", web: "off",
-                                    tests: ["pnpm test -- --runInBand"],
+                                    tests: [TestCommandInvocation(program: "pnpm", args: ["test", "--", "--runInBand"])],
                                     protectedPathApprovals: [ProtectedPathApproval(path: "packages/**/*.test.ts", reason: "test authoring requested")],
                                     authPreference: "api_key")
         let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
@@ -496,8 +499,9 @@ import Testing
         #expect(obj?["n"] as? Int == 2)
         #expect(obj?["untilClean"] as? Bool == true)
         #expect(obj?["maxUsd"] as? Double == 0.5)
-        let tests = try #require(obj?["tests"] as? [String])
-        #expect(tests == ["pnpm test -- --runInBand"])
+        let tests = try #require(obj?["tests"] as? [[String: Any]])
+        #expect(tests[0]["program"] as? String == "pnpm")
+        #expect(tests[0]["args"] as? [String] == ["test", "--", "--runInBand"])
         let approvals = try #require(obj?["protectedPathApprovals"] as? [[String: Any]])
         #expect(approvals[0]["path"] as? String == "packages/**/*.test.ts")
         #expect(obj?["authPreference"] as? String == "api_key")

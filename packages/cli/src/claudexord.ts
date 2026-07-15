@@ -30,14 +30,8 @@ import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
 import { SecretStore } from "@claudexor/secrets";
-import { ensureThreadWorktree, diffStaged, git, snapshotTree } from "@claudexor/workspace";
-import { deliver } from "@claudexor/delivery";
-import {
-  containsSecretLikeToken,
-  noProjectRepoRoot,
-  readTextSafe,
-  redactSecrets,
-} from "@claudexor/util";
+import { ensureThreadWorktree, purgeThreadWorktree } from "@claudexor/workspace";
+import { noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
 import {
   type AttachmentInput,
   type ControlSpecAnswersRequest,
@@ -58,6 +52,7 @@ import { createSetupJobManager } from "./setup-jobs.js";
 import { SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
+import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import {
   buildGroundingPrompt,
   extractQuestionsFromPlan,
@@ -345,69 +340,6 @@ async function main(): Promise<void> {
     writerLease.release();
   }
 }
-/** Deliver an isolated thread's accumulated worktree diff to its project. */
-async function applyThreadDiff(
-  threads: ProjectPartitions,
-  id: string,
-  opts: { mode: string; branch?: string; message?: string },
-): Promise<{ applied: boolean; status: string; headMoved: boolean; detail: string | null }> {
-  const thread = threads.getThread(id);
-  if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
-  const ws = thread.workspace;
-  if (ws.mode !== "isolated" || !ws.worktree_path || !thread.repo) {
-    throw Object.assign(
-      new Error(
-        "thread has no isolated worktree to apply (in-place threads write the project directly)",
-      ),
-      { status: 400 },
-    );
-  }
-  const projectRoot = thread.repo.root;
-  const base = ws.base_sha ?? "HEAD";
-  const patch = await diffStaged(ws.worktree_path, base);
-  if (!patch.trim())
-    return { applied: false, status: "empty", headMoved: false, detail: "no changes to apply" };
-  if (containsSecretLikeToken(patch))
-    return {
-      applied: false,
-      status: "rejected",
-      headMoved: false,
-      detail: "patch contains a secret-like token; refusing apply",
-    };
-  // Warn if the project advanced; preimage-bound apply still refuses stale content.
-  let headMoved = false;
-  try {
-    const head = (await git(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();
-    const mb = (await git(projectRoot, ["merge-base", "HEAD", base])).stdout.trim();
-    headMoved = mb !== "" && head !== "" && mb !== head;
-  } catch {
-    /* best-effort */
-  }
-  const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as
-    | "apply"
-    | "branch"
-    | "commit"
-    | "pr";
-  const delivered = await deliver(projectRoot, patch, {
-    mode,
-    branch: opts.branch,
-    message: opts.message,
-  });
-  if (delivered.applied) {
-    // Re-base the thread on the new project state so the next apply diffs only new work.
-    threads.setThreadWorktree(id, ws.worktree_path, await snapshotTree(ws.worktree_path));
-  }
-  const status = !delivered.applied
-    ? "conflict"
-    : mode === "branch"
-      ? "branched"
-      : mode === "commit"
-        ? "committed"
-        : mode === "pr"
-          ? "pr_opened"
-          : "applied";
-  return { applied: delivered.applied, status, headMoved, detail: delivered.detail ?? null };
-}
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
 type HarnessListInput = { fresh?: boolean; includeFakes?: boolean; harnessIds?: string[] };
@@ -561,8 +493,17 @@ function controlServices(
         primaryHarness: patch.primaryHarness,
         eligibleHarnesses: patch.eligibleHarnesses,
       }),
-    applyThread: async (id: string, opts: { mode: string; branch?: string; message?: string }) =>
-      applyThreadDiff(threads, id, opts),
+    trashThread: async (id: string) => threads.trashThread(id),
+    restoreThread: async (id: string) => threads.restoreThread(id),
+    purgeThread: async (id: string) => {
+      const thread = threads.getThread(id);
+      if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+      if (thread.repo && thread.workspace.mode === "isolated") {
+        await purgeThreadWorktree(thread.repo.root, id);
+      }
+      return threads.purgeThread(id);
+    },
+    applyThread: async (id: string, opts: ThreadApplyOptions) => applyThreadDiff(threads, id, opts),
     setTurnEnqueueError: (
       turnId: string,
       message: string,

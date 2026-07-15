@@ -20,6 +20,7 @@ import type {
   RunEvent,
   RunStatus,
   TaskContract,
+  TestCommandInvocation,
   ProviderFamily,
   AuthPreference,
   WebPolicySupport,
@@ -68,7 +69,6 @@ import {
 } from "./runTerminals.js";
 import {
   transientRetryDelayMs,
-  gateProtectedPaths,
   promptWithProtectedPathConstraint,
   sleep,
   redactHarnessEvent,
@@ -92,7 +92,6 @@ import {
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
-import { blockedDecisionOverride, finalVerifyBlocks, finalVerifyPatch } from "./finalVerifier.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
   type AttemptTelemetry,
@@ -108,6 +107,11 @@ import {
   webUnsatisfied,
 } from "./attemptTelemetry.js";
 import { interactionChannelFor } from "./interaction.js";
+import {
+  gateSpecsFromContract,
+  renderTestsEvidence,
+  resolveContractGates,
+} from "./contract-gates.js";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import {
@@ -119,14 +123,20 @@ import {
 } from "@claudexor/context";
 import {
   WorkspaceManager,
-  applyPatchProtected,
+  createRevertAnchorOrNull,
   ensureGitRepository,
   snapshotTree,
 } from "@claudexor/workspace";
-import { deliver, validateApplyGate } from "@claudexor/delivery";
+import {
+  blockedDecisionOverride,
+  deliver,
+  finalVerifyBlocks,
+  finalVerifyPatch,
+  validateApplyGate,
+  verifyAndDeliver,
+} from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
 import {
-  type GateSpec,
   ReadinessLedger,
   type ReviewerSpec,
   evaluateConvergence,
@@ -218,8 +228,8 @@ export interface RunInput {
   /** agent flag: create-from-scratch intent (the old `create` mode). */
   create?: boolean;
   synthesis?: SynthesisMode;
-  /** Explicit deterministic gate commands from caller-provided run configuration. */
-  tests?: string[];
+  /** Explicit typed-argv deterministic gates from caller-provided run configuration. */
+  tests?: TestCommandInvocation[];
   /** Typed per-run approval for changing auto-protected gate/test paths. */
   protectedPathApprovals?: ProtectedPathApproval[];
   /** Hard per-run spend cap (USD); overrides deps.maxUsd when set. */
@@ -1305,7 +1315,7 @@ export class Orchestrator {
     // its metadata did, leaving the arbitration acceptance axis permanently
     // empty and the interview pipeline dead in production.
     let specFields: Partial<TaskContract> = {};
-    let specTestCommands: string[] = [];
+    let specTestCommands: TestCommandInvocation[] = [];
     if (input.specPath) {
       try {
         const spec = SpecPackZ.parse(JSON.parse(readFileSync(input.specPath, "utf8")));
@@ -1332,7 +1342,12 @@ export class Orchestrator {
           task_graph: fromSpec.task_graph,
           constraints: fromSpec.constraints,
         };
-        specTestCommands = fromSpec.tests.commands.map((test) => test.command);
+        specTestCommands = fromSpec.tests.commands.map(({ program, args, cwd, envAllowlist }) => ({
+          program,
+          args,
+          ...(cwd === undefined ? {} : { cwd }),
+          envAllowlist,
+        }));
       } catch (err) {
         // An unreadable/unfrozen spec must fail the run loudly, never silently
         // degrade into an unspecced contract.
@@ -1344,21 +1359,18 @@ export class Orchestrator {
     // Deterministic gate commands come from the frozen SpecPack, explicit run
     // input, then versioned project config. Without these, gateSpecs is empty
     // and convergence is review-only; with them, convergence is test-driven.
-    const seenCommands = new Set<string>();
-    const commands = [...specTestCommands, ...(input.tests ?? []), ...(cfg?.tests?.commands ?? [])]
-      .map((c) => c.trim())
-      .filter(Boolean)
-      .filter((command) => {
-        if (seenCommands.has(command)) return false;
-        seenCommands.add(command);
-        return true;
-      })
-      .map((command, i) => {
-        assertNoSecretLikeTokens(`gate command ${i + 1}`, command);
-        return { id: `gate-${i + 1}`, command, required: true };
-      });
+    const resolvedGates = resolveContractGates({
+      repoRoot: input.repoRoot,
+      effectiveAccess,
+      config: cfg,
+      trustGrants: resolvedCfg.trust.test_command_grants,
+      specCommands: specTestCommands,
+      operatorCommands: input.tests ?? [],
+      projectCommands: cfg.tests?.commands ?? [],
+    });
+    const commands = resolvedGates.commands;
     const protectedPaths = [...new Set(specFields.constraints?.protected_paths ?? [])];
-    const autoProtectedPaths = [...new Set(gateProtectedPaths(commands.map((c) => c.command)))];
+    const autoProtectedPaths = resolvedGates.autoProtectedPaths;
     const protectedPathApprovals = [
       ...new Map(
         [...(input.protectedPathApprovals ?? [])].map((approval) => [approval.path, approval]),
@@ -1418,64 +1430,6 @@ export class Orchestrator {
       // reads — there is no run-global model (INV-103).
       routing_models: input.models ?? {},
     });
-  }
-
-  private gateSpecs(contract: TaskContract): GateSpec[] {
-    return contract.tests.commands.map((c) => ({
-      id: c.id,
-      command: c.command,
-      required: c.required,
-    }));
-  }
-
-  private testsEvidence(contract: TaskContract, gates?: GateResult[]): string {
-    const specs = this.gateSpecs(contract);
-    if (gates === undefined) {
-      if (specs.length === 0) return "(no test commands configured)";
-      return [
-        "Configured test commands (not run yet):",
-        ...specs.map(
-          (spec) => `- ${spec.id}${spec.required === false ? " (optional)" : ""}: ${spec.command}`,
-        ),
-      ].join("\n");
-    }
-    if (gates.length === 0) {
-      if (specs.length === 0) return "(no test commands configured)";
-      return [
-        "Configured test commands did not produce gate results before this review:",
-        ...specs.map(
-          (spec) => `- ${spec.id}${spec.required === false ? " (optional)" : ""}: ${spec.command}`,
-        ),
-      ].join("\n");
-    }
-    const required = gates.filter((gate) => gate.required);
-    const requiredPassed = required.filter((gate) => gate.status === "passed").length;
-    const lines = [
-      `Gate results: required ${requiredPassed}/${required.length} passed; total ${gates.length}.`,
-    ];
-    const appendTail = (label: string, text: string | null): void => {
-      if (!text) return;
-      lines.push(`  ${label}: |`);
-      for (const line of text.split(/\r?\n/)) lines.push(`    ${line}`);
-    };
-    for (const gate of gates) {
-      lines.push(
-        `- ${gate.id}${gate.required === false ? " (optional)" : ""}: ${gate.status}; exit=${gate.exit_code ?? "null"}; duration_ms=${gate.duration_ms}`,
-      );
-      lines.push(`  command: ${gate.command}`);
-      if (gate.output_truncated) lines.push("  output_truncated: true");
-      appendTail("stdout_tail", gate.stdout_tail);
-      appendTail("stderr_tail", gate.stderr_tail);
-    }
-    return lines.join("\n");
-  }
-
-  private writeTestsEvidence(
-    evidenceDir: string,
-    contract: TaskContract,
-    gates?: GateResult[],
-  ): void {
-    writeText(join(evidenceDir, "TESTS.txt"), this.testsEvidence(contract, gates).trim() + "\n");
   }
 
   /**
@@ -1817,11 +1771,14 @@ export class Orchestrator {
     // still land, so partial work stays inspectable.
     const gateSignalAborted = signal?.aborted === true;
     if (!gateSignalAborted) {
-      log?.emit("gate.started", { attempt_id: attemptId, gates: this.gateSpecs(contract).length });
+      log?.emit("gate.started", {
+        attempt_id: attemptId,
+        gates: gateSpecsFromContract(contract).length,
+      });
     }
     const gates = gateSignalAborted
       ? []
-      : await runGates(this.gateSpecs(contract), {
+      : await runGates(gateSpecsFromContract(contract), {
           cwd: envelope.worktree_path,
           env: wsm.envFor(envelope),
           signal,
@@ -2124,7 +2081,7 @@ export class Orchestrator {
     writeEvidencePacket(reviewDir, {
       userIntent: redactSecrets(input.prompt),
       diff: "(per-candidate diffs are supplied to reviewers individually)\n",
-      tests: this.testsEvidence(contract),
+      tests: renderTestsEvidence(contract),
     });
 
     let adapters: RoutedAdapter[];
@@ -2879,14 +2836,21 @@ export class Orchestrator {
     // (node_modules etc.), so gates there would false-block green turns. The
     // verifier's contract is isolated-envelope patches only.
     const inPlaceWinner = input.inPlace === true && requestedSingleCandidate;
+    const deferredRaceVerify = input.inPlace === true && !requestedSingleCandidate;
     if (
       winnerRun &&
       !inPlaceWinner &&
+      !deferredRaceVerify &&
       winnerRun.diff.trim().length > 0 &&
       (status === "success" || status === "ungated") &&
       !input.signal?.aborted
     ) {
-      finalVerify = await finalVerifyPatch(execRoot, winnerRun, this.gateSpecs(contract), log);
+      finalVerify = await finalVerifyPatch(
+        execRoot,
+        winnerRun,
+        gateSpecsFromContract(contract),
+        log,
+      );
       // FAIL CLOSED (INV-115): verify errors block like proven failures —
       // shared verdict owner (finalVerifyBlocks). accept_risk stays available.
       finalVerifyFailed = finalVerifyBlocks(finalVerify);
@@ -2922,24 +2886,15 @@ export class Orchestrator {
       if (!hasDiff && winnerAnswer.length > 0) {
         store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
       }
-      // a single-candidate in-place turn already mutated the live tree (its
-      // diff IS the live change). A race (n>1) ran candidates in isolated
-      // envelopes, so the winner's patch must be ADOPTED into the live tree for
-      // the next turn to see it. Blockers / non-success stop adoption; a failed
-      // apply (the user edited the tree mid-race) is disclosed, never lost.
-      // A clean terminal to adopt is success OR ungated (review passed but no
-      // test gates were configured to certify it) — never blocked/failed/no_op.
-      // Adoption is HONEST: `adopted` reflects whether the live in-place tree was
-      // actually mutated, DECOUPLED from a clean review. A single-candidate
-      // in-place turn edits the live tree directly — so it is "applied" even when
-      // review is blocked (applyState = applied_review_blocked + Revert offered).
-      // A race (n>1) ran candidates in isolated envelopes; its winner mutates the
-      // live tree only when we apply it, which we gate on a clean terminal.
-      const adoptable = status === "success" || status === "ungated";
+      // Auto-adoption is stricter than artifact production: only a fully
+      // verified `success` may mutate the live tree. `ungated` remains an
+      // inspectable patch, but the user must add gates/review and rerun.
+      const adoptable = status === "success";
       let adopted: boolean | null = null;
       let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
         "not_applied";
       let postTurnSha: string | null = null;
+      let revertAnchorId: string | null = null;
       if (input.inPlace === true && hasDiff) {
         if (requestedSingleCandidate) {
           // Already live: the candidate ran in-place and wrote the tree itself.
@@ -2952,8 +2907,20 @@ export class Orchestrator {
           // Protected path: --check first, restore on 3way failure —
           // adopted:false MUST mean the live tree is byte-identical (INV-114);
           // a failed restore is disclosed as tree_mutated, never hidden.
-          const applied = await applyPatchProtected(execRoot, winnerRun.diff);
-          if (applied.ok) {
+          const applied = await verifyAndDeliver(
+            execRoot,
+            winnerRun.diff,
+            { mode: "apply", protectedApply: true },
+            gateSpecsFromContract(contract),
+            (freshVerify) => {
+              finalVerify = freshVerify;
+              return finalVerifyBlocks(freshVerify)
+                ? (freshVerify.reason ?? "final verify failed before race adoption")
+                : null;
+            },
+            log,
+          );
+          if (applied.applied) {
             adopted = true;
             applyState = "applied";
             log.emit("work_product.adopted", {
@@ -2970,6 +2937,16 @@ export class Orchestrator {
           } else {
             adopted = false;
             applyState = "not_applied";
+            if (finalVerifyBlocks(finalVerify)) {
+              finalVerifyFailed = true;
+              status = "blocked";
+              store.writeYaml(decisionPath, {
+                ...result.decision,
+                ...blockedDecisionOverride(result.decision.evidence_facts, finalVerify),
+                review_verified: actualReviewVerified,
+                final_verify: finalVerify,
+              });
+            }
             log.emit("work_product.adopted", {
               applied: false,
               patch_sha256: patchSha256,
@@ -2978,6 +2955,9 @@ export class Orchestrator {
             });
           }
         }
+      }
+      if (applyState === "applied" || applyState === "applied_review_blocked") {
+        revertAnchorId = await createRevertAnchorOrNull(execRoot, preTurnSha, postTurnSha);
       }
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
@@ -3006,6 +2986,7 @@ export class Orchestrator {
           apply_state: applyState,
           pre_turn_sha: preTurnSha,
           post_turn_sha: postTurnSha,
+          revert_anchor_id: revertAnchorId,
         },
       });
       store.writeText(
@@ -3364,7 +3345,10 @@ export class Orchestrator {
       const candidateCwd = run.reviewCwd ?? cwd;
       const candidateEvidenceDir = this.prepareReviewEvidenceDir(reviewDir, candidateCwd);
       try {
-        this.writeTestsEvidence(candidateEvidenceDir, contract, run.gates);
+        writeText(
+          join(candidateEvidenceDir, "TESTS.txt"),
+          renderTestsEvidence(contract, run.gates).trim() + "\n",
+        );
         // a candidate that changed NO files has nothing to review — never
         // spend a reviewer panel on "(empty diff)" (a trivial greeting in agent mode used to
         // cost two reviewers). It still flows through policy gates and arbitration
@@ -3599,7 +3583,7 @@ export class Orchestrator {
     writeEvidencePacket(reviewDir, {
       userIntent: redactSecrets(input.prompt),
       diff: "(per-attempt)\n",
-      tests: this.testsEvidence(contract),
+      tests: renderTestsEvidence(contract),
     });
     const reviewersOutcome = await this.resolveReviewersWithArtifacts(
       input,
@@ -3912,7 +3896,10 @@ export class Orchestrator {
               candidateReviewCwd,
             );
             try {
-              this.writeTestsEvidence(candidateReviewEvidenceDir, contract, run.gates);
+              writeText(
+                join(candidateReviewEvidenceDir, "TESTS.txt"),
+                renderTestsEvidence(contract, run.gates).trim() + "\n",
+              );
               // Reviewer panels spend real money in convergence too: reserve before,
               // settle the observed cost, and surface it as a budget observation
               // (parity with the race path's reviewRuns metering).
@@ -4191,7 +4178,12 @@ export class Orchestrator {
       (status === "success" || status === "ungated") &&
       !input.signal?.aborted
     ) {
-      convFinalVerify = await finalVerifyPatch(execRoot, lastRun, this.gateSpecs(contract), log);
+      convFinalVerify = await finalVerifyPatch(
+        execRoot,
+        lastRun,
+        gateSpecsFromContract(contract),
+        log,
+      );
       if (finalVerifyBlocks(convFinalVerify)) status = "blocked";
     }
     if (decision) {
@@ -4234,6 +4226,10 @@ export class Orchestrator {
             ? "applied"
             : "applied_review_blocked"
           : "not_applied";
+      const revertAnchorId =
+        convAdopted === true
+          ? await createRevertAnchorOrNull(execRoot, preTurnSha, lastPostTurnSha)
+          : null;
       store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
         id: newId("wp"),
         kind: "patch",
@@ -4250,6 +4246,7 @@ export class Orchestrator {
           apply_state: convApplyState,
           pre_turn_sha: convAdopted === true ? preTurnSha : null,
           post_turn_sha: convAdopted === true ? lastPostTurnSha : null,
+          revert_anchor_id: revertAnchorId,
         },
       });
       store.writeText(
@@ -4801,7 +4798,7 @@ export class Orchestrator {
         userIntent: redactSecrets(input.prompt),
         planAccepted: planEvidence,
         diff: planReviewDiff,
-        tests: this.testsEvidence(contract),
+        tests: renderTestsEvidence(contract),
       });
       // Reserve BEFORE spending: a hard budget tier must stop the paid plan
       // review from starting, not account for it after the fact.

@@ -1,5 +1,10 @@
 import { realpathSync } from "node:fs";
-import type { ApplyEligibility, DecisionRecord, WorkProduct } from "@claudexor/schema";
+import type {
+  ApplyEligibility,
+  DecisionRecord,
+  FinalVerifyRecord,
+  WorkProduct,
+} from "@claudexor/schema";
 import { parseUnifiedDiff } from "@claudexor/core";
 import { pathGuard } from "@claudexor/policy";
 import { sha256 } from "@claudexor/util";
@@ -28,6 +33,9 @@ export interface ApplyGateInput {
    * server-owned unblock, never client-faked state.
    */
   operatorDecision?: { action: string; patch_sha256?: string } | null;
+  /** Fresh verifier result for this delivery attempt. When omitted, the
+   * persisted decision result is used for read-only eligibility projection. */
+  finalVerify?: FinalVerifyRecord | null;
 }
 
 /**
@@ -79,8 +87,9 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
   // fresh tree at its own base is factually undeliverable — no operator
   // override can change that. Failed verify GATES may be overridden through
   // the same accept_risk path as any blocked run.
-  const fv = input.decision.final_verify;
-  if (fv?.attempted) {
+  const fv = input.finalVerify !== undefined ? input.finalVerify : input.decision.final_verify;
+  if (!fv?.attempted) return "fresh final verify is required before apply";
+  if (fv.attempted) {
     if (fv.applied_cleanly === false) {
       return `final verify: the patch did not apply onto a fresh tree at its base (${fv.reason ?? "conflict"}); re-run the task`;
     }

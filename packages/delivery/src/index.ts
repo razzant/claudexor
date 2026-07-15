@@ -3,17 +3,30 @@ import {
   applyPatchAndIndexProtected,
   applyPatchProtected,
   materializePatchTree,
+  readRevertAnchor,
+  revertWorkingTreePatch,
   reversePatchAndIndexProtected,
+  revParse,
+  snapshotTree,
   statusPorcelainMeaningful,
 } from "@claudexor/workspace";
 import { newId } from "@claudexor/util";
+import type { FinalVerifyRecord } from "@claudexor/schema";
+import type { GateSpec } from "@claudexor/review";
+import { finalVerifyBlocks, finalVerifyPatch, type VerifyEventLog } from "./final-verifier.js";
 
 export * from "./gate.js";
+export * from "./final-verifier.js";
 
 // Server-owned in-place revert (restore the live tree to a run's pre-turn
 // snapshot, refusing if the tree diverged). Co-located with apply; control-api
 // calls it for the revert_run operator decision.
 export { revertWorkingTreeTo as revertInPlace, type RevertResult } from "@claudexor/workspace";
+
+/** GC-independent in-place revert from the external immutable anchor. */
+export async function revertInPlaceFromAnchor(repo: string, anchorId: string) {
+  return revertWorkingTreePatch(repo, readRevertAnchor(repo, anchorId));
+}
 
 async function git(repo: string, args: string[], input?: string) {
   // Raw capture: the patch rides stdin already; stdout may carry diffs too.
@@ -58,6 +71,73 @@ export interface DeliverResult {
   /** True when a FAILED delivery left the tree mutated (restore failed);
    * `applied:false, treeMutated:false` guarantees the tree is untouched. */
   treeMutated?: boolean;
+}
+
+export interface VerifiedDeliverResult extends DeliverResult {
+  finalVerify: FinalVerifyRecord;
+  targetPreimageSha: string;
+  refused?: boolean;
+}
+
+/** One mutation entry point for manual/thread/race delivery. It verifies the
+ * patch on a fresh worktree bound to the current target preimage, lets the
+ * caller project its semantic apply policy, rechecks the preimage, then
+ * performs exactly one protected mutation. */
+export async function verifyAndDeliver(
+  repoRoot: string,
+  patch: string,
+  options: DeliverOptions & { protectedApply?: boolean },
+  gates: GateSpec[] = [],
+  authorize?: (finalVerify: FinalVerifyRecord) => string | null,
+  log: VerifyEventLog = { emit: () => undefined },
+): Promise<VerifiedDeliverResult> {
+  const targetPreimageSha = await snapshotTree(repoRoot);
+  const targetPreimageTree = await revParse(repoRoot, `${targetPreimageSha}^{tree}`);
+  const finalVerify = await finalVerifyPatch(
+    repoRoot,
+    { baseSha: targetPreimageSha, diff: patch },
+    gates,
+    log,
+  );
+  const refusal =
+    authorize?.(finalVerify) ?? (finalVerifyBlocks(finalVerify) ? "final verify failed" : null);
+  if (refusal) {
+    return {
+      mode: options.mode,
+      applied: false,
+      treeMutated: false,
+      detail: refusal,
+      finalVerify,
+      targetPreimageSha,
+      refused: true,
+    };
+  }
+  const observedSha = await snapshotTree(repoRoot);
+  const observedTree = await revParse(repoRoot, `${observedSha}^{tree}`);
+  if (observedTree !== targetPreimageTree) {
+    return {
+      mode: options.mode,
+      applied: false,
+      treeMutated: false,
+      detail: "target changed after final verify; refusing stale delivery",
+      finalVerify,
+      targetPreimageSha,
+      refused: true,
+    };
+  }
+  if (options.protectedApply) {
+    const applied = await applyPatchProtected(repoRoot, patch);
+    return {
+      mode: "apply",
+      applied: applied.ok,
+      treeMutated: applied.treeMutated,
+      detail: applied.detail,
+      finalVerify,
+      targetPreimageSha,
+    };
+  }
+  const delivered = await deliver(repoRoot, patch, options);
+  return { ...delivered, finalVerify, targetPreimageSha };
 }
 
 /**
