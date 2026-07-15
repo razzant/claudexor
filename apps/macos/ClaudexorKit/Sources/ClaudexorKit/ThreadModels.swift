@@ -290,29 +290,17 @@ public struct ThreadApplyResponse: Codable, Sendable {
     public let delivery: JSONValue?
 }
 
-/// Body for POST /threads/:id/turns — a reduced run start anchored by the thread.
-/// One inbound attachment on a turn. Mirrors the control `AttachmentInput`:
-/// bytes ride base64-inline in `data` for a fresh upload (the daemon decodes
-/// them to a scoped file). `kind` is "image" or "file"; `mime` is used for the
-/// per-harness serializer. Vision gating reads the harness manifest's
-/// `capability_profile.image_input` — never send an image to a `none` harness.
-public struct AttachmentInput: Codable, Sendable, Identifiable, Equatable {
-    /// Stable-enough identity for SwiftUI chips (NOT encoded — computed).
-    public var id: String { "\(name):\(data?.count ?? path?.count ?? 0)" }
-    public var kind: String
-    public var mime: String
-    public var name: String
-    public var data: String?
-    public var path: String?
-    public init(kind: String, mime: String, name: String, data: String? = nil, path: String? = nil) {
-        self.kind = kind
-        self.mime = mime
-        self.name = name
-        self.data = data
-        self.path = path
+/// Immutable daemon resource reference accepted by run and turn requests.
+/// Bytes are uploaded and finalized before this value crosses the turn boundary.
+public struct ResourceAttachmentRef: Codable, Sendable, Equatable {
+    public let resourceId: String
+
+    public init(resourceId: String) {
+        self.resourceId = resourceId
     }
 }
 
+/// Body for POST /threads/:id/turns — a reduced run start anchored by the thread.
 public struct ThreadTurnRequest: Codable, Sendable {
     public var prompt: String
     public var mode: String?
@@ -349,9 +337,8 @@ public struct ThreadTurnRequest: Codable, Sendable {
     /// Implement a FROZEN spec: the path to the SpecPack file the orchestrator
     /// reads (fails loudly if unreadable). Carried by an Implement-spec turn.
     public var specPath: String?
-    /// Files/images attached to this turn (bytes ride base64-inline in each
-    /// AttachmentInput.data; the daemon resolves them to scoped paths).
-    public var attachments: [AttachmentInput]?
+    /// Files/images attached to this turn by immutable daemon resource id.
+    public var attachments: [ResourceAttachmentRef]?
     /// Optional per-turn gate/test command list; mirrors ControlRunStartRequest.
     public var tests: [TestCommandInvocation]?
     /// Typed approvals for protected gate/test path changes; never inferred from prompt text.
@@ -366,7 +353,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
-                specPath: String? = nil, attachments: [AttachmentInput]? = nil,
+                specPath: String? = nil, attachments: [ResourceAttachmentRef]? = nil,
                 tests: [TestCommandInvocation]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
                 authPreference: String? = nil) {
         self.prompt = prompt

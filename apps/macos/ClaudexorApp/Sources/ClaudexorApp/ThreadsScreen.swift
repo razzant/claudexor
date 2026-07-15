@@ -11,10 +11,9 @@ import UniformTypeIdentifiers
 struct ThreadsScreen: View {
     @Environment(AppModel.self) private var model
     @State private var composerText = ""
-    /// Files/images attached to the next turn (base64-inline; the daemon resolves
-    /// them to scoped paths). Images are gated by the primary harness's image_input;
-    /// generic files can ride the shared attachment DTO.
-    @State private var composerAttachments: [AttachmentInput] = []
+    /// Files/images staged for upload before the next turn. Images are gated by
+    /// each selected harness's finite attachment-input declaration.
+    @State private var composerAttachments: [PendingAttachment] = []
     @State private var composerMode: RunMode = .agent
     // "⋯" per-turn options (collapsed by default).
     @State private var showOptions = false
@@ -899,11 +898,8 @@ struct ThreadsScreen: View {
         }
     }
 
-    /// Pick files via NSOpenPanel, read each into a base64 AttachmentInput. Bytes
-    /// ride inline to the loopback control API; the daemon writes them to a scoped
-    /// dir and the chosen harness gets them in its native shape. Reading +
-    /// base64-encoding happens OFF the main actor (a large picked file would
-    /// otherwise beach-ball the composer — same pattern as runScreencapture).
+    /// Pick files via NSOpenPanel and stage their bytes outside the main actor.
+    /// AppModel uploads and finalizes them before the turn sends resource ids.
     private func pickAttachments() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -913,8 +909,8 @@ struct ThreadsScreen: View {
         let urls = panel.urls
         let acceptsImages = primaryAcceptsImages
         Task {
-            let loaded = await Task.detached(priority: .userInitiated) { () -> (attachments: [AttachmentInput], skippedImages: Int) in
-                var attachments: [AttachmentInput] = []
+            let loaded = await Task.detached(priority: .userInitiated) { () -> (attachments: [PendingAttachment], skippedImages: Int) in
+                var attachments: [PendingAttachment] = []
                 var skippedImages = 0
                 for url in urls {
                     guard let data = try? Data(contentsOf: url) else { continue }
@@ -924,9 +920,9 @@ struct ThreadsScreen: View {
                         skippedImages += 1
                         continue
                     }
-                    attachments.append(AttachmentInput(
+                    attachments.append(PendingAttachment(
                         kind: isImage ? "image" : "file", mime: mime, name: url.lastPathComponent,
-                        data: data.base64EncodedString()))
+                        data: data))
                 }
                 return (attachments, skippedImages)
             }.value
@@ -976,8 +972,8 @@ struct ThreadsScreen: View {
         }
     }
 
-    private static func runScreencapture() async -> AttachmentInput? {
-        await withCheckedContinuation { (cont: CheckedContinuation<AttachmentInput?, Never>) in
+    private static func runScreencapture() async -> PendingAttachment? {
+        await withCheckedContinuation { (cont: CheckedContinuation<PendingAttachment?, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 let tmp = FileManager.default.temporaryDirectory
                     .appendingPathComponent("claudexor-shot-\(UUID().uuidString).png")
@@ -990,9 +986,9 @@ struct ThreadsScreen: View {
                     cont.resume(returning: nil); return // cancelled or permission denied
                 }
                 try? FileManager.default.removeItem(at: tmp)
-                cont.resume(returning: AttachmentInput(
+                cont.resume(returning: PendingAttachment(
                     kind: "image", mime: "image/png", name: "screenshot.png",
-                    data: data.base64EncodedString()))
+                    data: data))
             }
         }
     }

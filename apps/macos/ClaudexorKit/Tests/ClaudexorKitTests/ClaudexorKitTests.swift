@@ -533,6 +533,22 @@ import Testing
         #expect(obj?["n"] == nil)
     }
 
+    @Test func threadTurnRequestEncodesOnlyFinalizedResourceReferences() throws {
+        let request = ThreadTurnRequest(
+            prompt: "inspect",
+            attachments: [ResourceAttachmentRef(resourceId: "res-finalized")]
+        )
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        let attachments = try #require(object["attachments"] as? [[String: Any]])
+        #expect(attachments.count == 1)
+        #expect(attachments[0].count == 1)
+        #expect(attachments[0]["resourceId"] as? String == "res-finalized")
+        #expect(attachments[0]["data"] == nil)
+        #expect(attachments[0]["path"] == nil)
+    }
+
     @Test func updateThreadRequestEncodesPrimaryAndPoolIncludingClear() throws {
         // Switch: explicit primary + pool.
         let switchBody = UpdateThreadRequest(primaryHarness: .some("claude"), eligibleHarnesses: ["claude", "cursor"])
@@ -1572,6 +1588,65 @@ import Testing
         }
         _ = try await client.listSetupJobs(filter: SetupJobListFilter(harness: "claude", active: true, limit: 1))
         RequestStubURLProtocol.handler = nil
+    }
+
+    @Test func gatewayUploadsExactBytesAndFinalizesDigestBeforeReturningReference() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        let payload = Data("generic sentinel".utf8)
+        var step = 0
+        RequestStubURLProtocol.handler = { request in
+            defer { step += 1 }
+            switch step {
+            case 0:
+                let body = try #require(testRequestBody(request))
+                let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+                guard request.httpMethod == "POST", request.url?.path == "/v2/uploads",
+                      object["kind"] as? String == "file",
+                      object["mime"] as? String == "text/plain",
+                      object["name"] as? String == "note.txt",
+                      object["sizeBytes"] as? Int == payload.count else {
+                    throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+                }
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: "HTTP/1.1", headerFields: nil)!,
+                    Data(#"{"uploadId":"upl-1","state":"open","receivedBytes":0,"expectedBytes":16}"#.utf8)
+                )
+            case 1:
+                guard request.httpMethod == "PUT", request.url?.path == "/v2/uploads/upl-1/bytes",
+                      testRequestBody(request) == payload else {
+                    throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+                }
+                return (
+                    Self.response(for: request),
+                    Data(#"{"uploadId":"upl-1","state":"uploaded","receivedBytes":16,"expectedBytes":16}"#.utf8)
+                )
+            case 2:
+                let body = try #require(testRequestBody(request))
+                let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+                guard request.httpMethod == "POST", request.url?.path == "/v2/uploads/upl-1/finalize",
+                      object["expectedSha256"] == "sha256:82dd674276b6cc38b6c4314020c896b23cd2f2203b1886808951956f51d411fa" else {
+                    throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+                }
+                return (
+                    HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: "HTTP/1.1", headerFields: nil)!,
+                    Data(#"{"resourceId":"res-1","kind":"file","mime":"text/plain","name":"note.txt","sha256":"sha256:82dd674276b6cc38b6c4314020c896b23cd2f2203b1886808951956f51d411fa","sizeBytes":16,"createdAt":"2026-07-15T00:00:00Z","deduplicated":false}"#.utf8)
+                )
+            default:
+                throw TestTransportError.badRequest("unexpected request")
+            }
+        }
+
+        let reference = try await client.uploadResource(
+            kind: "file", mime: "text/plain", name: "note.txt", data: payload
+        )
+        #expect(reference == ResourceAttachmentRef(resourceId: "res-1"))
+        #expect(step == 3)
     }
 
     @Test func gatewayHealthNegotiatesV2BeforeReportingReady() async throws {

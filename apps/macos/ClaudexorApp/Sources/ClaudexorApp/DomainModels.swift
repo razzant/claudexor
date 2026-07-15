@@ -6,6 +6,16 @@ import SwiftUI
 /// (live) or `DemoData` (showcase fallback). The canonical shapes live in
 /// `packages/schema`; these are the minimal projections the views display.
 
+// MARK: - Composer attachments
+
+struct PendingAttachment: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let kind: String
+    let mime: String
+    let name: String
+    let data: Data
+}
+
 // MARK: - Connection
 
 enum Health: Equatable {
@@ -784,9 +794,8 @@ struct HarnessInfo: Identifiable, Hashable {
     var intents: [String]
     var reasons: [String] = []
     var checks: [String] = []
-    /// True when the harness manifest declares a non-`none` `image_input` mode —
-    /// drives honest composer attach gating (never send an image to a harness
-    /// that would silently ignore it).
+    /// True when the harness manifest declares a finite image attachment input —
+    /// drives honest composer gating for routes that can receive the same bytes.
     var acceptsImages: Bool = false
     /// True when the harness manifest declares the `browser_tool` capability —
     /// drives the composer's agent-browser toggle (honest: only offered where the

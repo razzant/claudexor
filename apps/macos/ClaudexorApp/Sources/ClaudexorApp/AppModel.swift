@@ -388,7 +388,7 @@ final class AppModel {
                 let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
                 let auth = Self.harnessReadinessText(status: status, health: health)
                 let checks = status.checks.map { "\($0.id): \($0.status)" }
-                let acceptsImages = (status.manifest?["capability_profile"]?["image_input"]?.stringValue ?? "none") != "none"
+                let acceptsImages = Self.acceptsImages(manifest: status.manifest)
                 let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
                 // The doctor's configured-model verdict rides the DTO —
                 // surface a rejection so a doomed default is visible in Settings.
@@ -407,6 +407,22 @@ final class AppModel {
         } catch {
             // Keep last-known harness rows.
             return false
+        }
+    }
+
+    static func acceptsImages(manifest: JSONValue?) -> Bool {
+        guard case .array(let inputs) = manifest?["capability_profile"]?["attachment_inputs"] else {
+            return false
+        }
+        return inputs.contains { input in
+            guard input["kind"]?.stringValue == "image",
+                  let maxBytes = input["max_bytes"]?.doubleValue, maxBytes > 0, maxBytes.isFinite,
+                  let maxCount = input["max_count"]?.doubleValue, maxCount > 0, maxCount.isFinite,
+                  input["transport"]?.stringValue != nil,
+                  case .array(let mimeTypes) = input["mime_types"] else {
+                return false
+            }
+            return mimeTypes.contains { $0.stringValue?.isEmpty == false }
         }
     }
 
@@ -1163,7 +1179,7 @@ final class AppModel {
     /// Binding the target removes the thread-selection race: an action begun on one
     /// thread can't be re-pointed at a different thread the user switched to during
     /// the async send.
-    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [AttachmentInput] = [], options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
+    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [PendingAttachment] = [], options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
         let targetId = explicitThreadId ?? selectedThreadId
         // Single busy gate for EVERY turn-start path (composer, Implement-plan,
         // Implement-spec all funnel through here), so none can start a turn over a
@@ -1200,7 +1216,7 @@ final class AppModel {
     /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
     /// session resumes (plan -> implement is one conversation).
     @discardableResult
-    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [AttachmentInput] = [], options: TurnOptions = .init()) async -> Bool {
+    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [PendingAttachment] = [], options: TurnOptions = .init()) async -> Bool {
         guard let client else {
             threadStatus = "Engine offline — reconnect before sending."
             return false
@@ -1243,6 +1259,15 @@ final class AppModel {
         let repairMode = mode == .agent
         let result: RunStartResult
         do {
+            var attachmentRefs: [ResourceAttachmentRef] = []
+            for attachment in attachments {
+                attachmentRefs.append(try await client.uploadResource(
+                    kind: attachment.kind,
+                    mime: attachment.mime,
+                    name: attachment.name,
+                    data: attachment.data
+                ))
+            }
             result = try await client.sendTurn(threadId: threadId, body: ThreadTurnRequest(
                 prompt: prompt,
                 mode: mode.apiValue,
@@ -1266,7 +1291,7 @@ final class AppModel {
                 browser: options.browser ? true : nil,
                 planRunId: planRunId,
                 specPath: specPath,
-                attachments: attachments.isEmpty ? nil : attachments,
+                attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
                 protectedPathApprovals: options.protectedPathApprovals
             ))
         } catch {

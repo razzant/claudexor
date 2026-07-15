@@ -40,6 +40,26 @@ struct AppModelRefreshTests {
     }
 
     @MainActor
+    @Test func imageSupportComesFromFiniteAttachmentInputManifest() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!,
+            token: "test",
+            session: URLSession(configuration: config)
+        )
+        let model = AppModel(client: client, requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/harnesses" else { throw AppRefreshTestError.badRequest }
+            return (appResponse(for: request), Data(#"{"harnesses":[{"id":"claude","status":"ok","manifest":{"capability_profile":{"attachment_inputs":[{"kind":"image","mime_types":["image/png"],"max_bytes":1048576,"max_count":2,"transport":"file_path"}]}}}]}"#.utf8))
+        }
+
+        #expect(await model.refreshHarnesses())
+        #expect(model.harnessInfo(for: .claude)?.acceptsImages == true)
+    }
+
+    @MainActor
     @Test func lifecycleRefreshTargetsOneExactSourceAndPreservesCatalogState() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
