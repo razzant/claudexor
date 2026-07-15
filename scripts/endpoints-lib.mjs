@@ -104,6 +104,28 @@ const ROUTE_RESPONSE_OVERRIDES = new Map([
   ["POST /v2/spec/sessions/:id/cancel", "ControlSpecSession"],
   ["POST /v2/spec/sessions/:id/resume", "ControlSpecSession"],
   ["GET /v2/runs/:id", "ControlRunDetail"],
+  ["GET /v2/runs", "ControlRunListResponse"],
+  ["POST /v2/runs", "ControlRunStartResponse"],
+  ["POST /v2/runs/:id/apply", "ControlDeliveryResponse"],
+  ["POST /v2/runs/:id/apply/check", "ControlApplyCheckResponse"],
+  ["GET /v2/runs/:id/artifacts", "ControlArtifactListResponse"],
+  ["POST /v2/runs/:id/control", "ControlRunControlResponse"],
+  ["POST /v2/runs/:id/decision", "ControlRunDecisionResponse"],
+  ["POST /v2/runs/:id/interactions/:id/answer", "ControlInteractionAnswerResponse"],
+  ["POST /v2/runs/:id/retry", "ControlRunRetryResponse"],
+  ["GET /v2/runs/:id/run-again", "ControlRunAgainDraft"],
+  ["GET /v2/runs/:id/produced", "ControlArtifactListResponse"],
+  ["GET /v2/threads", "ControlThreadListResponse"],
+  ["POST /v2/threads", "ControlThread"],
+  ["GET /v2/threads/:id", "ControlThreadDetail"],
+  ["PATCH /v2/threads/:id", "ControlThread"],
+  ["POST /v2/threads/:id/turns", "ControlThreadTurnResponse"],
+  ["POST /v2/threads/:id/turns/:id/retry", "ControlThreadTurnResponse"],
+  ["GET /v2/secrets", "ControlSecretListResponse"],
+  ["POST /v2/secrets", "ControlSecretMutationResponse"],
+  ["DELETE /v2/secrets/:id", "ControlSecretMutationResponse"],
+  ["GET /v2/trust", "ControlTrustListResponse"],
+  ["POST /v2/trust", "ControlTrustState"],
   ["GET /v2/recovery/partitions/:id", "ControlJournalInspection"],
   ["POST /v2/recovery/partitions/:id/validate", "ControlJournalValidation"],
   ["POST /v2/recovery/partitions/:id/export", "ControlJournalExportReceipt"],
@@ -111,10 +133,14 @@ const ROUTE_RESPONSE_OVERRIDES = new Map([
 ]);
 
 const ROUTE_REQUEST_OVERRIDES = new Map([
+  ["POST /v2/runs", "ControlRunStartRequest"],
+  ["POST /v2/runs/:id/retry", null],
+  ["GET /v2/runs/:id/run-again", null],
   ["POST /v2/projects", "ControlProjectRegisterRequest"],
   ["POST /v2/projects/:id/relink", "ControlProjectRelinkRequest"],
   ["POST /v2/spec/sessions", "ControlSpecQuestionsRequest"],
   ["POST /v2/spec/sessions/:id/answers", "ControlSpecAnswersRequest"],
+  ["POST /v2/spec/sessions/:id/resume", null],
   ["POST /v2/recovery/partitions/:id/quarantine", "ControlJournalQuarantineRequest"],
 ]);
 
@@ -146,9 +172,16 @@ export function endpointDetails(input) {
         method: site.method,
         path: site.path,
         mutating: site.method !== "GET" && !READ_ONLY_NON_GET.has(key),
-        requestSchema: ROUTE_REQUEST_OVERRIDES.get(key) ?? (requestMatch ? requestMatch[1] : null),
-        responseSchema:
-          ROUTE_RESPONSE_OVERRIDES.get(key) ?? (serviceMatch ? serviceMatch[1] : null),
+        requestSchema: ROUTE_REQUEST_OVERRIDES.has(key)
+          ? ROUTE_REQUEST_OVERRIDES.get(key)
+          : requestMatch
+            ? requestMatch[1]
+            : null,
+        responseSchema: ROUTE_RESPONSE_OVERRIDES.has(key)
+          ? ROUTE_RESPONSE_OVERRIDES.get(key)
+          : serviceMatch
+            ? serviceMatch[1]
+            : null,
       };
     });
   });

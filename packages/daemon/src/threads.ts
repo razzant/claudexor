@@ -19,6 +19,7 @@ interface ThreadMutation {
   sessions?: Session[];
   turns?: ThreadTurn[];
   idempotency?: { keyDigest: string; requestDigest: string; turnId: string };
+  threadCreation?: { keyDigest: string; requestDigest: string; threadId: string };
 }
 
 const UPSERTED = "thread.entities_upserted";
@@ -33,6 +34,7 @@ export interface CreateThreadInput {
   primaryHarness?: string | null;
   /** Sticky eligible harness pool for the thread (turns inherit when unset). */
   eligibleHarnesses?: string[];
+  idempotency?: { key: string; client: string; request: unknown };
 }
 
 export interface CreateTurnInput {
@@ -70,6 +72,7 @@ function coercePrimaryToPool(primary: string | null, pool: string[]): string | n
 export class ThreadStore {
   private state: ThreadStoreState = { threads: [], sessions: [], turns: [] };
   private readonly turnIdByKey = new Map<string, { turnId: string; requestDigest: string }>();
+  private readonly threadIdByKey = new Map<string, { threadId: string; requestDigest: string }>();
 
   constructor(private readonly journal: DurableJournal) {
     this.replay();
@@ -84,6 +87,10 @@ export class ThreadStore {
     assertUnique(this.state.turns, "turn");
     for (const value of this.turnIdByKey.values()) {
       if (!this.getTurn(value.turnId)) throw new Error("thread idempotency index is dangling");
+    }
+    for (const value of this.threadIdByKey.values()) {
+      if (!this.getThread(value.threadId))
+        throw new Error("thread creation idempotency index is dangling");
     }
   }
 
@@ -112,9 +119,28 @@ export class ThreadStore {
       }
       this.turnIdByKey.set(keyDigest, { turnId, requestDigest });
     }
+    if (mutation.threadCreation) {
+      const { keyDigest, requestDigest, threadId } = mutation.threadCreation;
+      const prior = this.threadIdByKey.get(keyDigest);
+      if (prior && (prior.threadId !== threadId || prior.requestDigest !== requestDigest)) {
+        throw new Error("conflicting thread creation idempotency history");
+      }
+      this.threadIdByKey.set(keyDigest, { threadId, requestDigest });
+    }
   }
 
   createThread(input: CreateThreadInput): Thread {
+    const creation = threadCreationIdempotency(this.journal.options.partition, input.idempotency);
+    if (creation) {
+      const prior = this.threadIdByKey.get(creation.keyDigest);
+      if (prior) {
+        if (prior.requestDigest !== creation.requestDigest) throw idempotencyConflict();
+        const existing = this.getThread(prior.threadId);
+        if (!existing)
+          throw new Error(`idempotency record points to missing thread ${prior.threadId}`);
+        return existing;
+      }
+    }
     const now = nowIso();
     // Same invariant as updateThread: a sticky primary must be a member of a
     // non-empty eligible pool. Enforce it at CREATE too (the create request carries
@@ -143,7 +169,8 @@ export class ThreadStore {
       primary_harness: primary,
       eligible_harnesses: eligible,
     });
-    this.commit({ threads: [thread] });
+    if (creation) creation.threadId = thread.id;
+    this.commit({ threads: [thread], ...(creation ? { threadCreation: creation } : {}) });
     return thread;
   }
 
@@ -405,6 +432,7 @@ function parseMutation(value: unknown): ThreadMutation {
   }
   const mutation = value as ThreadMutation;
   const idempotency = mutation.idempotency;
+  const threadCreation = mutation.threadCreation;
   if (
     idempotency !== undefined &&
     (!idempotency ||
@@ -413,6 +441,15 @@ function parseMutation(value: unknown): ThreadMutation {
       typeof idempotency.turnId !== "string")
   ) {
     throw new Error("invalid thread idempotency record");
+  }
+  if (
+    threadCreation !== undefined &&
+    (!threadCreation ||
+      typeof threadCreation.keyDigest !== "string" ||
+      typeof threadCreation.requestDigest !== "string" ||
+      typeof threadCreation.threadId !== "string")
+  ) {
+    throw new Error("invalid thread creation idempotency record");
   }
   return {
     ...(mutation.threads
@@ -425,6 +462,25 @@ function parseMutation(value: unknown): ThreadMutation {
       ? { turns: mutation.turns.map((item) => ThreadTurnSchema.parse(item)) }
       : {}),
     ...(idempotency ? { idempotency: { ...idempotency } } : {}),
+    ...(threadCreation ? { threadCreation: { ...threadCreation } } : {}),
+  };
+}
+
+function threadCreationIdempotency(
+  partition: string,
+  input: CreateThreadInput["idempotency"],
+): ThreadMutation["threadCreation"] {
+  if (!input) return undefined;
+  validateIdempotencyKey(input.key);
+  return {
+    keyDigest: hashJson({
+      client: input.client,
+      partition,
+      operation: "thread.create",
+      key: input.key,
+    }),
+    requestDigest: hashJson(input.request),
+    threadId: "",
   };
 }
 
@@ -434,12 +490,7 @@ function turnIdempotency(
   input: CreateTurnInput["idempotency"],
 ): ThreadMutation["idempotency"] {
   if (!input) return undefined;
-  if (!input.key || input.key.length > 256) {
-    throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
-      code: "invalid_idempotency_key",
-      status: 400,
-    });
-  }
+  validateIdempotencyKey(input.key);
   return {
     keyDigest: hashJson({
       client: input.client,
@@ -450,6 +501,15 @@ function turnIdempotency(
     requestDigest: hashJson(input.request),
     turnId: "",
   };
+}
+
+function validateIdempotencyKey(key: string): void {
+  if (!key || key.length > 256) {
+    throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
+      code: "invalid_idempotency_key",
+      status: 400,
+    });
+  }
 }
 
 function idempotencyConflict(): Error & { code: string; status: number } {

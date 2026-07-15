@@ -37,6 +37,7 @@ function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promis
     (init.method ?? "GET").toUpperCase() === "POST" &&
     (url.pathname === "/v2/runs" ||
       url.pathname === "/v2/projects" ||
+      url.pathname === "/v2/threads" ||
       /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(url.pathname)) &&
     !headers.has("Idempotency-Key")
   ) {
@@ -457,13 +458,23 @@ describe("DaemonControlApiServer", () => {
       expect(catalog.status).toBe(200);
       const body = (await catalog.json()) as {
         protocolMajor: number;
-        operations: { id: string; path: string }[];
+        operations: {
+          id: string;
+          path: string;
+          responseKind: string;
+          responseSchema: string | null;
+        }[];
       };
       expect(body.protocolMajor).toBe(2);
       expect(body.operations.every((operation) => operation.path.startsWith("/v2/"))).toBe(true);
       expect(new Set(body.operations.map((operation) => operation.id)).size).toBe(
         body.operations.length,
       );
+      expect(
+        body.operations.filter(
+          (operation) => operation.responseKind === "json" && operation.responseSchema === null,
+        ),
+      ).toEqual([]);
       expect(body.operations).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ path: "/v2/runs" }),
@@ -794,7 +805,12 @@ describe("DaemonControlApiServer", () => {
       },
     };
     const services: DaemonControlApiOptions["services"] = {
-      createThread: async () => threadObj,
+      createThread: async (input) => {
+        expect(input).toMatchObject({
+          idempotency: { client: "control-api", request: { title: "test thread" } },
+        });
+        return threadObj;
+      },
       listThreads: async () => ({ threads: [threadObj] }),
       threadDetail: async (id) => {
         expect(id).toBe("th-1");
@@ -819,6 +835,18 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       wrapped,
       async (base) => {
+        const missingThreadKey = await globalThis.fetch(`${base}/v2/threads`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            "X-Claudexor-Protocol-Major": "2",
+          },
+          body: JSON.stringify({ title: "test thread", scope: { kind: "project", root: repo } }),
+        });
+        expect(missingThreadKey.status).toBe(400);
+        expect(await missingThreadKey.json()).toMatchObject({ code: "idempotency_key_required" });
+
         const missingKey = await globalThis.fetch(`${base}/v2/threads/th-1/turns`, {
           method: "POST",
           headers: {
@@ -4427,6 +4455,77 @@ describe("DaemonControlApiServer", () => {
       });
       expect(record.params).not.toHaveProperty("retryOf");
     });
+  });
+
+  it("Exact Retry and Run Again restore threaded attachment references from the durable turn", async () => {
+    const { daemon, record } = fakeDaemon();
+    const attachmentPath = join(record.runDir as string, "context", "attached.txt");
+    writeFileSync(attachmentPath, "attached sentinel");
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      threadId: "th-source",
+      turnId: "tn-source",
+    };
+    let copiedAttachments: unknown;
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params, options);
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({
+        thread: { id: "th-source" },
+        sessions: [],
+        turns: [
+          {
+            id: "tn-source",
+            attachments: [
+              {
+                id: "att-source",
+                kind: "file",
+                mime: "text/plain",
+                name: "attached.txt",
+                path: attachmentPath,
+              },
+            ],
+          },
+        ],
+      }),
+      createThreadTurn: async (_id, _prompt, options) => {
+        copiedAttachments = options.attachments;
+        return { id: "tn-retry" };
+      },
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        const retry = await apiFetch(`${base}/runs/run-d1/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "attachment-retry" },
+          body: "{}",
+        });
+        expect(retry.status).toBe(200);
+        expect(copiedAttachments).toEqual([
+          expect.objectContaining({ name: "attached.txt", path: attachmentPath }),
+        ]);
+        expect(enqueued?.["attachments"]).toEqual([
+          expect.objectContaining({ name: "attached.txt", path: attachmentPath }),
+        ]);
+
+        const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(draft.status).toBe(200);
+        expect(
+          ((await draft.json()) as { request: { attachments?: unknown[] } }).request.attachments,
+        ).toEqual([expect.objectContaining({ name: "attached.txt", path: attachmentPath })]);
+      },
+      undefined,
+      services,
+    );
   });
 
   it("Run Again returns an editable request and discloses omitted server-owned bindings", async () => {

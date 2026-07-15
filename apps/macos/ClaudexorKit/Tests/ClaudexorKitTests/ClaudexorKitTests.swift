@@ -24,6 +24,19 @@ import Testing
         #expect(value == again)
     }
 
+    @Test func runAgainDraftPreservesEveryUnknownAndNestedRunField() throws {
+        let json = #"{"sourceRunId":"run-1","request":{"prompt":"retry","mode":"agent","attachments":[{"kind":"file","mime":"text/plain","name":"a.txt","data":null,"path":"/tmp/a.txt"}],"effort":"xhigh","synthesis":"always","browser":true,"externalContextPolicy":"live","specId":"spec-1","autonomy":"auto_safe","maxToolCalls":12,"futureControl":{"enabled":true}},"differences":[]}"#
+        let draft = try JSONDecoder().decode(RunAgainDraft.self, from: Data(json.utf8))
+        #expect(draft.request["attachments"] != nil)
+        #expect(draft.request["effort"]?.stringValue == "xhigh")
+        #expect(draft.request["browser"]?.boolValue == true)
+        #expect(draft.request["maxToolCalls"]?.doubleValue == 12)
+        #expect(draft.request["futureControl"]?["enabled"]?.boolValue == true)
+        let encoded = try JSONEncoder().encode(draft)
+        let roundTrip = try JSONDecoder().decode(RunAgainDraft.self, from: encoded)
+        #expect(roundTrip.request == draft.request)
+    }
+
     @Test func startRunRequestEncodesPromptAndMode() throws {
         let req = StartRunRequest(
             prompt: "fix bug",

@@ -54,11 +54,13 @@ function documentedEndpoints(docText) {
 }
 
 const implemented = implementedEndpoints();
+let operationCatalog = null;
 
 // Runtime catalog and handler registry must describe the same product surface.
 // The CLI build performed by docs:check builds this artifact first.
 try {
   const { OPERATION_CATALOG } = await import("../packages/control-api/dist/operation-catalog.js");
+  operationCatalog = OPERATION_CATALOG;
   const described = new Set(OPERATION_CATALOG.operations.map((op) => `${op.method} ${op.path}`));
   const product = new Set([...implemented].filter((endpoint) => endpoint !== "GET /healthz"));
   for (const endpoint of product) {
@@ -130,6 +132,26 @@ try {
           failures.push(
             `endpoints.json references schema '${ref}' but packages/schema/generated/${ref}.schema.json does not exist`,
           );
+        }
+      }
+    }
+    if (operationCatalog) {
+      const catalogByEndpoint = new Map(
+        operationCatalog.operations.map((operation) => [
+          `${operation.method} ${operation.path}`,
+          operation,
+        ]),
+      );
+      for (const detail of details) {
+        if (detail.path === "/healthz") continue;
+        const key = `${detail.method} ${detail.path}`;
+        const operation = catalogByEndpoint.get(key);
+        if (
+          operation &&
+          (operation.requestSchema !== detail.requestSchema ||
+            operation.responseSchema !== detail.responseSchema)
+        ) {
+          failures.push(`operation catalog schema refs for '${key}' disagree with endpoints.json`);
         }
       }
     }

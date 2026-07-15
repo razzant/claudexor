@@ -19,7 +19,9 @@ public struct RunAgainDifference: Codable, Sendable, Equatable {
 
 public struct RunAgainDraft: Codable, Sendable {
     public let sourceRunId: String
-    public let request: StartRunRequest
+    /// Lossless editable request object. Keeping this schema-driven avoids a
+    /// hand-maintained Swift mirror silently dropping newly added run controls.
+    public let request: JSONValue
     public let differences: [RunAgainDifference]
 }
 

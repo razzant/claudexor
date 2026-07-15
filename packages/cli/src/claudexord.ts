@@ -579,7 +579,8 @@ function controlServices(
       runId: string,
       params: unknown,
       decision: Omit<OperatorDecisionRecord, "runId">,
-    ) => threads.recordOperatorDecision(params, { runId, ...decision }),
+      idempotency?: { key: string; client: string; request: unknown },
+    ) => threads.recordOperatorDecision(params, { runId, ...decision }, idempotency),
     harnesses: async (input?: HarnessListInput) => {
       const statuses = await buildGateway({ includeFakes: input?.includeFakes ?? false }).statusAll(
         { cwd: NO_PROJECT_ROOT, fresh: input?.fresh ?? false },

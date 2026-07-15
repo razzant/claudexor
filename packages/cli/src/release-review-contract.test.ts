@@ -106,10 +106,20 @@ describe("release review fail-closed contract", () => {
     expect(completionTermination("stop")).toEqual({ complete: true, error: null });
   });
 
-  it("parses only a whole JSON-array response", () => {
+  it("parses a whole JSON-array response with at most one exact json fence", () => {
     expect(parseChecklistJson(JSON.stringify(cleanRows()))).toEqual(cleanRows());
+    expect(parseChecklistJson(`\`\`\`json\n${JSON.stringify(cleanRows())}\n\`\`\``)).toEqual(
+      cleanRows(),
+    );
     expect(parseChecklistJson(`review:\n${JSON.stringify(cleanRows())}`)).toBeNull();
-    expect(parseChecklistJson(`\`\`\`json\n${JSON.stringify(cleanRows())}\n\`\`\``)).toBeNull();
+    expect(
+      parseChecklistJson(`before\n\`\`\`json\n${JSON.stringify(cleanRows())}\n\`\`\``),
+    ).toBeNull();
+    expect(
+      parseChecklistJson(
+        `\`\`\`json\n${JSON.stringify(cleanRows())}\n\`\`\`\n\`\`\`json\n[]\n\`\`\``,
+      ),
+    ).toBeNull();
   });
 
   it.each([

@@ -35,6 +35,15 @@ export const ControlOperationDescriptor = z
     completion: z.enum(["immediate", "durable_handle", "terminal_stream"]),
   })
   .strict()
+  .superRefine((value, ctx) => {
+    if (value.responseKind === "json" && value.responseSchema === null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["responseSchema"],
+        message: "JSON operations require an explicit response schema",
+      });
+    }
+  })
   .describe("Machine-readable truth for one implemented v2 operation.");
 export type ControlOperationDescriptor = z.infer<typeof ControlOperationDescriptor>;
 

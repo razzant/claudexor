@@ -14,7 +14,7 @@ import * as runStart from "./run-start.js";
 
 type RetryServices = Pick<
   NonNullable<DaemonControlApiOptions["services"]>,
-  "createThreadTurn" | "setTurnEnqueueError"
+  "createThreadTurn" | "setTurnEnqueueError" | "threadDetail"
 >;
 
 export interface RunRetryRouteContext {
@@ -61,7 +61,9 @@ async function exactRetry(
   let params: ControlRunStartRequest;
   try {
     idempotencyKey = runStart.requiredIdempotencyKey(req);
-    const parsed = ControlRunStartRequest.parse(source.params);
+    const parsed = ControlRunStartRequest.parse(
+      await sourceParamsWithThreadAttachments(ctx, source),
+    );
     const { turnId: _turnId, retryOf: _retryOf, ...original } = parsed;
     params = runStart.validateDirectRunAttachments(
       runStart.normalizeRunStart({
@@ -121,7 +123,9 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
   const source = await ctx.findRun(id);
   if (!source) return ctx.json(res, 404, { error: "no such run" });
   try {
-    const parsed = ControlRunStartRequest.parse(source.params);
+    const parsed = ControlRunStartRequest.parse(
+      await sourceParamsWithThreadAttachments(ctx, source),
+    );
     const { turnId, retryOf, planRunId, ...request } = parsed;
     const differences = [
       ...(turnId
@@ -142,4 +146,28 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
   } catch (error) {
     ctx.requestError(res, error);
   }
+}
+
+async function sourceParamsWithThreadAttachments(
+  ctx: RunRetryRouteContext,
+  source: DaemonRunRecord,
+): Promise<unknown> {
+  const params =
+    source.params && typeof source.params === "object" && !Array.isArray(source.params)
+      ? ({ ...source.params } as Record<string, unknown>)
+      : {};
+  if (params["attachments"] !== undefined) return params;
+  const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
+  const turnId = typeof params["turnId"] === "string" ? params["turnId"] : null;
+  if (!threadId || !turnId || !ctx.services?.threadDetail) return params;
+  const detail = await ctx.services.threadDetail(threadId);
+  const turn = detail.turns.find(
+    (candidate) =>
+      candidate &&
+      typeof candidate === "object" &&
+      !Array.isArray(candidate) &&
+      (candidate as { id?: unknown }).id === turnId,
+  ) as { attachments?: unknown } | undefined;
+  if (Array.isArray(turn?.attachments)) params["attachments"] = structuredClone(turn.attachments);
+  return params;
 }

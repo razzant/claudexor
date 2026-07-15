@@ -50,7 +50,10 @@ import {
   AttachmentInput,
   ControlWebEvidence,
   ControlApplyCheckRequest,
+  ControlApplyCheckResponse,
   ControlApplyRequest,
+  ControlArtifactListResponse,
+  ControlDeliveryResponse,
   AgentCapabilityCatalog,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
@@ -68,6 +71,7 @@ import {
   ControlReviewerPanelEntry,
   type ControlArtifactInfo,
   ControlRunDetail,
+  ControlRunListResponse,
   ControlRunSummary,
   ControlRunResult,
   ControlPrimaryOutput,
@@ -215,6 +219,7 @@ export interface DaemonControlApiOptions {
       runId: string,
       params: unknown,
       decision: ControlOperatorDecisionRecord,
+      idempotency?: { key: string; client: string; request: unknown },
     ) => ControlOperatorDecisionRecord;
     createThread?: (input: unknown) => Promise<unknown>;
     listThreads?: () => Promise<{ threads: unknown[] }>;
@@ -655,7 +660,13 @@ export class DaemonControlApiServer {
 
     if (method === "GET" && path === "/runs") {
       const runs = await this.opts.daemon.list();
-      return this.json(res, 200, { runs: runs.map((r) => this.summarizeRunOrDiagnostic(r)) });
+      return this.json(
+        res,
+        200,
+        ControlRunListResponse.parse({
+          runs: runs.map((r) => this.summarizeRunOrDiagnostic(r)),
+        }),
+      );
     }
 
     if (
@@ -772,6 +783,7 @@ export class DaemonControlApiServer {
         const body = await this.readBody(req);
         assertNoInlineSecretValues(body);
         const parsed = ControlThreadCreateRequest.parse(body);
+        const idempotencyKey = runStart.requiredIdempotencyKey(req);
         // Same project-root boundary validation as run start: a durable thread
         // with a relative/nonexistent root would only fail at its first turn.
         let repoRoot: string | null = null;
@@ -794,6 +806,11 @@ export class DaemonControlApiServer {
           authPreference: parsed.authPreference,
           primaryHarness: parsed.primaryHarness ?? null,
           eligibleHarnesses: parsed.eligibleHarnesses,
+          idempotency: {
+            key: idempotencyKey,
+            client: "control-api",
+            request: parsed,
+          },
         });
         return this.json(res, 200, projectThread(thread, false));
       } catch (err) {
@@ -978,10 +995,14 @@ export class DaemonControlApiServer {
     if (method === "GET" && artifactsRootMatch) {
       const rec = await this.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      return this.json(res, 200, {
-        runId: rec.runId ?? rec.id,
-        artifacts: listArtifacts(rec.runDir),
-      });
+      return this.json(
+        res,
+        200,
+        ControlArtifactListResponse.parse({
+          runId: rec.runId ?? rec.id,
+          artifacts: listArtifacts(rec.runDir),
+        }),
+      );
     }
 
     const artifactFetchMatch = /^\/runs\/([^/]+)\/artifacts\/(.+)$/.exec(path);
@@ -1027,7 +1048,11 @@ export class DaemonControlApiServer {
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       const repoRoot = producedRepoRoot(rec);
       const artifacts = repoRoot ? listArtifacts(join(repoRoot, "artifacts")) : [];
-      return this.json(res, 200, { runId: rec.runId ?? rec.id, artifacts });
+      return this.json(
+        res,
+        200,
+        ControlArtifactListResponse.parse({ runId: rec.runId ?? rec.id, artifacts }),
+      );
     }
 
     const producedFetchMatch = /^\/runs\/([^/]+)\/produced\/(.+)$/.exec(path);
@@ -1087,7 +1112,11 @@ export class DaemonControlApiServer {
       if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
       const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
       if (gateError) return this.json(res, 409, { error: gateError });
-      return this.json(res, 200, await checkPatch(repoRoot, patch));
+      return this.json(
+        res,
+        200,
+        ControlApplyCheckResponse.parse(await checkPatch(repoRoot, patch)),
+      );
     }
 
     const applyMatch = /^\/runs\/([^/]+)\/apply$/.exec(path);
@@ -1115,11 +1144,13 @@ export class DaemonControlApiServer {
       return this.json(
         res,
         200,
-        await deliver(repoRoot, patch, {
-          mode: body.mode,
-          branch: body.branch,
-          message: body.message,
-        }),
+        ControlDeliveryResponse.parse(
+          await deliver(repoRoot, patch, {
+            mode: body.mode,
+            branch: body.branch,
+            message: body.message,
+          }),
+        ),
       );
     }
 
@@ -1157,19 +1188,33 @@ export class DaemonControlApiServer {
           return this.json(res, 409, {
             error: "no patch artifact; there is nothing to unblock for apply",
           });
-        const decision = this.recordOperatorDecision(rec, {
-          action: body.action,
-          findingIds: body.findingIds,
-          acceptedRisks: body.acceptedRisks,
-          patchSha256: sha256(patch),
-          decidedAt: nowIso(),
-        });
-        writeOperatorDecisionProjection(rec, decision);
-        appendRunAuditEvent(rec, "control.applied", {
-          decision: body.action,
-          finding_ids: body.findingIds,
-          accepted_risks: body.acceptedRisks,
-        });
+        const decision = this.recordOperatorDecision(
+          rec,
+          {
+            action: body.action,
+            findingIds: body.findingIds,
+            acceptedRisks: body.acceptedRisks,
+            patchSha256: sha256(patch),
+            decidedAt: nowIso(),
+          },
+          {
+            key: decisionKey,
+            client: "control-api",
+            request: { runId: rec.runId ?? rec.id, body },
+          },
+        );
+        // These files are compatibility projections only. Once the journal ACKs,
+        // a projection failure must not turn an accepted decision into a false 500.
+        try {
+          writeOperatorDecisionProjection(rec, decision);
+          appendRunAuditEvent(rec, "control.applied", {
+            decision: body.action,
+            finding_ids: body.findingIds,
+            accepted_risks: body.acceptedRisks,
+          });
+        } catch {
+          // Journal authority remains queryable and replayable by Idempotency-Key.
+        }
         return this.json(
           res,
           200,
@@ -1815,6 +1860,7 @@ export class DaemonControlApiServer {
   private recordOperatorDecision(
     rec: DaemonRunRecord,
     decision: ControlOperatorDecisionRecord,
+    idempotency?: { key: string; client: string; request: unknown },
   ): ControlOperatorDecisionRecord {
     const record = this.opts.services?.recordOperatorDecision;
     if (!record) {
@@ -1822,7 +1868,7 @@ export class DaemonControlApiServer {
         status: 501,
       });
     }
-    return record(rec.runId ?? rec.id, rec.params, decision);
+    return record(rec.runId ?? rec.id, rec.params, decision, idempotency);
   }
 
   private threadTurnRouteCtx(): ThreadTurnRouteCtx {

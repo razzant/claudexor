@@ -125,14 +125,14 @@
       "path": "/v2/runs",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlRunListResponse"
     },
     {
       "method": "POST",
       "path": "/v2/runs",
       "mutating": true,
-      "request_schema": null,
-      "response_schema": null
+      "request_schema": "ControlRunStartRequest",
+      "response_schema": "ControlRunStartResponse"
     },
     {
       "method": "GET",
@@ -146,21 +146,21 @@
       "path": "/v2/runs/:id/apply",
       "mutating": true,
       "request_schema": "ControlApplyRequest",
-      "response_schema": null
+      "response_schema": "ControlDeliveryResponse"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/apply/check",
       "mutating": false,
       "request_schema": "ControlApplyCheckRequest",
-      "response_schema": null
+      "response_schema": "ControlApplyCheckResponse"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/artifacts",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlArtifactListResponse"
     },
     {
       "method": "GET",
@@ -174,14 +174,14 @@
       "path": "/v2/runs/:id/control",
       "mutating": true,
       "request_schema": "ControlRunControlRequest",
-      "response_schema": null
+      "response_schema": "ControlRunControlResponse"
     },
     {
       "method": "POST",
       "path": "/v2/runs/:id/decision",
       "mutating": true,
       "request_schema": "ControlRunDecisionRequest",
-      "response_schema": null
+      "response_schema": "ControlRunDecisionResponse"
     },
     {
       "method": "GET",
@@ -195,14 +195,14 @@
       "path": "/v2/runs/:id/interactions/:id/answer",
       "mutating": true,
       "request_schema": "ControlInteractionAnswerRequest",
-      "response_schema": null
+      "response_schema": "ControlInteractionAnswerResponse"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/produced",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlArtifactListResponse"
     },
     {
       "method": "GET",
@@ -216,35 +216,35 @@
       "path": "/v2/runs/:id/retry",
       "mutating": true,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlRunRetryResponse"
     },
     {
       "method": "GET",
       "path": "/v2/runs/:id/run-again",
       "mutating": false,
-      "request_schema": "ControlRunStartRequest",
-      "response_schema": null
+      "request_schema": null,
+      "response_schema": "ControlRunAgainDraft"
     },
     {
       "method": "GET",
       "path": "/v2/secrets",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlSecretListResponse"
     },
     {
       "method": "POST",
       "path": "/v2/secrets",
       "mutating": true,
       "request_schema": "ControlSecretSetRequest",
-      "response_schema": null
+      "response_schema": "ControlSecretMutationResponse"
     },
     {
       "method": "DELETE",
       "path": "/v2/secrets/:id",
       "mutating": true,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlSecretMutationResponse"
     },
     {
       "method": "GET",
@@ -362,7 +362,7 @@
       "method": "POST",
       "path": "/v2/spec/sessions/:id/resume",
       "mutating": true,
-      "request_schema": "ControlSpecAnswersRequest",
+      "request_schema": null,
       "response_schema": "ControlSpecSession"
     },
     {
@@ -370,28 +370,28 @@
       "path": "/v2/threads",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlThreadListResponse"
     },
     {
       "method": "POST",
       "path": "/v2/threads",
       "mutating": true,
       "request_schema": "ControlThreadCreateRequest",
-      "response_schema": null
+      "response_schema": "ControlThread"
     },
     {
       "method": "GET",
       "path": "/v2/threads/:id",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlThreadDetail"
     },
     {
       "method": "PATCH",
       "path": "/v2/threads/:id",
       "mutating": true,
       "request_schema": "ControlThreadUpdateRequest",
-      "response_schema": null
+      "response_schema": "ControlThread"
     },
     {
       "method": "POST",
@@ -405,28 +405,28 @@
       "path": "/v2/threads/:id/turns",
       "mutating": true,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlThreadTurnResponse"
     },
     {
       "method": "POST",
       "path": "/v2/threads/:id/turns/:id/retry",
       "mutating": true,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlThreadTurnResponse"
     },
     {
       "method": "GET",
       "path": "/v2/trust",
       "mutating": false,
       "request_schema": null,
-      "response_schema": null
+      "response_schema": "ControlTrustListResponse"
     },
     {
       "method": "POST",
       "path": "/v2/trust",
       "mutating": true,
       "request_schema": "ControlTrustUpdateRequest",
-      "response_schema": null
+      "response_schema": "ControlTrustState"
     }
   ]
 }

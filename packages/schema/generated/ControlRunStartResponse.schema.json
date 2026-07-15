@@ -1,0 +1,76 @@
+{
+  "$ref": "#/definitions/ControlRunStartResponse",
+  "definitions": {
+    "ControlRunStartResponse": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "description": "Daemon job id backing the run."
+            },
+            "runId": {
+              "type": "string",
+              "description": "Run id."
+            },
+            "taskId": {
+              "type": "string",
+              "description": "Task id, when already allocated."
+            },
+            "runDir": {
+              "type": "string",
+              "description": "On-disk run artifact directory."
+            }
+          },
+          "required": [
+            "runId",
+            "runDir"
+          ],
+          "additionalProperties": false,
+          "description": "Response for a successfully enqueued run."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "description": "Daemon job id."
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "queued",
+                "running",
+                "blocked",
+                "succeeded",
+                "no_op",
+                "ungated",
+                "review_not_run",
+                "failed",
+                "cancelled",
+                "interrupted_unknown",
+                "exhausted",
+                "not_converged",
+                "stuck_no_progress"
+              ],
+              "description": "Control-plane run state: queued/running while live; blocked awaiting a human; then a terminal outcome (succeeded, no_op, ungated, review_not_run, failed, cancelled, interrupted_unknown, exhausted, not_converged, stuck_no_progress)."
+            },
+            "error": {
+              "type": "string",
+              "description": "Error message, when the job failed."
+            }
+          },
+          "required": [
+            "jobId",
+            "state"
+          ],
+          "additionalProperties": false,
+          "description": "Compact state of a queued/running daemon job."
+        }
+      ],
+      "description": "Immediate or queued durable handle returned by POST /runs."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

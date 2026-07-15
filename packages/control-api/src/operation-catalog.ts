@@ -153,8 +153,8 @@ const operations: ControlOperationDescriptor[] = [
     "ControlAuthReadinessRefreshRequest",
     "ControlAuthReadinessRefreshResponse",
   ),
-  j("GET", "/v2/runs", "read_only"),
-  j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", null, {
+  j("GET", "/v2/runs", "read_only", null, "ControlRunListResponse"),
+  j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", "ControlRunStartResponse", {
     completion: "durable_handle",
     idempotency: "key_required",
   }),
@@ -164,9 +164,15 @@ const operations: ControlOperationDescriptor[] = [
     idempotency: "key_required",
   }),
   j("GET", "/v2/runs/:id/run-again", "read_only", null, "ControlRunAgainDraft"),
-  j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest"),
-  j("POST", "/v2/runs/:id/apply/check", "read_only", "ControlApplyCheckRequest"),
-  j("GET", "/v2/runs/:id/artifacts", "read_only"),
+  j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest", "ControlDeliveryResponse"),
+  j(
+    "POST",
+    "/v2/runs/:id/apply/check",
+    "read_only",
+    "ControlApplyCheckRequest",
+    "ControlApplyCheckResponse",
+  ),
+  j("GET", "/v2/runs/:id/artifacts", "read_only", null, "ControlArtifactListResponse"),
   descriptor({
     method: "GET",
     path: "/v2/runs/:id/artifacts/<path>",
@@ -175,12 +181,26 @@ const operations: ControlOperationDescriptor[] = [
     mutability: "read_only",
     responseKind: "binary",
   }),
-  j("POST", "/v2/runs/:id/control", "mutating", "ControlRunControlRequest", null, {
-    idempotency: "natural",
-  }),
-  j("POST", "/v2/runs/:id/decision", "mutating", "ControlRunDecisionRequest", null, {
-    idempotency: "key_required",
-  }),
+  j(
+    "POST",
+    "/v2/runs/:id/control",
+    "mutating",
+    "ControlRunControlRequest",
+    "ControlRunControlResponse",
+    {
+      idempotency: "natural",
+    },
+  ),
+  j(
+    "POST",
+    "/v2/runs/:id/decision",
+    "mutating",
+    "ControlRunDecisionRequest",
+    "ControlRunDecisionResponse",
+    {
+      idempotency: "key_required",
+    },
+  ),
   j("GET", "/v2/runs/:id/events", "read_only", null, null, { responseKind: "stream" }),
   j(
     "POST",
@@ -190,7 +210,7 @@ const operations: ControlOperationDescriptor[] = [
     "ControlInteractionAnswerResponse",
     { idempotency: "natural" },
   ),
-  j("GET", "/v2/runs/:id/produced", "read_only"),
+  j("GET", "/v2/runs/:id/produced", "read_only", null, "ControlArtifactListResponse"),
   descriptor({
     method: "GET",
     path: "/v2/runs/:id/produced/<path>",
@@ -199,10 +219,12 @@ const operations: ControlOperationDescriptor[] = [
     mutability: "read_only",
     responseKind: "binary",
   }),
-  j("GET", "/v2/threads", "read_only"),
-  j("POST", "/v2/threads", "mutating", "ControlThreadCreateRequest"),
-  j("GET", "/v2/threads/:id", "read_only"),
-  j("PATCH", "/v2/threads/:id", "mutating", "ControlThreadUpdateRequest", null, {
+  j("GET", "/v2/threads", "read_only", null, "ControlThreadListResponse"),
+  j("POST", "/v2/threads", "mutating", "ControlThreadCreateRequest", "ControlThread", {
+    idempotency: "key_required",
+  }),
+  j("GET", "/v2/threads/:id", "read_only", null, "ControlThreadDetail"),
+  j("PATCH", "/v2/threads/:id", "mutating", "ControlThreadUpdateRequest", "ControlThread", {
     idempotency: "natural",
   }),
   j(
@@ -212,10 +234,10 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadApplyRequest",
     "ControlThreadApplyResponse",
   ),
-  j("POST", "/v2/threads/:id/turns", "mutating", null, null, {
+  j("POST", "/v2/threads/:id/turns", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
   }),
-  j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, null, {
+  j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
   }),
   j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse"),

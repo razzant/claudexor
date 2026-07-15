@@ -1,0 +1,34 @@
+{
+  "$ref": "#/definitions/ControlApplyCheckResponse",
+  "definitions": {
+    "ControlApplyCheckResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stderr": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ok",
+        "code",
+        "stderr"
+      ],
+      "additionalProperties": false,
+      "description": "Mechanical git apply --check result."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

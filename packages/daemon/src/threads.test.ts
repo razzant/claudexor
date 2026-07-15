@@ -28,6 +28,24 @@ describe("ThreadStore", () => {
     expect(iso.workspace.mode).toBe("isolated");
   });
 
+  it("deduplicates thread creation by request and preserves the key across restart", () => {
+    const { root, journal, s } = store();
+    const input = {
+      repoRoot: "/tmp/proj",
+      idempotency: { key: "thread-1", client: "test", request: { root: "/tmp/proj" } },
+    };
+    const first = s.createThread(input);
+    expect(s.createThread(input).id).toBe(first.id);
+    expect(() =>
+      s.createThread({
+        ...input,
+        idempotency: { key: "thread-1", client: "test", request: { root: "/tmp/other" } },
+      }),
+    ).toThrow(/different request/);
+    const reloaded = reload(root, journal);
+    expect(reloaded.createThread(input).id).toBe(first.id);
+  });
+
   it("createTurn (run_id=null) then bindTurnRun is the single writer of run lineage", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

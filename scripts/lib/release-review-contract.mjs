@@ -106,10 +106,13 @@ export function completionTermination(finishReason) {
       };
 }
 
-/** Parse only the complete reviewer response; prose/fences are contract failures. */
+/** Parse only the complete reviewer response; one exact JSON fence is tolerated. */
 export function parseChecklistJson(raw) {
+  const text = String(raw ?? "").trim();
+  const fenced = text.startsWith("```json\n") && text.endsWith("\n```");
+  const json = fenced ? text.slice("```json\n".length, -"\n```".length).trim() : text;
   try {
-    const parsed = JSON.parse(String(raw ?? "").trim());
+    const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;

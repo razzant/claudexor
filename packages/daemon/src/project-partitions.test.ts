@@ -110,7 +110,8 @@ describe("ProjectPartitions", () => {
         .events()
         .some((event) => event.type === "run.event"),
     ).toBe(true);
-    f.partitions.recordOperatorDecision(
+    const decisionRequest = { runId: "run-a", action: "accept_risk" };
+    const recordedDecision = f.partitions.recordOperatorDecision(
       { scope: { kind: "project", root: projectA } },
       {
         runId: "run-a",
@@ -120,7 +121,22 @@ describe("ProjectPartitions", () => {
         patchSha256: `sha256:${"a".repeat(64)}`,
         decidedAt: "2026-01-01T00:00:00.000Z",
       },
+      { key: "decision-1", client: "test", request: decisionRequest },
     );
+    expect(
+      f.partitions.recordOperatorDecision(
+        { scope: { kind: "project", root: projectA } },
+        { ...recordedDecision, decidedAt: "2099-01-01T00:00:00.000Z" },
+        { key: "decision-1", client: "test", request: decisionRequest },
+      ),
+    ).toEqual(recordedDecision);
+    expect(() =>
+      f.partitions.recordOperatorDecision(
+        { scope: { kind: "project", root: projectA } },
+        recordedDecision,
+        { key: "decision-1", client: "test", request: { ...decisionRequest, action: "other" } },
+      ),
+    ).toThrow(/different request/);
 
     f.partitions.relinkProject(b.id, projectB2);
     expect(f.partitions.getThread(threadB.id)?.repo?.root).toBe(realpathSync(projectB2));

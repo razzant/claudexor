@@ -1,0 +1,73 @@
+{
+  "$ref": "#/definitions/ControlThreadTurnResponse",
+  "definitions": {
+    "ControlThreadTurnResponse": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "type": "string",
+              "description": "Daemon job id backing the run."
+            },
+            "runId": {
+              "type": "string",
+              "description": "Run id."
+            },
+            "taskId": {
+              "type": "string",
+              "description": "Task id, when already allocated."
+            },
+            "runDir": {
+              "type": "string",
+              "description": "On-disk run artifact directory."
+            },
+            "threadId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            "turnId": {
+              "$ref": "#/definitions/ControlThreadTurnResponse/anyOf/0/properties/threadId"
+            }
+          },
+          "required": [
+            "runId",
+            "runDir",
+            "threadId",
+            "turnId"
+          ],
+          "additionalProperties": false,
+          "description": "Response for a successfully enqueued run."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "jobId": {
+              "$ref": "#/definitions/ControlThreadTurnResponse/anyOf/0/properties/threadId"
+            },
+            "threadId": {
+              "$ref": "#/definitions/ControlThreadTurnResponse/anyOf/0/properties/threadId"
+            },
+            "turnId": {
+              "$ref": "#/definitions/ControlThreadTurnResponse/anyOf/0/properties/threadId"
+            },
+            "state": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "jobId",
+            "threadId",
+            "turnId",
+            "state"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "Durable handle returned by thread turn create or Exact Retry."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -7,7 +7,11 @@
  * the refused-turn honesty rules (persist the refusal ON the turn, INV-093).
  */
 import type { ServerResponse } from "node:http";
-import { ControlRunStartInfo, ControlRunStartRequest } from "@claudexor/schema";
+import {
+  ControlRunStartInfo,
+  ControlRunStartRequest,
+  ControlThreadTurnResponse,
+} from "@claudexor/schema";
 import type { AttachmentInput } from "@claudexor/schema";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 
@@ -127,16 +131,20 @@ async function respondToTurnJob(
     });
   }
   if (rec.runId && rec.runDir) {
-    return ctx.json(res, 200, {
-      ...ControlRunStartInfo.parse({
-        jobId: rec.id,
-        runId: rec.runId,
-        taskId: rec.taskId,
-        runDir: rec.runDir,
+    return ctx.json(
+      res,
+      200,
+      ControlThreadTurnResponse.parse({
+        ...ControlRunStartInfo.parse({
+          jobId: rec.id,
+          runId: rec.runId,
+          taskId: rec.taskId,
+          runDir: rec.runDir,
+        }),
+        turnId,
+        threadId,
       }),
-      turnId,
-      threadId,
-    });
+    );
   }
   if (ctx.isTerminalState(rec.state)) {
     return ctx.json(res, 500, {
@@ -147,7 +155,11 @@ async function respondToTurnJob(
       error: rec.error ?? `run ended pre-start: ${rec.state}`,
     });
   }
-  return ctx.json(res, 202, { jobId: rec.id, turnId, threadId, state: rec.state });
+  return ctx.json(
+    res,
+    202,
+    ControlThreadTurnResponse.parse({ jobId: rec.id, turnId, threadId, state: rec.state }),
+  );
 }
 
 /**

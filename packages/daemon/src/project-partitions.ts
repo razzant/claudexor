@@ -74,8 +74,9 @@ export class ProjectPartitions implements CommandAuthority {
   recordOperatorDecision(
     params: unknown,
     decision: OperatorDecisionRecord,
+    idempotency?: { key: string; client: string; request: unknown },
   ): OperatorDecisionRecord {
-    return this.decisionStoreForRequest(params).record(decision);
+    return this.decisionStoreForRequest(params).record(decision, idempotency);
   }
 
   recordRunEvent(params: unknown, event: RunEvent): RunEvent {
