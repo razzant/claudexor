@@ -397,6 +397,29 @@ describe("signed release review attestation sealer", () => {
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/finding count/);
   });
 
+  it("accepts a prompt-shaped advisory and binds reviewer identity from telemetry", () => {
+    const fixture = makeFixture();
+    writeJson(fixture.nativeParsed, [
+      {
+        completion: {
+          verdict: "PASS",
+          checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+          findingCount: 1,
+        },
+        findings: [
+          {
+            severity: "WARN",
+            category: "test_gap",
+            claim: "A nonblocking advisory follows the exact reviewer prompt shape.",
+            evidence: { files: [{ path: "TESTS.txt", lines: null }] },
+            proposed_fix: "Keep this item in the local punch list.",
+          },
+        ],
+      },
+    ]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).not.toThrow();
+  });
+
   it("refuses a malformed finding hidden inside an otherwise complete envelope", () => {
     const fixture = makeFixture();
     writeJson(fixture.nativeParsed, [

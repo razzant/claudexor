@@ -130,7 +130,31 @@ function artifactDigests(root, names) {
   };
 }
 
-function releaseNativeResponse(parsed, slot) {
+function normalizeNativeFinding(finding, metadata, index) {
+  requireValue(
+    finding && typeof finding === "object" && !Array.isArray(finding),
+    `${metadata.harness_id} finding ${index + 1} is malformed`,
+  );
+  return {
+    id: finding.id ?? `${metadata.harness_id}-release-${index + 1}`,
+    severity: finding.severity,
+    category: finding.category,
+    claim: finding.claim,
+    linked_acceptance_criteria: finding.linked_acceptance_criteria ?? [],
+    evidence: finding.evidence ?? {},
+    proposed_fix: finding.proposed_fix ?? null,
+    reviewer: {
+      harness_id: metadata.harness_id,
+      requested_model: metadata.requested_model,
+      requested_effort: metadata.requested_effort,
+      observed_model: metadata.observed_model,
+      route_proof_status: metadata.route_proof_status,
+    },
+    status: "proposed",
+  };
+}
+
+function releaseNativeResponse(parsed, slot, metadata) {
   requireValue(
     Array.isArray(parsed) && parsed.length >= 1,
     `${slot} completion envelope is missing`,
@@ -153,7 +177,10 @@ function releaseNativeResponse(parsed, slot) {
   );
   requireValue(completion.verdict === "PASS", `${slot} completion verdict did not pass`);
   requireValue(Array.isArray(findings), `${slot} findings are missing`);
-  for (const [index, finding] of findings.entries()) {
+  const normalizedFindings = findings.map((finding, index) =>
+    normalizeNativeFinding(finding, metadata, index),
+  );
+  for (const [index, finding] of normalizedFindings.entries()) {
     const valid = validateReviewFinding(finding);
     const reasons = (validateReviewFinding.errors ?? [])
       .map((error) => `${error.instancePath || "/"} ${error.message ?? error.keyword}`)
@@ -178,7 +205,7 @@ function releaseNativeResponse(parsed, slot) {
       `${slot} completion checklist is missing or incomplete`,
     );
   }
-  return findings;
+  return normalizedFindings;
 }
 
 function readProgress(path) {
@@ -236,7 +263,7 @@ function tier1Slot(root, required, index, expected) {
   requireValue(Number.isFinite(metadata.duration_ms), `${required.slot} duration is missing`);
   assertArtifactAbsent(join(dir, "parse-error.json"), `${required.slot} parse-error artifact`);
   const parsed = readJson(join(dir, "parsed-json-blocks.json"));
-  const findings = releaseNativeResponse(parsed, required.slot);
+  const findings = releaseNativeResponse(parsed, required.slot, metadata);
   const blockers = findings.filter((finding) => TIER1_BLOCKING.has(finding.severity));
   requireValue(blockers.length === 0, `${required.slot} has blocking or inconclusive findings`);
   const names = [
