@@ -4431,7 +4431,11 @@ describe("DaemonControlApiServer", () => {
 
   it("Run Again returns an editable request and discloses omitted server-owned bindings", async () => {
     const { daemon, record } = fakeDaemon();
-    record.params = { ...record.params, turnId: "tn-old", planRunId: "run-plan" };
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      turnId: "tn-old",
+      planRunId: "run-plan",
+    };
     await withDaemonServer(daemon, async (base) => {
       const response = await apiFetch(`${base}/runs/run-d1/run-again`, {
         headers: { authorization: `Bearer ${token}` },
