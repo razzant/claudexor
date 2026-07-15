@@ -2332,5 +2332,4 @@ final class AppModel {
             box.appendActivity(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }
     }
-
 }
