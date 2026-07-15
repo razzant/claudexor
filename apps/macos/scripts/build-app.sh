@@ -144,6 +144,15 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   echo "==> Deploying pinned Browser MCP runtime"
   rm -rf "$BROWSER_MCP_DIR"
   if ( cd "$REPO_ROOT" && pnpm --filter @claudexor/core deploy --legacy --prod "$BROWSER_MCP_DIR" >/dev/null ); then
+    # pnpm's legacy deploy creates a virtual-store self-link back to the source
+    # workspace. The deployed package already is @claudexor/core, so the link is
+    # redundant and makes codesign reject the bundle as an external destination.
+    DEPLOY_SELF_LINK="$BROWSER_MCP_DIR/node_modules/.pnpm/node_modules/@claudexor/core"
+    if [ -L "$DEPLOY_SELF_LINK" ]; then rm "$DEPLOY_SELF_LINK"; fi
+    if [ -e "$DEPLOY_SELF_LINK" ] || [ -L "$DEPLOY_SELF_LINK" ]; then
+      echo "ERROR: Browser MCP deploy retained an external @claudexor/core self-link" >&2
+      exit 1
+    fi
     echo "    browser-mcp-runtime $(du -sh "$BROWSER_MCP_DIR" | cut -f1 | tr -d ' ')"
   else
     echo "ERROR: Browser MCP deploy failed; packaged browser requests would be unavailable" >&2
