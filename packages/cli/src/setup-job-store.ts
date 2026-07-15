@@ -13,7 +13,7 @@ import {
   type ControlSetupJobListFilter,
   type ControlSetupJobSnapshot,
 } from "@claudexor/schema";
-import { ensureCanonicalPrivateDirectory, redactSecrets } from "@claudexor/util";
+import { ensureCanonicalPrivateDirectory, hashJson, redactSecrets } from "@claudexor/util";
 import { initialSetupJob, reduceSetupJob } from "./setup-job-reducer.js";
 
 export const ACTIVE_SETUP_STATES = new Set<ControlSetupJob["state"]>([
@@ -39,7 +39,24 @@ export interface SetupJobStoreOptions {
   journal?: DurableJournal;
 }
 
-type SetupJournalPayload = { job?: unknown; jobId?: unknown; line?: unknown };
+interface SetupCreateIdempotency {
+  key: string;
+  client: string;
+  request: unknown;
+}
+
+interface SetupCreateBinding {
+  keyDigest: string;
+  requestDigest: string;
+  jobId: string;
+}
+
+type SetupJournalPayload = {
+  job?: unknown;
+  jobId?: unknown;
+  line?: unknown;
+  binding?: unknown;
+};
 const MAX_LOG_RECORD_BYTES = 16 * 1024;
 
 /**
@@ -53,6 +70,7 @@ export class SetupJobStore {
   readonly artifactsDir: string;
   readonly journal: DurableJournal;
   private readonly jobs = new Map<string, ControlSetupJob>();
+  private readonly createByKey = new Map<string, { requestDigest: string; jobId: string }>();
   private readonly now: () => Date;
   private semanticRecovery: Extract<JournalRecoveryState, { status: "recovery_required" }> | null =
     null;
@@ -113,18 +131,45 @@ export class SetupJobStore {
     this.assertAvailable();
   }
 
-  create(job: ControlSetupJob): ControlSetupJob {
+  create(job: ControlSetupJob, idempotency?: SetupCreateIdempotency): ControlSetupJob {
     this.assertAvailable();
     if (this.jobs.has(job.jobId)) throw new Error(`setup job already exists: ${job.jobId}`);
-    return this.persist(initialSetupJob(job));
+    return this.persist(
+      initialSetupJob(job),
+      idempotency ? this.newBinding(job.jobId, idempotency) : undefined,
+    );
   }
 
-  private persist(job: ControlSetupJob): ControlSetupJob {
+  resolveCreate(idempotency: SetupCreateIdempotency): ControlSetupJob | null {
+    this.assertAvailable();
+    const binding = this.newBinding("pending", idempotency);
+    const prior = this.createByKey.get(binding.keyDigest);
+    if (!prior) return null;
+    if (prior.requestDigest !== binding.requestDigest) throw idempotencyConflict();
+    return this.status(prior.jobId);
+  }
+
+  bindCreate(jobId: string, idempotency: SetupCreateIdempotency): ControlSetupJob {
+    this.assertAvailable();
+    const job = this.status(jobId);
+    const binding = this.newBinding(jobId, idempotency);
+    const prior = this.createByKey.get(binding.keyDigest);
+    if (prior) {
+      if (prior.requestDigest !== binding.requestDigest) throw idempotencyConflict();
+      return this.status(prior.jobId);
+    }
+    this.journal.append<SetupJournalPayload>("setup.job.create_bound", { binding });
+    this.rememberBinding(binding);
+    return job;
+  }
+
+  private persist(job: ControlSetupJob, binding?: SetupCreateBinding): ControlSetupJob {
     this.assertAvailable();
     this.ensureJobDir(this.paths(job.jobId).dir);
-    this.journal.append<SetupJournalPayload>("setup.job.saved", { job });
+    this.journal.append<SetupJournalPayload>("setup.job.saved", { job, binding });
     const stored = cloneJob(job);
     this.jobs.set(job.jobId, stored);
+    if (binding) this.rememberBinding(binding);
     return cloneJob(stored);
   }
 
@@ -228,6 +273,15 @@ export class SetupJobStore {
         }
         continue;
       }
+      if (record.type === "setup.job.create_bound") {
+        const binding = parseBinding(record.payload?.binding);
+        if (!binding || !this.jobs.has(binding.jobId)) {
+          this.failSemantic(record, "invalid setup.job.create_bound payload");
+          return;
+        }
+        this.rememberBinding(binding);
+        continue;
+      }
       if (record.type !== "setup.job.saved") continue;
       const parsed = ControlSetupJobSchema.safeParse(record.payload?.job);
       if (!parsed.success) {
@@ -243,6 +297,14 @@ export class SetupJobStore {
         const current = this.jobs.get(parsed.data.jobId);
         const next = current ? reduceSetupJob(current, parsed.data) : initialSetupJob(parsed.data);
         this.jobs.set(next.jobId, cloneJob(next));
+        if (record.payload?.binding !== undefined) {
+          const binding = parseBinding(record.payload.binding);
+          if (!binding || binding.jobId !== next.jobId) {
+            this.failSemantic(record, "invalid setup create binding");
+            return;
+          }
+          this.rememberBinding(binding);
+        }
       } catch (error) {
         this.semanticRecovery = {
           status: "recovery_required",
@@ -255,6 +317,42 @@ export class SetupJobStore {
     }
     // Partition-level recovery is acknowledged only by the global recovery
     // coordinator after every registered projection has validated the prefix.
+  }
+
+  private newBinding(jobId: string, input: SetupCreateIdempotency): SetupCreateBinding {
+    if (!input.key.trim() || input.key.length > 256) {
+      throw Object.assign(new Error("invalid Idempotency-Key"), { status: 400 });
+    }
+    return {
+      keyDigest: hashJson({
+        client: input.client,
+        partition: "global",
+        operation: "setup.job.create",
+        key: input.key,
+      }),
+      requestDigest: hashJson(input.request),
+      jobId,
+    };
+  }
+
+  private rememberBinding(binding: SetupCreateBinding): void {
+    const prior = this.createByKey.get(binding.keyDigest);
+    if (prior && (prior.requestDigest !== binding.requestDigest || prior.jobId !== binding.jobId)) {
+      throw idempotencyConflict();
+    }
+    this.createByKey.set(binding.keyDigest, {
+      requestDigest: binding.requestDigest,
+      jobId: binding.jobId,
+    });
+  }
+
+  private failSemantic(record: { epoch: string; seq: number }, reason: string): void {
+    this.semanticRecovery = {
+      status: "recovery_required",
+      location: { kind: "cursor", epoch: record.epoch, seq: record.seq },
+      reason: `${reason} at journal seq ${record.seq}`,
+      discardedTailBytes: 0,
+    };
   }
 
   private assertAvailable(): void {
@@ -285,6 +383,32 @@ export class SetupJobStore {
       return false;
     }
   }
+}
+
+function parseBinding(value: unknown): SetupCreateBinding | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (
+    typeof row["keyDigest"] !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/.test(row["keyDigest"]) ||
+    typeof row["requestDigest"] !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/.test(row["requestDigest"]) ||
+    typeof row["jobId"] !== "string" ||
+    !/^setup-[A-Za-z0-9-]+$/.test(row["jobId"])
+  )
+    return null;
+  return {
+    keyDigest: row["keyDigest"],
+    requestDigest: row["requestDigest"],
+    jobId: row["jobId"],
+  };
+}
+
+function idempotencyConflict(): Error {
+  return Object.assign(new Error("Idempotency-Key was already used with a different request"), {
+    code: "idempotency_conflict",
+    status: 409,
+  });
 }
 
 function ensurePrivateRealDirectory(path: string, label: string): void {

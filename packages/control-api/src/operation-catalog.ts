@@ -234,9 +234,16 @@ const operations: ControlOperationDescriptor[] = [
     "ControlThreadApplyRequest",
     "ControlThreadApplyResponse",
   ),
-  j("POST", "/v2/threads/:id/turns", "mutating", null, "ControlThreadTurnResponse", {
-    idempotency: "key_required",
-  }),
+  j(
+    "POST",
+    "/v2/threads/:id/turns",
+    "mutating",
+    "ControlThreadTurnRequest",
+    "ControlThreadTurnResponse",
+    {
+      idempotency: "key_required",
+    },
+  ),
   j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
   }),
@@ -280,6 +287,7 @@ const operations: ControlOperationDescriptor[] = [
   j("GET", "/v2/setup/jobs", "read_only", null, "ControlSetupJobListResponse"),
   j("POST", "/v2/setup/jobs", "mutating", "ControlSetupJobCreateRequest", "ControlSetupJob", {
     completion: "durable_handle",
+    idempotency: "key_required",
   }),
   j("GET", "/v2/setup/jobs/:id", "read_only", null, "ControlSetupJob"),
   j("GET", "/v2/setup/jobs/:id/snapshot", "read_only", null, "ControlSetupJobSnapshot"),

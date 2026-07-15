@@ -1,6 +1,6 @@
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { timingSafeEqual } from "node:crypto";
-import { chmodSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
 import {
   assertNoInlineSecretValues,
@@ -146,10 +146,14 @@ export class DaemonServer {
     commandStores(this.opts.commands);
     await this.opts.startupBarrier?.("after_registry_load");
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled after registry load");
-    try {
-      rmSync(this.opts.socketPath, { force: true });
-    } catch {
-      /* nothing to clean */
+    if (pathExists(this.opts.socketPath)) {
+      const stale = lstatSync(this.opts.socketPath);
+      if (!stale.isSocket() || (process.getuid && stale.uid !== process.getuid())) {
+        throw Object.assign(new Error(`refusing to replace non-owned Unix socket path`), {
+          code: "unsafe_daemon_socket_path",
+        });
+      }
+      unlinkSync(this.opts.socketPath);
     }
     if (this.stopping) throw this.stoppingError("daemon startup was cancelled before listen");
     await new Promise<void>((resolve, reject) => {
@@ -173,13 +177,6 @@ export class DaemonServer {
   }
 
   private async stopOnce(): Promise<void> {
-    // Stop admission and scheduling before aborting anything. Queued jobs remain
-    // durable for the successor daemon; a completion racing shutdown must never
-    // start another runner after this writer begins draining.
-    // Graceful shutdown: abort in-flight runs so each runner performs its own
-    // bounded child-process teardown, then wait for the exact tracked promises.
-    // A wall-clock escape hatch here would release the single-writer ownership
-    // while a late runner can still persist or mutate user state.
     for (const controller of this.controllers.values()) {
       try {
         controller.abort(new Error("daemon shutdown"));

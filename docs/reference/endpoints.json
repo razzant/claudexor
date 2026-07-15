@@ -404,7 +404,7 @@
       "method": "POST",
       "path": "/v2/threads/:id/turns",
       "mutating": true,
-      "request_schema": null,
+      "request_schema": "ControlThreadTurnRequest",
       "response_schema": "ControlThreadTurnResponse"
     },
     {

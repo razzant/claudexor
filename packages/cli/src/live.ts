@@ -178,6 +178,8 @@ export function controlApiFetch(
     (externalPath === "/v2/runs" ||
       externalPath === "/v2/projects" ||
       externalPath === "/v2/spec/sessions" ||
+      externalPath === "/v2/setup/jobs" ||
+      externalPath === "/v2/threads" ||
       /^\/v2\/runs\/[^/]+\/(?:retry|decision)$/.test(externalPath) ||
       /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(externalPath)) &&
     !headers.has("Idempotency-Key")

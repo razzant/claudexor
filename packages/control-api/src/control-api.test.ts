@@ -2543,7 +2543,7 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       daemon,
       async (base) => {
-        const created = await apiFetch(`${base}/v2/setup/jobs`, {
+        const missingKey = await apiFetch(`${base}/v2/setup/jobs`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -2552,9 +2552,25 @@ describe("DaemonControlApiServer", () => {
             authRequest: "subscription",
           }),
         });
+        expect(missingKey.status).toBe(400);
+        const created = await apiFetch(`${base}/v2/setup/jobs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "setup-create-1" },
+          body: JSON.stringify({
+            harness: "cursor",
+            action: "login",
+            authRequest: "subscription",
+          }),
+        });
         expect(created.status).toBe(200);
         expect(await created.json()).toMatchObject({ jobId: "setup-1", action: "login" });
-        expect(seen).toEqual([{ harness: "cursor", action: "login", authRequest: "subscription" }]);
+        expect(seen).toEqual([
+          {
+            request: { harness: "cursor", action: "login", authRequest: "subscription" },
+            idempotencyKey: "setup-create-1",
+            clientId: "control-api",
+          },
+        ]);
         const retired = await globalThis.fetch(`${base}/setup/jobs`, {
           headers: { authorization: `Bearer ${token}` },
         });

@@ -86,6 +86,7 @@ import {
   ControlRunDecisionRequest,
   ControlRunDecisionResponse,
   ControlThreadCreateRequest,
+  ControlThreadTurnRequest,
   ControlThreadUpdateRequest,
   ControlThreadApplyRequest,
   ControlThreadApplyResponse,
@@ -183,7 +184,11 @@ export interface DaemonControlApiOptions {
       harnessId: string;
       request: ControlAuthReadinessRefreshRequest;
     }) => Promise<unknown>;
-    createSetupJob?: (input: unknown) => Promise<unknown>;
+    createSetupJob?: (input: {
+      request: ControlSetupJobCreateRequest;
+      idempotencyKey: string;
+      clientId: string;
+    }) => Promise<unknown>;
     listSetupJobs?: (input?: unknown) => Promise<unknown>;
     setupJobStatus?: (input: unknown) => Promise<unknown>;
     setupJobSnapshot?: (input: unknown) => Promise<unknown>;
@@ -391,12 +396,6 @@ function originIsLoopback(origin: string | undefined): boolean {
   }
 }
 
-/**
- * HTTP/SSE facade over the durable daemon. Canonical run/job state comes from the
- * daemon (journal-backed commands over the unix-socket JSON-RPC API). This server is a live
- * viewport only: POST/GET/cancel delegate to daemon. Scoped streams replay the
- * journal; the compatibility per-run stream tails the `events.jsonl` projection.
- */
 export class DaemonControlApiServer {
   private server?: Server;
   private startPromise: Promise<{ host: string; port: number }> | null = null;
@@ -899,9 +898,6 @@ export class DaemonControlApiServer {
       }
     }
 
-    // POST /threads/:id/apply — deliver an isolated thread's accumulated worktree
-    // diff to the project (in-place threads write the live tree directly, so they
-    // never need this).
     const threadApplyMatch = /^\/threads\/([^/]+)\/apply$/.exec(path);
     if (method === "POST" && threadApplyMatch) {
       const detailSvc = this.opts.services?.threadDetail;
@@ -962,11 +958,11 @@ export class DaemonControlApiServer {
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
       }
       const threadId = decodeURIComponent(threadTurnMatch[1] as string);
-      let body: Record<string, unknown>;
+      let body: ControlThreadTurnRequest;
       let idempotencyKey: string;
       try {
         idempotencyKey = runStart.requiredIdempotencyKey(req);
-        body = ((await this.readBody(req)) ?? {}) as Record<string, unknown>;
+        body = ControlThreadTurnRequest.parse((await this.readBody(req)) ?? {});
         assertNoInlineSecretValues(body);
       } catch (err) {
         return this.requestError(res, err);
@@ -1203,8 +1199,6 @@ export class DaemonControlApiServer {
             request: { runId: rec.runId ?? rec.id, body },
           },
         );
-        // These files are compatibility projections only. Once the journal ACKs,
-        // a projection failure must not turn an accepted decision into a false 500.
         try {
           writeOperatorDecisionProjection(rec, decision);
           appendRunAuditEvent(rec, "control.applied", {
@@ -1399,15 +1393,20 @@ export class DaemonControlApiServer {
       }
     }
     if (method === "POST" && path === "/setup/jobs") {
-      let body: ControlSetupJobCreateRequest;
       try {
+        const idempotencyKey = runStart.requiredIdempotencyKey(req);
         const raw = await this.readBody(req);
         assertNoInlineSecretValues(raw);
-        body = ControlSetupJobCreateRequest.parse(raw);
+        const body = ControlSetupJobCreateRequest.parse(raw);
+        return this.service(
+          res,
+          "createSetupJob",
+          { request: body, idempotencyKey, clientId: "control-api" },
+          ControlSetupJob,
+        );
       } catch (err) {
         return this.requestError(res, err);
       }
-      return this.service(res, "createSetupJob", body, ControlSetupJob);
     }
     const setupJobMatch = /^\/setup\/jobs\/([^/]+)$/.exec(path);
     if (method === "GET" && setupJobMatch) {

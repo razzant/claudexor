@@ -61,6 +61,27 @@ afterEach(() => {
 });
 
 describe("SetupJobStore global-journal authority", () => {
+  it("persists create idempotency bindings across restart and rejects changed requests", () => {
+    const request = { harness: "codex", action: "login", authRequest: "subscription" };
+    const store = new SetupJobStore(root);
+    store.create(job("setup-idempotent"), { key: "create-1", client: "control-api", request });
+    expect(store.resolveCreate({ key: "create-1", client: "control-api", request })?.jobId).toBe(
+      "setup-idempotent",
+    );
+
+    const reopened = new SetupJobStore(root);
+    expect(reopened.resolveCreate({ key: "create-1", client: "control-api", request })?.jobId).toBe(
+      "setup-idempotent",
+    );
+    expect(() =>
+      reopened.resolveCreate({
+        key: "create-1",
+        client: "control-api",
+        request: { ...request, harness: "claude" },
+      }),
+    ).toThrow(/different request/);
+  });
+
   it("does not read, migrate, chmod, or mutate any v1 setup bytes", () => {
     const legacyRoot = join(root, "setup-jobs");
     const legacyJobDir = join(legacyRoot, "jobs", "setup-legacy");

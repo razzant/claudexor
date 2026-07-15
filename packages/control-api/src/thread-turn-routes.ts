@@ -171,7 +171,7 @@ export function handleThreadTurnCreate(
   ctx: ThreadTurnRouteCtx,
   res: ServerResponse,
   threadId: string,
-  body: Record<string, unknown>,
+  body: import("@claudexor/schema").ControlThreadTurnRequest,
   idempotencyKey: string,
 ): Promise<void> {
   return chainOnThread(ctx, threadId, async () => {

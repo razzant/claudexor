@@ -66,8 +66,6 @@ const SETUP_PROFILES: Record<ControlHarnessSetupHarness, SetupProfile> = {
 
 export interface SetupJobManagerOptions {
   rootDir?: string;
-  /** Production injects the daemon composition root's global-journal
-   * projection. The fallback exists only for isolated unit tests. */
   store?: SetupJobStore;
   probeAuthSource?: (
     harness: string,
@@ -89,12 +87,6 @@ export interface SetupJobManagerOptions {
     }): Promise<AuthCapabilityReceipt>;
     cleanup(attemptId: string): void;
   };
-  /**
-   * Synchronous daemon-owned cache-coherence hook. It runs exactly once when
-   * this manager first journals evidence that an authorized native command
-   * actually started. At that point the command may have changed global
-   * credential state even when it exited nonzero or later verification fails.
-   */
   onCredentialStateMayHaveChanged?: (harness: ControlHarnessSetupHarness) => void;
   launcherTimeoutMs?: number;
   loginTimeoutMs?: number;
@@ -112,12 +104,6 @@ export interface SetupJobManagerOptions {
   runnerPath?: string;
   nodePath?: string;
 }
-/**
- * The published ESM package ships the TypeScript output as `.js`, while the
- * self-contained macOS app places an esbuild CommonJS bundle beside the daemon
- * as `.cjs`. Prefer that explicit bundle when present so a parent
- * `type: module` package scope can never reinterpret CommonJS as ESM.
- */
 export function resolveSetupLoginRunnerPath(
   moduleUrl: string = import.meta.url,
   pathExists: (path: string) => boolean = existsSync,
@@ -1093,17 +1079,23 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     start: () => supervisor.start(),
     beginDrain,
     shutdown,
-    create(input: unknown): ControlSetupJob {
-      const { harness, action } = ControlSetupJobCreateRequest.parse(input);
+    create(input: unknown, idempotency?: { key: string; client: string }): ControlSetupJob {
+      const request = ControlSetupJobCreateRequest.parse(input);
+      const { harness, action } = request;
+      const binding = idempotency ? { ...idempotency, request } : undefined;
+      const prior = binding ? store.resolveCreate(binding) : null;
+      if (prior) return prior;
       supervisor.assertCreateAllowed();
       const jobs = store.list({ harness });
       const existing = jobs.findLast((job) => ACTIVE_SETUP_STATES.has(job.state));
-      if (existing) return existing;
+      if (existing) return binding ? store.bindCreate(existing.jobId, binding) : existing;
       const replacementFence = jobs.findLast(
         (job) =>
           job.outcome?.reason === "termination_unconfirmed" && !job.terminationReconciliation,
       );
-      if (replacementFence) return replacementFence;
+      if (replacementFence) {
+        return binding ? store.bindCreate(replacementFence.jobId, binding) : replacementFence;
+      }
       const profile = SETUP_PROFILES[harness];
       const jobId = `setup-${now().getTime().toString(36)}-${randomUUID().slice(0, 8)}`;
       const authCapability = {
@@ -1116,20 +1108,23 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         }).binding,
         state: "disclosed" as const,
       };
-      const base = store.create({
-        jobId,
-        harness,
-        action,
-        state: "queued",
-        phase: "preparing",
-        command: null,
-        guideUrl: profile.guideUrl,
-        message: `${profile.note} The required same-harness smoke may consume quota; incremental billing is unknown.`,
-        createdAt: iso(),
-        startedAt: null,
-        finishedAt: null,
-        authCapability,
-      });
+      const base = store.create(
+        {
+          jobId,
+          harness,
+          action,
+          state: "queued",
+          phase: "preparing",
+          command: null,
+          guideUrl: profile.guideUrl,
+          message: `${profile.note} The required same-harness smoke may consume quota; incremental billing is unknown.`,
+          createdAt: iso(),
+          startedAt: null,
+          finishedAt: null,
+          authCapability,
+        },
+        binding,
+      );
       log(jobId, `created ${harness} ${action}`);
       const spec = NativeLogin.nativeLoginSpec(harness);
       if (!spec)

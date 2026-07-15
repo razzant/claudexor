@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
@@ -36,6 +36,26 @@ async function terminal(client: DaemonClient, id: string): Promise<JobRecord> {
 }
 
 describe("DaemonServer", () => {
+  it("never replaces a regular file at the configured socket path", async () => {
+    const dir = tempDir("unsafe-socket");
+    const socketPath = join(dir, "keep.txt");
+    writeFileSync(socketPath, "user bytes\n");
+    const authority = commandAuthority(dir);
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: async () => ({ status: "success" }),
+    });
+    try {
+      await expect(server.start()).rejects.toThrow(/refusing to replace/);
+      expect(readFileSync(socketPath, "utf8")).toBe("user bytes\n");
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
   it("claims one writer lease before journal startup", () => {
     const socketPath = join(tempDir("writer-lease"), "daemon.sock");
     const lease = acquireDaemonWriterLease(socketPath);

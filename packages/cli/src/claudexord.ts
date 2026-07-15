@@ -608,7 +608,11 @@ function controlServices(
     authReadiness: async (input: { harnessId: string; request: unknown }) =>
       authReadiness.refresh(input.harnessId, input.request),
     agentCapabilities: async () => buildAgentCapabilityCatalog(),
-    createSetupJob: async (input: unknown) => setupJobs().create(input),
+    createSetupJob: async (input: { request: unknown; idempotencyKey: string; clientId: string }) =>
+      setupJobs().create(input.request, {
+        key: input.idempotencyKey,
+        client: input.clientId,
+      }),
     listSetupJobs: async (input?: unknown) => {
       const jobs = setupJobs();
       return { jobs: jobs.list(input as Parameters<typeof jobs.list>[0]) };
@@ -638,8 +642,6 @@ function controlServices(
     },
     settings: async () => settingsSnapshot(NO_PROJECT_ROOT),
     updateSettings: async (patch: unknown) => {
-      // FAIL LOUDLY on malformed patches: a typo'd field name or bad enum must
-      // surface as a 4xx, never be silently dropped.
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
       await assertSettingsPatchValid(p);
       const nullableName = (
@@ -669,8 +671,6 @@ function controlServices(
         },
         harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
       }));
-      // Routing/auth settings change harness readiness semantics: drop the
-      // doctor TTL cache so the next /harnesses reflects the new truth.
       invalidateDoctorCache();
       return settingsSnapshot(NO_PROJECT_ROOT);
     },

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { followRun } from "./live.js";
+import { controlApiFetch, followRun } from "./live.js";
 
 /** Stub control API speaking just enough SSE for the follow contract. */
 function sseServer(
@@ -116,6 +116,30 @@ describe("claudexor follow", () => {
       expect(code).toBe(1);
     } finally {
       server.close();
+    }
+  });
+});
+
+describe("controlApiFetch create idempotency", () => {
+  it.each(["/v2/threads", "/v2/setup/jobs"])("injects a key for %s", async (path) => {
+    const server = createServer((req, res) => {
+      expect(req.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const response = await controlApiFetch(
+        { baseUrl: `http://127.0.0.1:${port}`, token: "token" },
+        path,
+        { method: "POST", body: "{}" },
+      );
+      expect(response.status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
     }
   });
 });

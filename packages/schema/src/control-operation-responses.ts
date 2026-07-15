@@ -3,6 +3,7 @@ import {
   ControlArtifactInfo,
   ControlQueuedRunInfo,
   ControlRunStartInfo,
+  ControlRunStartRequest,
   ControlRunSummary,
 } from "./control.js";
 import { Id } from "./primitives.js";
@@ -43,6 +44,16 @@ export const ControlDeliveryResponse = z
   .strict()
   .describe("Result of a manual run delivery attempt.");
 export type ControlDeliveryResponse = z.infer<typeof ControlDeliveryResponse>;
+
+export const ControlThreadTurnRequest = ControlRunStartRequest.omit({
+  scope: true,
+  execution: true,
+  threadId: true,
+  turnId: true,
+  parentRunId: true,
+  retryOf: true,
+}).describe("Client-settable thread-turn request; scope, execution and lineage are server-owned.");
+export type ControlThreadTurnRequest = z.infer<typeof ControlThreadTurnRequest>;
 
 export const ControlThreadTurnResponse = z
   .union([
