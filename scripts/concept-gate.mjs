@@ -20,9 +20,10 @@
  *
  * History remains append-only. If an immutable commit already carries a
  * CONCEPT-CHANGE marker but omitted one approved touched id, a later
- * descendant in the SAME checked release range may supplement it with
- * CONCEPT-COVERAGE(<full-sha>: INV-…). Coverage cannot replace a missing
- * original marker, target a non-ancestor, or attest a commit outside the range.
+ * descendant in the SAME checked release range may supplement or ratify it
+ * with CONCEPT-COVERAGE(<full-sha>: INV-…). The attestation commit must itself
+ * carry a matching owner-approved CONCEPT-CHANGE marker; coverage cannot target
+ * a non-ancestor or attest a commit outside the range.
  *
  * Usage:
  *   node scripts/concept-gate.mjs                    # checks HEAD
@@ -79,6 +80,7 @@ function collectSupplementalCoverage(shas) {
   const coverage = new Map();
   for (const attestationSha of shas) {
     const message = git(["log", "-1", "--format=%B", attestationSha]);
+    const approval = message.match(MARKER_RE);
     for (const match of message.matchAll(COVERAGE_RE)) {
       const targetSha = match[1];
       if (!checked.has(targetSha)) continue;
@@ -94,8 +96,16 @@ function collectSupplementalCoverage(shas) {
           `concept-gate: ${attestationSha.slice(0, 10)} cannot attest non-ancestor ${targetSha.slice(0, 10)}`,
         );
       }
+      const approved = new Set(approval?.[1].split(",").map((s) => s.trim()) ?? []);
+      const attested = match[2].split(",").map((s) => s.trim());
+      const unapproved = attested.filter((id) => !approved.has(id));
+      if (unapproved.length > 0) {
+        throw new Error(
+          `concept-gate: ${attestationSha.slice(0, 10)} coverage lacks matching CONCEPT-CHANGE approval for ${unapproved.join(", ")}`,
+        );
+      }
       const ids = coverage.get(targetSha) ?? new Set();
-      for (const id of match[2].split(",").map((s) => s.trim())) ids.add(id);
+      for (const id of attested) ids.add(id);
       coverage.set(targetSha, ids);
     }
   }
@@ -323,14 +333,15 @@ function checkCommit(sha) {
 
   const msg = git(["log", "-1", "--format=%B", sha]);
   const marker = msg.match(MARKER_RE);
-  if (!marker) {
+  const ratifiedIds = supplementalCoverage.get(sha);
+  if (!marker && !ratifiedIds) {
     return (
       `commit ${sha.slice(0, 10)} touches ${BIBLE} without a CONCEPT-CHANGE(INV-…) marker in its message.\n` +
       `  Bible edits are constitutional: add the marker naming every affected invariant id,\n` +
       `  and add it only when the owner explicitly approved the change.`
     );
   }
-  const markedIds = markedInvariantIds(sha, marker);
+  const markedIds = marker ? markedInvariantIds(sha, marker) : new Set(ratifiedIds);
 
   let before = "";
   if (parents.length === 1) {
@@ -379,7 +390,7 @@ function checkCommit(sha) {
   }
 
   console.log(
-    `concept-gate: ${sha.slice(0, 10)} carries ${marker[0]}; touched invariant blocks: ${[...touched].sort().join(", ") || "(preamble/headings only)"}`,
+    `concept-gate: ${sha.slice(0, 10)} ${marker ? `carries ${marker[0]}` : "is append-only ratified"}; touched invariant blocks: ${[...touched].sort().join(", ") || "(preamble/headings only)"}`,
   );
   return null;
 }
