@@ -49,6 +49,7 @@ import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute } from "./journal-event-routes.js";
+import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { controlProblemError } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
@@ -1804,7 +1805,11 @@ export class DaemonControlApiServer {
   }
   private chainRunMutation<T>(rec: DaemonRunRecord, work: () => Promise<T>): Promise<T> {
     const threadId = threadIdOfRun(rec);
-    return threadId ? chainThreadMutation(this.threadTurnRouteCtx(), threadId, work) : work();
+    if (!threadId) return work();
+    return chainThreadMutation(this.threadTurnRouteCtx(), threadId, async () => {
+      await assertThreadIdle(rec, () => this.opts.daemon.list());
+      return work();
+    });
   }
 
   private threadTurnRouteCtx(): ThreadTurnRouteCtx {
@@ -1836,7 +1841,6 @@ export class DaemonControlApiServer {
         applyGateError(record, patch, root, this.operatorDecisionFor(record), finalVerify),
       gateSpecs: gateSpecsForRun,
       chainMutation: (record, work) => this.chainRunMutation(record, work),
-      assertThreadIdle: (record) => assertThreadIdle(record, () => this.opts.daemon.list()),
       appendAudit: appendRunAuditEvent,
     };
   }
@@ -2684,19 +2688,13 @@ function safeReadStructuredArtifact<T>(
 function gateSpecsForRun(
   rec: DaemonRunRecord,
 ): NonNullable<Parameters<typeof verifyAndDeliver>[3]> {
-  const task = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract);
-  return (task?.tests.commands ?? []).map((command) => ({
-    id: command.id,
-    program: command.program,
-    args: command.args,
-    cwd: command.cwd,
-    envAllowlist: command.envAllowlist,
-    trustRequired: command.trust_required,
-    trustGrant: command.trust_grant,
-    projectRoot: task?.repo.root,
-    accessProfile: task?.access.effective_profile,
-    required: command.required,
-  }));
+  let raw: string | null = null;
+  try {
+    raw = readRawTextArtifact(rec, "context/task.yaml");
+  } catch {
+    // The shared parser maps unreadable authority to the same typed refusal.
+  }
+  return requiredGateSpecsFromTaskArtifact(raw);
 }
 
 function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {

@@ -119,7 +119,6 @@ export interface RunApplyRouteContext {
   ): string | null;
   gateSpecs(record: DaemonRunRecord): NonNullable<Parameters<typeof verifyAndDeliver>[3]>;
   chainMutation<T>(record: DaemonRunRecord, work: () => Promise<T>): Promise<T>;
-  assertThreadIdle(record: DaemonRunRecord): Promise<void>;
   appendAudit(record: DaemonRunRecord, type: string, payload: Record<string, unknown>): void;
 }
 
@@ -187,9 +186,8 @@ export async function handleRunApplyRoutes(
       throw Object.assign(new Error("project root is required for apply"), { status: 400 });
     const rootError = validateAbsoluteRepoRoot(root);
     if (rootError) throw Object.assign(new Error(rootError), { status: 400 });
-    const delivered = await ctx.chainMutation(record, async () => {
-      await ctx.assertThreadIdle(record);
-      return runIdempotentDelivery(ctx.services, {
+    const delivered = await ctx.chainMutation(record, () =>
+      runIdempotentDelivery(ctx.services, {
         params: record.params,
         key,
         operation: "run.apply",
@@ -207,8 +205,8 @@ export async function handleRunApplyRoutes(
             ctx.gateSpecs(record),
             (freshVerify) => ctx.gateError(record, patch, root, freshVerify),
           ),
-      });
-    });
+      }),
+    );
     if (delivered.refused)
       throw Object.assign(new Error(delivered.detail ?? "delivery refused"), { status: 409 });
     if (!delivered.applied && delivered.detail?.includes("refusing")) {

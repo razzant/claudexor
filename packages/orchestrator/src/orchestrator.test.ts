@@ -3295,6 +3295,44 @@ describe("Orchestrator", () => {
     expect(decision).toContain("applied_cleanly: false");
   });
 
+  it("race records a blocked delivery receipt when the live target changes after fresh verification", async () => {
+    const repo = await initRepo();
+    const concurrentPath = join(repo, "USER.txt");
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["a", diffImplementer("a", "local")],
+        ["b", diffImplementer("b", "openai")],
+      ]),
+      reviewers: reviewers(),
+    });
+    const gateScript = [
+      'const fs = require("node:fs")',
+      'const path = require("node:path")',
+      `if (process.cwd().includes(${JSON.stringify("claudexor-verify-")})) fs.writeFileSync(${JSON.stringify(concurrentPath)}, "concurrent user edit\\n")`,
+    ].join(";");
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["a", "b"],
+      n: 2,
+      inPlace: true,
+      tests: [{ program: process.execPath, args: ["-e", gateScript], envAllowlist: [] }],
+    });
+
+    expect(res.status).toBe("blocked");
+    expect(readFileSync(concurrentPath, "utf8")).toBe("concurrent user edit\n");
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+    const receipt = readFileSync(join(res.runDir, "final", "delivery_receipt.yaml"), "utf8");
+    expect(receipt).toContain("applied: false");
+    expect(receipt).toContain("target changed after final verify");
+    expect(receipt).toContain("gates_passed: true");
+    const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(decision).toContain("status: blocked");
+    expect(decision).toContain("delivery_receipt: final/delivery_receipt.yaml");
+  });
+
   it("plan mode writes an honest plan (no SpecPack) that surfaces review findings", async () => {
     const repo = await initRepo();
     // A reviewer that BLOCKs: the plan must still surface it, not hide it.

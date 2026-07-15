@@ -8,6 +8,9 @@ import type {
   ModeKind,
   ProtectedPathApproval,
   ReviewFinding,
+  DecisionRecord,
+  FinalVerifyRecord,
+  RunStatus,
 } from "@claudexor/schema";
 import {
   FallbackReason as FallbackReasonSchema,
@@ -22,6 +25,56 @@ import type { BudgetObservation, InteractionAnswerSet } from "@claudexor/schema"
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
+import { blockedDecisionOverride } from "@claudexor/delivery";
+
+/** Typed terminal evidence for a fresh-verified race whose live delivery was refused. */
+export function deliveryRefusalDecisionFields(evidenceFacts: string[], reason: string) {
+  return {
+    status: "blocked" as const,
+    outcome: "blocked" as const,
+    apply_recommendation: "inspect" as const,
+    evidence_facts: [...evidenceFacts, `delivery refused: ${redactSecrets(reason)}`],
+  };
+}
+
+export function deliveryRefusalFailure(reason: string, runDir: string) {
+  return {
+    phase: "delivery",
+    category: "validation",
+    safeMessage: `delivery refused after fresh verification: ${redactSecrets(reason)}`,
+    rawDetailRef: "final/delivery_receipt.yaml",
+    runDir,
+    nextActions: [
+      "Inspect final/delivery_receipt.yaml",
+      "Retry after the target tree stops changing",
+    ],
+  };
+}
+
+export function writeRaceDeliveryDecision(
+  store: ArtifactStore,
+  path: string,
+  input: {
+    decision: DecisionRecord;
+    status: RunStatus;
+    reviewVerified: boolean;
+    finalVerify: FinalVerifyRecord | null;
+    deliveryFailureReason: string | null;
+    deliveryReceiptPath: string | null;
+  },
+): void {
+  store.writeYaml(path, {
+    ...input.decision,
+    ...(input.deliveryFailureReason
+      ? deliveryRefusalDecisionFields(input.decision.evidence_facts, input.deliveryFailureReason)
+      : input.status === "blocked"
+        ? blockedDecisionOverride(input.decision.evidence_facts, input.finalVerify)
+        : {}),
+    review_verified: input.reviewVerified,
+    final_verify: input.finalVerify,
+    ...(input.deliveryReceiptPath ? { delivery_receipt: input.deliveryReceiptPath } : {}),
+  });
+}
 
 /**
  * Relay cross-share: the prior planners' plans, injected into a later

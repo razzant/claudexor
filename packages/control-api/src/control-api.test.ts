@@ -20,6 +20,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
+import { execFileSync } from "node:child_process";
 import { sha256 } from "@claudexor/util";
 import type { ControlSetupJob } from "@claudexor/schema";
 
@@ -224,7 +225,21 @@ describe("DaemonControlApiServer", () => {
     );
     writeFileSync(
       join(runDir, "context", "task.yaml"),
-      `task_id: task-d1\nrepo:\n  root: ${JSON.stringify(runDir)}\n  base_ref: HEAD\n`,
+      [
+        "schema_version: 2",
+        "task_id: task-d1",
+        "created_at: 2026-07-15T00:00:00.000Z",
+        "repo:",
+        `  root: ${JSON.stringify(runDir)}`,
+        "  base_ref: HEAD",
+        "mode:",
+        "  kind: agent",
+        "user_intent:",
+        "  raw: test run",
+        "tests:",
+        "  commands: []",
+        "",
+      ].join("\n"),
     );
     writeFileSync(
       join(runDir, "arbitration", "decision.yaml"),
@@ -3615,7 +3630,21 @@ describe("DaemonControlApiServer", () => {
       );
       writeFileSync(
         join(runDir, "context", "task.yaml"),
-        `task_id: task-${status}\nrepo:\n  root: ${JSON.stringify(dir)}\n  base_ref: HEAD\n`,
+        [
+          "schema_version: 2",
+          `task_id: task-${status}`,
+          "created_at: 2026-07-15T00:00:00.000Z",
+          "repo:",
+          `  root: ${JSON.stringify(dir)}`,
+          "  base_ref: HEAD",
+          "mode:",
+          "  kind: agent",
+          "user_intent:",
+          "  raw: thread gate test",
+          "tests:",
+          "  commands: []",
+          "",
+        ].join("\n"),
       );
       writeFileSync(
         join(runDir, "arbitration", "decision.yaml"),
@@ -3891,6 +3920,139 @@ describe("DaemonControlApiServer", () => {
       }
     });
   }
+
+  for (const activeState of ["queued", "running"] as const) {
+    for (const action of ["accept_clean_patch", "revert_run"] as const) {
+      it(`refuses ${action} with thread_busy while a mutating turn is ${activeState}`, async () => {
+        const { daemon, record } = fakeDaemon();
+        record.params = {
+          ...(record.params as Record<string, unknown>),
+          threadId: "th-decision-busy",
+        };
+        let deliveryBegun = 0;
+        const busyDaemon: DaemonFacadeClient = {
+          ...daemon,
+          async list() {
+            return [
+              record,
+              {
+                id: `job-active-${activeState}`,
+                state: activeState,
+                params: { threadId: "th-decision-busy", mode: "agent" },
+              },
+            ];
+          },
+        };
+        await withDaemonServer(
+          busyDaemon,
+          async (base) => {
+            const response = await apiFetch(`${base}/runs/run-d1/decision`, {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${token}`,
+                "Idempotency-Key": `decision-${action}-${activeState}`,
+              },
+              body: JSON.stringify({ action }),
+            });
+            expect(response.status).toBe(409);
+            expect(((await response.json()) as { code: string }).code).toBe("thread_busy");
+            expect(deliveryBegun).toBe(0);
+          },
+          undefined,
+          {
+            beginDelivery: async () => {
+              deliveryBegun += 1;
+              return { id: "unexpected-delivery", state: "running", reused: false };
+            },
+            completeDelivery: async () => undefined,
+            failDelivery: async () => undefined,
+          },
+        );
+      });
+    }
+  }
+
+  for (const taskContractState of ["missing", "malformed"] as const) {
+    it(`refuses manual apply when the task contract is ${taskContractState}`, async () => {
+      const { daemon, record } = fakeDaemon();
+      const taskPath = join(record.runDir as string, "context", "task.yaml");
+      if (taskContractState === "missing") rmSync(taskPath, { force: true });
+      else writeFileSync(taskPath, "schema_version: [\n");
+      await withDaemonServer(
+        daemon,
+        async (base) => {
+          const response = await apiFetch(`${base}/runs/run-d1/apply`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ mode: "apply" }),
+          });
+          expect(response.status).toBe(409);
+          expect(((await response.json()) as { code: string }).code).toBe(
+            "task_contract_unverifiable",
+          );
+        },
+        undefined,
+        inMemoryDeliveryServices(),
+      );
+    });
+  }
+
+  it("allows manual apply when a valid task contract explicitly has no test commands", async () => {
+    const { daemon, record } = fakeDaemon();
+    const project = mkdtempSync(join(tmpdir(), "claudexor-empty-gates-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: project });
+      execFileSync("git", ["config", "user.name", "Claudexor Test"], { cwd: project });
+      execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: project });
+      writeFileSync(join(project, "x"), "old\n");
+      execFileSync("git", ["add", "x"], { cwd: project });
+      execFileSync("git", ["commit", "-qm", "base"], { cwd: project });
+
+      record.params = {
+        ...(record.params as Record<string, unknown>),
+        scope: { kind: "project", root: project, context: "auto" },
+      };
+      const taskPath = join(record.runDir as string, "context", "task.yaml");
+      writeFileSync(
+        taskPath,
+        readFileSync(taskPath, "utf8").replace(
+          JSON.stringify(record.runDir),
+          JSON.stringify(project),
+        ),
+      );
+      const patch = [
+        "diff --git a/x b/x",
+        "--- a/x",
+        "+++ b/x",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n");
+      writeFileSync(join(record.runDir as string, "final", "patch.diff"), patch);
+      writeFileSync(
+        join(record.runDir as string, "final", "work_product.yaml"),
+        `id: wp-test\nkind: patch\nsource_task_id: task-d1\nmeta:\n  patch_sha256: ${sha256(patch)}\n`,
+      );
+
+      await withDaemonServer(
+        daemon,
+        async (base) => {
+          const response = await apiFetch(`${base}/runs/run-d1/apply`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ mode: "apply" }),
+          });
+          expect(response.status).toBe(200);
+          expect(readFileSync(join(project, "x"), "utf8")).toBe("new\n");
+        },
+        undefined,
+        inMemoryDeliveryServices(),
+      );
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
 
   it("serializes direct thread-scoped run creation against thread apply", async () => {
     const runDir = mkdtempSync(join(tmpdir(), "claudexor-direct-thread-run-"));

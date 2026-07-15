@@ -89,6 +89,8 @@ import {
   harnessInactivityTimeoutMs,
   observeAuthSwitch,
   relayPriorPlansSection,
+  deliveryRefusalFailure,
+  writeRaceDeliveryDecision,
 } from "./runSupport.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
@@ -2823,18 +2825,13 @@ export class Orchestrator {
       : evidences.length > 0 && evidences.every((e) => e.reviewVerified);
     let status: RunStatus =
       needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
-
-    // FinalVerifier (INV-115): an otherwise-adoptable winner with a patch
-    // must ALSO apply cleanly onto a fresh tree at its own base and pass the
-    // deterministic gates there, BEFORE adoption/apply eligibility. A failure
-    // BLOCKS the run with a typed reason instead of shipping it.
+    // FinalVerifier blocks adoption until the patch and gates pass on a fresh base.
     let finalVerify: FinalVerifyRecord | null = null;
     let finalVerifyFailed = false;
-    // IN-PLACE turns are explicitly EXEMPT (not merely base-less): a thread
-    // turn's snapshot base_sha IS recorded, but its diff was produced against
-    // the LIVE tree — a fresh snapshot worktree lacks gitignored deps
-    // (node_modules etc.), so gates there would false-block green turns. The
-    // verifier's contract is isolated-envelope patches only.
+    let deliveryFailureReason: string | null = null;
+    let raceDeliveryReceipt: Awaited<ReturnType<typeof verifyAndDeliver>> | null = null;
+    // A single in-place turn already mutated its execution tree; race adoption
+    // instead defers verification until immediately before delivery.
     const inPlaceWinner = input.inPlace === true && requestedSingleCandidate;
     const deferredRaceVerify = input.inPlace === true && !requestedSingleCandidate;
     if (
@@ -2851,16 +2848,13 @@ export class Orchestrator {
         gateSpecsFromContract(contract),
         log,
       );
-      // FAIL CLOSED (INV-115): verify errors block like proven failures —
-      // shared verdict owner (finalVerifyBlocks). accept_risk stays available.
+      // Verify errors block like proven failures; accept_risk stays available.
       finalVerifyFailed = finalVerifyBlocks(finalVerify);
       if (finalVerifyFailed) status = "blocked";
     }
-
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
-      // Shared honesty owner: a blocked terminal overrides the persisted
-      // decision (status/outcome/human_review + evidence fact).
+      // A blocked terminal overrides the persisted green arbitration fields.
       ...(status === "blocked"
         ? blockedDecisionOverride(result.decision.evidence_facts, finalVerify)
         : {}),
@@ -2879,16 +2873,13 @@ export class Orchestrator {
       const blockers = winnerEvidence
         ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
         : 0;
-      // An empty-diff winner that produced prose is an ANSWER (the chat shows it
-      // and the honest result_kind is "answer", not a misleading "patch").
+      // Prose from an empty-diff winner is an answer, never a patch.
       const winnerAnswer = winnerRun.answerText?.trim() ?? "";
       const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
       if (!hasDiff && winnerAnswer.length > 0) {
         store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
       }
-      // Auto-adoption is stricter than artifact production: only a fully
-      // verified `success` may mutate the live tree. `ungated` remains an
-      // inspectable patch, but the user must add gates/review and rerun.
+      // Only a fully verified success may auto-adopt; ungated remains an artifact.
       const adoptable = status === "success";
       let adopted: boolean | null = null;
       let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
@@ -2900,12 +2891,10 @@ export class Orchestrator {
           // Already live: the candidate ran in-place and wrote the tree itself.
           adopted = true;
           applyState = adoptable ? "applied" : "applied_review_blocked";
-          // Fence taken right after the candidate finished (pre-review), so user
-          // edits made during review/arbitration are not folded into the target.
+          // The pre-review fence excludes later user edits from the target.
           postTurnSha = earlyPostTurnSha;
         } else if (adoptable) {
-          // Protected path: adopted:false MUST mean the live tree is byte-identical (INV-114);
-          // a failed restore is disclosed as tree_mutated, never hidden.
+          // Protected apply preserves the live tree or reports tree_mutated.
           const applied = await verifyAndDeliver(
             execRoot,
             winnerRun.diff,
@@ -2919,6 +2908,8 @@ export class Orchestrator {
             },
             log,
           );
+          raceDeliveryReceipt = applied;
+          store.writeYaml(join(paths.finalDir, "delivery_receipt.yaml"), applied);
           finalVerify = applied.finalVerify;
           if (applied.applied) {
             adopted = true;
@@ -2937,16 +2928,9 @@ export class Orchestrator {
           } else {
             adopted = false;
             applyState = "not_applied";
-            if (finalVerifyBlocks(finalVerify)) {
-              finalVerifyFailed = true;
-              status = "blocked";
-              store.writeYaml(decisionPath, {
-                ...result.decision,
-                ...blockedDecisionOverride(result.decision.evidence_facts, finalVerify),
-                review_verified: actualReviewVerified,
-                final_verify: finalVerify,
-              });
-            }
+            deliveryFailureReason = applied.detail ?? "race adoption delivery was refused";
+            status = "blocked";
+            if (finalVerifyBlocks(finalVerify)) finalVerifyFailed = true;
             log.emit("work_product.adopted", {
               applied: false,
               patch_sha256: patchSha256,
@@ -2956,6 +2940,14 @@ export class Orchestrator {
           }
         }
       }
+      writeRaceDeliveryDecision(store, decisionPath, {
+        decision: result.decision,
+        status,
+        reviewVerified: actualReviewVerified,
+        finalVerify,
+        deliveryFailureReason,
+        deliveryReceiptPath: raceDeliveryReceipt ? "final/delivery_receipt.yaml" : null,
+      });
       if (
         requestedSingleCandidate &&
         (applyState === "applied" || applyState === "applied_review_blocked")
@@ -2967,13 +2959,14 @@ export class Orchestrator {
         kind: input.create === true ? "new_repo" : "patch",
         source_task_id: taskId,
         producer_attempt_id: winnerRun.attemptId,
+        ...(raceDeliveryReceipt
+          ? { files: { delivery_receipt: "final/delivery_receipt.yaml" } }
+          : {}),
         meta: {
           harness_id: winnerRun.harnessId,
           synthesis: synth,
           mode,
-          // Terminal run status rides the artifact so the artifact-only CLI
-          // apply path enforces the same state bar as the daemon gate (a
-          // blocked race must read as blocked from the run dir alone).
+          // Artifact-only apply reads the same terminal status as the daemon.
           status,
           review_verified: actualReviewVerified,
           budget_stopped: budgetStopped,
@@ -3026,7 +3019,9 @@ export class Orchestrator {
 
     const honestTerminal =
       status === "no_op" || status === "ungated" || status === "review_not_run";
-    if (finalVerifyFailed) {
+    if (deliveryFailureReason && !finalVerifyFailed) {
+      writeFailure(store, paths, deliveryRefusalFailure(deliveryFailureReason, paths.root));
+    } else if (finalVerifyFailed) {
       writeFailure(store, paths, {
         phase: "verification",
         // RunFailure.category is a closed enum; "validation" is the honest
@@ -3100,7 +3095,12 @@ export class Orchestrator {
       // phase "verification", not "review").
       log.emit("run.blocked", {
         status,
-        phase: finalVerifyFailed ? "verification" : "review",
+        phase:
+          deliveryFailureReason && !finalVerifyFailed
+            ? "delivery"
+            : finalVerifyFailed
+              ? "verification"
+              : "review",
         failure_ref: "final/failure.yaml",
       });
     } else {
