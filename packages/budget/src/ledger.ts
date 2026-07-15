@@ -245,8 +245,17 @@ export class BudgetLedger {
     if (!credentialRoute) return false;
     return this.snapshotsFor(harnessId, credentialRoute).some((snapshot) =>
       snapshot.constraints.some((constraint) => {
-        const time = constraint.cooldown_until ? Date.parse(constraint.cooldown_until) : Number.NaN;
-        return Number.isFinite(time) && time > now;
+        const cooldown = constraint.cooldown_until
+          ? Date.parse(constraint.cooldown_until)
+          : Number.NaN;
+        const reset = constraint.resets_at ? Date.parse(constraint.resets_at) : Number.NaN;
+        return (
+          (Number.isFinite(cooldown) && cooldown > now) ||
+          (constraint.used_ratio !== null &&
+            constraint.used_ratio >= 1 &&
+            Number.isFinite(reset) &&
+            reset > now)
+        );
       }),
     );
   }

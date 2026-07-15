@@ -1257,7 +1257,7 @@ final class AppModel {
                 untilClean: (repairMode && options.untilClean) ? true : (flags.untilClean ? true : nil),
                 swarm: flags.swarm ? true : nil,
                 create: flags.create ? true : nil,
-                maxUsd: options.maxUsd,
+                paidBudget: options.maxUsd.map { .finite(maxUsd: $0) },
                 // Per-turn model override (empty = harness default → don't send the key).
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },
                 // Harness-scoped map: specific beats the scalar and defaults.
@@ -2204,7 +2204,7 @@ final class AppModel {
     /// `review.finding.proposed`, `run.completed`, …) and sends the full record as data;
     /// the in-proc bus uses a normalized kind. We classify off the record's own `type`,
     /// falling back to the SSE kind — so it works against both servers.
-    private func apply(_ env: BusEnvelope, to runId: String) {
+    func apply(_ env: BusEnvelope, to runId: String) {
         // Snapshot fence, write side: never interleave with an in-flight
         // detail load; the load's defer re-applies these in arrival order.
         if snapshotLoadDepth[runId] ?? 0 > 0 {
@@ -2301,7 +2301,7 @@ final class AppModel {
                 box.spendKnown = true
                 box.spendEstimated = payload["estimated"]?.boolValue ?? box.spendEstimated
             }
-            if let cap = payload["max_usd"]?.doubleValue, cap > 0, cap != t.capUsd || !t.capKnown {
+            if let cap = payload["max_usd"]?.doubleValue, cap >= 0, cap != t.capUsd || !t.capKnown {
                 t.capUsd = cap
                 t.capKnown = true
                 taskChanged = true

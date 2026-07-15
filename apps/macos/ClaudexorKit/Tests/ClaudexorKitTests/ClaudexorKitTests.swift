@@ -494,7 +494,7 @@ import Testing
         // Every key must already exist on the engine's run-start request (the turn
         // endpoint .strict()-parses the body) — primary/access/web/n/until-clean/review.
         let req = ThreadTurnRequest(prompt: "go", mode: "agent", harnesses: ["codex", "claude"], n: 2,
-                                    attempts: 5, untilClean: true, maxUsd: 0.5, primaryHarness: "claude",
+                                    attempts: 5, untilClean: true, paidBudget: .finite(maxUsd: 0), primaryHarness: "claude",
                                     reviewerPanel: [
                                         ReviewerPanelEntry(harness: "claude", model: "claude-opus-4-8", effort: "max"),
                                         ReviewerPanelEntry(harness: "cursor", model: "gemini-3.1-pro")
@@ -516,13 +516,24 @@ import Testing
         #expect(obj?["web"] as? String == "off")
         #expect(obj?["n"] as? Int == 2)
         #expect(obj?["untilClean"] as? Bool == true)
-        #expect(obj?["maxUsd"] as? Double == 0.5)
+        let paidBudget = try #require(obj?["paidBudget"] as? [String: Any])
+        #expect(paidBudget["kind"] as? String == "finite")
+        #expect(paidBudget["maxUsd"] as? Double == 0)
+        #expect(obj?["maxUsd"] == nil)
         let tests = try #require(obj?["tests"] as? [[String: Any]])
         #expect(tests[0]["program"] as? String == "pnpm")
         #expect(tests[0]["args"] as? [String] == ["test", "--", "--runInBand"])
         let approvals = try #require(obj?["protectedPathApprovals"] as? [[String: Any]])
         #expect(approvals[0]["path"] as? String == "packages/**/*.test.ts")
         #expect(obj?["authPreference"] as? String == "api_key")
+    }
+
+    @Test func composerBudgetParserAcceptsZeroAndRejectsNonfiniteValues() {
+        #expect(ComposerOptionParser.parseNonnegativeFiniteDouble("0") == 0)
+        #expect(ComposerOptionParser.parseNonnegativeFiniteDouble("$0.25") == 0.25)
+        #expect(ComposerOptionParser.parseNonnegativeFiniteDouble("-1") == nil)
+        #expect(ComposerOptionParser.parseNonnegativeFiniteDouble("nan") == nil)
+        #expect(ComposerOptionParser.parseNonnegativeFiniteDouble("inf") == nil)
     }
 
     @Test func threadTurnRequestOmitsAbsentOptionalKeys() throws {

@@ -108,8 +108,8 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/review`: deterministic gates, review, revalidation, convergence
   predicate, readiness ledger.
 - `packages/arbitration`, `packages/synthesis`, `packages/budget`: evidence
-  ranking, synthesis decision/prompting, spend/quota ledger + portfolio router
-  with loop detection.
+  ranking, synthesis decision/prompting, spend/quota ledger + routing-goal
+  router with loop detection.
 - `packages/policy`: typed risk classification, protected-path/human-approval
   rules, workspace path guard.
 - `packages/context`: scope atlas + lazy ContextPack for read-only modes.

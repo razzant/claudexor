@@ -348,6 +348,38 @@ describe("router", () => {
     ).toBe("claude");
   });
 
+  it("keeps a fresh saturated quota route unavailable until its reset", () => {
+    const led = new BudgetLedger();
+    const reset = new Date(Date.now() + 60_000).toISOString();
+    led.observeQuotaSnapshot({
+      subject: {
+        harness: "codex",
+        credential_route: "vendor_native",
+        plan_label: "Plus",
+        subject_id: "native-subject",
+      },
+      constraints: [
+        {
+          id: "five-hour",
+          label: "5 hour",
+          used_ratio: 1,
+          window_seconds: 18_000,
+          resets_at: reset,
+          cooldown_until: null,
+        },
+      ],
+      source: "codex_app_server",
+      observed_at: new Date().toISOString(),
+      freshness: "fresh",
+    });
+
+    const codex = cand("codex", { credentialRoute: "vendor_native" });
+    expect(selectHarness([codex, cand("claude")], routeContext(led, "auto"))?.harnessId).toBe(
+      "claude",
+    );
+    expect(led.cooldownActive("codex", "vendor_native", Date.parse(reset) + 1)).toBe(false);
+  });
+
   it("excludes a rate-limited harness via the typed rate_limit signal", () => {
     const led = new BudgetLedger();
     const [obs] = observationsFromEvent("codex", {

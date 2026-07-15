@@ -5157,41 +5157,42 @@ describe("auth-route attempt telemetry (route evidence)", () => {
 });
 
 describe("durable quota projection routing (QP3)", () => {
+  const quotaAdapter = (id: string): HarnessAdapter => ({
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: id === "codex" ? "openai" : "anthropic",
+        capabilities: { read_files: true },
+        access_profiles_supported: ["readonly"],
+        auth_modes: ["local_session"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["explain"],
+      });
+    },
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "vendor_native",
+      };
+      yield { type: "message", session_id: spec.session_id, ts, text: `from ${id}` };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  });
+
   it("seeds a new root ledger before initial route ordering", async () => {
     await withScopedConfigDir(async () => {
       const repo = await initRepo();
-      const quotaAdapter = (id: string): HarnessAdapter => ({
-        id,
-        async discover() {
-          return HarnessManifest.parse({
-            id,
-            display_name: id,
-            kind: "local_cli",
-            provider_family: id === "codex" ? "openai" : "anthropic",
-            capabilities: { read_files: true },
-            access_profiles_supported: ["readonly"],
-            auth_modes: ["local_session"],
-          });
-        },
-        async doctor() {
-          return ConformanceReport.parse({
-            harness_id: id,
-            status: "ok",
-            enabled_intents: ["explain"],
-          });
-        },
-        async *run(spec) {
-          const ts = new Date().toISOString();
-          yield {
-            type: "started",
-            session_id: spec.session_id,
-            ts,
-            credential_route: "vendor_native",
-          };
-          yield { type: "message", session_id: spec.session_id, ts, text: `from ${id}` };
-          yield { type: "completed", session_id: spec.session_id, ts };
-        },
-      });
       const reset = new Date(Date.now() + 9_000_000).toISOString();
       const observed = new Date().toISOString();
       const snapshots = [
@@ -5260,6 +5261,66 @@ describe("durable quota projection routing (QP3)", () => {
       ]);
     });
   });
+
+  it.each(["paid fallback never", "active quota cooldown"])(
+    "refuses cleanly when %s removes the entire ordered pool",
+    async (scenario) => {
+      await withScopedConfigDir(async () => {
+        const repo = await initRepo();
+        if (scenario === "paid fallback never") {
+          writeFileSync(
+            join(process.env.CLAUDEXOR_CONFIG_DIR!, "config.yaml"),
+            "routing:\n  paid_fallback: never\n",
+          );
+        }
+        const cooldown = new Date(Date.now() + 60_000).toISOString();
+        const snapshots =
+          scenario === "active quota cooldown"
+            ? ["claude", "codex"].map((harness) => ({
+                subject: {
+                  harness,
+                  credential_route: "vendor_native" as const,
+                  plan_label: null,
+                  subject_id: `${harness}-native`,
+                },
+                constraints: [
+                  {
+                    id: "cooldown",
+                    label: "Cooldown",
+                    used_ratio: null,
+                    window_seconds: null,
+                    resets_at: null,
+                    cooldown_until: cooldown,
+                  },
+                ],
+                source: "codex_app_server" as const,
+                observed_at: new Date().toISOString(),
+                freshness: "fresh" as const,
+              }))
+            : [];
+        const orchestrator = new Orchestrator({
+          registry: new Map([
+            ["claude", quotaAdapter("claude")],
+            ["codex", quotaAdapter("codex")],
+          ]),
+          reviewers: [],
+          quotaSnapshots: () => snapshots,
+        });
+
+        const result = await orchestrator.run({
+          repoRoot: repo,
+          prompt: "route or refuse",
+          mode: "ask",
+          harnesses: ["claude", "codex"],
+          authPreference: "subscription",
+          web: "off",
+        });
+        expect(result.status).toBe("failed");
+        expect(result.summary).toMatch(/no harness remains eligible.*budget and quota routing/);
+        expect(result.candidates).toEqual([]);
+      });
+    },
+  );
 });
 
 describe("web evidence recovery keying (INV-043)", () => {

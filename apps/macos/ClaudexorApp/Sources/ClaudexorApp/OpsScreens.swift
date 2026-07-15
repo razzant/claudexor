@@ -17,7 +17,7 @@ struct SettingsScreen: View {
     @State private var interactionTimeoutMinutes = ""
     @State private var engineDraftsDirty = false
     @State private var syncedSnapshot: [String] = []
-    private var runCapValid: Bool { budgetUnlimited || parseOptionalDouble(maxUsdPerRun) != nil }
+    private var runCapValid: Bool { budgetUnlimited || ComposerOptionParser.parseNonnegativeFiniteDouble(maxUsdPerRun) != nil }
     private var interactionTimeoutValid: Bool {
         let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
@@ -380,7 +380,7 @@ struct SettingsScreen: View {
         }
         let paidBudget: PaidBudget = budgetUnlimited
             ? .unlimited
-            : .finite(maxUsd: parseOptionalDouble(maxUsdPerRun) ?? 0)
+            : .finite(maxUsd: ComposerOptionParser.parseNonnegativeFiniteDouble(maxUsdPerRun) ?? 0)
         let patch = SettingsUpdateRequest(
             routingGoal: routingGoal,
             paidFallback: paidFallback,
@@ -395,10 +395,4 @@ struct SettingsScreen: View {
         if await model.saveSettings(patch) { releaseDraftsToSync() }
     }
 
-    private func parseOptionalDouble(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "$", with: "")
-        if trimmed.isEmpty { return nil }
-        guard let value = Double(trimmed), value >= 0 else { return nil }
-        return value
-    }
 }

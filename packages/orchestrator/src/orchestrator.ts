@@ -1084,6 +1084,11 @@ export class Orchestrator {
       );
     }
     const ordered = this.orderPool(pool, input, intent, statusById, ledger);
+    if (ordered.length === 0) {
+      throw new HarnessUnavailableError(
+        `no harness remains eligible for '${intent}' after budget and quota routing`,
+      );
+    }
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);

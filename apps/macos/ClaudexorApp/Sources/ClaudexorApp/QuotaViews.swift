@@ -167,9 +167,11 @@ private func freshnessColor(_ freshness: String) -> Color {
     }
 }
 
-private func formattedDate(_ value: String?) -> String? {
+func formattedDate(_ value: String?) -> String? {
     guard let value else { return nil }
-    let formatter = ISO8601DateFormatter()
-    guard let date = formatter.date(from: value) else { return value }
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let plain = ISO8601DateFormatter()
+    guard let date = fractional.date(from: value) ?? plain.date(from: value) else { return value }
     return date.formatted(date: .abbreviated, time: .shortened)
 }

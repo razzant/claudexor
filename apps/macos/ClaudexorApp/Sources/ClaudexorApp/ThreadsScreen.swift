@@ -75,7 +75,7 @@ struct ThreadsScreen: View {
     /// Per-turn options the "⋯" panel collects, mapped onto engine run-start fields.
     private var currentOptions: TurnOptions {
         TurnOptions(
-            maxUsd: Double(capUsdText.trimmingCharacters(in: .whitespaces)),
+            maxUsd: ComposerOptionParser.parseNonnegativeFiniteDouble(capUsdText),
             access: access == .workspaceWrite ? nil : access.wire,  // workspace_write is the engine default
             web: webPolicy == "auto" ? nil : webPolicy,
             untilClean: untilClean,
@@ -106,14 +106,13 @@ struct ThreadsScreen: View {
         }
     }
 
-    /// The per-turn budget field is INVALID when it's non-empty but not a positive
+    /// The per-turn budget field is INVALID when it's non-empty but not a finite non-negative
     /// number. A typo must NOT silently drop the user's cap (the typed-money contract)
     /// — Send is blocked while invalid, with an inline reason. Empty = no cap (valid).
     private var capUsdInvalid: Bool {
         let t = capUsdText.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return false }
-        guard let v = Double(t) else { return true }
-        return v <= 0
+        return ComposerOptionParser.parseNonnegativeFiniteDouble(t) == nil
     }
 
     private var reviewerPanelTokens: [String] {
@@ -647,7 +646,7 @@ struct ThreadsScreen: View {
                     if capUsdInvalid {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange).font(.caption)
-                            .help("Must be a positive number, or empty for the default")
+                            .help("Must be a finite non-negative number, or empty for the default")
                     }
                 }
                 .help("Per-turn budget cap (USD). Empty = engine / thread default.")

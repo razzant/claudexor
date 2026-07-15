@@ -50,6 +50,35 @@ struct AppModelRefreshTests {
     }
 
     @MainActor
+    @Test func budgetEventAcceptsAnExplicitFiniteZeroCap() {
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.liveTasks = [TaskRun(
+            id: "run-zero", title: "Run", prompt: "", mode: .agent, status: .running,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now, activePhase: .budget,
+            spendUsd: 0, capUsd: 1, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+
+        model.apply(BusEnvelope(seq: 1, kind: "budget", event: .object([
+            "type": .string("budget.lease.created"),
+            "payload": .object(["max_usd": .number(0)])
+        ])), to: "run-zero")
+
+        #expect(model.liveTasks[0].capUsd == 0)
+        #expect(model.liveTasks[0].capKnown)
+    }
+
+    @Test func quotaDatesParseFractionalIsoBeforePlainIso() {
+        let fractional = "2026-07-15T10:00:01.123Z"
+        let plain = "2026-07-15T10:00:01Z"
+        #expect(formattedDate(fractional) != fractional)
+        #expect(formattedDate(plain) != plain)
+        #expect(formattedDate("not-a-date") == "not-a-date")
+    }
+
+    @MainActor
     @Test func freshHarnessRefreshReportsFailureAndKeepsLastKnownRows() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral

@@ -4,8 +4,8 @@ import { EffortHint } from "./harness.js";
 import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 import { TestCommandGrant, TestCommandInvocation } from "./task.js";
 
-// The former "portfolio" value was deleted as a fake knob (it behaved
-// identically to "auto"); the config loader migrates it to "auto".
+// All retired v1 portfolio ids are rejected; v2 routing uses the explicit
+// auto, quality, and economy goals instead.
 export const RoutingPolicy = z
   .enum(["auto", "primary"])
   .describe(

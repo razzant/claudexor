@@ -310,7 +310,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var untilClean: Bool?
     public var swarm: Bool?
     public var create: Bool?
-    public var maxUsd: Double?
+    public var paidBudget: PaidBudget?
     /// Per-turn primary harness override (bias hint; engine pins it first). When
     /// nil the turn inherits the thread's sticky primary_harness.
     public var primaryHarness: String?
@@ -348,7 +348,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
-                maxUsd: Double? = nil, primaryHarness: String? = nil, model: String? = nil,
+                paidBudget: PaidBudget? = nil, primaryHarness: String? = nil, model: String? = nil,
                 models: [String: String]? = nil,
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
@@ -364,7 +364,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.untilClean = untilClean
         self.swarm = swarm
         self.create = create
-        self.maxUsd = maxUsd
+        self.paidBudget = paidBudget
         self.primaryHarness = primaryHarness
         self.model = model
         self.models = models

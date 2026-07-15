@@ -10,6 +10,13 @@ public enum ComposerOptionParser {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
+    public static func parseNonnegativeFiniteDouble(_ text: String) -> Double? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "$", with: "")
+        guard let value = Double(trimmed), value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
     public static func parseReviewerPanelEntry(_ raw: String) -> ReviewerPanelEntry? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }

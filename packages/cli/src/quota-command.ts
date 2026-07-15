@@ -1,4 +1,4 @@
-import { ControlQuotaResponse } from "@claudexor/schema";
+import { ControlProblem, ControlQuotaResponse } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
 import { flagBool } from "./args.js";
 import { print, printJson } from "./cli-io.js";
@@ -13,8 +13,13 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
       method: refresh ? "POST" : "GET",
       headers: { Authorization: `Bearer ${addr.token}` },
     });
-    const value = ControlQuotaResponse.parse(await response.json());
-    if (!response.ok) throw new Error(`quota request failed (HTTP ${response.status})`);
+    const payload: unknown = await response.json();
+    if (!response.ok) {
+      const problem = ControlProblem.safeParse(payload);
+      const detail = problem.success ? `: ${problem.data.code}: ${problem.data.message}` : "";
+      throw new Error(`quota request failed (HTTP ${response.status})${detail}`);
+    }
+    const value = ControlQuotaResponse.parse(payload);
     if (json) printJson(value);
     else printQuota(value);
     return 0;
