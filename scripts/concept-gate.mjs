@@ -62,6 +62,7 @@ const COVERAGE_RE =
 // Ids may carry annotations inside the bold span (e.g. **INV-042 (RETIRED)**).
 const ID_RE = /\*\*(INV-\d{3})[^*]*\*\*/g;
 let supplementalCoverage = new Map();
+let ratifiedCoverage = new Map();
 
 const git = (args) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
 
@@ -78,6 +79,7 @@ function markedInvariantIds(sha, marker) {
 function collectSupplementalCoverage(shas) {
   const checked = new Set(shas);
   const coverage = new Map();
+  ratifiedCoverage = new Map();
   for (const attestationSha of shas) {
     const message = git(["log", "-1", "--format=%B", attestationSha]);
     const approval = message.match(MARKER_RE);
@@ -98,15 +100,14 @@ function collectSupplementalCoverage(shas) {
       }
       const approved = new Set(approval?.[1].split(",").map((s) => s.trim()) ?? []);
       const attested = match[2].split(",").map((s) => s.trim());
-      const unapproved = attested.filter((id) => !approved.has(id));
-      if (unapproved.length > 0) {
-        throw new Error(
-          `concept-gate: ${attestationSha.slice(0, 10)} coverage lacks matching CONCEPT-CHANGE approval for ${unapproved.join(", ")}`,
-        );
-      }
       const ids = coverage.get(targetSha) ?? new Set();
       for (const id of attested) ids.add(id);
       coverage.set(targetSha, ids);
+      if (attested.every((id) => approved.has(id))) {
+        const ratified = ratifiedCoverage.get(targetSha) ?? new Set();
+        for (const id of attested) ratified.add(id);
+        ratifiedCoverage.set(targetSha, ratified);
+      }
     }
   }
   return coverage;
@@ -333,7 +334,7 @@ function checkCommit(sha) {
 
   const msg = git(["log", "-1", "--format=%B", sha]);
   const marker = msg.match(MARKER_RE);
-  const ratifiedIds = supplementalCoverage.get(sha);
+  const ratifiedIds = ratifiedCoverage.get(sha);
   if (!marker && !ratifiedIds) {
     return (
       `commit ${sha.slice(0, 10)} touches ${BIBLE} without a CONCEPT-CHANGE(INV-…) marker in its message.\n` +
