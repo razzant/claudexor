@@ -111,7 +111,11 @@ describe("daemon recovery composition", () => {
       },
     };
     const services: NonNullable<DaemonControlApiOptions["services"]> = {
-      createSetupJob: async (input) => setup.current().create(input),
+      createSetupJob: async (input) =>
+        setup.current().create(input.request, {
+          key: input.idempotencyKey,
+          client: input.clientId,
+        }),
       setupJobStatus: async (input) => setup.current().status(input),
       setupJobEvents: async (input) => setup.current().events(input),
       recoveryInspectPartition: async () => journal.inspect(),
@@ -177,7 +181,7 @@ describe("daemon recovery composition", () => {
 
       const unavailableSetup = await fetch(`${base}/v2/setup/jobs`, {
         method: "POST",
-        headers: jsonHeaders,
+        headers: { ...jsonHeaders, "Idempotency-Key": "setup-while-degraded" },
         body: JSON.stringify({
           harness: "codex",
           action: "login",
@@ -250,7 +254,7 @@ describe("daemon recovery composition", () => {
 
       const createLogin = await fetch(`${base}/v2/setup/jobs`, {
         method: "POST",
-        headers: jsonHeaders,
+        headers: { ...jsonHeaders, "Idempotency-Key": "setup-after-recovery" },
         body: JSON.stringify({
           harness: "codex",
           action: "login",
