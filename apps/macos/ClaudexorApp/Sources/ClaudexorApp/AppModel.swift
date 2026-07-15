@@ -635,6 +635,7 @@ final class AppModel {
         task.tests = s.tests ?? []
         task.reviewerPanel = s.reviewerPanel
         task.protectedPathApprovals = s.protectedPathApprovals
+        task.browserRequirementDetail = browserRequirementDetail(s.requestRequirements)
         // Surfaces project engine telemetry only: when the artifact is absent
         // (legacy / mid-run) the UI says "telemetry unavailable", never a guess.
         if s.webEvidence?.available == false {
@@ -650,7 +651,6 @@ final class AppModel {
         }
         return task
     }
-
     private static func prettyTitle(_ id: String) -> String {
         "Live run · " + String(id.suffix(8))
     }
@@ -666,7 +666,6 @@ final class AppModel {
         if let error = evidence.errorSummary { parts.append(error) }
         return parts.joined(separator: " · ")
     }
-
     // MARK: Commands
 
     func startRun(prompt: String, mode: RunMode, harnesses: [HarnessFamily], primary: HarnessFamily?,
@@ -1721,6 +1720,7 @@ final class AppModel {
             task.tests = detail.summary.tests ?? task.tests
             task.reviewerPanel = detail.summary.reviewerPanel
             task.protectedPathApprovals = detail.summary.protectedPathApprovals
+            task.browserRequirementDetail = browserRequirementDetail(detail.summary.requestRequirements)
             if detail.summary.webEvidence?.available == false {
                 task.webEvidenceStatus = nil
                 task.webEvidenceDetail = "Web/tool telemetry unavailable for this run (predates telemetry.yaml or still running)."

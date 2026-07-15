@@ -16,6 +16,7 @@ import type {
   Portfolio,
   ProtectedPathApproval,
   ProjectConfig,
+  RequestRequirementResolution,
   ReviewFinding,
   RunEvent,
   RunStatus,
@@ -23,6 +24,8 @@ import type {
   TestCommandInvocation,
   ProviderFamily,
   AuthPreference,
+  ImplementationTransport,
+  RawGitPatchEnvelope,
   WebPolicySupport,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
@@ -60,6 +63,7 @@ import {
   withInactivityWatchdog,
 } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
+import { RequestRequirementsResolver } from "./requestRequirements.js";
 import {
   type AnnouncedRunContext,
   cancelledResult,
@@ -119,15 +123,18 @@ import { EventLog } from "@claudexor/event-log";
 import {
   assertMandatoryContext,
   buildContextPack,
+  rawContextForEnvelope,
   matchAny,
   preflightEvidence,
   writeEvidencePacket,
 } from "@claudexor/context";
 import {
   WorkspaceManager,
+  captureRawPatchEnvelope,
   createRevertAnchorFromPatchOrNull,
   createRevertAnchorOrNull,
   ensureGitRepository,
+  consumeRawPatchEnvelope,
   snapshotTree,
 } from "@claudexor/workspace";
 import {
@@ -210,9 +217,8 @@ export interface RunInput {
   /** Files/images attached to this turn, resolved to scoped on-disk paths. */
   attachments?: Attachment[];
   /**
-   * Opt this run into the agent-driven browser (Playwright MCP). Honored only
-   * for browser-capable harnesses when web policy is not `off`; the orchestrator
-   * resolves it to a per-harness `HarnessRunSpec.browser`.
+   * Request the agent-driven browser. Preflight resolves it per selected lane;
+   * a zero-effective pool refuses and a mixed pool carries explicit receipts.
    */
   browser?: boolean;
   mode?: ModeKind;
@@ -406,7 +412,7 @@ interface RoutedAdapter {
   providerFamily: ProviderFamily;
   supportsMaxTurns: boolean;
   supportsToolLists: boolean;
-  supportsBrowser: boolean;
+  browserRequirement: RequestRequirementResolution;
   /** Declared effort ladder (empty = effort is not a tunable surface; a
    * requested effort is then DISCLOSED as ignored, never silently dropped). */
   effortLevels: readonly EffortHint[];
@@ -418,6 +424,7 @@ interface RoutedAdapter {
   /** Manifest `json_schema_output`: only such routes receive
    * HarnessRunSpec.output_schema (gate); others keep fenced-JSON parsing. */
   supportsJsonSchemaOutput: boolean;
+  implementationTransport: ImplementationTransport;
   settings: HarnessRouteSettings | null;
 }
 
@@ -470,6 +477,7 @@ async function runBounded<T>(
 
 export class Orchestrator {
   private readonly gateway: HarnessGateway;
+  private readonly requestRequirements = new RequestRequirementsResolver();
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.gateway = new HarnessGateway(deps.registry);
@@ -740,36 +748,6 @@ export class Orchestrator {
   }
 
   /**
-   * Resolve the per-harness browser-tool wiring for a run spec. Returns null
-   * (no browser) unless: the run opted in (`input.browser`), the harness has the
-   * `browser_tool` capability, AND web policy is not `off` (the browser is live
-   * egress and must ride `external_context_policy`). Screenshots/PDFs are written
-   * into the run's artifact tree so they surface in the Canvas gallery. Headed by
-   * default so the user can watch; `cdp_endpoint` is filled by the headed-Chromium
-   * launcher (7B) for the shared, mirrored window.
-   */
-  private browserSpecFor(
-    input: RunInput | undefined,
-    routed: RoutedAdapter,
-    webPolicy: ExternalContextPolicy,
-    access: AccessProfile,
-    paths: ReturnType<ArtifactStore["runPaths"]>,
-  ): { output_dir: string; headless: boolean } | null {
-    if (!input?.browser || !routed.supportsBrowser || webPolicy === "off") return null;
-    // The browser MCP drives a real Chromium (subprocess + live network). Codex's
-    // workspace-write sandbox cancels the navigation (live-verified across
-    // network_access / approval_policy / external-CDP variants) — only full access
-    // lets it through. Require full access rather than silently inject a browser
-    // whose first navigation will fail. The composer discloses this when the user
-    // arms the tool; a non-full run drops the browser honestly (no broken tool).
-    // headless:false -> a real headed window is the live view (locked design:
-    // the user watches the browser itself, not a mirrored feed); output_dir
-    // captures navigation snapshots into the run tree.
-    if (access !== "full" && access !== "external_sandbox_full") return null;
-    return { output_dir: join(paths.root, "browser"), headless: false };
-  }
-
-  /**
    * Session fields for a route's run spec: auth route preference + native
    * resume id. Preference precedence: explicit per-run > per-harness
    * config > global routing config > auto.
@@ -832,7 +810,7 @@ export class Orchestrator {
   /**
    * Resolve candidate adapters: explicit `--harness`, else available real harnesses, then
    * **capability-gate** to those that can actually produce work for `intent` (e.g. a
-   * raw-API reviewer with `implement: false` is dropped from an implement race), and
+   * a planner-only adapter with `implement: false` is dropped from an implement race), and
    * expand to n. Fails loudly if nothing can perform the intent.
    */
   private resolveRunInput(input: RunInput): RunInput {
@@ -952,12 +930,6 @@ export class Orchestrator {
       }
     }
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
-    // Vision is a capability: a run carrying an image attachment must route to a
-    // harness that can actually deliver it (image_input != "none"). Routing an
-    // image to cursor/opencode (image_input="none") silently drops it and the
-    // model honestly reports it saw nothing — the schema's attachment contract
-    // (attachment.ts) promises the opposite. Gate the pool below, mirroring web.
-    const needsVision = (input.attachments ?? []).some((a) => a.kind === "image");
     const pool: RoutedAdapter[] = [];
     const dropped: string[] = [];
     for (const id of ids) {
@@ -1046,12 +1018,14 @@ export class Orchestrator {
         dropped.push(why);
         continue;
       }
-      // Vision gate: an image-bearing run only routes to vision-capable harnesses.
-      // Exclude blind ones from auto-pools; fail loud if the user explicitly chose one.
-      if (needsVision && manifest.capability_profile.image_input === "none") {
-        const why = `${id} cannot accept image attachments (manifest image_input=none); choose a vision-capable harness (see \`claudexor doctor\` — capability image_input) or remove the image attachment`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
+      const attachmentRefusal = this.requestRequirements.attachmentRefusal(
+        id,
+        input.attachments ?? [],
+        manifest.capability_profile.attachment_inputs,
+      );
+      if (attachmentRefusal) {
+        if (explicitPool) throw new HarnessUnavailableError(attachmentRefusal);
+        dropped.push(attachmentRefusal);
         continue;
       }
       const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
@@ -1062,11 +1036,18 @@ export class Orchestrator {
           providerFamily: manifest.provider_family,
           supportsMaxTurns: manifest.capabilities.max_turns,
           supportsToolLists: manifest.capabilities.tool_lists,
-          supportsBrowser: manifest.capabilities.browser_tool,
+          browserRequirement: this.requestRequirements.resolveBrowser({
+            harnessId: id,
+            requested: input.browser === true,
+            manifestCapable: manifest.capabilities.browser_tool,
+            webPolicy: routePolicy,
+            access: requiredAccess,
+          }),
           effortLevels: manifest.capabilities.effort_levels,
           knownModels: manifest.capabilities.known_models,
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
+          implementationTransport: manifest.capabilities.implementation_transport,
           settings: cfgEntry
             ? {
                 defaultModel: cfgEntry.default_model,
@@ -1095,6 +1076,10 @@ export class Orchestrator {
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
+    this.requestRequirements.requireEffectiveBrowser(
+      input.browser === true,
+      out.map((lane) => lane.browserRequirement),
+    );
     // Strict pre-run model gate (INV-104) — see modelGovernance.ts.
     await assertRouteModelsAllowed(out, input.models, this.execRootOf(input));
     return out;
@@ -1531,13 +1516,10 @@ export class Orchestrator {
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(routed, contract, modelHint, effortHint);
-    // In-place envelopes mutate the live tree under the user's native environment
-    // (no scoped HOME), so the vendor's own session store is reachable: the turn
-    // RESUMES the native CLI session (real continuity, like the read-only paths).
-    // Isolated envelopes (race candidates) get a fresh scoped home where that
-    // session id cannot exist — they run fresh, with a typed session.rebound
-    // disclosure, never a deterministic session-not-found failure.
+    // In-place envelopes can resume native sessions; isolated scoped homes cannot,
+    // so their session ids are never retained after disposal.
     const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
+    const rawContextPacket = await rawContextForEnvelope(routed.implementationTransport, envelope);
     const sessionFields = runInput ? this.sessionSpecFields(runInput, adapter.id) : undefined;
     const spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
@@ -1549,7 +1531,10 @@ export class Orchestrator {
         contract.constraints.protected_path_approvals,
       ),
       attachments: runInput?.attachments ?? [],
-      browser: this.browserSpecFor(runInput, routed, knobs.webPolicy, access, paths),
+      browser: this.requestRequirements.browserSpec(
+        routed.browserRequirement,
+        join(paths.root, "browser"),
+      ),
       cwd: envelope.worktree_path,
       access,
       external_context_policy: knobs.webPolicy,
@@ -1570,6 +1555,7 @@ export class Orchestrator {
       // Scoped harness home only for isolated envelopes; in-place runs use the
       // native environment so the resumed vendor session is actually reachable.
       ...(inPlaceEnvelope ? {} : { env: wsm.envFor(envelope) }),
+      raw_context_packet: rawContextPacket,
     });
     if (!inPlaceEnvelope && runInput?.threadId && sessionFields?.resume_session_id) {
       log?.emit(
@@ -1602,6 +1588,7 @@ export class Orchestrator {
         knobs.webPolicy === "cached" ||
         knobs.webPolicy === "live",
       effectiveWebMode ?? knobs.webPolicy,
+      [routed.browserRequirement],
     );
     let activeSessionId = spec.session_id;
     const onAbort = () => {
@@ -1629,6 +1616,7 @@ export class Orchestrator {
           : attemptAbort.signal;
         activeSessionId = runSpec.session_id;
         const transientStart = telemetry.transientFailures.length;
+        let rawPatch: RawGitPatchEnvelope | null = null;
         try {
           const watched = withInactivityWatchdog(adapter.run(runSpec), {
             timeoutMs: inactivityMs,
@@ -1642,6 +1630,8 @@ export class Orchestrator {
           });
           for await (const ev of watched) {
             if (signal?.aborted) break;
+            rawPatch = captureRawPatchEnvelope(rawContextPacket !== null, rawPatch, ev);
+            if (ev.type === "patch_produced") continue;
             const safeEv = redactHarnessEvent(ev);
             safeInvoke(onHarnessEvent, safeEv);
             // In-place turns run in the live tree under the native environment, so
@@ -1704,6 +1694,14 @@ export class Orchestrator {
             // BOTH spend and quota); pressure disclosed once per attempt.
             observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
           }
+          if (rawContextPacket && !harnessErrored)
+            await consumeRawPatchEnvelope({
+              repoRoot: envelope.repo_root,
+              worktreePath: envelope.worktree_path,
+              baseCommitSha: envelope.base_sha ?? "HEAD",
+              context: rawContextPacket,
+              envelope: rawPatch,
+            });
         } catch (err) {
           // A throwing adapter must not lose the cost already streamed: record the
           // error here and let the caller settle the REAL accumulated spend.
@@ -2268,14 +2266,12 @@ export class Orchestrator {
           baseRef: contract.repo.base_ref,
           dirtyPolicy: "snapshot",
           accessProfile: candidateAccess,
-          // A single-candidate turn (agent n=1) on an in-place/isolated thread
-          // runs directly in the execution tree so the next turn sees its work
-          // and the native session resumes. Race candidates (n>1) always stay in
-          // isolated envelopes; the winner is auto-adopted into the tree after.
-          // REQUESTED width decides: a budget-degraded race whose wave
-          // guard trimmed it to one slot still runs enveloped + adoption —
-          // never a silent switch to direct live-tree mutation.
-          inPlace: input.inPlace === true && requestedSingleCandidate,
+          // Direct-workspace singletons run in place. Races and patch-envelope
+          // transports stay isolated and adopt through the delivery service.
+          inPlace:
+            input.inPlace === true &&
+            requestedSingleCandidate &&
+            slot.routed.implementationTransport !== "git_patch_envelope",
         });
         const run = await this.runCandidateInEnvelope(
           slot.routed,
@@ -2375,6 +2371,7 @@ export class Orchestrator {
             knobs.webPolicy,
             contract.external_context.web_required,
             effectiveWeb,
+            [slot.routed.browserRequirement],
           ),
           infraPhase,
         };
@@ -2832,8 +2829,8 @@ export class Orchestrator {
     let raceDeliveryReceipt: Awaited<ReturnType<typeof verifyAndDeliver>> | null = null;
     // A single in-place turn already mutated its execution tree; race adoption
     // instead defers verification until immediately before delivery.
-    const inPlaceWinner = input.inPlace === true && requestedSingleCandidate;
-    const deferredRaceVerify = input.inPlace === true && !requestedSingleCandidate;
+    const inPlaceWinner = winnerRun?.reviewCwd === execRoot;
+    const deferredRaceVerify = input.inPlace === true && !inPlaceWinner;
     if (
       winnerRun &&
       !inPlaceWinner &&
@@ -2887,7 +2884,7 @@ export class Orchestrator {
       let postTurnSha: string | null = null;
       let revertAnchorId: string | null = null;
       if (input.inPlace === true && hasDiff) {
-        if (requestedSingleCandidate) {
+        if (inPlaceWinner) {
           // Already live: the candidate ran in-place and wrote the tree itself.
           adopted = true;
           applyState = adoptable ? "applied" : "applied_review_blocked";
@@ -3158,6 +3155,7 @@ export class Orchestrator {
       final_attempt_id: finalAttemptId,
       web: runWeb,
       attempts: records,
+      request_requirements: records.flatMap((record) => record.request_requirements),
       tool_warnings_total: records.reduce((sum, r) => sum + r.outcome.tool_warnings_count, 0),
       generated_at: nowIso(),
     });
@@ -3872,6 +3870,7 @@ export class Orchestrator {
               knobs.webPolicy,
               contract.external_context.web_required,
               effectiveWeb,
+              [routed.browserRequirement],
             ),
           };
         }

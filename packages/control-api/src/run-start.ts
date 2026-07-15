@@ -18,46 +18,6 @@ export function validateAbsoluteRepoRoot(repoRoot: string): string | null {
   return isAbsolute(repoRoot) ? null : "project root must be an absolute path";
 }
 
-/** Direct /runs attachments are path-only: inline bytes ride thread turns. */
-export function validateDirectRunAttachments<
-  T extends ControlRunStartRequest & { turnId?: string },
->(params: T): T {
-  if (!params.attachments || params.attachments.length === 0) return params;
-  const attachments = params.attachments.map((att, index) => {
-    const hasData = typeof att.data === "string" && att.data.length > 0;
-    const path = typeof att.path === "string" ? att.path.trim() : "";
-    const hasPath = path.length > 0;
-    if (hasData) {
-      throw Object.assign(
-        new Error(
-          "inline attachment data is only accepted through thread turns; direct /runs enqueue requires path-only attachments",
-        ),
-        { status: 400 },
-      );
-    }
-    if (!hasPath) {
-      throw Object.assign(
-        new Error(`attachments[${index}].path must be a non-empty absolute file path`),
-        { status: 400 },
-      );
-    }
-    if (!isAbsolute(path)) {
-      throw Object.assign(new Error(`attachments[${index}].path must be absolute: ${path}`), {
-        status: 400,
-      });
-    }
-    if (!existsSync(path) || !lstatSync(path).isFile()) {
-      throw Object.assign(
-        new Error(`attachments[${index}].path does not exist or is not a file: ${path}`),
-        { status: 400 },
-      );
-    }
-    const { data: _data, ...rest } = att;
-    return { ...rest, path };
-  });
-  return { ...params, attachments };
-}
-
 export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunStartRequest {
   const specPath = parsed.specPath?.trim();
   const mode = parsed.mode ?? "agent";
@@ -163,6 +123,7 @@ export interface RunCreateRouteContext {
     retryable?: boolean,
   ) => void;
   chainThreadMutation?: (threadId: string, work: () => Promise<void>) => Promise<void>;
+  validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
 }
 
 /** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle. */
@@ -178,6 +139,7 @@ export async function handleRunCreate(
     const body = await ctx.readBody(req);
     assertNoInlineSecretValues(body);
     params = normalizeRunStart(ControlRunStartRequest.parse(body));
+    await ctx.validateResources?.(params.attachments ?? []);
   } catch (error) {
     return ctx.requestError(res, error);
   }
@@ -239,7 +201,6 @@ export async function handleRunCreate(
     const preCreatedTurnId = enqueueParams.turnId;
     let job: { id: string };
     try {
-      enqueueParams = validateDirectRunAttachments(enqueueParams);
       job = await ctx.daemon.enqueue(enqueueParams, {
         idempotencyKey,
         clientId: "control-api",

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { repoHash } from "@claudexor/config";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import type { ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
-import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
+import { noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
@@ -150,7 +151,11 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
 
 /** An implementer that writes a REAL file, so the candidate has a non-empty diff
  * and the reviewer panel actually runs (empty-diff candidates skip paid review). */
-function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessAdapter {
+function diffImplementer(
+  id: string,
+  family: ProviderFamily = "local",
+  browserTool = false,
+): HarnessAdapter {
   return {
     id,
     async discover() {
@@ -161,8 +166,8 @@ function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessA
         provider_family: family,
         // Implement-only: it must NOT also qualify as a reviewer (else it would
         // review its own candidate and crowd out a real cross-family reviewer).
-        capabilities: { implement: true },
-        access_profiles_supported: ["workspace_write"],
+        capabilities: { implement: true, browser_tool: browserTool },
+        access_profiles_supported: ["workspace_write", "external_sandbox_full"],
       });
     },
     async doctor() {
@@ -182,6 +187,63 @@ function diffImplementer(id: string, family: ProviderFamily = "local"): HarnessA
         session_id: spec.session_id,
         ts,
         usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 },
+      };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
+function rawPatchImplementer(id: string): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "remote_api",
+        provider_family: "openai",
+        capabilities: {
+          implement: true,
+          implementation_transport: "git_patch_envelope",
+        },
+        access_profiles_supported: ["workspace_write"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({
+        harness_id: id,
+        status: "ok",
+        enabled_intents: ["implement"],
+      });
+    },
+    async *run(spec) {
+      const context = spec.raw_context_packet;
+      if (!context) throw new Error("missing raw context packet");
+      const readme = context.readable_files.find((file) => file.path === "README.md");
+      if (!readme) throw new Error("README.md missing from raw context packet");
+      const patch = [
+        "diff --git a/README.md b/README.md",
+        "--- a/README.md",
+        "+++ b/README.md",
+        "@@ -1 +1 @@",
+        "-# repo",
+        "+# raw implemented",
+        "",
+      ].join("\n");
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts };
+      yield {
+        type: "patch_produced",
+        session_id: spec.session_id,
+        ts,
+        patch_envelope: {
+          schema_version: 1,
+          context_packet_hash: context.packet_hash,
+          base_tree_sha: context.base_tree_sha,
+          patch,
+          patch_hash: sha256(patch),
+          touched_paths: [{ path: "README.md", expected_blob_oid: readme.blob_oid }],
+        },
       };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
@@ -237,7 +299,7 @@ function transientThenDiffImplementer(id: string): {
   };
 }
 
-/** A reviewer/planner-only adapter (like raw-api): cannot implement/edit. */
+/** A reviewer/planner-only adapter: cannot implement/edit. */
 function noImplementAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
   return {
     id,
@@ -1311,10 +1373,12 @@ describe("Orchestrator", () => {
     const note = join(repo, "note.txt");
     writeFileSync(note, "hello\n");
     const attachment = {
-      id: "att-1",
+      resource_id: "res-1",
       kind: "file" as const,
       mime: "text/plain",
       name: "note.txt",
+      sha256: `sha256:${createHash("sha256").update("hello\n").digest("hex")}`,
+      size_bytes: 6,
       path: note,
     };
     let observedAttachments: unknown;
@@ -1327,6 +1391,17 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: "openai",
           capabilities: { read_files: true },
+          capability_profile: {
+            attachment_inputs: [
+              {
+                kind: "file",
+                mime_types: ["text/plain"],
+                max_bytes: 1024,
+                max_count: 1,
+                transport: "text_inline",
+              },
+            ],
+          },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -1359,18 +1434,20 @@ describe("Orchestrator", () => {
     expect(observedAttachments).toEqual([attachment]);
   });
 
-  it("vision gate (INV-065): a blind harness is refused for an image run when explicit, dropped from auto-pools", async () => {
+  it("mandatory attachment gate refuses an incompatible selected lane and filters auto-pools", async () => {
     const repo = await initRepo();
     const image = join(repo, "shot.png");
     writeFileSync(image, "png-bytes\n");
     const attachment = {
-      id: "att-img",
+      resource_id: "res-img",
       kind: "image" as const,
       mime: "image/png",
       name: "shot.png",
+      sha256: `sha256:${createHash("sha256").update("png-bytes\n").digest("hex")}`,
+      size_bytes: 10,
       path: image,
     };
-    const mk = (id: string, imageInput: "none" | "file_path"): HarnessAdapter => ({
+    const mk = (id: string, acceptsImage: boolean): HarnessAdapter => ({
       id,
       async discover() {
         return HarnessManifest.parse({
@@ -1379,7 +1456,19 @@ describe("Orchestrator", () => {
           kind: "local_cli",
           provider_family: id === "blind" ? "openai" : "anthropic",
           capabilities: { read_files: true },
-          capability_profile: { image_input: imageInput },
+          capability_profile: {
+            attachment_inputs: acceptsImage
+              ? [
+                  {
+                    kind: "image",
+                    mime_types: ["image/png"],
+                    max_bytes: 1024,
+                    max_count: 1,
+                    transport: "file_path",
+                  },
+                ]
+              : [],
+          },
           access_profiles_supported: ["readonly"],
         });
       },
@@ -1398,8 +1487,8 @@ describe("Orchestrator", () => {
       },
     });
     const registry = new Map<string, HarnessAdapter>([
-      ["blind", mk("blind", "none")],
-      ["sighted", mk("sighted", "file_path")],
+      ["blind", mk("blind", false)],
+      ["sighted", mk("sighted", true)],
     ]);
     // EXPLICIT pool naming a blind harness: loud typed refusal naming the gap.
     const explicit = await new Orchestrator({ registry, reviewers: [] }).run({
@@ -1410,7 +1499,7 @@ describe("Orchestrator", () => {
       attachments: [attachment],
     });
     expect(explicit.status).toBe("failed");
-    expect(explicit.summary).toMatch(/cannot accept image attachments|image_input=none/);
+    expect(explicit.summary).toMatch(/cannot receive every mandatory attachment/);
     // AUTO pool: the blind harness is silently-but-honestly DROPPED; the
     // sighted one carries the run.
     const auto = await new Orchestrator({ registry, reviewers: [] }).run({
@@ -3172,6 +3261,26 @@ describe("Orchestrator", () => {
     expect(sawResume).toBe("vendor-sess-prev");
     expect(observed["impl"]).toBe("vendor-sess-9");
     expect(res.mode).toBe("agent");
+  });
+
+  it("materializes a raw patch in isolation and delivers its canonical diff through the normal gate", async () => {
+    const repo = await initRepo();
+    const raw = rawPatchImplementer("raw-patch");
+    const orch = new Orchestrator({ registry: new Map([[raw.id, raw]]), reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "edit README",
+      mode: "agent",
+      harnesses: [raw.id],
+      n: 1,
+      inPlace: true,
+      tests: [shellGate('test "$(cat README.md)" = "# raw implemented"')],
+    });
+    expect(res.status).toBe("success");
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# raw implemented\n");
+    const finalPatch = readFileSync(join(res.runDir, "final", "patch.diff"), "utf8");
+    expect(finalPatch).toContain("+# raw implemented");
+    expect(finalPatch).not.toContain("RawGitPatchEnvelope");
   });
 
   it("race leaves an ungated winner as an artifact without mutating the live tree", async () => {
@@ -5256,37 +5365,86 @@ describe("strict structured-output schema (critic findings)", () => {
   });
 });
 
-describe("browser gate (INV-066): every unmet condition disarms; fully-armed injects", () => {
-  it("browserSpecFor is null for opt-out/incapable/web-off/non-full-access; a spec appears only fully armed", async () => {
-    const { Orchestrator: Orch } = await import("./orchestrator.js");
-    const orch = new Orch({ registry: new Map(), reviewers: [] }) as any;
-    const paths = { root: "/tmp/run-root" };
-    const routedWith = (supportsBrowser: boolean) => ({ supportsBrowser });
-    const base = { browser: true };
-    // 1) run did not opt in
-    expect(
-      orch.browserSpecFor({ browser: false }, routedWith(true), "auto", "full", paths),
-    ).toBeNull();
-    // 2) harness lacks browser_tool
-    expect(orch.browserSpecFor(base, routedWith(false), "auto", "full", paths)).toBeNull();
-    // 3) web policy off (the browser is live egress riding external context policy)
-    expect(orch.browserSpecFor(base, routedWith(true), "off", "full", paths)).toBeNull();
-    // 4) access below full (workspace-write sandboxes cancel navigation — live-verified)
-    expect(
-      orch.browserSpecFor(base, routedWith(true), "auto", "workspace_write", paths),
-    ).toBeNull();
-    expect(orch.browserSpecFor(base, routedWith(true), "auto", "readonly", paths)).toBeNull();
-    // FULLY ARMED: opt-in + capability + web + full access -> headed spec into the run tree.
-    const armed = orch.browserSpecFor(base, routedWith(true), "auto", "full", paths);
-    expect(armed).toEqual({ output_dir: "/tmp/run-root/browser", headless: false });
-    const sandboxFull = orch.browserSpecFor(
-      base,
-      routedWith(true),
-      "live",
-      "external_sandbox_full",
-      paths,
+describe("browser preflight truth (INV-066 / P1-09)", () => {
+  function observeBrowserSpec(
+    adapter: HarnessAdapter,
+    observe: (browser: unknown) => void,
+  ): HarnessAdapter {
+    return {
+      ...adapter,
+      async *run(spec) {
+        observe(spec.browser);
+        yield* adapter.run(spec);
+      },
+    };
+  }
+
+  it("keeps mixed lanes participating and records requested/effective browser asymmetry", async () => {
+    const repo = await initRepo();
+    const seen = new Map<string, unknown>();
+    const capable = observeBrowserSpec(diffImplementer("capable", "local", true), (browser) =>
+      seen.set("capable", browser),
     );
-    expect(sandboxFull).not.toBeNull();
+    const incapable = observeBrowserSpec(diffImplementer("incapable", "openai"), (browser) =>
+      seen.set("incapable", browser),
+    );
+    const orch = new Orchestrator({
+      registry: new Map([
+        [capable.id, capable],
+        [incapable.id, incapable],
+      ]),
+      reviewers: reviewers(),
+    });
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "browse while implementing",
+      mode: "agent",
+      harnesses: ["capable", "incapable"],
+      n: 2,
+      access: "external_sandbox_full",
+      browser: true,
+      tests: [shellGate("true")],
+    });
+
+    expect(res.status).toBe("success");
+    expect(seen.get("capable")).toMatchObject({ headless: false });
+    expect(seen.get("incapable")).toBeNull();
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toMatch(/harness_id: capable[\s\S]*effective: true/);
+    expect(telemetry).toMatch(
+      /harness_id: incapable[\s\S]*effective: false[\s\S]*reason: manifest_unsupported/,
+    );
+  });
+
+  it("refuses a zero-effective browser pool before invoking a harness", async () => {
+    const repo = await initRepo();
+    let calls = 0;
+    const incapable = observeBrowserSpec(diffImplementer("incapable", "local"), () => {
+      calls += 1;
+    });
+    const orch = new Orchestrator({
+      registry: new Map([[incapable.id, incapable]]),
+      reviewers: reviewers(),
+    });
+
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "browse",
+      mode: "agent",
+      harnesses: ["incapable"],
+      n: 1,
+      access: "external_sandbox_full",
+      browser: true,
+    });
+
+    expect(calls).toBe(0);
+    expect(res.status).toBe("failed");
+    expect(res.summary).toMatch(/browser was requested.*manifest_unsupported/);
+    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "browser was requested",
+    );
   });
 });
 

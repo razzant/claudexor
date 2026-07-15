@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -38,11 +38,11 @@ import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
 import {
+  claudeAttachmentBlocks,
   handleControlRequestFrame,
   initialSessionFrames,
   isControlRequestFrame,
   isResultFrame,
-  type ClaudeImageBlock,
 } from "./interactive.js";
 
 const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
@@ -61,7 +61,22 @@ const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityPro
   },
   access_control: { readonly_mechanism: "tool_allowlist" },
   isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
-  image_input: "base64_stream",
+  attachment_inputs: [
+    {
+      kind: "image",
+      mime_types: ["image/png", "image/jpeg", "image/gif", "image/webp"],
+      max_bytes: 5 * 1024 * 1024,
+      max_count: 20,
+      transport: "base64_stream",
+    },
+    {
+      kind: "file",
+      mime_types: ["text/plain", "text/markdown", "application/json"],
+      max_bytes: 1024 * 1024,
+      max_count: 10,
+      transport: "text_inline",
+    },
+  ],
 });
 
 /**
@@ -872,29 +887,6 @@ function claudeBrowserArgs(spec: HarnessRunSpec): string[] {
   return ["--mcp-config", cfg];
 }
 
-/** Build Claude base64 image blocks from image attachments (read at spec time). */
-function claudeImageBlocks(
-  attachments: HarnessRunSpec["attachments"] | undefined,
-): ClaudeImageBlock[] {
-  const blocks: ClaudeImageBlock[] = [];
-  for (const a of attachments ?? []) {
-    if (a.kind !== "image") continue;
-    try {
-      blocks.push({
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: a.mime,
-          data: readFileSync(a.path).toString("base64"),
-        },
-      });
-    } catch {
-      // A late-deleted attachment is non-fatal: proceed with the text prompt.
-    }
-  }
-  return blocks;
-}
-
 async function* runClaude(
   spec: HarnessRunSpec,
   runtime: ClaudeRuntimeDeps,
@@ -918,11 +910,11 @@ async function* runClaude(
     }
   }
   const channel: InteractionChannel | undefined = interactionChannelFromSpec(spec);
-  const imageBlocks = claudeImageBlocks(spec.attachments);
+  const attachmentBlocks = claudeAttachmentBlocks(spec.attachments);
   // Images ride ONLY the stdin stream-json transport, so an attachment forces
   // the interactive path even with no interaction channel (control frames then
   // auto-decline). claudeArgsForSpec(interactive) selects --input-format stream-json.
-  const interactive = channel !== undefined || imageBlocks.length > 0;
+  const interactive = channel !== undefined || attachmentBlocks.length > 0;
   const nativeEnv = claudeNativeEnv(spec.env);
   const authPreference = spec.auth_preference ?? "auto";
   const native: ClaudeAuthStatusProbe =
@@ -1030,7 +1022,7 @@ async function* runClaude(
     ...(interactive
       ? {
           session: {
-            initialStdin: initialSessionFrames(spec.prompt, imageBlocks),
+            initialStdin: initialSessionFrames(spec.prompt, attachmentBlocks),
             matches: isControlRequestFrame,
             handle: (obj, io) => handleControlRequestFrame(obj, io, spec.session_id, channel),
             closeStdinOn: isResultFrame,

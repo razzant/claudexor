@@ -1,0 +1,40 @@
+{
+  "$ref": "#/definitions/ControlUploadStatus",
+  "definitions": {
+    "ControlUploadStatus": {
+      "type": "object",
+      "properties": {
+        "uploadId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "open",
+            "uploading",
+            "uploaded",
+            "cancelled"
+          ]
+        },
+        "receivedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "uploadId",
+        "state",
+        "receivedBytes",
+        "expectedBytes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

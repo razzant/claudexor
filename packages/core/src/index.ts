@@ -1,5 +1,6 @@
 export * from "./errors.js";
 export * from "./adapter.js";
+export * from "./attachment-integrity.js";
 export * from "./effort.js";
 export * from "./model.js";
 export * from "./proc.js";

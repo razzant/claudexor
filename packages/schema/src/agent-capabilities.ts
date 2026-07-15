@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AccessProfile, ModeKind, ProviderFamily } from "./primitives.js";
 import { AdapterStatus, EffortHint, ReadonlyMechanism } from "./harness.js";
 import { WorkspaceMode } from "./thread.js";
+import { AttachmentInputClass } from "./attachment.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
@@ -97,9 +98,9 @@ export const CatalogHarness = z
     webPolicy: z
       .enum(["native", "tools", "uncontrolled", "none"])
       .describe("How external web/search is controlled for this harness."),
-    imageInput: z
-      .enum(["file_path", "base64_stream", "base64_inline", "none"])
-      .describe("Attachment/vision delivery mechanism the adapter supports."),
+    attachmentInputs: z
+      .array(AttachmentInputClass)
+      .describe("Finite media/MIME/size/count/transport declarations for this adapter."),
     effortLevels: z
       .array(EffortHint)
       .describe("Reasoning-effort ladder the adapter declares (normalized by the engine)."),

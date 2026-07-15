@@ -72,10 +72,10 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": {
+              "resource_id": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Attachment id."
+                "description": "Immutable daemon resource id."
               },
               "kind": {
                 "type": "string",
@@ -83,30 +83,43 @@
                   "image",
                   "file"
                 ],
-                "description": "Kind of attachment: image (vision input) or file (generic bytes).",
-                "default": "file"
+                "description": "Kind of attached resource: image input or generic file bytes."
               },
               "mime": {
                 "type": "string",
-                "default": "application/octet-stream",
-                "description": "MIME type of the attachment content."
+                "minLength": 1,
+                "description": "Declared MIME type validated against adapter limits."
               },
               "name": {
                 "type": "string",
-                "default": "",
-                "description": "Original file name as provided by the user or agent."
+                "description": "Original display name."
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact sha256 digest of the immutable bytes."
+              },
+              "size_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Exact byte length."
               },
               "path": {
                 "type": "string",
-                "description": "Resolved local path in the scoped attachment store (kept outside any worktree)."
+                "description": "Daemon-owned immutable blob path; internal adapter input only."
               }
             },
             "required": [
-              "id",
+              "resource_id",
+              "kind",
+              "mime",
+              "name",
+              "sha256",
+              "size_bytes",
               "path"
             ],
             "additionalProperties": false,
-            "description": "A user- or agent-provided file/image attached to a turn, stored in the scoped attachment store and forwarded to harnesses in their native shape."
+            "description": "Daemon-resolved immutable resource supplied to a harness adapter."
           },
           "default": [],
           "description": "Files/images the user attached to this turn (resolved scoped paths)."

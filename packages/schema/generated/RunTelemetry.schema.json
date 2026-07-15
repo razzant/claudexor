@@ -206,6 +206,60 @@
                 "description": "Auth route the attempt actually ran under (local_session subscription vs api_key), disclosed by the adapter's typed started payload; null when never disclosed (treated as unknown, never guessed).",
                 "default": null
               },
+              "request_requirements": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "capability": {
+                      "type": "string",
+                      "const": "browser"
+                    },
+                    "harness_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "eligible": {
+                      "type": "boolean"
+                    },
+                    "requested": {
+                      "type": "boolean"
+                    },
+                    "effective": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "not_requested",
+                        "effective",
+                        "manifest_unsupported",
+                        "web_policy_off",
+                        "access_profile_incompatible"
+                      ]
+                    },
+                    "evidence_refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    }
+                  },
+                  "required": [
+                    "capability",
+                    "harness_id",
+                    "eligible",
+                    "requested",
+                    "effective",
+                    "reason"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Preflight resolution of one requested capability on one selected harness lane."
+                },
+                "default": [],
+                "description": "Per-lane requested/effective capability receipts computed at preflight; never inferred by surfaces."
+              },
               "web": {
                 "type": "object",
                 "properties": {
@@ -418,6 +472,14 @@
           },
           "default": [],
           "description": "Per-attempt telemetry records."
+        },
+        "request_requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RunTelemetry/properties/attempts/items/properties/request_requirements/items"
+          },
+          "default": [],
+          "description": "All selected-lane capability receipts for this run."
         },
         "tool_warnings_total": {
           "type": "integer",

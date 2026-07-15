@@ -81,11 +81,12 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       },
       access_control: { readonly_mechanism: "none" },
       isolation: { supported_containment: ["env_or_file_injection"] },
-      image_input: "none",
+      attachment_inputs: [],
     },
     capabilities: {
       plan: true,
       implement: true,
+      implementation_transport: "workspace",
       create_from_scratch: true,
       review: true,
       verify: true,

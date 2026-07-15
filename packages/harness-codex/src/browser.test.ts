@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { codexBrowserArgs, codexConfigHasNodeRepl, codexExecArgs } from "./index.js";
 
 describe("node_repl suppression — config-aware (must never break scoped homes)", () => {
@@ -100,6 +101,8 @@ describe("codexBrowserArgs", () => {
 });
 
 describe("codexExecArgs image attachments", () => {
+  const imagePath = join(mkdtempSync(join(tmpdir(), "claudexor-codex-image-")), "f.png");
+  writeFileSync(imagePath, "png");
   const imageSpec = (resume: boolean) => ({
     access: "readonly" as const,
     model_hint: null,
@@ -107,7 +110,15 @@ describe("codexExecArgs image attachments", () => {
     external_context_policy: "auto" as const,
     prompt: "что видишь на картинке?",
     attachments: [
-      { id: "a1", kind: "image" as const, mime: "image/png", name: "f.png", path: "/tmp/f.png" },
+      {
+        resource_id: "res-a1",
+        kind: "image" as const,
+        mime: "image/png",
+        name: "f.png",
+        path: imagePath,
+        sha256: `sha256:${createHash("sha256").update("png").digest("hex")}`,
+        size_bytes: 3,
+      },
     ],
     browser: null,
     ...(resume ? { resume_session_id: "ses-x" } : {}),
@@ -123,12 +134,22 @@ describe("codexExecArgs image attachments", () => {
       const iIdx = args.indexOf("-i");
       const dashIdx = args.indexOf("--");
       expect(iIdx).toBeGreaterThanOrEqual(0); // image is passed
-      expect(args[iIdx + 1]).toBe("/tmp/f.png"); // path follows -i
+      expect(args[iIdx + 1]).toBe(imagePath); // path follows -i
       expect(args[iIdx + 2]).toBe("--"); // `--` IMMEDIATELY after the path: no `-c` config wedged between -i and -- (would be eaten by variadic -i)
       expect(dashIdx).toBeGreaterThan(iIdx); // -- comes AFTER -i
       expect(args[args.length - 1]).toBe("что видишь на картинке?"); // prompt is the final positional, not eaten
     });
   }
+
+  it("refuses a changed resource before constructing vendor argv", () => {
+    const spec = imageSpec(false);
+    expect(() =>
+      codexExecArgs({
+        ...spec,
+        attachments: [{ ...spec.attachments[0]!, sha256: `sha256:${"0".repeat(64)}` }],
+      }),
+    ).toThrow(/no longer match resource/);
+  });
 
   it("adds no -- terminator when there are no image attachments", () => {
     const args = codexExecArgs({

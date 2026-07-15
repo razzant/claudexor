@@ -449,6 +449,7 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let webRequired: Bool?
     public let webMode: String?
     public let webEvidence: WebEvidence?
+    public let requestRequirements: [RequestRequirementResolution]?
     public let outputReadyState: String?
     public let toolWarningsTotal: Int?
     /// Honest terminal outcome (patch/answer/plan/report/none + diffstat/adopted).
@@ -500,6 +501,22 @@ public struct WebEvidence: Codable, Sendable, Equatable {
     public let rawDetailRef: String?
     /// False when the run predates telemetry.yaml: render "telemetry unavailable", never a guess.
     public let available: Bool?
+}
+
+public struct RequestRequirementResolution: Codable, Sendable, Equatable {
+    public let capability: String
+    public let harnessId: String
+    public let eligible: Bool
+    public let requested: Bool
+    public let effective: Bool
+    public let reason: String
+    public let evidenceRefs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case capability, eligible, requested, effective, reason
+        case harnessId = "harness_id"
+        case evidenceRefs = "evidence_refs"
+    }
 }
 
 public struct TimelineEvent: Codable, Sendable, Identifiable, Equatable {

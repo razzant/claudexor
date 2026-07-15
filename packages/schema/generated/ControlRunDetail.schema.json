@@ -454,6 +454,60 @@
               "description": "Web evidence projected onto a run summary from the telemetry artifact.",
               "default": {}
             },
+            "requestRequirements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "capability": {
+                    "type": "string",
+                    "const": "browser"
+                  },
+                  "harness_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "eligible": {
+                    "type": "boolean"
+                  },
+                  "requested": {
+                    "type": "boolean"
+                  },
+                  "effective": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "not_requested",
+                      "effective",
+                      "manifest_unsupported",
+                      "web_policy_off",
+                      "access_profile_incompatible"
+                    ]
+                  },
+                  "evidence_refs": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  }
+                },
+                "required": [
+                  "capability",
+                  "harness_id",
+                  "eligible",
+                  "requested",
+                  "effective",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "description": "Preflight resolution of one requested capability on one selected harness lane."
+              },
+              "default": [],
+              "description": "Engine-computed requested/effective capability receipts for selected harness lanes."
+            },
             "toolPermissionPolicy": {
               "type": "object",
               "additionalProperties": {},

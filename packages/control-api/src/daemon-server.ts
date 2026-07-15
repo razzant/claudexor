@@ -22,7 +22,13 @@ import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
-import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
+import {
+  controlWebEvidence,
+  eventPayload,
+  latestPlanProgress,
+  readRunEvents,
+  timelineEvents,
+} from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
 import {
   chainThreadMutation,
@@ -49,6 +55,7 @@ import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute } from "./journal-event-routes.js";
+import { handleResourceRoute, type ResourceRouteServices } from "./resource-routes.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { controlProblemError } from "./problem-response.js";
@@ -60,8 +67,7 @@ import {
   ControlAuthReadinessRefreshResponse,
   ControlProblem,
   AccessProfile,
-  AttachmentInput,
-  ControlWebEvidence,
+  ResourceAttachmentRef,
   ControlApplyCheckRequest,
   ControlApplyRequest,
   ControlArtifactListResponse,
@@ -176,113 +182,114 @@ export interface DaemonControlApiOptions {
   heartbeatMs?: number;
   runStartTimeoutMs?: number;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
-  services?: DeliveryCommandServices & {
-    listProjects?: () => Promise<{ projects: unknown[] }>;
-    registerProject?: (input: {
-      root: string;
-      idempotencyKey: string;
-      clientId: string;
-    }) => Promise<unknown>;
-    relinkProject?: (id: string, root: string) => Promise<unknown>;
-    harnesses?: (input?: {
-      fresh?: boolean;
-      includeFakes?: boolean;
-      harnessIds?: string[];
-    }) => Promise<unknown>;
-    agentCapabilities?: () => Promise<unknown>;
-    harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
-    authReadiness?: (input: {
-      harnessId: string;
-      request: ControlAuthReadinessRefreshRequest;
-    }) => Promise<unknown>;
-    createSetupJob?: (input: {
-      request: ControlSetupJobCreateRequest;
-      idempotencyKey: string;
-      clientId: string;
-    }) => Promise<unknown>;
-    listSetupJobs?: (input?: unknown) => Promise<unknown>;
-    setupJobStatus?: (input: unknown) => Promise<unknown>;
-    setupJobSnapshot?: (input: unknown) => Promise<unknown>;
-    setupJobEvents?: (input: unknown) => Promise<unknown>;
-    cancelSetupJob?: (input: unknown) => Promise<unknown>;
-    reconcileSetupJob?: (input: unknown) => Promise<unknown>;
-    extendSetupJob?: (input: unknown) => Promise<unknown>;
-    recoveryInspectPartition?: (partition: string) => Promise<unknown>;
-    recoveryValidatePartition?: (partition: string) => Promise<unknown>;
-    recoveryExportPartition?: (partition: string) => Promise<unknown>;
-    recoveryQuarantinePartition?: (partition: string, input: unknown) => Promise<unknown>;
-    journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
-    settings?: () => Promise<unknown>;
-    updateSettings?: (patch: unknown) => Promise<unknown>;
-    listSecrets?: () => Promise<unknown>;
-    setSecret?: (input: unknown) => Promise<unknown>;
-    deleteSecret?: (name: string) => Promise<unknown>;
-    createSpecSession?: SpecRouteServices["createSpecSession"];
-    listSpecSessions?: SpecRouteServices["listSpecSessions"];
-    getSpecSession?: SpecRouteServices["getSpecSession"];
-    answerSpecSession?: SpecRouteServices["answerSpecSession"];
-    freezeSpecSession?: SpecRouteServices["freezeSpecSession"];
-    cancelSpecSession?: SpecRouteServices["cancelSpecSession"];
-    resumeSpecSession?: SpecRouteServices["resumeSpecSession"];
-    pendingInteractions?: (runId: string) => ControlPendingInteraction[];
-    answerInteraction?: (
-      runId: string,
-      interactionId: string,
-      answers: unknown,
-    ) => { status: string; message?: string };
-    operatorDecision?: (runId: string, params: unknown) => ControlOperatorDecisionRecord | null;
-    recordOperatorDecision?: (
-      runId: string,
-      params: unknown,
-      decision: ControlOperatorDecisionRecord,
-      idempotency?: { key: string; client: string; request: unknown },
-    ) => ControlOperatorDecisionRecord;
-    createThread?: (input: unknown) => Promise<unknown>;
-    listThreads?: () => Promise<{ threads: unknown[] }>;
-    threadDetail?: (
-      id: string,
-    ) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
-    createThreadTurn?: (
-      id: string,
-      prompt: string,
-      opts: {
-        kind?: unknown;
-        parentRunId?: string | null;
-        planRunId?: string | null;
-        attachments?: AttachmentInput[];
-        idempotency?: { key: string; client: string; request: unknown };
-      },
-    ) => Promise<unknown>;
-    updateThread?: (
-      id: string,
-      patch: {
-        title?: string;
-        state?: string;
-        primaryHarness?: string | null;
-        eligibleHarnesses?: string[];
-      },
-    ) => Promise<unknown>;
-    trashThread?: (id: string) => Promise<unknown>;
-    restoreThread?: (id: string) => Promise<unknown>;
-    purgeThread?: (id: string) => Promise<unknown>;
-    applyThread?: (
-      id: string,
-      opts: {
-        mode: string;
-        branch?: string;
-        message?: string;
-        gates?: NonNullable<Parameters<typeof verifyAndDeliver>[3]>;
-      },
-    ) => Promise<unknown>;
-    setTurnEnqueueError?: (
-      turnId: string,
-      message: string,
-      code: string | null,
-      retryable?: boolean,
-    ) => void;
-    listTrust?: (input?: { repoRoot?: string }) => Promise<unknown>;
-    updateTrust?: (input: ControlTrustUpdateRequest) => Promise<unknown>;
-  };
+  services?: DeliveryCommandServices &
+    Partial<ResourceRouteServices> & {
+      listProjects?: () => Promise<{ projects: unknown[] }>;
+      registerProject?: (input: {
+        root: string;
+        idempotencyKey: string;
+        clientId: string;
+      }) => Promise<unknown>;
+      relinkProject?: (id: string, root: string) => Promise<unknown>;
+      harnesses?: (input?: {
+        fresh?: boolean;
+        includeFakes?: boolean;
+        harnessIds?: string[];
+      }) => Promise<unknown>;
+      agentCapabilities?: () => Promise<unknown>;
+      harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
+      authReadiness?: (input: {
+        harnessId: string;
+        request: ControlAuthReadinessRefreshRequest;
+      }) => Promise<unknown>;
+      createSetupJob?: (input: {
+        request: ControlSetupJobCreateRequest;
+        idempotencyKey: string;
+        clientId: string;
+      }) => Promise<unknown>;
+      listSetupJobs?: (input?: unknown) => Promise<unknown>;
+      setupJobStatus?: (input: unknown) => Promise<unknown>;
+      setupJobSnapshot?: (input: unknown) => Promise<unknown>;
+      setupJobEvents?: (input: unknown) => Promise<unknown>;
+      cancelSetupJob?: (input: unknown) => Promise<unknown>;
+      reconcileSetupJob?: (input: unknown) => Promise<unknown>;
+      extendSetupJob?: (input: unknown) => Promise<unknown>;
+      recoveryInspectPartition?: (partition: string) => Promise<unknown>;
+      recoveryValidatePartition?: (partition: string) => Promise<unknown>;
+      recoveryExportPartition?: (partition: string) => Promise<unknown>;
+      recoveryQuarantinePartition?: (partition: string, input: unknown) => Promise<unknown>;
+      journalEvents?: (partition: string, afterCursor?: string) => Promise<unknown>;
+      settings?: () => Promise<unknown>;
+      updateSettings?: (patch: unknown) => Promise<unknown>;
+      listSecrets?: () => Promise<unknown>;
+      setSecret?: (input: unknown) => Promise<unknown>;
+      deleteSecret?: (name: string) => Promise<unknown>;
+      createSpecSession?: SpecRouteServices["createSpecSession"];
+      listSpecSessions?: SpecRouteServices["listSpecSessions"];
+      getSpecSession?: SpecRouteServices["getSpecSession"];
+      answerSpecSession?: SpecRouteServices["answerSpecSession"];
+      freezeSpecSession?: SpecRouteServices["freezeSpecSession"];
+      cancelSpecSession?: SpecRouteServices["cancelSpecSession"];
+      resumeSpecSession?: SpecRouteServices["resumeSpecSession"];
+      pendingInteractions?: (runId: string) => ControlPendingInteraction[];
+      answerInteraction?: (
+        runId: string,
+        interactionId: string,
+        answers: unknown,
+      ) => { status: string; message?: string };
+      operatorDecision?: (runId: string, params: unknown) => ControlOperatorDecisionRecord | null;
+      recordOperatorDecision?: (
+        runId: string,
+        params: unknown,
+        decision: ControlOperatorDecisionRecord,
+        idempotency?: { key: string; client: string; request: unknown },
+      ) => ControlOperatorDecisionRecord;
+      createThread?: (input: unknown) => Promise<unknown>;
+      listThreads?: () => Promise<{ threads: unknown[] }>;
+      threadDetail?: (
+        id: string,
+      ) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
+      createThreadTurn?: (
+        id: string,
+        prompt: string,
+        opts: {
+          kind?: unknown;
+          parentRunId?: string | null;
+          planRunId?: string | null;
+          attachments?: ResourceAttachmentRef[];
+          idempotency?: { key: string; client: string; request: unknown };
+        },
+      ) => Promise<unknown>;
+      updateThread?: (
+        id: string,
+        patch: {
+          title?: string;
+          state?: string;
+          primaryHarness?: string | null;
+          eligibleHarnesses?: string[];
+        },
+      ) => Promise<unknown>;
+      trashThread?: (id: string) => Promise<unknown>;
+      restoreThread?: (id: string) => Promise<unknown>;
+      purgeThread?: (id: string) => Promise<unknown>;
+      applyThread?: (
+        id: string,
+        opts: {
+          mode: string;
+          branch?: string;
+          message?: string;
+          gates?: NonNullable<Parameters<typeof verifyAndDeliver>[3]>;
+        },
+      ) => Promise<unknown>;
+      setTurnEnqueueError?: (
+        turnId: string,
+        message: string,
+        code: string | null,
+        retryable?: boolean,
+      ) => void;
+      listTrust?: (input?: { repoRoot?: string }) => Promise<unknown>;
+      updateTrust?: (input: ControlTrustUpdateRequest) => Promise<unknown>;
+    };
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -652,6 +659,21 @@ export class DaemonControlApiServer {
     }
     const path = protocol.path;
     if (
+      await handleResourceRoute(
+        {
+          services: this.opts.services,
+          readBody: (request) => this.readBody(request),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
+    if (
       await handleProjectRoute(
         {
           services: this.opts.services,
@@ -680,6 +702,7 @@ export class DaemonControlApiServer {
           setTurnEnqueueError: this.opts.services?.setTurnEnqueueError,
           chainThreadMutation: (threadId, work) =>
             chainThreadMutation(this.threadTurnRouteCtx(), threadId, work),
+          validateResources: this.opts.services?.validateResources,
         },
         req,
         res,
@@ -2247,6 +2270,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     webRequired: telemetry?.web_required ?? task?.external_context.web_required,
     webMode: telemetry?.effective_web_mode ?? task?.external_context.effective_mode,
     webEvidence,
+    requestRequirements: telemetry?.request_requirements ?? [],
     toolPermissionPolicy: task?.tool_permission_policy,
     outputReadyState: outputReadyState(rec),
     toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
@@ -2258,40 +2282,6 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,
     finishedAt: rec.finishedAt,
-  });
-}
-
-/**
- * Project the orchestrator-owned telemetry artifact into the control DTO. The
- * control plane NEVER recomputes web evidence from raw events: a run without
- * `final/telemetry.yaml` (legacy or still running) renders `available: false`
- * so surfaces show "telemetry unavailable" instead of a recomputed guess.
- */
-function controlWebEvidence(
-  telemetry: RunTelemetry | null,
-  task: TaskContract | null,
-): ControlWebEvidence {
-  if (!telemetry) {
-    return ControlWebEvidence.parse({
-      required: task?.external_context.web_required ?? false,
-      mode: task?.external_context.policy ?? "auto",
-      effectiveMode:
-        task?.external_context.effective_mode ?? task?.external_context.policy ?? "auto",
-      available: false,
-    });
-  }
-  return ControlWebEvidence.parse({
-    required: telemetry.web.required,
-    mode: telemetry.web.policy,
-    effectiveMode: telemetry.web.effective_mode,
-    attempted: telemetry.web.attempted,
-    satisfied: telemetry.web.satisfied,
-    status: telemetry.web.status,
-    tool: telemetry.web.tool,
-    target: telemetry.web.target,
-    errorSummary: telemetry.web.error_summary,
-    rawDetailRef: "final/telemetry.yaml",
-    available: true,
   });
 }
 

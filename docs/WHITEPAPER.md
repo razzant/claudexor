@@ -124,17 +124,15 @@ the button, revocable from Settings at any time.
 
 A turn can carry attachments — files and images — and Claudexor treats them as
 typed run inputs, not prompt decoration. Attachment bytes persist only in a
-scoped store outside any worktree; they never enter the daemon command journal,
-task contracts, or `git add -A` scope. Direct non-thread runs accept only
-absolute existing file paths, while inline base64 upload bytes are accepted
-only through thread/composer turns, where they are sunk to scoped files before
-a job is queued.
+daemon-owned store outside any worktree; they never enter the daemon command
+journal, task contracts, or `git add -A` scope. Clients stream bytes first and
+receive an immutable, digest-bound resource ID; runs accept only that ID.
 
-Vision is capability-gated routing, not hope: an image-bearing run routes only
-to harnesses whose capability profile declares image input, and each adapter
-forwards images in its own native shape. A blind harness is refused pre-flight
-with an actionable reason — an attachment the model never saw must never look
-delivered.
+Delivery is capability-gated routing, not hope: every selected harness declares
+the exact MIME classes, finite byte/count ceilings and native transport it can
+honor. If any lane cannot receive every mandatory resource, the pool is refused
+before enqueue. The adapter verifies the finalized byte digest before creating
+the vendor payload, so an attachment the model never saw cannot look delivered.
 
 ## Harnesses Are Tools, Not Roles
 

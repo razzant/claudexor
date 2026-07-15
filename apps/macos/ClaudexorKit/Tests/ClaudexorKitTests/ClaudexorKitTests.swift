@@ -24,6 +24,15 @@ import Testing
         #expect(value == again)
     }
 
+    @Test func runSummaryDecodesBrowserLaneAsymmetry() throws {
+        let json = #"{"runId":"run-browser","state":"succeeded","requestRequirements":[{"capability":"browser","harness_id":"codex","eligible":true,"requested":true,"effective":true,"reason":"effective","evidence_refs":["manifest.capabilities.browser_tool"]},{"capability":"browser","harness_id":"cursor","eligible":false,"requested":true,"effective":false,"reason":"manifest_unsupported","evidence_refs":["manifest.capabilities.browser_tool"]}]}"#
+        let summary = try JSONDecoder().decode(RunSummary.self, from: Data(json.utf8))
+        #expect(summary.requestRequirements?.count == 2)
+        #expect(summary.requestRequirements?.first?.harnessId == "codex")
+        #expect(summary.requestRequirements?.last?.effective == false)
+        #expect(summary.requestRequirements?.last?.reason == "manifest_unsupported")
+    }
+
     @Test func runAgainDraftPreservesEveryUnknownAndNestedRunField() throws {
         let json = #"{"sourceRunId":"run-1","request":{"prompt":"retry","mode":"agent","attachments":[{"kind":"file","mime":"text/plain","name":"a.txt","data":null,"path":"/tmp/a.txt"}],"effort":"xhigh","synthesis":"always","browser":true,"externalContextPolicy":"live","specId":"spec-1","autonomy":"auto_safe","maxToolCalls":12,"futureControl":{"enabled":true}},"differences":[]}"#
         let draft = try JSONDecoder().decode(RunAgainDraft.self, from: Data(json.utf8))

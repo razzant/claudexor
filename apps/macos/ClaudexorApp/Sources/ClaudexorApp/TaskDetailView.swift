@@ -1,5 +1,14 @@
 import AppKit
+import ClaudexorKit
 import SwiftUI
+
+func browserRequirementDetail(_ requirements: [RequestRequirementResolution]?) -> String? {
+    let browser = (requirements ?? []).filter { $0.capability == "browser" && $0.requested }
+    guard !browser.isEmpty else { return nil }
+    return browser.map {
+        "\($0.harnessId): \($0.effective ? "browser enabled" : "browser unavailable (\($0.reason))")"
+    }.joined(separator: " · ")
+}
 
 struct TaskDetailView: View {
     @Environment(AppModel.self) private var model
@@ -151,6 +160,12 @@ struct TaskDetailView: View {
                         .font(.caption)
                         .foregroundStyle(Self.webEvidenceColor(web))
                         .help(task.webEvidenceDetail ?? "Web evidence status.")
+                }
+                if let browser = task.browserRequirementDetail {
+                    Label(browser, systemImage: "globe")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help(browser)
                 }
                 ForEach(task.harnesses) { HarnessChip(family: $0) }
                 // Live-first spend: the streaming box while the run is live

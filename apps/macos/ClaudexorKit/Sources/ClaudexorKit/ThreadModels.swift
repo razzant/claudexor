@@ -341,8 +341,8 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var access: String?
     /// Per-turn external-context policy: auto | off | cached | live.
     public var web: String?
-    /// Arm the agent-driven browser (Playwright MCP) for this turn. Honored only
-    /// for browser-capable harnesses at full access; the engine drops it otherwise.
+    /// Request the agent-driven browser for this turn. The engine returns a
+    /// requested/effective receipt for every selected lane and refuses if none can comply.
     public var browser: Bool?
     /// Implement an approved plan from an earlier turn (forces agent mode).
     public var planRunId: String?

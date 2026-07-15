@@ -5,7 +5,13 @@
  * event-reading helpers the budget snapshot reuses.
  */
 import { lstatSync, readFileSync } from "node:fs";
-import { ControlTimelineEvent, FallbackReason } from "@claudexor/schema";
+import {
+  ControlTimelineEvent,
+  ControlWebEvidence,
+  FallbackReason,
+  type RunTelemetry,
+  type TaskContract,
+} from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 import { safeArtifactPath } from "./artifact-paths.js";
 
@@ -50,6 +56,35 @@ export function eventPayload(ev: Record<string, unknown>): Record<string, unknow
 
 export function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? redactSecrets(value) : null;
+}
+
+/** Project the orchestrator-owned telemetry artifact without reconstructing evidence. */
+export function controlWebEvidence(
+  telemetry: RunTelemetry | null,
+  task: TaskContract | null,
+): ControlWebEvidence {
+  if (!telemetry) {
+    return ControlWebEvidence.parse({
+      required: task?.external_context.web_required ?? false,
+      mode: task?.external_context.policy ?? "auto",
+      effectiveMode:
+        task?.external_context.effective_mode ?? task?.external_context.policy ?? "auto",
+      available: false,
+    });
+  }
+  return ControlWebEvidence.parse({
+    required: telemetry.web.required,
+    mode: telemetry.web.policy,
+    effectiveMode: telemetry.web.effective_mode,
+    attempted: telemetry.web.attempted,
+    satisfied: telemetry.web.satisfied,
+    status: telemetry.web.status,
+    tool: telemetry.web.tool,
+    target: telemetry.web.target,
+    errorSummary: telemetry.web.error_summary,
+    rawDetailRef: "final/telemetry.yaml",
+    available: true,
+  });
 }
 
 function prettyEventType(type: string): string {

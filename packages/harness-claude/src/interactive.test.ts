@@ -64,6 +64,16 @@ describe("claude interactive control protocol", () => {
     expect(frame["message"]["content"][0]["text"]).toBe("hello");
   });
 
+  it("puts an admitted generic-file sentinel in the stream-json vendor payload", () => {
+    const frame = JSON.parse(
+      initialUserMessageFrame("read it", [{ type: "text", text: "generic sentinel" }]),
+    ) as Record<string, any>;
+    expect(frame["message"]["content"]).toEqual([
+      { type: "text", text: "read it" },
+      { type: "text", text: "generic sentinel" },
+    ]);
+  });
+
   it("opens interactive sessions with the initialize handshake before the prompt", () => {
     const lines = initialSessionFrames("hello")
       .trim()

@@ -410,14 +410,13 @@ local daemon/control API, MCP, and ACP. These surfaces are capability-gated;
 integrations should not assume every subcommand has JSON output or every
 harness supports live steering (see "Stability at 1.0").
 
-The CLI accepts the same attachment contract as the control API for run modes:
-use repeatable/comma-separated `--attach <path>` for files or `--image <path>` for
-images. Vision routing remains capability-gated; a blind harness is rejected with
-an actionable pre-flight reason instead of silently dropping the attachment.
-Direct non-thread `POST /v2/runs` requests accept only non-empty absolute existing
-file paths for attachments; inline base64 upload bytes are accepted through
-thread/composer turns so they are sunk to scoped files before a daemon job is
-queued.
+The CLI accepts repeatable/comma-separated `--attach <path>` or `--image <path>`
+and immediately streams each regular, non-symlink file through `/v2/uploads`.
+Finalize returns an immutable resource ID; run and turn requests accept only those
+IDs, never local paths or base64. Every selected harness must declare a finite
+MIME, byte/count limit, and native transport for every mandatory attachment or
+preflight refuses the whole pool. Adapters verify the finalized digest immediately
+before building the vendor payload.
 
 Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.

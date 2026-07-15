@@ -246,6 +246,43 @@ describe("DaemonControlApiServer", () => {
       join(runDir, "arbitration", "decision.yaml"),
       "winner: a01\nstatus: success\noutcome: ready\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
     );
+    writeFileSync(
+      join(runDir, "final", "telemetry.yaml"),
+      [
+        "schema_version: 2",
+        "run_id: run-d1",
+        "task_id: task-d1",
+        "mode: agent",
+        "requested_access: external_sandbox_full",
+        "effective_access: external_sandbox_full",
+        "external_context_policy: auto",
+        "effective_web_mode: auto",
+        "web_required: false",
+        "web:",
+        "  required: false",
+        "  policy: auto",
+        "  effective_mode: auto",
+        "  attempted: false",
+        "  satisfied: false",
+        "  status: none",
+        "  tool: null",
+        "  target: null",
+        "  error_summary: null",
+        "attempts: []",
+        "request_requirements:",
+        "  - capability: browser",
+        "    harness_id: codex",
+        "    eligible: true",
+        "    requested: true",
+        "    effective: true",
+        "    reason: effective",
+        "    evidence_refs:",
+        "      - manifest:codex:browser_tool",
+        "tool_warnings_total: 0",
+        "generated_at: 2026-07-15T00:00:00.000Z",
+        "",
+      ].join("\n"),
+    );
     mkdirSync(join(runDir, "attempts", "a01"), { recursive: true });
     mkdirSync(join(runDir, "attempts", "a02"), { recursive: true });
     writeFileSync(
@@ -1922,7 +1959,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("rejects direct inline attachment bytes before daemon enqueue", async () => {
+  it("rejects legacy inline/path attachment authority before daemon enqueue", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-inline-attachment-"));
     let enqueued = 0;
     const daemon: DaemonFacadeClient = {
@@ -1941,35 +1978,29 @@ describe("DaemonControlApiServer", () => {
       },
     };
     await withDaemonServer(daemon, async (base) => {
-      const start = await apiFetch(`${base}/runs`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          prompt: "use attached note",
-          mode: "agent",
-          scope: { kind: "project", root: repo },
-          attachments: [
-            {
-              kind: "file",
-              mime: "text/plain",
-              name: "note.txt",
-              data: Buffer.from("hello").toString("base64"),
-            },
-          ],
-        }),
-      });
-      const body = (await start.json()) as { message?: string };
-      expect(start.status).toBe(400);
-      expect(body.message).toMatch(/inline attachment data/);
+      for (const attachment of [
+        { kind: "file", mime: "text/plain", name: "note.txt", data: "aGVsbG8=" },
+        { kind: "file", mime: "text/plain", name: "note.txt", path: join(repo, "note.txt") },
+      ]) {
+        const start = await apiFetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            prompt: "use attached note",
+            mode: "agent",
+            scope: { kind: "project", root: repo },
+            attachments: [attachment],
+          }),
+        });
+        expect(start.status).toBe(400);
+      }
       expect(enqueued).toBe(0);
     });
   });
 
-  it("allows direct path-only attachments through daemon enqueue", async () => {
+  it("allows only finalized daemon resource ids through daemon enqueue", async () => {
     const { daemon } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-path-attachment-"));
-    const file = join(repo, "note.txt");
-    writeFileSync(file, "hello\n");
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-resource-attachment-"));
     let enqueued: Record<string, unknown> | undefined;
     const wrapped: DaemonFacadeClient = {
       ...daemon,
@@ -1986,70 +2017,109 @@ describe("DaemonControlApiServer", () => {
           prompt: "use attached note",
           mode: "agent",
           scope: { kind: "project", root: repo },
-          attachments: [
-            {
-              kind: "file",
-              mime: "text/plain",
-              name: "note.txt",
-              path: file,
-            },
-          ],
+          attachments: [{ resourceId: "res-note" }],
         }),
       });
       expect(start.status).toBe(200);
-      expect(enqueued?.["attachments"]).toEqual([
-        expect.objectContaining({ kind: "file", mime: "text/plain", name: "note.txt", path: file }),
-      ]);
-      expect(
-        (enqueued?.["attachments"] as Array<Record<string, unknown>> | undefined)?.[0]?.["data"],
-      ).toBeUndefined();
+      expect(enqueued?.["attachments"]).toEqual([{ resourceId: "res-note" }]);
     });
   });
 
-  it("rejects malformed direct path-only attachments before daemon enqueue", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-bad-attachment-"));
-    const nestedDir = join(repo, "dir");
-    mkdirSync(nestedDir);
-    let enqueued = 0;
-    const daemon: DaemonFacadeClient = {
-      async enqueue() {
-        enqueued += 1;
-        return { id: "job-bad-attachment", state: "queued" };
+  it("streams upload bytes, exposes progress, supports finalize and cancel", async () => {
+    const { daemon } = fakeDaemon();
+    let bytes = Buffer.alloc(0);
+    let cancelled = false;
+    const services: DaemonControlApiOptions["services"] = {
+      createUpload: async () => ({
+        uploadId: "upl-1",
+        state: "open",
+        receivedBytes: 0,
+        expectedBytes: 5,
+      }),
+      writeUpload: async (_id, chunks) => {
+        for await (const chunk of chunks) bytes = Buffer.concat([bytes, Buffer.from(chunk)]);
+        return { uploadId: "upl-1", state: "uploaded", receivedBytes: 5, expectedBytes: 5 };
       },
-      async status() {
-        return { id: "job-bad-attachment", state: "queued" };
-      },
-      async list() {
-        return [];
-      },
-      async cancel() {
-        return { ok: true };
+      uploadStatus: async () => ({
+        uploadId: "upl-1",
+        state: "uploaded",
+        receivedBytes: bytes.length,
+        expectedBytes: 5,
+      }),
+      finalizeUpload: async () => ({
+        resourceId: "res-1",
+        kind: "file",
+        mime: "text/plain",
+        name: "note.txt",
+        sha256: `sha256:${"1".repeat(64)}`,
+        sizeBytes: 5,
+        createdAt: new Date().toISOString(),
+        deduplicated: false,
+      }),
+      cancelUpload: async () => {
+        cancelled = true;
+        return { uploadId: "upl-1", state: "cancelled", receivedBytes: 5, expectedBytes: 5 };
       },
     };
-    await withDaemonServer(daemon, async (base) => {
-      for (const attachment of [
-        { kind: "file", mime: "text/plain", name: "none.txt" },
-        { kind: "file", mime: "text/plain", name: "blank.txt", path: "   " },
-        { kind: "file", mime: "text/plain", name: "relative.txt", path: "relative.txt" },
-        { kind: "file", mime: "text/plain", name: "missing.txt", path: join(repo, "missing.txt") },
-        { kind: "file", mime: "text/plain", name: "dir", path: nestedDir },
-      ]) {
-        const start = await apiFetch(`${base}/runs`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            prompt: "use attached note",
-            mode: "agent",
-            scope: { kind: "project", root: repo },
-            attachments: [attachment],
-          }),
-        });
-        const body = (await start.json()) as { message?: string };
-        expect(start.status).toBe(400);
-        expect(body.message).toMatch(/attachment/);
-      }
-      expect(enqueued).toBe(0);
-    });
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        expect(
+          (
+            await apiFetch(`${base}/uploads`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}` },
+              body: JSON.stringify({
+                kind: "file",
+                mime: "text/plain",
+                name: "note.txt",
+                sizeBytes: 5,
+              }),
+            })
+          ).status,
+        ).toBe(201);
+        expect(
+          (
+            await apiFetch(`${base}/uploads/upl-1/bytes`, {
+              method: "PUT",
+              headers: {
+                authorization: `Bearer ${token}`,
+                "content-type": "application/octet-stream",
+              },
+              body: "hello",
+            })
+          ).status,
+        ).toBe(200);
+        expect(bytes.toString()).toBe("hello");
+        expect(
+          (
+            await apiFetch(`${base}/uploads/upl-1`, {
+              headers: { authorization: `Bearer ${token}` },
+            })
+          ).status,
+        ).toBe(200);
+        expect(
+          (
+            await apiFetch(`${base}/uploads/upl-1/finalize`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}` },
+              body: "{}",
+            })
+          ).status,
+        ).toBe(201);
+        expect(
+          (
+            await apiFetch(`${base}/uploads/upl-1`, {
+              method: "DELETE",
+              headers: { authorization: `Bearer ${token}` },
+            })
+          ).status,
+        ).toBe(200);
+        expect(cancelled).toBe(true);
+      },
+      undefined,
+      services,
+    );
   });
 
   it("summarizes no-project Ask runs without exposing the synthetic repo root as a project", async () => {
@@ -4488,7 +4558,7 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("direct POST /runs with a bare threadId returns attachment precreate errors as 400", async () => {
+  it("direct POST /runs with a bare threadId returns resource precreate errors as 400", async () => {
     let enqueued = 0;
     const daemon: DaemonFacadeClient = {
       async enqueue() {
@@ -4530,7 +4600,7 @@ describe("DaemonControlApiServer", () => {
         turns: [],
       }),
       createThreadTurn: async () => {
-        throw Object.assign(new Error("attachment 0 path must be absolute: relative.txt"), {
+        throw Object.assign(new Error("no such resource: res-missing"), {
           status: 400,
         });
       },
@@ -4546,13 +4616,11 @@ describe("DaemonControlApiServer", () => {
             mode: "agent",
             scope: { kind: "project", root: repo },
             threadId: "th-attachment",
-            attachments: [
-              { kind: "file", mime: "text/plain", name: "relative.txt", path: "relative.txt" },
-            ],
+            attachments: [{ resourceId: "res-missing" }],
           }),
         });
         expect(res.status).toBe(400);
-        expect(await res.text()).toContain("attachment 0 path must be absolute");
+        expect(await res.text()).toContain("no such resource");
         expect(enqueued).toBe(0);
       },
       5,
@@ -4695,7 +4763,15 @@ describe("DaemonControlApiServer", () => {
       });
       expect(detail.status).toBe(200);
       const body = (await detail.json()) as {
-        summary: { mode?: string; prompt?: string };
+        summary: {
+          mode?: string;
+          prompt?: string;
+          requestRequirements?: Array<{
+            harness_id: string;
+            effective: boolean;
+            reason: string;
+          }>;
+        };
         primaryOutput?: { kind: string; path: string; text: string };
         timeline: { type: string; harnessId?: string | null; title: string }[];
         budget: { spendUsd?: number; source: string; estimated: boolean };
@@ -4707,6 +4783,9 @@ describe("DaemonControlApiServer", () => {
       };
       expect(body.summary.mode).toBe("agent");
       expect(body.summary.prompt).toBe("hello");
+      expect(body.summary.requestRequirements).toEqual([
+        expect.objectContaining({ harness_id: "codex", effective: true, reason: "effective" }),
+      ]);
       expect(body.primaryOutput?.kind).toBe("summary");
       expect(body.primaryOutput?.text).toContain("Done");
       expect(body.timeline.some((e) => e.type === "harness.event" && e.harnessId === "codex")).toBe(
@@ -5093,10 +5172,12 @@ describe("DaemonControlApiServer", () => {
             id: "tn-source",
             attachments: [
               {
-                id: "att-source",
+                resource_id: "res-source",
                 kind: "file",
                 mime: "text/plain",
                 name: "attached.txt",
+                sha256: "sha256:fixture",
+                size_bytes: 17,
                 path: attachmentPath,
               },
             ],
@@ -5117,12 +5198,8 @@ describe("DaemonControlApiServer", () => {
           body: "{}",
         });
         expect(retry.status).toBe(200);
-        expect(copiedAttachments).toEqual([
-          expect.objectContaining({ name: "attached.txt", path: attachmentPath }),
-        ]);
-        expect(enqueued?.["attachments"]).toEqual([
-          expect.objectContaining({ name: "attached.txt", path: attachmentPath }),
-        ]);
+        expect(copiedAttachments).toEqual([{ resourceId: "res-source" }]);
+        expect(enqueued?.["attachments"]).toEqual([{ resourceId: "res-source" }]);
 
         const draft = await apiFetch(`${base}/runs/run-d1/run-again`, {
           headers: { authorization: `Bearer ${token}` },
@@ -5130,7 +5207,7 @@ describe("DaemonControlApiServer", () => {
         expect(draft.status).toBe(200);
         expect(
           ((await draft.json()) as { request: { attachments?: unknown[] } }).request.attachments,
-        ).toEqual([expect.objectContaining({ name: "attached.txt", path: attachmentPath })]);
+        ).toEqual([{ resourceId: "res-source" }]);
       },
       undefined,
       services,

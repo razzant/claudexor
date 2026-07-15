@@ -644,7 +644,6 @@ struct DiffFile: Identifiable, Hashable {
 }
 
 // MARK: - Task (a run)
-
 struct TaskRun: Identifiable, Hashable {
     let id: String
     var title: String
@@ -680,6 +679,7 @@ struct TaskRun: Identifiable, Hashable {
     var outputReadyState: String?
     var webEvidenceStatus: String?
     var webEvidenceDetail: String?
+    var browserRequirementDetail: String?
     var requestedAccess: String?
     var effectiveAccess: String?
     /** Run-level external web policy (off|auto|cached|live), for honest Retry. */

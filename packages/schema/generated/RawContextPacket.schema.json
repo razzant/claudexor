@@ -1,0 +1,175 @@
+{
+  "$ref": "#/definitions/RawContextPacket",
+  "definitions": {
+    "RawContextPacket": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "packet_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+        },
+        "base_commit_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_tree_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "readable_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact repo-relative readable/editable path."
+              },
+              "mode": {
+                "type": "string",
+                "description": "Git object mode at the bound base tree."
+              },
+              "blob_oid": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Git blob oid at the bound base tree."
+              },
+              "content_hash": {
+                "$ref": "#/definitions/RawContextPacket/properties/packet_hash"
+              },
+              "content": {
+                "type": "string",
+                "description": "Complete text content; never truncated."
+              }
+            },
+            "required": [
+              "path",
+              "mode",
+              "blob_oid",
+              "content_hash",
+              "content"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "editable_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "file_manifest": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Repo-relative path."
+              },
+              "disposition": {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "included",
+                  "manifest_only",
+                  "excluded",
+                  "sensitive",
+                  "binary",
+                  "vendored",
+                  "oversized",
+                  "read_error",
+                  "omitted"
+                ],
+                "description": "How a tracked path was accounted for in the Scope Atlas (full/included content, manifest_only, or excluded/sensitive/binary/vendored/oversized/read_error/omitted); no path is ever silently dropped."
+              },
+              "hash": {
+                "$ref": "#/definitions/RawContextPacket/properties/packet_hash",
+                "description": "Content hash of the path, when read."
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Size of the path in bytes, when known."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why the path got this disposition."
+              }
+            },
+            "required": [
+              "path",
+              "disposition"
+            ],
+            "additionalProperties": false,
+            "description": "Accounting entry for one tracked path in the Scope Atlas."
+          }
+        },
+        "omissions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Repo-relative path that was omitted."
+              },
+              "reason": {
+                "type": "string",
+                "description": "Why the path was omitted."
+              },
+              "replacement": {
+                "type": "string",
+                "enum": [
+                  "summary",
+                  "map",
+                  "index",
+                  "none"
+                ],
+                "default": "none",
+                "description": "What stands in for the omitted content: a summary, a map, an index, or nothing."
+              },
+              "hash": {
+                "$ref": "#/definitions/RawContextPacket/properties/packet_hash",
+                "description": "Content hash of the omitted file, when known."
+              }
+            },
+            "required": [
+              "path",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "description": "Explicit record of a file omitted from the context; nothing is silently cut."
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "schema_version",
+        "packet_hash",
+        "base_commit_sha",
+        "base_tree_sha",
+        "readable_files",
+        "editable_paths",
+        "file_manifest",
+        "omissions",
+        "evidence_refs"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

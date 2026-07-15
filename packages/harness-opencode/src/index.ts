@@ -142,8 +142,7 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           // scoped readonly mechanism to declare (see access_profiles below).
           access_control: { readonly_mechanism: "none" },
           isolation: { supported_containment: ["env_or_file_injection"] },
-          // No proven headless image input surface — attach is gated off until verified.
-          image_input: "none",
+          attachment_inputs: [],
         },
         auth_modes: authReady ? ["api_key"] : [],
         access_profiles_supported: ["full", "inherit_native"],

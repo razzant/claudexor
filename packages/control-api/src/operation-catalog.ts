@@ -127,6 +127,17 @@ const j = (
   });
 
 const operations: ControlOperationDescriptor[] = [
+  j("POST", "/v2/uploads", "mutating", "ControlUploadCreateRequest", "ControlUploadStatus"),
+  j("PUT", "/v2/uploads/:id/bytes", "mutating", null, "ControlUploadStatus"),
+  j("GET", "/v2/uploads/:id", "read_only", null, "ControlUploadStatus"),
+  j("DELETE", "/v2/uploads/:id", "mutating", null, "ControlUploadStatus"),
+  j(
+    "POST",
+    "/v2/uploads/:id/finalize",
+    "mutating",
+    "ControlUploadFinalizeRequest",
+    "ControlResource",
+  ),
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse"),
   j("GET", "/v2/operations", "read_only", null, "ControlOperationCatalog"),
   j("GET", "/v2/agent-capabilities", "read_only", null, "AgentCapabilityCatalog"),

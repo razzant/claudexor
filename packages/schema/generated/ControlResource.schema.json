@@ -1,0 +1,59 @@
+{
+  "$ref": "#/definitions/ControlResource",
+  "definitions": {
+    "ControlResource": {
+      "type": "object",
+      "properties": {
+        "resourceId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "file"
+          ],
+          "description": "Kind of attached resource: image input or generic file bytes."
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "createdAt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ISO-8601 timestamp string."
+        },
+        "deduplicated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "resourceId",
+        "kind",
+        "mime",
+        "name",
+        "sha256",
+        "sizeBytes",
+        "createdAt",
+        "deduplicated"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

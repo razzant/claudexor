@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type {
   ConformanceReport,
   HarnessEvent,
@@ -6,13 +5,19 @@ import type {
   HarnessModel,
   HarnessRunSpec,
   ProviderFamily,
+  RawGitPatchEnvelope,
 } from "@claudexor/schema";
 import {
   ConformanceReport as ConformanceReportSchema,
   HarnessManifest as HarnessManifestSchema,
+  RawGitPatchEnvelope as RawGitPatchEnvelopeSchema,
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
-import { HarnessUnavailableError, abortSignalFromSpec } from "@claudexor/core";
+import {
+  HarnessUnavailableError,
+  abortSignalFromSpec,
+  readVerifiedAttachmentBytes,
+} from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseChatCompletion, parseModelsList } from "./parse.js";
@@ -23,6 +28,7 @@ const RAW_API_TIMEOUT_MS = 180_000;
 const RAW_API_MODELS_TIMEOUT_MS = 15_000;
 const RAW_API_TRANSIENT_STATUS = new Set([408, 502, 503, 504]);
 const RAW_API_ENABLED_INTENTS = [
+  "implement",
   "plan",
   "spec",
   "review",
@@ -30,35 +36,43 @@ const RAW_API_ENABLED_INTENTS = [
   "explain",
   "orchestrate",
 ] as const;
-const RAW_API_DISABLED_INTENTS = [
-  "implement",
-  "create_from_scratch",
-  "repair",
-  "verify",
-  "audit",
-] as const;
+const RAW_API_DISABLED_INTENTS = ["create_from_scratch", "repair", "verify", "audit"] as const;
 const ALL_RAW_API_INTENTS = [...RAW_API_ENABLED_INTENTS, ...RAW_API_DISABLED_INTENTS] as const;
 
 /**
- * Build the chat-completions user `content`. With image attachments, switch
- * from a plain string to the OpenAI-compatible parts array (`text` +
- * `image_url` data URLs). Non-image attachments have no inline chat shape.
+ * Build the chat-completions content from digest-bound immutable resources.
  */
 function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, unknown>> {
-  const images = (spec.attachments ?? []).filter((a) => a.kind === "image");
-  if (images.length === 0) return spec.prompt;
-  const parts: Array<Record<string, unknown>> = [{ type: "text", text: spec.prompt }];
-  for (const a of images) {
-    try {
+  let prompt = spec.prompt;
+  if (spec.intent === "implement" && spec.raw_context_packet) {
+    prompt = [
+      prompt,
+      "",
+      "Implement only by returning one JSON object matching RawGitPatchEnvelope.",
+      "The patch must be a complete textual git unified diff, touch only editable_paths, and bind every touched path to its supplied blob_oid.",
+      "Do not use Markdown fences or add prose. Binary patches and new paths are unsupported.",
+      "RAW_CONTEXT_PACKET:",
+      JSON.stringify(spec.raw_context_packet),
+    ].join("\n");
+  }
+  const attachments = spec.attachments ?? [];
+  if (attachments.length === 0) return prompt;
+  const parts: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
+  for (const a of attachments) {
+    const bytes = readVerifiedAttachmentBytes(a);
+    if (a.kind === "image") {
       parts.push({
         type: "image_url",
-        image_url: { url: `data:${a.mime};base64,${readFileSync(a.path).toString("base64")}` },
+        image_url: { url: `data:${a.mime};base64,${bytes.toString("base64")}` },
       });
-    } catch {
-      // Late-deleted attachment: skip; the text prompt still goes through.
+    } else {
+      parts.push({
+        type: "text",
+        text: `Attached file ${a.name || a.resource_id} (${a.mime}, ${a.sha256}):\n${bytes.toString("utf8")}`,
+      });
     }
   }
-  return parts.length > 1 ? parts : spec.prompt;
+  return parts.length > 1 ? parts : prompt;
 }
 
 export interface RawApiConfig {
@@ -71,8 +85,8 @@ export interface RawApiConfig {
 
 /**
  * A raw-API harness backed by an OpenAI-compatible chat-completions endpoint.
- * It has no native edit tools, so it serves as a planner/reviewer (useful as a
- * cross-family reviewer via API key when no CLI of that family is installed).
+ * Implementing calls receive a bounded context packet and return a typed Git
+ * patch envelope; the orchestrator validates/materializes it in isolation.
  */
 export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
   const id = config.id ?? "raw-api";
@@ -120,7 +134,8 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         provider_family: providerFamily,
         capabilities: {
           plan: true,
-          implement: false,
+          implement: true,
+          implementation_transport: "git_patch_envelope",
           create_from_scratch: false,
           review: true,
           verify: false,
@@ -143,8 +158,22 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           },
           access_control: { readonly_mechanism: "none" },
           isolation: { supported_containment: ["env_or_file_injection"] },
-          // OpenAI-compatible chat-completions accept images as an inline `image_url` data URL part.
-          image_input: "base64_inline",
+          attachment_inputs: [
+            {
+              kind: "image",
+              mime_types: ["image/png", "image/jpeg", "image/gif", "image/webp"],
+              max_bytes: 20 * 1024 * 1024,
+              max_count: 20,
+              transport: "base64_inline",
+            },
+            {
+              kind: "file",
+              mime_types: ["text/plain", "text/markdown", "application/json"],
+              max_bytes: 1024 * 1024,
+              max_count: 10,
+              transport: "text_inline",
+            },
+          ],
         },
         auth_modes: ["api_key"],
         access_profiles_supported: ["readonly"],
@@ -212,7 +241,6 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           },
           { id: "isolated_smoke", status: "skip", detail: "doctor does not spend paid API calls" },
         ],
-        // No native edit tools: planner/reviewer roles only.
         enabled_intents: RAW_API_ENABLED_INTENTS,
         disabled_intents: RAW_API_DISABLED_INTENTS,
         reasons: ["key present but route unproven (no isolated smoke)"],
@@ -313,8 +341,41 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         }
         const json = await res.json();
         const parsed = parseChatCompletion(json);
-        if (parsed.text)
+        if (spec.intent === "implement") {
+          if (!spec.raw_context_packet) {
+            yield {
+              type: "error",
+              session_id: spec.session_id,
+              ts: nowIso(),
+              error: "raw-api implement requires a RawContextPacket",
+              refusal_code: "raw_patch_missing_evidence",
+            };
+          } else {
+            let patchEnvelope: RawGitPatchEnvelope | null = null;
+            try {
+              patchEnvelope = RawGitPatchEnvelopeSchema.parse(JSON.parse(parsed.text));
+            } catch {
+              yield {
+                type: "error",
+                session_id: spec.session_id,
+                ts: nowIso(),
+                error:
+                  "raw-api implement response was not a complete RawGitPatchEnvelope JSON object",
+                refusal_code: "raw_patch_truncated",
+              };
+            }
+            if (patchEnvelope) {
+              yield {
+                type: "patch_produced",
+                session_id: spec.session_id,
+                ts: nowIso(),
+                patch_envelope: patchEnvelope,
+              };
+            }
+          }
+        } else if (parsed.text) {
           yield { type: "message", session_id: spec.session_id, ts: nowIso(), text: parsed.text };
+        }
         yield {
           type: "usage",
           session_id: spec.session_id,

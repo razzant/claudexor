@@ -14,7 +14,7 @@ import * as runStart from "./run-start.js";
 
 type RetryServices = Pick<
   NonNullable<DaemonControlApiOptions["services"]>,
-  "createThreadTurn" | "setTurnEnqueueError" | "threadDetail"
+  "createThreadTurn" | "setTurnEnqueueError" | "threadDetail" | "validateResources"
 >;
 
 export interface RunRetryRouteContext {
@@ -65,13 +65,12 @@ async function exactRetry(
       await sourceParamsWithThreadAttachments(ctx, source),
     );
     const { turnId: _turnId, retryOf: _retryOf, ...original } = parsed;
-    params = runStart.validateDirectRunAttachments(
-      runStart.normalizeRunStart({
-        ...original,
-        parentRunId: source.runId ?? source.id,
-        retryOf: source.runId ?? source.id,
-      }),
-    );
+    params = runStart.normalizeRunStart({
+      ...original,
+      parentRunId: source.runId ?? source.id,
+      retryOf: source.runId ?? source.id,
+    });
+    await ctx.services?.validateResources?.(params.attachments ?? []);
   } catch (error) {
     return ctx.requestError(res, error);
   }
@@ -168,6 +167,13 @@ async function sourceParamsWithThreadAttachments(
       !Array.isArray(candidate) &&
       (candidate as { id?: unknown }).id === turnId,
   ) as { attachments?: unknown } | undefined;
-  if (Array.isArray(turn?.attachments)) params["attachments"] = structuredClone(turn.attachments);
+  if (Array.isArray(turn?.attachments)) {
+    params["attachments"] = turn.attachments.map((attachment) => ({
+      resourceId:
+        attachment && typeof attachment === "object"
+          ? (attachment as { resource_id?: unknown }).resource_id
+          : undefined,
+    }));
+  }
   return params;
 }

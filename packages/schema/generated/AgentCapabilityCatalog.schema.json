@@ -135,15 +135,57 @@
                 ],
                 "description": "How external web/search is controlled for this harness."
               },
-              "imageInput": {
-                "type": "string",
-                "enum": [
-                  "file_path",
-                  "base64_stream",
-                  "base64_inline",
-                  "none"
-                ],
-                "description": "Attachment/vision delivery mechanism the adapter supports."
+              "attachmentInputs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "image",
+                        "file"
+                      ],
+                      "description": "Kind of attached resource: image input or generic file bytes."
+                    },
+                    "mime_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1
+                    },
+                    "max_bytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "max_count": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "transport": {
+                      "type": "string",
+                      "enum": [
+                        "file_path",
+                        "base64_stream",
+                        "base64_inline",
+                        "text_inline"
+                      ],
+                      "description": "Native adapter transport used for one supported attachment class."
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "mime_types",
+                    "max_bytes",
+                    "max_count",
+                    "transport"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Finite MIME, size, count and transport limits declared by one adapter."
+                },
+                "description": "Finite media/MIME/size/count/transport declarations for this adapter."
               },
               "effortLevels": {
                 "type": "array",
@@ -199,7 +241,7 @@
               "configuredModelValid",
               "models",
               "webPolicy",
-              "imageInput",
+              "attachmentInputs",
               "effortLevels",
               "accessProfilesSupported",
               "readonlyMechanism"

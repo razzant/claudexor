@@ -33,6 +33,7 @@ import {
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
+import { codexImageArgs } from "./attachments.js";
 
 const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
@@ -191,16 +192,6 @@ function codexNativeReadiness(login: CodexLoginProbe): AuthSourceReadiness {
     verification: "not_run",
     detail: "native Codex session is not logged in",
   };
-}
-
-/** Codex forwards images via `-i/--image <FILE>` (repeatable; file path only —
- *  it rejects remote URLs). Non-image attachments have no native codex surface. */
-function codexImageArgs(attachments: HarnessRunSpec["attachments"] | undefined): string[] {
-  const out: string[] = [];
-  for (const a of attachments ?? []) {
-    if (a.kind === "image") out.push("-i", a.path);
-  }
-  return out;
 }
 
 /**
@@ -439,8 +430,15 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           },
           access_control: { readonly_mechanism: "fs_sandbox" },
           isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
-          // Codex accepts images via `codex exec -i/--image <FILE>` (file path; remote URLs rejected).
-          image_input: "file_path",
+          attachment_inputs: [
+            {
+              kind: "image",
+              mime_types: ["image/png", "image/jpeg", "image/gif", "image/webp"],
+              max_bytes: 20 * 1024 * 1024,
+              max_count: 20,
+              transport: "file_path",
+            },
+          ],
         },
         auth_modes: authModes,
         access_profiles_supported: ["readonly", "workspace_write", "full", "inherit_native"],

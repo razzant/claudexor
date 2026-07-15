@@ -22,46 +22,19 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "kind": {
+                  "resourceId": {
                     "type": "string",
-                    "enum": [
-                      "image",
-                      "file"
-                    ],
-                    "description": "Kind of attachment: image (vision input) or file (generic bytes).",
-                    "default": "file"
-                  },
-                  "mime": {
-                    "type": "string",
-                    "default": "application/octet-stream",
-                    "description": "MIME type of the attachment content."
-                  },
-                  "name": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Original file name for the attachment."
-                  },
-                  "data": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null,
-                    "description": "Base64-inline attachment bytes for a fresh upload; null when path is used instead."
-                  },
-                  "path": {
-                    "type": [
-                      "string",
-                      "null"
-                    ],
-                    "default": null,
-                    "description": "Absolute existing file path to read bytes from; null when data is used instead."
+                    "minLength": 1,
+                    "description": "Immutable daemon resource id returned by upload finalize."
                   }
                 },
+                "required": [
+                  "resourceId"
+                ],
                 "additionalProperties": false,
-                "description": "Inbound attachment on a control request; exactly one of data (base64-inline) or path (absolute existing file) is expected, resolved by the daemon into a durable Attachment."
+                "description": "Reference to an immutable daemon-owned uploaded resource."
               },
-              "description": "Inbound files/images for this turn; the daemon resolves each to a scoped on-disk attachment before the run spec is built."
+              "description": "Immutable daemon resource ids returned by upload finalize; paths and inline bytes are not accepted."
             },
             "mode": {
               "type": "string",
@@ -313,7 +286,7 @@
             },
             "browser": {
               "type": "boolean",
-              "description": "Opt this run into the agent-driven browser; honored only for browser-capable harnesses when web policy is not off."
+              "description": "Request the agent-driven browser; preflight records per-lane effectiveness and refuses when no selected lane can receive it."
             },
             "tests": {
               "type": "array",

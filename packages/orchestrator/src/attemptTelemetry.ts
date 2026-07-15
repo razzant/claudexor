@@ -9,6 +9,7 @@ import type {
   AttemptTelemetryRecord,
   ExternalContextPolicy,
   HarnessEvent,
+  RequestRequirementResolution,
   TaskContract,
   ToolKind,
 } from "@claudexor/schema";
@@ -48,6 +49,7 @@ export interface WebEvidenceState {
 }
 
 export interface AttemptTelemetry {
+  requestRequirements: RequestRequirementResolution[];
   toolErrors: ToolErrorRecord[];
   /** tool_result events without a status field: never silently treated as ok. */
   statuslessResults: number;
@@ -71,8 +73,10 @@ export function createAttemptTelemetry(
   policy: ExternalContextPolicy,
   webRequired: boolean,
   effectiveMode: ExternalContextPolicy = policy,
+  requestRequirements: RequestRequirementResolution[] = [],
 ): AttemptTelemetry {
   return {
+    requestRequirements,
     toolErrors: [],
     statuslessResults: 0,
     droppedEvents: 0,
@@ -320,6 +324,7 @@ export function attemptTelemetryRecord(
     harness_id: harnessId,
     observed_model: t.observedModel,
     auth_mode: t.authMode,
+    request_requirements: t.requestRequirements,
     web: {
       required: t.web.required,
       policy: t.web.mode,

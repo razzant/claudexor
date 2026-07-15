@@ -426,11 +426,10 @@ views in the shared design-system files; screens compose them.
   attachments ride any non-Spec turn; IMAGE attachments and the **Capture**
   button (system `screencapture` region select, off the main thread; a
   denied/cancelled grab yields no attachment — never a blank fake image) are
-  gated by an available route whose primary/pool harness declares
-  `capability_profile.image_input`. When images are attached but no
-  vision-capable route exists, Send is blocked with an inline honest reason
-  ("Images need an available vision-capable route") — an attachment the model
-  never saw must never look delivered. The Spec interview takes no attachments
+  gated by the pool's finite `capability_profile.attachment_inputs` declarations.
+  Upload progress/cancel happens before Send; if any selected lane lacks the
+  MIME/size/count transport, Send is blocked with the engine's typed reason — an
+  attachment the model never saw must never look delivered. The Spec interview takes no attachments
   and says so instead of silently dropping them.
 - **Agent-driven browser toggle.** A per-turn `Browser` toggle in the "⋯"
   popover, offered ONLY when a pooled harness reports the `browser_tool`
@@ -439,7 +438,9 @@ views in the shared design-system files; screens compose them.
   to `auto` — never a silent escalation ("Agent browses in a real window · runs
   at Full access" renders under the switch). The hover help explains that the
   agent drives a real HEADED browser window (navigate / screenshot / read) and
-  that navigation snapshots are recorded in the run's artifacts.
+  that navigation snapshots are recorded in the run's artifacts. The run
+  inspector projects engine receipts for mixed pools: each lane says whether
+  Browser was effective and why not; the app never infers that from the toggle.
 - **One minimal toolbar, no second header.** The thread title/subtitle live in the
   system window toolbar (`.navigationTitle`/`.navigationSubtitle`) — there is NO custom
   header strip below it. The toolbar holds ONLY the standard trailing icon cluster:

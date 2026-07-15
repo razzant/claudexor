@@ -9,6 +9,7 @@ import {
 } from "./primitives.js";
 import { ToolKind } from "./harness.js";
 import { AuthMode } from "./budget.js";
+import { RequestRequirementResolution } from "./request-requirements.js";
 
 /**
  * Run telemetry artifact (`final/telemetry.yaml`).
@@ -171,6 +172,12 @@ export const AttemptTelemetryRecord = z
       .describe(
         "Auth route the attempt actually ran under (local_session subscription vs api_key), disclosed by the adapter's typed started payload; null when never disclosed (treated as unknown, never guessed).",
       ),
+    request_requirements: z
+      .array(RequestRequirementResolution)
+      .default([])
+      .describe(
+        "Per-lane requested/effective capability receipts computed at preflight; never inferred by surfaces.",
+      ),
     web: WebEvidenceRecord,
     /** Bounded by the writer (most recent first when truncated; `tool_errors_total` keeps the true count). */
     tool_errors: z
@@ -247,6 +254,10 @@ export const RunTelemetry = z
       .array(AttemptTelemetryRecord)
       .default([])
       .describe("Per-attempt telemetry records."),
+    request_requirements: z
+      .array(RequestRequirementResolution)
+      .default([])
+      .describe("All selected-lane capability receipts for this run."),
     /** Sum of attempt outcome warnings; surfaces render this separately from terminal state. */
     tool_warnings_total: z
       .number()

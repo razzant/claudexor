@@ -64,7 +64,7 @@ const CURSOR_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityPro
   isolation: {
     supported_containment: ["scoped_home_keychain_bridge", "env_or_file_injection"],
   },
-  image_input: "none",
+  attachment_inputs: [],
 });
 
 function accessArgs(access: AccessProfile): string[] {

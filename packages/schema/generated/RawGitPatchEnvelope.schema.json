@@ -1,0 +1,62 @@
+{
+  "$ref": "#/definitions/RawGitPatchEnvelope",
+  "definitions": {
+    "RawGitPatchEnvelope": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1
+        },
+        "context_packet_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+        },
+        "base_tree_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "patch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "patch_hash": {
+          "$ref": "#/definitions/RawGitPatchEnvelope/properties/context_packet_hash"
+        },
+        "touched_paths": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expected_blob_oid": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path",
+              "expected_blob_oid"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "context_packet_hash",
+        "base_tree_sha",
+        "patch",
+        "patch_hash",
+        "touched_paths"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

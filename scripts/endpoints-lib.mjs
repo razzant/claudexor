@@ -108,6 +108,11 @@ const ROUTE_RESPONSE_OVERRIDES = new Map([
   ["GET /v2/runs/:id", "ControlRunDetail"],
   ["GET /v2/runs", "ControlRunListResponse"],
   ["POST /v2/runs", "ControlRunStartResponse"],
+  ["POST /v2/uploads", "ControlUploadStatus"],
+  ["PUT /v2/uploads/:id/bytes", "ControlUploadStatus"],
+  ["GET /v2/uploads/:id", "ControlUploadStatus"],
+  ["DELETE /v2/uploads/:id", "ControlUploadStatus"],
+  ["POST /v2/uploads/:id/finalize", "ControlResource"],
   ["POST /v2/runs/:id/apply", "ControlDeliveryResponse"],
   ["POST /v2/runs/:id/apply/check", "ControlApplyCheckResponse"],
   ["GET /v2/runs/:id/artifacts", "ControlArtifactListResponse"],
@@ -140,6 +145,11 @@ const ROUTE_RESPONSE_OVERRIDES = new Map([
 
 const ROUTE_REQUEST_OVERRIDES = new Map([
   ["POST /v2/runs", "ControlRunStartRequest"],
+  ["POST /v2/uploads", "ControlUploadCreateRequest"],
+  ["PUT /v2/uploads/:id/bytes", null],
+  ["GET /v2/uploads/:id", null],
+  ["DELETE /v2/uploads/:id", null],
+  ["POST /v2/uploads/:id/finalize", "ControlUploadFinalizeRequest"],
   ["POST /v2/runs/:id/retry", null],
   ["GET /v2/runs/:id/run-again", null],
   ["POST /v2/projects", "ControlProjectRegisterRequest"],

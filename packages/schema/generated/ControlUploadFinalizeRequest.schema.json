@@ -1,0 +1,17 @@
+{
+  "$ref": "#/definitions/ControlUploadFinalizeRequest",
+  "definitions": {
+    "ControlUploadFinalizeRequest": {
+      "type": "object",
+      "properties": {
+        "expectedSha256": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

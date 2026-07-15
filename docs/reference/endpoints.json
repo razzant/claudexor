@@ -504,6 +504,46 @@
       "request_schema": "ControlTrustUpdateRequest",
       "response_schema": "ControlTrustState",
       "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/uploads",
+      "mutating": true,
+      "request_schema": "ControlUploadCreateRequest",
+      "response_schema": "ControlUploadStatus",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/uploads/:id",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlUploadStatus",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
+      "path": "/v2/uploads/:id",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlUploadStatus",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "PUT",
+      "path": "/v2/uploads/:id/bytes",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlUploadStatus",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "POST",
+      "path": "/v2/uploads/:id/finalize",
+      "mutating": true,
+      "request_schema": "ControlUploadFinalizeRequest",
+      "response_schema": "ControlResource",
+      "error_schema": "ControlProblem"
     }
   ]
 }

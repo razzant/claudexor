@@ -230,25 +230,27 @@ process below. Never paper over the conflict.
   can never capture auth files, plugin downloads, sqlite logs, or transcripts
   into a patch. verify: workspace env tests; T3 audit sweep.
 - **INV-064** User attachments (images, files) are persisted only in a
-  scoped store outside any worktree; attachment bytes never enter
-  the command journal, task contracts, or `git add -A` scope. Direct non-thread
-  `POST /v2/runs` accepts only absolute existing file paths; inline base64 is
-  accepted only through thread/composer turns, where it is sunk to scoped
-  files before a daemon job is queued. verify: attachment-resolver tests;
-  control-api attachment DTO tests.
-- **INV-065** An image-bearing run routes only to harnesses whose
-  capability profile declares image input; a blind harness is refused
-  pre-flight with an actionable reason — an attachment the model never saw
-  must never look delivered. verify: vision-gate orchestrator tests.
+  daemon-owned store outside any worktree; source paths/base64 are never runtime
+  authority. Upload streams to a temporary file, finalize fsyncs and atomically
+  publishes digest-bound immutable bytes, and run/turn requests accept only the
+  returned resource IDs. verify: resource-store and control-api upload tests.
+- **INV-065** Every selected lane must declare finite MIME, byte/count and
+  transport support for every mandatory attachment. Mixed pools fail before
+  enqueue when any selected lane cannot receive the same bytes; adapters verify
+  the finalized digest before the vendor payload. verify: attachment routing,
+  adapter payload and digest-mismatch tests.
 - **INV-066** The agent-driven browser is a second live-egress channel and
   is treated like one: it is injected only when the run opted in, the
   harness declares `browser_tool`, web policy is not `off`, and the access
-  profile allows it; the injection is disclosed, and navigation evidence
+  profile allows it. Preflight records requested/effective truth per selected
+  lane: incapable mixed-pool lanes still run with `effective: false` and a typed
+  reason, while a pool with no effective browser lane is refused before any
+  harness starts. The injection is disclosed, and navigation evidence
   lands in the run artifact tree. The Browser MCP is an exact lockfile-pinned
   local runtime, ships with the app, never downloads through `npx`, and runs
   without provider credentials. Harnesses without a wired injector honestly
   declare `browser_tool: false`. verify: browser-gate adapter tests; packaged
-  offline help smoke; adapter manifest review.
+  offline help smoke; mixed/zero-capable preflight tests; adapter manifest review.
 
 ## 7. Project Context Is Explicit
 

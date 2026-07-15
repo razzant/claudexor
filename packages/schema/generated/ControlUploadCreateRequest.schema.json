@@ -1,0 +1,37 @@
+{
+  "$ref": "#/definitions/ControlUploadCreateRequest",
+  "definitions": {
+    "ControlUploadCreateRequest": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "file"
+          ],
+          "description": "Kind of attached resource: image input or generic file bytes."
+        },
+        "mime": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "default": ""
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "mime",
+        "sizeBytes"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

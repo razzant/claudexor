@@ -12,7 +12,7 @@ import {
   ControlRunStartRequest,
   ControlThreadTurnResponse,
 } from "@claudexor/schema";
-import type { AttachmentInput } from "@claudexor/schema";
+import type { ResourceAttachmentRef } from "@claudexor/schema";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 
 export interface ThreadTurnRouteCtx {
@@ -31,7 +31,7 @@ export interface ThreadTurnRouteCtx {
     opts: {
       parentRunId?: string | null;
       planRunId?: string | null;
-      attachments?: AttachmentInput[];
+      attachments?: ResourceAttachmentRef[];
       idempotency?: { key: string; client: string; request: unknown };
     },
   ): Promise<unknown>;
@@ -281,9 +281,7 @@ export function handleThreadTurnCreate(
         },
       })) as { id: string };
       createdTurnId = turn.id;
-      // Strip base64 attachment bytes from the enqueued params: the command journal must
-      // never carry the bytes (the turn holds the resolved scoped paths, and
-      // the run reads them back from the turn at start).
+      // The turn stores resolved immutable resources; enqueue carries no duplicate refs.
       const { attachments: _att, ...enqueueParams } = params;
       // ENQUEUE phase: a throw here means NO job was recorded — persist the
       // refusal as retryable:false (nothing to replay).

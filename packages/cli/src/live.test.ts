@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { controlApiFetch, followRun } from "./live.js";
+import { controlApiFetch, followRun, formatRunEventLine } from "./live.js";
 
 /** Stub control API speaking just enough SSE for the follow contract. */
 function sseServer(
@@ -62,6 +62,25 @@ describe("claudexor follow", () => {
     );
     writeFileSync(join(daemonDir, "token"), "tkn-follow", { mode: 0o600 });
   }
+
+  it("renders per-lane browser effectiveness from the engine receipt", () => {
+    expect(
+      formatRunEventLine({
+        type: "harness.started",
+        payload: {
+          harness_id: "cursor",
+          attempt_id: "a02",
+          external_context_policy: "auto",
+          request_requirement: {
+            capability: "browser",
+            requested: true,
+            effective: false,
+            reason: "manifest_unsupported",
+          },
+        },
+      }),
+    ).toContain("browser=unavailable:manifest_unsupported");
+  });
 
   it("resumes after a mid-stream drop via Last-Event-ID and exits 0 on the terminal", async () => {
     let connections = 0;

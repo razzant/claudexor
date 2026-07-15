@@ -15,6 +15,7 @@ import {
   ProjectStore,
   projectProjection,
   RunEventBus,
+  ResourceStore,
   threadProjection,
   daemonDir,
   defaultSocketPath,
@@ -33,14 +34,13 @@ import { SecretStore } from "@claudexor/secrets";
 import { ensureThreadWorktree, purgeThreadWorktree } from "@claudexor/workspace";
 import { noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
 import {
-  type AttachmentInput,
+  type ResourceAttachmentRef,
   type ControlSpecAnswersRequest,
   type ControlSpecQuestionsRequest,
   ControlSettingsUpdateRequest,
 } from "@claudexor/schema";
 import { invalidateDoctorCache, validateModel } from "@claudexor/core";
 import { AuthReadinessService } from "@claudexor/gateway";
-import { resolveAttachments } from "./attachment-resolver.js";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import {
@@ -107,6 +107,7 @@ async function main(): Promise<void> {
       forRequest: (params) => threads.interactionsForRequest(params),
       all: () => threads.interactionStores(),
     });
+    const resources = new ResourceStore(join(daemonDir(), "resource-store"));
 
     const server = new DaemonServer({
       socketPath,
@@ -185,7 +186,7 @@ async function main(): Promise<void> {
           prompt: String(p.prompt ?? ""),
           attachments: turnId
             ? (threads.getTurn(turnId)?.attachments ?? [])
-            : resolveAttachments((p as { attachments?: AttachmentInput[] }).attachments),
+            : resources.resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
           browser: (p as { browser?: boolean }).browser === true,
           mode: p.mode,
           contextMode: noProjectAsk
@@ -262,6 +263,7 @@ async function main(): Promise<void> {
               setupBinding,
               journalManager,
               authReadiness,
+              resources,
             ),
           });
     // Arm signals before startup awaits; serialized lifecycle fences late listeners.
@@ -350,6 +352,7 @@ function controlServices(
   setupBinding: SetupBinding,
   journalManager: JournalManager,
   authReadiness: AuthReadinessService,
+  resources: ResourceStore,
 ) {
   const secretStore = new SecretStore();
   const journalPartition = (partition: string): JournalManager =>
@@ -444,6 +447,16 @@ function controlServices(
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
   return {
+    createUpload: async (input: unknown) => resources.create(input),
+    writeUpload: async (uploadId: string, chunks: AsyncIterable<Uint8Array>) =>
+      resources.write(uploadId, chunks),
+    uploadStatus: async (uploadId: string) => resources.status(uploadId),
+    cancelUpload: async (uploadId: string) => resources.cancel(uploadId),
+    finalizeUpload: async (uploadId: string, expectedSha256?: string) =>
+      resources.finalize(uploadId, expectedSha256),
+    validateResources: async (refs: ResourceAttachmentRef[]) => {
+      resources.resolve(refs);
+    },
     listProjects: async () => ({ projects: projects().list() as unknown[] }),
     registerProject: async (input: Parameters<ProjectStore["register"]>[0]) =>
       threads.registerProject(input),
@@ -467,7 +480,7 @@ function controlServices(
         kind?: unknown;
         parentRunId?: string | null;
         planRunId?: string | null;
-        attachments?: AttachmentInput[];
+        attachments?: ResourceAttachmentRef[];
         idempotency?: { key: string; client: string; request: unknown };
       },
     ) =>
@@ -475,7 +488,7 @@ function controlServices(
         kind: opts.kind as any,
         parentRunId: opts.parentRunId,
         planRunId: opts.planRunId,
-        attachments: resolveAttachments(opts.attachments),
+        attachments: resources.resolve(opts.attachments),
         idempotency: opts.idempotency,
       }),
     updateThread: async (

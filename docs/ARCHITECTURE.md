@@ -196,7 +196,7 @@ Harness manifests carry capability booleans the engine consumes (intent
 gating, knob support, the interactive-channel gate) and a small structured
 `capability_profile` limited to what is actually read: auth sources and
 credential transports, isolation containment, the honest readonly mechanism,
-and vision `image_input` (the never-consumed execution-surface/session/output
+and finite `attachment_inputs` declarations (the never-consumed execution-surface/session/output
 subtrees were deleted in the stabilization triage — a declared capability with no
 consumer is a staged field). Capabilities are data-driven and declared by the
 adapter: `effort_levels` (a shared normalizer clamps a requested hint onto the
@@ -528,6 +528,11 @@ files.
 - `POST /v2/threads/:id/turns/:id/retry`
 - `GET /v2/trust`
 - `POST /v2/trust`
+- `POST /v2/uploads`
+- `DELETE /v2/uploads/:id`
+- `GET /v2/uploads/:id`
+- `PUT /v2/uploads/:id/bytes`
+- `POST /v2/uploads/:id/finalize`
 <!-- END GENERATED ENDPOINTS -->
 
 Endpoint semantics beyond the inventory:
@@ -1086,16 +1091,14 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   routing readiness, setup progress, and budget truth are projections of
   control-api DTOs and run artifacts, never app-local logic. Read-only modes
   expose no patch/apply controls.
-- Attachments are an engine contract the composer merely feeds: upload bytes
-  are sunk to a scoped store OUTSIDE any worktree before a daemon job is queued
-  (bytes never enter the command journal or `git add -A` scope), forwarded to the
-  harness in its NATIVE shape (codex `-i/--image`, claude base64 image block on
-  the stream-json transport, raw-api `image_url` data URL), and vision-gated:
-  an image-bearing run routes only to harnesses declaring
-  `capability_profile.image_input`, else it is refused pre-flight. Direct
-  non-thread `POST /v2/runs` accepts only non-empty absolute existing file paths
-  for attachments; inline base64 is accepted only through thread/composer turn
-  creation.
+- Attachments use a daemon-owned resource pipeline. `/v2/uploads` streams bytes
+  to an external temporary file; finalize fsyncs, hashes, deduplicates the blob,
+  atomically publishes it, and returns an immutable resource ID. `/v2/runs` and
+  thread turns accept only resource IDs. Each adapter declares exact MIME classes,
+  finite byte/count limits and a native transport in
+  `capability_profile.attachment_inputs`; every explicitly selected lane must
+  support every mandatory attachment. The daemon revalidates finalized bytes at
+  enqueue and adapters recheck the digest immediately before vendor serialization.
 - The agent-driven browser is an engine capability the app merely arms: the
   adapter injects the exact lockfile-pinned Microsoft Playwright MCP (codex via stateless
   `-c mcp_servers.browser.*` overrides, claude via `--mcp-config` inline JSON —
@@ -1103,6 +1106,12 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   tools) only when the run opted in, the harness declares
   `browser_tool`, web policy is not `off`, and the run has **full access**
   (codex's workspace-write sandbox cancels the navigation — live-verified).
+  `RequestRequirementsResolver` records `{eligible, requested, effective,
+  reason, evidenceRefs}` for every selected lane. A mixed pool keeps an
+  incapable lane participating without Browser (`effective=false`); zero
+  effective Browser lanes produce a typed preflight refusal before a harness
+  starts. The same receipts project through telemetry, Control API, CLI, and
+  the macOS run inspector, so a missing Browser is never a silent null.
   The runtime is deployed inside the DMG/ZIP and its offline entrypoint is
   build-smoked; no `npx`, runtime package download, or provider credential is
   available to the browser child. The injection is disclosed, the browser runs

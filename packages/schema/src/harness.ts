@@ -8,7 +8,13 @@ import {
   Intent,
   ProviderFamily,
 } from "./primitives.js";
-import { Attachment, ImageInputMode } from "./attachment.js";
+import { Attachment, AttachmentInputClass } from "./attachment.js";
+import {
+  ImplementationTransport,
+  RawContextPacket,
+  RawGitPatchEnvelope,
+  RawPatchRefusalCode,
+} from "./raw.js";
 
 /** Quality of a usage/quota signal a harness can emit. */
 export const SignalQuality = z
@@ -73,6 +79,9 @@ export const HarnessCapabilities = z
       .boolean()
       .default(false)
       .describe("The harness can implement code changes (implement intent)."),
+    implementation_transport: ImplementationTransport.default("workspace").describe(
+      "Typed producer/consumer transport used when implement=true.",
+    ),
     create_from_scratch: z
       .boolean()
       .default(false)
@@ -289,13 +298,12 @@ export const HarnessCapabilityProfile = z
     auth: AuthCapabilities,
     access_control: AccessControlCapabilities,
     isolation: IsolationCapabilities,
-    /** How the harness accepts image input (drives honest attach gating + the
-     *  per-adapter serializer). `none` = no vision input on this route. */
-    image_input: ImageInputMode.default("none"),
+    /** Every accepted media class has a finite MIME/size/count/transport declaration. */
+    attachment_inputs: z.array(AttachmentInputClass).default([]),
   })
   .default({})
   .describe(
-    "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and vision input.",
+    "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and finite attachment inputs.",
   );
 export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
 
@@ -400,20 +408,8 @@ export const ConformanceReport = z
   );
 export type ConformanceReport = z.infer<typeof ConformanceReport>;
 
-/**
- * Per-run browser-tool wiring. Present (non-null) on a HarnessRunSpec ONLY when
- * the orchestrator has decided this run gets the agent-driven browser: the run
- * opted in, the harness has the `browser_tool` capability, AND web policy is not
- * `off`. The adapter injects Playwright MCP accordingly.
- */
 export const BrowserToolSpec = z
   .object({
-    /**
-     * `--output-dir` for the browser MCP. Captures the per-navigation accessibility
-     * SNAPSHOTS (Playwright MCP writes screenshot image files to the agent's cwd,
-     * not here) into the run artifact tree as a browsing record the Canvas gallery
-     * lists. The live view is the headed window itself. Null = MCP's own temp dir.
-     */
     output_dir: z
       .string()
       .nullable()
@@ -421,11 +417,6 @@ export const BrowserToolSpec = z
       .describe(
         "Output directory for the browser MCP's per-navigation accessibility snapshots, kept in the run artifact tree; null = the MCP's own temp dir.",
       ),
-    /**
-     * Run the browser headless (no visible window). Default false — a headed
-     * Chromium so the user can watch the agent browse directly (the chosen mirror:
-     * a real visible window, not an embedded screencast).
-     */
     headless: z
       .boolean()
       .default(false)
@@ -512,15 +503,14 @@ export const HarnessRunSpec = z
       .default({})
       .describe("Extra environment variables injected into the harness process."),
     /**
-     * User/agent attachments (images, files) forwarded to the harness in its
-     * native shape per `capability_profile.image_input`. Empty for non-vision
-     * harnesses — the orchestrator drops + discloses rather than silently ignore.
+     * Immutable user/agent resources forwarded only after the selected adapter's
+     * finite `capability_profile.attachment_inputs` declaration admits them.
      */
     attachments: z
       .array(Attachment)
       .default([])
       .describe(
-        "Attachments forwarded to the harness in its native shape; empty for non-vision harnesses (dropped and disclosed).",
+        "Digest-bound resources forwarded to the harness in its declared native attachment transport.",
       ),
     /**
      * Agent-driven browser wiring. Null = no browser tool this run (the common
@@ -542,6 +532,9 @@ export const HarnessRunSpec = z
       .describe(
         "JSON Schema constraining the harness's final message; passed only to routes declaring json_schema_output.",
       ),
+    raw_context_packet: RawContextPacket.nullable()
+      .optional()
+      .describe("Hash-bound context packet supplied only to git-patch-envelope producers."),
     extra: z
       .record(z.string(), z.unknown())
       .default({})
@@ -692,6 +685,7 @@ export const HarnessEvent = z
         "tool_result",
         "interaction_requested",
         "file_change",
+        "patch_produced",
         "usage",
         "error",
         "completed",
@@ -706,6 +700,12 @@ export const HarnessEvent = z
     tool: ToolRef.optional().describe("Typed tool info; set on tool_call and tool_result events."),
     /** Set on `interaction_requested` events. */
     interaction: InteractionRequest.optional().describe("Set on interaction_requested events."),
+    patch_envelope: RawGitPatchEnvelope.optional().describe(
+      "Typed hash-bound patch produced by a git-patch-envelope harness.",
+    ),
+    refusal_code: RawPatchRefusalCode.optional().describe(
+      "Typed refusal code for a rejected raw patch contract.",
+    ),
     usage: z
       .object({
         input_tokens: z.number().int().nonnegative().optional().describe("Input tokens consumed."),

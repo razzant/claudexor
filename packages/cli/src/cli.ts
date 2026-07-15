@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { existsSync, lstatSync, readdirSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { createReadStream, existsSync, lstatSync, readdirSync } from "node:fs";
+import { Readable } from "node:stream";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import {
   CLAUDEXOR_VERSION,
@@ -29,6 +30,7 @@ import {
   RunTelemetry,
   TaskContract,
   type TestCommandInvocation,
+  type ResourceAttachmentRef,
 } from "@claudexor/schema";
 import {
   flagBool,
@@ -53,6 +55,7 @@ import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
 import { retryCommand, runAgainCommand } from "./retry-command.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
+import { resolveLocalAttachment, type LocalAttachment } from "./local-attachment.js";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
@@ -202,39 +205,55 @@ function attachmentPaths(args: ParsedArgs): { path: string; forceImage: boolean 
   return values;
 }
 
-function imageMimeFor(path: string): string | null {
-  switch (extname(path).toLowerCase()) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    default:
-      return null;
-  }
+function attachmentInputs(args: ParsedArgs): LocalAttachment[] | undefined {
+  const out = attachmentPaths(args).map(({ path, forceImage }) =>
+    resolveLocalAttachment(path, forceImage),
+  );
+  return out.length > 0 ? out : undefined;
 }
 
-function attachmentInputs(
-  args: ParsedArgs,
-): { kind: "image" | "file"; mime: string; name: string; path: string }[] | undefined {
-  const out = attachmentPaths(args).map(({ path, forceImage }) => {
-    const resolved = resolve(path);
-    if (!existsSync(resolved) || !lstatSync(resolved).isFile())
-      throw new Error(`attachment must be an existing file: ${path}`);
-    const imageMime = imageMimeFor(resolved);
-    const kind = forceImage || imageMime ? ("image" as const) : ("file" as const);
-    return {
-      kind,
-      mime: imageMime ?? "application/octet-stream",
-      name: basename(resolved),
-      path: resolved,
-    };
-  });
-  return out.length > 0 ? out : undefined;
+async function uploadLocalAttachment(
+  addr: Awaited<ReturnType<typeof ensureDaemon>>["addr"],
+  attachment: LocalAttachment,
+): Promise<ResourceAttachmentRef> {
+  const created = (await controlJson(addr, "/uploads", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      kind: attachment.kind,
+      mime: attachment.mime,
+      name: attachment.name,
+      sizeBytes: attachment.sizeBytes,
+    }),
+  })) as { uploadId: string };
+  try {
+    const source = createReadStream(attachment.path);
+    const response = await controlApiFetch(
+      addr,
+      `/uploads/${encodeURIComponent(created.uploadId)}/bytes`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/octet-stream" },
+        body: Readable.toWeb(source) as unknown as RequestInit["body"],
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+    );
+    if (!response.ok) {
+      const detail = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      throw new Error(String(detail["message"] ?? detail["error"] ?? `HTTP ${response.status}`));
+    }
+    const resource = (await controlJson(
+      addr,
+      `/uploads/${encodeURIComponent(created.uploadId)}/finalize`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    )) as { resourceId: string };
+    return { resourceId: resource.resourceId };
+  } catch (error) {
+    await controlApiFetch(addr, `/uploads/${encodeURIComponent(created.uploadId)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Per-family reviewer model map from `--reviewer-model "openai=gpt-4o-mini,anthropic=claude-haiku"`. Fails loudly on malformed input. */
@@ -455,9 +474,43 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   // The run is always project-scoped (the cwd is its repo); execution is
   // live in-place only under the explicit --in-place convergence path.
   const inPlace = flagBool(args, "in-place");
+  let client: Awaited<ReturnType<typeof ensureDaemon>>["client"];
+  let addr: Awaited<ReturnType<typeof ensureDaemon>>["addr"];
+  try {
+    ({ client, addr } = await ensureDaemon());
+  } catch (err) {
+    if (json)
+      printJson({
+        ok: false,
+        exitCode: 1,
+        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+  let attachmentRefs: ResourceAttachmentRef[] | undefined;
+  try {
+    attachmentRefs = p.attachmentRequest
+      ? await Promise.all(
+          p.attachmentRequest.map((attachment) => uploadLocalAttachment(addr, attachment)),
+        )
+      : undefined;
+  } catch (err) {
+    if (json)
+      printJson({
+        ok: false,
+        exitCode: 1,
+        error: `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    else
+      process.stderr.write(
+        `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    return 1;
+  }
   const body: Record<string, unknown> = {
     prompt: p.prompt,
-    ...(p.attachmentRequest ? { attachments: p.attachmentRequest } : {}),
+    ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
     // Autonomy only governs the orchestrate executor; send it only for that mode.
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
@@ -491,7 +544,6 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   };
 
   try {
-    const { client, addr } = await ensureDaemon();
     if (json) {
       // Pure machine surface: await the terminal outcome and print one JSON object.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
@@ -1122,6 +1174,11 @@ async function main(): Promise<number> {
         print(
           `web: policy=${telemetry.external_context_policy} effective=${telemetry.effective_web_mode} required=${telemetry.web_required} evidence=${telemetry.web.status}`,
         );
+        for (const requirement of telemetry.request_requirements.filter((item) => item.requested)) {
+          print(
+            `${requirement.capability}: harness=${requirement.harness_id} requested=true effective=${requirement.effective} reason=${requirement.reason}`,
+          );
+        }
       } else if (contract.success) {
         print(
           `web: policy=${contract.data.external_context.policy} required=${contract.data.external_context.web_required} evidence=unavailable (no telemetry.yaml)`,

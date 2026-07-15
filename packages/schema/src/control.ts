@@ -22,7 +22,8 @@ import {
 } from "./harness.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy } from "./orchestrate.js";
-import { AttachmentInput } from "./attachment.js";
+import { ResourceAttachmentRef } from "./attachment.js";
+import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
@@ -63,13 +64,12 @@ export type ControlReviewerPanelEntry = z.infer<typeof ControlReviewerPanelEntry
 export const ControlRunStartRequest = z
   .object({
     prompt: z.string().default("").describe("The user's prompt for the run."),
-    /** Inbound files/images for this turn; the daemon resolves each to a scoped
-     *  on-disk Attachment before the run spec is built. */
+    /** Immutable daemon resource ids; upload/finalize happens before enqueue. */
     attachments: z
-      .array(AttachmentInput)
+      .array(ResourceAttachmentRef)
       .optional()
       .describe(
-        "Inbound files/images for this turn; the daemon resolves each to a scoped on-disk attachment before the run spec is built.",
+        "Immutable daemon resource ids returned by upload finalize; paths and inline bytes are not accepted.",
       ),
     mode: ModeKind.default("agent"),
     scope: RunScope.default({ kind: "none" }),
@@ -155,13 +155,12 @@ export const ControlRunStartRequest = z
     externalContextPolicy: ExternalContextPolicy.optional().describe(
       "External web/context policy for the run.",
     ),
-    /** Opt this run into the agent-driven browser (Playwright MCP). Honored only
-     *  for browser-capable harnesses when web policy is not `off`. */
+    /** Opt this run into the agent-driven browser (Playwright MCP). */
     browser: z
       .boolean()
       .optional()
       .describe(
-        "Opt this run into the agent-driven browser; honored only for browser-capable harnesses when web policy is not off.",
+        "Request the agent-driven browser; preflight records per-lane effectiveness and refuses when no selected lane can receive it.",
       ),
     tests: z
       .array(TestCommandInvocation)
@@ -555,6 +554,12 @@ export const ControlRunSummary = z
       "Web policy actually executed by the selected route.",
     ),
     webEvidence: ControlWebEvidence.default({}),
+    requestRequirements: z
+      .array(RequestRequirementResolution)
+      .default([])
+      .describe(
+        "Engine-computed requested/effective capability receipts for selected harness lanes.",
+      ),
     toolPermissionPolicy: z
       .record(z.string(), z.unknown())
       .optional()

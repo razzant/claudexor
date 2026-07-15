@@ -1,6 +1,8 @@
 import type { ChildStdin, InteractionChannel } from "@claudexor/core";
+import { readVerifiedAttachmentBytes } from "@claudexor/core";
 import type {
   HarnessEvent,
+  HarnessRunSpec,
   InteractionAnswerSet,
   InteractionQuestion,
   InteractionRequest,
@@ -42,10 +44,40 @@ export interface ClaudeImageBlock {
   type: "image";
   source: { type: "base64"; media_type: string; data: string };
 }
+export interface ClaudeTextBlock {
+  type: "text";
+  text: string;
+}
+export type ClaudeAttachmentBlock = ClaudeImageBlock | ClaudeTextBlock;
+
+/** Bind finalized bytes once, then build Claude stream-json content blocks. */
+export function claudeAttachmentBlocks(
+  attachments: HarnessRunSpec["attachments"] | undefined,
+): ClaudeAttachmentBlock[] {
+  return (attachments ?? []).map((attachment) => {
+    const bytes = readVerifiedAttachmentBytes(attachment);
+    return attachment.kind === "image"
+      ? {
+          type: "image" as const,
+          source: {
+            type: "base64" as const,
+            media_type: attachment.mime,
+            data: bytes.toString("base64"),
+          },
+        }
+      : {
+          type: "text" as const,
+          text: `Attached file ${attachment.name || attachment.resource_id} (${attachment.mime}, ${attachment.sha256}):\n${bytes.toString("utf8")}`,
+        };
+  });
+}
 
 /** Initial user message frame for `--input-format stream-json` sessions. */
-export function initialUserMessageFrame(prompt: string, images: ClaudeImageBlock[] = []): string {
-  const content = [{ type: "text", text: prompt }, ...images];
+export function initialUserMessageFrame(
+  prompt: string,
+  attachments: ClaudeAttachmentBlock[] = [],
+): string {
+  const content = [{ type: "text", text: prompt }, ...attachments];
   return (
     JSON.stringify({
       type: "user",
@@ -61,13 +93,16 @@ export function initialUserMessageFrame(prompt: string, images: ClaudeImageBlock
  * one block without waiting for the initialize response
  * (fixtures/protocol/control-handshake.jsonl).
  */
-export function initialSessionFrames(prompt: string, images: ClaudeImageBlock[] = []): string {
+export function initialSessionFrames(
+  prompt: string,
+  attachments: ClaudeAttachmentBlock[] = [],
+): string {
   const initialize = JSON.stringify({
     type: "control_request",
     request_id: "req_claudexor_init",
     request: { subtype: "initialize" },
   });
-  return initialize + "\n" + initialUserMessageFrame(prompt, images);
+  return initialize + "\n" + initialUserMessageFrame(prompt, attachments);
 }
 
 /** Map the native AskUserQuestion input into the typed InteractionRequest. */

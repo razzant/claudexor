@@ -176,21 +176,62 @@
               "default": {},
               "description": "Declared isolation containment facts for a harness."
             },
-            "image_input": {
-              "type": "string",
-              "enum": [
-                "file_path",
-                "base64_stream",
-                "base64_inline",
-                "none"
-              ],
-              "description": "How a harness accepts image input: file_path (CLI file argument), base64_stream (base64 image block on the stream), base64_inline (data-URL in the request), or none (no vision input on this route).",
-              "default": "none"
+            "attachment_inputs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "image",
+                      "file"
+                    ],
+                    "description": "Kind of attached resource: image input or generic file bytes."
+                  },
+                  "mime_types": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  },
+                  "max_bytes": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "max_count": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "transport": {
+                    "type": "string",
+                    "enum": [
+                      "file_path",
+                      "base64_stream",
+                      "base64_inline",
+                      "text_inline"
+                    ],
+                    "description": "Native adapter transport used for one supported attachment class."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "mime_types",
+                  "max_bytes",
+                  "max_count",
+                  "transport"
+                ],
+                "additionalProperties": false,
+                "description": "Finite MIME, size, count and transport limits declared by one adapter."
+              },
+              "default": []
             }
           },
           "additionalProperties": false,
           "default": {},
-          "description": "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and vision input."
+          "description": "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and finite attachment inputs."
         },
         "capabilities": {
           "type": "object",
@@ -204,6 +245,15 @@
               "type": "boolean",
               "default": false,
               "description": "The harness can implement code changes (implement intent)."
+            },
+            "implementation_transport": {
+              "type": "string",
+              "enum": [
+                "workspace",
+                "git_patch_envelope"
+              ],
+              "description": "Typed producer/consumer transport used when implement=true.",
+              "default": "workspace"
             },
             "create_from_scratch": {
               "type": "boolean",

@@ -29,6 +29,10 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
     case "project.git.initialized":
       return `initialized git repository at ${String(p["repo_root"] ?? "?")} (baseline commit)`;
     case "harness.started":
+      if (p["request_requirement"] && typeof p["request_requirement"] === "object") {
+        const requirement = p["request_requirement"] as Record<string, unknown>;
+        return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")}, browser=${requirement["effective"] === true ? "effective" : `unavailable:${String(requirement["reason"] ?? "unknown")}`})`;
+      }
       return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")})`;
     case "harness.event": {
       const sub = String(p["type"] ?? "");
@@ -181,6 +185,7 @@ export function controlApiFetch(
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
     (externalPath === "/v2/runs" ||
+      externalPath === "/v2/uploads" ||
       externalPath === "/v2/projects" ||
       externalPath === "/v2/spec/sessions" ||
       externalPath === "/v2/setup/jobs" ||
@@ -188,7 +193,8 @@ export function controlApiFetch(
       /^\/v2\/recovery\/partitions\/[^/]+\/quarantine$/.test(externalPath) ||
       /^\/v2\/runs\/[^/]+\/(?:retry|decision|apply)$/.test(externalPath) ||
       /^\/v2\/threads\/[^/]+\/apply$/.test(externalPath) ||
-      /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(externalPath)) &&
+      /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(externalPath) ||
+      /^\/v2\/uploads\/[^/]+\/finalize$/.test(externalPath)) &&
     !headers.has("Idempotency-Key")
   ) {
     headers.set("Idempotency-Key", randomUUID());

@@ -83,7 +83,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
           verifiedAgainst: truth.verifiedAgainst,
         },
         webPolicy: s.manifest?.capabilities.web_policy ?? "none",
-        imageInput: profile?.image_input ?? "none",
+        attachmentInputs: [...(profile?.attachment_inputs ?? [])],
         effortLevels: [...(s.manifest?.capabilities.effort_levels ?? [])],
         accessProfilesSupported: [...(s.manifest?.access_profiles_supported ?? [])],
         readonlyMechanism: profile?.access_control.readonly_mechanism ?? "none",
