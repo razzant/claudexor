@@ -205,11 +205,16 @@ for (const arg of mcpArgs) {
 
 // v2: tool-surface contract parity.
 // 1. Every tool declares MCP behavior annotations; a tool's read-only hint
-//    must match its actual nature (agent-mode run tools are the ONLY
-//    mutating tools; MCP orchestrate is suggest-only = read-only).
+//    must match its actual nature (agent-mode run tools and explicitly
+//    destructive recovery are mutating; MCP orchestrate is suggest-only).
 // 2. Every prompt-taking run tool declares the structured outputSchema.
 // 3. The recovery tool set exists (hosts recover lost run handles).
-const MUTATING_TOOLS = new Set(["claudexor_run", "claudexor_best_of", "claudexor_create"]);
+const MUTATING_TOOLS = new Set([
+  "claudexor_run",
+  "claudexor_best_of",
+  "claudexor_create",
+  "claudexor_quarantine_journal",
+]);
 for (const tool of tools) {
   if (!tool.annotations || typeof tool.annotations.readOnlyHint !== "boolean") {
     failures.push(`MCP tool '${tool.name}' declares no readOnlyHint annotation`);
