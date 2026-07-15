@@ -261,6 +261,7 @@ if [ -n "${SIGN_IDENTITY:-}" ]; then
     xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" \
       ${NOTARY_KEYCHAIN:+--keychain "$NOTARY_KEYCHAIN"} --wait
     xcrun stapler staple "$APP"
+    xcrun stapler validate "$APP"
     rm -f "$ZIP"
   else
     echo "    (set NOTARY_PROFILE to notarize + staple)"
@@ -303,6 +304,12 @@ if [ "${MAKE_DMG:-0}" = "1" ]; then
   rm -rf "$STAGE"
   if [ -n "${SIGN_IDENTITY:-}" ]; then
     codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
+    if [ -n "${NOTARY_PROFILE:-}" ]; then
+      xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" \
+        ${NOTARY_KEYCHAIN:+--keychain "$NOTARY_KEYCHAIN"} --wait
+      xcrun stapler staple "$DMG"
+      xcrun stapler validate "$DMG"
+    fi
   else
     echo "    (unsigned DMG; Gatekeeper bypass instructions are in the README)"
   fi

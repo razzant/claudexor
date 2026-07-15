@@ -82,7 +82,9 @@ There is no root `pnpm lint` script at the moment. `pnpm format:check` checks
 Prettier formatting when a formatting pass is relevant. Note on Node versions:
 `.node-version` pins the DEV toolchain (24.16.0, matching CI); the root
 `engines.node >= 20.19.0` is the published-package compatibility floor — the
-split is intentional, do not "reconcile" them.
+split is intentional, do not "reconcile" them. CI runs the full Node battery
+on both 20.19.0 and 24.16.0; publication repeats a clean installed-package CLI
+smoke on both versions before the GitHub Release becomes public.
 
 macOS app checks:
 
@@ -98,28 +100,35 @@ pnpm release:verify
 ```
 
 It runs Node/schema checks, Swift build/test checks, and local (unsigned)
-app packaging; the CI release build signs and notarizes when the Apple
-secrets are present. App packaging also asserts that the separately bundled
+app packaging. Public CI artifacts are fail-closed: all Apple signing and
+notary secrets must be present, and both the app and DMG are signed,
+notarized, stapled, and validated. App packaging also asserts that the separately bundled
 setup-login runner exists and can start under the bundled Node; a daemon-only
 bundle is incomplete.
 
-Publishing happens FROM THE TAG: pushing `v<semver>` runs
-`.github/workflows/release.yml`, which re-runs the full gate battery on a
-macOS runner, enforces tag/manifest version parity UNCONDITIONALLY (every
-public workspace manifest must equal the tag), packages the DMG/ZIP
-(signed + notarized when the Apple signing secrets are configured;
-honest `-unsigned` names otherwise), and creates the DRAFT GitHub Release with notes generated from
-that version's `CHANGELOG.md` entry (the changelog is the notes SSOT —
-write it before tagging). A separate `publish-npm` job publishes every
-public workspace package to npm with provenance (`--provenance` flag,
-`NPM_TOKEN` secret), but ONLY once the operator arms it by setting the
-`NPM_PUBLISH` repository variable to `true`; until then the job skips and
-the release is GitHub-only. The local `pnpm release:npm` script is the
-manual fallback of the same publish (verify + `pnpm -r publish --access
-public`; note npm provenance attestation is only produced by the CI job).
-Version BUMPS still go through changesets (`pnpm changeset` +
-`pnpm version-packages`, fixed lockstep group); only the publish step is
-tag-driven.
+The workflow has two explicit manual modes. `candidate` accepts only a full
+40-character commit SHA and builds/signs/notarizes/attests without publishing.
+After review, `publish` accepts only an annotated stable tag on the exact
+`origin/main` commit plus the base64 compact review attestation. The workflow
+recomputes the commit tree, verifies the sealed packet digest and exact six
+reviewer slots, then publishes only that authority. Missing signing/notary/npm
+credentials fail; there is no unsigned or GitHub-only release fallback. npm
+packages publish in dependency order with `--provenance`; a retry skips only an
+already-published byte-identical package carrying provenance, while any version
+collision fails. The GitHub Release is a draft until macOS and npm complete,
+uploads only absent assets, rejects differing same-name bytes, and becomes
+public as the final mutation. The workflow never edits a published release and
+does not claim platform-enforced immutability. Version bumps still go through
+changesets (`pnpm changeset` + `pnpm version-packages`, fixed lockstep group).
+The decoded review attestation is JSON with `schemaVersion: 1`, exact
+`candidateSha`, `candidateTree`, and `packetManifestSha256`; its `panelLock`
+uses the same `triad`, `scope`, `candidate_sha`, `candidate_tree`, and
+`packet_manifest_sha256` fields as the pre-created panel lock. `slots` contains
+the two Tier 1 slots, all three exact triad slots, and exact scope slot with
+route, requested/observed model, applicable effort, and terminal status. `decision` must be
+`passed` and `openBlockers` must be empty. Both Tier 1 slots and scope must
+respond; the triad keeps the accepted quorum of two. Encode the compact JSON as
+base64 for the workflow input; never put raw transcripts or secrets in it.
 The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` with the
 exact source-pinned models. It requires the sealed packet, full candidate SHA
 and tree, the packet manifest's expected SHA-256 digest, and a panel-lock path

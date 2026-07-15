@@ -9,7 +9,7 @@ The core rule is simple: a harness is not a role. Roles are intents such as
 `review`, `verify`, `synthesize`, `audit`, and `orchestrate`. Any harness
 that declares the capability can be assigned the intent.
 
-Current status: **v1.0.1**. See "Stability at 1.0" below for what is a
+Current status: **v2.0.0**. See "Stability at 2.0" below for what is a
 stable contract and what remains experimental; retired verbs and mode ids
 hard-error with the new spelling instead of silently aliasing.
 
@@ -536,9 +536,10 @@ pnpm knip         # dead exports/files gate
 ```
 
 `pnpm release:verify` runs Node/schema checks, Swift tests/build, and local
-app ZIP/DMG packaging for smoke. Final GitHub Release assets are built by
-the `Release` GitHub Actions workflow from the pushed `v*` tag; do not upload
-stale local `apps/macos/dist` artifacts.
+app ZIP/DMG packaging for smoke. Final GitHub Release assets are built by the
+`Release` GitHub Actions workflow in `candidate` mode for an exact full SHA,
+then in `publish` mode for the reviewed annotated tag. Do not upload stale
+local `apps/macos/dist` artifacts.
 
 There is no root `pnpm lint` script.
 
@@ -549,9 +550,9 @@ cd apps/macos/ClaudexorKit && swift test
 cd ../ClaudexorApp && swift build
 ```
 
-## Stability at 1.0
+## Stability at 2.0
 
-What 1.0 means here, per surface:
+What stability means in the clean v2 contract, per surface:
 
 - **Stable contracts** (semver-guarded from now on): the CLI verb/flag
   surface as declared by `claudexor help --json`; the CLI `--json` output
@@ -640,7 +641,7 @@ starts the new build).
 
 ## Version History
 
-The current version is **v1.0.1** (the root `package.json` is the version
+The current version is **v2.0.0** (the root `package.json` is the version
 SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## License

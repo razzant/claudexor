@@ -1,103 +1,107 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing release tag to package, for example v0.7.0"
+      mode:
+        description: Build a signed candidate or publish an existing reviewed tag
         required: true
+        type: choice
+        options: [candidate, publish]
+      ref:
+        description: Full 40-character SHA for candidate; stable vMAJOR.MINOR.PATCH tag for publish
+        required: true
+        type: string
+      review_attestation_b64:
+        description: Base64 compact review attestation; required only for publish
+        required: false
         type: string
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  RELEASE_MODE_INPUT: ${{ inputs.mode }}
+  RELEASE_REF_INPUT: ${{ inputs.ref }}
+  REVIEW_ATTESTATION_B64_INPUT: ${{ inputs.review_attestation_b64 }}
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: claudexor-release-v2
   cancel-in-progress: false
 
 jobs:
-  package-macos:
-    name: Package unsigned macOS app
-    runs-on: macos-26
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.release.outputs.mode }}
+      sha: ${{ steps.release.outputs.sha }}
+      tree: ${{ steps.release.outputs.tree }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: main
           fetch-depth: 0
           persist-credentials: false
 
-      # Secret scan runs FIRST — before any toolchain/lifecycle step can read
-      # or echo repository contents. The patterns cannot self-match their own
-      # literals (each embeds a `[` that breaks the class), so workflow files
-      # are scanned too; verified empirically.
+      - name: Validate input syntax before fetching it
+        run: node scripts/verify-release-input.mjs --syntax-only
+
+      - name: Fetch immutable release authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            git fetch --no-tags origin "refs/tags/$RELEASE_REF_INPUT:refs/tags/$RELEASE_REF_INPUT"
+          fi
+
+      - name: Resolve exact SHA, tree, tag, and version
+        id: release
+        run: node scripts/verify-release-input.mjs
+
+  package-macos:
+    name: Build signed, notarized and attested macOS artifacts
+    needs: prepare
+    runs-on: macos-26
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Revalidate reviewed release authority
+        env:
+          REVIEW_ATTESTATION_PATH: ${{ runner.temp }}/review-attestation.json
+        run: |
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            git fetch --no-tags origin "refs/tags/$RELEASE_REF_INPUT:refs/tags/$RELEASE_REF_INPUT"
+          fi
+          node scripts/verify-release-input.mjs
+
       - name: Secret scan
         shell: bash
         run: |
           set -euo pipefail
-          # Keep this pattern IDENTICAL to ci.yml's secret scan (one canonical regex).
           if git grep -InE '(\bsk-[A-Za-z0-9_-]{20,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-or-[A-Za-z0-9_-]{20,}|\bghp_[A-Za-z0-9_]{20,}|\bgithub_pat_[A-Za-z0-9_]{20,}|xox[baeprs]-[A-Za-z0-9-]{10,}|\bnpm_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- . ':!pnpm-lock.yaml'; then
             echo "::error::Potential token-like secret found in tracked files."
             exit 1
           fi
 
-      - name: Resolve release version
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
-          if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+){2}([.-][A-Za-z0-9.]+)?$ ]]; then
-            echo "::error::Release workflow requires a semver-ish v* tag, got '$tag'"
-            exit 1
-          fi
-          if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "::error::Tag '$tag' is not present in this checkout."
-            exit 1
-          fi
-          version="${tag#v}"
-          build="$(git rev-list --count "${tag}^{commit}")"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "build=$build" >> "$GITHUB_OUTPUT"
-          echo "CLAUDEXOR_VERSION=$version" >> "$GITHUB_ENV"
-          echo "CLAUDEXOR_BUILD=$build" >> "$GITHUB_ENV"
-
-      # Version parity is enforced UNCONDITIONALLY before any release asset
-      # exists — not inside the (skippable) npm publish job. A drifted
-      # manifest fails the whole release run here. One shared checker script
-      # covers the root SSOT manifest + every public workspace manifest.
-      - name: Verify tag version matches manifests
-        run: node scripts/verify-version-parity.mjs "${{ steps.release.outputs.version }}"
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          # Single pinning site: .node-version (three hardcoded copies drifted before).
           node-version-file: .node-version
           cache: pnpm
 
-      - name: Capture Node binary path
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "CLAUDEXOR_NODE_BIN=$(node -p 'process.execPath')" >> "$GITHUB_ENV"
-
-      # Signing is DATA-DRIVEN: when the four Apple secrets exist the app is
-      # signed (Developer ID + hardened runtime), notarized, and stapled; a
-      # fork/no-secrets run builds the honest -unsigned artifacts instead of
-      # failing. SIGN_IDENTITY/NOTARY_PROFILE are the build-app.sh hooks.
-      - name: Import Developer ID certificate + notary credentials
+      - name: Require and import Apple release credentials
         shell: bash
         env:
           BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
@@ -108,284 +112,266 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${BUILD_CERTIFICATE_BASE64}" ]; then
-            echo "No signing certificate secret; building unsigned artifacts."
-            exit 0
-          fi
-          CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
-          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
-          identity="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
-          if [ -z "$identity" ]; then
-            echo "::error::Certificate imported but no Developer ID Application identity found."
-            exit 1
-          fi
+          for name in BUILD_CERTIFICATE_BASE64 P12_PASSWORD KEYCHAIN_PASSWORD APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Signing and notarization secrets are required for every release artifact."
+              exit 1
+            fi
+          done
+          cert="$RUNNER_TEMP/build_certificate.p12"
+          keychain="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$cert"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$cert" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          test -n "$identity" || { echo "::error::No Developer ID Application identity found."; exit 1; }
+          xcrun notarytool store-credentials claudexor-notary \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" --keychain "$keychain" >/dev/null
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
-          if [ -n "${APPLE_ID}" ] && [ -n "${APPLE_TEAM_ID}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD}" ]; then
-            xcrun notarytool store-credentials "claudexor-notary" \
-              --apple-id "$APPLE_ID" \
-              --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-              --keychain "$KEYCHAIN_PATH" >/dev/null
-            echo "NOTARY_PROFILE=claudexor-notary" >> "$GITHUB_ENV"
-            echo "NOTARY_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
-            echo "Signing + notarization armed."
-          else
-            echo "Certificate present but notary credentials incomplete; will sign without notarizing."
-          fi
+          echo "NOTARY_PROFILE=claudexor-notary" >> "$GITHUB_ENV"
+          echo "NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "CLAUDEXOR_NODE_BIN=$(node -p 'process.execPath')" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm build
-
-      - name: Verify generated schemas
-        shell: bash
-        run: |
-          set -euo pipefail
-          pnpm schema:gen
-          git diff --exit-code packages/schema/generated || {
-            echo "::error::Generated JSON Schema is stale; run pnpm schema:gen and commit the result."
-            exit 1
-          }
-          if [ -n "$(git ls-files --others --exclude-standard packages/schema/generated)" ]; then
-            echo "::error::Untracked generated schema files exist; commit them."
-            exit 1
-          fi
-
-      - name: Typecheck
-        run: pnpm typecheck && pnpm typecheck:tests
-
-      - name: Test
-        run: pnpm test
-
-      - name: Docs truth (endpoints, mode ids, CLI flags)
-        run: node scripts/docs-truth-check.mjs
-
-      - name: Concept gate (cumulative since the previous release tag)
-        run: node scripts/concept-gate.mjs --since-last-tag
-
-      - name: Staged-field gate
-        run: pnpm staged:check
-
-      - name: Dead exports (knip)
-        run: pnpm knip
-
-      - name: Validate generated JSON Schema dialect (ajv)
-        run: node scripts/validate-generated-schemas.mjs
-
-      - name: Complexity ratchet
-        run: node scripts/complexity-ratchet.mjs
-
-      - name: Model-hints freshness (manifest known_models vs installed CLIs)
-        # Release escalates drift warnings to failures; CI runners without the
-        # vendor CLIs report "not discoverable" and pass either way.
-        run: node scripts/model-hints-freshness.mjs --strict
-
-      - name: MCP-CLI capability parity
-        run: node scripts/mcp-cli-parity-check.mjs
-
-      - name: Fixture provenance (structure; freshness needs local CLIs)
-        # The GitHub runner has no vendor CLIs, and a missing CLI with
-        # recorded fixtures is strict-FATAL by design — the STRICT run
-        # happens in the operator's `pnpm release:verify` (checklist),
-        # where the CLIs exist and re-recording is possible.
-        run: node scripts/fixture-freshness-check.mjs
-
-      - name: Canary golden stories
-        run: pnpm canary
-
-      - name: Swift tests and debug build
-        run: pnpm release:verify:swift
-
-      - name: Build DMG and ZIP
+      - name: Deterministic release gates
         shell: bash
         env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          pnpm build
+          pnpm typecheck
+          pnpm typecheck:tests
+          pnpm test
+          pnpm schema:gen
+          git diff --exit-code packages/schema/generated
+          test -z "$(git ls-files --others --exclude-standard packages/schema/generated)"
+          node scripts/validate-generated-schemas.mjs
+          pnpm docs:check
+          node scripts/concept-gate.mjs --since-last-tag
+          pnpm staged:check
+          pnpm sensitive:check
+          pnpm knip
+          node scripts/complexity-ratchet.mjs
+          node scripts/model-hints-freshness.mjs --strict
+          node scripts/mcp-cli-parity-check.mjs
+          node scripts/fixture-freshness-check.mjs
+          pnpm release:workflow:check
+          pnpm format:check
+          pnpm canary
+          pnpm release:verify:swift
+          node scripts/verify-version-parity.mjs "$VERSION"
+
+      - name: Build signed DMG and ZIP
+        env:
+          CLAUDEXOR_VERSION: ${{ needs.prepare.outputs.version }}
+          CLAUDEXOR_BUILD: ${{ github.run_number }}
           MAKE_DMG: "1"
           MAKE_ZIP: "1"
-        run: |
-          set -euo pipefail
-          apps/macos/scripts/build-app.sh
-          ls -lah apps/macos/dist
-          # Asset suffix mirrors build-app.sh naming: "" (signed+notarized),
-          # -signed-unnotarized, or -unsigned. Exported for the later steps.
-          if [ -n "${SIGN_IDENTITY:-}" ] && [ -n "${NOTARY_PROFILE:-}" ]; then
-            echo "ASSET_SUFFIX=" >> "$GITHUB_ENV"
-            echo "SIGNING_LINE=The macOS app is Developer ID-signed, notarized, and stapled; macOS 26 or newer is required." >> "$GITHUB_ENV"
-          elif [ -n "${SIGN_IDENTITY:-}" ]; then
-            echo "ASSET_SUFFIX=-signed-unnotarized" >> "$GITHUB_ENV"
-            echo "SIGNING_LINE=The macOS app is Developer ID-signed but NOT notarized; macOS 26 or newer is required." >> "$GITHUB_ENV"
-          else
-            echo "ASSET_SUFFIX=-unsigned" >> "$GITHUB_ENV"
-            echo "SIGNING_LINE=The macOS app, DMG, and ZIP are unsigned and not notarized; macOS 26 or newer is required." >> "$GITHUB_ENV"
-          fi
+        run: apps/macos/scripts/build-app.sh
 
-      - name: Verify expected assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ steps.release.outputs.version }}"
-          for file in \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256"
-          do
-            test -s "$file" || { echo "::error::Missing expected asset: $file"; exit 1; }
-          done
-          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256"
-          shasum -a 256 -c "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256"
-          test -f "apps/macos/dist/Claudexor.app/Contents/Resources/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
-            echo "::error::Packaged app is missing the SwiftPM resource bundle."
-            exit 1
-          }
-          verify_setup_runner() {
-            app="$1"
-            node="$app/Contents/Resources/node"
-            runner="$app/Contents/Resources/setup-login-runner.cjs"
-            test -x "$node" || { echo "::error::Packaged app is missing executable bundled Node: $node"; exit 1; }
-            test -s "$runner" || { echo "::error::Packaged app is missing setup-login-runner.cjs: $runner"; exit 1; }
-            output="$(mktemp)"
-            set +e
-            "$node" "$runner" >"$output" 2>&1
-            status=$?
-            set -e
-            if [ "$status" -ne 2 ] || ! grep -q "usage: setup-login-runner" "$output"; then
-              echo "::error::Packaged setup-login runner does not execute under bundled Node: $runner"
-              cat "$output"
-              rm -f "$output"
-              exit 1
-            fi
-            rm -f "$output"
-          }
-          verify_setup_runner "apps/macos/dist/Claudexor.app"
-          zipstage="$(mktemp -d)"
-          /usr/bin/ditto -x -k "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" "$zipstage"
-          test -f "$zipstage/Claudexor.app/Contents/Resources/ClaudexorApp_ClaudexorApp.bundle/AppIcon.png" || {
-            echo "::error::Release ZIP app is missing the SwiftPM resource bundle."
-            exit 1
-          }
-          verify_setup_runner "$zipstage/Claudexor.app"
-          # Signed builds: Gatekeeper must actually accept the stapled app.
-          if [ -z "${ASSET_SUFFIX}" ]; then
-            spctl --assess --type execute --verbose=2 "$zipstage/Claudexor.app"
-          fi
-
-      - name: Upload workflow artifact
-        # Redundant CI-scratch copy: the canonical deliverable is the GitHub
-        # Release assets (next step, uploaded via gh release with GITHUB_TOKEN).
-        # Actions artifact storage can be quota-capped; that must NEVER block the
-        # actual Release publish (Release assets use separate storage).
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: Claudexor-${{ steps.release.outputs.version }}-macos
-          path: |
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.dmg
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.dmg.sha256
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.zip
-            apps/macos/dist/Claudexor-${{ steps.release.outputs.version }}*.zip.sha256
-          if-no-files-found: error
-
-      - name: Create or update draft GitHub Release
+      - name: Verify signed and notarized artifacts
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          tag="${{ steps.release.outputs.tag }}"
-          version="${{ steps.release.outputs.version }}"
-          notes="$(mktemp)"
-          # Notes come FROM the CHANGELOG entry (single source of shipped-
-          # behavior truth); the operator finalizes before publishing.
-          node - "$version" > "$notes" <<'NODE'
-          const { readFileSync } = require("node:fs");
-          const version = process.argv[2];
-          const log = readFileSync("CHANGELOG.md", "utf8");
-          // CHANGELOG entries are BULLETS: `- **vX.Y.Z** (date) — text...`
-          // (continuation lines indented); an entry ends at the next version
-          // bullet or EOF.
-          const re = new RegExp(String.raw`^- \*\*v${version.replace(/\./g, "\\.")}\*\*([\s\S]*?)(?=^- \*\*v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\*\*|$(?![\s\S]))`, "m");
-          const m = re.exec(log);
-          if (!m) {
-            console.error(`CHANGELOG.md has no entry for ${version}`);
-            process.exit(1);
-          }
-          process.stdout.write(`Claudexor ${version}\n\n${m[1].trim()}\n\nBuilt by GitHub Actions from tag v${version} at commit ${process.env.GITHUB_SHA}.\n${process.env.SIGNING_LINE}\nVerify downloads with the attached SHA256 files.\n`);
-          NODE
-          # A re-package of an ALREADY-PUBLISHED release must not demote it
-          # back to draft (the v1.0.0 near-miss): only pass --draft while the
-          # release is still a draft (or on first creation).
-          if gh release view "$tag" >/dev/null 2>&1; then
-            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" = "true" ]; then
-              gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft
-            else
-              gh release edit "$tag" --title "Claudexor ${version}" --notes-file "$notes"
-            fi
-          else
-            gh release create "$tag" --title "Claudexor ${version}" --notes-file "$notes" --draft --verify-tag
+          app="apps/macos/dist/Claudexor.app"
+          dmg="apps/macos/dist/Claudexor-$VERSION.dmg"
+          zip="apps/macos/dist/Claudexor-$VERSION.zip"
+          for file in "$dmg" "$dmg.sha256" "$zip" "$zip.sha256"; do
+            test -s "$file" || { echo "::error::Missing expected asset: $file"; exit 1; }
+          done
+          shasum -a 256 -c "$dmg.sha256"
+          shasum -a 256 -c "$zip.sha256"
+          codesign --verify --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          codesign --verify --verbose=2 "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          zipstage="$(mktemp -d)"
+          /usr/bin/ditto -x -k "$zip" "$zipstage"
+          codesign --verify --strict --verbose=2 "$zipstage/Claudexor.app"
+          xcrun stapler validate "$zipstage/Claudexor.app"
+          spctl --assess --type execute --verbose=2 "$zipstage/Claudexor.app"
+          test -x "$zipstage/Claudexor.app/Contents/Resources/node"
+          test -s "$zipstage/Claudexor.app/Contents/Resources/setup-login-runner.cjs"
+          test -s "$zipstage/Claudexor.app/Contents/Resources/browser-mcp-runtime/dist/browser-mcp-launcher.js"
+
+      - name: Assemble checksums, SBOM and review evidence
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+          cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"
+          cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"
+          pnpm licenses list --prod --json | node scripts/generate-release-sbom.mjs > "$assets/Claudexor-$VERSION.spdx.json"
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            cp "$RUNNER_TEMP/review-attestation.json" "$assets/REVIEW_ATTESTATION.json"
           fi
-          gh release upload "$tag" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.dmg.sha256" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip" \
-            "apps/macos/dist/Claudexor-${version}${ASSET_SUFFIX}.zip.sha256" \
-            --clobber
+          (cd "$assets" && shasum -a 256 * > SHA256SUMS)
+
+      - name: Upload immutable candidate assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attest candidate assets
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: ${{ runner.temp }}/release-assets/*
 
   publish-npm:
-    name: Publish npm packages (provenance)
+    name: Publish npm packages with provenance
+    needs: [prepare, package-macos]
+    if: needs.prepare.outputs.mode == 'publish'
     runs-on: ubuntu-latest
-    # npm publish happens only for the real tag push (not workflow_dispatch
-    # repackaging), only after the macOS gate battery passed, and only once
-    # the operator has armed it by setting the NPM_PUBLISH repository
-    # variable to "true" (npm org + NPM_TOKEN are provisioned separately;
-    # until then the job skips instead of failing the release run).
-    needs: package-macos
-    if: github.event_name == 'push' && vars.NPM_PUBLISH == 'true'
     permissions:
       contents: read
-      id-token: write # npm provenance attestation
+      id-token: write
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
           persist-credentials: false
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
           cache: pnpm
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
-
-      # Publish-time defense: the same parity bar package-macos already
-      # enforced, re-checked in this job because publishing is the
-      # irreversible step (npm versions cannot be reused).
-      - name: Verify tag version matches manifests
-        run: node scripts/verify-version-parity.mjs "${GITHUB_REF_NAME#v}"
-
-      - name: Publish (public, provenance)
+          registry-url: https://registry.npmjs.org
+      - name: Revalidate review authority
+        run: |
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --no-tags origin "refs/tags/$RELEASE_REF_INPUT:refs/tags/$RELEASE_REF_INPUT"
+          node scripts/verify-release-input.mjs
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Publish only missing, byte-identical packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        # --provenance must be the CLI flag: pnpm's native publish does not
-        # honor the NPM_CONFIG_PROVENANCE env var. The flag also fails loudly
-        # (instead of silently skipping attestation) if the repo is not yet
-        # public or the workflow lacks id-token permissions.
-        run: pnpm -r publish --access public --no-git-checks --provenance
+        run: node scripts/publish-npm-release.mjs --provenance
+      - run: npm audit signatures
+
+  npm-smoke:
+    name: npm smoke on Node ${{ matrix.node-version }}
+    needs: [prepare, publish-npm]
+    if: needs.prepare.outputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.19.0, 24.16.0]
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          registry-url: https://registry.npmjs.org
+      - name: Clean install and CLI smoke
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          root="$(mktemp -d)"
+          cd "$root"
+          npm init -y >/dev/null
+          npm install --ignore-scripts "claudexor@$VERSION"
+          test "$(./node_modules/.bin/claudexor --version)" = "$VERSION"
+          ./node_modules/.bin/claudexor help --json > help.json
+          node -e 'const x=require("./help.json"); if(!x.ok||!Array.isArray(x.commands)) process.exit(1)'
+          ./node_modules/.bin/claudexor doctor --json > doctor.json
+          node -e 'const x=require("./doctor.json"); if(!Array.isArray(x.harnesses)) process.exit(1)'
+
+  publish-release:
+    name: Publish immutable GitHub Release
+    needs: [prepare, package-macos, publish-npm, npm-smoke]
+    if: needs.prepare.outputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
+          path: release-assets
+      - name: Revalidate downloaded release authority and digests
+        env:
+          REVIEW_ATTESTATION_PATH: ${{ runner.temp }}/expected-review-attestation.json
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git fetch --no-tags origin "refs/tags/$RELEASE_REF_INPUT:refs/tags/$RELEASE_REF_INPUT"
+          node scripts/verify-release-input.mjs
+          cmp "$RUNNER_TEMP/expected-review-attestation.json" release-assets/REVIEW_ATTESTATION.json
+          (cd release-assets && shasum -a 256 -c SHA256SUMS)
+      - name: Verify GitHub provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for file in release-assets/*; do
+            gh attestation verify "$file" --repo "$GITHUB_REPOSITORY"
+          done
+      - name: Create draft, reject asset collisions, then publish last
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/release-notes.md"
+          node - "$VERSION" > "$notes" <<'NODE'
+          const { readFileSync } = require("node:fs");
+          const version = process.argv[2];
+          const log = readFileSync("CHANGELOG.md", "utf8");
+          const escaped = version.replace(/\./g, "\\.");
+          const re = new RegExp(String.raw`^- \*\*v${escaped}\*\*([\s\S]*?)(?=^- \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*|$(?![\s\S]))`, "m");
+          const match = re.exec(log);
+          if (!match) throw new Error(`CHANGELOG.md has no entry for ${version}`);
+          process.stdout.write(`Claudexor ${version}\n\n${match[1].trim()}\n\nSigned, notarized, stapled, SBOM-backed and provenance-attested.\n`);
+          NODE
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true || {
+              echo "::error::Published release already exists; immutable releases are never edited."
+              exit 1
+            }
+          else
+            gh release create "$TAG" --verify-tag --draft --title "Claudexor $VERSION" --notes-file "$notes"
+          fi
+          gh release edit "$TAG" --title "Claudexor $VERSION" --notes-file "$notes" --draft
+          remote_names="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for file in release-assets/*; do
+            name="$(basename "$file")"
+            if grep -Fxq "$name" <<<"$remote_names"; then
+              check="$RUNNER_TEMP/collision-$name"
+              mkdir -p "$check"
+              gh release download "$TAG" --pattern "$name" --dir "$check"
+              cmp "$file" "$check/$name" || {
+                echo "::error::Release asset collision for $name"
+                exit 1
+              }
+            else
+              gh release upload "$TAG" "$file"
+            fi
+          done
+          gh release edit "$TAG" --draft=false --latest

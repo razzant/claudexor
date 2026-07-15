@@ -10,9 +10,14 @@ permissions:
 
 jobs:
   build-test:
+    name: Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20.19.0, 24.16.0]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           # Full history: the concept gate range-walks the PR's constituent
@@ -36,13 +41,12 @@ jobs:
       # No `version:` here — pnpm/action-setup reads the `packageManager` field in package.json
       # (pnpm@11.5.2). Specifying both causes ERR_PNPM_BAD_PM_VERSION.
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          # Single pinning site: .node-version (three hardcoded copies drifted before).
-          node-version-file: .node-version
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install dependencies
@@ -73,21 +77,29 @@ jobs:
         run: node scripts/docs-truth-check.mjs
 
       - name: Concept gate (Bible edits need CONCEPT-CHANGE markers)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           # Checkout is fetch-depth: 0, so ranges walk real constituent
           # commits (synthetic PR merges are exempt unless they change the
           # Bible beyond their parents; the gate handles that itself).
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            node scripts/concept-gate.mjs --range "origin/${{ github.base_ref }}..HEAD"
-          elif [ "${{ github.event.before }}" != "" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            node scripts/concept-gate.mjs --range "${{ github.event.before }}..HEAD"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git check-ref-format --branch "$BASE_REF" >/dev/null
+            git fetch --no-tags origin "$BASE_REF"
+            node scripts/concept-gate.mjs --range "origin/$BASE_REF..HEAD"
+          elif [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            node scripts/concept-gate.mjs --range "$BEFORE_SHA..HEAD"
           else
             node scripts/concept-gate.mjs --since-last-tag
           fi
 
       - name: Staged-field gate (schema fields need producer+consumer)
         run: pnpm staged:check
+
+      - name: Sensitive-resource ownership gate
+        run: pnpm sensitive:check
 
       - name: Dead exports (knip)
         run: pnpm knip
@@ -107,6 +119,12 @@ jobs:
       - name: Canary golden stories (fake-harness E2E)
         run: pnpm canary
 
+      - name: Release workflow supply-chain contract
+        run: pnpm release:workflow:check
+
+      - name: Format
+        run: pnpm format:check
+
       - name: Linux CLI smoke (bins, machine surfaces, doctor honesty)
         shell: bash
         run: |
@@ -124,7 +142,7 @@ jobs:
   swift:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 

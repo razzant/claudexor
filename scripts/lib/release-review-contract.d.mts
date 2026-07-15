@@ -1,5 +1,11 @@
 export const REQUIRED_TRIAD_MODELS: readonly string[];
 export const REQUIRED_SCOPE_MODEL: string;
+export const REQUIRED_RELEASE_REVIEW_SLOTS: ReadonlyArray<{
+  slot: string;
+  route: string;
+  model: string;
+  effort: string | null;
+}>;
 export const TRIAD_ITEMS: readonly string[];
 export const SCOPE_ITEMS: readonly string[];
 
@@ -35,6 +41,14 @@ export function panelLockText(binding: PanelLockBinding): string;
 export function validatePanelLock(
   lock: ParsedPanelLock | null,
   binding: PanelLockBinding,
+): { ok: boolean; reasons: string[] };
+export function validateReleaseInput(
+  mode: unknown,
+  ref: string,
+): { ok: boolean; reasons: string[] };
+export function validateReleaseAttestation(
+  attestation: any,
+  expected: { candidateSha: string; candidateTree: string },
 ): { ok: boolean; reasons: string[] };
 export function pathIsWithin(root: string, target: string): boolean;
 export function validateNewReviewOutput(

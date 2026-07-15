@@ -175,6 +175,11 @@ pnpm test
 - `git status --short` reviewed.
 - Public docs and app README are aligned with current behavior.
 - `pnpm release:verify` passes.
+- Node 20.19.0 and the current pinned Node CI lanes pass; both clean npm install
+  smokes must complete before the GitHub Release is published.
+- `pnpm release:workflow:check` passes: every action is full-SHA pinned,
+  workflow inputs are projected through environment variables rather than
+  interpolated into shell, and unsigned/clobber fallbacks are absent.
 - Schema generated diff is clean.
 - `node scripts/docs-truth-check.mjs` passes (endpoints, mode ids, CLI flags
   match docs).
@@ -198,11 +203,21 @@ pnpm test
 - If the cumulative diff is too large for a remote reviewer, lower only
   `TRIAD_MAX_PACK_BYTES` to shrink supplemental file-pack context; do not
   downgrade or substitute the pinned review panel.
-- Local app package artifacts are labeled honestly as signed/notarized or
-  unsigned; they are smoke artifacts only.
-- Final DMG/ZIP release assets are produced by GitHub Actions from the committed
-  `v*` tag/sha and uploaded to the GitHub Release by the workflow. Do not upload
-  stale local `apps/macos/dist` artifacts.
+- Local unsigned app packages are smoke artifacts only. Final DMG/ZIP assets
+  come from GitHub Actions `candidate` then `publish` mode; missing signing or
+  notarization credentials block publication.
+- The publish input is an annotated stable tag on exact `origin/main` plus a
+  compact attestation bound to candidate SHA, tree, sealed packet manifest,
+  exact Tier 1 critics, exact triad, exact scope reviewer, and zero open blockers.
+- Verify app, ZIP-contained app, and DMG signatures, notarization tickets,
+  staples, checksums, SBOM, and GitHub provenance. Do not upload stale local
+  `apps/macos/dist` artifacts.
+- npm packages publish with provenance in dependency order. Existing versions
+  are retryable only when local tarball integrity and published provenance
+  match; any mismatch blocks as a version collision.
+- Release assets are uploaded without `--clobber`; a same-name differing asset
+  blocks. Publish the draft last and never edit its tag/assets afterward. This
+  is workflow-enforced immutability, not a claim about GitHub repository settings.
 - GitHub release notes summarize shipped behavior; they do not publish private
   planning notes or review scratch.
 - Pre-release immune scan (MANDATORY, no cron): an autonomous read-only audit

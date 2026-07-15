@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   REQUIRED_SCOPE_MODEL,
+  REQUIRED_RELEASE_REVIEW_SLOTS,
   REQUIRED_TRIAD_MODELS,
   TRIAD_ITEMS,
   buildTouchedFilePack,
@@ -17,6 +18,8 @@ import {
   validateFrozenReviewBinding,
   validateNewReviewOutput,
   validatePanelLock,
+  validateReleaseAttestation,
+  validateReleaseInput,
   validateChecklistResponse,
 } from "../../../scripts/lib/release-review-contract.mjs";
 
@@ -30,6 +33,71 @@ function cleanRows() {
 }
 
 describe("release review fail-closed contract", () => {
+  const releaseAttestation = () => {
+    const candidateSha = "a".repeat(40);
+    const candidateTree = "b".repeat(40);
+    const packetManifestSha256 = "c".repeat(64);
+    return {
+      schemaVersion: 1,
+      candidateSha,
+      candidateTree,
+      packetManifestSha256,
+      panelLock: {
+        triad: REQUIRED_TRIAD_MODELS.join(","),
+        scope: REQUIRED_SCOPE_MODEL,
+        candidate_sha: candidateSha,
+        candidate_tree: candidateTree,
+        packet_manifest_sha256: packetManifestSha256,
+      },
+      slots: REQUIRED_RELEASE_REVIEW_SLOTS.map(({ slot, route, model, effort }) => ({
+        slot,
+        route,
+        requestedModel: model,
+        observedModel: model,
+        effort,
+        status: "responded",
+      })),
+      decision: "passed",
+      openBlockers: [],
+    };
+  };
+
+  it("accepts only full-SHA candidate or stable-tag publish inputs", () => {
+    expect(validateReleaseInput("candidate", "a".repeat(40)).ok).toBe(true);
+    expect(validateReleaseInput("candidate", "main").ok).toBe(false);
+    expect(validateReleaseInput("publish", "v2.0.0").ok).toBe(true);
+    expect(validateReleaseInput("publish", "v2.0.0-rc.1").ok).toBe(false);
+    expect(validateReleaseInput("publish", "v2.0.0; echo nope").ok).toBe(false);
+  });
+
+  it("binds publication to the exact reviewed SHA, tree, manifest, and six slots", () => {
+    const valid = releaseAttestation();
+    const expected = { candidateSha: valid.candidateSha, candidateTree: valid.candidateTree };
+    expect(validateReleaseAttestation(valid, expected)).toEqual({ ok: true, reasons: [] });
+    const quorum = {
+      ...valid,
+      slots: valid.slots.map((slot) =>
+        slot.slot === "triad-3" ? { ...slot, status: "timed_out", observedModel: null } : slot,
+      ),
+    };
+    expect(validateReleaseAttestation(quorum, expected).ok).toBe(true);
+    expect(
+      validateReleaseAttestation({ ...valid, candidateTree: "d".repeat(40) }, expected).ok,
+    ).toBe(false);
+    expect(
+      validateReleaseAttestation(
+        {
+          ...valid,
+          slots: valid.slots.map((slot, i) => (i ? slot : { ...slot, observedModel: "wrong" })),
+        },
+        expected,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateReleaseAttestation({ ...valid, openBlockers: ["still open"] }, expected).ok,
+    ).toBe(false);
+  });
+
   it("accepts only the exact ordered model panel", () => {
     expect(exactPanelMatch(REQUIRED_TRIAD_MODELS, REQUIRED_SCOPE_MODEL)).toBe(true);
     expect(exactPanelMatch([...REQUIRED_TRIAD_MODELS].reverse(), REQUIRED_SCOPE_MODEL)).toBe(false);

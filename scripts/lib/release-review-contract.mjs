@@ -15,6 +15,15 @@ export const REQUIRED_TRIAD_MODELS = Object.freeze([
 
 export const REQUIRED_SCOPE_MODEL = "anthropic/claude-fable-5";
 
+export const REQUIRED_RELEASE_REVIEW_SLOTS = Object.freeze([
+  Object.freeze({ slot: "tier1-codex", route: "codex", model: "gpt-5.6-sol", effort: "xhigh" }),
+  Object.freeze({ slot: "tier1-claude", route: "claude", model: "claude-fable-5", effort: "max" }),
+  ...REQUIRED_TRIAD_MODELS.map((model, index) =>
+    Object.freeze({ slot: `triad-${index + 1}`, route: "openrouter", model, effort: null }),
+  ),
+  Object.freeze({ slot: "scope", route: "openrouter", model: REQUIRED_SCOPE_MODEL, effort: null }),
+]);
+
 export const TRIAD_ITEMS = Object.freeze([
   "review_protocol",
   "runtime_behavior_changes",
@@ -67,6 +76,97 @@ export function validatePanelLock(lock, { candidateSha, candidateTree, packetMan
   if (lock.candidate_tree?.trim() !== candidateTree) reasons.push("candidate tree is not locked");
   if (lock.packet_manifest_sha256?.trim() !== packetManifestSha256) {
     reasons.push("packet manifest digest is not locked");
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
+const SHA1 = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const SEMVER_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+
+/** Validate the only two release workflow entry modes before any ref is fetched. */
+export function validateReleaseInput(mode, ref) {
+  const reasons = [];
+  if (mode !== "candidate" && mode !== "publish") reasons.push("mode must be candidate or publish");
+  if (mode === "candidate" && !SHA1.test(ref)) {
+    reasons.push("candidate ref must be a full lowercase 40-character commit SHA");
+  }
+  if (mode === "publish" && !SEMVER_TAG.test(ref)) {
+    reasons.push("publish ref must be an exact stable vMAJOR.MINOR.PATCH tag");
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
+/**
+ * Compact release authority. Publication accepts only the exact six-slot
+ * reviewed panel bound to the checked-out SHA, tree and sealed packet digest.
+ */
+export function validateReleaseAttestation(attestation, expected) {
+  const reasons = [];
+  if (!attestation || typeof attestation !== "object" || Array.isArray(attestation)) {
+    return { ok: false, reasons: ["review attestation is not an object"] };
+  }
+  if (attestation.schemaVersion !== 1) reasons.push("review attestation schemaVersion must be 1");
+  if (
+    attestation.candidateSha !== expected.candidateSha ||
+    !SHA1.test(attestation.candidateSha ?? "")
+  ) {
+    reasons.push("review attestation candidate SHA mismatch");
+  }
+  if (
+    attestation.candidateTree !== expected.candidateTree ||
+    !SHA1.test(attestation.candidateTree ?? "")
+  ) {
+    reasons.push("review attestation candidate tree mismatch");
+  }
+  if (!SHA256.test(attestation.packetManifestSha256 ?? "")) {
+    reasons.push("review attestation packet manifest SHA-256 is missing or malformed");
+  }
+  const lock = validatePanelLock(attestation.panelLock ?? null, {
+    candidateSha: expected.candidateSha,
+    candidateTree: expected.candidateTree,
+    packetManifestSha256: attestation.packetManifestSha256 ?? "",
+  });
+  reasons.push(...lock.reasons);
+
+  const slots = Array.isArray(attestation.slots) ? attestation.slots : [];
+  if (slots.length !== REQUIRED_RELEASE_REVIEW_SLOTS.length) {
+    reasons.push(
+      `review attestation must contain exactly ${REQUIRED_RELEASE_REVIEW_SLOTS.length} slots`,
+    );
+  } else {
+    let responsiveTriad = 0;
+    for (const required of REQUIRED_RELEASE_REVIEW_SLOTS) {
+      const actual = slots.find((slot) => slot?.slot === required.slot);
+      if (!actual) {
+        reasons.push(`review slot ${required.slot} is missing`);
+        continue;
+      }
+      const triad = required.slot.startsWith("triad-");
+      if (actual.status === "responded" && triad) responsiveTriad += 1;
+      if (!triad && actual.status !== "responded") {
+        reasons.push(`review slot ${required.slot} did not respond`);
+      }
+      if (
+        actual.route !== required.route ||
+        actual.requestedModel !== required.model ||
+        (actual.status === "responded" && actual.observedModel !== required.model) ||
+        (actual.observedModel && actual.observedModel !== required.model)
+      ) {
+        reasons.push(`review slot ${required.slot} model mismatch`);
+      }
+      if (required.effort && actual.effort !== required.effort)
+        reasons.push(`review slot ${required.slot} effort mismatch`);
+    }
+    const unique = new Set(slots.map((slot) => slot?.slot));
+    if (unique.size !== slots.length) reasons.push("review attestation contains duplicate slots");
+    if (responsiveTriad < 2) {
+      reasons.push(`review attestation triad quorum not met: ${responsiveTriad}/2`);
+    }
+  }
+  if (attestation.decision !== "passed") reasons.push("review attestation decision is not passed");
+  if (!Array.isArray(attestation.openBlockers) || attestation.openBlockers.length !== 0) {
+    reasons.push("review attestation has open blockers");
   }
   return { ok: reasons.length === 0, reasons };
 }

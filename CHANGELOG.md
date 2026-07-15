@@ -3,6 +3,25 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v2.0.0** (2026-07-15) — clean breaking reset. Claudexor now exposes one
+  versioned `/v2` daemon authority over a checksummed durable journal, typed
+  commands and scoped event streams; v1 project, trust, secret, run, and thread
+  state is neither imported nor mutated. Delivery is preimage-bound and always
+  runs the same fresh FinalVerifier before manual apply, thread apply, race
+  adoption, or orchestration delivery. Capability truth is split into static
+  manifest, live doctor, and request preflight; attachments are immutable
+  streamed resources, Browser is a pinned offline-capable runtime with
+  per-lane receipts, and Raw implement returns a scoped hash-bound Git patch.
+  Outcome reduction no longer launders incomplete required work into success;
+  budgets use explicit finite/unlimited semantics and one root ledger, while
+  routing is reduced to `auto`, `quality`, and `economy` over durable
+  multi-window quota evidence. The macOS app, CLI, MCP, and ACP are thin live
+  projections of those contracts, with honest offline/review/retry/spec/setup
+  states. Release publication is now fail-closed: exact-SHA review attestation,
+  signed and separately notarized/stapled app + DMG, SBOM, checksums, GitHub
+  provenance, collision refusal, and npm provenance are mandatory; published
+  tags, releases, and assets are never edited by the workflow.
+
 - **v1.0.1** (2026-07-09) — the macOS app is now SIGNED (Developer ID +
   hardened runtime), NOTARIZED, and stapled: no Gatekeeper bypass needed.
   Fixed the v1.0.0 app's self-contained daemon, which crashed at load in
