@@ -10,6 +10,11 @@ const print = (s: string): void => {
   process.stdout.write(s + "\n");
 };
 
+/** One CLI process-status policy for direct runs and streamed terminals. */
+export function processExitCodeForRunStatus(state: unknown): number {
+  return state === "success" || state === "succeeded" || state === "no_op" ? 0 : 1;
+}
+
 /**
  * One concise line per run event for live terminal progress. Returns null for
  * noise (heartbeats, raw harness deltas we do not surface in a TTY).
@@ -248,7 +253,12 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     const type = String(ev["type"] ?? "");
     if (type === "run.completed" || type === "run.failed" || type === "run.blocked")
       sawTerminal = true;
-    if (type === "run.failed" || type === "run.blocked") exitCode = 1;
+    if (type === "run.completed") {
+      const payload = (ev["payload"] ?? {}) as Record<string, unknown>;
+      exitCode = processExitCodeForRunStatus(payload["status"]);
+    } else if (type === "run.failed" || type === "run.blocked") {
+      exitCode = 1;
+    }
     if (type === "interaction.requested" && !json) {
       await answerInteractionFromTty(addr, runId, ev);
     }

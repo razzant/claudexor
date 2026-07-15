@@ -90,6 +90,23 @@ describe("claudexor follow", () => {
     }
   }, 20_000);
 
+  it.each(["ungated", "review_not_run"])(
+    "exits 1 when a completed stream ends as %s",
+    async (status) => {
+      const { server, port } = await sseServer((_last, res) => {
+        res.write(frame(1, "run.completed", { status }));
+        res.write("event: end\ndata: {}\n\n");
+        res.end();
+      });
+      writeControlApiInfo(port);
+      try {
+        expect(await followRun("run-f", true)).toBe(1);
+      } finally {
+        server.close();
+      }
+    },
+  );
+
   it("exits 1 with 'stream lost' when the stream keeps ending without a terminal event", async () => {
     const { server, port } = await sseServer((_last, res) => {
       res.write(frame(1, "run.created"));
