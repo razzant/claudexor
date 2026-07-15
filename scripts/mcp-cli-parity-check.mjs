@@ -118,6 +118,8 @@ const CLI_ONLY_EXEMPT = {
     "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only)",
   "access-default":
     "trust subcommand flag, not a run control (was invisible to the old VALUE_FLAGS source-regex; the registry surfaces it)",
+  "grant-test": "trust subcommand flag for an external exact-command grant, not a run control",
+  "revoke-test": "trust subcommand flag for an external exact-command grant, not a run control",
   "from-env": "secrets subcommand flag, not a run control",
   "apply-mode": "decision subcommand flag, not a run control",
   feedback: "decision subcommand flag, not a run control",
