@@ -75,6 +75,7 @@ describe("candidate release input", () => {
         env: {
           ...process.env,
           GITHUB_SHA: "0".repeat(40),
+          GITHUB_REF: "refs/tags/v2.0.0",
           RELEASE_MODE_INPUT: "publish",
           RELEASE_REF_INPUT: "v2.0.0",
         },
@@ -83,6 +84,52 @@ describe("candidate release input", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(
         "release input rejected: publish SHA does not match the workflow-dispatch GITHUB_SHA",
+      );
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects publish from a branch ref before release work can start", () => {
+    const fixture = mkdtempSync(resolve(tmpdir(), "claudexor-release-input-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, {
+        cwd: fixture,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "fixture",
+          GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+          GIT_COMMITTER_NAME: "fixture",
+          GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+        },
+      });
+    try {
+      git("init", "-q");
+      writeFileSync(resolve(fixture, "README.md"), "fixture\n");
+      git("add", "README.md");
+      git("commit", "-qm", "fixture");
+      git("tag", "-a", "v2.0.0", "-m", "fixture");
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
+      const candidateSha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: fixture,
+        encoding: "utf8",
+      }).trim();
+
+      const result = spawnSync(process.execPath, [verifier], {
+        cwd: fixture,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_SHA: candidateSha,
+          GITHUB_REF: "refs/heads/main",
+          RELEASE_MODE_INPUT: "publish",
+          RELEASE_REF_INPUT: "v2.0.0",
+        },
+      });
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "release input rejected: publish workflow must be dispatched from the exact release tag ref",
       );
     } finally {
       rmSync(fixture, { recursive: true, force: true });

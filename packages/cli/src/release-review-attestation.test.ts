@@ -212,7 +212,7 @@ function makeFixture(
     };
     writeJson(join(dir, "parsed-json-blocks.json"), [response]);
     writeFileSync(join(dir, "raw-normalized-stream.jsonl"), "{}\n");
-    writeFileSync(join(dir, "transcript.md"), "[]\n");
+    writeFileSync(join(dir, "transcript.md"), `${JSON.stringify(response)}\n`);
     writeFileSync(join(dir, "prompt.md"), "review\n");
     tier1Progress.push(
       {
@@ -365,6 +365,7 @@ function makeFixture(
     packetFiles,
     missingArtifact: join(tier1, "01-codex", "transcript.md"),
     nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
+    nativeTranscript: join(tier1, "01-codex", "transcript.md"),
     nativeParseError: join(tier1, "01-codex", "parse-error.json"),
     tier1Progress: join(tier1, "reviewer-progress.jsonl"),
     triadPrompt: join(triad, "triad-prompt.md"),
@@ -590,6 +591,27 @@ describe("signed release review attestation sealer", () => {
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsupported fields/);
   });
 
+  it("refuses a PASS envelope followed by arbitrary transcript text", () => {
+    const fixture = makeFixture();
+    writeFileSync(
+      fixture.nativeTranscript,
+      `${readFileSync(fixture.nativeTranscript, "utf8")}BLOCK: trailing finding outside JSON\n`,
+    );
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /does not end with a strict JSON completion envelope/,
+    );
+  });
+
+  it("accepts progress followed by one terminal fenced completion envelope", () => {
+    const fixture = makeFixture();
+    const response = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"))[0];
+    writeFileSync(
+      fixture.nativeTranscript,
+      `progress before terminal response\n\n\`\`\`json\n${JSON.stringify(response)}\n\`\`\`\n`,
+    );
+    expect(() => sealReleaseReviewAttestation(fixture.input)).not.toThrow();
+  });
+
   it("refuses an unknown native completion field before normalization", () => {
     const fixture = makeFixture();
     const parsed = JSON.parse(readFileSync(fixture.nativeParsed, "utf8"));
@@ -617,24 +639,24 @@ describe("signed release review attestation sealer", () => {
 
   it("accepts a prompt-shaped advisory and binds reviewer identity from telemetry", () => {
     const fixture = makeFixture();
-    writeJson(fixture.nativeParsed, [
-      {
-        completion: {
-          verdict: "PASS",
-          checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
-          findingCount: 1,
-        },
-        findings: [
-          {
-            severity: "WARN",
-            category: "test_gap",
-            claim: "A nonblocking advisory follows the exact reviewer prompt shape.",
-            evidence: { files: [{ path: "TESTS.txt", lines: null }] },
-            proposed_fix: "Keep this item in the local punch list.",
-          },
-        ],
+    const response = {
+      completion: {
+        verdict: "PASS",
+        checklist: RELEASE_NATIVE_CHECKLIST_ITEMS.map((item) => ({ item, completed: true })),
+        findingCount: 1,
       },
-    ]);
+      findings: [
+        {
+          severity: "WARN",
+          category: "test_gap",
+          claim: "A nonblocking advisory follows the exact reviewer prompt shape.",
+          evidence: { files: [{ path: "TESTS.txt", lines: null }] },
+          proposed_fix: "Keep this item in the local punch list.",
+        },
+      ],
+    };
+    writeJson(fixture.nativeParsed, [response]);
+    writeFileSync(fixture.nativeTranscript, `${JSON.stringify(response)}\n`);
     expect(() => sealReleaseReviewAttestation(fixture.input)).not.toThrow();
   });
 

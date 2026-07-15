@@ -154,6 +154,41 @@ function artifactDigests(root, names) {
   };
 }
 
+function terminalJsonResponse(text, label) {
+  const trimmed = text.trim();
+  requireValue(trimmed !== "", `${label} is empty`);
+
+  let terminalFence = null;
+  for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/g)) {
+    if ((match.index ?? -1) + match[0].length === trimmed.length) terminalFence = match;
+  }
+  if (terminalFence) {
+    try {
+      return JSON.parse((terminalFence[1] ?? "").trim());
+    } catch (error) {
+      throw new Error(`${label} terminal JSON fence is invalid: ${String(error)}`);
+    }
+  }
+
+  const starts = [];
+  let lineStart = 0;
+  for (let index = 0; index <= trimmed.length; index += 1) {
+    if (index < trimmed.length && trimmed[index] !== "\n") continue;
+    let first = lineStart;
+    while (first < index && /[ \t\r]/.test(trimmed[first] ?? "")) first += 1;
+    if (trimmed[first] === "{" || trimmed[first] === "[") starts.push(first);
+    lineStart = index + 1;
+  }
+  for (let index = starts.length - 1; index >= 0; index -= 1) {
+    try {
+      return JSON.parse(trimmed.slice(starts[index]));
+    } catch {
+      // Only a complete JSON value at the end of the transcript is authoritative.
+    }
+  }
+  throw new Error(`${label} does not end with a strict JSON completion envelope`);
+}
+
 function normalizeNativeFinding(finding, metadata, index) {
   requireExactKeys(
     finding,
@@ -294,8 +329,19 @@ function tier1Slot(root, required, index, expected) {
   }
   requireValue(Number.isFinite(metadata.duration_ms), `${required.slot} duration is missing`);
   assertArtifactAbsent(join(dir, "parse-error.json"), `${required.slot} parse-error artifact`);
+  assertRegularFile(join(dir, "transcript.md"));
   const parsed = readJson(join(dir, "parsed-json-blocks.json"));
   const findings = releaseNativeResponse(parsed, required.slot, metadata);
+  const transcriptResponse = terminalJsonResponse(
+    readFileSync(join(dir, "transcript.md"), "utf8"),
+    `${required.slot} transcript`,
+  );
+  requireValue(
+    Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      canonicalJson(transcriptResponse) === canonicalJson(parsed[0]),
+    `${required.slot} transcript does not match the parsed completion envelope`,
+  );
   const blockers = findings.filter((finding) => TIER1_BLOCKING.has(finding.severity));
   requireValue(blockers.length === 0, `${required.slot} has blocking or inconclusive findings`);
   const names = [

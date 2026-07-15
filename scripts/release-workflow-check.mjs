@@ -103,6 +103,11 @@ const verifier = readFileSync("scripts/verify-release-input.mjs", "utf8");
 if (!/validateReleaseAttestation\(attestation, reviewAuthority/.test(verifier)) {
   errors.push("verify-release-input.mjs: signed review authority is not checked before publish");
 }
+if (!/GITHUB_REF[\s\S]*refs\/tags\/\$\{tag\}/.test(verifier)) {
+  errors.push(
+    "verify-release-input.mjs: publish mode must require workflow dispatch from the exact tag ref",
+  );
+}
 const authority = JSON.parse(readFileSync("release/review-attestation-authority.json", "utf8"));
 if (
   authority.algorithm !== "Ed25519" ||

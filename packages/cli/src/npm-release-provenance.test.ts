@@ -1,5 +1,11 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { validatePublishedProvenance } from "../../../scripts/publish-npm-release.mjs";
+
+const publisher = resolve(import.meta.dirname, "../../../scripts/publish-npm-release.mjs");
 
 const SLSA = "https://slsa.dev/provenance/v1";
 const packageName = "@claudexor/core";
@@ -85,6 +91,29 @@ function replaceStatement(input: ReturnType<typeof fixture>, next: unknown): voi
 }
 
 describe("npm release provenance", () => {
+  it("rejects a branch ref before creating release output or invoking package tools", () => {
+    const runnerTemp = mkdtempSync(join(tmpdir(), "claudexor-npm-ref-"));
+    try {
+      const result = spawnSync(process.execPath, [publisher, "--provenance"], {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          RUNNER_TEMP: runnerTemp,
+          NODE_AUTH_TOKEN: "test-only-token",
+          GITHUB_SHA: candidateSha,
+          GITHUB_REPOSITORY: repository,
+          GITHUB_REF: "refs/heads/main",
+          PATH: "",
+        },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("GITHUB_REF must be the exact release tag");
+      expect(existsSync(join(runnerTemp, "claudexor-npm-release"))).toBe(false);
+    } finally {
+      rmSync(runnerTemp, { recursive: true, force: true });
+    }
+  });
+
   it("binds the published tarball to latest, repository, workflow, tag and candidate SHA", () => {
     expect(validatePublishedProvenance(fixture())).toEqual({ ok: true, reasons: [] });
   });

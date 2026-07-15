@@ -20,8 +20,10 @@ async function main() {
   const candidateSha = process.env.GITHUB_SHA ?? "";
   const repository = process.env.GITHUB_REPOSITORY ?? "";
   const ref = process.env.GITHUB_REF ?? "";
+  const releaseVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   if (!/^[0-9a-f]{40}$/.test(candidateSha)) fail("GITHUB_SHA must be an exact commit SHA");
   if (repository !== "razzant/claudexor") fail("GITHUB_REPOSITORY is not the release repository");
+  if (ref !== `refs/tags/v${releaseVersion}`) fail("GITHUB_REF must be the exact release tag");
 
   rmSync(out, { recursive: true, force: true });
   mkdirSync(out, { recursive: true });

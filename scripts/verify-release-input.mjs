@@ -29,6 +29,9 @@ if (mode === "candidate") {
   }
 } else {
   tag = ref;
+  if ((process.env.GITHUB_REF ?? "") !== `refs/tags/${tag}`) {
+    fail(["publish workflow must be dispatched from the exact release tag ref"]);
+  }
   if (git("cat-file", "-t", `refs/tags/${tag}`) !== "tag") {
     fail(["publish ref must be an annotated tag"]);
   }
