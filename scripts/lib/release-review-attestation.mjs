@@ -1,4 +1,4 @@
-import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import Ajv from "ajv";
@@ -26,6 +26,19 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_OID = /^[0-9a-f]{40}$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const TIER1_BLOCKING = new Set(["BLOCK", "FIX_FIRST", "NEEDS_HUMAN", "INSUFFICIENT_EVIDENCE"]);
+const MANUAL_ACCESSIBILITY_FILES = [
+  "manual-accessibility/MANUAL_ACCESSIBILITY_MATRIX.md",
+  "manual-accessibility/MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig",
+  "manual-accessibility/MANUAL_ACCESSIBILITY_SIGNATURE.json",
+  "manual-accessibility/keyboard-full-navigation.log",
+  "manual-accessibility/keyboard-shortcuts.log",
+  "manual-accessibility/voiceover-ax-controls.log",
+  "manual-accessibility/screenshots/dark-reduce-transparency-window.png",
+  "manual-accessibility/screenshots/dark-wide-window.png",
+  "manual-accessibility/screenshots/light-compact-window.png",
+  "manual-accessibility/screenshots/light-increase-contrast-window.png",
+  "manual-accessibility/screenshots/light-settings-window.png",
+];
 const reviewFindingSchema = JSON.parse(
   readFileSync(
     new URL("../../packages/schema/generated/ReviewFinding.schema.json", import.meta.url),
@@ -512,6 +525,81 @@ function validateFullGate(receiptPath, testResults, expected) {
   };
 }
 
+function validateManualAccessibility(packetDir, evidence, expected, authority) {
+  const sealed = new Set(evidence.entries.map((entry) => entry.name));
+  for (const name of MANUAL_ACCESSIBILITY_FILES) {
+    requireValue(sealed.has(name), `manual accessibility artifact is missing: ${name}`);
+  }
+  const root = join(packetDir, "manual-accessibility");
+  const receipt = readJson(join(root, "MANUAL_ACCESSIBILITY_SIGNATURE.json"));
+  requireExactKeys(
+    receipt,
+    [
+      "schemaVersion",
+      "candidateSha",
+      "candidateTree",
+      "appTree",
+      "matrix",
+      "matrixSha256",
+      "signature",
+      "signatureSha256",
+      "algorithm",
+      "keyId",
+      "authority",
+      "verified",
+      "performedAt",
+    ],
+    "manual accessibility signature receipt",
+  );
+  requireValue(receipt.schemaVersion === 1, "manual accessibility receipt version mismatch");
+  requireValue(
+    receipt.candidateSha === expected.candidateSha,
+    "manual accessibility candidate SHA mismatch",
+  );
+  requireValue(
+    receipt.candidateTree === expected.candidateTree,
+    "manual accessibility candidate tree mismatch",
+  );
+  requireValue(GIT_OID.test(receipt.appTree ?? ""), "manual accessibility app tree is invalid");
+  requireValue(
+    receipt.matrix === "MANUAL_ACCESSIBILITY_MATRIX.md" &&
+      receipt.signature === "MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig",
+    "manual accessibility artifact names mismatch",
+  );
+  requireValue(
+    receipt.algorithm === RELEASE_REVIEW_ATTESTATION_ALGORITHM &&
+      receipt.keyId === authority.keyId &&
+      receipt.authority === "release/review-attestation-authority.json" &&
+      receipt.verified === true,
+    "manual accessibility authority mismatch",
+  );
+  requireValue(
+    Number.isFinite(Date.parse(receipt.performedAt ?? "")),
+    "manual accessibility performedAt is invalid",
+  );
+  const matrixPath = join(root, receipt.matrix);
+  const signaturePath = join(root, receipt.signature);
+  requireValue(
+    receipt.matrixSha256 === sha256File(matrixPath),
+    "manual accessibility matrix digest mismatch",
+  );
+  requireValue(
+    receipt.signatureSha256 === sha256File(signaturePath),
+    "manual accessibility signature digest mismatch",
+  );
+  const matrix = readFileSync(matrixPath);
+  const matrixText = matrix.toString("utf8");
+  requireValue(
+    matrixText.includes(`- Candidate: \`${expected.candidateSha}\``) &&
+      matrixText.includes(`- Candidate tree: \`${expected.candidateTree}\``),
+    "manual accessibility matrix is not bound to the candidate",
+  );
+  requireValue(
+    verify(null, matrix, createPublicKey(authority.publicKeyPem), readFileSync(signaturePath)),
+    "manual accessibility signature verification failed",
+  );
+}
+
 export function sealReleaseReviewAttestation(input) {
   const freeze = readJson(join(input.packetDir, "FREEZE.json"));
   requireValue(GIT_OID.test(freeze.candidateSha ?? ""), "packet candidate SHA is invalid");
@@ -531,6 +619,9 @@ export function sealReleaseReviewAttestation(input) {
     candidateTree: freeze.candidateTree,
     packetManifestSha256: evidence.manifestSha256,
   };
+  const authority = readJson(input.authorityPath);
+  requireValue(authority.algorithm === RELEASE_REVIEW_ATTESTATION_ALGORITHM, "authority mismatch");
+  validateManualAccessibility(input.packetDir, evidence, expected, authority);
   requireValue(fingerprints.candidateSha === expected.candidateSha, "fingerprint SHA mismatch");
   requireValue(fingerprints.candidateTree === expected.candidateTree, "fingerprint tree mismatch");
   requireValue(testResults.exitCode === 0, "sealed TEST_RESULTS did not pass");
@@ -545,6 +636,7 @@ export function sealReleaseReviewAttestation(input) {
     expectedManifestSha256: evidence.manifestSha256,
   });
   const tier1Evidence = verifyEvidenceManifest(tier1PacketDir);
+  validateManualAccessibility(tier1PacketDir, tier1Evidence, expected, authority);
   requireValue(
     tier1Evidence.manifestSha256 === evidence.manifestSha256,
     "Tier 1 evidence copy does not match sealed packet",
@@ -674,8 +766,6 @@ export function sealReleaseReviewAttestation(input) {
   const semantic = validateReleaseAttestationPayload(payload, expected);
   requireValue(semantic.ok, semantic.reasons.join("; "));
 
-  const authority = readJson(input.authorityPath);
-  requireValue(authority.algorithm === RELEASE_REVIEW_ATTESTATION_ALGORITHM, "authority mismatch");
   assertRegularFile(input.privateKeyPath);
   const privateKey = createPrivateKey(readFileSync(input.privateKeyPath));
   requireValue(privateKey.asymmetricKeyType === "ed25519", "release authority is not Ed25519");

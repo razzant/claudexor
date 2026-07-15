@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +39,67 @@ function writeManifest(packet: string, names: string[]): string {
   return sha256(text);
 }
 
+function writeAccessibilityFixture(
+  packet: string,
+  candidateSha: string,
+  candidateTree: string,
+  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
+  authority: { keyId: string; algorithm: string; publicKeyPem: string },
+): string[] {
+  const root = join(packet, "manual-accessibility");
+  const screenshots = join(root, "screenshots");
+  mkdirSync(screenshots, { recursive: true });
+  const matrix = `# Manual accessibility\n\n- Candidate: \`${candidateSha}\`\n- Candidate tree: \`${candidateTree}\`\n- Result: PASS\n`;
+  const matrixPath = join(root, "MANUAL_ACCESSIBILITY_MATRIX.md");
+  const signaturePath = join(root, "MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig");
+  writeFileSync(matrixPath, matrix);
+  writeFileSync(signaturePath, sign(null, Buffer.from(matrix), privateKey));
+  for (const name of [
+    "keyboard-full-navigation.log",
+    "keyboard-shortcuts.log",
+    "voiceover-ax-controls.log",
+  ]) {
+    writeFileSync(join(root, name), `${name} passed\n`);
+  }
+  for (const name of [
+    "dark-reduce-transparency-window.png",
+    "dark-wide-window.png",
+    "light-compact-window.png",
+    "light-increase-contrast-window.png",
+    "light-settings-window.png",
+  ]) {
+    writeFileSync(join(screenshots, name), `${name} fixture\n`);
+  }
+  writeJson(join(root, "MANUAL_ACCESSIBILITY_SIGNATURE.json"), {
+    schemaVersion: 1,
+    candidateSha,
+    candidateTree,
+    appTree: "d".repeat(40),
+    matrix: "MANUAL_ACCESSIBILITY_MATRIX.md",
+    matrixSha256: sha256File(matrixPath),
+    signature: "MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig",
+    signatureSha256: sha256File(signaturePath),
+    algorithm: "Ed25519",
+    keyId: authority.keyId,
+    authority: "release/review-attestation-authority.json",
+    verified: true,
+    performedAt: "2026-07-15T00:00:00.000Z",
+  });
+  return [
+    "manual-accessibility/MANUAL_ACCESSIBILITY_MATRIX.md",
+    "manual-accessibility/MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig",
+    "manual-accessibility/MANUAL_ACCESSIBILITY_SIGNATURE.json",
+    "manual-accessibility/keyboard-full-navigation.log",
+    "manual-accessibility/keyboard-shortcuts.log",
+    "manual-accessibility/voiceover-ax-controls.log",
+    "manual-accessibility/screenshots/dark-reduce-transparency-window.png",
+    "manual-accessibility/screenshots/dark-wide-window.png",
+    "manual-accessibility/screenshots/light-compact-window.png",
+    "manual-accessibility/screenshots/light-increase-contrast-window.png",
+    "manual-accessibility/screenshots/light-settings-window.png",
+  ];
+}
+
 function makeFixture() {
   const root = mkdtempSync(join(tmpdir(), "claudexor-signed-review-"));
   roots.push(root);
@@ -46,6 +107,12 @@ function makeFixture() {
   const candidateTree = "b".repeat(40);
   const reviewWaveId = "11111111-1111-4111-8111-111111111111";
   const reviewRunId = "triad-run-fixture";
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const authority = {
+    keyId: "fixture-ed25519",
+    algorithm: "Ed25519",
+    publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+  };
   const packet = join(root, "packet");
   const verification = join(root, "verification");
   const tier1 = join(root, "tier1");
@@ -85,7 +152,14 @@ function makeFixture() {
     if (!structuredFiles.has(name)) writeFileSync(join(packet, name), `${name} sealed\n`);
   }
   writeFileSync(join(packet, "EVIDENCE.txt"), "sealed\n");
-  const packetFiles = [...FROZEN_REVIEW_EVIDENCE_FILES, "EVIDENCE.txt"];
+  const accessibilityFiles = writeAccessibilityFixture(
+    packet,
+    candidateSha,
+    candidateTree,
+    privateKey,
+    authority,
+  );
+  const packetFiles = [...FROZEN_REVIEW_EVIDENCE_FILES, "EVIDENCE.txt", ...accessibilityFiles];
   const packetManifestSha256 = writeManifest(packet, packetFiles);
 
   cpSync(packet, join(tier1, "evidence"), { recursive: true });
@@ -260,23 +334,29 @@ function makeFixture() {
 
   const panelLock = join(root, "panel.lock");
   writeFileSync(panelLock, panelLockText({ candidateSha, candidateTree, packetManifestSha256 }));
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateKeyPath = join(root, "private.pem");
   const authorityPath = join(root, "authority.json");
   writeFileSync(privateKeyPath, privateKey.export({ type: "pkcs8", format: "pem" }), {
     mode: 0o600,
   });
-  const authority = {
-    keyId: "fixture-ed25519",
-    algorithm: "Ed25519",
-    publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
-  };
   writeJson(authorityPath, authority);
   return {
     expected: { candidateSha, candidateTree },
     authority,
     packet,
     packetFiles,
+    accessibilityFiles,
+    accessibilityMatrix: join(packet, "manual-accessibility", "MANUAL_ACCESSIBILITY_MATRIX.md"),
+    accessibilitySignature: join(
+      packet,
+      "manual-accessibility",
+      "MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig",
+    ),
+    accessibilityReceipt: join(
+      packet,
+      "manual-accessibility",
+      "MANUAL_ACCESSIBILITY_SIGNATURE.json",
+    ),
     missingArtifact: join(tier1, "01-codex", "transcript.md"),
     nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
     nativeParseError: join(tier1, "01-codex", "parse-error.json"),
@@ -345,6 +425,32 @@ describe("signed release review attestation sealer", () => {
     const fixture = makeFixture();
     writeFileSync(join(fixture.packet, "UNSEALED.txt"), "not in manifest\n");
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/unsealed packet file/);
+  });
+
+  it("refuses a self-consistent packet that omits required manual accessibility evidence", () => {
+    const fixture = makeFixture();
+    rmSync(fixture.accessibilityMatrix);
+    fixture.input.packetManifestSha256 = writeManifest(
+      fixture.packet,
+      fixture.packetFiles.filter(
+        (name) => name !== "manual-accessibility/MANUAL_ACCESSIBILITY_MATRIX.md",
+      ),
+    );
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /manual accessibility artifact is missing/,
+    );
+  });
+
+  it("refuses a manifest-sealed forged manual accessibility signature", () => {
+    const fixture = makeFixture();
+    writeFileSync(fixture.accessibilitySignature, "forged signature");
+    const receipt = JSON.parse(readFileSync(fixture.accessibilityReceipt, "utf8"));
+    receipt.signatureSha256 = sha256File(fixture.accessibilitySignature);
+    writeJson(fixture.accessibilityReceipt, receipt);
+    fixture.input.packetManifestSha256 = writeManifest(fixture.packet, fixture.packetFiles);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /manual accessibility signature verification failed/,
+    );
   });
 
   it.each([
