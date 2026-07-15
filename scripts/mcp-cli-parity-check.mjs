@@ -71,7 +71,8 @@ const MCP_TO_CLI = {
   tests: { cli: "test" },
   paidBudget: {
     cli: "max-usd",
-    reason: "the CLI scalar projects to PaidBudget.finite; omission preserves the configured tagged budget",
+    reason:
+      "the CLI scalar projects to PaidBudget.finite; omission preserves the configured tagged budget",
   },
   access: { cli: "access" },
   reviewerPanel: { cli: "reviewer-panel" },
