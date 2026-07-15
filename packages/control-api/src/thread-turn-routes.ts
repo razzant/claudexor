@@ -49,11 +49,11 @@ export interface ThreadTurnRouteCtx {
  * Chain `work` onto the thread's serialization chain and drop the entry once
  * settled so the Map cannot grow unbounded across a thread's lifetime.
  */
-export function chainThreadMutation(
-  ctx: ThreadTurnRouteCtx,
+export function chainThreadMutation<T>(
+  ctx: Pick<ThreadTurnRouteCtx, "threadTurnChains">,
   threadId: string,
-  work: () => Promise<void>,
-): Promise<void> {
+  work: () => Promise<T>,
+): Promise<T> {
   const previous = ctx.threadTurnChains.get(threadId) ?? Promise.resolve();
   const chained = previous.catch(() => undefined).then(work);
   const entry: Promise<void> = chained

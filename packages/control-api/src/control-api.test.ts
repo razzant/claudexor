@@ -38,12 +38,46 @@ function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promis
     (url.pathname === "/v2/runs" ||
       url.pathname === "/v2/projects" ||
       url.pathname === "/v2/threads" ||
+      /^\/v2\/runs\/[^/]+\/apply$/.test(url.pathname) ||
+      /^\/v2\/threads\/[^/]+\/apply$/.test(url.pathname) ||
       /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(url.pathname)) &&
     !headers.has("Idempotency-Key")
   ) {
     headers.set("Idempotency-Key", `test-${crypto.randomUUID()}`);
   }
   return globalThis.fetch(url, { ...init, headers });
+}
+
+function inMemoryDeliveryServices() {
+  const byKey = new Map<
+    string,
+    { id: string; state: string; result?: unknown; error?: string; errorCode?: string }
+  >();
+  return {
+    beginDelivery: async (
+      _params: unknown,
+      input: { key: string; operation: string; request: unknown },
+    ) => {
+      const key = `${input.operation}:${input.key}`;
+      const prior = byKey.get(key);
+      if (prior) return { ...prior, reused: true };
+      const record = { id: `delivery-${byKey.size + 1}`, state: "running" };
+      byKey.set(key, record);
+      return { ...record, reused: false };
+    },
+    completeDelivery: async (id: string, result: unknown) => {
+      const record = [...byKey.values()].find((candidate) => candidate.id === id);
+      if (record) Object.assign(record, { state: "succeeded", result });
+    },
+    failDelivery: async (id: string, error: unknown) => {
+      const record = [...byKey.values()].find((candidate) => candidate.id === id);
+      if (record)
+        Object.assign(record, {
+          state: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+    },
+  };
 }
 
 describe("normalizeRunStart prompt validation", () => {
@@ -3637,6 +3671,7 @@ describe("DaemonControlApiServer", () => {
       token,
       daemon,
       services: {
+        ...inMemoryDeliveryServices(),
         operatorDecision: (runId) => operatorDecisions.get(runId) ?? null,
         recordOperatorDecision: (runId, _params, decision) => {
           operatorDecisions.set(runId, decision);
@@ -3672,10 +3707,18 @@ describe("DaemonControlApiServer", () => {
       });
       const okRes = await apiFetch(`${base}/threads/th-gate/apply`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "thread-apply-1" },
         body: JSON.stringify({ mode: "apply" }),
       });
       expect(okRes.status).toBe(200);
+      expect(applied).toBe(1);
+
+      const replay = await apiFetch(`${base}/threads/th-gate/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "thread-apply-1" },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(replay.status).toBe(200);
       expect(applied).toBe(1);
 
       // Once the prefix is durably delivered, it is not re-gated on a later
@@ -3764,6 +3807,102 @@ describe("DaemonControlApiServer", () => {
     });
   }
 
+  it("serializes direct thread-scoped run creation against thread apply", async () => {
+    const runDir = mkdtempSync(join(tmpdir(), "claudexor-direct-thread-run-"));
+    let releaseTurn!: () => void;
+    const turnBarrier = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    let enteredTurn!: () => void;
+    const turnEntered = new Promise<void>((resolve) => {
+      enteredTurn = resolve;
+    });
+    let enqueued = false;
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        enqueued = true;
+        return { id: "job-direct", state: "running" };
+      },
+      async status() {
+        return {
+          id: "job-direct",
+          state: "running",
+          runId: "run-direct",
+          runDir,
+          params: { threadId: "th-direct", mode: "agent" },
+        };
+      },
+      async list() {
+        return enqueued
+          ? [
+              {
+                id: "job-direct",
+                state: "running" as const,
+                runId: "run-direct",
+                runDir,
+                params: { threadId: "th-direct", mode: "agent" },
+              },
+            ]
+          : [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      services: {
+        threadDetail: async () => ({
+          thread: { id: "th-direct", run_ids: [], workspace: {}, repo: { root: tmpdir() } },
+          sessions: [],
+          turns: [],
+        }),
+        createThreadTurn: async () => {
+          enteredTurn();
+          await turnBarrier;
+          return { id: "turn-direct" };
+        },
+        applyThread: async () => ({ applied: true, status: "applied" }),
+      },
+    });
+    const { host, port } = await server.start();
+    try {
+      const directRun = apiFetch(`http://${host}:${port}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          prompt: "thread work",
+          mode: "agent",
+          threadId: "th-direct",
+          scope: { kind: "project", root: tmpdir() },
+        }),
+      });
+      await turnEntered;
+      let applySettled = false;
+      const apply = apiFetch(`http://${host}:${port}/threads/th-direct/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      }).then((response) => {
+        applySettled = true;
+        return response;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(applySettled).toBe(false);
+      releaseTurn();
+      expect((await directRun).status).toBe(200);
+      const applyResponse = await apply;
+      expect(applyResponse.status).toBe(409);
+      expect(((await applyResponse.json()) as { code: string }).code).toBe("thread_busy");
+    } finally {
+      releaseTurn();
+      await server.stop();
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";
@@ -3823,6 +3962,67 @@ describe("DaemonControlApiServer", () => {
       expect(((await res.json()) as { message: string }).message).toContain(
         "no longer in the daemon history",
       );
+      expect(applied).toBe(0);
+    } finally {
+      await server.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a successful thread run whose required patch artifact is missing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-thread-missing-patch-"));
+    const runDir = join(dir, "run");
+    mkdirSync(runDir, { recursive: true });
+    const now = new Date().toISOString();
+    const daemon: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job", state: "queued" };
+      },
+      async status() {
+        return { id: "job", state: "succeeded", runId: "run-missing", runDir };
+      },
+      async list() {
+        return [{ id: "job", state: "succeeded", runId: "run-missing", runDir }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    let applied = 0;
+    const server = new DaemonControlApiServer({
+      ...readyIdentity,
+      token,
+      daemon,
+      services: {
+        threadDetail: async () => ({
+          thread: {
+            id: "th-missing",
+            created_at: now,
+            updated_at: now,
+            repo: { root: dir, base_ref: "HEAD" },
+            workspace: { mode: "in_place", base_sha: "abc" },
+            run_ids: ["run-missing"],
+            head_run_id: "run-missing",
+            state: "active",
+          },
+          sessions: [],
+          turns: [],
+        }),
+        applyThread: async () => {
+          applied += 1;
+          return { applied: true, status: "applied" };
+        },
+      },
+    });
+    const { host, port } = await server.start();
+    try {
+      const response = await apiFetch(`http://${host}:${port}/threads/th-missing/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as { code: string }).code).toBe("thread_run_unverifiable");
       expect(applied).toBe(0);
     } finally {
       await server.stop();

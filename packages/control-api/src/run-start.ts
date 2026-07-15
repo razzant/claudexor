@@ -162,6 +162,7 @@ export interface RunCreateRouteContext {
     code: string | null,
     retryable?: boolean,
   ) => void;
+  chainThreadMutation?: (threadId: string, work: () => Promise<void>) => Promise<void>;
 }
 
 /** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle. */
@@ -206,63 +207,68 @@ export async function handleRunCreate(
       error: "retryOf is server-owned; use POST /runs/:id/retry for Exact Retry",
     });
   }
-  let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
-  if (directThreadId && ctx.createThreadTurn) {
-    if (ctx.threadDetail) {
-      try {
-        await ctx.threadDetail(directThreadId);
-      } catch (error) {
-        const status =
-          error && typeof error === "object" && "status" in error
-            ? Number((error as { status: number }).status)
-            : 404;
-        return ctx.json(res, status, {
-          error: error instanceof Error ? error.message : `no such thread: ${directThreadId}`,
-        });
+  const submit = async (): Promise<void> => {
+    let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
+    if (directThreadId && ctx.createThreadTurn) {
+      if (ctx.threadDetail) {
+        try {
+          await ctx.threadDetail(directThreadId);
+        } catch (error) {
+          const status =
+            error && typeof error === "object" && "status" in error
+              ? Number((error as { status: number }).status)
+              : 404;
+          return ctx.json(res, status, {
+            error: error instanceof Error ? error.message : `no such thread: ${directThreadId}`,
+          });
+        }
       }
+      const turn = (await ctx.createThreadTurn(directThreadId, params.prompt, {
+        parentRunId: params.parentRunId ?? null,
+        planRunId: params.planRunId ?? null,
+        attachments: params.attachments,
+        idempotency: {
+          key: idempotencyKey,
+          client: "control-api",
+          request: params,
+        },
+      })) as { id: string };
+      const { attachments: _attachments, ...rest } = params;
+      enqueueParams = { ...rest, turnId: turn.id };
     }
-    const turn = (await ctx.createThreadTurn(directThreadId, params.prompt, {
-      parentRunId: params.parentRunId ?? null,
-      planRunId: params.planRunId ?? null,
-      attachments: params.attachments,
-      idempotency: {
-        key: idempotencyKey,
-        client: "control-api",
-        request: params,
-      },
-    })) as { id: string };
-    const { attachments: _attachments, ...rest } = params;
-    enqueueParams = { ...rest, turnId: turn.id };
-  }
-  const preCreatedTurnId = enqueueParams.turnId;
-  let job: { id: string };
-  try {
-    enqueueParams = validateDirectRunAttachments(enqueueParams);
-    job = await ctx.daemon.enqueue(enqueueParams, {
-      idempotencyKey,
-      clientId: "control-api",
-      idempotencyRequest: params,
-    });
-  } catch (error) {
-    recordTurnEnqueueFailure(ctx.setTurnEnqueueError, preCreatedTurnId, error);
-    const status =
-      error && typeof error === "object" && "status" in error
-        ? Number((error as { status: number }).status)
-        : 500;
-    return ctx.json(res, status, {
-      error: error instanceof Error ? error.message : "enqueue failed",
-      ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
-    });
-  }
-  try {
-    return await ctx.respondToAcceptedJob(res, job.id);
-  } catch (error) {
-    return ctx.json(res, 500, {
-      error: `job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
-      jobId: job.id,
-      ...(preCreatedTurnId ? { turnId: preCreatedTurnId } : {}),
-    });
-  }
+    const preCreatedTurnId = enqueueParams.turnId;
+    let job: { id: string };
+    try {
+      enqueueParams = validateDirectRunAttachments(enqueueParams);
+      job = await ctx.daemon.enqueue(enqueueParams, {
+        idempotencyKey,
+        clientId: "control-api",
+        idempotencyRequest: params,
+      });
+    } catch (error) {
+      recordTurnEnqueueFailure(ctx.setTurnEnqueueError, preCreatedTurnId, error);
+      const status =
+        error && typeof error === "object" && "status" in error
+          ? Number((error as { status: number }).status)
+          : 500;
+      return ctx.json(res, status, {
+        error: error instanceof Error ? error.message : "enqueue failed",
+        ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
+      });
+    }
+    try {
+      return await ctx.respondToAcceptedJob(res, job.id);
+    } catch (error) {
+      return ctx.json(res, 500, {
+        error: `job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
+        jobId: job.id,
+        ...(preCreatedTurnId ? { turnId: preCreatedTurnId } : {}),
+      });
+    }
+  };
+  return directThreadId && ctx.chainThreadMutation
+    ? ctx.chainThreadMutation(directThreadId, submit)
+    : submit();
 }
 
 export function requiredIdempotencyKey(req: IncomingMessage): string {

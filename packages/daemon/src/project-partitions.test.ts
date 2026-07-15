@@ -45,6 +45,40 @@ function fixture() {
 }
 
 describe("ProjectPartitions", () => {
+  it("persists idempotent delivery receipts and rejects key reuse for another request", () => {
+    const f = fixture();
+    const input = {
+      key: "delivery-key",
+      client: "test",
+      operation: "run.apply",
+      request: { runId: "run-1", patchSha256: `sha256:${"a".repeat(64)}` },
+    };
+    const first = f.partitions.beginDelivery({}, input);
+    expect(first).toMatchObject({ state: "running", reused: false });
+    f.partitions.completeDelivery(first.id, { applied: true, receipt: "receipt-1" });
+    expect(f.partitions.beginDelivery({}, input)).toMatchObject({
+      id: first.id,
+      state: "succeeded",
+      result: { applied: true, receipt: "receipt-1" },
+      reused: true,
+    });
+    expect(() => f.partitions.beginDelivery({}, { ...input, request: { runId: "run-2" } })).toThrow(
+      /different request/,
+    );
+    f.partitions.close();
+    f.manager.close();
+
+    const restarted = fixtureAt(f.root);
+    expect(restarted.partitions.beginDelivery({}, input)).toMatchObject({
+      id: first.id,
+      state: "succeeded",
+      result: { applied: true, receipt: "receipt-1" },
+      reused: true,
+    });
+    restarted.partitions.close();
+    restarted.manager.close();
+  });
+
   it("routes registered project commands and threads through stable project partitions", () => {
     const f = fixture();
     const projectA = join(f.root, "project-a");

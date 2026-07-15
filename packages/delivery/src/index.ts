@@ -99,8 +99,20 @@ export async function verifyAndDeliver(
     gates,
     log,
   );
-  const refusal =
-    authorize?.(finalVerify) ?? (finalVerifyBlocks(finalVerify) ? "final verify failed" : null);
+  let refusal: string | null;
+  if (finalVerify.applied_cleanly === false) {
+    // Mechanical applicability is never waivable, even when a caller owns the
+    // semantic risk decision for failed gates or verifier infrastructure.
+    refusal = finalVerify.reason ?? "final verify failed: patch did not apply cleanly";
+  } else if (authorize) {
+    // A supplied policy owns the semantic verdict. In particular, null is an
+    // affirmative allow after a hash-bound accept_risk decision; do not replace
+    // it via nullish coalescing with the default refusal.
+    refusal = authorize(finalVerify);
+    if (refusal === "") refusal = "delivery authorization returned an empty refusal";
+  } else {
+    refusal = finalVerifyBlocks(finalVerify) ? "final verify failed" : null;
+  }
   if (refusal) {
     return {
       mode: options.mode,

@@ -13,7 +13,6 @@ import { type IncomingMessage, type Server, type ServerResponse, createServer } 
 import { basename, extname, join, relative, sep } from "node:path";
 import {
   type ApplyGateInput,
-  checkPatch,
   deriveApplyEligibility,
   revertInPlaceFromAnchor,
   validateApplyGate,
@@ -26,6 +25,7 @@ import { streamRunEvents } from "./run-events-stream.js";
 import { eventPayload, latestPlanProgress, readRunEvents, timelineEvents } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
 import {
+  chainThreadMutation,
   handleThreadTurnCreate,
   handleThreadTurnRetry,
   type ThreadTurnRouteCtx,
@@ -36,6 +36,12 @@ import {
 } from "./thread-lifecycle-routes.js";
 import * as runStart from "./run-start.js";
 import { handleRunRetryRoute } from "./run-retry-routes.js";
+import {
+  handleRunApplyRoutes,
+  runIdempotentDelivery,
+  type DeliveryCommandServices,
+  type RunApplyRouteContext,
+} from "./run-apply-routes.js";
 import { rerunWithFeedback } from "./decision-rerun.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
@@ -55,10 +61,8 @@ import {
   AttachmentInput,
   ControlWebEvidence,
   ControlApplyCheckRequest,
-  ControlApplyCheckResponse,
   ControlApplyRequest,
   ControlArtifactListResponse,
-  ControlDeliveryResponse,
   AgentCapabilityCatalog,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
@@ -170,7 +174,7 @@ export interface DaemonControlApiOptions {
   heartbeatMs?: number;
   runStartTimeoutMs?: number;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
-  services?: {
+  services?: DeliveryCommandServices & {
     listProjects?: () => Promise<{ projects: unknown[] }>;
     registerProject?: (input: {
       root: string;
@@ -672,6 +676,8 @@ export class DaemonControlApiServer {
           createThreadTurn: this.opts.services?.createThreadTurn,
           threadDetail: this.opts.services?.threadDetail,
           setTurnEnqueueError: this.opts.services?.setTurnEnqueueError,
+          chainThreadMutation: (threadId, work) =>
+            chainThreadMutation(this.threadTurnRouteCtx(), threadId, work),
         },
         req,
         res,
@@ -1031,75 +1037,7 @@ export class DaemonControlApiServer {
       return;
     }
 
-    const applyCheckMatch = /^\/runs\/([^/]+)\/apply\/check$/.exec(path);
-    if (method === "POST" && applyCheckMatch) {
-      const rec = await this.findRun(decodeURIComponent(applyCheckMatch[1] as string));
-      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      let body: ControlApplyCheckRequest;
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        body = ControlApplyCheckRequest.parse(raw);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-      const patch = readPatch(rec);
-      if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
-      if (containsSecretLikeToken(patch))
-        return this.json(res, 409, {
-          error: "patch contains secret-like token; refusing apply check",
-        });
-      const repoRoot = applyTargetRoot(body.target, rec);
-      if (!repoRoot)
-        return this.json(res, 400, { error: "project root is required for apply check" });
-      const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
-      if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const gateError = applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec));
-      if (gateError) return this.json(res, 409, { error: gateError });
-      return this.json(
-        res,
-        200,
-        ControlApplyCheckResponse.parse(await checkPatch(repoRoot, patch)),
-      );
-    }
-
-    const applyMatch = /^\/runs\/([^/]+)\/apply$/.exec(path);
-    if (method === "POST" && applyMatch) {
-      const rec = await this.findRun(decodeURIComponent(applyMatch[1] as string));
-      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      let body: ControlApplyRequest;
-      try {
-        const raw = await this.readBody(req);
-        assertNoInlineSecretValues(raw);
-        body = ControlApplyRequest.parse(raw);
-      } catch (err) {
-        return this.requestError(res, err);
-      }
-      const patch = readPatch(rec);
-      if (patch === null) return this.json(res, 404, { error: "no patch artifact for this run" });
-      if (containsSecretLikeToken(patch))
-        return this.json(res, 409, { error: "patch contains secret-like token; refusing apply" });
-      const repoRoot = applyTargetRoot(body.target, rec);
-      if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
-      const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
-      if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-      const delivered = await verifyAndDeliver(
-        repoRoot,
-        patch,
-        { mode: body.mode, branch: body.branch, message: body.message },
-        gateSpecsForRun(rec),
-        (freshVerify) =>
-          applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec), freshVerify),
-      );
-      if (delivered.refused) return this.json(res, 409, { error: delivered.detail });
-      if (!delivered.applied && delivered.detail?.includes("refusing")) {
-        appendRunAuditEvent(rec, "control.rejected", {
-          control: "apply",
-          reason: delivered.detail,
-        });
-      }
-      return this.json(res, 200, ControlDeliveryResponse.parse(delivered));
-    }
+    if (await handleRunApplyRoutes(this.runApplyRouteCtx(), method, path, req, res)) return;
 
     const decisionMatch = /^\/runs\/([^/]+)\/decision$/.exec(path);
     if (method === "POST" && decisionMatch) {
@@ -1117,110 +1055,122 @@ export class DaemonControlApiServer {
       }
 
       if (body.action === "accept_risk" || body.action === "override_needs_human") {
-        // The override exists to unblock a BLOCKED run (the only state the
-        // apply gate honors it for); recording one elsewhere would claim an
-        // apply permission that does not exist.
-        if (rec.state !== "blocked") {
-          return this.json(res, 409, {
-            error:
-              rec.state === "succeeded"
-                ? "run already succeeded; apply it directly (no risk override needed)"
-                : `run is ${rec.state}; risk overrides only unblock blocked runs (use rerun_with_feedback instead)`,
-          });
-        }
-        const patch = readPatch(rec);
-        if (patch === null)
-          return this.json(res, 409, {
-            error: "no patch artifact; there is nothing to unblock for apply",
-          });
-        const decision = this.recordOperatorDecision(
-          rec,
-          {
-            action: body.action,
-            findingIds: body.findingIds,
-            acceptedRisks: body.acceptedRisks,
-            patchSha256: sha256(patch),
-            decidedAt: nowIso(),
-          },
-          {
-            key: decisionKey,
-            client: "control-api",
-            request: { runId: rec.runId ?? rec.id, body },
-          },
-        );
+        const decisionBody = body;
+        const decisionAction: "accept_risk" | "override_needs_human" = body.action;
         try {
-          writeOperatorDecisionProjection(rec, decision);
-          appendRunAuditEvent(rec, "control.applied", {
-            decision: body.action,
-            finding_ids: body.findingIds,
-            accepted_risks: body.acceptedRisks,
+          return await this.chainRunMutation(rec, async () => {
+            // The override unblocks a BLOCKED run; recording one elsewhere would claim an
+            // apply permission that does not exist.
+            if (rec.state !== "blocked") {
+              return this.json(res, 409, {
+                error:
+                  rec.state === "succeeded"
+                    ? "run already succeeded; apply it directly (no risk override needed)"
+                    : `run is ${rec.state}; risk overrides only unblock blocked runs (use rerun_with_feedback instead)`,
+              });
+            }
+            const patch = readPatch(rec);
+            if (patch === null)
+              return this.json(res, 409, {
+                error: "no patch artifact; there is nothing to unblock for apply",
+              });
+            const decision = this.recordOperatorDecision(
+              rec,
+              {
+                action: decisionAction,
+                findingIds: decisionBody.findingIds,
+                acceptedRisks: decisionBody.acceptedRisks,
+                patchSha256: sha256(patch),
+                decidedAt: nowIso(),
+              },
+              {
+                key: decisionKey,
+                client: "control-api",
+                request: { runId: rec.runId ?? rec.id, body: decisionBody },
+              },
+            );
+            try {
+              writeOperatorDecisionProjection(rec, decision);
+              appendRunAuditEvent(rec, "control.applied", {
+                decision: decisionAction,
+                finding_ids: decisionBody.findingIds,
+                accepted_risks: decisionBody.acceptedRisks,
+              });
+            } catch {
+              // Journal authority remains queryable and replayable by Idempotency-Key.
+            }
+            return this.json(
+              res,
+              200,
+              ControlRunDecisionResponse.parse({
+                accepted: true,
+                status: "applied",
+                message: `${decisionAction} recorded; apply is now permitted for this exact patch`,
+              }),
+            );
           });
-        } catch {
-          // Journal authority remains queryable and replayable by Idempotency-Key.
+        } catch (error) {
+          return this.requestError(res, error);
         }
-        return this.json(
-          res,
-          200,
-          ControlRunDecisionResponse.parse({
-            accepted: true,
-            status: "applied",
-            message: `${body.action} recorded; apply is now permitted for this exact patch`,
-          }),
-        );
       }
 
       if (body.action === "revert_run") {
-        // Server-owned revert of an in-place turn's live mutation. Restores the
-        // tree to the recorded pre-turn snapshot, refusing (fail loud) if the tree
-        // has diverged from the recorded post-turn state (the user edited since).
-        const result = controlRunResult(rec);
-        if (!result.revertable || !result.revertAnchorId) {
-          return this.json(res, 409, { error: "this run produced no revertable in-place change" });
-        }
-        const repoRoot = applyTargetRoot({ kind: "original_project" }, rec);
-        if (!repoRoot)
-          return this.json(res, 400, {
-            error: "cannot resolve the in-place project root to revert",
-          });
-        const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
-        if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-        let revert;
         try {
-          revert = await revertInPlaceFromAnchor(repoRoot, result.revertAnchorId);
-        } catch (err) {
-          return this.json(res, 500, {
-            error: `revert failed: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        }
-        if (!revert.reverted) {
-          appendRunAuditEvent(rec, "control.rejected", {
-            decision: "revert_run",
-            reason: revert.reason ?? "revert refused",
-          });
-          return this.json(
-            res,
-            409,
-            ControlRunDecisionResponse.parse({
-              accepted: false,
-              status: "rejected",
-              message: revert.reason ?? "revert refused",
+          const response = await this.chainRunMutation(rec, () =>
+            runIdempotentDelivery(this.opts.services, {
+              params: rec.params,
+              key: decisionKey,
+              operation: "run.decision.revert",
+              request: { runId: rec.runId ?? rec.id, body },
+              work: async () => {
+                // Server-owned revert of an in-place turn's live mutation. Restores the
+                // tree to the recorded pre-turn snapshot, refusing if the user edited since.
+                const result = controlRunResult(rec);
+                if (!result.revertable || !result.revertAnchorId) {
+                  throw Object.assign(
+                    new Error("this run produced no revertable in-place change"),
+                    { status: 409 },
+                  );
+                }
+                const repoRoot = applyTargetRoot({ kind: "original_project" }, rec);
+                if (!repoRoot) {
+                  throw Object.assign(
+                    new Error("cannot resolve the in-place project root to revert"),
+                    { status: 400 },
+                  );
+                }
+                const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
+                if (absoluteRepoError) {
+                  throw Object.assign(new Error(absoluteRepoError), { status: 400 });
+                }
+                const revert = await revertInPlaceFromAnchor(repoRoot, result.revertAnchorId);
+                if (!revert.reverted) {
+                  appendRunAuditEvent(rec, "control.rejected", {
+                    decision: "revert_run",
+                    reason: revert.reason ?? "revert refused",
+                  });
+                  throw Object.assign(new Error(revert.reason ?? "revert refused"), {
+                    status: 409,
+                    code: "revert_refused",
+                  });
+                }
+                markRunReverted(rec);
+                appendRunAuditEvent(rec, "control.applied", {
+                  decision: "revert_run",
+                  removed: revert.removed,
+                });
+                return ControlRunDecisionResponse.parse({
+                  accepted: true,
+                  status: "applied",
+                  message: `reverted to the pre-turn state${revert.removed.length ? ` (removed ${revert.removed.length} turn-added file(s))` : ""}`,
+                });
+              },
             }),
           );
+          return this.json(res, 200, response);
+        } catch (error) {
+          return this.requestError(res, error);
         }
-        markRunReverted(rec);
-        appendRunAuditEvent(rec, "control.applied", {
-          decision: "revert_run",
-          removed: revert.removed,
-        });
-        return this.json(
-          res,
-          200,
-          ControlRunDecisionResponse.parse({
-            accepted: true,
-            status: "applied",
-            message: `reverted to the pre-turn state${revert.removed.length ? ` (removed ${revert.removed.length} turn-added file(s))` : ""}`,
-          }),
-        );
       }
 
       if (body.action === "accept_clean_patch") {
@@ -1232,29 +1182,56 @@ export class DaemonControlApiServer {
         if (!repoRoot) return this.json(res, 400, { error: "project root is required for apply" });
         const absoluteRepoError = runStart.validateAbsoluteRepoRoot(repoRoot);
         if (absoluteRepoError) return this.json(res, 400, { error: absoluteRepoError });
-        const delivered = await verifyAndDeliver(
-          repoRoot,
-          patch,
-          { mode: body.applyMode ?? "apply" },
-          gateSpecsForRun(rec),
-          (freshVerify) =>
-            applyGateError(rec, patch, repoRoot, this.operatorDecisionFor(rec), freshVerify),
-        );
-        if (delivered.refused) return this.json(res, 409, { error: delivered.detail });
-        appendRunAuditEvent(rec, "control.applied", {
-          decision: body.action,
-          mode: body.applyMode ?? "apply",
-          applied: delivered.applied,
-        });
-        return this.json(
-          res,
-          200,
-          ControlRunDecisionResponse.parse({
-            accepted: delivered.applied,
-            status: delivered.applied ? "applied" : "rejected",
-            message: delivered.detail ?? undefined,
-          }),
-        );
+        try {
+          const response = await this.chainRunMutation(rec, () =>
+            runIdempotentDelivery(this.opts.services, {
+              params: rec.params,
+              key: decisionKey,
+              operation: "run.decision.accept_clean_patch",
+              request: {
+                runId: rec.runId ?? rec.id,
+                body,
+                patchSha256: sha256(patch),
+                repoRoot,
+              },
+              work: async () => {
+                const delivered = await verifyAndDeliver(
+                  repoRoot,
+                  patch,
+                  { mode: body.applyMode ?? "apply" },
+                  gateSpecsForRun(rec),
+                  (freshVerify) =>
+                    applyGateError(
+                      rec,
+                      patch,
+                      repoRoot,
+                      this.operatorDecisionFor(rec),
+                      freshVerify,
+                    ),
+                );
+                if (delivered.refused) {
+                  throw Object.assign(new Error(delivered.detail ?? "delivery refused"), {
+                    status: 409,
+                    code: "delivery_refused",
+                  });
+                }
+                appendRunAuditEvent(rec, "control.applied", {
+                  decision: body.action,
+                  mode: body.applyMode ?? "apply",
+                  applied: delivered.applied,
+                });
+                return ControlRunDecisionResponse.parse({
+                  accepted: delivered.applied,
+                  status: delivered.applied ? "applied" : "rejected",
+                  message: delivered.detail ?? undefined,
+                });
+              },
+            }),
+          );
+          return this.json(res, 200, response);
+        } catch (error) {
+          return this.requestError(res, error);
+        }
       }
 
       return rerunWithFeedback(
@@ -1825,6 +1802,12 @@ export class DaemonControlApiServer {
     return record(rec.runId ?? rec.id, rec.params, decision, idempotency);
   }
 
+  private chainRunMutation<T>(rec: DaemonRunRecord, work: () => Promise<T>): Promise<T> {
+    const params = paramsRecord(rec);
+    const threadId = typeof params["threadId"] === "string" ? params["threadId"] : null;
+    return threadId ? chainThreadMutation(this.threadTurnRouteCtx(), threadId, work) : work();
+  }
+
   private threadTurnRouteCtx(): ThreadTurnRouteCtx {
     const services = this.opts.services ?? {};
     return {
@@ -1841,6 +1824,23 @@ export class DaemonControlApiServer {
     };
   }
 
+  private runApplyRouteCtx(): RunApplyRouteContext {
+    return {
+      services: this.opts.services,
+      findRun: (id) => this.findRun(id),
+      readBody: (req) => this.readBody(req),
+      json: (res, status, body) => this.json(res, status, body),
+      requestError: (res, error) => this.requestError(res, error),
+      readPatch,
+      targetRoot: applyTargetRoot,
+      gateError: (record, patch, root, finalVerify) =>
+        applyGateError(record, patch, root, this.operatorDecisionFor(record), finalVerify),
+      gateSpecs: gateSpecsForRun,
+      chainMutation: (record, work) => this.chainRunMutation(record, work),
+      appendAudit: appendRunAuditEvent,
+    };
+  }
+
   private threadLifecycleRouteCtx(): ThreadLifecycleRouteCtx {
     return {
       turnCtx: this.threadTurnRouteCtx(),
@@ -1849,6 +1849,8 @@ export class DaemonControlApiServer {
       readBody: (req) => this.readBody(req),
       json: (res, status, body) => this.json(res, status, body),
       requestError: (res, error) => this.requestError(res, error),
+      requiredIdempotencyKey: runStart.requiredIdempotencyKey,
+      runIdempotentDelivery: (input) => runIdempotentDelivery(this.opts.services, input),
       readPatch,
       applyGateError: (record, patch, projectRoot) =>
         applyGateError(record, patch, projectRoot, this.operatorDecisionFor(record)),
@@ -2691,9 +2693,8 @@ function gateSpecsForRun(
     envAllowlist: command.envAllowlist,
     trustRequired: command.trust_required,
     trustGrant: command.trust_grant,
-    projectDigest: command.trust_grant?.projectDigest,
-    configDigest: command.trust_grant?.configDigest,
-    accessProfile: command.trust_grant?.accessProfile,
+    projectRoot: task?.repo.root,
+    accessProfile: task?.access.effective_profile,
     required: command.required,
   }));
 }

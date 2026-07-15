@@ -1,5 +1,9 @@
 import type { JobRecord } from "./server.js";
 
+export function productCommandRecords(records: readonly JobRecord[]): JobRecord[] {
+  return records.filter(({ id }) => !id.startsWith("delivery-"));
+}
+
 /** Select only expired terminal records; blocked commands remain operator-visible. */
 export function prunableCommandIds(
   records: readonly JobRecord[],

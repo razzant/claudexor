@@ -65,6 +65,21 @@ describe("delivery", () => {
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
   });
 
+  it("honors an explicit semantic risk authorization after mechanical verification passes", async () => {
+    const { repo, patch } = await makePatchRepo();
+    const result = await verifyAndDeliver(
+      repo,
+      patch,
+      { mode: "apply", protectedApply: true },
+      [{ id: "accepted-risk", program: process.execPath, args: ["-e", "process.exit(9)"] }],
+      () => null,
+    );
+    expect(result).toMatchObject({ applied: true, treeMutated: true });
+    expect(result.finalVerify).toMatchObject({ applied_cleanly: true, gates_passed: false });
+    expect(result.refused).not.toBe(true);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+  });
+
   it("refuses when the target changes between fresh verification and mutation", async () => {
     const { repo, patch } = await makePatchRepo();
     const result = await verifyAndDeliver(

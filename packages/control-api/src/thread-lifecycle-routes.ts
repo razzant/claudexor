@@ -17,6 +17,14 @@ export interface ThreadLifecycleRouteCtx {
   readBody(req: IncomingMessage): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
   requestError(res: ServerResponse, error: unknown): void;
+  requiredIdempotencyKey(req: IncomingMessage): string;
+  runIdempotentDelivery<T>(input: {
+    params: unknown;
+    key: string;
+    operation: string;
+    request: unknown;
+    work: () => Promise<T>;
+  }): Promise<T>;
   readPatch(record: DaemonRunRecord): string | null;
   applyGateError(record: DaemonRunRecord, patch: string, projectRoot: string): string | null;
   appendAudit(record: DaemonRunRecord, type: string, payload: Record<string, unknown>): void;
@@ -90,6 +98,13 @@ export async function handleThreadLifecycleRoutes(
     return true;
   }
   const threadId = decodeURIComponent(threadApplyMatch[1] as string);
+  let idempotencyKey: string;
+  try {
+    idempotencyKey = ctx.requiredIdempotencyKey(req);
+  } catch (error) {
+    ctx.requestError(res, error);
+    return true;
+  }
   await chainThreadMutation(ctx.turnCtx, threadId, async () => {
     try {
       const body = ControlThreadApplyRequest.parse(await ctx.readBody(req));
@@ -143,7 +158,13 @@ export async function handleThreadLifecycleRoutes(
           });
         }
         const patch = ctx.readPatch(record);
-        if (!patch?.trim()) {
+        if (patch === null) {
+          throw Object.assign(new Error(`thread run ${runId} is missing required patch evidence`), {
+            status: 409,
+            code: "thread_run_unverifiable",
+          });
+        }
+        if (!patch.trim()) {
           if (record.state === "succeeded") continue;
           throw Object.assign(new Error(`thread run ${runId} is ${record.state}`), {
             status: 409,
@@ -171,18 +192,27 @@ export async function handleThreadLifecycleRoutes(
         }
         gates.push(...ctx.gateSpecs(record));
       }
-      ctx.json(
-        res,
-        200,
-        ControlThreadApplyResponse.parse(
-          await apply(threadId, {
-            mode: body.mode,
-            branch: body.branch,
-            message: body.message,
-            gates,
-          }),
-        ),
-      );
+      const response = await ctx.runIdempotentDelivery({
+        params: { threadId },
+        key: idempotencyKey,
+        operation: "thread.apply",
+        request: {
+          threadId,
+          body,
+          runIds,
+          deliveredThroughRunId: delivered,
+        },
+        work: async () =>
+          ControlThreadApplyResponse.parse(
+            await apply(threadId, {
+              mode: body.mode,
+              branch: body.branch,
+              message: body.message,
+              gates,
+            }),
+          ),
+      });
+      ctx.json(res, 200, response);
     } catch (error) {
       ctx.requestError(res, error);
     }

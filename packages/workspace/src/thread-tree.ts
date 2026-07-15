@@ -96,17 +96,20 @@ export async function advanceThreadWorktree(
   }
   const branch = `refs/heads/claudexor/thread-${threadId}`;
   const oldTip = await revParse(projectRoot, branch);
-  const update = await git(projectRoot, ["update-ref", branch, targetSha, oldTip]);
-  if (update.code !== 0) {
-    throw new WorkspaceError(`thread branch advanced concurrently: ${update.stderr.trim()}`);
-  }
-  const reset = await git(worktreePath, ["reset", "--hard", targetSha]);
-  if (reset.code !== 0) {
-    throw new WorkspaceError(`thread worktree realignment failed: ${reset.stderr.trim()}`);
+  // Materialize the target in the daemon-owned index/worktree without moving
+  // HEAD. Publishing the persistent branch first would make a failed reset or
+  // clean look authoritative even though the worktree still held older work.
+  const realign = await git(worktreePath, ["read-tree", "--reset", "-u", targetSha]);
+  if (realign.code !== 0) {
+    throw new WorkspaceError(`thread worktree realignment failed: ${realign.stderr.trim()}`);
   }
   const clean = await git(worktreePath, ["clean", "-fd"]);
   if (clean.code !== 0) {
     throw new WorkspaceError(`thread worktree cleanup failed: ${clean.stderr.trim()}`);
+  }
+  const update = await git(projectRoot, ["update-ref", branch, targetSha, oldTip]);
+  if (update.code !== 0) {
+    throw new WorkspaceError(`thread branch advanced concurrently: ${update.stderr.trim()}`);
   }
   const observed = await revParse(worktreePath, "HEAD");
   if (observed !== targetSha) {

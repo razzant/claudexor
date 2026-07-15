@@ -1,5 +1,5 @@
 import type { Project, RunEvent, Thread, ThreadTurn } from "@claudexor/schema";
-import { hashJson } from "@claudexor/util";
+import { hashJson, newId, nowIso } from "@claudexor/util";
 import { commandProjection, type CommandStore } from "./command-store.js";
 import { JournalManager, type JournalProjectionSlot } from "./journal-manager.js";
 import { interactionProjection, type InteractionStore } from "./interactions.js";
@@ -116,6 +116,47 @@ export class ProjectPartitions implements CommandAuthority {
 
   findById(id: string): CommandStore | undefined {
     return this.all().find((store) => store.get(id));
+  }
+
+  beginDelivery(
+    params: unknown,
+    input: { key: string; client: string; operation: string; request: unknown },
+  ) {
+    const store = this.forRequest(params);
+    const accepted = store.accept({
+      id: newId("delivery"),
+      params,
+      idempotencyKey: input.key,
+      clientId: input.client,
+      operation: `delivery.${input.operation}`,
+      idempotencyParams: input.request,
+    });
+    const record = accepted.reused
+      ? accepted.record
+      : store.update(accepted.record.id, { state: "running", startedAt: nowIso() });
+    return { ...record, reused: accepted.reused };
+  }
+
+  completeDelivery(id: string, result: unknown): void {
+    const store = this.findById(id);
+    if (!store) throw new Error(`delivery authority lost command ${id}`);
+    store.update(id, { state: "succeeded", result, finishedAt: nowIso() });
+  }
+
+  failDelivery(id: string, error: unknown): void {
+    const store = this.findById(id);
+    if (!store) throw new Error(`delivery authority lost command ${id}`);
+    const value = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+    store.update(id, {
+      state: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      errorCode: typeof value["code"] === "string" ? value["code"] : undefined,
+      result: {
+        status: typeof value["status"] === "number" ? value["status"] : 500,
+        code: typeof value["code"] === "string" ? value["code"] : null,
+      },
+      finishedAt: nowIso(),
+    });
   }
 
   registerProject(input: Parameters<ProjectStore["register"]>[0]): Project {

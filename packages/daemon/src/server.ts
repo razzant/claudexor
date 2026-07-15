@@ -16,7 +16,7 @@ import {
   commandStores,
   type CommandAuthority,
 } from "./command-authority.js";
-import { prunableCommandIds } from "./command-retention.js";
+import { productCommandRecords, prunableCommandIds } from "./command-retention.js";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -343,7 +343,7 @@ export class DaemonServer {
         return record ? publicJobRecord(record) : null;
       }
       case "claudexor.list":
-        return this.allRecords().map(publicJobRecord);
+        return productCommandRecords(this.allRecords()).map(publicJobRecord);
       case "claudexor.cancel": {
         const jid = String(params?.id);
         const rec = this.getRecord(jid);

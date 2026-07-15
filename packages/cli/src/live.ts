@@ -186,7 +186,8 @@ export function controlApiFetch(
       externalPath === "/v2/setup/jobs" ||
       externalPath === "/v2/threads" ||
       /^\/v2\/recovery\/partitions\/[^/]+\/quarantine$/.test(externalPath) ||
-      /^\/v2\/runs\/[^/]+\/(?:retry|decision)$/.test(externalPath) ||
+      /^\/v2\/runs\/[^/]+\/(?:retry|decision|apply)$/.test(externalPath) ||
+      /^\/v2\/threads\/[^/]+\/apply$/.test(externalPath) ||
       /^\/v2\/threads\/[^/]+\/turns(?:\/[^/]+\/retry)?$/.test(externalPath)) &&
     !headers.has("Idempotency-Key")
   ) {

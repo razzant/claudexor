@@ -498,10 +498,14 @@ function controlServices(
     purgeThread: async (id: string) => {
       const thread = threads.getThread(id);
       if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+      // Journal the explicit purge authority before deleting bytes. If owned
+      // cleanup fails, a repeated purge can safely finish it; validation can
+      // never fail after user state has already been removed.
+      const purged = threads.purgeThread(id);
       if (thread.repo && thread.workspace.mode === "isolated") {
         await purgeThreadWorktree(thread.repo.root, id);
       }
-      return threads.purgeThread(id);
+      return purged;
     },
     applyThread: async (id: string, opts: ThreadApplyOptions) => applyThreadDiff(threads, id, opts),
     setTurnEnqueueError: (
@@ -522,6 +526,12 @@ function controlServices(
       decision: Omit<OperatorDecisionRecord, "runId">,
       idempotency?: { key: string; client: string; request: unknown },
     ) => threads.recordOperatorDecision(params, { runId, ...decision }, idempotency),
+    beginDelivery: async (
+      params: unknown,
+      input: { key: string; client: string; operation: string; request: unknown },
+    ) => threads.beginDelivery(params, input),
+    completeDelivery: async (id: string, result: unknown) => threads.completeDelivery(id, result),
+    failDelivery: async (id: string, error: unknown) => threads.failDelivery(id, error),
     harnesses: async (input?: HarnessListInput) => {
       const statuses = await buildGateway({ includeFakes: input?.includeFakes ?? false }).statusAll(
         { cwd: NO_PROJECT_ROOT, fresh: input?.fresh ?? false },

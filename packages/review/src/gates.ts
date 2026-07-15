@@ -1,7 +1,8 @@
 import type { AccessProfile, GateResult, TestCommandGrant } from "@claudexor/schema";
 import { GateResult as GateResultSchema } from "@claudexor/schema";
+import { loadConfig } from "@claudexor/config";
 import { runCapture } from "@claudexor/core";
-import { hashJson, redactSecrets } from "@claudexor/util";
+import { canonicalProjectRoot, hashJson, redactSecrets, sha256 } from "@claudexor/util";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, relative, resolve } from "node:path";
@@ -16,8 +17,7 @@ export interface GateSpec {
   envAllowlist?: string[];
   trustRequired?: boolean;
   trustGrant?: TestCommandGrant | null;
-  projectDigest?: string;
-  configDigest?: string;
+  projectRoot?: string;
   accessProfile?: AccessProfile;
   required?: boolean;
 }
@@ -89,9 +89,14 @@ function verifyExternalGrant(spec: GateSpec, cwd: string, env: Record<string, st
     ...(spec.cwd === undefined ? {} : { cwd: spec.cwd }),
     envAllowlist: spec.envAllowlist ?? [],
   };
+  const projectRoot = spec.projectRoot;
+  if (!projectRoot || !spec.accessProfile) {
+    throw new Error("versioned project gate is missing its current project context");
+  }
+  const currentConfig = loadConfig(projectRoot);
   if (
-    grant.projectDigest !== spec.projectDigest ||
-    grant.configDigest !== spec.configDigest ||
+    grant.projectDigest !== sha256(canonicalProjectRoot(projectRoot)) ||
+    grant.configDigest !== hashJson(currentConfig.project) ||
     grant.commandDigest !== hashJson(invocation) ||
     grant.accessProfile !== spec.accessProfile
   ) {
@@ -104,7 +109,7 @@ function verifyExternalGrant(spec: GateSpec, cwd: string, env: Record<string, st
   ) {
     throw new Error("versioned project gate executable changed since it was granted");
   }
-  const scriptPath = resolveScript(spec.args, cwd);
+  const scriptPath = resolveScript(spec.program, spec.args, cwd);
   const scriptDigest = scriptPath ? fileDigest(scriptPath) : null;
   // commandDigest binds the exact relative/absolute argv. A fresh verifier
   // intentionally resolves that same relative script inside another worktree,
@@ -131,7 +136,11 @@ function resolveExecutable(program: string, cwd: string, pathValue?: string): st
   return realpathSync(found);
 }
 
-function resolveScript(args: string[], cwd: string): string | null {
+function resolveScript(program: string, args: string[], cwd: string): string | null {
+  if (["pnpm", "npm", "yarn", "bun"].includes(program.split(/[\\/]/).at(-1) ?? "")) {
+    const packageJson = resolve(cwd, "package.json");
+    if (existsSync(packageJson) && statSync(packageJson).isFile()) return realpathSync(packageJson);
+  }
   const candidate = args.find((arg) => !arg.startsWith("-"));
   if (!candidate) return null;
   const path = isAbsolute(candidate) ? candidate : resolve(cwd, candidate);
@@ -187,14 +196,15 @@ export function gatesPassed(gates: GateResult[]): boolean {
 export function buildTestCommandGrant(
   invocation: Pick<GateSpec, "program" | "args" | "cwd" | "envAllowlist">,
   projectRoot: string,
-  context: { projectDigest: string; configDigest: string; accessProfile: AccessProfile },
+  accessProfile: AccessProfile,
 ): TestCommandGrant {
   const cwd = commandCwd(projectRoot, invocation.cwd);
   const executablePath = resolveExecutable(invocation.program, cwd, process.env.PATH);
-  const scriptPath = resolveScript(invocation.args, cwd);
+  const scriptPath = resolveScript(invocation.program, invocation.args, cwd);
+  const currentConfig = loadConfig(projectRoot);
   return {
-    projectDigest: context.projectDigest,
-    configDigest: context.configDigest,
+    projectDigest: sha256(canonicalProjectRoot(projectRoot)),
+    configDigest: hashJson(currentConfig.project),
     commandDigest: hashJson({
       program: invocation.program,
       args: invocation.args,
@@ -205,7 +215,7 @@ export function buildTestCommandGrant(
     executableDigest: fileDigest(executablePath),
     scriptPath,
     scriptDigest: scriptPath ? fileDigest(scriptPath) : null,
-    accessProfile: context.accessProfile,
+    accessProfile,
   };
 }
 

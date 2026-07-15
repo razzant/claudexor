@@ -180,11 +180,7 @@ describe("gates", () => {
     const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-trust-"));
     writeFileSync(join(cwd, "gate.js"), "require('node:fs').writeFileSync('ran.txt', 'yes')\n");
     const invocation = { program: process.execPath, args: ["gate.js"], envAllowlist: [] };
-    const context = {
-      projectDigest: `sha256:${"1".repeat(64)}`,
-      configDigest: `sha256:${"2".repeat(64)}`,
-      accessProfile: "workspace_write" as const,
-    };
+    const context = { projectRoot: cwd, accessProfile: "workspace_write" as const };
     const ungranted = await runGate(
       { id: "ungranted", ...invocation, trustRequired: true, ...context },
       { cwd },
@@ -192,7 +188,7 @@ describe("gates", () => {
     expect(ungranted.status).toBe("failed");
     expect(existsSync(join(cwd, "ran.txt"))).toBe(false);
 
-    const grant = buildTestCommandGrant(invocation, cwd, context);
+    const grant = buildTestCommandGrant(invocation, cwd, context.accessProfile);
     const trusted = await runGate(
       {
         id: "trusted",
@@ -239,6 +235,24 @@ describe("gates", () => {
     expect(changedArg.status).toBe("failed");
     expect(existsSync(join(cwd, "ran.txt"))).toBe(false);
 
+    mkdirSync(join(cwd, ".claudexor"), { recursive: true });
+    writeFileSync(
+      join(cwd, ".claudexor", "config.yaml"),
+      "version: 1\ncontext:\n  include: [src/**]\n",
+    );
+    const changedConfig = await runGate(
+      {
+        id: "changed-config",
+        ...invocation,
+        trustRequired: true,
+        trustGrant: grant,
+        ...context,
+      },
+      { cwd },
+    );
+    expect(changedConfig.status).toBe("failed");
+    rmSync(join(cwd, ".claudexor"), { recursive: true });
+
     writeFileSync(join(cwd, "gate.js"), "process.exit(0)\n");
     const changedScript = await runGate(
       {
@@ -251,6 +265,30 @@ describe("gates", () => {
       { cwd },
     );
     expect(changedScript.status).toBe("failed");
+  });
+
+  it("revokes a package-manager command when package.json changes", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-package-script-"));
+    const invocation = { program: "pnpm", args: ["test"], envAllowlist: [] };
+    writeFileSync(
+      join(cwd, "package.json"),
+      JSON.stringify({ scripts: { test: 'node -e "process.exit(0)"' } }),
+    );
+    const grant = buildTestCommandGrant(invocation, cwd, "workspace_write");
+    const spec = {
+      id: "package-script",
+      ...invocation,
+      trustRequired: true,
+      trustGrant: grant,
+      projectRoot: cwd,
+      accessProfile: "workspace_write" as const,
+    };
+    expect((await runGate(spec, { cwd })).status).toBe("passed");
+    writeFileSync(
+      join(cwd, "package.json"),
+      JSON.stringify({ scripts: { test: 'node -e "process.exit(1)"' } }),
+    );
+    expect((await runGate(spec, { cwd })).status).toBe("failed");
   });
 });
 

@@ -383,6 +383,23 @@ describe("WorkspaceManager", () => {
     expect(readFileSync(join(restored.path, "delivered.txt"), "utf8")).toBe("delivered\n");
   });
 
+  it("does not publish the thread branch when worktree realignment fails", async () => {
+    const repo = await initRepo();
+    const wt = await ensureThreadWorktree(repo, "th-realign-fail");
+    const original = await revParse(repo, "claudexor/thread-th-realign-fail");
+    writeFileSync(join(repo, "new-file.txt"), "new target content\n");
+    const target = await snapshotTree(repo);
+    chmodSync(wt.path, 0o500);
+    try {
+      await expect(advanceThreadWorktree(repo, "th-realign-fail", wt.path, target)).rejects.toThrow(
+        /realignment failed/,
+      );
+      expect(await revParse(repo, "claudexor/thread-th-realign-fail")).toBe(original);
+    } finally {
+      chmodSync(wt.path, 0o700);
+    }
+  });
+
   it("reverts from an external content-addressed anchor after snapshot GC", async () => {
     const repo = await initRepo();
     const pre = await snapshotTree(repo);

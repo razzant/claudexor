@@ -1,5 +1,6 @@
 import {
   closeSync,
+  constants,
   existsSync,
   fsyncSync,
   openSync,
@@ -30,11 +31,13 @@ export async function createRevertAnchor(
   const patch = await diffTrees(repo, preTurnSha, postTurnSha);
   const id = sha256(patch);
   const target = objectPath(repo, id);
-  ensureDir(dirname(target));
+  const targetDir = dirname(target);
+  ensureDir(targetDir);
   if (existsSync(target)) {
     if (sha256(readFileSync(target, "utf8")) !== id) {
       throw new WorkspaceError(`revert anchor ${id} failed its content digest`);
     }
+    fsyncDirectory(targetDir);
     return id;
   }
   const temp = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
@@ -47,6 +50,7 @@ export async function createRevertAnchor(
   }
   try {
     renameSync(temp, target);
+    fsyncDirectory(targetDir);
   } catch (error) {
     try {
       unlinkSync(temp);
@@ -56,6 +60,15 @@ export async function createRevertAnchor(
     throw error;
   }
   return id;
+}
+
+function fsyncDirectory(path: string): void {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function readRevertAnchor(repo: string, id: string): string {

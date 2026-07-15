@@ -80,9 +80,8 @@ export function gateSpecsFromContract(contract: TaskContract): GateSpec[] {
     envAllowlist: command.envAllowlist,
     trustRequired: command.trust_required,
     trustGrant: command.trust_grant,
-    projectDigest: command.trust_grant?.projectDigest,
-    configDigest: command.trust_grant?.configDigest,
-    accessProfile: command.trust_grant?.accessProfile,
+    projectRoot: contract.repo.root,
+    accessProfile: contract.access.effective_profile,
     required: command.required,
   }));
 }

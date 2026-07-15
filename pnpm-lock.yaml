@@ -458,6 +458,9 @@ importers:
 
   packages/review:
     dependencies:
+      '@claudexor/config':
+        specifier: workspace:*
+        version: link:../config
       '@claudexor/context':
         specifier: workspace:*
         version: link:../context

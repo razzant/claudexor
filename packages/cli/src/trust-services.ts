@@ -12,7 +12,6 @@ import {
   updateTrustConfig,
 } from "@claudexor/config";
 import { buildTestCommandGrant } from "@claudexor/review";
-import { canonicalProjectRoot, hashJson, sha256 } from "@claudexor/util";
 
 export async function listTrustService(input?: {
   repoRoot?: string;
@@ -50,11 +49,11 @@ export async function updateTrustService(
   if (!isAbsolute(input.repoRoot)) throw badRoot(input.repoRoot);
   const current = loadConfig(input.repoRoot);
   const grant = input.grantTestCommand
-    ? buildTestCommandGrant(input.grantTestCommand, input.repoRoot, {
-        projectDigest: sha256(canonicalProjectRoot(input.repoRoot)),
-        configDigest: hashJson(current.project),
-        accessProfile: input.grantAccessProfile ?? current.trust.access_default,
-      })
+    ? buildTestCommandGrant(
+        input.grantTestCommand,
+        input.repoRoot,
+        input.grantAccessProfile ?? current.trust.access_default,
+      )
     : null;
   const res = updateTrustConfig(input.repoRoot, (cfg) => ({
     ...cfg,

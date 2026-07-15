@@ -164,7 +164,9 @@ const operations: ControlOperationDescriptor[] = [
     idempotency: "key_required",
   }),
   j("GET", "/v2/runs/:id/run-again", "read_only", null, "ControlRunAgainDraft"),
-  j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest", "ControlDeliveryResponse"),
+  j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest", "ControlDeliveryResponse", {
+    idempotency: "key_required",
+  }),
   j(
     "POST",
     "/v2/runs/:id/apply/check",
@@ -242,6 +244,7 @@ const operations: ControlOperationDescriptor[] = [
     "mutating",
     "ControlThreadApplyRequest",
     "ControlThreadApplyResponse",
+    { idempotency: "key_required" },
   ),
   j(
     "POST",
