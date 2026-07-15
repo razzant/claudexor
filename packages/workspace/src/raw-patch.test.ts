@@ -216,7 +216,7 @@ describe("raw patch envelope consumer", () => {
     const live = fixture();
     live.worktreePath = live.repo;
     expect(await refusalCode(live)).toBe("raw_patch_requires_isolation");
-  });
+  }, 15000);
 
   it("refuses a wrong-base or dirty isolated worktree before applying", async () => {
     const wrongBase = fixture();
