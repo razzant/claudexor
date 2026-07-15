@@ -159,6 +159,11 @@ const operations: ControlOperationDescriptor[] = [
     idempotency: "key_required",
   }),
   j("GET", "/v2/runs/:id", "read_only", null, "ControlRunDetail"),
+  j("POST", "/v2/runs/:id/retry", "mutating", null, "ControlRunRetryResponse", {
+    completion: "durable_handle",
+    idempotency: "key_required",
+  }),
+  j("GET", "/v2/runs/:id/run-again", "read_only", null, "ControlRunAgainDraft"),
   j("POST", "/v2/runs/:id/apply", "mutating", "ControlApplyRequest"),
   j("POST", "/v2/runs/:id/apply/check", "read_only", "ControlApplyCheckRequest"),
   j("GET", "/v2/runs/:id/artifacts", "read_only"),
@@ -173,7 +178,9 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/runs/:id/control", "mutating", "ControlRunControlRequest", null, {
     idempotency: "natural",
   }),
-  j("POST", "/v2/runs/:id/decision", "mutating", "ControlRunDecisionRequest"),
+  j("POST", "/v2/runs/:id/decision", "mutating", "ControlRunDecisionRequest", null, {
+    idempotency: "key_required",
+  }),
   j("GET", "/v2/runs/:id/events", "read_only", null, null, { responseKind: "stream" }),
   j(
     "POST",

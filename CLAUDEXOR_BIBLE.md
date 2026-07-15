@@ -120,8 +120,10 @@ process below. Never paper over the conflict.
   turns); the vendor CLI session is a re-hostable cache that later turns
   resume natively. Thread, turn, and session mutations are fsync-before-ACK
   journal records; create and Exact Retry bind `Idempotency-Key` to the
-  original request and never duplicate a turn. verify: thread journal restart
-  and idempotency tests; session-resume orchestrator tests.
+  original request and never duplicate a turn. Exact Retry is a fresh linked
+  command with fresh preflight; Run Again is an editable draft with explicit
+  differences. verify: thread journal restart and idempotency tests; run retry
+  and draft tests; session-resume orchestrator tests.
 - **INV-035** A v2 project has a stable daemon-owned id bound to one canonical
   local root. The v2 registry starts empty, never imports v1 state implicitly,
   and registration is request-idempotent; relink moves the same project id

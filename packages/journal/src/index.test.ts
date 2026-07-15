@@ -159,4 +159,25 @@ describe("DurableJournal", () => {
     expect(synced).toBe(true);
     journal.close();
   });
+
+  it("atomically compacts frames, invalidates the old epoch cursor, and remains appendable", () => {
+    const journal = openJournal();
+    for (let index = 0; index < 100; index += 1) {
+      journal.append("probe.saved", { index, repeated: "same-value".repeat(20) });
+    }
+    const cursor = journal.currentCursor();
+    const before = journal.physicalBytes();
+    const compacted = journal.compact();
+    expect(compacted).toMatchObject({ beforeBytes: before, records: 100 });
+    expect(compacted!.afterBytes).toBeLessThan(before);
+    expect(() => journal.sequenceAfter(cursor)).toThrow(/stale epoch/);
+    expect(journal.append("probe.saved", { index: 100 }).seq).toBe(101);
+    journal.close();
+
+    const reopened = openJournal();
+    expect(reopened.records()).toHaveLength(101);
+    expect(reopened.records()[0]?.payload).toMatchObject({ index: 0 });
+    expect(reopened.records()[100]?.payload).toMatchObject({ index: 100 });
+    reopened.close();
+  });
 });

@@ -364,6 +364,10 @@
           "$ref": "#/definitions/ControlRunStartRequest/properties/threadId",
           "description": "Run this turn follows up on."
         },
+        "retryOf": {
+          "$ref": "#/definitions/ControlRunStartRequest/properties/threadId",
+          "description": "Server-owned Exact Retry lineage; direct POST /runs rejects it."
+        },
         "planRunId": {
           "$ref": "#/definitions/ControlRunStartRequest/properties/threadId",
           "description": "Internal daemon handoff only; rejected (400) on POST /runs. When set, the turn implements an approved plan from that run."

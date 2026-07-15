@@ -1,4 +1,5 @@
 /** CLI command/flag SSOT; help, parsing, plugins, docs and parity are projections. */
+import { RETRY_COMMAND_SPECS } from "./retry-command-specs.js";
 
 export type CliFlagKind = "boolean" | "value";
 
@@ -311,6 +312,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     stability: "stable",
     recovery: true,
   },
+  ...RETRY_COMMAND_SPECS,
   {
     id: "apply",
     usageArgs: "<run_id> [--mode ...]",
@@ -468,9 +470,7 @@ export const REPL_COMMANDS: readonly {
   { name: "/quit", help: "exit" },
 ];
 
-// ---------------------------------------------------------------------------
 // Derived projections (the old hand-maintained sets).
-// ---------------------------------------------------------------------------
 
 /** Every flag the CLI accepts anywhere (the unknown-flag preflight set). */
 export const KNOWN_FLAGS: ReadonlySet<string> = new Set(CLI_FLAGS.map((f) => f.name));
@@ -521,9 +521,7 @@ export function recoveryVerbs(): readonly string[] {
   return CLI_COMMANDS.filter((c) => c.recovery).map((c) => c.id);
 }
 
-// ---------------------------------------------------------------------------
 // Rendered views.
-// ---------------------------------------------------------------------------
 
 const USAGE_COLUMN = 42;
 

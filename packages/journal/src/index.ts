@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import {
   closeSync,
   constants,
@@ -16,26 +17,19 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { ensureCanonicalPrivateDirectory } from "@claudexor/util";
-const MAGIC = Buffer.from([0x43, 0x4c, 0x58, 0x4a, 0x4e, 0x4c, 0x32, 0x00]);
-const VERSION = 1;
-const PREFIX_CORE_BYTES = MAGIC.length + 2 + 4 + 4;
-const PREFIX_CHECKSUM_BYTES = 8;
-const PREFIX_BYTES = PREFIX_CORE_BYTES + PREFIX_CHECKSUM_BYTES;
-const HASH_BYTES = 32;
-const MAX_HEADER_BYTES = 64 * 1024;
-const MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
-const ZERO_HASH = "0".repeat(64);
-export interface JournalRecord<T = unknown> {
-  partition: string;
-  epoch: string;
-  seq: number;
-  previousFrameHash: string;
-  frameHash: string;
-  time: string;
-  type: string;
-  payload: T;
-  byteOffset: number;
-}
+import {
+  COMPACTED_SNAPSHOT,
+  HASH_BYTES,
+  MAX_PAYLOAD_BYTES,
+  ZERO_HASH,
+  encodeFrame,
+  replayFrames,
+  type CompactedRecord,
+  type CompactedSnapshotPayload,
+  type FrameHeader,
+  type JournalRecord,
+} from "./frame-codec.js";
+export type { JournalRecord } from "./frame-codec.js";
 export type JournalRecoveryLocation =
   | { kind: "byte"; byteOffset: number }
   | { kind: "cursor"; epoch: string; seq: number };
@@ -54,21 +48,13 @@ export interface DurableJournalOptions {
   now?: () => Date;
   epochFactory?: () => string;
   appendAndSync?: (fd: number, bytes: Buffer) => void;
+  compactionThresholdBytes?: number;
 }
 
 export function journalPartitionDirectory(rootDir: string, partition: string): string {
   if (!partition.trim()) throw new Error("journal partition must not be empty");
   const slug = partition.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 48) || "partition";
   return join(rootDir, `${slug}-${sha256(Buffer.from(partition)).slice(0, 12)}`);
-}
-
-interface FrameHeader {
-  partition: string;
-  epoch: string;
-  seq: number;
-  previousFrameHash: string;
-  time: string;
-  type: string;
 }
 
 interface AppendIntent {
@@ -125,7 +111,7 @@ export class DurableJournal {
   readonly path: string;
   private readonly now: () => Date;
   private readonly appendFrame: (fd: number, bytes: Buffer) => void;
-  private readonly fd: number;
+  private fd: number;
   private readonly entries: JournalRecord[] = [];
   private epoch: string;
   private nextSeq = 1;
@@ -153,6 +139,12 @@ export class DurableJournal {
     }
     this.epoch = (options.epochFactory ?? randomUUID)();
     this.recover();
+    if (
+      this.recovery.status === "ready" &&
+      this.knownFileBytes >= (options.compactionThresholdBytes ?? 8 * 1024 * 1024)
+    ) {
+      this.compact();
+    }
   }
 
   state(): JournalRecoveryState {
@@ -194,6 +186,78 @@ export class DurableJournal {
   currentEpoch(): string {
     this.assertReadable();
     return this.epoch;
+  }
+
+  physicalBytes(): number {
+    this.assertOpen();
+    return this.knownFileBytes;
+  }
+
+  /** Atomically replace physical frames with one checksummed compressed frame. */
+  compact(): { beforeBytes: number; afterBytes: number; records: number } | null {
+    this.assertReadable();
+    if (this.entries.length === 0) return null;
+    const logical: CompactedRecord[] = this.entries.map((record) => ({
+      time: record.time,
+      type: record.type,
+      payload: cloneJson(record.payload),
+    }));
+    const compressed = gzipSync(Buffer.from(JSON.stringify(logical)));
+    const payload: CompactedSnapshotPayload = {
+      version: 1,
+      count: logical.length,
+      encoding: "gzip-base64",
+      data: compressed.toString("base64"),
+    };
+    const payloadBytes = encodeJson(payload);
+    if (payloadBytes.length > MAX_PAYLOAD_BYTES) {
+      throw new Error("journal compaction snapshot exceeds the maximum frame payload");
+    }
+    const epoch = randomUUID();
+    const header: FrameHeader = {
+      partition: this.options.partition,
+      epoch,
+      seq: 1,
+      previousFrameHash: ZERO_HASH,
+      time: this.now().toISOString(),
+      type: COMPACTED_SNAPSHOT,
+      logicalSpan: logical.length,
+    };
+    const frame = encodeFrame(header, payloadBytes);
+    if (frame.length >= this.knownFileBytes) return null;
+    const temp = `${this.path}.${randomUUID()}.compact`;
+    const tempFd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    try {
+      appendAndSync(tempFd, frame);
+    } finally {
+      closeSync(tempFd);
+    }
+    const beforeBytes = this.knownFileBytes;
+    renameSync(temp, this.path);
+    fsyncDirectory(dirname(this.path));
+    closeSync(this.fd);
+    this.fd = openSync(this.path, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW);
+    const frameHash = frame.subarray(frame.length - HASH_BYTES).toString("hex");
+    this.entries.splice(
+      0,
+      this.entries.length,
+      ...logical.map((record, index) => ({
+        partition: this.options.partition,
+        epoch,
+        seq: index + 1,
+        previousFrameHash: index === 0 ? ZERO_HASH : frameHash,
+        frameHash,
+        time: record.time,
+        type: record.type,
+        payload: cloneJson(record.payload),
+        byteOffset: 0,
+      })),
+    );
+    this.epoch = epoch;
+    this.nextSeq = logical.length + 1;
+    this.previousFrameHash = frameHash;
+    this.knownFileBytes = frame.length;
+    return { beforeBytes, afterBytes: frame.length, records: logical.length };
   }
 
   sequenceAfter(cursor: string | null | undefined): number {
@@ -288,7 +352,7 @@ export class DurableJournal {
     try {
       const intent = readIntent(this.intentPath());
       if (intent) {
-        const prefix = replay(bytes.subarray(0, intent.offset), this.options.partition);
+        const prefix = replayFrames(bytes.subarray(0, intent.offset), this.options.partition);
         if (
           intent.offset > bytes.length ||
           bytes.length > intent.offset + intent.length ||
@@ -310,7 +374,7 @@ export class DurableJournal {
       this.requireRecovery(0, `append intent is malformed: ${String(error)}`);
       return;
     }
-    const decoded = replay(bytes, this.options.partition);
+    const decoded = replayFrames(bytes, this.options.partition);
     if (decoded.incompleteOffset !== null) {
       this.requireRecovery(decoded.incompleteOffset, "unexplained suffix without append intent");
       return;
@@ -367,125 +431,6 @@ export class DurableJournal {
   private assertOpen(): void {
     if (this.closed) throw new Error("journal writer is closed");
   }
-}
-
-interface ReplayResult {
-  records: JournalRecord[];
-  incompleteOffset: number | null;
-  error: { offset: number; reason: string } | null;
-}
-
-function replay(bytes: Buffer, partition: string): ReplayResult {
-  const records: JournalRecord[] = [];
-  let offset = 0;
-  let epoch: string | null = null;
-  let expectedSeq = 1;
-  let previous = ZERO_HASH;
-  while (offset < bytes.length) {
-    const remaining = bytes.length - offset;
-    if (remaining < PREFIX_BYTES) return { records, incompleteOffset: offset, error: null };
-    if (!bytes.subarray(offset, offset + MAGIC.length).equals(MAGIC)) {
-      return corrupt(records, offset, "frame magic mismatch");
-    }
-    const prefix = bytes.subarray(offset, offset + PREFIX_BYTES);
-    const expectedPrefix = createHash("sha256")
-      .update(prefix.subarray(0, PREFIX_CORE_BYTES))
-      .digest()
-      .subarray(0, PREFIX_CHECKSUM_BYTES);
-    if (!prefix.subarray(PREFIX_CORE_BYTES).equals(expectedPrefix)) {
-      return corrupt(records, offset, "frame prefix checksum mismatch");
-    }
-    const version = bytes.readUInt16BE(offset + MAGIC.length);
-    const headerLength = bytes.readUInt32BE(offset + MAGIC.length + 2);
-    const payloadLength = bytes.readUInt32BE(offset + MAGIC.length + 6);
-    if (version !== VERSION)
-      return corrupt(records, offset, `unsupported frame version ${version}`);
-    if (
-      headerLength === 0 ||
-      headerLength > MAX_HEADER_BYTES ||
-      payloadLength > MAX_PAYLOAD_BYTES
-    ) {
-      return corrupt(records, offset, "invalid frame lengths");
-    }
-    const frameLength = PREFIX_BYTES + headerLength + payloadLength + HASH_BYTES;
-    if (frameLength > remaining) return { records, incompleteOffset: offset, error: null };
-    const headerStart = offset + PREFIX_BYTES;
-    const payloadStart = headerStart + headerLength;
-    const bodyEnd = payloadStart + payloadLength;
-    const body = bytes.subarray(offset, bodyEnd);
-    const frameHashBytes = createHash("sha256").update(body).digest();
-    if (!bytes.subarray(bodyEnd, bodyEnd + HASH_BYTES).equals(frameHashBytes)) {
-      return corrupt(records, offset, "frame checksum mismatch");
-    }
-    let header: FrameHeader;
-    let payload: unknown;
-    try {
-      header = JSON.parse(
-        bytes.subarray(headerStart, payloadStart).toString("utf8"),
-      ) as FrameHeader;
-      payload = JSON.parse(bytes.subarray(payloadStart, bodyEnd).toString("utf8"));
-    } catch {
-      return corrupt(records, offset, "frame JSON is malformed");
-    }
-    const semantic = validateHeader(header, partition, epoch, expectedSeq, previous);
-    if (semantic) return corrupt(records, offset, semantic);
-    const frameHash = frameHashBytes.toString("hex");
-    records.push({
-      partition,
-      epoch: header.epoch,
-      seq: header.seq,
-      previousFrameHash: header.previousFrameHash,
-      frameHash,
-      time: header.time,
-      type: header.type,
-      payload,
-      byteOffset: offset,
-    });
-    epoch ??= header.epoch;
-    expectedSeq += 1;
-    previous = frameHash;
-    offset += frameLength;
-  }
-  return { records, incompleteOffset: null, error: null };
-}
-
-function corrupt(records: JournalRecord[], offset: number, reason: string): ReplayResult {
-  return { records, incompleteOffset: null, error: { offset, reason } };
-}
-
-function validateHeader(
-  header: FrameHeader,
-  partition: string,
-  epoch: string | null,
-  seq: number,
-  previous: string,
-): string | null {
-  if (!header || typeof header !== "object") return "frame header is not an object";
-  if (header.partition !== partition) return "frame partition mismatch";
-  if (typeof header.epoch !== "string" || !header.epoch) return "frame epoch is invalid";
-  if (epoch !== null && header.epoch !== epoch) return "frame epoch changed";
-  if (header.seq !== seq) return "frame sequence mismatch";
-  if (header.previousFrameHash !== previous) return "frame hash-chain mismatch";
-  if (typeof header.time !== "string" || !header.time) return "frame timestamp is invalid";
-  if (typeof header.type !== "string" || !header.type) return "frame type is invalid";
-  return null;
-}
-
-function encodeFrame(header: FrameHeader, payload: Buffer): Buffer {
-  const headerBytes = encodeJson(header);
-  if (headerBytes.length > MAX_HEADER_BYTES) throw new Error("journal header is too large");
-  const prefix = Buffer.alloc(PREFIX_BYTES);
-  MAGIC.copy(prefix);
-  prefix.writeUInt16BE(VERSION, MAGIC.length);
-  prefix.writeUInt32BE(headerBytes.length, MAGIC.length + 2);
-  prefix.writeUInt32BE(payload.length, MAGIC.length + 6);
-  createHash("sha256")
-    .update(prefix.subarray(0, PREFIX_CORE_BYTES))
-    .digest()
-    .subarray(0, PREFIX_CHECKSUM_BYTES)
-    .copy(prefix, PREFIX_CORE_BYTES);
-  const body = Buffer.concat([prefix, headerBytes, payload]);
-  return Buffer.concat([body, createHash("sha256").update(body).digest()]);
 }
 
 function appendAndSync(fd: number, bytes: Buffer): void {

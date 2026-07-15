@@ -7,6 +7,7 @@ import { DaemonClient } from "./client.js";
 import { CommandStore } from "./command-store.js";
 import { InteractionRegistry, InteractionStore } from "./interactions.js";
 import { DaemonServer, type JobRecord } from "./server.js";
+import { acquireDaemonWriterLease } from "./writer-lease.js";
 
 function tempDir(name = "daemon"): string {
   return realpathSync(mkdtempSync(join(tmpdir(), `claudexor-${name}-`)));
@@ -35,6 +36,15 @@ async function terminal(client: DaemonClient, id: string): Promise<JobRecord> {
 }
 
 describe("DaemonServer", () => {
+  it("claims one writer lease before journal startup", () => {
+    const socketPath = join(tempDir("writer-lease"), "daemon.sock");
+    const lease = acquireDaemonWriterLease(socketPath);
+    expect(() => acquireDaemonWriterLease(socketPath)).toThrow(/another claudexor daemon owns/);
+    lease.release();
+    const successor = acquireDaemonWriterLease(socketPath);
+    successor.release();
+  });
+
   it("scopes identical command idempotency keys to their journal partition", () => {
     const dir = tempDir("partition-idempotency");
     const global = commandAuthority(dir);
@@ -122,6 +132,42 @@ describe("DaemonServer", () => {
       await server.stop();
       authority.journal.close();
     }
+  });
+
+  it("retains recent idempotency handles beyond the history cap and restores terminal results", async () => {
+    const dir = tempDir("retention");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      maxHistory: 1,
+      runner: async (params) => ({ status: "success", echoed: params }),
+    });
+    await server.start();
+    const client = new DaemonClient(socketPath, "token");
+    const first = await client.enqueue({ value: 1 }, { idempotencyKey: "first" });
+    const second = await client.enqueue({ value: 2 }, { idempotencyKey: "second" });
+    await terminal(client, first.id);
+    await terminal(client, second.id);
+    expect(authority.store.records()).toHaveLength(2);
+    await server.stop();
+    authority.journal.close();
+
+    const reopened = commandAuthority(dir);
+    expect(reopened.store.get(first.id)).toMatchObject({
+      state: "succeeded",
+      result: { status: "success", echoed: { value: 1 } },
+    });
+    expect(
+      reopened.store.find({
+        params: { value: 1 },
+        idempotencyKey: "first",
+        clientId: "daemon-client",
+      })?.id,
+    ).toBe(first.id);
+    reopened.journal.close();
   });
 
   it("recovers queued and running commands as interrupted_unknown without replay", async () => {

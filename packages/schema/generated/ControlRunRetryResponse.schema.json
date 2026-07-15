@@ -1,0 +1,54 @@
+{
+  "$ref": "#/definitions/ControlRunRetryResponse",
+  "definitions": {
+    "ControlRunRetryResponse": {
+      "type": "object",
+      "properties": {
+        "retryOf": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "jobId": {
+          "$ref": "#/definitions/ControlRunRetryResponse/properties/retryOf"
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlRunRetryResponse/properties/retryOf"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty identifier string.",
+          "default": null
+        },
+        "turnId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlRunRetryResponse/properties/retryOf"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Non-empty identifier string.",
+          "default": null
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "retryOf",
+        "jobId",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "Durable handle returned by Exact Retry for a fresh command attempt."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

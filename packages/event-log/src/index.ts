@@ -22,8 +22,9 @@ export class EventLog {
     /**
      * Optional in-process sink invoked after each event is persisted. Lets a
      * long-running service / GUI observe the live RunEvent stream without
-     * tailing the file. The file remains the canonical log; a throwing sink
-     * must never break a run, so sink errors are swallowed.
+     * tailing the file. A configured sink is part of the daemon's durable
+     * event authority; failure must fail the run instead of silently creating
+     * a gap in restart replay.
      */
     private readonly onEmit?: (event: RunEvent) => void,
     /**
@@ -58,13 +59,7 @@ export class EventLog {
       payload: redactEventValue(payload),
     });
     appendLine(this.path, JSON.stringify(event));
-    if (this.onEmit) {
-      try {
-        this.onEmit(event);
-      } catch {
-        /* sink errors must never break the canonical run */
-      }
-    }
+    this.onEmit?.(event);
     // Terminal events are emitted exactly once, last (output.ready invariant
     // tests pin this). Self-disposing here hands the seq space back to
     // file-tail appenders without requiring every orchestrator mode to

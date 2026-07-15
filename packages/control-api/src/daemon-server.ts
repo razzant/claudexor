@@ -28,10 +28,11 @@ import { projectSession, projectThread, projectTurn, turnRunCard } from "./threa
 import {
   handleThreadTurnCreate,
   handleThreadTurnRetry,
-  recordTurnEnqueueFailure,
   type ThreadTurnRouteCtx,
 } from "./thread-turn-routes.js";
 import * as runStart from "./run-start.js";
+import { handleRunRetryRoute } from "./run-retry-routes.js";
+import { rerunWithFeedback } from "./decision-rerun.js";
 export { normalizeRunStartRequest } from "./run-start.js";
 import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
@@ -60,7 +61,6 @@ import {
   isTerminalControlSetupJobState,
   ControlSetupJobListFilter,
   ControlSetupJobListResponse,
-  ControlRunStartRequest,
   ControlRunStartInfo,
   ControlQueuedRunInfo,
   ControlRunControlRequest,
@@ -658,6 +658,24 @@ export class DaemonControlApiServer {
       return this.json(res, 200, { runs: runs.map((r) => this.summarizeRunOrDiagnostic(r)) });
     }
 
+    if (
+      await handleRunRetryRoute(
+        {
+          daemon: this.opts.daemon,
+          services: this.opts.services,
+          findRun: (id) => this.findRun(id),
+          waitForRunStart: (id) => this.waitForRunStart(id),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
+
     const runDetailMatch = /^\/runs\/([^/]+)$/.exec(path);
     if (method === "GET" && runDetailMatch) {
       const rec = await this.findRun(decodeURIComponent(runDetailMatch[1] as string));
@@ -1112,7 +1130,9 @@ export class DaemonControlApiServer {
       const rec = await this.findRun(decodeURIComponent(decisionMatch[1] as string));
       if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
       let body: ControlRunDecisionRequest;
+      let decisionKey: string;
       try {
+        decisionKey = runStart.requiredIdempotencyKey(req);
         const raw = await this.readBody(req);
         assertNoInlineSecretValues(raw);
         body = ControlRunDecisionRequest.parse(raw);
@@ -1243,88 +1263,18 @@ export class DaemonControlApiServer {
         );
       }
 
-      // rerun_with_feedback: enqueue a follow-up run seeded with the reviewer feedback.
-      if (!body.feedback || !body.feedback.trim()) {
-        return this.json(res, 400, { error: "feedback is required for rerun_with_feedback" });
-      }
-      const p = paramsRecord(rec);
-      const originalPrompt = typeof p["prompt"] === "string" ? p["prompt"] : "";
-      // Turn/plan ids are SERVER-owned: strip the originals so the rebuild
-      // can't re-bind the rerun to the old turn (a fresh decision turn is
-      // created below when the run is thread-anchored).
-      const { turnId: _turnId, planRunId: _planRunId, ...pRest } = p;
-      let params: ControlRunStartRequest;
-      try {
-        params = runStart.normalizeRunStart(
-          ControlRunStartRequest.parse({
-            ...pRest,
-            prompt: `${originalPrompt}\n\n## Reviewer feedback to address (operator decision)\n${body.feedback}`,
-            parentRunId: rec.runId ?? rec.id,
-          }),
-        );
-      } catch (err) {
-        return this.json(res, 400, {
-          error: `cannot rebuild run params for rerun: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
-      // A thread-anchored rerun is a TURN of that conversation. Single-writer:
-      // create the decision turn (run_id=null) BEFORE enqueue and pass its id, so
-      // the daemon runner binds the rerun and head_run_id/needsHuman move off the
-      // old blocked head — no post-hoc turn that could fail to reconcile.
-      const threadId = typeof p["threadId"] === "string" ? p["threadId"] : null;
-      const createTurnSvc = this.opts.services?.createThreadTurn;
-      let rerunTurnId: string | undefined;
-      if (threadId && createTurnSvc) {
-        const turn = (await createTurnSvc(threadId, String(params.prompt ?? ""), {
-          kind: "decision",
-          parentRunId: rec.runId ?? rec.id,
-        })) as { id: string };
-        rerunTurnId = turn.id;
-      }
-      let rerunJob: { id: string };
-      try {
-        rerunJob = await this.opts.daemon.enqueue({
-          ...params,
-          ...(rerunTurnId ? { turnId: rerunTurnId } : {}),
-        });
-      } catch (err) {
-        // The decision turn was pre-created: a failed rerun ENQUEUE must be
-        // an inline refusal on that turn, not a silent orphan bubble.
-        // retryable=false mirrors the recorded refusal (no job to replay).
-        recordTurnEnqueueFailure(this.opts.services?.setTurnEnqueueError, rerunTurnId, err);
-        const status =
-          err && typeof err === "object" && "status" in err
-            ? Number((err as { status: number }).status)
-            : 500;
-        return this.json(res, status, {
-          error: err instanceof Error ? err.message : "rerun enqueue failed",
-          ...(rerunTurnId ? { turnId: rerunTurnId, retryable: false } : {}),
-        });
-      }
-      // POST-ENQUEUE: observation loss is not a refusal — record nothing.
-      let newRec: DaemonRunRecord;
-      try {
-        newRec = await this.waitForRunStart(rerunJob.id);
-      } catch (err) {
-        return this.json(res, 500, {
-          error: `rerun job ${rerunJob.id} was accepted but its start could not be observed: ${err instanceof Error ? err.message : String(err)}`,
-          jobId: rerunJob.id,
-          ...(rerunTurnId ? { turnId: rerunTurnId } : {}),
-        });
-      }
-      appendRunAuditEvent(rec, "control.applied", {
-        decision: body.action,
-        new_run_id: newRec.runId ?? newRec.id,
-      });
-      return this.json(
+      return rerunWithFeedback(
+        {
+          daemon: this.opts.daemon,
+          services: this.opts.services,
+          waitForRunStart: (id) => this.waitForRunStart(id),
+          appendAudit: (record, payload) => appendRunAuditEvent(record, "control.applied", payload),
+          json: (response, status, responseBody) => this.json(response, status, responseBody),
+        },
+        rec,
+        body,
+        decisionKey,
         res,
-        200,
-        ControlRunDecisionResponse.parse({
-          accepted: true,
-          status: "requeued",
-          newRunId: newRec.runId ?? newRec.id,
-          message: "follow-up run enqueued with reviewer feedback",
-        }),
       );
     }
 

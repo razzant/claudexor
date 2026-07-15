@@ -254,9 +254,7 @@ export class ProjectPartitions implements CommandAuthority {
 
   private healthy(): ProjectPartition[] {
     this.sync();
-    return [...this.partitions.values()].filter(
-      (entry) => entry.manager.inspect().status === "ready",
-    );
+    return [...this.partitions.values()].filter((entry) => entry.manager.ready());
   }
 
   private partitionForRoot(root: string): ProjectPartition {

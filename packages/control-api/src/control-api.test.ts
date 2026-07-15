@@ -3732,6 +3732,7 @@ describe("DaemonControlApiServer", () => {
     // The job sits QUEUED (never surfaces runId/runDir) — exactly the window where
     // an unbound turn would be observable headless.
     let enqueuedParams: Record<string, unknown> | undefined;
+    let turnIdempotency: unknown;
     let createTurnCalled = false;
     let enqueueOrder: "turn-first" | "enqueue-first" | undefined;
     const daemon: DaemonFacadeClient = {
@@ -3757,6 +3758,7 @@ describe("DaemonControlApiServer", () => {
       },
       createThreadTurn: async (id, prompt, opts) => {
         createTurnCalled = true;
+        turnIdempotency = opts.idempotency;
         const turn = {
           id: "tn-race",
           thread_id: id,
@@ -3790,6 +3792,10 @@ describe("DaemonControlApiServer", () => {
         expect(createTurnCalled).toBe(true);
         expect(enqueueOrder).toBe("turn-first");
         expect(enqueuedParams?.["turnId"]).toBe("tn-race");
+        expect(turnIdempotency).toMatchObject({
+          client: "control-api",
+          request: expect.objectContaining({ threadId: "th-race" }),
+        });
         expect(turns).toHaveLength(1);
       },
       5,
@@ -4295,7 +4301,7 @@ describe("DaemonControlApiServer", () => {
       // Operator accepts the risk (typed, audited, hash-bound).
       const decide = await apiFetch(`${base}/runs/run-d1/decision`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-risk-1" },
         body: JSON.stringify({
           action: "accept_risk",
           findingIds: ["f-1"],
@@ -4343,7 +4349,7 @@ describe("DaemonControlApiServer", () => {
       ).json()) as { lastSeq: number };
       const decide = await apiFetch(`${base}/runs/run-d1/decision`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-risk-2" },
         body: JSON.stringify({ action: "accept_risk", acceptedRisks: ["r"] }),
       });
       expect(decide.status).toBe(200);
@@ -4364,15 +4370,19 @@ describe("DaemonControlApiServer", () => {
     let enqueued: Record<string, unknown> | undefined;
     const wrapped: DaemonFacadeClient = {
       ...daemon,
-      async enqueue(params: unknown) {
+      async enqueue(params: unknown, options) {
         enqueued = params as Record<string, unknown>;
-        return daemon.enqueue(params);
+        expect(options).toMatchObject({
+          idempotencyKey: "decision-rerun-1",
+          operation: "run.decision.rerun",
+        });
+        return daemon.enqueue(params, options);
       },
     };
     await withDaemonServer(wrapped, async (base) => {
       const res = await apiFetch(`${base}/runs/run-d1/decision`, {
         method: "POST",
-        headers: { authorization: `Bearer ${token}` },
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-rerun-1" },
         body: JSON.stringify({
           action: "rerun_with_feedback",
           feedback: "Narrow the diff to src/auth only.",
@@ -4384,6 +4394,57 @@ describe("DaemonControlApiServer", () => {
       expect(body.newRunId).toBeTruthy();
       expect(String(enqueued?.["prompt"])).toContain("Narrow the diff to src/auth only.");
       expect(enqueued?.["parentRunId"]).toBe("run-d1");
+    });
+  });
+
+  it("Exact Retry creates a fresh idempotent command linked to the immutable source request", async () => {
+    const { daemon, record } = fakeDaemon();
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued = params as Record<string, unknown>;
+        expect(options).toMatchObject({
+          idempotencyKey: "exact-retry-1",
+          operation: "run.retry",
+          idempotencyRequest: { retryOf: "run-d1" },
+        });
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "exact-retry-1" },
+        body: "{}",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ retryOf: "run-d1", jobId: "job-d1" });
+      expect(enqueued).toMatchObject({
+        prompt: "hello",
+        parentRunId: "run-d1",
+        retryOf: "run-d1",
+      });
+      expect(record.params).not.toHaveProperty("retryOf");
+    });
+  });
+
+  it("Run Again returns an editable request and discloses omitted server-owned bindings", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = { ...record.params, turnId: "tn-old", planRunId: "run-plan" };
+    await withDaemonServer(daemon, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/run-again`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        request: Record<string, unknown>;
+        differences: Array<{ field: string }>;
+      };
+      expect(body.request).toMatchObject({ prompt: "hello", mode: "agent" });
+      expect(body.request).not.toHaveProperty("turnId");
+      expect(body.request).not.toHaveProperty("planRunId");
+      expect(body.differences.map((entry) => entry.field)).toEqual(["turnId", "planRunId"]);
     });
   });
 

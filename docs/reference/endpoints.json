@@ -212,6 +212,20 @@
       "response_schema": null
     },
     {
+      "method": "POST",
+      "path": "/v2/runs/:id/retry",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": null
+    },
+    {
+      "method": "GET",
+      "path": "/v2/runs/:id/run-again",
+      "mutating": false,
+      "request_schema": "ControlRunStartRequest",
+      "response_schema": null
+    },
+    {
       "method": "GET",
       "path": "/v2/secrets",
       "mutating": false,

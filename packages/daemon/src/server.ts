@@ -16,6 +16,7 @@ import {
   commandStores,
   type CommandAuthority,
 } from "./command-authority.js";
+import { prunableCommandIds } from "./command-retention.js";
 
 /** Context the daemon supplies to the runner so a job can be observed and cancelled. */
 export interface RunContext {
@@ -35,6 +36,9 @@ export interface DaemonOptions {
   commands: CommandAuthority;
   /** Max retained terminal jobs (older ones are pruned to bound memory/disk). Default 500. */
   maxHistory?: number;
+  /** Minimum age before a terminal command and its idempotency binding may be pruned. */
+  idempotencyRetentionMs?: number;
+  now?: () => Date;
   /** Called when a job reaches a terminal state (any path) with its runId —
    * used to drop pending interactions so a dead run never advertises
    * waiting_on_user. */
@@ -374,23 +378,17 @@ export class DaemonServer {
     return Object.assign(new Error(message), { code: "daemon_stopping", status: 503 });
   }
 
-  /** Bound memory/disk: prune the oldest terminal jobs beyond maxHistory.
-   * `blocked` runs are NEVER pruned — they are the needs-human inbox awaiting an
-   * operator decision; dropping one would silently lose a pending action. */
   private pruneHistory(): void {
-    const cap = this.opts.maxHistory ?? 500;
-    const terminal = this.allRecords().filter(
-      (r) => r.state !== "running" && r.state !== "queued" && r.state !== "blocked",
+    const removed = prunableCommandIds(
+      this.allRecords(),
+      this.opts.maxHistory ?? 500,
+      this.opts.idempotencyRetentionMs ?? 30 * 24 * 60 * 60 * 1_000,
+      (this.opts.now ?? (() => new Date()))().getTime(),
     );
-    if (terminal.length <= cap) return;
-    terminal.sort((a, b) => (a.createdAt < b.createdAt ? -1 : 1));
-    const removed = terminal.slice(0, terminal.length - cap).map((record) => record.id);
     for (const store of commandStores(this.opts.commands)) {
       store.prune(removed.filter((id) => store.get(id)));
     }
-    for (const id of removed) {
-      this.cancelled.delete(id);
-    }
+    for (const id of removed) this.cancelled.delete(id);
   }
 
   private acceptCommand(
@@ -490,7 +488,6 @@ export class DaemonServer {
           rec = this.updateRecord(rec, info);
         },
       });
-      rec.result = result;
       const state = jobStateFromResult(result, controller.signal.aborted);
       // Only failure-shaped terminals carry an error string. no_op / ungated /
       // review_not_run / blocked are HONEST terminals: fabricating an error here
@@ -503,11 +500,12 @@ export class DaemonServer {
       ) {
         rec = this.updateRecord(rec, {
           state,
+          result,
           error: resultSummary(result) ?? `run ended with status ${state}`,
           finishedAt: nowIso(),
         });
       } else {
-        rec = this.updateRecord(rec, { state, finishedAt: nowIso() });
+        rec = this.updateRecord(rec, { state, result, finishedAt: nowIso() });
       }
     } catch (err) {
       // Preserve a typed throw's machine code (e.g. the trust gate) so
@@ -589,7 +587,6 @@ function tokenMatches(candidate: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-/** True when something is actively accepting connections on the socket path. */
 /** Is a daemon already listening on this socket? Exported so the claudexord
  * entrypoint can refuse BEFORE running crash GC — a second daemon must never
  * reap the live daemon's children or sweep envelopes its jobs still own. */

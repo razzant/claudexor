@@ -18,6 +18,7 @@ import {
   threadProjection,
   daemonDir,
   defaultSocketPath,
+  acquireDaemonWriterLease,
   ensureToken,
   ensureDaemonRuntimeRoot,
   logPath,
@@ -67,11 +68,12 @@ const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 async function main(): Promise<void> {
   ensureDaemonRuntimeRoot();
+  const socketPath = defaultSocketPath();
+  const writerLease = acquireDaemonWriterLease(socketPath);
   let shutdownRuntime: DaemonRuntimeShutdown | null = null;
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
   try {
     const token = ensureToken();
-    const socketPath = defaultSocketPath();
     let requestRootShutdown: () => Promise<void> = async () => {
       throw new Error("daemon shutdown coordinator is not initialized");
     };
@@ -137,9 +139,7 @@ async function main(): Promise<void> {
               : undefined,
         });
         const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
-        // Resolve the execution tree: an ISOLATED thread runs in its persistent
-        // worktree (lazily created); in-place threads and ordinary runs use the
-        // project root. Config/artifacts stay anchored to repoRoot either way.
+        // Isolated threads use their persistent worktree; other runs use the project root.
         let executionRoot: string | undefined;
         let inPlace = p.execution.isolation === "live";
         if (threadId && repoRoot !== NO_PROJECT_ROOT) {
@@ -269,9 +269,7 @@ async function main(): Promise<void> {
               authReadiness,
             ),
           });
-    // Signals are armed before the first journal/setup/listener startup await.
-    // Daemon and control start/stop are serialized, so a signal at any startup
-    // boundary fences future listen() calls instead of allowing a late server.
+    // Arm signals before startup awaits; serialized lifecycle fences late listeners.
     lifecycle = armDaemonLifecycle({
       daemonDir: daemonDir(),
       logPath: logPath(),
@@ -343,6 +341,8 @@ async function main(): Promise<void> {
       }
     }
     throw error;
+  } finally {
+    writerLease.release();
   }
 }
 /** Deliver an isolated thread's accumulated worktree diff to its project. */
@@ -374,8 +374,7 @@ async function applyThreadDiff(
       headMoved: false,
       detail: "patch contains a secret-like token; refusing apply",
     };
-  // Best-effort: did the PROJECT advance past where this thread branched? (a
-  // warning; the protected preimage-bound apply still refuses stale content.)
+  // Warn if the project advanced; preimage-bound apply still refuses stale content.
   let headMoved = false;
   try {
     const head = (await git(projectRoot, ["rev-parse", "HEAD"])).stdout.trim();

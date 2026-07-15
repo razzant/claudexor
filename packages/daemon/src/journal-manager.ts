@@ -31,21 +31,12 @@ import {
   writeExclusiveFile,
 } from "./journal-recovery-files.js";
 import { journalEvents } from "./journal-events.js";
+import type { JournalProjectionDescriptor, JournalProjectionSlot } from "./journal-projection.js";
+export type { JournalProjectionDescriptor, JournalProjectionSlot } from "./journal-projection.js";
 
 export type JournalQuarantineRequest = ControlJournalQuarantineRequest & {
   idempotencyKey: string;
 };
-
-export interface JournalProjectionDescriptor<T> {
-  name: string;
-  create(journal: DurableJournal): T;
-  validate(projection: T): void;
-}
-
-export interface JournalProjectionSlot<T> {
-  current(): T;
-  generation(): number;
-}
 
 interface ProjectionRegistration<T = unknown> {
   descriptor: JournalProjectionDescriptor<T>;
@@ -130,6 +121,15 @@ export class JournalManager {
       if (state.status === "recovery_required") this.enterRecovery(state);
     }
     return this.inspection(fingerprintPartition(this.partitionDir));
+  }
+
+  ready(): boolean {
+    this.assertStarted();
+    if (this.journal && this.recovery.status === "ready") {
+      const state = this.journal.state();
+      if (state.status === "recovery_required") this.enterRecovery(state);
+    }
+    return this.recovery.status === "ready";
   }
 
   validate(): ControlJournalValidation {

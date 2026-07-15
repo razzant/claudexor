@@ -9,7 +9,7 @@ interface AcceptedCommand {
 }
 
 interface CommandUpdate {
-  record: Omit<JobRecord, "result">;
+  record: JobRecord;
 }
 
 const ACCEPTED = "command.accepted";
@@ -168,9 +168,8 @@ export function commandProjection() {
   };
 }
 
-function persisted(record: JobRecord): Omit<JobRecord, "result"> {
-  const { result: _result, ...value } = record;
-  return structuredClone(value);
+function persisted(record: JobRecord): JobRecord {
+  return structuredClone(record);
 }
 
 function validateRecord(record: JobRecord): void {

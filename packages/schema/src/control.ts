@@ -25,6 +25,7 @@ import { OrchestrateAutonomy } from "./orchestrate.js";
 import { AttachmentInput } from "./attachment.js";
 import { ProtectedPathApproval } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
+import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 
 export const RunExecution = z
   .object({
@@ -187,6 +188,9 @@ export const ControlRunStartRequest = z
       "Internal daemon handoff only; rejected (400) when supplied by a client on POST /runs — use POST /threads/:id/turns instead.",
     ),
     parentRunId: Id.optional().describe("Run this turn follows up on."),
+    retryOf: Id.optional().describe(
+      "Server-owned Exact Retry lineage; direct POST /runs rejects it.",
+    ),
     /** When set, this turn implements an approved plan: the engine prefixes the
      * parent plan run's final/plan.md into the prompt (mode is forced to agent). */
     planRunId: Id.optional().describe(
@@ -225,15 +229,11 @@ export const ControlRunStartRequest = z
   );
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
 
-export const ControlRunStartInfo = z
-  .object({
-    jobId: z.string().optional().describe("Daemon job id backing the run."),
-    runId: z.string().describe("Run id."),
-    taskId: z.string().optional().describe("Task id, when already allocated."),
-    runDir: z.string().describe("On-disk run artifact directory."),
-  })
-  .describe("Response for a successfully enqueued run.");
+const RunRetrySchemas = makeControlRunRetrySchemas(ControlRunStartRequest);
+export const ControlRunStartInfo = RunRetrySchemas.startInfo;
 export type ControlRunStartInfo = z.infer<typeof ControlRunStartInfo>;
+export const ControlRunRetryResponse = RunRetrySchemas.response;
+export const ControlRunAgainDraft = RunRetrySchemas.draft;
 
 export const ControlRunState = z
   .enum([

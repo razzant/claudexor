@@ -64,6 +64,7 @@ import {
 } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
+import { retryCommand, runAgainCommand } from "./retry-command.js";
 import { assertCliRunParamsHaveNoInlineSecrets } from "./run-secret-scan.js";
 import {
   connectDaemonIfRunning,
@@ -505,13 +506,9 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   try {
     const { client, addr } = await ensureDaemon();
     if (json) {
-      // Pure machine surface: enqueue, wait for the terminal outcome, print
-      // exactly one JSON object. No event printer, no TTY prompts.
+      // Pure machine surface: await the terminal outcome and print one JSON object.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
-      // Keep the documented bench-parser keys {runId,runDir,status}; ADD `mode`,
-      // `error` (only for real errors), and `summary` (a machine-readable reason
-      // for EVERY non-success terminal incl. `blocked`, which carries no error)
-      // so this path matches the in-process one (P2: one machine surface).
+      // Preserve bench keys while adding mode and honest non-success detail.
       const reason = daemonOutcomeSummary(out);
       // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
       // apply-gate verdict, so machine callers act on truth instead of
@@ -549,12 +546,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         `  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
       );
     } else if (exitCodeForState(status) === 0) {
-      // Honest post-run hint: "apply with" is printed ONLY when the apply
-      // gate verifiably accepts the patch. A null verdict means no patch
-      // artifact (answer/no-op runs) or an unreachable detail endpoint —
-      // either way, promising `claudexor apply` would be a lie, so print the
-      // inspect handle instead. Ineligible runs get the honest unblock hint
-      // (ungated/review_not_run used to get a doomed apply command here).
+      // Offer apply only after a positive gate; otherwise print inspect/unblock guidance.
       const eligibility = await fetchApplyEligibility(addr, started.runId);
       if (eligibility?.eligible) {
         print(`  apply with: claudexor apply ${started.runId}`);
@@ -1054,6 +1046,12 @@ async function main(): Promise<number> {
       }
       return followRun(runId, json);
     }
+
+    case "retry":
+      return retryCommand(args, json);
+
+    case "run-again":
+      return runAgainCommand(args, json);
 
     case "review":
       return reviewCommand(args, json);

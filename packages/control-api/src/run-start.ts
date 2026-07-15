@@ -201,6 +201,11 @@ export async function handleRunCreate(
         "planRunId is not accepted on POST /runs; use POST /threads/:id/turns (the turn pipeline implements the plan)",
     });
   }
+  if (params.retryOf) {
+    return ctx.json(res, 400, {
+      error: "retryOf is server-owned; use POST /runs/:id/retry for Exact Retry",
+    });
+  }
   let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
   if (directThreadId && ctx.createThreadTurn) {
     if (ctx.threadDetail) {
@@ -220,6 +225,11 @@ export async function handleRunCreate(
       parentRunId: params.parentRunId ?? null,
       planRunId: params.planRunId ?? null,
       attachments: params.attachments,
+      idempotency: {
+        key: idempotencyKey,
+        client: "control-api",
+        request: params,
+      },
     })) as { id: string };
     const { attachments: _attachments, ...rest } = params;
     enqueueParams = { ...rest, turnId: turn.id };

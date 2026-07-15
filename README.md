@@ -591,21 +591,26 @@ Claudexor owns these locations:
   remove the file tree.
 - `~/Library/LaunchAgents/com.claudexor.claudexord.plist` — only if you opted
   into the launchd autostart.
-- Per-project `.claudexor/` — run artifacts (`runs/`), and for isolated
-  threads `workspaces/` **may hold unapplied work** (persistent worktrees).
-  Apply or export anything you care about before deleting it.
+- `~/.claudexor/projects/<project-sha256>/` — daemon-owned project journals,
+  run artifacts, and isolated-thread worktrees. Isolated worktrees may hold
+  unapplied work; apply or export it before removing this external namespace.
+- A repository's `.claudexor/` directory is user-owned versioned configuration.
+  Claudexor does not create, rewrite, or remove it during uninstall.
 - Host-plugin artifacts in vendor config trees — remove them with
   `claudexor plugin uninstall all` (ownership-aware; it only deletes
   Claudexor-owned files).
 
 Uninstalling is: `claudexor plugin uninstall all`, `claudexor daemon stop`,
-then delete the paths above (and npm/global install or the app bundle).
+then remove the daemon-owned paths above (and npm/global install or the app
+bundle). Do not delete a repository's `.claudexor/` directory as part of the
+product uninstall.
 
 ## Upgrading from 0.x
 
-The config loader migrates forward automatically: retired keys are stripped
-with a disclosure at load, unknown keys fail loudly, and old wire mode ids
-hard-error with the canonical replacement named. After upgrading, run
+Version 2 is a clean breaking reset: it does not import or mutate v1 project,
+trust, secret, run, or thread state. Retired config keys and old wire mode ids
+hard-error instead of being migrated or aliased. Keep any v1 state you may
+need separately. After upgrading, run
 `claudexor plugin repair all` so generated host-plugin files match the new
 version, and restart the daemon (`claudexor daemon stop` — the next command
 starts the new build).

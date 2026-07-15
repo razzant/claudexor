@@ -5,6 +5,15 @@ import { describe, expect, it } from "vitest";
 import { EventLog, appendRunEvent, lastSeqInFile } from "./index.js";
 
 describe("EventLog seq stamping", () => {
+  it("fails the producer when the configured durable sink rejects an event", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const log = new EventLog(path, "run-1", "task-1", () => {
+      throw new Error("journal append failed");
+    });
+    expect(() => log.emit("run.created", {})).toThrow(/journal append failed/);
+    expect(lastSeqInFile(path)).toBe(1);
+  });
+
   it("stamps a strictly monotonic seq starting at 1", () => {
     const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const log = new EventLog(path, "run-1", "task-1");

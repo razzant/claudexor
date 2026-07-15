@@ -494,6 +494,8 @@ files.
 - `POST /v2/runs/:id/interactions/:id/answer`
 - `GET /v2/runs/:id/produced`
 - `GET /v2/runs/:id/produced/<path>`
+- `POST /v2/runs/:id/retry`
+- `GET /v2/runs/:id/run-again`
 - `GET /v2/secrets`
 - `POST /v2/secrets`
 - `DELETE /v2/secrets/:id`
@@ -558,6 +560,12 @@ Endpoint semantics beyond the inventory:
   returns the original durable handles, while key reuse with another request
   returns typed `409 idempotency_conflict`. Retry refuses turns that already
   have a run, have no recorded refusal, or still have an active job (409).
+- Run-level `POST /v2/runs/:id/retry` is Exact Retry for any settled run: it
+  creates a new command/turn, links `retryOf`, reuses the immutable original
+  request, and performs fresh normalization/preflight. `GET
+  /v2/runs/:id/run-again` instead returns an editable draft and explicitly
+  lists server-owned fields omitted from that draft. The CLI projects these as
+  `claudexor retry` and `claudexor run-again`.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
   enumerates per-repo trust files (`~/.claudexor/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
@@ -615,7 +623,8 @@ Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's
 EventLog at emit time (control-api audit appends continue the same sequence).
 In the daemon composition root, each emitted event is also appended to its
 owning global/project journal partition before live bus publication; scoped
-journal streams therefore replay run progress after restart.
+journal streams therefore replay run progress after restart. A journal sink
+failure fails the producer/run instead of being swallowed as a live-only gap.
 `GET /v2/runs/:id` returns the snapshot together with `lastSeq` — the highest seq
 already reflected in that snapshot — so a client subscribes to
 `GET /v2/runs/:id/events` with `Last-Event-ID: <lastSeq>` and applies deltas with
