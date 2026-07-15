@@ -252,15 +252,23 @@ describe("daemon recovery composition", () => {
       });
       expect(handles).toHaveLength(1);
 
-      const createLogin = await fetch(`${base}/v2/setup/jobs`, {
-        method: "POST",
-        headers: { ...jsonHeaders, "Idempotency-Key": "setup-after-recovery" },
-        body: JSON.stringify({
-          harness: "codex",
-          action: "login",
-          authRequest: "subscription",
-        }),
-      });
+      const previousCodexBin = process.env.CLAUDEXOR_CODEX_BIN;
+      process.env.CLAUDEXOR_CODEX_BIN = process.execPath;
+      let createLogin: Response;
+      try {
+        createLogin = await fetch(`${base}/v2/setup/jobs`, {
+          method: "POST",
+          headers: { ...jsonHeaders, "Idempotency-Key": "setup-after-recovery" },
+          body: JSON.stringify({
+            harness: "codex",
+            action: "login",
+            authRequest: "subscription",
+          }),
+        });
+      } finally {
+        if (previousCodexBin === undefined) delete process.env.CLAUDEXOR_CODEX_BIN;
+        else process.env.CLAUDEXOR_CODEX_BIN = previousCodexBin;
+      }
       expect(createLogin.status).toBe(200);
       const created = await responseJson(createLogin);
       expect(created).toMatchObject({
