@@ -33,6 +33,7 @@ for (const file of files) {
 }
 
 const release = readFileSync(".github/workflows/release.yml", "utf8");
+const prepareJob = jobBody(release, "prepare");
 const publishNpmJob = jobBody(release, "publish-npm");
 const publishReleaseJob = jobBody(release, "publish-release");
 for (const [label, pattern] of [
@@ -50,6 +51,11 @@ for (const [label, pattern] of [
   ],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
+}
+if (!/^\s+ref:\s*\$\{\{\s*github\.sha\s*\}\}\s*$/m.test(prepareJob)) {
+  errors.push(
+    "release.yml: prepare checkout must use the immutable workflow-dispatch github.sha (never hardcoded main)",
+  );
 }
 if (!/^\s{4}runs-on:\s*macos-26\s*$/m.test(publishNpmJob)) {
   errors.push("release.yml: npm publication must run on macos-26");
