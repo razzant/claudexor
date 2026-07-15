@@ -21,7 +21,7 @@ import {
   ControlUploadStatus,
   type ResourceAttachmentRef,
 } from "@claudexor/schema";
-import { hashJson, newId } from "@claudexor/util";
+import { hashJson, newId, sensitiveResourcePolicy } from "@claudexor/util";
 
 interface UploadRecord {
   request: ReturnType<typeof ControlUploadCreateRequest.parse>;
@@ -80,6 +80,9 @@ export class ResourceStore {
 
   create(raw: unknown, idempotencyKey: string): ReturnType<typeof ControlUploadStatus.parse> {
     const request = ControlUploadCreateRequest.parse(raw);
+    if (sensitiveResourcePolicy.classifyPath(request.name).sensitive) {
+      throw sensitiveResourceError();
+    }
     const requestDigest = hashJson(request);
     const prior = this.createIdempotency.get(idempotencyKey);
     if (prior) {
@@ -189,6 +192,12 @@ export class ResourceStore {
         "upload_not_uploaded",
       );
     const bytes = readFileSync(upload.partPath);
+    if (sensitiveResourcePolicy.containsSensitiveContent(bytes.toString("utf8"))) {
+      upload.status = { ...upload.status, state: "cancelled" };
+      rmSync(upload.partPath, { force: true });
+      this.persistUpload(upload);
+      throw sensitiveResourceError();
+    }
     const sha256 = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
     if (expectedSha256 !== undefined && expectedSha256 !== sha256)
       throw resourceError(
@@ -238,6 +247,12 @@ export class ResourceStore {
           "resource_unavailable",
         );
       const bytes = readFileSync(path);
+      if (
+        sensitiveResourcePolicy.classifyPath(resource.name).sensitive ||
+        sensitiveResourcePolicy.containsSensitiveContent(bytes.toString("utf8"))
+      ) {
+        throw sensitiveResourceError();
+      }
       const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
       if (bytes.length !== resource.sizeBytes || digest !== resource.sha256)
         throw resourceError(
@@ -324,5 +339,13 @@ function idempotencyConflict(): Error {
     "idempotency key was already used with a different request",
     409,
     "idempotency_conflict",
+  );
+}
+
+function sensitiveResourceError(): Error {
+  return resourceError(
+    "resource rejected by sensitive-resource policy",
+    422,
+    "sensitive_resource_rejected",
   );
 }

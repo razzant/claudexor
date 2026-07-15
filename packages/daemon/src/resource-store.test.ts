@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -114,5 +114,61 @@ describe("ResourceStore", () => {
     await expect(restarted.write(upload.uploadId, chunks("x"))).resolves.toMatchObject({
       state: "uploaded",
     });
+  });
+
+  it("rejects sensitive names and content before availability or vendor resolution", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-resource-sensitive-"));
+    const store = new ResourceStore(root);
+    expect(() =>
+      store.create(
+        { kind: "file", mime: "application/json", name: "credentials.json", sizeBytes: 2 },
+        "sensitive-name",
+      ),
+    ).toThrowError(expect.objectContaining({ code: "sensitive_resource_rejected" }));
+    expect(readdirSync(join(root, "uploads"))).toEqual([]);
+
+    const tokenLike = `ghp_${"z".repeat(24)}`;
+    const bytes = Buffer.from(JSON.stringify({ authorization: tokenLike }));
+    const upload = store.create(
+      { kind: "file", mime: "application/json", name: "input.json", sizeBytes: bytes.length },
+      "sensitive-content",
+    );
+    await store.write(upload.uploadId, chunks(bytes.toString("utf8")));
+    let finalizeError: unknown;
+    try {
+      store.finalize(upload.uploadId, undefined, "sensitive-finalize");
+    } catch (error) {
+      finalizeError = error;
+    }
+    expect(finalizeError).toMatchObject({ code: "sensitive_resource_rejected", status: 422 });
+    expect(String(finalizeError)).not.toContain(tokenLike);
+    expect(store.status(upload.uploadId).state).toBe("cancelled");
+    expect(existsSync(join(root, "uploads", `${upload.uploadId}.part`))).toBe(false);
+    expect(readdirSync(join(root, "blobs"))).toEqual([]);
+    expect(readdirSync(join(root, "resources"))).toEqual([]);
+
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    writeFileSync(join(root, "blobs", digest.slice("sha256:".length)), bytes);
+    writeFileSync(
+      join(root, "resources", "res-seeded.json"),
+      JSON.stringify({
+        resourceId: "res-seeded",
+        kind: "file",
+        mime: "application/json",
+        name: "input.json",
+        sha256: digest,
+        sizeBytes: bytes.length,
+        createdAt: "2026-07-15T00:00:00Z",
+        deduplicated: false,
+      }),
+    );
+    let resolveError: unknown;
+    try {
+      store.resolve([{ resourceId: "res-seeded" }]);
+    } catch (error) {
+      resolveError = error;
+    }
+    expect(resolveError).toMatchObject({ code: "sensitive_resource_rejected", status: 422 });
+    expect(String(resolveError)).not.toContain(tokenLike);
   });
 });

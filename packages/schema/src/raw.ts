@@ -66,6 +66,7 @@ export const RawPatchRefusalCode = z.enum([
   "raw_patch_outside_scope",
   "raw_patch_stale_preimage",
   "raw_patch_binary_unsupported",
+  "raw_patch_sensitive_content",
   "raw_patch_truncated",
   "raw_patch_apply_failed",
 ]);

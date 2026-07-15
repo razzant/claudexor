@@ -217,4 +217,27 @@ describe("raw patch envelope consumer", () => {
     live.worktreePath = live.repo;
     expect(await refusalCode(live)).toBe("raw_patch_requires_isolation");
   });
+
+  it("refuses a wrong-base or dirty isolated worktree before applying", async () => {
+    const wrongBase = fixture();
+    writeFileSync(join(wrongBase.worktreePath, "a.txt"), "other\n");
+    git(wrongBase.worktreePath, "add", "a.txt");
+    git(
+      wrongBase.worktreePath,
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-m",
+      "other base",
+    );
+    expect(await refusalCode(wrongBase)).toBe("raw_patch_base_mismatch");
+    expect(readFileSync(join(wrongBase.worktreePath, "a.txt"), "utf8")).toBe("other\n");
+
+    const dirty = fixture();
+    writeFileSync(join(dirty.worktreePath, "local.txt"), "uncommitted\n");
+    expect(await refusalCode(dirty)).toBe("raw_patch_requires_isolation");
+    expect(readFileSync(join(dirty.worktreePath, "a.txt"), "utf8")).toBe("old\n");
+  });
 });

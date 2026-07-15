@@ -291,7 +291,7 @@ describe("raw-api typed patch producer", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("advertises implement only with the git-patch transport and emits a typed envelope", async () => {
+  it("advertises patch transport and emits typed envelopes for implement and synthesize", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
     const patch = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
     vi.stubGlobal(
@@ -320,45 +320,47 @@ describe("raw-api typed patch producer", () => {
       implement: true,
       implementation_transport: "git_patch_envelope",
     });
-    const events = await collect(
-      adapter.run(
-        HarnessRunSpec.parse({
-          session_id: "raw1",
-          intent: "implement",
-          prompt: "edit",
-          cwd: process.cwd(),
-          raw_context_packet: {
-            schema_version: 1,
-            packet_hash: "sha256:packet",
-            base_commit_sha: "commit",
-            base_tree_sha: "tree",
-            readable_files: [
-              {
-                path: "a.txt",
-                mode: "100644",
-                blob_oid: "blob",
-                content_hash: "sha256:old",
-                content: "old\n",
-              },
-            ],
-            editable_paths: ["a.txt"],
-            file_manifest: [{ path: "a.txt", disposition: "full" }],
-            omissions: [],
-            evidence_refs: ["git:tree:a.txt:blob"],
-          },
-        }),
-      ),
-    );
-    expect(events.find((event) => event.type === "patch_produced")?.patch_envelope?.patch).toBe(
-      patch,
-    );
-    expect(events.find((event) => event.type === "patch_produced")?.patch_envelope).toMatchObject({
-      context_packet_hash: "sha256:packet",
-      base_tree_sha: "tree",
-      patch_hash: `sha256:${createHash("sha256").update(patch).digest("hex")}`,
-      touched_paths: [{ path: "a.txt", expected_blob_oid: "blob" }],
-    });
-    expect(events.some((event) => event.type === "message")).toBe(false);
+    for (const intent of ["implement", "synthesize"] as const) {
+      const events = await collect(
+        adapter.run(
+          HarnessRunSpec.parse({
+            session_id: `raw-${intent}`,
+            intent,
+            prompt: "edit",
+            cwd: process.cwd(),
+            raw_context_packet: {
+              schema_version: 1,
+              packet_hash: "sha256:packet",
+              base_commit_sha: "commit",
+              base_tree_sha: "tree",
+              readable_files: [
+                {
+                  path: "a.txt",
+                  mode: "100644",
+                  blob_oid: "blob",
+                  content_hash: "sha256:old",
+                  content: "old\n",
+                },
+              ],
+              editable_paths: ["a.txt"],
+              file_manifest: [{ path: "a.txt", disposition: "full" }],
+              omissions: [],
+              evidence_refs: ["git:tree:a.txt:blob"],
+            },
+          }),
+        ),
+      );
+      expect(events.find((event) => event.type === "patch_produced")?.patch_envelope).toMatchObject(
+        {
+          context_packet_hash: "sha256:packet",
+          base_tree_sha: "tree",
+          patch,
+          patch_hash: `sha256:${createHash("sha256").update(patch).digest("hex")}`,
+          touched_paths: [{ path: "a.txt", expected_blob_oid: "blob" }],
+        },
+      );
+      expect(events.some((event) => event.type === "message")).toBe(false);
+    }
   });
 
   it("refuses incomplete JSON with a typed truncation code", async () => {
@@ -394,5 +396,64 @@ describe("raw-api typed patch producer", () => {
     expect(events.find((event) => event.type === "error")?.refusal_code).toBe(
       "raw_patch_truncated",
     );
+  });
+
+  it("refuses token-like patch content before emitting a patch event", async () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const tokenLike = `ghp_${"x".repeat(24)}`;
+    const patch = [
+      "diff --git a/a.txt b/a.txt",
+      "--- a/a.txt",
+      "+++ b/a.txt",
+      "@@ -1 +1 @@",
+      "-old",
+      `+${tokenLike}`,
+      "",
+    ].join("\n");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ choices: [{ message: { content: JSON.stringify({ patch }) } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+    const events = await collect(
+      createRawApiAdapter().run(
+        HarnessRunSpec.parse({
+          session_id: "raw-sensitive",
+          intent: "implement",
+          prompt: "edit",
+          cwd: process.cwd(),
+          raw_context_packet: {
+            schema_version: 1,
+            packet_hash: "sha256:packet",
+            base_commit_sha: "commit",
+            base_tree_sha: "tree",
+            readable_files: [
+              {
+                path: "a.txt",
+                mode: "100644",
+                blob_oid: "blob",
+                content_hash: "sha256:old",
+                content: "old\n",
+              },
+            ],
+            editable_paths: ["a.txt"],
+            file_manifest: [{ path: "a.txt", disposition: "full" }],
+            omissions: [],
+            evidence_refs: ["git:tree:a.txt:blob"],
+          },
+        }),
+      ),
+    );
+    expect(events.some((event) => event.type === "patch_produced")).toBe(false);
+    expect(events.find((event) => event.type === "error")).toMatchObject({
+      refusal_code: "raw_patch_sensitive_content",
+      error: "raw-api implement patch refused by sensitive-content policy",
+    });
+    expect(JSON.stringify(events)).not.toContain(tokenLike);
   });
 });

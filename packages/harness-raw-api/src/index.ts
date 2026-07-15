@@ -20,7 +20,13 @@ import {
   readVerifiedAttachmentBytes,
 } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
-import { CLAUDEXOR_VERSION, nowIso, redactSecrets, sha256 } from "@claudexor/util";
+import {
+  CLAUDEXOR_VERSION,
+  nowIso,
+  redactSecrets,
+  sensitiveResourcePolicy,
+  sha256,
+} from "@claudexor/util";
 import { parseChatCompletion, parseModelsList } from "./parse.js";
 
 /** A stalled remote endpoint must not hang a run forever. */
@@ -45,11 +51,11 @@ const ALL_RAW_API_INTENTS = [...RAW_API_ENABLED_INTENTS, ...RAW_API_DISABLED_INT
  */
 function rawApiUserContent(spec: HarnessRunSpec): string | Array<Record<string, unknown>> {
   let prompt = spec.prompt;
-  if (spec.intent === "implement" && spec.raw_context_packet) {
+  if ((spec.intent === "implement" || spec.intent === "synthesize") && spec.raw_context_packet) {
     prompt = [
       prompt,
       "",
-      'Implement only by returning one JSON object: {"patch":"<complete textual git unified diff>"}.',
+      'Produce the requested change only by returning one JSON object: {"patch":"<complete textual git unified diff>"}.',
       "Touch existing files only from editable_paths. New paths are allowed only below creatable_roots.",
       "Do not calculate hashes or preimage evidence; the trusted local adapter derives them. Do not use Markdown fences or add prose. Binary patches are unsupported.",
       "RAW_CONTEXT_PACKET:",
@@ -376,13 +382,13 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         }
         const json = await res.json();
         const parsed = parseChatCompletion(json);
-        if (spec.intent === "implement") {
+        if (spec.intent === "implement" || spec.intent === "synthesize") {
           if (!spec.raw_context_packet) {
             yield {
               type: "error",
               session_id: spec.session_id,
               ts: nowIso(),
-              error: "raw-api implement requires a RawContextPacket",
+              error: `raw-api ${spec.intent} requires a RawContextPacket`,
               refusal_code: "raw_patch_missing_evidence",
             };
           } else {
@@ -394,18 +400,28 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
                 type: "error",
                 session_id: spec.session_id,
                 ts: nowIso(),
-                error:
-                  "raw-api implement response was not a complete Git patch proposal JSON object",
+                error: `raw-api ${spec.intent} response was not a complete Git patch proposal JSON object`,
                 refusal_code: "raw_patch_truncated",
               };
             }
             if (patchEnvelope) {
-              yield {
-                type: "patch_produced",
-                session_id: spec.session_id,
-                ts: nowIso(),
-                patch_envelope: patchEnvelope,
-              };
+              const content = sensitiveResourcePolicy.inspectContent(patchEnvelope.patch, "reject");
+              if (content.containsSensitiveContent) {
+                yield {
+                  type: "error",
+                  session_id: spec.session_id,
+                  ts: nowIso(),
+                  error: `raw-api ${spec.intent} patch refused by sensitive-content policy`,
+                  refusal_code: "raw_patch_sensitive_content",
+                };
+              } else {
+                yield {
+                  type: "patch_produced",
+                  session_id: spec.session_id,
+                  ts: nowIso(),
+                  patch_envelope: patchEnvelope,
+                };
+              }
             }
           }
         } else if (parsed.text) {

@@ -7,7 +7,7 @@ import type {
   RawPatchRefusalCode,
 } from "@claudexor/schema";
 import { sensitiveResourcePolicy, sha256 } from "@claudexor/util";
-import { applyPatchProtected, materializePatchTree, revParse } from "./git.js";
+import { applyPatchProtected, git, materializePatchTree, revParse } from "./git.js";
 
 export class RawPatchRefusalError extends Error {
   constructor(
@@ -48,6 +48,9 @@ export function captureRawPatchEnvelope(
   if (event.type !== "patch_produced") return previous;
   if (!enabled || !event.patch_envelope || previous)
     refuse("raw_patch_missing_evidence", "expected exactly one enabled patch envelope");
+  if (sensitiveResourcePolicy.containsSensitiveContent(event.patch_envelope.patch)) {
+    refuse("raw_patch_sensitive_content", "patch content matched sensitive-resource policy");
+  }
   return event.patch_envelope;
 }
 
@@ -75,6 +78,27 @@ export async function consumeRawPatchEnvelope(input: {
     envelope.base_tree_sha !== actualBaseTree
   ) {
     refuse("raw_patch_base_mismatch", "patch and context do not bind the candidate base tree");
+  }
+  let worktreeBaseTree: string;
+  try {
+    worktreeBaseTree = await revParse(worktreePath, "HEAD^{tree}");
+  } catch {
+    refuse("raw_patch_requires_isolation", "isolated worktree base could not be verified");
+  }
+  if (worktreeBaseTree !== actualBaseTree) {
+    refuse("raw_patch_base_mismatch", "isolated worktree HEAD does not match the bound base tree");
+  }
+  const worktreeStatus = await git(worktreePath, [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
+  ]);
+  if (worktreeStatus.code !== 0) {
+    refuse("raw_patch_requires_isolation", "isolated worktree status could not be verified");
+  }
+  if (worktreeStatus.stdout.length !== 0) {
+    refuse("raw_patch_requires_isolation", "isolated worktree must be clean before raw apply");
   }
   if (sha256(envelope.patch) !== envelope.patch_hash) {
     refuse("raw_patch_digest_mismatch", "patch_hash does not match the exact patch bytes");
