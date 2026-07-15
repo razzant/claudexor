@@ -589,9 +589,12 @@ function validateManualAccessibility(packetDir, evidence, expected, authority) {
   );
   const matrix = readFileSync(matrixPath);
   const matrixText = matrix.toString("utf8");
+  const matrixLines = matrixText.split(/\r?\n/);
+  const shaLine = `- Candidate: \`${expected.candidateSha}\``;
+  const treeLine = `- Candidate tree: \`${expected.candidateTree}\``;
   requireValue(
-    matrixText.includes(`- Candidate: \`${expected.candidateSha}\``) &&
-      matrixText.includes(`- Candidate tree: \`${expected.candidateTree}\``),
+    matrixLines.filter((line) => line === shaLine).length === 1 &&
+      matrixLines.filter((line) => line === treeLine).length === 1,
     "manual accessibility matrix is not bound to the candidate",
   );
   requireValue(

@@ -45,15 +45,18 @@ function writeAccessibilityFixture(
   candidateTree: string,
   privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
   authority: { keyId: string; algorithm: string; publicKeyPem: string },
+  signatureVariant: "valid" | "forged",
+  matrixCandidateSha: string = candidateSha,
 ): string[] {
   const root = join(packet, "manual-accessibility");
   const screenshots = join(root, "screenshots");
   mkdirSync(screenshots, { recursive: true });
-  const matrix = `# Manual accessibility\n\n- Candidate: \`${candidateSha}\`\n- Candidate tree: \`${candidateTree}\`\n- Result: PASS\n`;
+  const matrix = `# Manual accessibility\n\n- Candidate: \`${matrixCandidateSha}\`\n- Candidate tree: \`${candidateTree}\`\n- Result: PASS\n`;
   const matrixPath = join(root, "MANUAL_ACCESSIBILITY_MATRIX.md");
   const signaturePath = join(root, "MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig");
   writeFileSync(matrixPath, matrix);
   writeFileSync(signaturePath, sign(null, Buffer.from(matrix), privateKey));
+  if (signatureVariant === "forged") writeFileSync(signaturePath, "forged signature");
   for (const name of [
     "keyboard-full-navigation.log",
     "keyboard-shortcuts.log",
@@ -100,7 +103,7 @@ function writeAccessibilityFixture(
   ];
 }
 
-function makeFixture() {
+function makeFixture(accessibility: "valid" | "missing" | "forged" | "wrong_binding" = "valid") {
   const root = mkdtempSync(join(tmpdir(), "claudexor-signed-review-"));
   roots.push(root);
   const candidateSha = "a".repeat(40);
@@ -152,13 +155,18 @@ function makeFixture() {
     if (!structuredFiles.has(name)) writeFileSync(join(packet, name), `${name} sealed\n`);
   }
   writeFileSync(join(packet, "EVIDENCE.txt"), "sealed\n");
-  const accessibilityFiles = writeAccessibilityFixture(
-    packet,
-    candidateSha,
-    candidateTree,
-    privateKey,
-    authority,
-  );
+  const accessibilityFiles =
+    accessibility === "missing"
+      ? []
+      : writeAccessibilityFixture(
+          packet,
+          candidateSha,
+          candidateTree,
+          privateKey,
+          authority,
+          accessibility === "forged" ? "forged" : "valid",
+          accessibility === "wrong_binding" ? "e".repeat(40) : candidateSha,
+        );
   const packetFiles = [...FROZEN_REVIEW_EVIDENCE_FILES, "EVIDENCE.txt", ...accessibilityFiles];
   const packetManifestSha256 = writeManifest(packet, packetFiles);
 
@@ -345,18 +353,6 @@ function makeFixture() {
     authority,
     packet,
     packetFiles,
-    accessibilityFiles,
-    accessibilityMatrix: join(packet, "manual-accessibility", "MANUAL_ACCESSIBILITY_MATRIX.md"),
-    accessibilitySignature: join(
-      packet,
-      "manual-accessibility",
-      "MANUAL_ACCESSIBILITY_MATRIX.ed25519.sig",
-    ),
-    accessibilityReceipt: join(
-      packet,
-      "manual-accessibility",
-      "MANUAL_ACCESSIBILITY_SIGNATURE.json",
-    ),
     missingArtifact: join(tier1, "01-codex", "transcript.md"),
     nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
     nativeParseError: join(tier1, "01-codex", "parse-error.json"),
@@ -428,28 +424,23 @@ describe("signed release review attestation sealer", () => {
   });
 
   it("refuses a self-consistent packet that omits required manual accessibility evidence", () => {
-    const fixture = makeFixture();
-    rmSync(fixture.accessibilityMatrix);
-    fixture.input.packetManifestSha256 = writeManifest(
-      fixture.packet,
-      fixture.packetFiles.filter(
-        (name) => name !== "manual-accessibility/MANUAL_ACCESSIBILITY_MATRIX.md",
-      ),
-    );
+    const fixture = makeFixture("missing");
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
       /manual accessibility artifact is missing/,
     );
   });
 
   it("refuses a manifest-sealed forged manual accessibility signature", () => {
-    const fixture = makeFixture();
-    writeFileSync(fixture.accessibilitySignature, "forged signature");
-    const receipt = JSON.parse(readFileSync(fixture.accessibilityReceipt, "utf8"));
-    receipt.signatureSha256 = sha256File(fixture.accessibilitySignature);
-    writeJson(fixture.accessibilityReceipt, receipt);
-    fixture.input.packetManifestSha256 = writeManifest(fixture.packet, fixture.packetFiles);
+    const fixture = makeFixture("forged");
     expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
       /manual accessibility signature verification failed/,
+    );
+  });
+
+  it("refuses a validly signed accessibility matrix bound to another candidate", () => {
+    const fixture = makeFixture("wrong_binding");
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(
+      /manual accessibility matrix is not bound to the candidate/,
     );
   });
 
