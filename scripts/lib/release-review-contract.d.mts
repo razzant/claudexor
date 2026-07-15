@@ -8,6 +8,8 @@ export const REQUIRED_RELEASE_REVIEW_SLOTS: ReadonlyArray<{
 }>;
 export const TRIAD_ITEMS: readonly string[];
 export const SCOPE_ITEMS: readonly string[];
+export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION: 2;
+export const RELEASE_REVIEW_ATTESTATION_ALGORITHM: "Ed25519";
 
 export interface ChecklistFinding {
   item: string;
@@ -46,8 +48,19 @@ export function validateReleaseInput(
   mode: unknown,
   ref: string,
 ): { ok: boolean; reasons: string[] };
+export function canonicalJson(value: any): string;
+export function releaseAttestationSigningBytes(attestation: any): Buffer;
+export function verifyReleaseAttestationSignature(
+  attestation: any,
+  authority: any,
+): { ok: boolean; reasons: string[] };
+export function validateReleaseAttestationPayload(
+  payload: any,
+  expected: { candidateSha: string; candidateTree: string },
+): { ok: boolean; reasons: string[] };
 export function validateReleaseAttestation(
   attestation: any,
+  authority: any,
   expected: { candidateSha: string; candidateTree: string },
 ): { ok: boolean; reasons: string[] };
 export function pathIsWithin(root: string, target: string): boolean;

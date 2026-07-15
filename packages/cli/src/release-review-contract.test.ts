@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,12 +10,14 @@ import {
   REQUIRED_TRIAD_MODELS,
   TRIAD_ITEMS,
   buildTouchedFilePack,
+  canonicalJson,
   completionTermination,
   exactPanelMatch,
   parseChecklistJson,
   pathIsWithin,
   panelLockText,
   releaseReviewDecision,
+  releaseAttestationSigningBytes,
   validateFrozenReviewBinding,
   validateNewReviewOutput,
   validatePanelLock,
@@ -37,11 +40,28 @@ describe("release review fail-closed contract", () => {
     const candidateSha = "a".repeat(40);
     const candidateTree = "b".repeat(40);
     const packetManifestSha256 = "c".repeat(64);
-    return {
-      schemaVersion: 1,
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const authority = {
+      keyId: "fixture-key",
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    };
+    const digest = "d".repeat(64);
+    const payload: any = {
       candidateSha,
       candidateTree,
       packetManifestSha256,
+      evidenceManifestSha256: packetManifestSha256,
+      fullGate: {
+        receiptSha256: digest,
+        exitCode: 0,
+        candidateUnchanged: true,
+        beforeSha: candidateSha,
+        beforeTree: candidateTree,
+        afterSha: candidateSha,
+        afterTree: candidateTree,
+        stdoutSha256: digest,
+        stderrSha256: digest,
+      },
       panelLock: {
         triad: REQUIRED_TRIAD_MODELS.join(","),
         scope: REQUIRED_SCOPE_MODEL,
@@ -56,10 +76,32 @@ describe("release review fail-closed contract", () => {
         observedModel: model,
         effort,
         status: "responded",
+        result: "passed",
+        telemetrySha256: digest,
+        resultSha256: digest,
+        artifactManifestSha256: digest,
+        artifacts: [{ name: "result.json", sha256: digest }],
       })),
-      decision: "passed",
+      decision: { status: "passed", quorum: 2, responsiveTriad: 3, blockingFindings: 0 },
       openBlockers: [],
     };
+    const attestation = {
+      schemaVersion: 2,
+      keyId: authority.keyId,
+      algorithm: "Ed25519",
+      payload,
+      signature: "",
+    };
+    attestation.signature = sign(
+      null,
+      releaseAttestationSigningBytes(attestation),
+      privateKey,
+    ).toString("base64");
+    const resign = (next: typeof attestation) => ({
+      ...next,
+      signature: sign(null, releaseAttestationSigningBytes(next), privateKey).toString("base64"),
+    });
+    return { attestation, authority, privateKey, resign };
   };
 
   it("accepts only full-SHA candidate or stable-tag publish inputs", () => {
@@ -71,31 +113,93 @@ describe("release review fail-closed contract", () => {
   });
 
   it("binds publication to the exact reviewed SHA, tree, manifest, and six slots", () => {
-    const valid = releaseAttestation();
-    const expected = { candidateSha: valid.candidateSha, candidateTree: valid.candidateTree };
-    expect(validateReleaseAttestation(valid, expected)).toEqual({ ok: true, reasons: [] });
-    const quorum = {
-      ...valid,
-      slots: valid.slots.map((slot) =>
+    const fixture = releaseAttestation();
+    const { attestation: valid, authority, resign } = fixture;
+    const expected = {
+      candidateSha: valid.payload.candidateSha,
+      candidateTree: valid.payload.candidateTree,
+    };
+    expect(validateReleaseAttestation(valid, authority, expected)).toEqual({
+      ok: true,
+      reasons: [],
+    });
+    const quorumPayload = {
+      ...valid.payload,
+      slots: valid.payload.slots.map((slot: any) =>
         slot.slot === "triad-3" ? { ...slot, status: "timed_out", observedModel: null } : slot,
       ),
+      decision: { ...valid.payload.decision, responsiveTriad: 2 },
     };
-    expect(validateReleaseAttestation(quorum, expected).ok).toBe(true);
+    const quorum = resign({ ...valid, payload: quorumPayload });
+    expect(validateReleaseAttestation(quorum, authority, expected).ok).toBe(true);
     expect(
-      validateReleaseAttestation({ ...valid, candidateTree: "d".repeat(40) }, expected).ok,
+      validateReleaseAttestation(
+        { ...valid, payload: { ...valid.payload, candidateTree: "d".repeat(40) } },
+        authority,
+        expected,
+      ).ok,
     ).toBe(false);
     expect(
       validateReleaseAttestation(
         {
           ...valid,
-          slots: valid.slots.map((slot, i) => (i ? slot : { ...slot, observedModel: "wrong" })),
+          payload: {
+            ...valid.payload,
+            slots: valid.payload.slots.map((slot: any, i: number) =>
+              i ? slot : { ...slot, observedModel: "wrong" },
+            ),
+          },
         },
+        authority,
         expected,
       ).ok,
     ).toBe(false);
     expect(
-      validateReleaseAttestation({ ...valid, openBlockers: ["still open"] }, expected).ok,
+      validateReleaseAttestation(
+        { ...valid, payload: { ...valid.payload, openBlockers: ["still open"] } },
+        authority,
+        expected,
+      ).ok,
     ).toBe(false);
+  });
+
+  it("rejects forged schema 1, unsigned, unknown-key, and tampered attestations", () => {
+    const { attestation, authority } = releaseAttestation();
+    const expected = {
+      candidateSha: attestation.payload.candidateSha,
+      candidateTree: attestation.payload.candidateTree,
+    };
+    expect(
+      validateReleaseAttestation(
+        { schemaVersion: 1, ...attestation.payload, decision: "passed", openBlockers: [] },
+        authority,
+        expected,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateReleaseAttestation({ ...attestation, signature: "" }, authority, expected).ok,
+    ).toBe(false);
+    expect(
+      validateReleaseAttestation({ ...attestation, keyId: "attacker-key" }, authority, expected).ok,
+    ).toBe(false);
+    const tampered = validateReleaseAttestation(
+      {
+        ...attestation,
+        payload: {
+          ...attestation.payload,
+          slots: attestation.payload.slots.map((slot: any, index: number) =>
+            index ? slot : { ...slot, resultSha256: "e".repeat(64) },
+          ),
+        },
+      },
+      authority,
+      expected,
+    );
+    expect(tampered).toEqual({
+      ok: false,
+      reasons: ["review attestation signature is invalid"],
+    });
+    expect(canonicalJson({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
   });
 
   it("accepts only the exact ordered model panel", () => {

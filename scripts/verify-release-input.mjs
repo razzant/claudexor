@@ -6,6 +6,10 @@ import {
   validateReleaseInput,
 } from "./lib/release-review-contract.mjs";
 
+const reviewAuthority = JSON.parse(
+  readFileSync(new URL("../release/review-attestation-authority.json", import.meta.url), "utf8"),
+);
+
 const mode = process.env.RELEASE_MODE_INPUT ?? "";
 const ref = process.env.RELEASE_REF_INPUT ?? "";
 const input = validateReleaseInput(mode, ref);
@@ -45,7 +49,10 @@ if (mode === "publish") {
   try {
     attestationText = Buffer.from(encoded, "base64").toString("utf8");
     const attestation = JSON.parse(attestationText);
-    const reviewed = validateReleaseAttestation(attestation, { candidateSha, candidateTree });
+    const reviewed = validateReleaseAttestation(attestation, reviewAuthority, {
+      candidateSha,
+      candidateTree,
+    });
     if (!reviewed.ok) fail(reviewed.reasons);
   } catch (error) {
     fail([

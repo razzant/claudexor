@@ -5,6 +5,7 @@
  * them without network access.
  */
 
+import { createPublicKey, verify } from "node:crypto";
 import { relative, resolve, sep } from "node:path";
 
 export const REQUIRED_TRIAD_MODELS = Object.freeze([
@@ -83,6 +84,9 @@ export function validatePanelLock(lock, { candidateSha, candidateTree, packetMan
 const SHA1 = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const SEMVER_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION = 2;
+export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
 
 /** Validate the only two release workflow entry modes before any ref is fetched. */
 export function validateReleaseInput(mode, ref) {
@@ -97,45 +101,125 @@ export function validateReleaseInput(mode, ref) {
   return { ok: reasons.length === 0, reasons };
 }
 
-/**
- * Compact release authority. Publication accepts only the exact six-slot
- * reviewed panel bound to the checked-out SHA, tree and sealed packet digest.
- */
-export function validateReleaseAttestation(attestation, expected) {
+/** Stable JSON is the byte contract signed by the offline review authority. */
+export function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+    .join(",")}}`;
+}
+
+export function releaseAttestationSigningBytes(attestation) {
+  return Buffer.from(
+    canonicalJson({
+      schemaVersion: attestation.schemaVersion,
+      keyId: attestation.keyId,
+      algorithm: attestation.algorithm,
+      payload: attestation.payload,
+    }),
+    "utf8",
+  );
+}
+
+/** Verify authority before trusting any caller-supplied review semantics. */
+export function verifyReleaseAttestationSignature(attestation, authority) {
   const reasons = [];
   if (!attestation || typeof attestation !== "object" || Array.isArray(attestation)) {
     return { ok: false, reasons: ["review attestation is not an object"] };
   }
-  if (attestation.schemaVersion !== 1) reasons.push("review attestation schemaVersion must be 1");
-  if (
-    attestation.candidateSha !== expected.candidateSha ||
-    !SHA1.test(attestation.candidateSha ?? "")
-  ) {
+  if (attestation.schemaVersion !== RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION) {
+    reasons.push(
+      `review attestation schemaVersion must be ${RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION}`,
+    );
+  }
+  if (!authority || typeof authority !== "object") {
+    reasons.push("review attestation authority is missing");
+  } else if (attestation.keyId !== authority.keyId) {
+    reasons.push("review attestation keyId is unknown");
+  }
+  if (attestation.algorithm !== RELEASE_REVIEW_ATTESTATION_ALGORITHM) {
+    reasons.push(`review attestation algorithm must be ${RELEASE_REVIEW_ATTESTATION_ALGORITHM}`);
+  }
+  if (!attestation.payload || typeof attestation.payload !== "object") {
+    reasons.push("review attestation payload is missing");
+  }
+  if (typeof attestation.signature !== "string" || !BASE64.test(attestation.signature)) {
+    reasons.push("review attestation signature is missing or malformed");
+  }
+  if (reasons.length > 0) return { ok: false, reasons };
+  try {
+    const key = createPublicKey(authority.publicKeyPem);
+    if (key.asymmetricKeyType !== "ed25519") {
+      return { ok: false, reasons: ["review attestation authority is not an Ed25519 key"] };
+    }
+    const signature = Buffer.from(attestation.signature, "base64");
+    if (
+      signature.length !== 64 ||
+      !verify(null, releaseAttestationSigningBytes(attestation), key, signature)
+    ) {
+      return { ok: false, reasons: ["review attestation signature is invalid"] };
+    }
+  } catch {
+    return { ok: false, reasons: ["review attestation signature is invalid"] };
+  }
+  return { ok: true, reasons: [] };
+}
+
+/**
+ * Semantic validation runs only after signature verification. Publication
+ * accepts the exact reviewed SHA/tree, sealed evidence, full gate, and panel.
+ */
+export function validateReleaseAttestationPayload(payload, expected) {
+  const reasons = [];
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, reasons: ["review attestation payload is not an object"] };
+  }
+  if (payload.candidateSha !== expected.candidateSha || !SHA1.test(payload.candidateSha ?? "")) {
     reasons.push("review attestation candidate SHA mismatch");
   }
-  if (
-    attestation.candidateTree !== expected.candidateTree ||
-    !SHA1.test(attestation.candidateTree ?? "")
-  ) {
+  if (payload.candidateTree !== expected.candidateTree || !SHA1.test(payload.candidateTree ?? "")) {
     reasons.push("review attestation candidate tree mismatch");
   }
-  if (!SHA256.test(attestation.packetManifestSha256 ?? "")) {
+  if (!SHA256.test(payload.packetManifestSha256 ?? "")) {
     reasons.push("review attestation packet manifest SHA-256 is missing or malformed");
   }
-  const lock = validatePanelLock(attestation.panelLock ?? null, {
+  if (
+    payload.evidenceManifestSha256 !== payload.packetManifestSha256 ||
+    !SHA256.test(payload.evidenceManifestSha256 ?? "")
+  ) {
+    reasons.push("review attestation evidence manifest digest mismatch");
+  }
+  const gate = payload.fullGate;
+  if (
+    !gate ||
+    !SHA256.test(gate.receiptSha256 ?? "") ||
+    gate.exitCode !== 0 ||
+    gate.candidateUnchanged !== true ||
+    gate.beforeSha !== expected.candidateSha ||
+    gate.afterSha !== expected.candidateSha ||
+    gate.beforeTree !== expected.candidateTree ||
+    gate.afterTree !== expected.candidateTree ||
+    !SHA256.test(gate.stdoutSha256 ?? "") ||
+    !SHA256.test(gate.stderrSha256 ?? "")
+  ) {
+    reasons.push("review attestation full deterministic gate is invalid");
+  }
+  const lock = validatePanelLock(payload.panelLock ?? null, {
     candidateSha: expected.candidateSha,
     candidateTree: expected.candidateTree,
-    packetManifestSha256: attestation.packetManifestSha256 ?? "",
+    packetManifestSha256: payload.packetManifestSha256 ?? "",
   });
   reasons.push(...lock.reasons);
 
-  const slots = Array.isArray(attestation.slots) ? attestation.slots : [];
+  const slots = Array.isArray(payload.slots) ? payload.slots : [];
+  let responsiveTriad = 0;
   if (slots.length !== REQUIRED_RELEASE_REVIEW_SLOTS.length) {
     reasons.push(
       `review attestation must contain exactly ${REQUIRED_RELEASE_REVIEW_SLOTS.length} slots`,
     );
   } else {
-    let responsiveTriad = 0;
     for (const required of REQUIRED_RELEASE_REVIEW_SLOTS) {
       const actual = slots.find((slot) => slot?.slot === required.slot);
       if (!actual) {
@@ -143,9 +227,11 @@ export function validateReleaseAttestation(attestation, expected) {
         continue;
       }
       const triad = required.slot.startsWith("triad-");
-      if (actual.status === "responded" && triad) responsiveTriad += 1;
-      if (!triad && actual.status !== "responded") {
-        reasons.push(`review slot ${required.slot} did not respond`);
+      if (actual.status === "responded" && actual.result === "passed" && triad) {
+        responsiveTriad += 1;
+      }
+      if (!triad && (actual.status !== "responded" || actual.result !== "passed")) {
+        reasons.push(`review slot ${required.slot} did not pass`);
       }
       if (
         actual.route !== required.route ||
@@ -157,6 +243,19 @@ export function validateReleaseAttestation(attestation, expected) {
       }
       if (required.effort && actual.effort !== required.effort)
         reasons.push(`review slot ${required.slot} effort mismatch`);
+      if (
+        !SHA256.test(actual.telemetrySha256 ?? "") ||
+        !SHA256.test(actual.resultSha256 ?? "") ||
+        !SHA256.test(actual.artifactManifestSha256 ?? "") ||
+        !Array.isArray(actual.artifacts) ||
+        actual.artifacts.length === 0 ||
+        actual.artifacts.some(
+          (artifact) =>
+            !artifact || typeof artifact.name !== "string" || !SHA256.test(artifact.sha256 ?? ""),
+        )
+      ) {
+        reasons.push(`review slot ${required.slot} artifact digests are invalid`);
+      }
     }
     const unique = new Set(slots.map((slot) => slot?.slot));
     if (unique.size !== slots.length) reasons.push("review attestation contains duplicate slots");
@@ -164,11 +263,24 @@ export function validateReleaseAttestation(attestation, expected) {
       reasons.push(`review attestation triad quorum not met: ${responsiveTriad}/2`);
     }
   }
-  if (attestation.decision !== "passed") reasons.push("review attestation decision is not passed");
-  if (!Array.isArray(attestation.openBlockers) || attestation.openBlockers.length !== 0) {
+  if (
+    payload.decision?.status !== "passed" ||
+    payload.decision?.quorum !== 2 ||
+    payload.decision?.responsiveTriad !== responsiveTriad ||
+    payload.decision?.blockingFindings !== 0
+  ) {
+    reasons.push("review attestation decision is not passed");
+  }
+  if (!Array.isArray(payload.openBlockers) || payload.openBlockers.length !== 0) {
     reasons.push("review attestation has open blockers");
   }
   return { ok: reasons.length === 0, reasons };
+}
+
+export function validateReleaseAttestation(attestation, authority, expected) {
+  const signature = verifyReleaseAttestationSignature(attestation, authority);
+  if (!signature.ok) return signature;
+  return validateReleaseAttestationPayload(attestation.payload, expected);
 }
 
 export function pathIsWithin(root, target) {

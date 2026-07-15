@@ -81,6 +81,19 @@ const publishTarball = npmPublisher.indexOf('"publish"');
 if (verifyDarwinPackage < 0 || publishTarball < 0 || verifyDarwinPackage > publishTarball) {
   errors.push("publish-npm-release.mjs: Darwin package verification must precede npm publish");
 }
+
+const verifier = readFileSync("scripts/verify-release-input.mjs", "utf8");
+if (!/validateReleaseAttestation\(attestation, reviewAuthority/.test(verifier)) {
+  errors.push("verify-release-input.mjs: signed review authority is not checked before publish");
+}
+const authority = JSON.parse(readFileSync("release/review-attestation-authority.json", "utf8"));
+if (
+  authority.algorithm !== "Ed25519" ||
+  !/^claudexor-v2\.0\.0-review-ed25519-[0-9a-f]{16}$/.test(authority.keyId ?? "") ||
+  !String(authority.publicKeyPem ?? "").includes("BEGIN PUBLIC KEY")
+) {
+  errors.push("release/review-attestation-authority.json: invalid pinned Ed25519 authority");
+}
 for (const [label, pattern] of [
   ["--clobber is forbidden", /--clobber/],
   ["unsigned release fallback is forbidden", /continue-on-error:\s*true/],

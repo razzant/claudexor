@@ -207,8 +207,12 @@ pnpm test
   come from GitHub Actions `candidate` then `publish` mode; missing signing or
   notarization credentials block publication.
 - The publish input is an annotated stable tag on exact `origin/main` plus a
-  compact attestation bound to candidate SHA, tree, sealed packet manifest,
-  exact Tier 1 critics, exact triad, exact scope reviewer, and zero open blockers.
+  sealer-generated signed schema-v2 attestation bound to candidate SHA, tree,
+  sealed packet and full-gate receipt digests, per-slot terminal artifact
+  digests, exact Tier 1 critics, exact triad, exact scope reviewer, quorum, and
+  zero blockers. Verify the Ed25519 signature against the tracked pinned public
+  key before semantic validation; reject schema 1, unsigned, unknown-key, and
+  tampered inputs.
 - Verify app, ZIP-contained app, and DMG signatures, notarization tickets,
   staples, checksums, SBOM, and GitHub provenance. Do not upload stale local
   `apps/macos/dist` artifacts.

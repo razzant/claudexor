@@ -109,9 +109,11 @@ bundle is incomplete.
 The workflow has two explicit manual modes. `candidate` accepts only a full
 40-character commit SHA and builds/signs/notarizes/attests without publishing.
 After review, `publish` accepts only an annotated stable tag on the exact
-`origin/main` commit plus the base64 compact review attestation. The workflow
-recomputes the commit tree, verifies the sealed packet digest and exact six
-reviewer slots, then publishes only that authority. Missing signing/notary/npm
+`origin/main` commit plus the base64 signed schema-v2 review attestation. The
+workflow verifies its Ed25519 signature against the pinned public release-review
+key before reading any review claims, then recomputes the commit tree and
+validates the sealed packet, full-gate receipt, artifact digests, exact six
+reviewer slots, quorum, and pass result. Missing signing/notary/npm
 credentials fail; there is no unsigned or GitHub-only release fallback. npm
 packages publish in dependency order with `--provenance`; a retry skips only an
 already-published byte-identical package carrying provenance, while any version
@@ -120,15 +122,26 @@ uploads only absent assets, rejects differing same-name bytes, and becomes
 public as the final mutation. The workflow never edits a published release and
 does not claim platform-enforced immutability. Version bumps still go through
 changesets (`pnpm changeset` + `pnpm version-packages`, fixed lockstep group).
-The decoded review attestation is JSON with `schemaVersion: 1`, exact
-`candidateSha`, `candidateTree`, and `packetManifestSha256`; its `panelLock`
+The decoded review attestation is an envelope with `schemaVersion: 2`, pinned
+`keyId`, `algorithm: "Ed25519"`, signed `payload`, and base64 `signature`.
+Schema 1, unsigned, unknown-key, and tampered inputs are rejected. The payload
+contains exact `candidateSha`, `candidateTree`, `packetManifestSha256`,
+`evidenceManifestSha256`, and the digest and terminal result of the full
+deterministic gate. Its `panelLock`
 uses the same `triad`, `scope`, `candidate_sha`, `candidate_tree`, and
 `packet_manifest_sha256` fields as the pre-created panel lock. `slots` contains
 the two Tier 1 slots, all three exact triad slots, and exact scope slot with
-route, requested/observed model, applicable effort, and terminal status. `decision` must be
-`passed` and `openBlockers` must be empty. Both Tier 1 slots and scope must
-respond; the triad keeps the accepted quorum of two. Encode the compact JSON as
-base64 for the workflow input; never put raw transcripts or secrets in it.
+route, requested/observed model, applicable effort, terminal status, result,
+and per-slot telemetry/result/artifact digests. `decision.status` must be
+`passed`, `blockingFindings` must be zero, and `openBlockers` must be empty.
+Both Tier 1 slots and scope must pass; the triad keeps the accepted quorum of
+two. Do not hand-author this JSON. Run
+`scripts/seal-release-review-attestation.mjs` with the sealed packet, exact
+terminal reviewer directories, full-gate receipt, external 0600 private key,
+tracked `release/review-attestation-authority.json`, and an external output
+path. The sealer refuses incomplete or inconsistent artifacts and can emit the
+base64 transport with `--base64-out`. Never put raw transcripts, the private
+key, or secrets in the repository or workflow input.
 The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` with the
 exact source-pinned models. It requires the sealed packet, full candidate SHA
 and tree, the packet manifest's expected SHA-256 digest, and a panel-lock path

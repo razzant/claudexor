@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "keyId": "claudexor-v2.0.0-review-ed25519-56c6abde94e2ecf8",
+  "algorithm": "Ed25519",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAVsXiW528a/1IoNSFu7mzztddItuR4VO1Os5pFnWJ6r4=\n-----END PUBLIC KEY-----\n"
+}
