@@ -27,7 +27,7 @@ import {
 } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
-import { Orchestrator, RequestRequirementsResolver } from "@claudexor/orchestrator";
+import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
 import { SecretStore } from "@claudexor/secrets";
@@ -35,8 +35,6 @@ import { ensureThreadWorktree, purgeThreadWorktree } from "@claudexor/workspace"
 import { noProjectRepoRoot, readTextSafe, redactSecrets } from "@claudexor/util";
 import {
   type ResourceAttachmentRef,
-  type ControlRunStartRequest,
-  type Intent,
   type ControlSpecAnswersRequest,
   type ControlSpecQuestionsRequest,
   ControlSettingsUpdateRequest,
@@ -54,6 +52,7 @@ import { createSetupJobManager } from "./setup-jobs.js";
 import { SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { DaemonRuntimeShutdown } from "./daemon-runtime-shutdown.js";
+import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
 import {
   buildGroundingPrompt,
@@ -448,81 +447,7 @@ function controlServices(
     }
   };
   mkdirSync(NO_PROJECT_ROOT, { recursive: true, mode: 0o700 });
-  const requestRequirements = new RequestRequirementsResolver();
-  const preflightRunRequirements = async (request: ControlRunStartRequest): Promise<void> => {
-    if ((request.attachments?.length ?? 0) === 0 && request.browser !== true) return;
-    const cwd = request.scope.kind === "project" ? request.scope.root : NO_PROJECT_ROOT;
-    let harnessIds = request.harnesses ?? [];
-    if (harnessIds.length === 0) {
-      const intent: Intent =
-        (
-          {
-            agent: "implement",
-            ask: "explain",
-            plan: "plan",
-            audit: "audit",
-            orchestrate: "orchestrate",
-          } as const
-        )[request.mode ?? "agent"] ?? "implement";
-      const statuses = await buildGateway({ includeFakes: false }).statusAll({ cwd });
-      harnessIds = statuses
-        .filter((status) => status.status === "ok" && status.enabledIntents.includes(intent))
-        .map((status) => status.id);
-    }
-    if (harnessIds.length === 0) {
-      throw Object.assign(new Error("no eligible harness lane can satisfy this request"), {
-        status: 400,
-        code: "request_requirements_unavailable",
-      });
-    }
-    const registry = buildRegistry({ includeFakes: true });
-    const attachments = resources.resolve(request.attachments ?? []);
-    const manifests = await Promise.all(
-      harnessIds.map(async (harnessId) => {
-        const adapter = registry.get(harnessId);
-        if (!adapter) {
-          throw Object.assign(new Error(`unknown harness lane: ${harnessId}`), {
-            status: 400,
-            code: "harness_unavailable",
-          });
-        }
-        return { harnessId, manifest: await adapter.discover() };
-      }),
-    );
-    for (const { harnessId, manifest } of manifests) {
-      const refusal = requestRequirements.attachmentRefusal(
-        harnessId,
-        attachments,
-        manifest.capability_profile.attachment_inputs,
-      );
-      if (refusal) {
-        throw Object.assign(new Error(refusal), {
-          status: 400,
-          code: "attachment_pool_unsupported",
-        });
-      }
-    }
-    if (request.browser === true) {
-      const webPolicy = request.externalContextPolicy ?? request.web ?? "auto";
-      const access = request.access ?? "workspace_write";
-      const resolutions = manifests.map(({ harnessId, manifest }) =>
-        requestRequirements.resolveBrowser({
-          harnessId,
-          requested: true,
-          manifestCapable: manifest.capabilities.browser_tool,
-          webPolicy,
-          access,
-        }),
-      );
-      try {
-        requestRequirements.requireEffectiveBrowser(true, resolutions);
-      } catch (error) {
-        throw Object.assign(error instanceof Error ? error : new Error(String(error)), {
-          status: 400,
-        });
-      }
-    }
-  };
+  const preflightRunRequirements = createRunRequirementsPreflight(resources, NO_PROJECT_ROOT);
   return {
     preflightRunRequirements,
     createUpload: async (input: unknown, idempotencyKey: string) =>
