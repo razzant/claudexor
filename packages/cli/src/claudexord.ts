@@ -181,6 +181,20 @@ async function main(): Promise<void> {
             /* turn binding must never fail the run */
           }
         };
+        // maxSeconds: a hard wall-clock deadline for the WHOLE run (run-scoped,
+        // never per-attempt). Combine the daemon's per-run cancel signal with a
+        // deadline that aborts with a typed STRING reason so the terminal is
+        // `cancelled` + wall_clock_exceeded rather than a bare user cancel.
+        const maxSeconds =
+          typeof p.maxSeconds === "number" && p.maxSeconds > 0 ? p.maxSeconds : null;
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        let runSignal: AbortSignal | undefined = ctx.signal;
+        if (maxSeconds !== null) {
+          const deadline = new AbortController();
+          deadlineTimer = setTimeout(() => deadline.abort("wall_clock_exceeded"), maxSeconds * 1000);
+          deadlineTimer.unref?.();
+          runSignal = ctx.signal ? AbortSignal.any([ctx.signal, deadline.signal]) : deadline.signal;
+        }
         return orchestrator.run({
           onEvent: (event) => {
             if (event.type === "harness.event") {
@@ -243,8 +257,10 @@ async function main(): Promise<void> {
           specHash: typeof p.specHash === "string" ? p.specHash : undefined,
           specPath: typeof p.specPath === "string" ? p.specPath : undefined,
           inPlace,
-          signal: ctx.signal,
+          signal: runSignal,
           onRunStart,
+        }).finally(() => {
+          if (deadlineTimer) clearTimeout(deadlineTimer);
         });
       },
     });

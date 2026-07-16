@@ -367,6 +367,11 @@
           "type": "integer",
           "exclusiveMinimum": 0,
           "description": "Cap on orchestrate plan tool calls; only meaningful for mode=orchestrate."
+        },
+        "maxSeconds": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Hard wall-clock deadline for the whole run (seconds, from scheduler start); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept."
         }
       },
       "additionalProperties": false,

@@ -3854,6 +3854,37 @@ describe("Orchestrator", () => {
     expect(harnessEvents.length).toBe(0);
   });
 
+  it("a wall-clock deadline abort ends cancelled with reason + output.ready before terminal (W6)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
+    const orch = new Orchestrator({ registry });
+    const ac = new AbortController();
+    // The daemon aborts the deadline controller with a STRING reason; a plain
+    // user cancel aborts with a DOMException and stays a bare cancel.
+    ac.abort("wall_clock_exceeded");
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      signal: ac.signal,
+    });
+    expect(res.status).toBe("cancelled");
+    expect(res.cancelReason).toBe("wall_clock_exceeded");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { type: string; payload?: Record<string, unknown> });
+    const outIdx = events.map((e) => e.type).lastIndexOf("output.ready");
+    const failIdx = events.map((e) => e.type).lastIndexOf("run.failed");
+    expect(outIdx).toBeGreaterThan(-1);
+    // output.ready precedes the terminal (INV-116), even on the cancel path.
+    expect(failIdx).toBeGreaterThan(outIdx);
+    expect(events[failIdx].payload?.["reason"]).toBe("wall_clock_exceeded");
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

@@ -227,6 +227,18 @@ export const ControlRunStartRequest = z
       .positive()
       .optional()
       .describe("Cap on orchestrate plan tool calls; only meaningful for mode=orchestrate."),
+    /** Hard wall-clock deadline for the WHOLE run, measured from scheduler
+     * start. On expiry the run is cooperatively cancelled (hard-kill fallback)
+     * and ends `cancelled` with reason `wall_clock_exceeded`, preserving partial
+     * artifacts. Distinct from the inactivity watchdog (per-attempt silence). */
+    maxSeconds: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        "Hard wall-clock deadline for the whole run (seconds, from scheduler start); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept.",
+      ),
   })
   .strict()
   .describe(

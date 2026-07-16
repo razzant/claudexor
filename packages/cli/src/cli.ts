@@ -395,6 +395,7 @@ async function orchestrate(
   let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   let resolvedProtectedPathApprovals: ProtectedPathApproval[] | undefined;
   let resolvedInstructions: string | undefined;
+  let resolvedMaxSeconds: number | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedReviewerModels = reviewerModels(args);
@@ -415,6 +416,7 @@ async function orchestrate(
     attachmentRequest = attachmentInputs(args);
     resolvedProtectedPathApprovals = protectedPathApprovals(args);
     resolvedInstructions = resolveInstructions(args);
+    resolvedMaxSeconds = intFlag(args, "max-seconds");
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -464,6 +466,7 @@ async function orchestrate(
     autonomy,
     prompt: prompt || "audit this repository",
     instructions: resolvedInstructions,
+    maxSeconds: resolvedMaxSeconds,
     tests,
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
@@ -494,6 +497,7 @@ interface DaemonRunParams {
   autonomy: OrchestrateAutonomy | undefined;
   prompt: string;
   instructions: string | undefined;
+  maxSeconds: number | undefined;
   tests: TestCommandInvocation[] | undefined;
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
@@ -561,6 +565,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   const body: Record<string, unknown> = {
     prompt: p.prompt,
     ...(p.instructions ? { instructions: p.instructions } : {}),
+    ...(p.maxSeconds !== undefined ? { maxSeconds: p.maxSeconds } : {}),
     ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),

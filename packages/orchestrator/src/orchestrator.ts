@@ -378,6 +378,10 @@ export interface OrchestratorResult {
   /** Settled ledger spend for this run (USD); null when no ledger tracked it.
    * Consumer: the orchestrate executor's aggregate budget across sub-runs. */
   spendUsd?: number | null;
+  /** Why a `cancelled` run was cancelled, when it was NOT a plain user cancel —
+   * today only `wall_clock_exceeded` (the maxSeconds deadline). Absent for a
+   * user-initiated cancel. */
+  cancelReason?: string;
 }
 
 interface CandidateRun {
@@ -2476,6 +2480,7 @@ export class Orchestrator {
             null,
           ),
         ledger.spend(),
+        input.signal,
       );
     }
 
@@ -2662,6 +2667,7 @@ export class Orchestrator {
             null,
           ),
         ledger.spend(),
+        input.signal,
       );
     }
 
@@ -2795,6 +2801,7 @@ export class Orchestrator {
                     null,
                   ),
                 ledger.spend(),
+                input.signal,
               );
             }
           } finally {
@@ -2838,6 +2845,7 @@ export class Orchestrator {
             null,
           ),
         ledger.spend(),
+        input.signal,
       );
     }
 
@@ -4825,6 +4833,7 @@ export class Orchestrator {
             null,
           ),
         ledger.spend(),
+        input.signal,
       );
     }
 
@@ -4986,6 +4995,7 @@ export class Orchestrator {
             null,
           ),
         ledger.spend(),
+        input.signal,
       );
     }
 
@@ -5812,6 +5822,7 @@ export class Orchestrator {
             null,
           ),
         ledger.spend(),
+        input.signal,
       );
     }
 

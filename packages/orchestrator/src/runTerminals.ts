@@ -74,6 +74,10 @@ export function cancelledResult(
   candidates: { attemptId: string; harnessId: string; status: string }[],
   writeTelemetry?: () => void,
   spendUsd?: number | null,
+  /** The abort signal that ended the run: a STRING reason (e.g.
+   * `wall_clock_exceeded` from the maxSeconds deadline) is surfaced; a plain
+   * user cancel aborts with a DOMException reason and stays a bare cancel. */
+  cancelSignal?: AbortSignal,
 ): OrchestratorResult {
   if (writeTelemetry) {
     try {
@@ -82,7 +86,13 @@ export function cancelledResult(
       /* partial telemetry is best-effort on the cancel path */
     }
   }
-  log.emit("run.failed", { status: "cancelled" });
+  const cancelReason =
+    typeof cancelSignal?.reason === "string" && cancelSignal.reason ? cancelSignal.reason : undefined;
+  // output.ready MUST precede the terminal in every mode (INV-116): a cancelled
+  // run's partial telemetry/summary is diagnostic, so an observer that applied
+  // the terminal already knows the (partial) output is materialized.
+  log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+  log.emit("run.failed", { status: "cancelled", ...(cancelReason ? { reason: cancelReason } : {}) });
   return {
     runId,
     taskId,
@@ -90,9 +100,13 @@ export function cancelledResult(
     status: "cancelled",
     winner: null,
     runDir,
-    summary: "run cancelled",
+    summary:
+      cancelReason === "wall_clock_exceeded"
+        ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
+        : "run cancelled",
     candidates,
     ...(spendUsd !== undefined ? { spendUsd } : {}),
+    ...(cancelReason ? { cancelReason } : {}),
   };
 }
 
