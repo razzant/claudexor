@@ -144,6 +144,10 @@ export interface DaemonRunRecord {
   taskId?: string;
   runDir?: string;
   error?: string;
+  /** Machine-readable code of a typed pre-start refusal (e.g. the trust gate's
+   * trust_full_access_required) — surfaces key remedies on the CODE and the
+   * turn-turn route maps it to a client-actionable 4xx (W24). */
+  errorCode?: string;
   params?: unknown;
   createdAt?: string;
   startedAt?: string;

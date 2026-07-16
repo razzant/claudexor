@@ -11,6 +11,7 @@ import {
   ControlRunStartInfo,
   ControlRunStartRequest,
   ControlThreadTurnResponse,
+  TRUST_FULL_ACCESS_CODE,
 } from "@claudexor/schema";
 import type { ResourceAttachmentRef } from "@claudexor/schema";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
@@ -73,6 +74,20 @@ function errStatus(err: unknown, fallback = 400): number {
   return err && typeof err === "object" && "status" in err
     ? Number((err as { status: number }).status)
     : fallback;
+}
+
+/**
+ * HTTP status for a pre-start terminal turn (W24). A TYPED refusal code is
+ * client-actionable — the inline card keys its remedy on the code and must not
+ * be retried as a transient failure: the trust gate needs a one-time grant
+ * (403), any other typed refusal (e.g. browser_unavailable) is a 400. A
+ * terminal with NO typed code is an infra failure and stays 500 so genuine
+ * transient failures are still retried.
+ */
+function preStartRefusalStatus(errorCode: string | undefined): number {
+  if (!errorCode) return 500;
+  if (errorCode === TRUST_FULL_ACCESS_CODE) return 403;
+  return 400;
 }
 
 /** A typed throw's machine code (e.g. the trust gate's), null when absent or
@@ -148,12 +163,18 @@ async function respondToTurnJob(
     );
   }
   if (ctx.isTerminalState(rec.state)) {
-    return ctx.json(res, 500, {
+    // A pre-start terminal carrying a TYPED refusal code (e.g. the trust gate's
+    // trust_full_access_required) is a client-actionable 4xx, not a 500: the
+    // inline turn card keys its one-click remedy on the CODE, and a 500 would
+    // make embedders retry an unretryable refusal. Infra terminals (no typed
+    // code) stay 5xx so genuine transient failures are still retried.
+    return ctx.json(res, preStartRefusalStatus(rec.errorCode), {
       jobId: rec.id,
       turnId,
       threadId,
       state: rec.state,
       error: rec.error ?? `run ended pre-start: ${rec.state}`,
+      ...(rec.errorCode ? { code: rec.errorCode } : {}),
     });
   }
   return ctx.json(
@@ -265,7 +286,6 @@ export function handleThreadTurnCreate(
             : {}),
         }),
       );
-      await ctx.preflightRunRequirements?.(params);
       // Single-writer: create the turn (run_id=null) BEFORE enqueue and pass
       // its id in the params; the daemon runner binds the started run to it.
       // This means a queued-but-not-yet-started turn is still recorded, so we
@@ -283,6 +303,11 @@ export function handleThreadTurnCreate(
         },
       })) as { id: string };
       createdTurnId = turn.id;
+      // Preflight AFTER the turn exists (W19/INV-093): a browser/requirements
+      // refusal now has a turnId to land on, so the outer catch persists it via
+      // setTurnEnqueueError and the app renders an inline refusal card instead
+      // of raw JSON with no turn to attach to.
+      await ctx.preflightRunRequirements?.(params);
       // The turn stores resolved immutable resources; enqueue carries no duplicate refs.
       const { attachments: _att, ...enqueueParams } = params;
       // ENQUEUE phase: a throw here means NO job was recorded — persist the
@@ -321,16 +346,21 @@ export function handleThreadTurnCreate(
       // their own catches above. When the turn was already recorded, persist
       // the refusal so a thread reload still shows it (no silent orphan);
       // no job exists -> retryable:false.
+      const code = errCode(err);
       if (createdTurnId) {
         try {
-          ctx.setTurnEnqueueError?.(createdTurnId, message, errCode(err), false);
+          ctx.setTurnEnqueueError?.(createdTurnId, message, code, false);
         } catch {
           /* recording the refusal must not mask the original error */
         }
       }
+      // Pre-enqueue failures are client errors (validation, preflight refusal) —
+      // errStatus keeps its 400 default; the inline card keys its remedy on the
+      // typed `code` when one is present.
       return ctx.json(res, errStatus(err), {
         error: message,
         ...(createdTurnId ? { turnId: createdTurnId, retryable: false } : {}),
+        ...(code ? { code } : {}),
       });
     }
   });

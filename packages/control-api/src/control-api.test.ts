@@ -1245,6 +1245,149 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("threads: a typed pre-start refusal (trust) is a 4xx with the code, not a retryable 500 (W24)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-typed-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-typed",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "typed refusal thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    // The run fails PRE-start with a TYPED code (the daemon captures the trust
+    // gate's throw into JobRecord.errorCode).
+    const typedFail: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-typed", state: "queued" };
+      },
+      async status() {
+        return {
+          id: "job-typed",
+          state: "failed",
+          error: "access profile 'full' requires allow_full_access: true",
+          errorCode: "trust_full_access_required",
+        };
+      },
+      async list() {
+        return [{ id: "job-typed", state: "failed", errorCode: "trust_full_access_required" }];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt) => {
+        const turn = { id: "tn-typed", thread_id: id, run_id: null, prompt, created_at: now };
+        turns.push(turn);
+        return turn;
+      },
+    };
+    await withDaemonServer(
+      typedFail,
+      async (base) => {
+        const res = await apiFetch(`${base}/threads/th-typed/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "risky work" }),
+        });
+        // trust_full_access_required needs a one-time grant → 403, NOT 500.
+        expect(res.status).toBe(403);
+        const raw = await res.text();
+        // The typed code rides the response so the inline card keys its remedy
+        // on the CODE (never substring-matching the human message).
+        expect(raw).toContain("trust_full_access_required");
+        expect(raw).toContain("tn-typed");
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("threads: a preflight refusal lands on the created turn, not raw JSON with no turn (W19)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-preflight-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-pf",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "preflight thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const turns: Record<string, unknown>[] = [];
+    let enqueueCalled = false;
+    const noEnqueue: DaemonFacadeClient = {
+      async enqueue() {
+        enqueueCalled = true;
+        return { id: "job-x", state: "queued" };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+      createThreadTurn: async (id, prompt) => {
+        const turn: Record<string, unknown> = {
+          id: "tn-pf",
+          thread_id: id,
+          run_id: null,
+          prompt,
+          created_at: now,
+        };
+        turns.push(turn);
+        return turn;
+      },
+      setTurnEnqueueError: (turnId, message, code) => {
+        const turn = turns.find((t) => t["id"] === turnId);
+        if (turn) turn["enqueue_error"] = { message, code, failed_at: now };
+      },
+      // Preflight refuses (e.g. a browser lane requirement) AFTER the turn exists.
+      preflightRunRequirements: async () => {
+        throw Object.assign(new Error("browser was requested but no lane can receive it"), {
+          code: "browser_unavailable",
+        });
+      },
+    };
+    await withDaemonServer(
+      noEnqueue,
+      async (base) => {
+        const res = await apiFetch(`${base}/threads/th-pf/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "use the browser", browser: true }),
+        });
+        // A client-actionable refusal (4xx), the turn already exists, enqueue
+        // never happened, and the refusal is persisted ON the turn (inline card).
+        expect(res.status).toBeGreaterThanOrEqual(400);
+        expect(res.status).toBeLessThan(500);
+        const raw = await res.text();
+        expect(raw).toContain("tn-pf");
+        expect(enqueueCalled).toBe(false);
+        expect(turns[0]?.["enqueue_error"]).toMatchObject({ code: "browser_unavailable" });
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("threads: retry 409s IMMEDIATELY for a retryable:false refusal (no registry lookup for params that were never recorded)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-norep-"));
     const now = new Date().toISOString();
