@@ -298,7 +298,21 @@ export function assertNoInlineSecretValues(
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    // Inside a JSON Schema subtree, keys are field names — scan values only.
+    // A real secret embedded in a KEY (e.g. a schema property literally named
+    // with a live token) is rejected in EVERY mode — valuesOnly only relaxes
+    // the NAME heuristic (a legitimate `token`/`password` field name), never
+    // the actual-secret detector. Never echo the raw key in the message.
+    if (containsSecretLikeToken(key)) {
+      throw Object.assign(
+        new Error(
+          `secret-like value is not accepted in ${context} (${path}: object key); store values via secrets and pass refs/profiles`,
+        ),
+        { status: 400, code: "inline_secret_rejected" },
+      );
+    }
+    // Inside a JSON Schema subtree, keys are field names — skip the name-word
+    // heuristic (a `token`/`password`/`env` FIELD is legitimate), but string
+    // VALUES are still scanned below.
     if (
       !valuesOnly &&
       (key === "env" ||

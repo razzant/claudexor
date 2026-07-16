@@ -28,6 +28,17 @@ describe("assertNoInlineSecretValues schema-awareness (W8/G7)", () => {
     expect(() => assertNoInlineSecretValues({ api_key: "whatever" })).toThrow();
   });
 
+  it("rejects a real secret embedded in a schema property KEY (valuesOnly relaxes only the name heuristic)", () => {
+    expect(() =>
+      assertNoInlineSecretValues({
+        outputSchema: {
+          type: "object",
+          properties: { [`leaked-${secret}`]: { type: "string" } },
+        },
+      }),
+    ).toThrow(/secret-like/);
+  });
+
   it("ALLOWS legitimate schema property names token/password/env (field names, not secrets)", () => {
     expect(() =>
       assertNoInlineSecretValues({

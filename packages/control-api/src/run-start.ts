@@ -139,6 +139,29 @@ export async function handleRunCreate(
     idempotencyKey = requiredIdempotencyKey(req);
     const body = await ctx.readBody(req);
     assertNoInlineSecretValues(body);
+    // A thread turn ALWAYS runs in the THREAD's own project, never the caller's
+    // scope/cwd — otherwise `--thread <A>` launched from project B would execute
+    // (and mutate) B while recording the run as a turn of A. Resolve the thread
+    // scope onto the body BEFORE normalization/resource-validation/preflight/
+    // idempotency so EVERY downstream step sees the thread's project (not the
+    // caller's), and a missing thread is a 404 before any run work. The
+    // dedicated POST /threads/:id/turns route derives scope the same way.
+    const bodyThreadId =
+      body &&
+      typeof body === "object" &&
+      typeof (body as { threadId?: unknown }).threadId === "string"
+        ? (body as { threadId: string }).threadId
+        : null;
+    if (bodyThreadId && ctx.threadDetail) {
+      const detail = (await ctx.threadDetail(bodyThreadId)) as {
+        thread?: { repo?: { root?: string } | null } | null;
+      };
+      const threadRoot = detail?.thread?.repo?.root;
+      (body as Record<string, unknown>).scope =
+        typeof threadRoot === "string" && threadRoot.length > 0
+          ? { kind: "project", root: threadRoot, context: "auto" }
+          : { kind: "none" };
+    }
     params = normalizeRunStart(ControlRunStartRequest.parse(body));
     await ctx.validateResources?.(params.attachments ?? []);
     await ctx.preflightRunRequirements?.(params);
@@ -174,33 +197,9 @@ export async function handleRunCreate(
   const submit = async (): Promise<void> => {
     let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
     if (directThreadId && ctx.createThreadTurn) {
-      // A thread turn ALWAYS runs in the THREAD's own project, never the
-      // caller's scope/cwd — otherwise `--thread <A>` launched from project B's
-      // cwd would execute (and mutate) B while recording the run as a turn of A
-      // (cross-project execution + broken lineage). The dedicated
-      // POST /threads/:id/turns route already derives scope this way; the
-      // direct POST /runs + threadId path must match it exactly.
-      let threadScope: ControlRunStartRequest["scope"] = params.scope;
-      if (ctx.threadDetail) {
-        try {
-          const detail = (await ctx.threadDetail(directThreadId)) as {
-            thread?: { repo?: { root?: string } | null } | null;
-          };
-          const threadRoot = detail?.thread?.repo?.root;
-          threadScope =
-            typeof threadRoot === "string" && threadRoot.length > 0
-              ? { kind: "project", root: threadRoot, context: "auto" }
-              : { kind: "none" };
-        } catch (error) {
-          const status =
-            error && typeof error === "object" && "status" in error
-              ? Number((error as { status: number }).status)
-              : 404;
-          return ctx.json(res, status, {
-            error: error instanceof Error ? error.message : `no such thread: ${directThreadId}`,
-          });
-        }
-      }
+      // params.scope was already anchored to the thread's project upfront (and
+      // the thread's existence proven), so normalization/preflight/idempotency
+      // all ran against the correct scope. Here we only create the turn.
       const turn = (await ctx.createThreadTurn(directThreadId, params.prompt, {
         parentRunId: params.parentRunId ?? null,
         planRunId: params.planRunId ?? null,
@@ -212,7 +211,7 @@ export async function handleRunCreate(
         },
       })) as { id: string };
       const { attachments: _attachments, ...rest } = params;
-      enqueueParams = { ...rest, turnId: turn.id, scope: threadScope };
+      enqueueParams = { ...rest, turnId: turn.id };
     }
     const preCreatedTurnId = enqueueParams.turnId;
     let job: { id: string };
