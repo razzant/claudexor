@@ -10,7 +10,6 @@ struct AppModelRefreshTests {
         let model = AppModel(client: GatewayClient(
             baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test"
         ), requestNotificationAuthorization: false)
-        model.demoMode = false
         model.health = .connected
         model.endpoint = "127.0.0.1:1234"
         model.route = .task("stale-run")
@@ -26,7 +25,7 @@ struct AppModelRefreshTests {
         model.threads = [thread]
         model.selectedThreadId = thread.id
         model.selectedThreadDetail = ThreadDetailResponse(thread: thread, sessions: [], turns: [])
-        model.liveHarnesses = DemoData.harnesses
+        model.liveHarnesses = [HarnessInfo(family: .claude, health: .ok, version: "1.0.0", auth: "native", intents: ["implement"])]
         model.settingsSnapshot = try JSONDecoder().decode(SettingsSnapshot.self, from: Data(#"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":900000}"#.utf8))
         model.quotaResponse = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"{"snapshots":[],"refreshed_at":"2026-07-15T00:00:00Z"}"#.utf8))
         model.storedSecrets = [try JSONDecoder().decode(SecretInfo.self, from: Data(#"{"name":"stale","backend":"file","present":true}"#.utf8))]

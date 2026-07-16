@@ -45,10 +45,6 @@ cd ../ClaudexorApp && swift run ClaudexorApp
 
 Dev/QA env switches:
 
-- `CLAUDEXOR_DEBUG_ROUTE`: open a run's inspector for deterministic screenshots.
-  The code handles `task` and `convergence` (each opens a sample run's detail);
-  setting any value also turns on sample data. The older per-screen routes were
-  removed in the chat-first collapse (see CHANGELOG).
 - `CLAUDEXOR_DEBUG_SIZE="WxH"`: deterministic window size.
 - `CLAUDEXOR_DEBUG_APPEARANCE=light|dark`: deterministic appearance.
 
@@ -132,8 +128,8 @@ the server-owned durable interview lifecycle (`POST /spec/sessions` → answers 
 freeze) and then sends a normal agent turn carrying the returned
 `specPath`.
 
-Sample data is off by default behind Settings. Surfaces the engine does not
-fully expose yet use honest empty states instead of pretending to be live.
+There is no sample/demo data mode: surfaces the engine does not fully expose
+yet use honest empty states instead of pretending to be live.
 
 The Per-Harness Defaults editor saves enable/disable, model override, effort,
 web policy, per-harness budget cap (`maxUsd` per run), tool allow/deny lists,

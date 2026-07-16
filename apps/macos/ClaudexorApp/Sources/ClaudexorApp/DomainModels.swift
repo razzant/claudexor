@@ -2,9 +2,9 @@ import ClaudexorKit
 import Foundation
 import SwiftUI
 
-/// UI-side domain models. These render the engine-service state read via `GatewayClient`
-/// (live) or `DemoData` (showcase fallback). The canonical shapes live in
-/// `packages/schema`; these are the minimal projections the views display.
+/// UI-side domain models. These render the engine-service state read via `GatewayClient`.
+/// The canonical shapes live in `packages/schema`; these are the minimal projections
+/// the views display.
 
 // MARK: - Connection
 
@@ -294,37 +294,6 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .spec: return "plan"
         case .unknown: return "implement"
         default: return "implement"
-        }
-    }
-}
-
-// MARK: - Access profile (per-turn write scope)
-
-/// How much a write turn may touch — surfaced in the composer's "⋯" options and
-/// sent on the turn (the engine's `access` field). Read-only modes ignore it.
-enum AccessProfile: String, CaseIterable, Identifiable {
-    case readOnly, workspaceWrite, elevated
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .readOnly: return "Read only"
-        case .workspaceWrite: return "Workspace write"
-        case .elevated: return "Elevated"
-        }
-    }
-    var glyph: String {
-        switch self {
-        case .readOnly: return "eye"
-        case .workspaceWrite: return "square.and.pencil"
-        case .elevated: return "lock.open"
-        }
-    }
-    /// The engine wire value for `ControlRunStartRequest.access`.
-    var wire: String {
-        switch self {
-        case .readOnly: return "readonly"
-        case .workspaceWrite: return "workspace_write"
-        case .elevated: return "full"
         }
     }
 }
@@ -699,11 +668,14 @@ struct TaskRun: Identifiable, Hashable {
     /// Last immutable delivery receipt returned by the server for this run.
     var deliveryReceipt: ApplyResultInfo?
 
-    /// "workspace_write" or "readonly → readonly" style badge; nil when unknown.
+    /// "Full access" or "Read-only → Workspace write" style badge; nil when unknown.
+    /// Humanizes raw engine wire values (all five profiles) instead of leaking them.
     var accessLabel: String? {
-        guard let effective = effectiveAccess else { return requestedAccess }
-        if let requested = requestedAccess, requested != effective { return "\(requested) → \(effective)" }
-        return effective
+        guard let effective = effectiveAccess else { return requestedAccess.map(AccessProfile.humanize) }
+        if let requested = requestedAccess, requested != effective {
+            return "\(AccessProfile.humanize(requested)) → \(AccessProfile.humanize(effective))"
+        }
+        return AccessProfile.humanize(effective)
     }
 
     var planDone: Int { plan.filter { $0.state == .done }.count }

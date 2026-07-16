@@ -84,10 +84,6 @@ final class AppModel {
         didSet { UserDefaults.standard.set(recentProjects, forKey: "claudexor.recentProjects") }
     }
 
-    var demoMode = false {
-        didSet { UserDefaults.standard.set(demoMode, forKey: "claudexor.demoMode") }
-    }
-
     var liveTasks: [TaskRun] = []
     /// Run ids the user has successfully cancelled. Lets `composerTurnState` treat a
     /// cancelled run as inactive IMMEDIATELY — even in the bound-but-not-yet-hydrated
@@ -156,10 +152,9 @@ final class AppModel {
     /// Per-repo user-level trust files (Settings trust section).
     var trustEntries: [TrustEntry] = []
     var trustStatus: String?
-    let demoTasks: [TaskRun] = DemoData.tasks
 
-    var projects: [Project] { demoMode ? DemoData.projects : liveProjects }
-    var harnesses: [HarnessInfo] { demoMode ? DemoData.harnesses : liveHarnesses }
+    var projects: [Project] { liveProjects }
+    var harnesses: [HarnessInfo] { liveHarnesses }
     /// Controls enumerate doctor truth, not a compiled enum. Built-ins remain
     /// available before the first successful refresh; any adapter returned by
     /// the daemon appears without a Swift patch.
@@ -235,27 +230,17 @@ final class AppModel {
            let saved = AppearanceMode(rawValue: raw) {
             appearance = saved
         }
-        demoMode = UserDefaults.standard.bool(forKey: "claudexor.demoMode")
         // Dev/QA only: force an appearance for deterministic screenshots.
         switch ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_APPEARANCE"] {
         case "light": appearance = .light
         case "dark": appearance = .dark
         default: break
         }
-        // Dev/QA only: open a run's inspector for deterministic screenshots. No
-        // effect unless the env var is set. (The other v0.9 debug routes pointed
-        // at screens removed in the v0.10 chat-first collapse — review #14.)
-        if ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_ROUTE"] != nil { demoMode = true }
-        switch ProcessInfo.processInfo.environment["CLAUDEXOR_DEBUG_ROUTE"] {
-        case "task": route = .task("run-7f3a91")
-        case "convergence": route = .task("run-2bd180")
-        default: break
-        }
         projectRoot = UserDefaults.standard.string(forKey: "claudexor.projectRoot") ?? ProcessInfo.processInfo.environment["CLAUDEXOR_PROJECT_ROOT"] ?? ""
         recentProjects = UserDefaults.standard.stringArray(forKey: "claudexor.recentProjects") ?? []
     }
 
-    var tasks: [TaskRun] { demoMode ? liveTasks + demoTasks : liveTasks }
+    var tasks: [TaskRun] { liveTasks }
 
     func task(_ id: String) -> TaskRun? { tasks.first { $0.id == id } }
 
@@ -393,12 +378,10 @@ final class AppModel {
         guard let client else { return }
         do {
             let summaries = try await client.listRuns()
-            let known = Set(demoTasks.map(\.id))
             let existingById = Dictionary(uniqueKeysWithValues: liveTasks.map { ($0.id, $0) })
             // Merge instead of replace: a refresh must not wipe locally-hydrated
             // detail (activity, diff, findings, outputs) for rows we already track.
             liveTasks = summaries
-                .filter { !known.contains($0.runId) }
                 .map { summary in
                     var task = Self.liveTask(from: summary)
                     if let existing = existingById[task.id] ?? summary.jobId.flatMap({ existingById[$0] }) {

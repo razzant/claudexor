@@ -81,14 +81,6 @@ struct SettingsScreen: View {
     @ViewBuilder private var generalGroup: some View {
         @Bindable var model = model
         settingsGroup("General", "gearshape") {
-                    Toggle(isOn: $model.demoMode) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Show sample data").font(.callout)
-                            Text("Preview empty surfaces without mixing mock rows into live state unless this is on.")
-                                .font(.caption2).foregroundStyle(.secondary)
-                        }
-                    }
-                    .toggleStyle(.switch).tint(Theme.accent)
                     KeyValueRow(key: "Engine status", value: model.health.label, valueColor: model.health == .connected ? Theme.status(.succeeded) : .secondary)
                     HStack {
                         Button { Task { await model.connect() } } label: { Label("Reconnect", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)

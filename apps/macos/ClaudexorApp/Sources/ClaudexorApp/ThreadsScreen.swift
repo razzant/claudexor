@@ -618,8 +618,10 @@ struct ThreadsScreen: View {
                 FlowLayout(spacing: Theme.Spacing.sm) {
                     ForEach(poolFamilies) { family in
                         let avail = model.availability(for: family, mode: composerMode)
+                        // Never synthesize "<glyph>.slash" (no such SF Symbol → blank
+                        // icon); disabled dimming + hover reason convey unavailability.
                         FilterChip(label: family.label,
-                                   systemImage: avail.available ? family.glyph : "\(family.glyph).slash",
+                                   systemImage: family.glyph,
                                    isActive: resolvedPoolFamilies.contains(family), tint: family.color) {
                             togglePool(family)
                         }
@@ -654,7 +656,7 @@ struct ThreadsScreen: View {
             }
             OptionRow(label: "Access") {
                 Picker("", selection: $access) {
-                    ForEach(AccessProfile.allCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
+                    ForEach(AccessProfile.composerCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
                 }
                 .labelsHidden()
                 .fixedSize()
@@ -712,7 +714,7 @@ struct ThreadsScreen: View {
                         get: { browser },
                         set: { on in
                             browser = on
-                            if on { access = .elevated }
+                            if on { access = .full }
                             if on { webPolicy = webPolicy == "off" ? "auto" : webPolicy }
                         }
                     ))

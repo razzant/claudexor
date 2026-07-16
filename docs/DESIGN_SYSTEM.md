@@ -632,7 +632,8 @@ views in the shared design-system files; screens compose them.
   not auto-closed; it remains available with the vendor result until the user presses Return.
   The wizard may store secret refs, mark
   setup complete, or skip, but it must not invent app-only auth state. Offline or unimplemented
-  surfaces show honest empty states; sample data is opt-in from Settings.
+  surfaces show honest empty states — there is no sample/demo data mode; every surface
+  reflects live engine truth.
 
 ### 5.1 Component contracts (SSOT for the smallest details)
 

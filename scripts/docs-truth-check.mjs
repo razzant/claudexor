@@ -277,49 +277,7 @@ if (!constMatch) {
 }
 
 // --------------------------------------------------------------------------
-// 5. Debug-route parity (AppModel.swift vs apps/macos/README.md).
-// --------------------------------------------------------------------------
-
-const appModelSrc = readFileSync(
-  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift",
-  "utf8",
-);
-const switchMatch =
-  /switch ProcessInfo\.processInfo\.environment\["CLAUDEXOR_DEBUG_ROUTE"\]\s*\{([\s\S]*?)\n\s*\}/.exec(
-    appModelSrc,
-  );
-if (!switchMatch) {
-  failures.push("could not locate the CLAUDEXOR_DEBUG_ROUTE switch in AppModel.swift");
-} else {
-  const handledRoutes = new Set(
-    [...switchMatch[1].matchAll(/case "([a-z_]+)":/g)].map((m) => m[1]),
-  );
-  const macReadme = readFileSync("apps/macos/README.md", "utf8");
-  const bulletMatch = /- `CLAUDEXOR_DEBUG_ROUTE`:[\s\S]*?(?=\n- `|\n\n)/.exec(macReadme);
-  const documentedRoutes = new Set();
-  if (bulletMatch) {
-    for (const m of bulletMatch[0].matchAll(/`([a-z_]+)`/g)) {
-      if (m[1] !== "CLAUDEXOR_DEBUG_ROUTE") documentedRoutes.add(m[1]);
-    }
-  } else {
-    failures.push("could not locate the CLAUDEXOR_DEBUG_ROUTE bullet in apps/macos/README.md");
-  }
-  for (const r of handledRoutes) {
-    if (!documentedRoutes.has(r))
-      failures.push(
-        `AppModel.swift handles debug route '${r}' but apps/macos/README.md does not document it`,
-      );
-  }
-  for (const r of documentedRoutes) {
-    if (!handledRoutes.has(r))
-      failures.push(
-        `apps/macos/README.md documents debug route '${r}' but AppModel.swift does not handle it`,
-      );
-  }
-}
-
-// --------------------------------------------------------------------------
-// 6. Deleted-screen guard: removed screens must not reappear as current.
+// 5. Deleted-screen guard: removed screens must not reappear as current.
 // --------------------------------------------------------------------------
 
 const DELETED_SCREEN_PHRASES = [
@@ -354,7 +312,7 @@ for (const docPath of ["docs/DESIGN_SYSTEM.md", "docs/ARCHITECTURE.md"]) {
 }
 
 // --------------------------------------------------------------------------
-// 7. Dead-symbol check: code-shaped backticked identifiers in public docs must
+// 6. Dead-symbol check: code-shaped backticked identifiers in public docs must
 //    exist somewhere in the source tree. Catches NavigationSplitView / glowHi /
 //    MeshGradient-class staleness where docs legislate about deleted code.
 // --------------------------------------------------------------------------
@@ -506,7 +464,7 @@ function collectSourceHaystack() {
 }
 
 // --------------------------------------------------------------------------
-// 8. Enum parity: inspector tabs vs DESIGN_SYSTEM; MCP tools vs INTEGRATIONS.
+// 7. Enum parity: inspector tabs vs DESIGN_SYSTEM; MCP tools vs INTEGRATIONS.
 // --------------------------------------------------------------------------
 
 {
@@ -593,7 +551,7 @@ function collectSourceHaystack() {
 }
 
 // --------------------------------------------------------------------------
-// 9. Version-anchor lint (INV-133): current-behavior descriptions must be
+// 8. Version-anchor lint (INV-133): current-behavior descriptions must be
 //    era-neutral. `v0.N` is allowed only on lines that read as history
 //    (introduced/removed/since/legacy/…) or inside explicit history docs.
 // --------------------------------------------------------------------------
