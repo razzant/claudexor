@@ -136,6 +136,15 @@ struct TaskDetailView: View {
                 }
                 RouteProofBadge(proof: task.routeProof)
                     .help(task.observedModel.map { "Observed model: \($0)" } ?? "No model identity was disclosed by the harness stream.")
+                // W18: the auth route ACTUALLY taken (route receipt, INV-061
+                // disclosure) next to the proof badge; the tooltip carries the
+                // requested preference, source, and the typed reason.
+                if let route = task.authRoute, let effective = route.effective, effective != "unknown" {
+                    Label(Self.authModeLabel(effective), systemImage: "person.badge.key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("Auth route taken: \(Self.authModeLabel(effective)). Requested: \(route.requested)\(route.source.map { " · source: \($0)" } ?? "") · reason: \(route.reason).")
+                }
                 // W20: the typed requested-vs-observed model mismatch from the
                 // route receipt (a vendor downgrade must be visible, never quiet).
                 if let mismatch = task.authRoute?.modelMismatch {

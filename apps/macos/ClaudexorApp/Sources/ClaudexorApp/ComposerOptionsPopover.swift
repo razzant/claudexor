@@ -76,6 +76,23 @@ extension ThreadsScreen {
                 .fixedSize()
                 .help("External-context policy for this turn")
             }
+            // Per-turn auth route REQUEST (W18/Р20) over the thread preference.
+            // Honest language: this is what we ASK for — auto may switch routes
+            // (typed fallback), and the run badge discloses the effective route.
+            OptionRow(label: "Auth route") {
+                Picker("", selection: $authRoutePreference) {
+                    Text("Auto").tag("auto")
+                    Text("Subscription").tag("subscription")
+                    Text("API key").tag("api_key")
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("Requested auth route for THIS turn. Auto prefers the native subscription session with a typed, policy-governed fallback.")
+            }
+            Text("Requested route: \(authRoutePreference == "api_key" ? "API key" : authRoutePreference.capitalized). Auto may switch routes; the run's badge shows the route actually taken.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 2)
             OptionSection(title: "Review controls") {
                 OptionRow(label: "Reviewers") {
                     HStack(spacing: Theme.Spacing.xs) {

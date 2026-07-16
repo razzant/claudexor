@@ -175,7 +175,23 @@ struct TurnCard: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(Theme.status(.failed))
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                Text(run.status.label).font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text(run.status.label).font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                    // W18: the TYPED failure category + the auth route that was
+                    // tried — never inferred from prose.
+                    if let category = run.failureCategory, category != "unknown" {
+                        Text(category.replacingOccurrences(of: "_", with: " "))
+                            .font(.caption2)
+                            .padding(.horizontal, Theme.Spacing.xs)
+                            .background(Theme.status(.failed).opacity(0.12), in: Capsule())
+                            .foregroundStyle(Theme.status(.failed))
+                    }
+                    if let route = run.authRoute, let effective = route.effective, effective != "unknown" {
+                        Text("route: \(TaskDetailView.authModeLabel(effective))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .help("Auth route this turn ran under — requested: \(route.requested), reason: \(route.reason).")
+                    }
+                }
                 Text(failureReason(run))
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }

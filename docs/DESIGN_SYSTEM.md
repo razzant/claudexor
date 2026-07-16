@@ -316,7 +316,12 @@ frequency and volume are. The contracts:
     "New" enters the draft state (the first message materializes the thread).
     Each row carries a context menu — Rename… (title sheet) and
     Archive/Reopen — riding the server-owned `PATCH /threads/:id`
-    (`title`/`state`); no local-only thread state.
+    (`title`/`state`); no local-only thread state. The sidebar footer stacks
+    quota VERTICALLY, one chip per `(harness, credential route)` group: every
+    vendor window keeps its own row, the chip header carries the humanized
+    route + freshness dot + nearest reset, an active cooldown is an overlay
+    badge on the chip (never a standalone card), and only superseded window
+    copies / expired cooldowns are hidden — a window is never quietly dropped.
   - **Conversation (frosted cards; code solid):** the turns — prompt, live
     transcript (reasoning + tool calls), honest outcome (plan badge / diffstat /
     winner adopted), decision/apply actions, and the always-live composer.
@@ -369,7 +374,14 @@ views in the shared design-system files; screens compose them.
     the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
     thread's project, an open thread's repo is bound; the ONLY place project
     selection lives in the app), the `PrimaryHarnessChip` (which
-    harness answers in chat; sticky on the thread), the attachment controls
+    harness answers in chat; sticky on the thread), the composite **`AccessChip`**
+    (the per-turn write scope — Read-only / Workspace write / Full access — as a
+    first-class chip; it reads "Full access · Browser" and DISABLES while the
+    agent browser is armed, because Browser derives Full access and a downgrade
+    would be a contradiction; choosing Full access for an ungranted repo surfaces
+    an inline "Full access requires a one-time grant" row with the grant action —
+    the grant stays a separate explicit act, never implied by the chip),
+    the attachment controls
     (paperclip picker + the **Capture** button, below), and the borderless options
     icon button with an active accent capsule that opens the advanced options as a
     native dismissible **`.popover`** — NOT an inline panel (the inline version read
@@ -390,14 +402,25 @@ views in the shared design-system files; screens compose them.
     row per pooled harness, `[harness label][model dropdown]`, each dropdown
     fed by THAT harness's model truth source (`/harnesses/:id/models` — live
     `api` inventory or `manifest` known-good hints, with the freshness note in
-    hover help). There is NO free-text model entry: a harness without a truth
-    source shows "Harness default only" (strict model governance — an
-    arbitrary id would be refused at run preflight). Selections build the
-    harness-scoped `models` map on the turn; model choice is harness-scoped —
-    there is no cross-harness model value, and a race pool is never poisoned
-    by one vendor's id;
+    hover help). The enumeration is **route-scoped**: the effective per-turn
+    credential route rides `?route=` and route-annotated models foreign to it
+    are hidden (with a hidden-count note in help — the strict preflight would
+    refuse them anyway); an already-chosen id the route hides stays visible so
+    it can be seen and cleared. There is NO free-text model entry: a harness
+    without a truth source shows "Harness default only" (strict model
+    governance — an arbitrary id would be refused at run preflight). Selections
+    build the harness-scoped `models` map on the turn; model choice is
+    harness-scoped — there is no cross-harness model value, and a race pool is
+    never poisoned by one vendor's id;
   - the **budget** field (typed per-turn USD cap; validated currency text, never
-    a slider), **access** profile, and **web** policy pickers;
+    a slider) and the **web** policy picker (the access profile lives on the
+    controls-row `AccessChip`, not here);
+  - the **Auth route** row (Auto / Subscription / API key — the per-turn
+    `authPreference` request over the thread preference), with a caption
+    stating the REQUESTED route in honest language: auto may switch routes
+    (typed, policy-governed fallback), and the route actually taken is
+    disclosed as a badge on the finished run — the composer never claims what
+    "will be charged";
   - the **reviewer panel editor** (ordered explicit `harness[=model[:effort]]`
     entries; invalid entries block Send with an inline reason) and typed
     **protected-path approvals** for auto-protected gate/test paths;
@@ -406,8 +429,10 @@ views in the shared design-system files; screens compose them.
     thread can choose `isolated` — turns accumulate in a persistent thread
     worktree — instead of the default in-place execution);
   - **repair strategies** (until-clean / max-attempts) for agent turns.
-  Routing goal, paid fallback, quality tiers, and deterministic gate commands are engine/Settings concerns, not
-  per-turn composer controls.
+  Routing goal, quality tiers, and deterministic gate commands are engine/Settings
+  concerns, not per-turn composer controls. The paid-fallback/auth-route CHOICE is a
+  per-turn composer control (the Auth route row above); its outcome is a post-run
+  route receipt, never a composer promise.
   Default intent is `Agent`; project intents need a project; a **no-project thread is
   `Ask`-only** — the `ProjectChip` remains visible as the choose-project CTA, the
   primary harness chip and project-scoped controls are hidden or disabled, the
@@ -530,7 +555,15 @@ views in the shared design-system files; screens compose them.
   directly and never show it.
 - **Inline failure card.** A terminal turn that FAILED with no answer/transcript
   renders an inline failure card with the engine's honest failure reason,
-  instead of reading as idle next to a red status pill.
+  instead of reading as idle next to a red status pill. The card also carries
+  the run's TYPED failure category as a small chip and the auth route the turn
+  actually ran under (from the route receipt) — never inferred from prose.
+- **Run route disclosure (Run Detail header).** The finished run's header shows
+  the auth route ACTUALLY taken (Subscription / API key, from the engine's
+  route receipt; hover reveals requested preference, source, and the typed
+  reason) next to the route-proof badge, plus an orange `observed ≠ requested`
+  model-mismatch badge when the vendor served a different model than requested.
+  A route or model downgrade is visible evidence, never quiet.
 - **Refused-turn card + one-click trust.** A turn whose run was refused before
   it started (server-persisted `enqueueError` — e.g. the trust gate rejecting
   `access: full`) renders an inline "Not started" card with the engine's exact

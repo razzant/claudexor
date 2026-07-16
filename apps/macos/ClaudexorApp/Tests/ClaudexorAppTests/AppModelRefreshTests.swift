@@ -260,6 +260,13 @@ struct AppModelRefreshTests {
                 == ["native-only", "api-only", "everywhere"])
     }
 
+    @MainActor
+    @Test func authModeLabelSpeaksSubscriptionApiKeyAndDegradesHonestly() {
+        #expect(TaskDetailView.authModeLabel("local_session") == "Subscription")
+        #expect(TaskDetailView.authModeLabel("api_key") == "API key")
+        #expect(TaskDetailView.authModeLabel("future_mode") == "Future Mode")
+    }
+
     @Test func quotaDatesParseFractionalIsoBeforePlainIso() {
         let fractional = "2026-07-15T10:00:01.123Z"
         let plain = "2026-07-15T10:00:01Z"

@@ -49,6 +49,16 @@ extension TaskDetailView {
         }
     }
 
+    /// Wire `AuthMode` (the route a run actually executed under) -> label.
+    /// Distinct vocabulary from `credential_route` (see humanizeCredentialRoute).
+    static func authModeLabel(_ mode: String) -> String {
+        switch mode {
+        case "local_session": return "Subscription"
+        case "api_key": return "API key"
+        default: return mode.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
     static func webEvidenceColor(_ status: String) -> Color {
         switch status {
         case "satisfied": return Theme.status(.succeeded)

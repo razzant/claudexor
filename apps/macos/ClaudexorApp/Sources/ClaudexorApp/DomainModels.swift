@@ -316,6 +316,9 @@ struct TurnOptions: Equatable {
     var models: [String: String] = [:]
     var reviewerPanel: [ReviewerPanelEntry]? = nil
     var protectedPathApprovals: [ProtectedPathApproval]? = nil
+    /// Per-turn auth route REQUEST ("subscription" | "api_key"); nil = auto /
+    /// inherit the thread preference. The effective route is a post-run receipt.
+    var authRoute: String? = nil
 }
 
 // MARK: - Agent plan / todo list (the "task list" Codex & Claude Code surface)
@@ -656,6 +659,8 @@ struct TaskRun: Identifiable, Hashable {
     var observedModel: String?
     /// Auth route receipt incl. requested-vs-observed model mismatch (W20/W18).
     var authRoute: RunAuthRoute?
+    /// Typed failure category from the run's failure record (W18 failure card).
+    var failureCategory: String?
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false

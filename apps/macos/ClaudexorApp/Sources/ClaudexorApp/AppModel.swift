@@ -1248,7 +1248,8 @@ final class AppModel {
                 planRunId: planRunId,
                 specPath: specPath,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
-                protectedPathApprovals: options.protectedPathApprovals
+                protectedPathApprovals: options.protectedPathApprovals,
+                authPreference: options.authRoute
             ))
         } catch {
             // A REFUSED turn is not a lost turn: when the server persisted the
@@ -1675,6 +1676,7 @@ final class AppModel {
             task.spendEstimated = detail.summary.spendEstimated ?? task.spendEstimated
             let failure = detail.failure ?? detail.summary.failure
             task.engineError = failure?.safeMessage ?? detail.summary.error
+            task.failureCategory = failure?.category
             task.runDir = detail.summary.runDir ?? failure?.runDir ?? task.runDir
             task.outputReadyState = detail.summary.outputReadyState
             task.pendingInteractions = detail.pendingInteractions
