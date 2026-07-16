@@ -253,20 +253,32 @@ struct TurnCard: View {
         }
     }
 
-    /// Honest application state of an in-place turn (decoupled from a clean terminal):
-    /// `applied` is green, `applied_review_blocked` is an honest amber (NOT a green
-    /// "succeeded"), `reverted` is neutral, `not_applied` shows nothing. While the
-    /// mutation is still safely revertable, offers Revert (server-owned; refuses on
-    /// tree divergence and the refusal is surfaced verbatim).
+    /// Honest RECONCILED outcome of the turn (W21, Квиз-7a): one composed line
+    /// from the three orthogonal axes (execution terminal / delivery-apply /
+    /// review gate) — at most two facts in the headline, the rest as chips.
+    /// "Applied · review blocked" is an honest amber composition, NEVER a green
+    /// "succeeded". While the mutation is still safely revertable, offers
+    /// Revert (server-owned; refuses on tree divergence, surfaced verbatim).
     @ViewBuilder
     private func applyStateRow(_ result: RunResult, run: TaskRun) -> some View {
         // Local revert wins immediately; otherwise read the honest server state.
-        let state = reverted ? "reverted" : result.applyState
-        if let (text, glyph, tint) = Self.applyStateBadge(state) {
+        let effective = reverted
+            ? RunResult(kind: result.kind, diffStat: result.diffStat, blockers: result.blockers,
+                        adopted: result.adopted, applyState: "reverted")
+            : result
+        if let line = OutcomePresentation.line(status: run.status, result: effective,
+                                               reviewVerdict: run.reviewVerdict) {
             HStack(spacing: Theme.Spacing.sm) {
-                Label(text, systemImage: glyph)
+                Text(line.headline)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(line.tone.color)
+                ForEach(Array(line.chips.enumerated()), id: \.offset) { _, chip in
+                    Text(chip.text)
+                        .font(.caption2)
+                        .padding(.horizontal, Theme.Spacing.xs)
+                        .background(chip.tone.color.opacity(0.12), in: Capsule())
+                        .foregroundStyle(chip.tone.color)
+                }
                 Spacer()
                 // Offer Revert only while the server still says it's safe (tree
                 // unchanged since) and we haven't already reverted this turn.
@@ -287,17 +299,6 @@ struct TurnCard: View {
                     .help("Restore the project to this turn's pre-turn state (server refuses if you've edited since)")
                 }
             }
-        }
-    }
-
-    /// Map the honest apply-state to a label/glyph/tint. nil => render nothing
-    /// (not_applied / unknown — envelope-only, plan/answer, or nothing produced).
-    private static func applyStateBadge(_ state: String) -> (String, String, Color)? {
-        switch state {
-        case "applied": return ("Applied", "checkmark.seal.fill", Theme.status(.succeeded))
-        case "applied_review_blocked": return ("Applied · review blocked", "exclamationmark.triangle.fill", Theme.status(.blocked))
-        case "reverted": return ("Reverted", "arrow.uturn.backward.circle", .secondary)
-        default: return nil
         }
     }
 
