@@ -30,14 +30,48 @@ struct ArtifactGalleryView: View {
         }
     }
 
+    /// Images the run CHANGED anywhere in the project tree (typed diff
+    /// evidence — Ф2.5 W-C7 part 3): agents drop screenshots wherever the
+    /// task says, not just artifacts/, so the canvas surfaces every image the
+    /// diff touched — same canonical scope gate as inline chat previews.
+    private var runChangedImages: [String] {
+        guard produced, let run = model.task(runId) else { return [] }
+        return Self.runImagePaths(diffPaths: run.diff.map(\.path), repoRoot: run.repoRoot)
+    }
+
+    /// Pure derivation (unit-tested): diff-relative paths -> absolute image
+    /// paths that pass the thread-scope gate on the real filesystem.
+    static func runImagePaths(diffPaths: [String], repoRoot: String?) -> [String] {
+        guard let root = repoRoot, !root.isEmpty else { return [] }
+        return diffPaths
+            .map { ($0 as NSString).isAbsolutePath ? $0 : (root as NSString).appendingPathComponent($0) }
+            .compactMap { ScopedInlineImage.scopedImagePath($0, roots: [root]) }
+    }
+
     var body: some View {
         ScrollView {
+            if !runChangedImages.isEmpty {
+                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                    Label("Images this run changed", systemImage: "photo.badge.checkmark")
+                        .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Theme.Spacing.md)],
+                              alignment: .leading, spacing: Theme.Spacing.md) {
+                        ForEach(runChangedImages, id: \.self) { path in
+                            ScopedInlineImage(target: path,
+                                              alt: (path as NSString).lastPathComponent,
+                                              roots: [model.task(runId)?.repoRoot].compactMap { $0 })
+                        }
+                    }
+                }
+                .padding(Theme.Spacing.md)
+                Divider()
+            }
             if let loadError {
                 Text(loadError).font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(Theme.Spacing.xl)
-            } else if displayArtifacts.isEmpty {
+            } else if displayArtifacts.isEmpty && runChangedImages.isEmpty {
                 Text(produced
-                     ? "No project outputs yet — files the run writes into the project's artifacts/ folder show up here."
+                     ? "No project outputs yet — files the run writes into the project's artifacts/ folder (and any images its diff touches) show up here."
                      : "No artifacts produced yet — files appear here as the run finishes its output.")
                     .font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).multilineTextAlignment(.center).padding(Theme.Spacing.xl)

@@ -52,6 +52,21 @@ import Testing
         #expect(ScopedInlineImage.scopedImagePath(root + "/shots/action.png", roots: []) == nil)
     }
 
+    /// W-C7 part 3: the canvas surfaces every image the run's DIFF touched
+    /// (typed evidence), through the same scope gate — nothing outside the
+    /// project ever renders, non-images never render.
+    @Test func runImagePathsDeriveOnlyInScopeImagesFromDiffPaths() throws {
+        let (root, outside) = try makeFixture()
+        let paths = ArtifactGalleryView.runImagePaths(
+            diffPaths: ["shots/action.png", "notes.txt", "shots/escape.png", outside + "/secret.png"],
+            repoRoot: root
+        )
+        #expect(paths.count == 1)
+        #expect(paths.first?.hasSuffix("/shots/action.png") == true)
+        // No root = no derivation at all.
+        #expect(ArtifactGalleryView.runImagePaths(diffPaths: ["shots/action.png"], repoRoot: nil).isEmpty)
+    }
+
     @Test func markdownImageLinesBecomeImageBlocks() {
         let md = "Итог гонки:\n\n![Гонка NEON//RUN](/Users/anton/racing6/racing-action.png)\n\nВсё работает."
         let blocks = MarkdownOutputView.parse(md)
