@@ -4,13 +4,16 @@ import Foundation
 /// `harness.event` SSE stream into these so the chat shows working progress
 /// (reasoning + tools) as it happens, not just the final answer.
 public enum TranscriptBlock: Identifiable, Sendable, Equatable {
-    case thinking(id: String, text: String)
+    /// One merged reasoning SEGMENT (consecutive thinking between other
+    /// blocks); `seconds` is the segment's observed wall-clock span from the
+    /// events' own timestamps (0 while unknown — the UI hides the timer).
+    case thinking(id: String, text: String, seconds: Double = 0)
     case message(id: String, text: String)
     case tool(id: String, ToolBlock)
 
     public var id: String {
         switch self {
-        case .thinking(let id, _): return id
+        case .thinking(let id, _, _): return id
         case .message(let id, _): return id
         case .tool(let id, _): return id
         }
@@ -25,6 +28,16 @@ public struct ToolBlock: Sendable, Equatable {
     public var status: Status
     public var detail: String?      // content_summary / error_summary
     public var exitCode: Int?
+
+    public init(name: String, kind: String? = nil, target: String? = nil,
+                status: Status, detail: String? = nil, exitCode: Int? = nil) {
+        self.name = name
+        self.kind = kind
+        self.target = target
+        self.status = status
+        self.detail = detail
+        self.exitCode = exitCode
+    }
 }
 
 /// Pure fold of SSE envelopes into transcript blocks. No UI, no I/O — unit
@@ -47,6 +60,9 @@ public struct TranscriptReducer: Sendable {
     private var lastSeq: Int = -1
     private var toolIndexByUseId: [String: Int] = [:]
     private var lastOpenToolByName: [String: Int] = [:]
+    /// Wall-clock start of the OPEN thinking segment (from the events' own
+    /// `ts`), so the merged block can disclose how long the reasoning ran.
+    private var openThinkingStart: Date?
     private let cap: Int
     /// W23 P0-hang bounds: the block COUNT cap alone let a single merged
     /// thinking block grow to megabytes — SwiftUI then laid out that Text on
@@ -89,14 +105,17 @@ public struct TranscriptReducer: Sendable {
         switch evType {
         case "thinking":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
-            if case .thinking(let id, let prev) = blocks.last {
+            let eventAt = Self.isoDate(payload["ts"]?.stringValue)
+            if case .thinking(let id, let prev, _) = blocks.last {
                 // Keep the TAIL of an overlong merge: the live feed shows the
                 // newest reasoning; the cut is counted, never silent.
                 let bounded = boundTail(prev + "\n" + text)
                 textChars += bounded.count - prev.count
-                blocks[blocks.count - 1] = .thinking(id: id, text: bounded)
+                blocks[blocks.count - 1] = .thinking(id: id, text: bounded,
+                                                     seconds: segmentSeconds(until: eventAt))
                 enforceBudget()
             } else {
+                openThinkingStart = eventAt
                 append(.thinking(id: "th-\(seqKey)", text: boundTail(text)))
             }
             return true
@@ -194,7 +213,7 @@ public struct TranscriptReducer: Sendable {
     /// (the invariant must cover ALL unbounded inputs, review sol #2).
     private func chars(of block: TranscriptBlock) -> Int {
         switch block {
-        case .thinking(_, let text): return text.count
+        case .thinking(_, let text, _): return text.count
         case .message(_, let text): return text.count
         case .tool(_, let b):
             return b.name.count + (b.kind?.count ?? 0) + (b.target?.count ?? 0) + (b.detail?.count ?? 0)
@@ -222,8 +241,26 @@ public struct TranscriptReducer: Sendable {
     }
 
     private mutating func append(_ block: TranscriptBlock) {
+        // Anything but a thinking-merge CLOSES the open reasoning segment: the
+        // next thinking event starts a new segment (and a new timer).
+        if case .thinking = block {} else { openThinkingStart = nil }
         blocks.append(block)
         textChars += chars(of: block)
         enforceBudget()
+    }
+
+    /// Observed span of the open reasoning segment; 0 while unknown (missing
+    /// or unparsable event timestamps) — the UI hides a zero timer.
+    private func segmentSeconds(until eventAt: Date?) -> Double {
+        guard let start = openThinkingStart, let eventAt else { return 0 }
+        return max(0, eventAt.timeIntervalSince(start))
+    }
+
+    static func isoDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        // Value-type Sendable parse strategies (ISO8601DateFormatter is not
+        // concurrency-safe under Swift 6): fractional first, then plain.
+        return (try? Date(raw, strategy: .iso8601.time(includingFractionalSeconds: true)))
+            ?? (try? Date(raw, strategy: .iso8601))
     }
 }

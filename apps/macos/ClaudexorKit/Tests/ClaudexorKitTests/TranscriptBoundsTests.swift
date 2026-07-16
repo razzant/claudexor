@@ -24,7 +24,7 @@ import Testing
     @Test func mergedThinkingNeverExceedsThePerBlockBound() {
         var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 10_000)
         for i in 1...50 { r.apply(thinking(i, String(repeating: "x", count: 400))) }
-        guard case .thinking(_, let text) = r.blocks.last else {
+        guard case .thinking(_, let text, _) = r.blocks.last else {
             Issue.record("expected a merged thinking block")
             return
         }
@@ -43,7 +43,7 @@ import Testing
         // The invariant accessor tells the truth about what is held.
         let held = r.blocks.reduce(0) { sum, block in
             if case .message(_, let text) = block { return sum + text.count }
-            if case .thinking(_, let text) = block { return sum + text.count }
+            if case .thinking(_, let text, _) = block { return sum + text.count }
             return sum
         }
         #expect(held == r.textChars)
@@ -128,6 +128,46 @@ import Testing
             return
         }
         #expect(text == "narration")
+    }
+
+    private func thinkingAt(_ seq: Int, _ text: String, ts: String) -> BusEnvelope {
+        BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object(["type": .string("thinking"), "text": .string(text), "ts": .string(ts)])
+        ]))
+    }
+
+    /// Ф2.5 W-C3: a merged reasoning SEGMENT discloses its observed span from
+    /// the events' own timestamps; a tool call closes the segment, and the
+    /// next thinking starts a fresh timer.
+    @Test func thinkingSegmentsDiscloseTheirObservedDurationPerSegment() {
+        var r = TranscriptReducer()
+        r.apply(thinkingAt(1, "start", ts: "2026-07-17T00:00:00Z"))
+        r.apply(thinkingAt(2, "more", ts: "2026-07-17T00:00:12Z"))
+        guard case .thinking(_, _, let firstSpan) = r.blocks.last else {
+            Issue.record("expected a thinking segment")
+            return
+        }
+        #expect(firstSpan == 12)
+
+        r.apply(toolCall(3, target: "ls"))
+        r.apply(thinkingAt(4, "next segment", ts: "2026-07-17T00:01:00Z"))
+        r.apply(thinkingAt(5, "still next", ts: "2026-07-17T00:01:05Z"))
+        guard case .thinking(_, _, let secondSpan) = r.blocks.last else {
+            Issue.record("expected a second thinking segment")
+            return
+        }
+        #expect(secondSpan == 5)
+
+        // Missing timestamps degrade to 0 (the UI hides a zero timer).
+        var bare = TranscriptReducer()
+        bare.apply(thinking(1, "no ts"))
+        bare.apply(thinking(2, "still none"))
+        guard case .thinking(_, _, let unknownSpan) = bare.blocks.last else {
+            Issue.record("expected a thinking segment")
+            return
+        }
+        #expect(unknownSpan == 0)
     }
 
     @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {

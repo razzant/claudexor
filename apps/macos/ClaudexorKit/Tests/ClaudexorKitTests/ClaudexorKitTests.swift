@@ -853,7 +853,7 @@ import Testing
         r.apply(env(2, #"{"type":"harness.event","payload":{"type":"thinking","text":"step two"}}"#)) // replay
         r.apply(env(3, #"{"type":"harness.event","payload":{"type":"message","text":"the answer"}}"#))
         #expect(r.blocks.count == 2)   // merged thinking + one message (replay ignored)
-        if case .thinking(_, let text) = r.blocks[0] { #expect(text == "step one\nstep two") } else { Issue.record("expected thinking") }
+        if case .thinking(_, let text, _) = r.blocks[0] { #expect(text == "step one\nstep two") } else { Issue.record("expected thinking") }
         if case .message(_, let text) = r.blocks[1] { #expect(text == "the answer") } else { Issue.record("expected message") }
     }
 
