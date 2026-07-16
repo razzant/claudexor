@@ -54,10 +54,7 @@ export function finalizeStructuredOutput(opts: {
   let status: "passed" | "failed" = "failed";
   let outputPath: string | null = null;
   if (parsed) {
-    opts.store.writeText(
-      join(opts.finalDir, "output.json"),
-      JSON.stringify(value, null, 2) + "\n",
-    );
+    opts.store.writeText(join(opts.finalDir, "output.json"), JSON.stringify(value, null, 2) + "\n");
     outputPath = "final/output.json";
     // strict:false — the boundary already normalized the schema for the
     // vendor routes; the validator must accept exactly that dialect rather

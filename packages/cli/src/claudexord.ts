@@ -191,83 +191,88 @@ async function main(): Promise<void> {
         let runSignal: AbortSignal | undefined = ctx.signal;
         if (maxSeconds !== null) {
           const deadline = new AbortController();
-          deadlineTimer = setTimeout(() => deadline.abort("wall_clock_exceeded"), maxSeconds * 1000);
+          deadlineTimer = setTimeout(
+            () => deadline.abort("wall_clock_exceeded"),
+            maxSeconds * 1000,
+          );
           deadlineTimer.unref?.();
           runSignal = ctx.signal ? AbortSignal.any([ctx.signal, deadline.signal]) : deadline.signal;
         }
-        return orchestrator.run({
-          onEvent: (event) => {
-            if (event.type === "harness.event") {
-              const payload = event.payload as Record<string, unknown>;
-              const harnessId =
-                typeof payload["harness_id"] === "string" ? payload["harness_id"] : "";
-              if (harnessId) quotaStoreSlot.current().ingest(harnessId, payload);
-            }
-            threads.recordRunEvent(p, event);
-            bus.publish(event);
-          },
-          onInteraction: (ctx2) => interactions.register(ctx2, p),
-          interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
-          threadId,
-          executionRoot,
-          resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
-          onSessionObserved: threadId
-            ? (harnessId, nativeSessionId, observedModel) =>
-                threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
-            : undefined,
-          authPreference: p.authPreference,
-          autonomy: p.autonomy,
-          answerInteraction: async (subRunId, interactionId, answers) =>
-            interactions.answer(subRunId, interactionId, answers).status === "delivered",
-          repoRoot,
-          prompt: String(p.prompt ?? ""),
-          instructions: typeof p.instructions === "string" ? p.instructions : undefined,
-          denyPaths: Array.isArray(p.denyPaths) ? p.denyPaths : undefined,
-          maxTurns: typeof p.maxTurns === "number" && p.maxTurns > 0 ? p.maxTurns : undefined,
-          outputSchema:
-            p.outputSchema && typeof p.outputSchema === "object" && !Array.isArray(p.outputSchema)
-              ? (p.outputSchema as Record<string, unknown>)
+        return orchestrator
+          .run({
+            onEvent: (event) => {
+              if (event.type === "harness.event") {
+                const payload = event.payload as Record<string, unknown>;
+                const harnessId =
+                  typeof payload["harness_id"] === "string" ? payload["harness_id"] : "";
+                if (harnessId) quotaStoreSlot.current().ingest(harnessId, payload);
+              }
+              threads.recordRunEvent(p, event);
+              bus.publish(event);
+            },
+            onInteraction: (ctx2) => interactions.register(ctx2, p),
+            interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
+            threadId,
+            executionRoot,
+            resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
+            onSessionObserved: threadId
+              ? (harnessId, nativeSessionId, observedModel) =>
+                  threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
               : undefined,
-          attachments: turnId
-            ? (threads.getTurn(turnId)?.attachments ?? [])
-            : resources.resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
-          browser: (p as { browser?: boolean }).browser === true,
-          mode: p.mode,
-          contextMode: noProjectAsk
-            ? "off"
-            : p.scope.kind === "project"
-              ? p.scope.context
+            authPreference: p.authPreference,
+            autonomy: p.autonomy,
+            answerInteraction: async (subRunId, interactionId, answers) =>
+              interactions.answer(subRunId, interactionId, answers).status === "delivered",
+            repoRoot,
+            prompt: String(p.prompt ?? ""),
+            instructions: typeof p.instructions === "string" ? p.instructions : undefined,
+            denyPaths: Array.isArray(p.denyPaths) ? p.denyPaths : undefined,
+            maxTurns: typeof p.maxTurns === "number" && p.maxTurns > 0 ? p.maxTurns : undefined,
+            outputSchema:
+              p.outputSchema && typeof p.outputSchema === "object" && !Array.isArray(p.outputSchema)
+                ? (p.outputSchema as Record<string, unknown>)
+                : undefined,
+            attachments: turnId
+              ? (threads.getTurn(turnId)?.attachments ?? [])
+              : resources.resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),
+            browser: (p as { browser?: boolean }).browser === true,
+            mode: p.mode,
+            contextMode: noProjectAsk
+              ? "off"
+              : p.scope.kind === "project"
+                ? p.scope.context
+                : undefined,
+            harnesses: p.harnesses,
+            primaryHarness: p.primaryHarness,
+            routingGoal: p.routingGoal,
+            n: p.n,
+            attempts: p.attempts ?? null,
+            untilClean: p.untilClean === true,
+            swarm: p.swarm === true,
+            create: p.create === true,
+            synthesis: p.synthesis,
+            paidBudget: p.paidBudget,
+            maxToolCalls: p.maxToolCalls ?? null,
+            access: p.access,
+            web: p.web ?? p.externalContextPolicy,
+            externalContextPolicy: p.externalContextPolicy ?? p.web,
+            model: p.model,
+            models: p.models,
+            effort: p.effort,
+            tests: Array.isArray(p.tests) ? p.tests : undefined,
+            protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
+              ? p.protectedPathApprovals
               : undefined,
-          harnesses: p.harnesses,
-          primaryHarness: p.primaryHarness,
-          routingGoal: p.routingGoal,
-          n: p.n,
-          attempts: p.attempts ?? null,
-          untilClean: p.untilClean === true,
-          swarm: p.swarm === true,
-          create: p.create === true,
-          synthesis: p.synthesis,
-          paidBudget: p.paidBudget,
-          maxToolCalls: p.maxToolCalls ?? null,
-          access: p.access,
-          web: p.web ?? p.externalContextPolicy,
-          externalContextPolicy: p.externalContextPolicy ?? p.web,
-          model: p.model,
-          models: p.models,
-          effort: p.effort,
-          tests: Array.isArray(p.tests) ? p.tests : undefined,
-          protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
-            ? p.protectedPathApprovals
-            : undefined,
-          specId: typeof p.specId === "string" ? p.specId : undefined,
-          specHash: typeof p.specHash === "string" ? p.specHash : undefined,
-          specPath: typeof p.specPath === "string" ? p.specPath : undefined,
-          inPlace,
-          signal: runSignal,
-          onRunStart,
-        }).finally(() => {
-          if (deadlineTimer) clearTimeout(deadlineTimer);
-        });
+            specId: typeof p.specId === "string" ? p.specId : undefined,
+            specHash: typeof p.specHash === "string" ? p.specHash : undefined,
+            specPath: typeof p.specPath === "string" ? p.specPath : undefined,
+            inPlace,
+            signal: runSignal,
+            onRunStart,
+          })
+          .finally(() => {
+            if (deadlineTimer) clearTimeout(deadlineTimer);
+          });
       },
     });
 

@@ -89,7 +89,9 @@ export function cancelledResult(
     }
   }
   const cancelReason =
-    typeof cancelSignal?.reason === "string" && cancelSignal.reason ? cancelSignal.reason : undefined;
+    typeof cancelSignal?.reason === "string" && cancelSignal.reason
+      ? cancelSignal.reason
+      : undefined;
   const summaryText =
     cancelReason === "wall_clock_exceeded"
       ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
@@ -108,7 +110,10 @@ export function cancelledResult(
     }
   }
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-  log.emit("run.failed", { status: "cancelled", ...(cancelReason ? { reason: cancelReason } : {}) });
+  log.emit("run.failed", {
+    status: "cancelled",
+    ...(cancelReason ? { reason: cancelReason } : {}),
+  });
   return {
     runId,
     taskId,

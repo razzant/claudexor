@@ -159,14 +159,18 @@ export const StructuredOutputConformance = z
       .string()
       .nullable()
       .default(null)
-      .describe("Why conformance failed (missing/unparsable answer, validator errors); null on pass."),
+      .describe(
+        "Why conformance failed (missing/unparsable answer, validator errors); null on pass.",
+      ),
     /** Present when the answer parsed as JSON at all (even non-conformant JSON
      * is materialized to help the embedder debug and retry). */
     output_path: z
       .string()
       .nullable()
       .default(null)
-      .describe("Artifact path of the materialized structured output (final/output.json); null when the answer never parsed."),
+      .describe(
+        "Artifact path of the materialized structured output (final/output.json); null when the answer never parsed.",
+      ),
     generated_at: IsoTimestamp.describe("When the receipt was generated."),
   })
   .describe(

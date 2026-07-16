@@ -1485,7 +1485,8 @@ export class Orchestrator {
       // (the inline-secret fence already blocked any secret-like value at every
       // ingress incl. this engine boundary), so task-producing lanes read back
       // the real instructions via harnessSpecKnobs().
-      instructions: input.instructions === undefined ? undefined : redactSecrets(input.instructions),
+      instructions:
+        input.instructions === undefined ? undefined : redactSecrets(input.instructions),
       // Already normalized/strictified at the engine boundary (run() refuses
       // unsupported shapes before any run dir exists).
       output_schema: input.outputSchema ?? null,

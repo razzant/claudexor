@@ -617,7 +617,9 @@ export const ControlRunSummary = z
       .nonnegative()
       .nullable()
       .optional()
-      .describe("Cached input tokens summed across all attempts; null when no harness reported them."),
+      .describe(
+        "Cached input tokens summed across all attempts; null when no harness reported them.",
+      ),
     /** Typed conformance receipt for a run started with outputSchema: passed =
      * final/output.json conforms; failed = the answer was missing, unparsable,
      * or non-conformant (the run still ends success-with-warnings — the

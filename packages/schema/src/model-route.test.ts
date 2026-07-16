@@ -42,9 +42,9 @@ describe("estimateEffectiveAuthRoute (W11, INV-061 projection)", () => {
     }) as never;
 
   it("auto prefers the native session (native-first doctrine)", () => {
-    expect(
-      estimateEffectiveAuthRoute("auto", [src("native_session"), src("api_key_env")]),
-    ).toBe("local_session");
+    expect(estimateEffectiveAuthRoute("auto", [src("native_session"), src("api_key_env")])).toBe(
+      "local_session",
+    );
   });
 
   it("auto falls back to api_key when no native source is usable", () => {
@@ -63,9 +63,9 @@ describe("estimateEffectiveAuthRoute (W11, INV-061 projection)", () => {
   });
 
   it("a failed verification disqualifies a source; no usable source = null", () => {
-    expect(
-      estimateEffectiveAuthRoute("auto", [src("native_session", "available", "failed")]),
-    ).toBe(null);
+    expect(estimateEffectiveAuthRoute("auto", [src("native_session", "available", "failed")])).toBe(
+      null,
+    );
     expect(estimateEffectiveAuthRoute("auto", [])).toBe(null);
   });
 });

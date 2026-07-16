@@ -310,7 +310,9 @@ export class UnsupportedOutputSchemaError extends Error {}
  * top-level type; a $ref-wrapped root 400s), and `$ref` is refused anywhere
  * (no ref resolution on the tool-input path).
  */
-export function normalizeUserOutputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+export function normalizeUserOutputSchema(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
   if (schema["type"] !== "object" || typeof schema["properties"] !== "object") {
     throw new UnsupportedOutputSchemaError(
       'outputSchema root must be an inline object schema ({"type":"object","properties":{...}}); $ref-wrapped or non-object roots are rejected by the native structured-output routes',

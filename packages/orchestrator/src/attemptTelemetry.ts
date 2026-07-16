@@ -407,9 +407,11 @@ export function attemptTelemetryRecord(
 /** Sum token usage across attempt records (candidates + synthesis), the same
  *  scope as the ledger's spend. A field stays null unless some attempt reported
  *  it, so "no harness reported tokens" never reads as a real 0. */
-export function aggregateRunTokenUsage(
-  records: AttemptTelemetryRecord[],
-): { input_tokens: number | null; output_tokens: number | null; cached_input_tokens: number | null } {
+export function aggregateRunTokenUsage(records: AttemptTelemetryRecord[]): {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_input_tokens: number | null;
+} {
   const sum = (pick: (u: AttemptTelemetryRecord["usage"]) => number | null): number | null => {
     let total: number | null = null;
     for (const r of records) {

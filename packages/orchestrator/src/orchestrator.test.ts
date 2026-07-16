@@ -2463,7 +2463,12 @@ describe("Orchestrator", () => {
             family === "anthropic"
               ? ["claude-opus-4-8", "opus"]
               : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M", "o-review"];
-          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null, routes: null }));
+          return ids.map((modelId) => ({
+            id: modelId,
+            label: null,
+            context_window: null,
+            routes: null,
+          }));
         },
         async *run(spec) {
           const ts = new Date().toISOString();
@@ -2537,7 +2542,12 @@ describe("Orchestrator", () => {
             family === "anthropic"
               ? ["claude-opus-4-8"]
               : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M"];
-          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null, routes: null }));
+          return ids.map((modelId) => ({
+            id: modelId,
+            label: null,
+            context_window: null,
+            routes: null,
+          }));
         },
         async *run(spec) {
           const ts = new Date().toISOString();

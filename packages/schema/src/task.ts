@@ -257,9 +257,7 @@ export const TaskContract = z
       .positive()
       .nullable()
       .default(null)
-      .describe(
-        "Per-run turn cap (beats per-harness settings); null when the caller set none.",
-      ),
+      .describe("Per-run turn cap (beats per-harness settings); null when the caller set none."),
     spec: z
       .object({
         id: Id.optional().describe("SpecPack id."),

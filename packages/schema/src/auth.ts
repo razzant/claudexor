@@ -105,7 +105,9 @@ export function estimateEffectiveAuthRoute(
   const hasApiKey = sources.some(
     (s) =>
       usable(s) &&
-      (s.source === "api_key_env" || s.source === "api_key_flag" || s.source === "provider_auth_file"),
+      (s.source === "api_key_env" ||
+        s.source === "api_key_flag" ||
+        s.source === "provider_auth_file"),
   );
   if (requested === "subscription") return hasNative ? "local_session" : null;
   if (requested === "api_key") return hasApiKey ? "api_key" : null;
