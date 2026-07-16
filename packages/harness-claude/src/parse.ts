@@ -131,12 +131,23 @@ function parseClaudeEventStateful(
   }
 
   if (type === "system" && obj.subtype === "api_retry") {
+    // TYPED status, not a fabricated thinking block: the old mapping planted
+    // "api_retry: 529…" junk in the chat's reasoning disclosure. The official
+    // fields (attempt/max_retries/retry_delay_ms/error category) pass through
+    // so the activity feed can say "retrying (2/10, in 5s)" honestly.
     const errText = String(obj.error ?? "");
     const ev: HarnessEvent = {
-      type: "thinking",
+      type: "status",
       session_id: sessionId,
       ts,
       text: `api_retry: ${redactSecrets(errText)}`,
+      status: {
+        kind: "api_retry",
+        attempt: numberOrUndef(obj.attempt),
+        max_retries: numberOrUndef(obj.max_retries),
+        retry_delay_ms: numberOrUndef(obj.retry_delay_ms),
+        error_category: typeof obj.error === "string" ? obj.error : undefined,
+      },
       payload: { api_retry: true, retry_delay_ms: obj.retry_delay_ms },
     };
     // Adapter-layer translation of claude's native retry into a TYPED rate-limit
@@ -347,10 +358,13 @@ function parseClaudeEventStateful(
         session_id: sessionId,
         ts,
         text: JSON.stringify(obj.structured_output),
+        final: true,
         payload: { structured_output: true },
       });
     } else if (typeof obj.result === "string" && obj.result.trim()) {
-      out.push({ type: "message", session_id: sessionId, ts, text: obj.result });
+      // The terminal `result` IS claude's typed final answer (docs: "the last
+      // line of the stream is a result message with the final response text").
+      out.push({ type: "message", session_id: sessionId, ts, text: obj.result, final: true });
     }
     if (obj.subtype && obj.subtype !== "success") {
       // `error_max_turns` is NOT a run failure: the turn ended because it hit the

@@ -83,7 +83,6 @@ import {
   sleep,
   redactHarnessEvent,
   harnessEventPayload,
-  pushUniqueText,
   formatFindings,
   renderSummary,
   readRunPatch,
@@ -101,6 +100,7 @@ import {
   deliveryRefusalFailure,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
+import { AnswerAssembly } from "./answerAssembly.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
 import { orchestrateFailureFor, readRunStatus } from "./outcomeReducer.js";
@@ -1768,7 +1768,7 @@ export class Orchestrator {
     let costEstimated = false;
     let harnessErrored = false;
     const errors: string[] = [];
-    const messageParts: string[] = [];
+    const answer = new AnswerAssembly();
     const retryPolicy = transientRetryPolicy(this.config(contract.repo.root));
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
@@ -1873,14 +1873,8 @@ export class Orchestrator {
               errors.push(redactSecrets(safeEv.error ?? safeEv.text ?? "harness emitted error"));
             }
             // Capture assistant prose so an answer-only turn (no file changes) still
-            // has an honest output artifact instead of an empty "succeeded".
-            if (
-              safeEv.type === "message" &&
-              safeEv.text &&
-              safeEv.payload?.["auth_switched"] !== true
-            ) {
-              pushUniqueText(messageParts, safeEv.text);
-            }
+            // has an honest output artifact; a TYPED final message wins verbatim.
+            answer.observe(safeEv);
             // Observe ALL budget/quota signals (one codex usage event carries
             // BOTH spend and quota); pressure disclosed once per attempt.
             observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
@@ -1904,7 +1898,7 @@ export class Orchestrator {
         const transient = telemetry.transientFailures.at(-1) ?? null;
         const sawTransient = telemetry.transientFailures.length > transientStart;
         const currentDiff = await wsm.diff(envelope);
-        const currentAnswer = messageParts.join("\n").trim();
+        const currentAnswer = answer.text();
         const deliverableEmpty = currentDiff.trim().length === 0 && currentAnswer.length === 0;
         if (
           !harnessErrored ||
@@ -1955,7 +1949,7 @@ export class Orchestrator {
     }
 
     const diff = await wsm.diff(envelope);
-    const answerText = messageParts.join("\n").trim() || undefined;
+    const answerText = answer.text() || undefined;
     const deliverablePresent = diff.trim().length > 0 || Boolean(answerText);
     // Cancelled attempts skip gates entirely: the operator asked to
     // stop NOW; running a 600s-per-gate suite after the abort delays the ack
@@ -4909,7 +4903,7 @@ export class Orchestrator {
         );
         if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
         const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
-        const parts: string[] = [];
+        const answer = new AnswerAssembly();
         const telemetry = createAttemptTelemetry(
           knobs.webPolicy,
           contract.external_context.web_required ||
@@ -4982,13 +4976,8 @@ export class Orchestrator {
                   estimated: safeEv.usage.estimated === true,
                 });
               }
-              if (
-                safeEv.type === "message" &&
-                safeEv.text &&
-                safeEv.payload?.["auth_switched"] !== true
-              ) {
-                pushUniqueText(parts, safeEv.text);
-              }
+              // A TYPED final message wins verbatim over joined narration.
+              answer.observe(safeEv);
               if (safeEv.type === "error")
                 harnessError = safeEv.error
                   ? redactSecrets(safeEv.error)
@@ -5038,7 +5027,7 @@ export class Orchestrator {
           });
           continue;
         }
-        const text = parts.join("\n").trim() || "(no output)";
+        const text = answer.text() || "(no output)";
         log.emit("harness.completed", {
           harness_id: adapter.id,
           attempt_id: attemptId,
@@ -5738,7 +5727,7 @@ export class Orchestrator {
       );
       if (reportInteraction) spec.extra["interactionChannel"] = reportInteraction;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
-      const parts: string[] = [];
+      const answer = new AnswerAssembly();
       const telemetry = createAttemptTelemetry(
         knobs.webPolicy,
         contract.external_context.web_required ||
@@ -5825,13 +5814,8 @@ export class Orchestrator {
                   estimated: safeEv.usage.estimated === true,
                 });
               }
-              if (
-                safeEv.type === "message" &&
-                safeEv.text &&
-                safeEv.payload?.["auth_switched"] !== true
-              ) {
-                pushUniqueText(parts, safeEv.text);
-              }
+              // A TYPED final message wins verbatim over joined narration.
+              answer.observe(safeEv);
               if (safeEv.type === "error")
                 harnessError = safeEv.error
                   ? redactSecrets(safeEv.error)
@@ -5843,7 +5827,7 @@ export class Orchestrator {
 
           const transient = telemetry.transientFailures.at(-1) ?? null;
           const sawTransient = telemetry.transientFailures.length > transientStart;
-          const reportSoFar = parts.join("\n").trim();
+          const reportSoFar = answer.text();
           if (
             !harnessError ||
             !sawTransient ||
@@ -5895,7 +5879,7 @@ export class Orchestrator {
         });
       }
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
-      const report = redactSecrets(parts.join("\n").trim());
+      const report = redactSecrets(answer.text());
       const unrecovered = unrecoveredToolErrors(telemetry);
       const webBlocked = webUnsatisfied(telemetry);
       const deliverablePresent = report.length > 0;

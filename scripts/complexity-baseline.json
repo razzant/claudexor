@@ -16,12 +16,12 @@
   "packages/daemon/src/journal-manager.ts": 582,
   "packages/daemon/src/server.ts": 643,
   "packages/harness-claude/src/index.ts": 1039,
-  "packages/harness-codex/src/index.ts": 842,
+  "packages/harness-codex/src/index.ts": 843,
   "packages/harness-cursor/src/index.ts": 794,
   "packages/journal/src/index.ts": 545,
   "packages/mcp-server/src/index.ts": 699,
-  "packages/orchestrator/src/orchestrator.ts": 6708,
+  "packages/orchestrator/src/orchestrator.ts": 6692,
   "packages/review/src/reviewEngine.ts": 1413,
   "packages/schema/src/control.ts": 1544,
-  "packages/schema/src/harness.ts": 889
+  "packages/schema/src/harness.ts": 933
 }

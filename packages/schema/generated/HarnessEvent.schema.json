@@ -17,9 +17,10 @@
             "patch_produced",
             "usage",
             "error",
+            "status",
             "completed"
           ],
-          "description": "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, and errors."
+          "description": "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, transient status, and errors."
         },
         "session_id": {
           "type": "string",
@@ -33,6 +34,10 @@
         "text": {
           "type": "string",
           "description": "Text content for thinking/message/error events."
+        },
+        "final": {
+          "type": "boolean",
+          "description": "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it."
         },
         "tool": {
           "type": "object",
@@ -491,6 +496,42 @@
           },
           "additionalProperties": false,
           "description": "Typed rate-limit/quota signal set by the adapter when the native CLI reports a 429/quota/overload."
+        },
+        "status": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "api_retry"
+              ],
+              "description": "Kind of transient status."
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Retry attempt number."
+            },
+            "max_retries": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Vendor's configured retry ceiling."
+            },
+            "retry_delay_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Delay before the retry, when reported."
+            },
+            "error_category": {
+              "type": "string",
+              "description": "Vendor's own error category label, passed through verbatim."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "description": "Typed transient-status detail set by the adapter on status events."
         },
         "transient": {
           "type": "object",

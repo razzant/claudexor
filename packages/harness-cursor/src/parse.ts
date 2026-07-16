@@ -224,7 +224,9 @@ function parseCursorEventStateful(
       });
     }
     if (typeof obj.result === "string" && obj.result.trim()) {
-      out.push({ type: "message", session_id: sessionId, ts, text: obj.result });
+      // The terminal `result` IS cursor's typed final answer (the docs define
+      // `result` as the full assistant text of the turn).
+      out.push({ type: "message", session_id: sessionId, ts, text: obj.result, final: true });
     }
     if (obj.subtype && obj.subtype !== "success") {
       out.push({

@@ -109,6 +109,27 @@ import Testing
         #expect(r.truncatedChars == 99_500)
     }
 
+    /// A TYPED final message is the answer bubble's content — repeating it in
+    /// the live transcript would double the text the user just read (Ф2.5).
+    @Test func typedFinalMessageNeverEntersTheTranscript() {
+        var r = TranscriptReducer()
+        r.apply(message(1, "narration"))
+        r.apply(BusEnvelope(seq: 2, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object([
+                "type": .string("message"),
+                "text": .string("final answer"),
+                "final": .bool(true)
+            ])
+        ])))
+        #expect(r.blocks.count == 1)
+        guard case .message(_, let text) = r.blocks.first else {
+            Issue.record("expected the narration message")
+            return
+        }
+        #expect(text == "narration")
+    }
+
     @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {
         var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 3_000, toolFieldCap: 500)
         for i in 1...20 { r.apply(toolCall(i, target: String(repeating: "c", count: 500))) }

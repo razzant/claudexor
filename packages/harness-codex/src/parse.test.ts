@@ -16,7 +16,8 @@ const SAMPLE = [
 
 describe("parseCodexEvent", () => {
   it("maps a realistic codex exec --json stream to normalized typed events", () => {
-    const events = SAMPLE.flatMap((l) => parseCodexEvent(JSON.parse(l), "s1") ?? []);
+    const state = {};
+    const events = SAMPLE.flatMap((l) => parseCodexEvent(JSON.parse(l), "s1", state) ?? []);
     for (const e of events) expect(() => HarnessEvent.parse(e)).not.toThrow();
 
     const types = events.map((e) => e.type);
@@ -47,6 +48,29 @@ describe("parseCodexEvent", () => {
 
     const msg = events.find((e) => e.type === "message");
     expect(msg?.text).toBe("Done.");
+
+    // codex has NO native final marker: the adapter finalizes the turn's
+    // LAST agent message as a typed `final` message on turn.completed
+    // (vendor semantics — --output-last-message / task_complete). Ф2.5 W-C1.
+    const finals = events.filter((e) => e.type === "message" && e.final === true);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]?.text).toBe("Done.");
+    expect(finals[0]?.payload?.["final_source"]).toBe("last_agent_message");
+  });
+
+  it("does not fabricate a final message when a turn produced no agent message", () => {
+    const state = {};
+    const events = [
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"ls","exit_code":0,"status":"completed"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}',
+    ].flatMap((l) => parseCodexEvent(JSON.parse(l), "s1", state) ?? []);
+    expect(events.some((e) => e.final === true)).toBe(false);
+  });
+
+  it("stateless parse (no state) never emits a final message", () => {
+    const events = SAMPLE.flatMap((l) => parseCodexEvent(JSON.parse(l), "s1") ?? []);
+    expect(events.some((e) => e.final === true)).toBe(false);
   });
 
   it("maps failed command executions to error tool_results (status + exit code)", () => {

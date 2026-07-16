@@ -102,6 +102,10 @@ public struct TranscriptReducer: Sendable {
             return true
         case "message":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
+            // A TYPED final message (claude/cursor result, codex finalized
+            // last agent message) IS the answer bubble — repeating it in the
+            // live transcript would double the text the user just read.
+            if payload["final"]?.boolValue == true { return false }
             // A message is a one-shot: keep the HEAD (the answer's beginning);
             // the full text lives in the run's artifacts.
             append(.message(id: "msg-\(seqKey)", text: boundHead(text)))

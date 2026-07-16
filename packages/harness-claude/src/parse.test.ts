@@ -20,17 +20,27 @@ describe("parseClaudeEvent", () => {
     expect(parseClaudeEvent({ type: "system", subtype: "compact" }, "s1")).toEqual([]);
   });
 
-  it("maps api_retry overloads to typed rate_limit and transient signals", () => {
+  it("maps api_retry to a TYPED status event (never a thinking block) with rate_limit/transient signals", () => {
     const out = parseClaudeEvent(
       {
         type: "system",
         subtype: "api_retry",
         error: "temporarily unavailable / overloaded",
+        attempt: 2,
+        max_retries: 10,
         retry_delay_ms: 2500,
       },
       "s1",
     )?.[0];
-    expect(out?.type).toBe("thinking");
+    // A native retry is transient STATUS for the activity feed — mapping it
+    // to `thinking` used to plant "api_retry: 529…" junk in the chat's
+    // reasoning disclosure (Ф2.5 W-C2).
+    expect(out?.type).toBe("status");
+    expect(out?.status?.kind).toBe("api_retry");
+    expect(out?.status?.attempt).toBe(2);
+    expect(out?.status?.max_retries).toBe(10);
+    expect(out?.status?.retry_delay_ms).toBe(2500);
+    expect(out?.status?.error_category).toBe("temporarily unavailable / overloaded");
     expect(out?.rate_limit?.retry_delay_ms).toBe(2500);
     expect(out?.transient?.kind).toBe("service_unavailable");
     expect(out?.transient?.retry_delay_ms).toBe(2500);
@@ -80,6 +90,8 @@ describe("parseClaudeEvent", () => {
     expect(ok[0]?.usage?.cost_usd).toBe(0.25);
     expect(ok[0]?.usage?.cached_input_tokens).toBe(100);
     expect(ok[1]?.text).toBe("[]");
+    // The terminal result is claude's TYPED final answer (Ф2.5 W-C1).
+    expect(ok[1]?.final).toBe(true);
 
     // error_max_turns is a BENIGN turn-control outcome (the run hit --max-turns
     // with partial work preserved), NOT a run failure -> a timeline thinking
@@ -115,6 +127,7 @@ describe("parseClaudeEvent", () => {
     expect(structured.map((e) => e.type)).toEqual(["usage", "message"]);
     expect(JSON.parse(structured[1]?.text ?? "")).toEqual({ verdict: "ok", score: 7 });
     expect(structured[1]?.payload?.["structured_output"]).toBe(true);
+    expect(structured[1]?.final).toBe(true);
 
     // Exhausted structured-output retries = a CONFORMANCE failure (the engine
     // receipt reports it), never a run failure.

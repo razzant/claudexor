@@ -31,7 +31,7 @@ import {
   shouldVerifyApiKey,
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
-import { parseCodexEvent } from "./parse.js";
+import { parseCodexEvent, type CodexParseState } from "./parse.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 import { codexImageArgs } from "./attachments.js";
 
@@ -749,6 +749,7 @@ async function* runCodex(
   // codex recorded in its own rollout transcript; cache that one read.
   let codexThreadId: string | undefined;
   let transcriptModel: string | undefined;
+  const parseState: CodexParseState = {}; // per-run finality (see CodexParseState)
 
   try {
     yield* runtime.runCliHarness({
@@ -763,7 +764,7 @@ async function* runCodex(
         const raw = obj as { type?: unknown; thread_id?: unknown };
         if (raw?.type === "thread.started" && typeof raw.thread_id === "string")
           codexThreadId = raw.thread_id;
-        const out = parseCodexEvent(obj, sessionId);
+        const out = parseCodexEvent(obj, sessionId, parseState);
         if (out === null) return null;
         for (const ev of out) {
           // Do NOT fabricate observed_model from the request hint: route proof

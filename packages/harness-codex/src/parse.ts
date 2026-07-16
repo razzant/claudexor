@@ -12,6 +12,18 @@ const CODEX_TRANSIENT_RE =
   /stream disconnected|failed to lookup address information|nodename nor servname|eai_again|enotfound|econnreset|etimedout|temporar(?:y|ily) unavailable|network/i;
 
 /**
+ * Per-run finality state: codex's `exec --json` stream has NO typed marker of
+ * the final answer (verified against exec_events.rs + official docs, 2026-07)
+ * — the vendor's own definition (`--output-last-message`, SDK finalResponse,
+ * proto `task_complete.last_agent_message`) is "the last agent message of the
+ * turn". The adapter tracks it and FINALIZES it as a typed `final` message on
+ * `turn.completed`, so consumers never re-derive finality from prose order.
+ */
+export interface CodexParseState {
+  lastAgentMessage?: string;
+}
+
+/**
  * Map a single Codex `exec --json` JSONL object to normalized HarnessEvents.
  * Codex event names: thread.*, turn.*, item.started|updated|completed, error.
  *
@@ -19,7 +31,11 @@ const CODEX_TRANSIENT_RE =
  * and `[]` for recognized-but-intentionally-skipped events (e.g. item.updated
  * progress ticks that would double-register a tool call).
  */
-export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | null {
+export function parseCodexEvent(
+  obj: Json,
+  sessionId: string,
+  state?: CodexParseState,
+): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
 
@@ -36,7 +52,7 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
   }
   if (type === "turn.completed") {
     const u = obj.usage ?? {};
-    return [
+    const out: HarnessEvent[] = [
       {
         type: "usage",
         session_id: sessionId,
@@ -48,6 +64,21 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
         },
       },
     ];
+    // Typed finality: the turn's last agent message IS the final answer
+    // (vendor semantics — see CodexParseState). Emitted as a `final` message
+    // so the engine takes it verbatim; the narration copy already streamed.
+    if (state?.lastAgentMessage) {
+      out.push({
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: state.lastAgentMessage,
+        final: true,
+        payload: { final_source: "last_agent_message" },
+      });
+      state.lastAgentMessage = undefined;
+    }
+    return out;
   }
   if (type === "turn.failed") {
     const message = obj.error?.message ?? "turn failed";
@@ -162,8 +193,11 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
   if (type === "item.completed") {
     const item = obj.item ?? {};
     switch (item.type) {
-      case "agent_message":
-        return [{ type: "message", session_id: sessionId, ts, text: String(item.text ?? "") }];
+      case "agent_message": {
+        const text = String(item.text ?? "");
+        if (state && text.trim()) state.lastAgentMessage = text;
+        return [{ type: "message", session_id: sessionId, ts, text }];
+      }
       case "reasoning":
         return [{ type: "thinking", session_id: sessionId, ts, text: String(item.text ?? "") }];
       case "file_change": {

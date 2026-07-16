@@ -736,14 +736,27 @@ export const HarnessEvent = z
         "patch_produced",
         "usage",
         "error",
+        "status",
         "completed",
       ])
       .describe(
-        "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, and errors.",
+        "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, transient status, and errors.",
       ),
     session_id: Id.describe("Session the event belongs to."),
     ts: z.string().describe("Event timestamp."),
     text: z.string().optional().describe("Text content for thinking/message/error events."),
+    /**
+     * True on the harness's TYPED final answer message — claude/cursor's
+     * terminal `result` event, codex's last agent message finalized at
+     * `turn.completed`. Narration (mid-run) messages never set it; consumers
+     * take a final message VERBATIM as the answer instead of joining prose.
+     */
+    final: z
+      .boolean()
+      .optional()
+      .describe(
+        "True on the harness's typed final-answer message (vendor terminal result); mid-run narration never sets it.",
+      ),
     /** Typed tool info; set on `tool_call` and `tool_result` events. */
     tool: ToolRef.optional().describe("Typed tool info; set on tool_call and tool_result events."),
     /** Set on `interaction_requested` events. */
@@ -849,6 +862,37 @@ export const HarnessEvent = z
       .describe(
         "Typed rate-limit/quota signal set by the adapter when the native CLI reports a 429/quota/overload.",
       ),
+    /**
+     * Typed transient-status detail; set on `status` events. Today's only kind
+     * is claude's native `api_retry` (the CLI is retrying an API call by
+     * itself): the adapter maps the official fields through instead of
+     * fabricating a thinking block, so retries land in the activity feed —
+     * never in the reasoning disclosure. `error_category` passes the vendor's
+     * own label (e.g. rate_limit, overloaded) verbatim as disclosed evidence.
+     */
+    status: z
+      .object({
+        kind: z.enum(["api_retry"]).describe("Kind of transient status."),
+        attempt: z.number().int().nonnegative().optional().describe("Retry attempt number."),
+        max_retries: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Vendor's configured retry ceiling."),
+        retry_delay_ms: z
+          .number()
+          .int()
+          .nonnegative()
+          .optional()
+          .describe("Delay before the retry, when reported."),
+        error_category: z
+          .string()
+          .optional()
+          .describe("Vendor's own error category label, passed through verbatim."),
+      })
+      .optional()
+      .describe("Typed transient-status detail set by the adapter on status events."),
     /**
      * Typed transient-failure signal. Adapters set this from native CLI/API error
      * shapes in their parse layer; the orchestrator consumes it for bounded retry

@@ -382,6 +382,7 @@ extension AppModel {
             let kind: ActivityKind = detail.contains("file") ? .file
                 : detail.contains("tool") ? .tool
                 : detail.contains("think") ? .thinking
+                : detail == "status" ? .system   // typed transient status (e.g. api_retry)
                 : detail.contains("message") ? .message : .tool
             let h = (payload["harness_id"]?.stringValue ?? payload["harness"]?.stringValue).flatMap { HarnessFamily(rawValue: $0) }
             if let h, !t.harnesses.contains(h) {
