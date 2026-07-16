@@ -46,6 +46,7 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { print, printJson, printJsonLine, printUsageError, statusGlyph } from "./cli-io.js";
+import { pickResumableThread } from "./thread-select.js";
 import {
   KNOWN_FLAGS,
   VALUE_FLAGS,
@@ -623,19 +624,21 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // Parse through the typed DTO — the field is camelCase `updatedAt`, and a
       // hand-rolled `updated_at` read silently sorts undefined and throws.
       const list = ControlThreadListResponse.parse(await res.json());
-      const newest = [...list.threads]
-        .filter((t) => t.state === "active")
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+      const newest = pickResumableThread(list.threads);
       if (!newest) {
+        // Stay valid on the active output surface: NDJSON stream keeps compact
+        // lines; --json prints its one object; text goes to stderr.
         const message = "claudexor: --resume found no threads to continue";
-        if (json || jsonStream) printJson({ ok: false, exitCode: 1, error: message });
+        if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
+        else if (json) printJson({ ok: false, exitCode: 1, error: message });
         else process.stderr.write(`${message}\n`);
         return 1;
       }
       threadId = newest.id;
     } catch (err) {
       const message = `claudexor: --resume could not list threads: ${err instanceof Error ? err.message : String(err)}`;
-      if (json || jsonStream) printJson({ ok: false, exitCode: 1, error: message });
+      if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
+      else if (json) printJson({ ok: false, exitCode: 1, error: message });
       else process.stderr.write(`${message}\n`);
       return 1;
     }
