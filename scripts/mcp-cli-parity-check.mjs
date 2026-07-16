@@ -91,6 +91,14 @@ const BOOLEAN_FLAG_MAP = {
     reason: "live-tree mutation is a CLI-only explicit opt-in (never a remote-ish surface default)",
   },
   json: { mcp: null, reason: "CLI output shaping, not a run control" },
+  "json-stream": {
+    mcp: null,
+    reason: "CLI output shaping (NDJSON terminal surface); MCP transport is already structured",
+  },
+  resume: {
+    mcp: null,
+    reason: "CLI shorthand over --thread; thread continuation via MCP is deferred with it",
+  },
   all: { mcp: null, reason: "subcommand scope flag, not a run control" },
   refresh: { mcp: null, reason: "quota subcommand operation, not a run control" },
   "dry-run": { mcp: null, reason: "subcommand plumbing" },
@@ -121,6 +129,12 @@ const CLI_ONLY_EXEMPT = {
     "per-run structured-output contract; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
   route:
     "models-subcommand credential-route filter (read-only listing), not a run-control knob; MCP has no models tool today",
+  "max-turns":
+    "per-run turn cap; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
+  "prompt-file":
+    "terminal input plumbing (file/stdin prompt sources); MCP callers pass the prompt inline",
+  thread:
+    "thread continuation is a CLI/HTTP embedder handle; MCP one-shot tools have no thread surface yet (deferred with DT2.1-1)",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",
   attempts: "convergence knob; MCP one-shot surface exposes race width (n) only today",
   synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",

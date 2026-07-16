@@ -117,6 +117,19 @@
           "description": "Requested auth route for the run (subscription/api_key/auto); the telemetry auth_route receipt carries the effective truth.",
           "default": "auto"
         },
+        "max_turns": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-run turn cap (beats per-harness settings); null when the caller set none."
+        },
         "spec": {
           "type": "object",
           "properties": {

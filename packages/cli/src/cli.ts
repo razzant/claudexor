@@ -326,7 +326,32 @@ async function orchestrate(
   json: boolean,
   forced: { swarm?: boolean; create?: boolean; race?: boolean } = {},
 ): Promise<number> {
-  const rawPrompt = args._.slice(1).join(" ").trim();
+  let rawPrompt = args._.slice(1).join(" ").trim();
+  // Headless prompt sources (W13): `-` reads the prompt from stdin; a file
+  // beats retyping. Exactly ONE source — ambiguity is a usage error, never a
+  // silent pick.
+  const promptFile = flagStr(args, "prompt-file");
+  if (promptFile !== undefined) {
+    if (rawPrompt && rawPrompt !== "-") {
+      return printUsageError(
+        json,
+        "claudexor: pass either an inline prompt or --prompt-file, not both",
+      );
+    }
+    try {
+      rawPrompt = readFileSync(promptFile, "utf8").trim();
+    } catch (err) {
+      return printUsageError(
+        json,
+        `claudexor: --prompt-file: cannot read ${promptFile}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  } else if (rawPrompt === "-") {
+    rawPrompt = readFileSync(0, "utf8").trim();
+    if (!rawPrompt) {
+      return printUsageError(json, "claudexor: stdin prompt (`-`) was empty");
+    }
+  }
   const specPath = flagStr(args, "spec");
   let loadedSpec: ReturnType<typeof loadFrozenSpec> | null = null;
   try {
@@ -397,6 +422,7 @@ async function orchestrate(
   let resolvedProtectedPathApprovals: ProtectedPathApproval[] | undefined;
   let resolvedInstructions: string | undefined;
   let resolvedMaxSeconds: number | undefined;
+  let resolvedMaxTurns: number | undefined;
   let resolvedDenyPaths: string[] | undefined;
   let resolvedOutputSchema: Record<string, unknown> | undefined;
   try {
@@ -420,6 +446,7 @@ async function orchestrate(
     resolvedProtectedPathApprovals = protectedPathApprovals(args);
     resolvedInstructions = resolveInstructions(args);
     resolvedMaxSeconds = intFlag(args, "max-seconds");
+    resolvedMaxTurns = intFlag(args, "max-turns");
     const denyPathFlags = flagStringList(args, "deny-path");
     resolvedDenyPaths = denyPathFlags.length > 0 ? denyPathFlags : undefined;
     const outputSchemaPath = flagStr(args, "output-schema");
@@ -493,6 +520,7 @@ async function orchestrate(
     prompt: prompt || "audit this repository",
     instructions: resolvedInstructions,
     maxSeconds: resolvedMaxSeconds,
+    maxTurns: resolvedMaxTurns,
     denyPaths: resolvedDenyPaths,
     outputSchema: resolvedOutputSchema,
     tests,
@@ -526,6 +554,7 @@ interface DaemonRunParams {
   prompt: string;
   instructions: string | undefined;
   maxSeconds: number | undefined;
+  maxTurns: number | undefined;
   denyPaths: string[] | undefined;
   outputSchema: Record<string, unknown> | undefined;
   tests: TestCommandInvocation[] | undefined;
@@ -558,6 +587,13 @@ interface DaemonRunParams {
  */
 async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): Promise<number> {
   const inPlace = flagBool(args, "in-place");
+  const jsonStream = flagBool(args, "json-stream");
+  if (json && jsonStream) {
+    return printUsageError(
+      json,
+      "claudexor: --json prints exactly one object and --json-stream prints NDJSON; pass one, not both",
+    );
+  }
   let client: Awaited<ReturnType<typeof ensureDaemon>>["client"];
   let addr: Awaited<ReturnType<typeof ensureDaemon>>["addr"];
   try {
@@ -571,6 +607,35 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       });
     else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
+  }
+  // Thread continuation (W13): --thread <id> targets a thread explicitly;
+  // --resume picks the most recently updated one. POST /runs already funnels a
+  // threadId through the SINGLE createThreadTurn point server-side — this is
+  // parameter plumbing, never a second turn-creation path.
+  let threadId = flagStr(args, "thread");
+  if (threadId === undefined && flagBool(args, "resume")) {
+    try {
+      const res = await controlApiFetch(addr, "/threads", {
+        headers: { Authorization: `Bearer ${addr.token}` },
+      });
+      if (!res.ok) throw new Error(`GET /threads failed: ${res.status}`);
+      const list = (await res.json()) as { threads?: { id: string; updated_at: string }[] };
+      const newest = [...(list.threads ?? [])].sort((a, b) =>
+        b.updated_at.localeCompare(a.updated_at),
+      )[0];
+      if (!newest) {
+        const message = "claudexor: --resume found no threads to continue";
+        if (json || jsonStream) printJson({ ok: false, exitCode: 1, error: message });
+        else process.stderr.write(`${message}\n`);
+        return 1;
+      }
+      threadId = newest.id;
+    } catch (err) {
+      const message = `claudexor: --resume could not list threads: ${err instanceof Error ? err.message : String(err)}`;
+      if (json || jsonStream) printJson({ ok: false, exitCode: 1, error: message });
+      else process.stderr.write(`${message}\n`);
+      return 1;
+    }
   }
   let attachmentRefs: ResourceAttachmentRef[] | undefined;
   try {
@@ -596,10 +661,12 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     prompt: p.prompt,
     ...(p.instructions ? { instructions: p.instructions } : {}),
     ...(p.maxSeconds !== undefined ? { maxSeconds: p.maxSeconds } : {}),
+    ...(p.maxTurns !== undefined ? { maxTurns: p.maxTurns } : {}),
     ...(p.denyPaths?.length ? { denyPaths: p.denyPaths } : {}),
     ...(p.outputSchema !== undefined ? { outputSchema: p.outputSchema } : {}),
     ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
+    ...(threadId ? { threadId } : {}),
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
     scope: { kind: "project", root: process.cwd() },
     execution: { isolation: inPlace ? "live" : "envelope" },
@@ -631,6 +698,54 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   };
 
   try {
+    if (jsonStream) {
+      // NDJSON machine surface (W13): an EARLY runId frame first, every run
+      // event as its own line (the shared follow pipeline in json mode), and
+      // the same terminal object --json prints as the LAST line. --json keeps
+      // its exactly-one-object contract untouched.
+      const started = await enqueueAndAwait(client, addr, body, { waitForTerminal: false });
+      if (!started.runId) {
+        printJson({
+          runId: "",
+          runDir: started.runDir,
+          status: runStatusForCli(started.status),
+          jobId: started.jobId,
+          mode: p.mode,
+          ...(started.error ? { error: started.error } : {}),
+        });
+        return exitCodeForState(started.status);
+      }
+      printJson({
+        frame: "run.started",
+        runId: started.runId,
+        runDir: started.runDir,
+        jobId: started.jobId,
+        mode: p.mode,
+      });
+      await followRun(started.runId, true);
+      const final = started.jobId ? await client.status(started.jobId) : null;
+      const status = final?.state ?? started.status;
+      const out = {
+        runId: started.runId,
+        runDir: final?.runDir ?? started.runDir,
+        status: runStatusForCli(status),
+        jobId: started.jobId,
+        error: final?.error ?? started.error,
+      };
+      const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
+      const applyEligibility = await fetchApplyEligibility(addr, started.runId);
+      printJson({
+        runId: out.runId,
+        runDir: out.runDir,
+        status: out.status,
+        jobId: out.jobId,
+        mode: p.mode,
+        ...(out.error ? { error: out.error } : {}),
+        ...(reason ? { summary: reason } : {}),
+        ...(applyEligibility ? { applyEligibility } : {}),
+      });
+      return exitCodeForState(status);
+    }
     if (json) {
       // Pure machine surface: await the terminal outcome and print one JSON object.
       const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });

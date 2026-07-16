@@ -4288,6 +4288,81 @@ describe("Orchestrator", () => {
     expect(res.summary).toContain("route");
   });
 
+  it("run-level maxTurns beats settings and is disclosed when unsupported (W13)", async () => {
+    const repo = await initRepo();
+    let seenMaxTurns: number | null | undefined;
+    const supported: HarnessAdapter = {
+      ...diffImplementer("turns-lane"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "turns-lane",
+          display_name: "turns-lane",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, max_turns: true },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seenMaxTurns = spec.max_turns;
+        yield { type: "started", session_id: spec.session_id, ts };
+        writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+        yield {
+          type: "file_change",
+          session_id: spec.session_id,
+          ts,
+          payload: { path: "CHANGED.txt", action: "create" },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    await new Orchestrator({ registry: new Map([[supported.id, supported]]), reviewers: [] }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [supported.id],
+      maxTurns: 7,
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    expect(seenMaxTurns).toBe(7);
+    // A lane without native max_turns support never receives the cap; the
+    // contract still records the caller's request.
+    const unsupported: HarnessAdapter = {
+      ...diffImplementer("no-turns-lane"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seenMaxTurns = spec.max_turns;
+        yield { type: "started", session_id: spec.session_id, ts };
+        writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+        yield {
+          type: "file_change",
+          session_id: spec.session_id,
+          ts,
+          payload: { path: "CHANGED.txt", action: "create" },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[unsupported.id, unsupported]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [unsupported.id],
+      maxTurns: 7,
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    expect(seenMaxTurns ?? null).toBe(null);
+    expect(readFileSync(join(res.runDir, "context", "task.yaml"), "utf8")).toContain(
+      "max_turns: 7",
+    );
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

@@ -248,6 +248,18 @@ export const TaskContract = z
     auth_preference: AuthPreference.default("auto").describe(
       "Requested auth route for the run (subscription/api_key/auto); the telemetry auth_route receipt carries the effective truth.",
     ),
+    /** Caller-requested per-run turn cap. Run-level beats per-harness settings
+     * (specific beats general); a lane whose manifest lacks max_turns support
+     * discloses the ignored knob instead of silently dropping it. */
+    max_turns: z
+      .number()
+      .int()
+      .positive()
+      .nullable()
+      .default(null)
+      .describe(
+        "Per-run turn cap (beats per-harness settings); null when the caller set none.",
+      ),
     spec: z
       .object({
         id: Id.optional().describe("SpecPack id."),

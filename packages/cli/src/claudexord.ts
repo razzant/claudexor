@@ -223,6 +223,7 @@ async function main(): Promise<void> {
           prompt: String(p.prompt ?? ""),
           instructions: typeof p.instructions === "string" ? p.instructions : undefined,
           denyPaths: Array.isArray(p.denyPaths) ? p.denyPaths : undefined,
+          maxTurns: typeof p.maxTurns === "number" && p.maxTurns > 0 ? p.maxTurns : undefined,
           outputSchema:
             p.outputSchema && typeof p.outputSchema === "object" && !Array.isArray(p.outputSchema)
               ? (p.outputSchema as Record<string, unknown>)

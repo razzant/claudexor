@@ -37,10 +37,50 @@ the command documents or returns machine-readable output.
 `--web off|auto|cached|live` is the CLI-first external context policy. It is
 separate from process/network sandboxing. `claudexor inspect <run_id> --json`
 projects the run artifacts: output-ready state, the task contract, the
-engine-owned telemetry (web evidence and unrecovered tool errors), primary
-output, decision record, work product, and artifact paths. Terminal daemon
-state, live budget, and event streams come from the daemon/control API, not
-from `inspect`.
+engine-owned telemetry (web evidence, token usage, the auth route receipt,
+structured-output conformance, unrecovered tool errors), primary output,
+decision record, work product, and artifact paths. Terminal daemon state, live
+budget, and event streams come from the daemon/control API, not from
+`inspect`.
+
+### Embedder run controls (v2.1)
+
+Headless per-run knobs on the canonical run verbs (all also accepted by
+`POST /v2/runs`; MCP/ACP exposure is deferred per the parity gate's recorded
+exemptions):
+
+- Prompt sources: positional text, `-` (stdin), or `--prompt-file <file>` —
+  exactly one source.
+- `--instructions <text>` / `--instructions-file <file>`: per-run system-level
+  instructions layered onto every task-producing lane (never reviewers or the
+  synthesis judge).
+- `--max-seconds <n>`: hard wall-clock deadline for the whole run; on expiry
+  the run ends `cancelled` with reason `wall_clock_exceeded` and partial
+  artifacts (diagnostic `final/summary.md`) are kept.
+- `--max-turns <n>`: per-run turn cap; beats per-harness settings, and a lane
+  without native support discloses the ignored knob.
+- `--deny-path <glob>` (repeatable): globs no candidate may touch at all;
+  isolated/envelope runs only (in-place refuses at preflight) — a violating
+  patch is blocked before delivery, per-lane enforcement is disclosed via
+  `path_deny` receipts, and an operator `accept_risk` decision may still
+  deliver (the human is the final authority).
+- `--output-schema <file>`: mandatory JSON Schema for the final answer; an
+  incapable lane is a preflight refusal, the single engine validator writes
+  `final/output.json` plus a typed conformance receipt, and a non-conformant
+  answer ends success-with-warnings (`outputConformance: failed`) for the
+  embedder to retry.
+- `--thread <id>` / `--resume`: continue an existing thread (the daemon
+  funnels the run through its single thread-turn creation point); `--resume`
+  picks the most recently updated thread.
+- `--json-stream`: NDJSON — early `run.started` frame with the runId, one line
+  per run event, terminal summary object last. `--json` keeps its
+  exactly-one-object contract.
+
+Run summaries (`GET /v2/runs/:id`, CLI `--json`) carry the matching receipts:
+`inputTokens`/`outputTokens`/`cachedInputTokens` (null when a harness reported
+none — never a fake 0), `outputConformance`, and `authRoute`
+({requested, effective, source, reason, modelMismatch}) so embedders act on
+typed truth instead of parsing prose.
 
 ## Daemon And Control API
 

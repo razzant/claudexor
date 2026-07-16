@@ -351,6 +351,12 @@ export interface RunInput {
    */
   outputSchema?: Record<string, unknown> | null;
   /**
+   * Per-run turn cap. Run-level beats per-harness settings (specific beats
+   * general); a lane whose manifest lacks max_turns support discloses the
+   * ignored knob instead of silently dropping it.
+   */
+  maxTurns?: number | null;
+  /**
    * How much the orchestrate planner may act without confirmation
    * (suggest/auto_safe/auto_full). Honored ONLY by mode=orchestrate; the
    * executor over the typed plan classifies each tool_call via toolRisk and
@@ -1484,6 +1490,7 @@ export class Orchestrator {
       // unsupported shapes before any run dir exists).
       output_schema: input.outputSchema ?? null,
       auth_preference: input.authPreference ?? "auto",
+      max_turns: input.maxTurns ?? null,
       spec:
         input.specId || input.specHash || input.specPath
           ? {
@@ -1607,11 +1614,13 @@ export class Orchestrator {
     let maxTurns: number | null = null;
     let toolsAllow: string[] = [];
     let toolsDeny: string[] = [];
-    if (s?.maxTurns) {
-      if (routed.supportsMaxTurns) maxTurns = s.maxTurns;
+    // Run-level cap beats per-harness settings (specific beats general).
+    const requestedMaxTurns = contract.max_turns ?? s?.maxTurns ?? null;
+    if (requestedMaxTurns) {
+      if (routed.supportsMaxTurns) maxTurns = requestedMaxTurns;
       else
         ignored.push(
-          `max_turns=${s.maxTurns} (manifest capabilities.max_turns=false for ${routed.adapter.id})`,
+          `max_turns=${requestedMaxTurns} (manifest capabilities.max_turns=false for ${routed.adapter.id})`,
         );
     }
     if ((s?.toolsAllow.length ?? 0) > 0 || (s?.toolsDeny.length ?? 0) > 0) {

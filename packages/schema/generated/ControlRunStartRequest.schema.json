@@ -469,6 +469,11 @@
           "type": "object",
           "additionalProperties": {},
           "description": "JSON Schema for the run's final answer; mandatory (incapable lane => preflight refusal), engine-validated into final/output.json with a typed outputConformance receipt."
+        },
+        "maxTurns": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Per-run turn cap (beats per-harness settings)."
         }
       },
       "additionalProperties": false,

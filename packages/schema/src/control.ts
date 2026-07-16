@@ -266,6 +266,14 @@ export const ControlRunStartRequest = z
       .describe(
         "JSON Schema for the run's final answer; mandatory (incapable lane => preflight refusal), engine-validated into final/output.json with a typed outputConformance receipt.",
       ),
+    /** Per-run turn cap; beats per-harness settings, and a lane without native
+     * max_turns support discloses the ignored knob instead of dropping it. */
+    maxTurns: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Per-run turn cap (beats per-harness settings)."),
   })
   .strict()
   .describe(
