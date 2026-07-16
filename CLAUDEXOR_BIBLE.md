@@ -215,8 +215,16 @@ process below. Never paper over the conflict.
   the typed paid-fallback policy. Requested/effective credential route and
   source plus the selection reason are preserved as evidence. Codex subscription
   auth uses a Claudexor-owned `CODEX_HOME` with file-only credential storage,
-  never the operator's ordinary `~/.codex` or OS Keychain. verify: adapter auth
-  isolation tests; setup capability receipts; routing paid-fallback tests.
+  never the operator's ordinary `~/.codex` or OS Keychain. Native/subscription is
+  also the PRESENTED default on every surface: onboarding, the Harness Doctor,
+  the composer's route disclosure, routing defaults, and docs lead with and prefer
+  the native route, and API keys appear as an explicitly-labeled fallback — never
+  the default path a user lands on (most users authenticate by subscription, not
+  by key). This surface ordering does not fork routing: the typed paid-fallback
+  under `auto` above stays the single routing rule, so a native-unavailable `auto`
+  run may still use a verified API route. verify: adapter auth
+  isolation tests; setup capability receipts; routing paid-fallback tests;
+  onboarding native-first + composer route-disclosure review question.
 - **INV-062** Raw secrets must not appear in run params, the command journal, task
   contracts, events, summaries, patches, PR text, logs, or docs. The PROMPT
   is included: a secret-like value inside the prompt text is hard-blocked at
