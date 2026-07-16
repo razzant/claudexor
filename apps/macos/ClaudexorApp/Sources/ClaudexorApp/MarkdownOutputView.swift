@@ -58,7 +58,7 @@ struct MarkdownOutputView: View {
         let c = NSCache<NSString, InlineBox>(); c.countLimit = 2048; return c
     }()
 
-    private static func inlineAttributed(_ raw: String) -> AttributedString {
+    static func inlineAttributed(_ raw: String) -> AttributedString {
         let key = raw as NSString
         if let hit = inlineCache.object(forKey: key) { return hit.value }
         let parsed = (try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(raw)
@@ -77,7 +77,9 @@ struct MarkdownOutputView: View {
         let c = NSCache<NSString, BlocksBox>(); c.countLimit = 256; return c
     }()
 
-    private static func parse(_ markdown: String) -> [MarkdownBlock] {
+    /// Internal (not private) so the W22 acceptance fixtures can assert the
+    /// block structure (headings / lists / fences) without rendering views.
+    static func parse(_ markdown: String) -> [MarkdownBlock] {
         let key = markdown as NSString
         if let hit = cache.object(forKey: key) { return hit.blocks }
         let out = parseUncached(markdown)
@@ -156,8 +158,8 @@ struct MarkdownOutputView: View {
         return String(line.dropFirst(head.count + 2))
     }
 
-    private struct MarkdownBlock: Identifiable {
-        enum Kind { case heading(Int), paragraph, list, code }
+    struct MarkdownBlock: Identifiable, Equatable {
+        enum Kind: Equatable { case heading(Int), paragraph, list, code }
         let id: Int
         let kind: Kind
         let text: String

@@ -35,6 +35,9 @@ struct TurnCard: View {
     /// True while an "Implement plan" turn is being sent, so the button shows a
     /// working state and can't be double-clicked (mirrors ApplyThreadBar.applying).
     @State private var implementingPlan = false
+    /// W22: a LONG final answer starts height-collapsed with a Show more toggle
+    /// (never the old hard 8-line cut); short answers render in full.
+    @State private var answerExpanded = false
 
     private var run: TaskRun? { turn.runId.flatMap { model.task($0) } }
 
@@ -117,12 +120,26 @@ struct TurnCard: View {
                     applyBar(run)
                         .task(id: run.id) { applyBlockReason = await model.applyCheck(runId: run.id) }
                 }
+                // W22: the FINAL answer renders as markdown (headings / lists /
+                // fences / links — the shared MarkdownOutputView), not flat
+                // 8-line-truncated text. Diffs/patches are NOT markdown — they
+                // live in the run's Diff tab. Long answers start collapsed with
+                // an explicit toggle; the full content is always reachable.
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
-                    Text(answer)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(8)
-                        .textSelection(.enabled)
+                    let long = Self.isLongAnswer(answer)
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        MarkdownOutputView(markdown: answer)
+                            .frame(maxHeight: long && !answerExpanded ? 260 : nil, alignment: .top)
+                            .clipped()
+                        if long {
+                            Button(answerExpanded ? "Show less" : "Show more") {
+                                answerExpanded.toggle()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption)
+                            .help(answerExpanded ? "Collapse the final answer" : "Show the whole final answer")
+                        }
+                    }
                 }
                 // Inline failure card: a terminal-FAILED turn with nothing to show
                 // (no answer, no transcript, no diff — e.g. an unauthed harness wrote
@@ -300,6 +317,11 @@ struct TurnCard: View {
                 }
             }
         }
+    }
+
+    /// A final answer long enough to start collapsed (chat stays scannable).
+    static func isLongAnswer(_ answer: String) -> Bool {
+        answer.count > 1200 || answer.filter { $0 == "\n" }.count > 14
     }
 
     private func applyBar(_ run: TaskRun) -> some View {
