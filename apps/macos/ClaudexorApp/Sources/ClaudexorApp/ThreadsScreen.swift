@@ -501,6 +501,15 @@ struct ThreadsScreen: View {
                         // (moved out of "⋯"); " · Browser" appends while armed.
                         AccessChip(access: $access, browserArmed: browser,
                                    writeDisabled: composerMode.isReadOnly && composerMode != .spec)
+                        // A dead control must SAY why (dogfood: «не кликабельный
+                        // стал» — the reason lived only in the hover tooltip).
+                        if composerMode.isReadOnly && composerMode != .spec {
+                            Text("\(composerMode.label) never writes — switch to Agent to change access")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        } else if browser {
+                            Text("Browser armed → Full (disarm in ⋯)")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
                     }
                     // The "⋯" options button is ALWAYS available — a no-project Ask is
                     // still entitled to a per-turn model / web / budget. `composerOptions`
