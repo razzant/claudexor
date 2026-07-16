@@ -21,6 +21,18 @@ extension ThreadsScreen {
         return modelsRouteParam(forAuthPreference: preference)
     }
 
+    /// Union of the RESOLVED pool's declared effort ladders in schema order
+    /// (weakest → strongest); a sticky primary narrows to its own ladder. One
+    /// scalar effort rides the run — adapters clamp it individually.
+    var composerEffortLevels: [String] {
+        let families = primaryFamily.map { [$0] }
+            ?? (resolvedPoolFamilies.isEmpty ? poolFamilies : resolvedPoolFamilies)
+        let declared = Set(families.flatMap { model.harnessInfo(for: $0)?.effortLevels ?? [] })
+        let canonical = ["low", "medium", "high", "xhigh", "max"].filter { declared.contains($0) }
+        // Unknown future levels degrade honestly to the tail, never dropped.
+        return canonical + declared.subtracting(canonical).sorted()
+    }
+
     /// The advanced options popover ("⋯"): clean SOLID sections on the popover's
     /// own material — harness pool, per-turn budget/access/web, agent repair strategies.
     var composerOptions: some View {
@@ -79,19 +91,20 @@ extension ThreadsScreen {
                 .fixedSize()
                 .help("External-context policy for this turn")
             }
-            // Per-turn reasoning effort: offered ONLY when the primary
-            // harness declares an effort ladder (adapter capability truth —
-            // an empty ladder hides the control, DESIGN_SYSTEM rule).
-            if let primary = primaryFamily,
-               let levels = model.harnessInfo(for: primary)?.effortLevels, !levels.isEmpty {
+            // Per-turn reasoning effort: ONE scalar rides the run and each
+            // adapter's normalizer clamps it onto its own declared ladder, so
+            // the picker offers the UNION of the resolved pool's ladders (a
+            // sticky primary narrows it to that harness). Hidden only when no
+            // routable harness declares a ladder (adapter capability truth).
+            if !composerEffortLevels.isEmpty {
                 OptionRow(label: "Effort") {
                     Picker("", selection: $effortPreference) {
                         Text("Harness default").tag("")
-                        ForEach(levels, id: \.self) { Text($0.capitalized).tag($0) }
+                        ForEach(composerEffortLevels, id: \.self) { Text($0.capitalized).tag($0) }
                     }
                     .labelsHidden()
                     .fixedSize()
-                    .help("Requested reasoning effort for \(primary.label) on THIS turn; the ladder comes from the adapter manifest.")
+                    .help("Requested reasoning effort for THIS turn. Each harness clamps it onto its own declared ladder (e.g. codex xhigh, claude max).")
                 }
             }
             // Per-turn auth route REQUEST (W18/Р20) over the thread preference.

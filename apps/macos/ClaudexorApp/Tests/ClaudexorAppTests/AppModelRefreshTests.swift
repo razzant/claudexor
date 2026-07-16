@@ -499,8 +499,11 @@ struct AppModelRefreshTests {
             baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
             session: URLSession(configuration: config)
         ), requestNotificationAuthorization: false)
+        // Schema truth: the ladder lives at manifest.capabilities.effort_levels
+        // (the old capability_profile path was a dead read — live manifests
+        // never populated it, so every effort control stayed hidden).
         AppRequestStubURLProtocol.handler = { request in
-            (appResponse(for: request), Data(#"{"harnesses":[{"id":"future-agent","status":"ok","manifest":{"capability_profile":{"effort_levels":["fast","deep"]}}}]}"#.utf8))
+            (appResponse(for: request), Data(#"{"harnesses":[{"id":"future-agent","status":"ok","manifest":{"capabilities":{"effort_levels":["fast","deep"]}}}]}"#.utf8))
         }
         #expect(await model.refreshHarnesses())
         #expect(model.selectableHarnesses.map(\.rawValue) == ["future-agent"])

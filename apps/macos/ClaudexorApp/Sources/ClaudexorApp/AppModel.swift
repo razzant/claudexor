@@ -418,7 +418,10 @@ final class AppModel {
                 let acceptsImages = Self.acceptsImages(manifest: status.manifest)
                 let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
                 let effortLevels: [String] = {
-                    guard case .array(let values) = status.manifest?["capability_profile"]?["effort_levels"] else { return [] }
+                    // Schema truth: HarnessCapabilities.effort_levels lives under
+                    // manifest.capabilities (the old capability_profile path was
+                    // never populated — the ladder read empty for EVERY harness).
+                    guard case .array(let values) = status.manifest?["capabilities"]?["effort_levels"] else { return [] }
                     return values.compactMap(\.stringValue)
                 }()
                 // The doctor's configured-model verdict rides the DTO —
