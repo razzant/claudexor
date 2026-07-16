@@ -82,9 +82,12 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
-/** Lane key for per-attempt dedup state — the same pair the line renders. */
+/**
+ * Lane key for per-attempt dedup state — the same pair the line renders,
+ * bounded so a pathological id never bloats the map (confirm review, minor).
+ */
 function laneOf(p: Record<string, unknown>): string {
-  return [p["attempt_id"], p["harness_id"]].filter(Boolean).join("/");
+  return truncate([p["attempt_id"], p["harness_id"]].filter(Boolean).join("/"), 256);
 }
 
 /**
@@ -110,15 +113,19 @@ function laneOf(p: Record<string, unknown>): string {
  * Text mode only — `--json`/NDJSON stay verbatim machine surfaces.
  */
 export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => string | null {
-  const lastMessageLineByLane = new Map<string, string>();
+  const lastMessageTitleByLane = new Map<string, string>();
   return (ev) => {
     const line = formatRunEventLine(ev);
     if (line === null || String(ev["type"] ?? "") !== "harness.event") return line;
     const p = (ev["payload"] ?? {}) as Record<string, unknown>;
-    if (String(p["type"] ?? "") !== "message") return line;
+    if (String(p["type"] ?? "") !== "message" || typeof p["title"] !== "string") return line;
+    // The per-lane value is ONLY the truncated rendered title — the lane key
+    // already carries the `[who]` prefix, and storing the whole line would
+    // retain an unbounded id a second time (confirm review, minor).
+    const rendered = truncate(p["title"], 160);
     const lane = laneOf(p);
-    if (p["final"] === true && lastMessageLineByLane.get(lane) === line) return null;
-    lastMessageLineByLane.set(lane, line);
+    if (p["final"] === true && lastMessageTitleByLane.get(lane) === rendered) return null;
+    lastMessageTitleByLane.set(lane, rendered);
     return line;
   };
 }
