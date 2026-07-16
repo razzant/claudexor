@@ -257,6 +257,11 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
     const version = status.manifest?.version ? ` ${status.manifest.version}` : "";
     print(`${statusGlyph(status.status)} ${status.id}${version}`);
     if (status.enabledIntents.length) print(`    intents: ${status.enabledIntents.join(", ")}`);
+    // The doctor-gated availability truth: what this harness can ACTUALLY be
+    // routed for right now (empty on degraded/unauth — nothing routes).
+    print(
+      `    routable: ${status.routableIntents.length ? status.routableIntents.join(", ") : "(none)"}`,
+    );
     print(`    auth sources: ${authSourceAvailability(status)}`);
     print(`    checks: ${checksSummary(status)}`);
     if (status.reasons.length) print(`    reasons: ${status.reasons.join(", ")}`);

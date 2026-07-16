@@ -464,6 +464,14 @@
                 "default": [],
                 "description": "Intents the gateway will route to this harness."
               },
+              "routableIntents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Intents the harness is actually routable for right now (doctor-gated); the server-side availability truth surfaces must read instead of re-deriving."
+              },
               "disabledIntents": {
                 "type": "array",
                 "items": {

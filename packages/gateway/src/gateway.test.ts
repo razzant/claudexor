@@ -38,6 +38,44 @@ describe("HarnessGateway auth readiness projection", () => {
     ]);
   });
 
+  it("routableIntents is EMPTY for a degraded harness and doctor-gated for an ok one (W_readiness)", async () => {
+    const make = (id: string, status: "ok" | "degraded"): HarnessAdapter =>
+      ({
+        id,
+        discover: async () =>
+          HarnessManifest.parse({
+            id,
+            display_name: id,
+            kind: "fake",
+            provider_family: "unknown",
+            capabilities: { implement: true, ask: true },
+          }),
+        doctor: async () =>
+          ConformanceReport.parse({
+            harness_id: id,
+            status,
+            enabled_intents: ["implement", "explain"],
+          }),
+        run: async function* () {
+          /* not used */
+        },
+      }) satisfies HarnessAdapter;
+
+    const rows = await new HarnessGateway(
+      new Map([
+        ["ok-lane", make("ok-lane", "ok")],
+        ["degraded-lane", make("degraded-lane", "degraded")],
+      ]),
+    ).statusAll({ cwd: "/repo" });
+    const ok = rows.find((r) => r.id === "ok-lane");
+    const degraded = rows.find((r) => r.id === "degraded-lane");
+    // ok: routable mirrors the doctor-enabled intents.
+    expect(ok?.routableIntents.length).toBeGreaterThan(0);
+    expect(ok?.routableIntents).toEqual(ok?.enabledIntents);
+    // degraded: intents may be declared/enabled, but NOTHING routes (incl. write intents).
+    expect(degraded?.routableIntents).toEqual([]);
+  });
+
   it("targets one harness/source without calling discover or unrelated adapters", async () => {
     const seen: Array<{ source?: string; fresh?: boolean }> = [];
     const target = {

@@ -15,6 +15,11 @@ export interface HarnessStatus {
   status: "ok" | "degraded" | "unavailable";
   manifest: HarnessManifest | null;
   enabledIntents: Intent[];
+  /** Intents this harness is ACTUALLY routable for right now: enabledIntents
+   * gated by doctor readiness (BIBLE §2 — doctor decides; a degraded or
+   * unauth'd harness routes NOTHING). The server-side availability truth: UI
+   * surfaces read this field instead of re-deriving business logic (Р8). */
+  routableIntents: Intent[];
   disabledIntents: Intent[];
   checks: ConformanceCheck[];
   reasons: string[];
@@ -85,12 +90,14 @@ export class HarnessGateway {
       }
       const report = (await runDoctor(new Map([[adapter.id, adapter]]), spec))[0] ?? null;
       const status = report?.status ?? "unavailable";
+      const enabledIntents = manifest ? allowedIntents(manifest, report) : [];
       out.push({
         id: adapter.id,
         available: manifest !== null && status !== "unavailable",
         status,
         manifest,
-        enabledIntents: manifest ? allowedIntents(manifest, report) : [],
+        enabledIntents,
+        routableIntents: status === "ok" ? enabledIntents : [],
         disabledIntents: report?.disabled_intents ?? [],
         checks: report?.checks ?? [],
         reasons: [...(discoverError ? [discoverError] : []), ...(report?.reasons ?? [])],

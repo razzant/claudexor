@@ -1214,6 +1214,16 @@ export const HarnessStatusDto = z
       .array(z.string())
       .default([])
       .describe("Intents the gateway will route to this harness."),
+    /** Intents this harness is ACTUALLY routable for right now: enabledIntents
+     * gated by doctor readiness (a degraded/unauth'd harness routes nothing).
+     * The SERVER-side availability truth — surfaces read this field and never
+     * re-derive availability from status+intents business logic (Р8). */
+    routableIntents: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "Intents the harness is actually routable for right now (doctor-gated); the server-side availability truth surfaces must read instead of re-deriving.",
+      ),
     disabledIntents: z.array(z.string()).default([]).describe("Intents the doctor disabled."),
     checks: z.array(ConformanceCheck).default([]).describe("Doctor probe results."),
     reasons: z
