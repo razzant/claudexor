@@ -59,10 +59,26 @@ struct AccessChip: View {
     /// Read-only intents never write (Spec keeps the control for its
     /// eventual Implement turn) — the chip disables with an honest reason.
     let writeDisabled: Bool
+    /// The current intent's label for the visible disable reason (dogfood:
+    /// «не кликабельный стал» — a hover-only tooltip is not disclosure).
+    var modeLabel: String = ""
 
     private var tint: Color { access == .full ? .orange : Theme.accent }
 
     var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            chipMenu
+            if writeDisabled {
+                Text("\(modeLabel.isEmpty ? "This intent" : modeLabel) never writes — switch to Agent to change access")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            } else if browserArmed {
+                Text("Browser armed → Full (disarm in ⋯)")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var chipMenu: some View {
         Menu {
             ForEach(AccessProfile.composerCases) { profile in
                 Button { access = profile } label: {
