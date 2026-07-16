@@ -236,6 +236,14 @@
               "default": [],
               "description": "Spec/config-owned globs whose changes escalate risk to a human-approval gate; cannot be suppressed by per-run protected-path approvals."
             },
+            "deny_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "Per-run globs no candidate may touch at all; enforced by the engine post-diff gate on envelope runs (in-place runs with deny_paths are refused). accept_risk may still deliver (INV-111)."
+            },
             "auto_protected_paths": {
               "type": "array",
               "items": {

@@ -144,6 +144,25 @@ export class RequestRequirementsResolver {
     };
   }
 
+  /**
+   * Per-lane deny-path enforcement receipt. No pinned adapter supports native
+   * pre-write path deny today (claude needs >=2.1.208), so an eligible lane
+   * does not exist and the engine's post-diff policy gate is the authoritative
+   * enforcement — the receipt discloses exactly that (`postdiff_only`), never
+   * implying OS/native containment that is not there.
+   */
+  resolveDenyPaths(harnessId: string, requested: boolean): RequestRequirementResolution {
+    return {
+      capability: "path_deny",
+      harness_id: harnessId,
+      eligible: false,
+      requested,
+      effective: false,
+      reason: requested ? "postdiff_only" : "not_requested",
+      evidence_refs: ["request.deny_paths"],
+    };
+  }
+
   requireEffectiveBrowser(requested: boolean, resolutions: RequestRequirementResolution[]): void {
     if (!requested || resolutions.some((resolution) => resolution.effective)) return;
     const detail = resolutions

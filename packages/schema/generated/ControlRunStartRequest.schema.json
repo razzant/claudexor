@@ -456,6 +456,14 @@
           "type": "integer",
           "exclusiveMinimum": 0,
           "description": "Hard wall-clock deadline for the whole run (seconds, from scheduler start); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept."
+        },
+        "denyPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Per-run globs no candidate may touch at all; envelope-only (in-place runs are refused), enforced by the engine post-diff gate, disclosed per lane via path_deny receipts. accept_risk may still deliver (INV-111)."
         }
       },
       "additionalProperties": false,

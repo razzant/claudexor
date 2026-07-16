@@ -7,6 +7,9 @@ export const RequestRequirementReason = z.enum([
   "manifest_unsupported",
   "web_policy_off",
   "access_profile_incompatible",
+  /** No selected lane can enforce the capability natively; the engine's
+   * post-diff policy gate is the authoritative enforcement instead. */
+  "postdiff_only",
 ]);
 export type RequestRequirementReason = z.infer<typeof RequestRequirementReason>;
 
@@ -17,7 +20,7 @@ export type RequestRequirementReason = z.infer<typeof RequestRequirementReason>;
  */
 export const RequestRequirementResolution = z
   .object({
-    capability: z.literal("browser"),
+    capability: z.enum(["browser", "path_deny"]),
     harness_id: z.string().min(1),
     eligible: z.boolean(),
     requested: z.boolean(),

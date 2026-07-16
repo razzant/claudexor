@@ -524,7 +524,10 @@
                   "properties": {
                     "capability": {
                       "type": "string",
-                      "const": "browser"
+                      "enum": [
+                        "browser",
+                        "path_deny"
+                      ]
                     },
                     "harness_id": {
                       "type": "string",
@@ -546,7 +549,8 @@
                         "effective",
                         "manifest_unsupported",
                         "web_policy_off",
-                        "access_profile_incompatible"
+                        "access_profile_incompatible",
+                        "postdiff_only"
                       ]
                     },
                     "evidence_refs": {

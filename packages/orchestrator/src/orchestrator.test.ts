@@ -3910,6 +3910,54 @@ describe("Orchestrator", () => {
     expect(telemetry).toMatch(/cached_input_tokens: null/);
   });
 
+  it("blocks an envelope candidate that touches a denied path and discloses postdiff_only receipts (W7)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      mode: "agent",
+      harnesses: ["fake-implement"],
+      tests: [shellGate("true")],
+      n: 1,
+      // fake-implement creates FAKE_CHANGE.txt: creating a denied file is a
+      // violation (stricter than protected paths, which gate existing files).
+      denyPaths: ["FAKE_*.txt"],
+    });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("candidate touched denied path(s) (deny_paths): FAKE_CHANGE.txt");
+    expect(review).toContain("severity: BLOCK");
+    expect(review).toContain("level: critical");
+    // The contract carries the constraint; the lane receipt is honest about
+    // enforcement: no native pre-write deny, the post-diff gate is authoritative.
+    expect(readFileSync(join(res.runDir, "context", "task.yaml"), "utf8")).toContain("FAKE_*.txt");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("capability: path_deny");
+    expect(telemetry).toContain("reason: postdiff_only");
+  });
+
+  it("refuses denyPaths on an in-place run at preflight (W7)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-implement"],
+        inPlace: true,
+        denyPaths: ["secrets/**"],
+      }),
+    ).rejects.toThrow(/denyPaths requires an isolated\/envelope run/);
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

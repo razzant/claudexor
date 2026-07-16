@@ -98,6 +98,18 @@ export const TaskConstraints = z
       .describe(
         "Spec/config-owned globs whose changes escalate risk to a human-approval gate; cannot be suppressed by per-run protected-path approvals.",
       ),
+    /** Per-run globs no candidate may touch AT ALL (create, modify, or delete —
+     * stricter than protected_paths, which gates only tampering with existing
+     * files). Enforced by the engine's post-diff policy gate on envelope runs;
+     * an in-place run with deny_paths is refused at preflight. An operator
+     * accept_risk decision MAY still deliver a violating patch (INV-111: the
+     * human is the final authority). */
+    deny_paths: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "Per-run globs no candidate may touch at all; enforced by the engine post-diff gate on envelope runs (in-place runs with deny_paths are refused). accept_risk may still deliver (INV-111).",
+      ),
     /** Engine-derived gate/test path protections. Per-run approvals can narrow
      * only this auto-protected set, never spec/config-owned protected_paths. */
     auto_protected_paths: z

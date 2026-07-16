@@ -326,6 +326,16 @@ export interface RunInput {
    */
   inPlace?: boolean;
   /**
+   * Per-run globs no candidate may touch at all (create/modify/delete) —
+   * stricter than protected paths, which gate only tampering with existing
+   * files. Envelope/isolated runs only: the engine's post-diff policy gate is
+   * the authoritative enforcement (violation → blocking finding → blocked,
+   * patch undelivered). An in-place run with denyPaths is refused at preflight:
+   * a live tree offers no pre-delivery containment, and silent non-enforcement
+   * is never acceptable. accept_risk MAY still deliver (INV-111).
+   */
+  denyPaths?: string[];
+  /**
    * How much the orchestrate planner may act without confirmation
    * (suggest/auto_safe/auto_full). Honored ONLY by mode=orchestrate; the
    * executor over the typed plan classifies each tool_call via toolRisk and
@@ -435,6 +445,9 @@ interface RoutedAdapter {
   supportsMaxTurns: boolean;
   supportsToolLists: boolean;
   browserRequirement: RequestRequirementResolution;
+  /** Per-lane deny-path enforcement disclosure (postdiff_only until an adapter
+   * supports native pre-write deny). */
+  denyRequirement: RequestRequirementResolution;
   /** Declared effort ladder (empty = effort is not a tunable surface; a
    * requested effort is then DISCLOSED as ignored, never silently dropped). */
   effortLevels: readonly EffortHint[];
@@ -542,6 +555,15 @@ export class Orchestrator {
     ) {
       throw new Error(
         `maxToolCalls caps the orchestrate EXECUTOR's plan steps and only applies to mode=orchestrate (got mode=${mode}); drop the knob or switch modes`,
+      );
+    }
+    // denyPaths is enforced by the post-diff policy gate BEFORE delivery, which
+    // only exists on envelope/isolated runs — an in-place run mutates the live
+    // tree directly, so the gate could not contain a violation. Refuse loudly
+    // rather than accept a knob the engine cannot honor (INV-023).
+    if ((resolved.denyPaths?.length ?? 0) > 0 && resolved.inPlace === true) {
+      throw new Error(
+        "denyPaths requires an isolated/envelope run: the post-diff policy gate blocks a violating patch before delivery, which an in-place run cannot guarantee; drop --deny-path or run isolated",
       );
     }
     // P1: a versioned `mandatory_files` contract is enforced UNIFORMLY here, for
@@ -1069,6 +1091,10 @@ export class Orchestrator {
             webPolicy: routePolicy,
             access: requiredAccess,
           }),
+          denyRequirement: this.requestRequirements.resolveDenyPaths(
+            id,
+            (input.denyPaths?.length ?? 0) > 0,
+          ),
           effortLevels: manifest.capabilities.effort_levels,
           knownModels: manifest.capabilities.known_models,
           supportsInteractive: manifest.capabilities.interactive,
@@ -1400,6 +1426,7 @@ export class Orchestrator {
       ...specFields,
       constraints: {
         protected_paths: protectedPaths,
+        deny_paths: [...new Set(input.denyPaths ?? [])],
         auto_protected_paths: autoProtectedPaths,
         protected_path_approvals: protectedPathApprovals,
       },
@@ -1639,7 +1666,7 @@ export class Orchestrator {
         knobs.webPolicy === "cached" ||
         knobs.webPolicy === "live",
       effectiveWebMode ?? knobs.webPolicy,
-      [routed.browserRequirement],
+      [routed.browserRequirement, routed.denyRequirement],
     );
     let activeSessionId = spec.session_id;
     const onAbort = () => {
@@ -2424,7 +2451,7 @@ export class Orchestrator {
             knobs.webPolicy,
             contract.external_context.web_required,
             effectiveWeb,
-            [slot.routed.browserRequirement],
+            [slot.routed.browserRequirement, slot.routed.denyRequirement],
           ),
           infraPhase,
         };
@@ -3247,11 +3274,16 @@ export class Orchestrator {
     protectedPaths: string[] = [],
     autoProtectedPaths: string[] = [],
     protectedPathApprovals: ProtectedPathApproval[] = [],
+    denyPaths: string[] = [],
   ): {
     findings: ReviewFinding[];
     risk: { level: string; reasons: string[]; changedFiles: number };
   } {
     const stats = diffStats(run.diff);
+    // deny_paths: ANY touch (create/modify/delete) of a denied glob is a
+    // violation — stricter than protected paths, which gate only tampering
+    // with existing files. Same matcher as every other path policy (INV-122).
+    const denyViolation = requireHuman(stats.paths, denyPaths);
     const approvalPatterns = protectedPathApprovals.map((approval) => approval.path);
     const unapprovedExistingAutoProtectedPaths = stats.existingPaths.filter(
       (path) => !matchAny(path, approvalPatterns),
@@ -3291,13 +3323,45 @@ export class Orchestrator {
     const evidenceFromPaths = (paths: string[]) => ({
       files: paths.map((path) => ({ path, lines: null })),
     });
-    const reportedRisk = protectedOnly.required
-      ? {
-          level: "critical" as const,
-          reasons: [...new Set([...risk.reasons, ...protectedOnly.reasons])],
-          matchedPaths: [...new Set([...risk.matchedPaths, ...protectedOnly.matchedPaths])],
-        }
-      : risk;
+    const denyReasons = denyViolation.matchedPaths.map(
+      (path) => `candidate touched denied path ${path}`,
+    );
+    const reportedRisk =
+      protectedOnly.required || denyViolation.required
+        ? {
+            level: "critical" as const,
+            reasons: [
+              ...new Set([
+                ...risk.reasons,
+                ...protectedOnly.reasons,
+                ...(denyViolation.required ? denyReasons : []),
+              ]),
+            ],
+            matchedPaths: [
+              ...new Set([
+                ...risk.matchedPaths,
+                ...protectedOnly.matchedPaths,
+                ...denyViolation.matchedPaths,
+              ]),
+            ],
+          }
+        : risk;
+    if (denyViolation.required) {
+      // Authoritative post-diff deny gate: a BLOCK finding keeps the patch
+      // undelivered (blocked); only an operator accept_risk decision may still
+      // deliver it (INV-111 — the human is the final authority).
+      findings.push(
+        ReviewFindingSchema.parse({
+          id: newId("find"),
+          severity: "BLOCK",
+          category: "security",
+          claim: `candidate touched denied path(s) (deny_paths): ${denyViolation.matchedPaths.join(", ")}`,
+          evidence: evidenceFromPaths(denyViolation.matchedPaths),
+          reviewer,
+          status: "accepted",
+        }),
+      );
+    }
     if (protectedOnly.required) {
       findings.push(
         ReviewFindingSchema.parse({
@@ -3507,6 +3571,7 @@ export class Orchestrator {
           contract.constraints.protected_paths,
           contract.constraints.auto_protected_paths,
           contract.constraints.protected_path_approvals,
+          contract.constraints.deny_paths,
         );
         const allFindings = [...policy.findings, ...revalidated];
         const inconclusive = allFindings.some(
@@ -3962,7 +4027,7 @@ export class Orchestrator {
               knobs.webPolicy,
               contract.external_context.web_required,
               effectiveWeb,
-              [routed.browserRequirement],
+              [routed.browserRequirement, routed.denyRequirement],
             ),
           };
         }
@@ -4074,6 +4139,7 @@ export class Orchestrator {
                 contract.constraints.protected_paths,
                 contract.constraints.auto_protected_paths,
                 contract.constraints.protected_path_approvals,
+                contract.constraints.deny_paths,
               );
               const allFindings = [...policy.findings, ...revalidated];
               lastFindings = allFindings;

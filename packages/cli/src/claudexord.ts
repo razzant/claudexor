@@ -222,6 +222,7 @@ async function main(): Promise<void> {
           repoRoot,
           prompt: String(p.prompt ?? ""),
           instructions: typeof p.instructions === "string" ? p.instructions : undefined,
+          denyPaths: Array.isArray(p.denyPaths) ? p.denyPaths : undefined,
           attachments: turnId
             ? (threads.getTurn(turnId)?.attachments ?? [])
             : resources.resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),

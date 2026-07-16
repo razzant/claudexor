@@ -239,6 +239,20 @@ export const ControlRunStartRequest = z
       .describe(
         "Hard wall-clock deadline for the whole run (seconds, from scheduler start); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept.",
       ),
+    /** Per-run globs no candidate may touch at all (create/modify/delete).
+     * Envelope/isolated runs only: enforced by the engine's authoritative
+     * post-diff policy gate (violation → blocking finding → blocked, patch
+     * undelivered); an in-place run with denyPaths is refused at preflight
+     * because a live tree cannot guarantee pre-delivery containment. Native
+     * per-lane enforcement is disclosed via path_deny receipts (postdiff_only
+     * until an adapter supports native deny). accept_risk MAY still deliver a
+     * violating patch (INV-111: the human is the final authority). */
+    denyPaths: z
+      .array(z.string().min(1))
+      .optional()
+      .describe(
+        "Per-run globs no candidate may touch at all; envelope-only (in-place runs are refused), enforced by the engine post-diff gate, disclosed per lane via path_deny receipts. accept_risk may still deliver (INV-111).",
+      ),
   })
   .strict()
   .describe(
