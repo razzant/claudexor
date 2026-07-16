@@ -79,6 +79,21 @@ extension ThreadsScreen {
                 .fixedSize()
                 .help("External-context policy for this turn")
             }
+            // Per-turn reasoning effort: offered ONLY when the primary
+            // harness declares an effort ladder (adapter capability truth —
+            // an empty ladder hides the control, DESIGN_SYSTEM rule).
+            if let primary = primaryFamily,
+               let levels = model.harnessInfo(for: primary)?.effortLevels, !levels.isEmpty {
+                OptionRow(label: "Effort") {
+                    Picker("", selection: $effortPreference) {
+                        Text("Harness default").tag("")
+                        ForEach(levels, id: \.self) { Text($0.capitalized).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Requested reasoning effort for \(primary.label) on THIS turn; the ladder comes from the adapter manifest.")
+                }
+            }
             // Per-turn auth route REQUEST (W18/Р20) over the thread preference.
             // Honest language: this is what we ASK for — auto may switch routes
             // (typed fallback), and the run badge discloses the effective route.

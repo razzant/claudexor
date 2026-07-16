@@ -63,12 +63,15 @@ export function parseCodexEvent(obj: Json, sessionId: string): HarnessEvent[] | 
     return [ev];
   }
   if (type === "turn.started") {
+    // A lifecycle marker, NOT reasoning: mapping it to `thinking` used to
+    // plant a junk "turn started" block at the top of every chat transcript
+    // (the reducer renders thinking verbatim). `started` keeps the boundary
+    // in the activity feed without polluting the reasoning disclosure.
     return [
       {
-        type: "thinking",
+        type: "started",
         session_id: sessionId,
         ts,
-        text: "turn started",
         payload: { turn_id: obj.turn_id },
       },
     ];

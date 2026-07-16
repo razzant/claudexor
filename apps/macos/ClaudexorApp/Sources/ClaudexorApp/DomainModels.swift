@@ -319,6 +319,9 @@ struct TurnOptions: Equatable {
     /// Per-turn auth route REQUEST ("subscription" | "api_key"); nil = auto /
     /// inherit the thread preference. The effective route is a post-run receipt.
     var authRoute: String? = nil
+    /// Per-turn reasoning effort from the primary harness's declared ladder;
+    /// nil = harness default (the control hides when the ladder is empty).
+    var effort: String? = nil
 }
 
 // MARK: - Agent plan / todo list (the "task list" Codex & Claude Code surface)

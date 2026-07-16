@@ -94,8 +94,10 @@ describe("parseCodexEvent", () => {
   });
 
   it("maps turn/item progress events instead of dropping live progress", () => {
+    // A lifecycle marker, not reasoning: it must never plant a junk
+    // "turn started" block in the chat's thinking disclosure.
     expect(parseCodexEvent({ type: "turn.started", turn_id: "t1" }, "s1")?.[0]?.type).toBe(
-      "thinking",
+      "started",
     );
     const cmd = parseCodexEvent(
       {

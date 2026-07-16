@@ -1276,7 +1276,8 @@ final class AppModel {
                 specPath: specPath,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
                 protectedPathApprovals: options.protectedPathApprovals,
-                authPreference: options.authRoute
+                authPreference: options.authRoute,
+                effort: options.effort
             ))
         } catch {
             // A REFUSED turn is not a lost turn: when the server persisted the

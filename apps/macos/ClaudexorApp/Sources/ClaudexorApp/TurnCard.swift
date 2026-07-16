@@ -54,9 +54,19 @@ struct TurnCard: View {
                     StatusPill(status: run.status)
                     Text(run.mode.label).font(.caption).foregroundStyle(.secondary)
                     // Live-first spend (the run's streaming box while live).
+                    // Subscription-routed compute is a VALUATION, not billed
+                    // cash (owner doctrine) — "≈" + hover help say so; only a
+                    // metered API route reads as plain dollars.
                     let spend = model.spendDisplay(run)
                     if spend.known {
-                        Text(String(format: "$%.2f", spend.usd)).font(.caption).foregroundStyle(.secondary)
+                        let route = run.authRoute?.effective
+                        Text((route == "local_session" ? "≈$" : "$") + String(format: "%.2f", spend.usd))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .help(route == "local_session"
+                                  ? "Estimated compute valuation on the subscription route — nothing is billed to an API key."
+                                  : route == "api_key"
+                                      ? "Metered API spend on the key route."
+                                      : "Live spend estimate; the finished run's route badge shows how it was actually billed.")
                     }
                     Spacer()
                     Button("Open run") {
@@ -293,6 +303,7 @@ struct TurnCard: View {
                 Text(line.headline)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(line.tone.color)
+                    .textSelection(.enabled)
                 ForEach(Array(line.chips.enumerated()), id: \.offset) { _, chip in
                     Text(chip.text)
                         .font(.caption2)
@@ -481,8 +492,10 @@ private struct TranscriptView: View {
                             .foregroundStyle(color(tool.status))
                             .font(.caption2)
                         Text(tool.name).font(.caption.monospaced().weight(.medium))
+                            .textSelection(.enabled)
                         if let target = tool.target, !target.isEmpty {
                             Text(target).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1)
+                                .textSelection(.enabled)
                         }
                         Spacer()
                         if let code = tool.exitCode, code != 0 {

@@ -345,6 +345,8 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var protectedPathApprovals: [ProtectedPathApproval]?
     /// Per-turn auth route override; nil inherits the thread setting/server default.
     public var authPreference: String?
+    /// Per-turn reasoning-effort request (adapter-declared ladder); nil = harness default.
+    public var effort: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
                 attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
@@ -355,7 +357,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
                 access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
                 specPath: String? = nil, attachments: [ResourceAttachmentRef]? = nil,
                 tests: [TestCommandInvocation]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
-                authPreference: String? = nil) {
+                authPreference: String? = nil, effort: String? = nil) {
         self.prompt = prompt
         self.mode = mode
         self.harnesses = harnesses
@@ -380,5 +382,6 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.tests = tests
         self.protectedPathApprovals = protectedPathApprovals
         self.authPreference = authPreference
+        self.effort = effort
     }
 }
