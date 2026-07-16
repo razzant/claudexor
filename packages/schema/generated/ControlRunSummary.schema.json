@@ -408,6 +408,97 @@
           ],
           "description": "Structured-output conformance receipt (passed/failed); null when the run had no outputSchema."
         },
+        "authRoute": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "string",
+                  "enum": [
+                    "subscription",
+                    "api_key",
+                    "auto"
+                  ],
+                  "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret."
+                },
+                "effective": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "local_session",
+                        "api_key",
+                        "unknown"
+                      ],
+                      "description": "Auth mode a route runs under: a native local session, an API key, or unknown."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Auth mode a route runs under: a native local session, an API key, or unknown.",
+                  "default": null
+                },
+                "source": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "native_session",
+                        "oauth_token_env",
+                        "api_key_env",
+                        "api_key_flag",
+                        "provider_auth_file",
+                        "none"
+                      ],
+                      "description": "Concrete credential source used or probed by a harness."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Concrete credential source used or probed by a harness.",
+                  "default": null
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "as_requested",
+                    "native_first",
+                    "no_native_session_fallback",
+                    "requested_route_unavailable",
+                    "undisclosed"
+                  ],
+                  "description": "Deterministic reason for the effective auth route: as_requested, native_first (auto, INV-061), no_native_session_fallback (auto downgraded to api_key), requested_route_unavailable (explicit preference contradicted), or undisclosed."
+                },
+                "harnessId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                },
+                "attemptId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null
+                }
+              },
+              "required": [
+                "requested",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Auth route receipt (requested/effective/source/reason + disclosing attempt), projected verbatim from telemetry; null when unavailable."
+        },
         "access": {
           "type": "string",
           "enum": [

@@ -1307,6 +1307,13 @@ async function main(): Promise<number> {
             `tokens: in=${u.input_tokens ?? "n/a"} out=${u.output_tokens ?? "n/a"} cached=${u.cached_input_tokens ?? "n/a"}`,
           );
         }
+        // Route receipt (INV-061 disclosure), projected verbatim from telemetry.
+        const route = telemetry.auth_route;
+        if (route) {
+          print(
+            `auth route: requested=${route.requested} effective=${route.effective ?? "undisclosed"} source=${route.source ?? "undisclosed"} reason=${route.reason}${route.harness_id ? ` (${route.harness_id}/${route.attempt_id ?? "?"})` : ""}`,
+          );
+        }
       }
       if (telemetry && (telemetry.web.attempted || telemetry.web.required)) {
         print(

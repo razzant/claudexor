@@ -38,6 +38,41 @@ export const AuthSourceKind = z
   .describe("Concrete credential source used or probed by a harness.");
 export type AuthSourceKind = z.infer<typeof AuthSourceKind>;
 
+/** Why a run's effective auth route is what it is — a DETERMINISTIC projection
+ * of (requested preference x disclosed effective route), never scraped from
+ * prose. `native_first` documents INV-061 (auto prefers the native session);
+ * `no_native_session_fallback` is the honest auto→api_key downgrade;
+ * `requested_route_unavailable` surfaces a route that contradicts an explicit
+ * preference (should not happen — surfacing beats hiding). */
+export const AuthRouteReason = z
+  .enum([
+    "as_requested",
+    "native_first",
+    "no_native_session_fallback",
+    "requested_route_unavailable",
+    "undisclosed",
+  ])
+  .describe(
+    "Deterministic reason for the effective auth route: as_requested, native_first (auto, INV-061), no_native_session_fallback (auto downgraded to api_key), requested_route_unavailable (explicit preference contradicted), or undisclosed.",
+  );
+export type AuthRouteReason = z.infer<typeof AuthRouteReason>;
+
+/** One owner for the requested x effective → reason mapping (used by the
+ * engine telemetry writer; surfaces project the stored value verbatim). */
+export function deriveAuthRouteReason(
+  requested: "subscription" | "api_key" | "auto",
+  effective: "local_session" | "api_key" | "unknown" | null,
+): AuthRouteReason {
+  if (effective === null || effective === "unknown") return "undisclosed";
+  if (requested === "subscription") {
+    return effective === "local_session" ? "as_requested" : "requested_route_unavailable";
+  }
+  if (requested === "api_key") {
+    return effective === "api_key" ? "as_requested" : "requested_route_unavailable";
+  }
+  return effective === "local_session" ? "native_first" : "no_native_session_fallback";
+}
+
 export const AuthSourceReadiness = z
   .object({
     source: AuthSourceKind,

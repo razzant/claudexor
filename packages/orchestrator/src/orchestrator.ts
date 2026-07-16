@@ -52,6 +52,7 @@ import {
   isBlocking,
   orchestratePlanJsonSchema,
   normalizeUserOutputSchema,
+  deriveAuthRouteReason,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
@@ -1469,6 +1470,7 @@ export class Orchestrator {
       // Already normalized/strictified at the engine boundary (run() refuses
       // unsupported shapes before any run dir exists).
       output_schema: input.outputSchema ?? null,
+      auth_preference: input.authPreference ?? "auto",
       spec:
         input.specId || input.specHash || input.specPath
           ? {
@@ -3329,6 +3331,23 @@ export class Orchestrator {
       request_requirements: records.flatMap((record) => record.request_requirements),
       tool_warnings_total: records.reduce((sum, r) => sum + r.outcome.tool_warnings_count, 0),
       usage_totals: aggregateRunTokenUsage(records),
+      auth_route: (() => {
+        // The FINAL attempt's disclosure decides the run's route receipt (it
+        // produced the deliverable); fall back to the first disclosing attempt.
+        const disclosing =
+          (finalRecord?.auth_mode ? finalRecord : undefined) ??
+          records.find((r) => r.auth_mode !== null) ??
+          finalRecord ??
+          records[0];
+        return {
+          requested: contract.auth_preference,
+          effective: disclosing?.auth_mode ?? null,
+          source: disclosing?.auth_source ?? null,
+          reason: deriveAuthRouteReason(contract.auth_preference, disclosing?.auth_mode ?? null),
+          harness_id: disclosing?.harness_id ?? null,
+          attempt_id: disclosing?.attempt_id ?? null,
+        };
+      })(),
       generated_at: nowIso(),
     });
     store.writeYaml(join(paths.finalDir, "telemetry.yaml"), telemetry);

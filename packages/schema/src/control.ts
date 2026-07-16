@@ -10,9 +10,9 @@ import {
   OutputReadyState,
   ProviderFamily,
 } from "./primitives.js";
-import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
+import { AuthMode, PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 export { ControlQuotaResponse } from "./quota.js";
-import { AuthSourceReadiness } from "./auth.js";
+import { AuthRouteReason, AuthSourceKind, AuthSourceReadiness } from "./auth.js";
 import {
   AdapterStatus,
   ConformanceCheck,
@@ -620,6 +620,24 @@ export const ControlRunSummary = z
       .optional()
       .describe(
         "Structured-output conformance receipt (passed/failed); null when the run had no outputSchema.",
+      ),
+    /** Auth ROUTE RECEIPT (INV-061 disclosure) projected verbatim from the
+     * engine telemetry: requested preference, effective route/source the
+     * deciding attempt disclosed, and a deterministic typed reason. Null on
+     * runs whose telemetry predates the receipt. */
+    authRoute: z
+      .object({
+        requested: AuthPreference,
+        effective: AuthMode.nullable().default(null),
+        source: AuthSourceKind.nullable().default(null),
+        reason: AuthRouteReason,
+        harnessId: z.string().nullable().default(null),
+        attemptId: z.string().nullable().default(null),
+      })
+      .nullable()
+      .optional()
+      .describe(
+        "Auth route receipt (requested/effective/source/reason + disclosing attempt), projected verbatim from telemetry; null when unavailable.",
       ),
     access: AccessProfile.optional().describe(
       "Access profile of the run: the effective profile when known, else the requested one (prefer requestedAccess/effectiveAccess).",

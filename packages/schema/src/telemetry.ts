@@ -9,6 +9,8 @@ import {
 } from "./primitives.js";
 import { ToolKind } from "./harness.js";
 import { AuthMode } from "./budget.js";
+import { AuthPreference } from "./primitives.js";
+import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
 
 /**
@@ -213,6 +215,13 @@ export const AttemptTelemetryRecord = z
       .describe(
         "Auth route the attempt actually ran under (local_session subscription vs api_key), disclosed by the adapter's typed started payload; null when never disclosed (treated as unknown, never guessed).",
       ),
+    /** Concrete credential source the attempt disclosed alongside its route
+     * (route evidence; null = undisclosed, never guessed). */
+    auth_source: AuthSourceKind.nullable()
+      .default(null)
+      .describe(
+        "Concrete credential source the attempt disclosed (native_session/api_key_env/...); null when never disclosed.",
+      ),
     request_requirements: z
       .array(RequestRequirementResolution)
       .default([])
@@ -312,6 +321,24 @@ export const RunTelemetry = z
      * same accounting scope as spendUsd. Each field null until some attempt
      * reports it. Not a grand total (see TokenUsage). */
     usage_totals: TokenUsage.default({}),
+    /** The run's auth ROUTE RECEIPT (INV-061 disclosure): requested preference,
+     * the effective route/source the deciding attempt disclosed, and a
+     * deterministic reason — computed ONCE here; summary/CLI project it
+     * verbatim. Null only on legacy artifacts written before this field. */
+    auth_route: z
+      .object({
+        requested: AuthPreference,
+        effective: AuthMode.nullable().default(null),
+        source: AuthSourceKind.nullable().default(null),
+        reason: AuthRouteReason,
+        harness_id: z.string().nullable().default(null),
+        attempt_id: z.string().nullable().default(null),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "Auth route receipt: requested preference, disclosed effective route/source, deterministic reason, and the disclosing attempt; surfaces project it verbatim.",
+      ),
     generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
   })
   .describe(

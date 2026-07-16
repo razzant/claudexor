@@ -4147,6 +4147,69 @@ describe("Orchestrator", () => {
     ).rejects.toThrow(/format/);
   });
 
+  it("writes an auth route receipt from the disclosing attempt (native_first + fallback reason) (W10)", async () => {
+    const repo = await initRepo();
+    const disclose = (
+      id: string,
+      route: "vendor_native" | "managed_api_key",
+      source: "native_session" | "api_key_env",
+    ): HarnessAdapter => ({
+      ...diffImplementer(id),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          credential_route: route,
+          credential_source: source,
+        };
+        writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+        yield {
+          type: "file_change",
+          session_id: spec.session_id,
+          ts,
+          payload: { path: "CHANGED.txt", action: "create" },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    });
+    // auto + native session disclosed → native_first (INV-061).
+    const native = disclose("native-lane", "vendor_native", "native_session");
+    const res1 = await new Orchestrator({
+      registry: new Map([[native.id, native]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [native.id],
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    const t1 = readFileSync(join(res1.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(t1).toContain("requested: auto");
+    expect(t1).toContain("effective: local_session");
+    expect(t1).toContain("source: native_session");
+    expect(t1).toContain("reason: native_first");
+    // auto + api key route disclosed → the honest fallback reason.
+    const api = disclose("api-lane", "managed_api_key", "api_key_env");
+    const res2 = await new Orchestrator({
+      registry: new Map([[api.id, api]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [api.id],
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    const t2 = readFileSync(join(res2.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(t2).toContain("effective: api_key");
+    expect(t2).toContain("reason: no_native_session_fallback");
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

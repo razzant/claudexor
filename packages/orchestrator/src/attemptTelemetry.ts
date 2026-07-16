@@ -7,6 +7,7 @@
  */
 import type {
   AttemptTelemetryRecord,
+  AuthSourceKind,
   ExternalContextPolicy,
   HarnessEvent,
   RequestRequirementResolution,
@@ -60,6 +61,8 @@ export interface AttemptTelemetry {
   observedModel: string | null;
   /** Auth route the adapter disclosed for this attempt (route evidence; null = undisclosed). */
   authMode: "local_session" | "api_key" | null;
+  /** Concrete credential source disclosed alongside the route (never guessed). */
+  authSource: AuthSourceKind | null;
   /** Adapter-declared transient failures seen during this attempt. */
   transientFailures: {
     kind: NonNullable<HarnessEvent["transient"]>["kind"];
@@ -103,6 +106,7 @@ export function createAttemptTelemetry(
     },
     observedModel: null,
     authMode: null,
+    authSource: null,
     transientFailures: [],
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
@@ -130,6 +134,8 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     if (ev.credential_route === "vendor_native") t.authMode = "local_session";
     else if (ev.credential_route === "managed_api_key") t.authMode = "api_key";
   }
+  // First-wins like the route: the source is decided once before spawn.
+  if (!t.authSource && ev.credential_source) t.authSource = ev.credential_source;
   if (ev.transient) {
     t.transientFailures.push({
       kind: ev.transient.kind,
@@ -348,6 +354,7 @@ export function attemptTelemetryRecord(
     harness_id: harnessId,
     observed_model: t.observedModel,
     auth_mode: t.authMode,
+    auth_source: t.authSource,
     request_requirements: t.requestRequirements,
     web: {
       required: t.web.required,

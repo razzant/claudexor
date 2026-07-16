@@ -107,6 +107,16 @@
           "default": null,
           "description": "Normalized caller-supplied JSON Schema for the final answer; null when the run has no structured-output contract."
         },
+        "auth_preference": {
+          "type": "string",
+          "enum": [
+            "subscription",
+            "api_key",
+            "auto"
+          ],
+          "description": "Requested auth route for the run (subscription/api_key/auto); the telemetry auth_route receipt carries the effective truth.",
+          "default": "auto"
+        },
         "spec": {
           "type": "object",
           "properties": {

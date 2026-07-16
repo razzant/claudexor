@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   AccessProfile,
+  AuthPreference,
   ContentHash,
   DirtyPolicy,
   ExternalContextPolicy,
@@ -241,6 +242,12 @@ export const TaskContract = z
       .describe(
         "Normalized caller-supplied JSON Schema for the final answer; null when the run has no structured-output contract.",
       ),
+    /** The auth route the caller REQUESTED for this run (a preference, not a
+     * secret); the effective route is disclosed per attempt and rolled into
+     * the telemetry auth_route receipt. */
+    auth_preference: AuthPreference.default("auto").describe(
+      "Requested auth route for the run (subscription/api_key/auto); the telemetry auth_route receipt carries the effective truth.",
+    ),
     spec: z
       .object({
         id: Id.optional().describe("SpecPack id."),
