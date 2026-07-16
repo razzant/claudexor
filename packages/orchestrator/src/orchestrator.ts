@@ -107,6 +107,7 @@ import {
   type AttemptTelemetry,
   type ToolErrorRecord,
   aggregateRunWebEvidence,
+  aggregateRunTokenUsage,
   attemptTelemetryRecord,
   createAttemptTelemetry,
   observeAttemptTelemetry,
@@ -3227,6 +3228,7 @@ export class Orchestrator {
       attempts: records,
       request_requirements: records.flatMap((record) => record.request_requirements),
       tool_warnings_total: records.reduce((sum, r) => sum + r.outcome.tool_warnings_count, 0),
+      usage_totals: aggregateRunTokenUsage(records),
       generated_at: nowIso(),
     });
     store.writeYaml(join(paths.finalDir, "telemetry.yaml"), telemetry);

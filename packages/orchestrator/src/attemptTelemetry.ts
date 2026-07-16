@@ -67,6 +67,16 @@ export interface AttemptTelemetry {
   }[];
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
+  /** Token usage summed across this attempt's usage events (money stays in the
+   * ledger, not here). Each field is null until at least one usage event
+   * reports it — cursor reports cost only (all null), raw-api has no cached —
+   * so "not reported" is never conflated with a real 0. Cross-harness caution:
+   * codex `cached ⊆ input`, claude `cached ∩ input = ∅` — never derive a total. */
+  usage: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cachedInputTokens: number | null;
+  };
 }
 
 export function createAttemptTelemetry(
@@ -95,7 +105,14 @@ export function createAttemptTelemetry(
     authMode: null,
     transientFailures: [],
     outcome: null,
+    usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
   };
+}
+
+/** Add one present token field to a null-aware accumulator (null stays null
+ *  until a value actually arrives, so "unreported" never reads as 0). */
+function addToken(acc: number | null, value: number | undefined): number | null {
+  return value === undefined ? acc : (acc ?? 0) + value;
 }
 
 /**
@@ -118,6 +135,13 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       kind: ev.transient.kind,
       retryDelayMs: ev.transient.retry_delay_ms ?? null,
     });
+  }
+  // Token usage: SUM across the attempt's usage events (single-event adapters
+  // sum == last-wins; codex per-turn needs the sum). Money is the ledger's job.
+  if (ev.type === "usage" && ev.usage) {
+    t.usage.inputTokens = addToken(t.usage.inputTokens, ev.usage.input_tokens);
+    t.usage.outputTokens = addToken(t.usage.outputTokens, ev.usage.output_tokens);
+    t.usage.cachedInputTokens = addToken(t.usage.cachedInputTokens, ev.usage.cached_input_tokens);
   }
   if (ev.type === "completed") {
     const dropped =
@@ -359,6 +383,32 @@ export function attemptTelemetryRecord(
       tool_warnings_count: t.outcome?.toolWarningsCount ?? warnings.length,
       status: t.outcome?.status ?? (warnings.length > 0 ? "success_with_warnings" : "success"),
     },
+    usage: {
+      input_tokens: t.usage.inputTokens,
+      output_tokens: t.usage.outputTokens,
+      cached_input_tokens: t.usage.cachedInputTokens,
+    },
+  };
+}
+
+/** Sum token usage across attempt records (candidates + synthesis), the same
+ *  scope as the ledger's spend. A field stays null unless some attempt reported
+ *  it, so "no harness reported tokens" never reads as a real 0. */
+export function aggregateRunTokenUsage(
+  records: AttemptTelemetryRecord[],
+): { input_tokens: number | null; output_tokens: number | null; cached_input_tokens: number | null } {
+  const sum = (pick: (u: AttemptTelemetryRecord["usage"]) => number | null): number | null => {
+    let total: number | null = null;
+    for (const r of records) {
+      const v = pick(r.usage);
+      if (v !== null) total = (total ?? 0) + v;
+    }
+    return total;
+  };
+  return {
+    input_tokens: sum((u) => u.input_tokens),
+    output_tokens: sum((u) => u.output_tokens),
+    cached_input_tokens: sum((u) => u.cached_input_tokens),
   };
 }
 

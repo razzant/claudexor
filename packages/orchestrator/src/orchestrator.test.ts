@@ -3889,6 +3889,27 @@ describe("Orchestrator", () => {
     expect(summary).toContain("wall_clock_exceeded");
   });
 
+  it("aggregates token usage into run telemetry and keeps unreported fields null (W9)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      mode: "agent",
+      harnesses: ["fake-implement"],
+      n: 1,
+    });
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    // fake-implement reports input/output but no cached tokens.
+    expect(telemetry).toMatch(/input_tokens: 100/);
+    expect(telemetry).toMatch(/output_tokens: 50/);
+    // Unreported cached stays null — never a false 0 (money stays in the ledger).
+    expect(telemetry).toMatch(/cached_input_tokens: null/);
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

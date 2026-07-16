@@ -460,6 +460,50 @@
                 "additionalProperties": false,
                 "description": "Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.",
                 "default": {}
+              },
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "input_tokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "output_tokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "cached_input_tokens": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Token usage summed from harness usage events; money is tracked separately in the budget ledger, not here. Each field is null until a harness reports it (cursor reports cost only; raw-api has no cached), so unreported never reads as 0. Do NOT sum into a grand total: codex cached is a subset of input while claude cached is disjoint from input.",
+                "default": {}
               }
             },
             "required": [
@@ -486,6 +530,11 @@
           "minimum": 0,
           "default": 0,
           "description": "Sum of attempt tool warnings; rendered separately from terminal state."
+        },
+        "usage_totals": {
+          "$ref": "#/definitions/RunTelemetry/properties/attempts/items/properties/usage",
+          "default": {},
+          "description": "Token usage summed from harness usage events; money is tracked separately in the budget ledger, not here. Each field is null until a harness reports it (cursor reports cost only; raw-api has no cached), so unreported never reads as 0. Do NOT sum into a grand total: codex cached is a subset of input while claude cached is disjoint from input."
         },
         "generated_at": {
           "type": "string",

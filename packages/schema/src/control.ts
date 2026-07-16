@@ -559,6 +559,30 @@ export const ControlRunSummary = z
       .boolean()
       .optional()
       .describe("True when spend is token-derived rather than natively reported."),
+    /** Token usage summed across every attempt (money stays in spendUsd). Each
+     * field null until a harness reported it — never render null as 0, and never
+     * sum into a grand total (codex cached ⊆ input; claude cached disjoint). */
+    inputTokens: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .describe("Input tokens summed across all attempts; null when no harness reported them."),
+    outputTokens: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .describe("Output tokens summed across all attempts; null when no harness reported them."),
+    cachedInputTokens: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .describe("Cached input tokens summed across all attempts; null when no harness reported them."),
     access: AccessProfile.optional().describe(
       "Access profile of the run: the effective profile when known, else the requested one (prefer requestedAccess/effectiveAccess).",
     ),

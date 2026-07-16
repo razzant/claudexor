@@ -142,6 +142,17 @@ export const AttemptOutcome = z
   );
 export type AttemptOutcome = z.infer<typeof AttemptOutcome>;
 
+export const TokenUsage = z
+  .object({
+    input_tokens: z.number().int().nonnegative().nullable().default(null),
+    output_tokens: z.number().int().nonnegative().nullable().default(null),
+    cached_input_tokens: z.number().int().nonnegative().nullable().default(null),
+  })
+  .describe(
+    "Token usage summed from harness usage events; money is tracked separately in the budget ledger, not here. Each field is null until a harness reports it (cursor reports cost only; raw-api has no cached), so unreported never reads as 0. Do NOT sum into a grand total: codex cached is a subset of input while claude cached is disjoint from input.",
+  );
+export type TokenUsage = z.infer<typeof TokenUsage>;
+
 export const AttemptTelemetryRecord = z
   .object({
     attempt_id: Id.describe("Attempt id."),
@@ -221,6 +232,8 @@ export const AttemptTelemetryRecord = z
       .describe("Adapter-declared transient failures that informed bounded retry policy."),
     /** Contract/outcome projection for this attempt. */
     outcome: AttemptOutcome.default({}),
+    /** Token usage summed across this attempt's usage events. */
+    usage: TokenUsage.default({}),
   })
   .describe(
     "Telemetry for one attempt: route evidence, web evidence, tool errors, dropped events, and outcome.",
@@ -265,6 +278,10 @@ export const RunTelemetry = z
       .nonnegative()
       .default(0)
       .describe("Sum of attempt tool warnings; rendered separately from terminal state."),
+    /** Token usage summed across every attempt (candidates + synthesis), the
+     * same accounting scope as spendUsd. Each field null until some attempt
+     * reports it. Not a grand total (see TokenUsage). */
+    usage_totals: TokenUsage.default({}),
     generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
   })
   .describe(

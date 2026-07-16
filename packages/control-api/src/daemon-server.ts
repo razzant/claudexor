@@ -2270,6 +2270,11 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     paidBudget: PaidBudget.safeParse(p["paidBudget"]).data ?? task?.budget.paid_budget,
     spendUsd: budget.spendUsd,
     spendEstimated: budget.estimated,
+    // Token usage is projected straight from the engine-owned telemetry rollup —
+    // never re-derived from raw events; runs that predate it report null.
+    inputTokens: telemetry?.usage_totals.input_tokens ?? null,
+    outputTokens: telemetry?.usage_totals.output_tokens ?? null,
+    cachedInputTokens: telemetry?.usage_totals.cached_input_tokens ?? null,
     access: effectiveAccess ?? parsedAccess,
     requestedAccess,
     effectiveAccess,

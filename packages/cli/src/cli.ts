@@ -1256,6 +1256,14 @@ async function main(): Promise<number> {
           `budget: spend=${budget.spend_usd ?? "unknown"}${budget.estimated ? " estimated" : ""}`,
         );
       }
+      if (telemetry) {
+        const u = telemetry.usage_totals;
+        if (u.input_tokens !== null || u.output_tokens !== null || u.cached_input_tokens !== null) {
+          print(
+            `tokens: in=${u.input_tokens ?? "n/a"} out=${u.output_tokens ?? "n/a"} cached=${u.cached_input_tokens ?? "n/a"}`,
+          );
+        }
+      }
       if (telemetry && (telemetry.web.attempted || telemetry.web.required)) {
         print(
           `web evidence: status=${telemetry.web.status} tool=${telemetry.web.tool ?? "none"} target=${telemetry.web.target ?? "none"}${telemetry.web.error_summary ? ` error=${telemetry.web.error_summary}` : ""}`,

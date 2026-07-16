@@ -362,6 +362,42 @@
                 "type": "boolean",
                 "description": "True when spend is token-derived rather than natively reported."
               },
+              "inputTokens": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Input tokens summed across all attempts; null when no harness reported them."
+              },
+              "outputTokens": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Output tokens summed across all attempts; null when no harness reported them."
+              },
+              "cachedInputTokens": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Cached input tokens summed across all attempts; null when no harness reported them."
+              },
               "access": {
                 "type": "string",
                 "enum": [
