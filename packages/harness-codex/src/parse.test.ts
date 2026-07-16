@@ -73,6 +73,19 @@ describe("parseCodexEvent", () => {
     expect(events.some((e) => e.final === true)).toBe(false);
   });
 
+  it("never leaks a prior turn's agent message into a later turn's final (sol #2)", () => {
+    const state = {};
+    const events = [
+      '{"type":"turn.started"}',
+      '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"turn one draft"}}',
+      '{"type":"turn.failed","error":{"message":"boom"}}',
+      // A fresh turn that produces NO agent message must NOT finalize the stale one.
+      '{"type":"turn.started"}',
+      '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}',
+    ].flatMap((l) => parseCodexEvent(JSON.parse(l), "s1", state) ?? []);
+    expect(events.some((e) => e.final === true)).toBe(false);
+  });
+
   it("maps failed command executions to error tool_results (status + exit code)", () => {
     const out = parseCodexEvent(
       {

@@ -48,7 +48,9 @@ struct TurnCard: View {
             // of uniform cards with a person icon.
             HStack(alignment: .top) {
                 Spacer(minLength: 48)
-                Text(turn.prompt)
+                // Bounded before layout (sol #16): a pasted megabyte prompt
+                // must not lay out unbounded on the main thread.
+                Text(turn.prompt.count > 8_000 ? String(turn.prompt.prefix(8_000)) + "…" : turn.prompt)
                     .font(.body)
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
@@ -66,15 +68,29 @@ struct TurnCard: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             if let run {
                 HStack(spacing: Theme.Spacing.sm) {
-                    // Status line: «Codex · Working · 2m» — the harness that
-                    // answers, the honest state pill, and a live elapsed clock.
-                    if let family = run.harnesses.first {
+                    // Status line: «Codex · Working · 2m». Show the harness
+                    // identity ONLY when it is UNAMBIGUOUS (a single harness) —
+                    // a race's `harnesses.first` may be a losing candidate, not
+                    // the one that answered (sol #19); engine-typed winner
+                    // attribution is the durable fix, tracked in the plan.
+                    if run.harnesses.count == 1, let family = run.harnesses.first {
                         Label(family.label, systemImage: family.glyph)
                             .font(.caption.weight(.medium))
                             .foregroundStyle(family.color)
                     }
                     StatusPill(status: run.status)
                     elapsedText(run)
+                    // Typed transient status in the status line (W-C2/sol #6):
+                    // «Retrying 2/10 · overloaded · in 2.5s» while it's live —
+                    // never buried as reasoning junk.
+                    if run.status.isActive, let retry = run.retryStatus {
+                        Label(retry.label, systemImage: "arrow.clockwise")
+                            .font(.caption2)
+                            .padding(.horizontal, Theme.Spacing.xs)
+                            .background(Theme.status(.blocked).opacity(0.14), in: Capsule())
+                            .foregroundStyle(Theme.status(.blocked))
+                            .help("The harness is retrying an API call (typed api_retry status).")
+                    }
                     Text(run.mode.label).font(.caption).foregroundStyle(.secondary)
                     // Live-first spend (the run's streaming box while live).
                     // Subscription-routed compute is a VALUATION, not billed

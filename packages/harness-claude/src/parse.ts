@@ -140,13 +140,16 @@ function parseClaudeEventStateful(
       type: "status",
       session_id: sessionId,
       ts,
-      text: `api_retry: ${redactSecrets(errText)}`,
+      // The prose is redacted AND bounded (a hostile frame must not inject a
+      // huge/secret-bearing field, review sol #7); the typed category is the
+      // official enum, never free-form text.
+      text: `api_retry: ${redactSecrets(errText).slice(0, 500)}`,
       status: {
         kind: "api_retry",
         attempt: numberOrUndef(obj.attempt),
         max_retries: numberOrUndef(obj.max_retries),
         retry_delay_ms: numberOrUndef(obj.retry_delay_ms),
-        error_category: typeof obj.error === "string" ? obj.error : undefined,
+        error_category: claudeRetryCategory(obj.error),
       },
       payload: { api_retry: true, retry_delay_ms: obj.retry_delay_ms },
     };
@@ -170,16 +173,24 @@ function parseClaudeEventStateful(
   }
 
   if (type === "assistant") {
+    // Subagent traffic (parent_tool_use_id set) is NOT the main conversation
+    // and must never enter narration / the answer — the guard belongs on the
+    // COMPLETE assistant frame too, not only stream_event deltas (review sol
+    // #8). Tool_use blocks still process (a subagent's edits are real file
+    // changes); only its assistant TEXT/thinking is suppressed.
+    const isSubagent = obj.parent_tool_use_id != null;
     const content: Json[] = obj.message?.content ?? [];
     const out: HarnessEvent[] = [];
     for (const block of content) {
       if (block?.type === "text" && block.text) {
+        if (isSubagent) continue;
         out.push({ type: "message", session_id: sessionId, ts, text: String(block.text) });
       } else if (
         block?.type === "thinking" &&
         typeof block.thinking === "string" &&
         block.thinking.trim()
       ) {
+        if (isSubagent) continue;
         out.push({ type: "thinking", session_id: sessionId, ts, text: String(block.thinking) });
       } else if (block?.type === "tool_use") {
         const name = String(block.name ?? "tool");
@@ -352,19 +363,30 @@ function parseClaudeEventStateful(
     // value IS the answer — surface it verbatim as the final message so the
     // engine's single validator receives pure JSON (never the prose result,
     // which may narrate around it).
+    // Finality is claimed ONLY for a SUCCESS result (review sol #1): a
+    // `subtype:"error_*"` result carries partial/aborted text that must never
+    // win in AnswerAssembly as the authoritative answer — it rides as a plain
+    // message (and the error branch below marks the run) instead.
+    const successResult = !obj.subtype || obj.subtype === "success";
     if (obj.structured_output !== undefined && obj.structured_output !== null) {
       out.push({
         type: "message",
         session_id: sessionId,
         ts,
         text: JSON.stringify(obj.structured_output),
-        final: true,
+        ...(successResult ? { final: true } : {}),
         payload: { structured_output: true },
       });
     } else if (typeof obj.result === "string" && obj.result.trim()) {
       // The terminal `result` IS claude's typed final answer (docs: "the last
       // line of the stream is a result message with the final response text").
-      out.push({ type: "message", session_id: sessionId, ts, text: obj.result, final: true });
+      out.push({
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: obj.result,
+        ...(successResult ? { final: true } : {}),
+      });
     }
     if (obj.subtype && obj.subtype !== "success") {
       // `error_max_turns` is NOT a run failure: the turn ended because it hit the
@@ -480,6 +502,46 @@ function summarizeToolResultContent(content: unknown): string {
 
 function numberOrUndef(v: unknown): number | undefined {
   return typeof v === "number" ? v : undefined;
+}
+
+/**
+ * Map claude's `api_retry.error` onto the documented category enum (headless
+ * docs). It IS the category label, but a hostile/newer frame could send
+ * anything — unrecognized values collapse to "unknown" so the typed field is
+ * never free-form prose (review sol #7).
+ */
+const CLAUDE_RETRY_CATEGORIES = new Set([
+  "authentication_failed",
+  "oauth_org_not_allowed",
+  "billing_error",
+  "rate_limit",
+  "overloaded",
+  "invalid_request",
+  "model_not_found",
+  "server_error",
+  "max_output_tokens",
+  "unknown",
+]);
+
+function claudeRetryCategory(
+  raw: unknown,
+):
+  | "authentication_failed"
+  | "oauth_org_not_allowed"
+  | "billing_error"
+  | "rate_limit"
+  | "overloaded"
+  | "invalid_request"
+  | "model_not_found"
+  | "server_error"
+  | "max_output_tokens"
+  | "unknown"
+  | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const s = String(raw);
+  return CLAUDE_RETRY_CATEGORIES.has(s)
+    ? (s as ReturnType<typeof claudeRetryCategory>)
+    : "unknown";
 }
 
 function sumOrUndef(...values: unknown[]): number | undefined {

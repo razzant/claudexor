@@ -15,21 +15,61 @@ struct ScopedInlineImage: View {
     let alt: String
     let roots: [String]
 
+    /// Decode result, produced OFF the main actor (sol #13): a crafted
+    /// compressed image must not stall the chat UI from `body` evaluation.
+    private enum Load { case loading, ready(NSImage, String), failed, outOfScope }
+    @State private var load: Load = .loading
+
+    /// Off-main handoff of an already-bounded decode. NSImage is read-only
+    /// here; the box makes the actor crossing explicit for Swift 6.
+    private struct Decoded: @unchecked Sendable {
+        enum Kind { case ready, failed, outOfScope }
+        let kind: Kind
+        let image: NSImage?
+        let path: String?
+    }
+
     var body: some View {
-        if let path = Self.scopedImagePath(target, roots: roots) {
-            if let image = Self.boundedPreview(path) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 560, maxHeight: 340, alignment: .leading)
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
-                    .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
-                    .help(alt.isEmpty ? path : "\(alt) — \(path). Click to open.")
-                    .accessibilityLabel(alt.isEmpty ? "agent image" : alt)
-            } else {
-                refusal("image could not be decoded (or exceeds the preview size bound)")
+        content
+            .task(id: target + "|" + roots.joined(separator: ":")) {
+                // Scope resolution + metadata + thumbnail decode all run off the
+                // main actor; only the bounded result publishes back.
+                let t = target, r = roots
+                let decoded: Decoded = await Task.detached(priority: .userInitiated) {
+                    guard let path = Self.scopedImagePath(t, roots: r) else {
+                        return Decoded(kind: .outOfScope, image: nil, path: nil)
+                    }
+                    guard let image = Self.boundedPreview(path) else {
+                        return Decoded(kind: .failed, image: nil, path: nil)
+                    }
+                    return Decoded(kind: .ready, image: image, path: path)
+                }.value
+                switch decoded.kind {
+                case .ready: load = .ready(decoded.image!, decoded.path!)
+                case .failed: load = .failed
+                case .outOfScope: load = .outOfScope
+                }
             }
-        } else {
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch load {
+        case .loading:
+            ProgressView().controlSize(.small)
+                .frame(maxWidth: 560, alignment: .leading)
+        case .ready(let image, let path):
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(maxWidth: 560, maxHeight: 340, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control))
+                .onTapGesture { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+                .help(alt.isEmpty ? path : "\(alt) — \(path). Click to open.")
+                .accessibilityLabel(alt.isEmpty ? "agent image" : alt)
+        case .failed:
+            refusal("image could not be decoded (or exceeds the preview size bound)")
+        case .outOfScope:
             refusal("image path is outside this thread's scope, so it is not rendered")
         }
     }
@@ -49,7 +89,7 @@ struct ScopedInlineImage: View {
     /// The canonical on-disk path IF the target is an image inside one of the
     /// allowed roots; nil otherwise. Pure given a filesystem — unit-tested
     /// with real symlink/traversal fixtures.
-    static func scopedImagePath(_ target: String, roots: [String]) -> String? {
+    nonisolated static func scopedImagePath(_ target: String, roots: [String]) -> String? {
         guard let path = scopedFilePath(target, roots: roots),
               imageExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
         else { return nil }
@@ -60,7 +100,7 @@ struct ScopedInlineImage: View {
     /// further by extension): absolute local targets only, canonicalized on
     /// BOTH sides — a symlink inside a root must not escape it, and `..`
     /// segments must not sneak past a plain prefix check.
-    static func scopedFilePath(_ target: String, roots: [String]) -> String? {
+    nonisolated static func scopedFilePath(_ target: String, roots: [String]) -> String? {
         guard !roots.isEmpty else { return nil }
         var raw = target
         if raw.hasPrefix("file://") { raw = String(raw.dropFirst("file://".count)) }
@@ -77,13 +117,38 @@ struct ScopedInlineImage: View {
         return nil
     }
 
-    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
-    /// Refuse absurd source files outright (a 2GB "png" is not a chat preview).
-    private static let maxSourceBytes = 64 * 1024 * 1024
-    private static let maxThumbnailPixels = 1_200
+    nonisolated static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
 
-    private final class ImageBox { let image: NSImage; init(_ i: NSImage) { image = i } }
-    private static let previewCache: NSCache<NSString, ImageBox> = {
+    /// Documents/images safe to hand to `NSWorkspace.open` directly. Being
+    /// inside repoRoot does NOT make agent output trusted — a `.command` /
+    /// `.app` / `.sh` link would launch agent-produced CODE on click (review
+    /// sol #11), so opening is allowed ONLY for this allowlist; anything else
+    /// is refused (reveal-in-Finder stays a safe manual fallback).
+    nonisolated static let openableExtensions: Set<String> = imageExtensions.union([
+        "txt", "md", "markdown", "json", "yaml", "yml", "csv", "log",
+        "pdf", "html", "htm", "svg", "rtf", "xml", "toml",
+    ])
+
+    /// Decide how a scoped file-link click resolves: `.open` for an in-scope
+    /// SAFE-type file, else `.refuse(reason)` — never a silent no-op. Pure
+    /// (given the FS) so the policy is unit-tested.
+    enum OpenDecision: Equatable { case open(String); case refuse(String) }
+    nonisolated static func openDecision(_ target: String, roots: [String]) -> OpenDecision {
+        guard let path = scopedFilePath(target, roots: roots) else {
+            return .refuse("outside this thread's scope")
+        }
+        let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
+        guard openableExtensions.contains(ext) else {
+            return .refuse("unsafe file type “.\(ext)” — reveal it in Finder instead")
+        }
+        return .open(path)
+    }
+    /// Refuse absurd source files outright (a 2GB "png" is not a chat preview).
+    nonisolated static let maxSourceBytes = 64 * 1024 * 1024
+    nonisolated static let maxThumbnailPixels = 1_200
+
+    final class ImageBox { let image: NSImage; init(_ i: NSImage) { image = i } }
+    nonisolated(unsafe) private static let previewCache: NSCache<NSString, ImageBox> = {
         // Byte-costed (W23 class): decoded previews must not pool unbounded.
         let c = NSCache<NSString, ImageBox>(); c.countLimit = 64
         c.totalCostLimit = 64 * 1024 * 1024
@@ -92,11 +157,15 @@ struct ScopedInlineImage: View {
 
     /// Downsampled preview via CGImageSource — never a full-resolution decode
     /// of an arbitrary agent-produced file on the main thread.
-    static func boundedPreview(_ path: String) -> NSImage? {
-        let key = path as NSString
-        if let hit = previewCache.object(forKey: key) { return hit.image }
+    nonisolated static func boundedPreview(_ path: String) -> NSImage? {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        if let bytes = attrs?[.size] as? Int, bytes > maxSourceBytes { return nil }
+        // Cache key includes size + mtime so an agent OVERWRITING a screenshot
+        // at the same path invalidates the stale preview (review sol #15).
+        let size = (attrs?[.size] as? Int) ?? -1
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+        let key = "\(path)|\(size)|\(mtime)" as NSString
+        if let hit = previewCache.object(forKey: key) { return hit.image }
+        if size > maxSourceBytes { return nil }
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
               let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                   kCGImageSourceCreateThumbnailFromImageAlways: true,

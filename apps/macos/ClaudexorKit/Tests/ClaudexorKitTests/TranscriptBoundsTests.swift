@@ -210,6 +210,30 @@ import Testing
         #expect(r.blocks.count == 3)
     }
 
+    private func finalMessage(_ seq: Int, _ text: String) -> BusEnvelope {
+        BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object(["type": .string("message"), "text": .string(text), "final": .bool(true)])
+        ]))
+    }
+
+    /// Ф2.5 sol #9: after a TYPED final the delta stream is sealed — a late
+    /// stray delta must not append to a stale block or reopen a stream.
+    @Test func aLateDeltaAfterTheFinalIsDropped() {
+        var r = TranscriptReducer()
+        r.apply(deltaMessage(1, "streaming"))
+        r.apply(finalMessage(2, "the final answer"))  // seals; not in transcript
+        r.apply(deltaMessage(3, " GHOST"))
+        // Only the (now-complete) streaming narration block remains; the ghost
+        // delta neither appended to it nor created a new live block.
+        #expect(r.blocks.count == 1)
+        guard case .message(_, let text) = r.blocks.last else {
+            Issue.record("expected the sealed streaming block")
+            return
+        }
+        #expect(text == "streaming")
+    }
+
     @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {
         var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 3_000, toolFieldCap: 500)
         for i in 1...20 { r.apply(toolCall(i, target: String(repeating: "c", count: 500))) }

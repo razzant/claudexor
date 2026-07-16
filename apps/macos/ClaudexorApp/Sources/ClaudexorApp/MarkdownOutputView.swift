@@ -12,9 +12,19 @@ struct MarkdownOutputView: View {
     /// whose file links may open (Ф2.5 W-C7). Empty = no local-file access:
     /// an image degrades to its visible markdown text, honestly.
     var fileScopeRoots: [String] = []
+    /// A visible, dismissible refusal for a blocked file-link click (sol #14):
+    /// out-of-scope or unsafe-type targets never fail silently.
+    @State private var linkRefusal: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            if let linkRefusal {
+                Label(linkRefusal, systemImage: "hand.raised.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                    .onTapGesture { self.linkRefusal = nil }
+                    .help("Tap to dismiss. Agent-produced files open only inside this thread's scope, and only for safe document/image types.")
+            }
             ForEach(blocks) { block in
                 switch block.kind {
                 case .heading(let level):
@@ -43,18 +53,27 @@ struct MarkdownOutputView: View {
                     .codeSurface(Theme.Radius.control)
                 }
             }
+            if renderTruncated > 0 {
+                Text("\(renderTruncated) more characters not rendered here — open the run's full answer artifact.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // W-C7: FILE links open via NSWorkspace, but ONLY inside the thread's
-        // scope roots — a link into arbitrary FS is refused with a beep (the
-        // web keeps its normal browser behavior).
+        // W-C7: FILE links open via NSWorkspace, but ONLY for an in-scope
+        // SAFE-type file — an out-of-scope target OR an executable/script/app
+        // (a `.command`/`.app` would launch agent code, sol #11) is refused
+        // with a VISIBLE disclosure, not a silent beep (sol #14). Web links
+        // keep normal browser behavior.
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL || url.scheme == nil else { return .systemAction }
             let raw = url.isFileURL ? url.path : url.absoluteString
-            if let path = ScopedInlineImage.scopedFilePath(raw, roots: fileScopeRoots) {
+            switch ScopedInlineImage.openDecision(raw, roots: fileScopeRoots) {
+            case .open(let path):
                 NSWorkspace.shared.open(URL(fileURLWithPath: path))
-            } else {
-                NSSound.beep()   // refused: out-of-scope local target
+                linkRefusal = nil
+            case .refuse(let reason):
+                linkRefusal = "Link not opened: \(reason)."
+                NSSound.beep()
             }
             return .handled
         })
@@ -88,11 +107,22 @@ struct MarkdownOutputView: View {
         return parsed
     }
 
+    /// Hard character bound BEFORE parse/layout (review sol #16, the W23 hang
+    /// class): "Show more" / Run Detail used to hand the WHOLE answer to the
+    /// parser, which materializes the entire string on the main thread. The
+    /// full artifact stays reachable in the run's files; the view never lays
+    /// out more than this. Disclosed via `renderTruncated`.
+    static let renderCharCap = 200_000
+    private var boundedMarkdown: String {
+        markdown.count > Self.renderCharCap ? String(markdown.prefix(Self.renderCharCap)) : markdown
+    }
+    private var renderTruncated: Int { max(0, markdown.count - Self.renderCharCap) }
+
     // Memoized: parsing was a computed property that re-ran on EVERY render, so a
     // list re-render (e.g. one new SSE event) re-parsed every visible message. The
     // cache keys on the raw string — a completed message's text never changes, so it
     // parses once. (Only the actively-streaming message's text changes → cache miss.)
-    private var blocks: [MarkdownBlock] { Self.parse(markdown) }
+    private var blocks: [MarkdownBlock] { Self.parse(boundedMarkdown) }
 
     private final class BlocksBox { let blocks: [MarkdownBlock]; init(_ b: [MarkdownBlock]) { blocks = b } }
     private static let cache: NSCache<NSString, BlocksBox> = {

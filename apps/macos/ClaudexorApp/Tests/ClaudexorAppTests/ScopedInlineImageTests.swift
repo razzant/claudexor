@@ -67,6 +67,40 @@ import Testing
         #expect(ArtifactGalleryView.runImagePaths(diffPaths: ["shots/action.png"], repoRoot: nil).isEmpty)
     }
 
+    /// sol #11/#14: a scoped file-link opens ONLY safe document/image types;
+    /// an executable/script inside the repo is refused (with a reason), never
+    /// launched; out-of-scope is refused too.
+    @Test func openDecisionAllowsSafeTypesAndRefusesExecutablesAndOutOfScope() throws {
+        let base = NSTemporaryDirectory() + "open-" + UUID().uuidString + "/repo"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        for (name, data) in [("doc.md", "hi"), ("shot.png", "x"), ("evil.command", "#!/bin/sh"), ("run.sh", "echo")] {
+            try Data(data.utf8).write(to: URL(fileURLWithPath: base + "/" + name))
+        }
+        if case .open = ScopedInlineImage.openDecision(base + "/doc.md", roots: [base]) {} else {
+            Issue.record("a .md should open")
+        }
+        if case .open = ScopedInlineImage.openDecision(base + "/shot.png", roots: [base]) {} else {
+            Issue.record("a .png should open")
+        }
+        if case .refuse(let r) = ScopedInlineImage.openDecision(base + "/evil.command", roots: [base]) {
+            #expect(r.contains("unsafe"))
+        } else { Issue.record(".command must be refused") }
+        if case .refuse = ScopedInlineImage.openDecision(base + "/run.sh", roots: [base]) {} else {
+            Issue.record(".sh must be refused")
+        }
+        if case .refuse(let r) = ScopedInlineImage.openDecision("/etc/hosts", roots: [base]) {
+            #expect(r.contains("scope"))
+        } else { Issue.record("out-of-scope must be refused") }
+    }
+
+    @Test func markdownIsHardBoundedBeforeLayoutWithDisclosure() {
+        // sol #16: even "show the whole answer" must not lay out unbounded text.
+        let huge = String(repeating: "a ", count: MarkdownOutputView.renderCharCap)
+        let blocks = MarkdownOutputView.parse(String(huge.prefix(MarkdownOutputView.renderCharCap)))
+        let held = blocks.reduce(0) { $0 + $1.text.count }
+        #expect(held <= MarkdownOutputView.renderCharCap + 16)
+    }
+
     @Test func markdownImageLinesBecomeImageBlocks() {
         let md = "Итог гонки:\n\n![Гонка NEON//RUN](/Users/anton/racing6/racing-action.png)\n\nВсё работает."
         let blocks = MarkdownOutputView.parse(md)

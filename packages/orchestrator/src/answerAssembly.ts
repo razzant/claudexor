@@ -23,8 +23,15 @@ export class AnswerAssembly {
     // Live deltas are DISPLAY-stream chunks (W-C4): the complete message
     // always follows — joining chunks here would shred the answer.
     if (ev.payload?.["delta"] === true) return;
-    if (ev.final === true) this.finalText = ev.text.trim() || undefined;
-    else pushUniqueText(this.parts, ev.text);
+    if (ev.final === true) {
+      // A whitespace-only final is NOT an answer: ignore it, never let it
+      // erase an earlier real final (review sol #3). The accepted final is
+      // kept VERBATIM (the documented contract) — no trimming.
+      if (ev.text.trim().length === 0) return;
+      this.finalText = ev.text;
+    } else {
+      pushUniqueText(this.parts, ev.text);
+    }
   }
 
   /** The assembled answer: the typed final verbatim, else joined narration. */

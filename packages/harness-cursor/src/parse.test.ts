@@ -140,6 +140,17 @@ describe("parseCursorEvent", () => {
   it("maps error events and counts unknown shapes as null", () => {
     const out = parseCursorEvent({ type: "error", message: "boom" }, "s1") as HarnessEvent[];
     expect(out[0]?.type).toBe("error");
+  });
+
+  it("an is_error result is never a typed final (sol #1)", () => {
+    const failed = parseCursorEvent(
+      { type: "result", subtype: "error", is_error: true, result: "partial" },
+      "s1",
+    ) as HarnessEvent[];
+    const msg = failed.find((e) => e.type === "message");
+    expect(msg?.text).toBe("partial");
+    expect(msg?.final).toBeUndefined();
+    expect(failed.some((e) => e.type === "error")).toBe(true);
     expect(parseCursorEvent({ type: "brand_new_event" }, "s1")).toBeNull();
   });
 });

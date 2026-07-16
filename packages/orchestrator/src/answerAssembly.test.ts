@@ -31,6 +31,19 @@ describe("AnswerAssembly (Ф2.5 W-C1 typed finality)", () => {
     expect(b.text()).toBe("kept narration");
   });
 
+  it("a whitespace final never erases a REAL earlier final, and finals are verbatim (sol #3)", () => {
+    const a = new AnswerAssembly();
+    a.observe({ type: "message", text: "the real answer", final: true });
+    a.observe({ type: "message", text: "   \n  ", final: true });
+    expect(a.text()).toBe("the real answer");
+
+    // The accepted final keeps its exact whitespace (documented verbatim
+    // contract) — no trimming.
+    const b = new AnswerAssembly();
+    b.observe({ type: "message", text: "  indented answer  ", final: true });
+    expect(b.text()).toBe("  indented answer  ");
+  });
+
   it("never joins display-stream delta chunks into the answer (W-C4)", () => {
     const a = new AnswerAssembly();
     a.observe({ type: "message", text: "The ", payload: { delta: true } });

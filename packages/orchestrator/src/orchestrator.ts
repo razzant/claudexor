@@ -537,6 +537,10 @@ async function runBounded<T>(
 export class Orchestrator {
   private readonly gateway: HarnessGateway;
   private readonly requestRequirements = new RequestRequirementsResolver();
+  /** Per-attempt cap on forwarded live delta chunks (W-C4 flood guard, sol
+   * #10): past this the deltas are dropped and the cutoff is disclosed once;
+   * the complete message always still lands. */
+  static readonly MAX_DELTAS_PER_ATTEMPT = 4000;
 
   constructor(private readonly deps: OrchestratorDeps) {
     this.gateway = new HarnessGateway(deps.registry);
@@ -1769,6 +1773,9 @@ export class Orchestrator {
     let cost = 0;
     let costEstimated = false;
     let harnessErrored = false;
+    // W-C4 delta flood budget (per attempt): counts forwarded delta chunks.
+    let deltaCount = 0;
+    let deltaCutoffDisclosed = false;
     const errors: string[] = [];
     const answer = new AnswerAssembly();
     const retryPolicy = transientRetryPolicy(this.config(contract.repo.root));
@@ -1824,6 +1831,27 @@ export class Orchestrator {
             rawPatch = captureRawPatchEnvelope(rawContextPacket !== null, rawPatch, ev);
             if (ev.type === "patch_produced") continue;
             const safeEv = redactHarnessEvent(ev);
+            // W-C4 flood guard (review sol #10): a per-character delta stream
+            // would otherwise persist/SSE one journal event PER CHUNK without
+            // bound. Delta messages are DISPLAY-only (the complete message
+            // still follows and carries the authoritative text), so past a
+            // per-attempt budget we DROP further deltas and disclose the
+            // cutoff ONCE — the final answer is unaffected.
+            if (safeEv.type === "message" && safeEv.payload?.["delta"] === true) {
+              deltaCount += 1;
+              if (deltaCount > Orchestrator.MAX_DELTAS_PER_ATTEMPT) {
+                if (!deltaCutoffDisclosed) {
+                  deltaCutoffDisclosed = true;
+                  log?.emit("harness.event", {
+                    harness_id: adapter.id,
+                    attempt_id: attemptId,
+                    type: "status",
+                    title: `live delta stream capped at ${Orchestrator.MAX_DELTAS_PER_ATTEMPT} chunks; the complete message still lands`,
+                  });
+                }
+                continue; // drop this delta; never journal past the budget
+              }
+            }
             safeInvoke(onHarnessEvent, safeEv);
             // In-place turns run in the live tree under the native environment, so
             // the session they emit IS reachable for the next turn: record it. An

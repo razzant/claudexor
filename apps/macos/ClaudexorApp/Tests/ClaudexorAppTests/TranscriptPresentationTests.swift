@@ -57,4 +57,15 @@ import ClaudexorKit
         #expect(TurnCard.durationLabel(seconds: 60) == "1m 00s")
         #expect(TurnCard.durationLabel(seconds: 125) == "2m 05s")
     }
+
+    /// sol #6: the typed retry status renders a human line, omitting unknowns.
+    @Test func retryStatusLabelRendersTypedDetailAndOmitsUnknowns() {
+        let full = RetryStatusNote(kind: "api_retry", attempt: 2, maxRetries: 10,
+                                   retryDelayMs: 2500, errorCategory: "rate_limit")
+        #expect(full.label == "Retrying 2/10 · rate limit · in 2s")
+
+        let sparse = RetryStatusNote(kind: "api_retry", attempt: nil, maxRetries: nil,
+                                     retryDelayMs: nil, errorCategory: nil)
+        #expect(sparse.label == "Retrying")
+    }
 }

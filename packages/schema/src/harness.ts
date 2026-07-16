@@ -900,9 +900,22 @@ export const HarnessEvent = z
           .optional()
           .describe("Delay before the retry, when reported."),
         error_category: z
-          .string()
+          .enum([
+            "authentication_failed",
+            "oauth_org_not_allowed",
+            "billing_error",
+            "rate_limit",
+            "overloaded",
+            "invalid_request",
+            "model_not_found",
+            "server_error",
+            "max_output_tokens",
+            "unknown",
+          ])
           .optional()
-          .describe("Vendor's own error category label, passed through verbatim."),
+          .describe(
+            "Vendor's error category mapped onto the documented enum; unrecognized values collapse to 'unknown' (never free-form prose).",
+          ),
       })
       .optional()
       .describe("Typed transient-status detail set by the adapter on status events."),

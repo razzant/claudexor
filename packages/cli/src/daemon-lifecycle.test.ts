@@ -88,6 +88,55 @@ describe("armDaemonLifecycle", () => {
     lifecycle.finalize();
   });
 
+  it("the drain sweep reads the exit code at FIRE time, not arm time (sol #17)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
+    const exits: number[] = [];
+    const prevExitCode = process.exitCode;
+    const lifecycle = armDaemonLifecycle({
+      daemonDir: root,
+      logPath: join(root, "daemon.log"),
+      signals,
+      snapshot: () => {},
+      forceExit: (code) => exits.push(code),
+      stopDeadlineMs: 5_000,
+      drainGraceMs: 40,
+      // A clean stop() that sets a FAILURE exit code during the grace window.
+      stop: async () => {
+        process.exitCode = 1;
+      },
+    });
+    try {
+      signals.emit("SIGTERM");
+      await new Promise<void>((resolve) => setTimeout(resolve, 90));
+      expect(exits).toEqual([1]); // NOT the arm-time 0
+      lifecycle.finalize();
+    } finally {
+      process.exitCode = prevExitCode;
+    }
+  });
+
+  it("finalize() before any timer fires cancels the escalation (sol #17)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
+    const exits: number[] = [];
+    const lifecycle = armDaemonLifecycle({
+      daemonDir: root,
+      logPath: join(root, "daemon.log"),
+      signals,
+      snapshot: () => {},
+      forceExit: (code) => exits.push(code),
+      stopDeadlineMs: 40,
+      drainGraceMs: 40,
+      stop: async () => {},
+    });
+    signals.emit("SIGTERM");
+    await new Promise<void>((resolve) => setTimeout(resolve, 10)); // let stop() settle + drain arm
+    lifecycle.finalize(); // clean shutdown reached main()'s tail
+    await new Promise<void>((resolve) => setTimeout(resolve, 90));
+    expect(exits).toEqual([]); // no forced exit — both timers cancelled
+  });
+
   it("does not let diagnostic log or snapshot failures suppress shutdown", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
     const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;

@@ -25,7 +25,7 @@ describe("parseClaudeEvent", () => {
       {
         type: "system",
         subtype: "api_retry",
-        error: "temporarily unavailable / overloaded",
+        error: "overloaded",
         attempt: 2,
         max_retries: 10,
         retry_delay_ms: 2500,
@@ -40,11 +40,54 @@ describe("parseClaudeEvent", () => {
     expect(out?.status?.attempt).toBe(2);
     expect(out?.status?.max_retries).toBe(10);
     expect(out?.status?.retry_delay_ms).toBe(2500);
-    expect(out?.status?.error_category).toBe("temporarily unavailable / overloaded");
+    // error_category is the DOCUMENTED enum, never free-form prose (sol #7).
+    expect(out?.status?.error_category).toBe("overloaded");
     expect(out?.rate_limit?.retry_delay_ms).toBe(2500);
     expect(out?.transient?.kind).toBe("service_unavailable");
     expect(out?.transient?.retry_delay_ms).toBe(2500);
     expect(() => HarnessEvent.parse(out)).not.toThrow();
+  });
+
+  it("collapses an unrecognized api_retry error to the 'unknown' category (sol #7)", () => {
+    const out = parseClaudeEvent(
+      { type: "system", subtype: "api_retry", error: "SOME-NEW-VENDOR-STRING sk-secret" },
+      "s1",
+    )?.[0];
+    expect(out?.status?.error_category).toBe("unknown");
+    // The prose is redacted AND bounded, never the raw field.
+    expect(out?.text?.length ?? 0).toBeLessThanOrEqual(520);
+  });
+
+  it("a FAILED result is never a typed final (sol #1)", () => {
+    const failed = parseClaudeEvent(
+      { type: "result", subtype: "error_during_execution", result: "partial output" },
+      "s1",
+    ) as HarnessEvent[];
+    const msg = failed.find((e) => e.type === "message");
+    expect(msg?.text).toBe("partial output");
+    expect(msg?.final).toBeUndefined(); // NOT the authoritative answer
+    expect(failed.some((e) => e.type === "error")).toBe(true);
+  });
+
+  it("suppresses a COMPLETE subagent assistant frame's text and thinking (sol #8)", () => {
+    const out = parseClaudeEvent(
+      {
+        type: "assistant",
+        parent_tool_use_id: "tu_sub",
+        message: {
+          content: [
+            { type: "text", text: "subagent narration" },
+            { type: "thinking", thinking: "subagent reasoning" },
+            { type: "tool_use", id: "tu_e", name: "Edit", input: { file_path: "src/a.ts" } },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    // Its text/thinking never enter narration; its file edit is still real.
+    expect(out.some((e) => e.type === "message")).toBe(false);
+    expect(out.some((e) => e.type === "thinking")).toBe(false);
+    expect(out.some((e) => e.type === "file_change")).toBe(true);
   });
 
   it("maps stream_event text deltas to delta messages and skips other frames (W-C4)", () => {

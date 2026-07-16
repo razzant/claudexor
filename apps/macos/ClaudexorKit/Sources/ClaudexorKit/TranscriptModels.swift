@@ -63,9 +63,13 @@ public struct TranscriptReducer: Sendable {
     /// Wall-clock start of the OPEN thinking segment (from the events' own
     /// `ts`), so the merged block can disclose how long the reasoning ran.
     private var openThinkingStart: Date?
-    /// True while the last block is a delta-built streaming message (W-C4):
-    /// deltas append into it; the complete message REPLACES it (no doubling).
-    private var openStreamingMessage = false
+    /// Block id of the delta-built streaming message awaiting its authoritative
+    /// full flush (W-C4): tracked by id so an intervening tool block cannot
+    /// orphan it, and the complete message reconciles in place (no doubling).
+    private var streamingMessageId: String?
+    /// Set once a TYPED final message arrives: seals the delta stream so a
+    /// late stray delta never appends after the answer is final (sol #9).
+    private var finalized = false
     private let cap: Int
     /// W23 P0-hang bounds: the block COUNT cap alone let a single merged
     /// thinking block grow to megabytes — SwiftUI then laid out that Text on
@@ -126,27 +130,44 @@ public struct TranscriptReducer: Sendable {
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
             // A TYPED final message (claude/cursor result, codex finalized
             // last agent message) IS the answer bubble — repeating it in the
-            // live transcript would double the text the user just read.
-            if payload["final"]?.boolValue == true { return false }
-            // Live deltas (W-C4) grow ONE streaming block; the complete
-            // message then REPLACES it (authoritative text, no doubling).
+            // live transcript would double the text the user just read. It also
+            // SEALS the delta stream so a late stray delta cannot append to a
+            // stale block after the answer is final (review sol #9).
+            if payload["final"]?.boolValue == true {
+                streamingMessageId = nil
+                finalized = true
+                return true
+            }
+            // Live deltas (W-C4) grow ONE streaming block. After a final the
+            // stream is SEALED (a late stray delta is dropped, sol #9). A
+            // delta continues the streaming block only while it is still LAST
+            // (real vendor protocols stream a message's deltas contiguously,
+            // ended by the complete flush before any tool block); otherwise it
+            // starts a fresh streaming block.
             if payload["delta"]?.boolValue == true {
-                if openStreamingMessage, case .message(let id, let prev) = blocks.last {
+                if finalized { return false }
+                if let sid = streamingMessageId, blocks.last?.id == sid,
+                   case .message(let id, let prev) = blocks.last {
                     let bounded = boundHead(prev + text)
                     textChars += bounded.count - prev.count
                     blocks[blocks.count - 1] = .message(id: id, text: bounded)
                     enforceBudget()
                 } else {
-                    append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
-                    openStreamingMessage = true
+                    let id = "msg-\(seqKey)"
+                    append(.message(id: id, text: boundHead(text)))
+                    streamingMessageId = id
                 }
                 return true
             }
-            if openStreamingMessage, case .message(let id, let prev) = blocks.last {
+            // The complete (non-delta) message REPLACES its delta-built block
+            // in place when that block is still last (no doubled paragraph);
+            // otherwise it is a standalone message.
+            if let sid = streamingMessageId, blocks.last?.id == sid,
+               case .message(let id, let prev) = blocks.last {
                 let bounded = boundHead(text)
                 textChars += bounded.count - prev.count
                 blocks[blocks.count - 1] = .message(id: id, text: bounded)
-                openStreamingMessage = false
+                streamingMessageId = nil
                 enforceBudget()
                 return true
             }
@@ -270,7 +291,9 @@ public struct TranscriptReducer: Sendable {
         // next thinking event starts a new segment (and a new timer). Any
         // non-message block likewise closes the open streaming message.
         if case .thinking = block {} else { openThinkingStart = nil }
-        if case .message = block {} else { openStreamingMessage = false }
+        // A non-message block ends the delta stream: the next delta is a new
+        // message, not a continuation of the pre-tool one.
+        if case .message = block {} else { streamingMessageId = nil }
         blocks.append(block)
         textChars += chars(of: block)
         enforceBudget()

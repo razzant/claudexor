@@ -389,6 +389,22 @@ extension AppModel {
                 t.harnesses.append(h)
                 taskChanged = true
             }
+            // Typed transient status (W-C2/sol #6): project the retry detail
+            // onto the run so the LIVE status line can render it; any OTHER
+            // harness event = progress, so the retry note clears.
+            if detail == "status", let s = payload["status"], s["kind"]?.stringValue == "api_retry" {
+                t.retryStatus = RetryStatusNote(
+                    kind: "api_retry",
+                    attempt: s["attempt"]?.doubleValue.map { Int($0) },
+                    maxRetries: s["max_retries"]?.doubleValue.map { Int($0) },
+                    retryDelayMs: s["retry_delay_ms"]?.doubleValue.map { Int($0) },
+                    errorCategory: s["error_category"]?.stringValue
+                )
+                taskChanged = true
+            } else if t.retryStatus != nil {
+                t.retryStatus = nil
+                taskChanged = true
+            }
             box.appendActivity(ActivityEvent(kind, harness: h, Self.title(payload) ?? Self.pretty(type), detail: payload["text"]?.stringValue ?? payload["error"]?.stringValue, code: payload["rawRef"]?.stringValue, at: .now))
             if type == "harness.completed" { shouldLoadDetail = true }
         } else if type.hasPrefix("gate.") {

@@ -83,12 +83,19 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
   const forceExit = deps.forceExit ?? ((code: number) => process.exit(code));
   const stopDeadlineMs = deps.stopDeadlineMs ?? 15_000;
   const drainGraceMs = deps.drainGraceMs ?? 2_000;
-  const armExitTimer = (ms: number, reason: string, code: number): void => {
+  // Timer handles are RETAINED so the deadline can be cancelled once stop()
+  // settles and both can be cancelled in finalize() (review sol #17). The
+  // callbacks read `process.exitCode` at FIRE time (not arm time), so a
+  // failure setting it during the grace window still exits nonzero.
+  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let drainTimer: ReturnType<typeof setTimeout> | null = null;
+  const armExitTimer = (ms: number, reason: string, code?: number): ReturnType<typeof setTimeout> => {
     const t = setTimeout(() => {
       logLine(deps.logPath, reason);
-      forceExit(code);
+      forceExit(code ?? Number(process.exitCode ?? 0));
     }, ms);
     t.unref?.();
+    return t;
   };
 
   let stopping = false;
@@ -98,15 +105,21 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
     if (stopping) return;
     stopping = true;
     logLine(deps.logPath, `${sig} received; stopping daemon`);
-    armExitTimer(stopDeadlineMs, `graceful stop exceeded ${stopDeadlineMs}ms; forcing exit`, 1);
+    deadlineTimer = armExitTimer(
+      stopDeadlineMs,
+      `graceful stop exceeded ${stopDeadlineMs}ms; forcing exit`,
+      1,
+    );
     void deps.stop().then(
       () => {
-        // Clean stop: if the loop drains, the process exits before this
-        // fires (unref'd); if a leaked handle holds it open, sweep it.
-        armExitTimer(
+        // stop() settled: cancel the deadline. If the loop then drains the
+        // process exits before the drain timer fires (unref'd); a leaked
+        // handle is swept with the exit code prevailing AT that time.
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        deadlineTimer = null;
+        drainTimer = armExitTimer(
           drainGraceMs,
           `event loop still alive ${drainGraceMs}ms after a clean stop (leaked handle); forcing exit`,
-          Number(process.exitCode ?? 0),
         );
       },
       (error: unknown) => {
@@ -116,6 +129,7 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
           deps.logPath,
           `shutdown FAILED: ${error instanceof Error ? error.message : String(error)}`,
         );
+        // Failure: the deadline timer stays armed to guarantee exit.
       },
     );
   };
@@ -130,6 +144,12 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
       if (finalized) return;
       finalized = true;
       clearInterval(pidsTimer);
+      // Cancel any armed escalation timers: a clean shutdown reaching the
+      // main() tail must not be force-exited by a still-pending timer.
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      if (drainTimer) clearTimeout(drainTimer);
+      deadlineTimer = null;
+      drainTimer = null;
       signals.off("SIGTERM", onSigterm);
       signals.off("SIGINT", onSigint);
       // Graceful stop aborted all children; one final snapshot records any

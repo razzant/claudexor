@@ -81,6 +81,9 @@ export function parseCodexEvent(
     return out;
   }
   if (type === "turn.failed") {
+    // A failed turn NEVER finalizes its (partial) agent message, and must not
+    // let it leak into the NEXT turn's finalization either (review sol #2).
+    if (state) state.lastAgentMessage = undefined;
     const message = obj.error?.message ?? "turn failed";
     const ev: HarnessEvent = {
       type: "error",
@@ -94,6 +97,10 @@ export function parseCodexEvent(
     return [ev];
   }
   if (type === "turn.started") {
+    // A new turn starts fresh: never let a PRIOR turn's last agent message
+    // finalize as THIS turn's answer (review sol #2 — the leak was cleared
+    // only on turn.completed, so a failed/empty turn inherited a stale one).
+    if (state) state.lastAgentMessage = undefined;
     // A lifecycle marker, NOT reasoning: mapping it to `thinking` used to
     // plant a junk "turn started" block at the top of every chat transcript
     // (the reducer renders thinking verbatim). `started` keeps the boundary

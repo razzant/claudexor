@@ -237,10 +237,19 @@ function parseCursorEventStateful(
         usage: { cost_usd: obj.total_cost_usd },
       });
     }
+    // Finality only for a SUCCESS result (review sol #1): an is_error / non-
+    // success result is aborted/partial text, never the authoritative answer.
+    const successResult = obj.is_error !== true && (!obj.subtype || obj.subtype === "success");
     if (typeof obj.result === "string" && obj.result.trim()) {
       // The terminal `result` IS cursor's typed final answer (the docs define
       // `result` as the full assistant text of the turn).
-      out.push({ type: "message", session_id: sessionId, ts, text: obj.result, final: true });
+      out.push({
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: obj.result,
+        ...(successResult ? { final: true } : {}),
+      });
     }
     if (obj.subtype && obj.subtype !== "success") {
       out.push({

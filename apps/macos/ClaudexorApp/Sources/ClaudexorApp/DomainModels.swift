@@ -623,9 +623,9 @@ struct TaskRun: Identifiable, Hashable {
     var n: Int
     var createdAt: Date
     var updatedAt: Date
-    /// Explicit review truth. Empty findings are never interpreted as clean;
-    /// `.clean` requires the engine's verified decision/candidate evidence.
+    /// Explicit review truth: empty findings are never `.clean` (needs the engine's verified evidence).
     var reviewVerdict: ReviewVerdict = .notRun
+    var retryStatus: RetryStatusNote?  // latest typed transient status (W-C2/sol #6); cleared on progress
     var spendUsd: Double
     var capUsd: Double
     var spendKnown: Bool = true
