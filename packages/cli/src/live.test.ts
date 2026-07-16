@@ -226,6 +226,36 @@ describe("live formatter typed-final dedup", () => {
       "run completed: success",
     );
   });
+
+  it("dedups on the rendered line: texts diverging past the 160-char cut never double-print", () => {
+    // sol review of 00448bd8 (major): the printer truncates to 160 chars, so a
+    // final whose full text differs only past the cut would render a line
+    // byte-identical to the narration already on screen.
+    const format = createRunEventLineFormatter();
+    const first = format(message("a01", `${"A".repeat(200)}x`));
+    expect(first).not.toBeNull();
+    expect(format(message("a01", `${"A".repeat(200)}y`, { final: true }))).toBeNull();
+  });
+
+  it("dedups a whitespace-only final against its whitespace-only narration", () => {
+    // sol review of 00448bd8 (minor): whitespace normalized to an empty
+    // identity and skipped dedup entirely; line equality has no such hole.
+    const format = createRunEventLineFormatter();
+    const first = format(message("a01", "   "));
+    expect(first).not.toBeNull();
+    expect(format(message("a01", "   ", { final: true }))).toBeNull();
+  });
+
+  it("keeps per-lane state bounded to one rendered line, not full message bodies", () => {
+    // sol review of 00448bd8 (minor): the dedup key is the rendered line
+    // (≤160-char title cut), so a multi-megabyte narration body is never
+    // retained — pinned here via the truncation marker in the stored line.
+    const format = createRunEventLineFormatter();
+    const line = format(message("a01", "B".repeat(1_000_000)));
+    expect(line).not.toBeNull();
+    expect(line!.length).toBeLessThan(200);
+    expect(format(message("a01", "B".repeat(1_000_000), { final: true }))).toBeNull();
+  });
 });
 
 describe("claudexor follow text mode", () => {

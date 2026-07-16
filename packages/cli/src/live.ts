@@ -88,19 +88,6 @@ function laneOf(p: Record<string, unknown>): string {
 }
 
 /**
- * Typed identity of a harness message. `text` is the full body; `title` is the
- * projection's 500-char shortcut and the only field present when the event
- * carries no text. Both copies of a doubled answer travel the same projection,
- * so comparing the same field on both is what makes the dedup exact.
- */
-function messageIdentity(p: Record<string, unknown>): string | null {
-  const raw =
-    typeof p["text"] === "string" ? p["text"] : typeof p["title"] === "string" ? p["title"] : null;
-  const normalized = raw?.trim() ?? "";
-  return normalized === "" ? null : normalized;
-}
-
-/**
  * Stateful live formatter: `formatRunEventLine` plus the typed-final dedup.
  *
  * Codex narrates its answer mid-run (agent_message) and then repeats the SAME
@@ -108,25 +95,30 @@ function messageIdentity(p: Record<string, unknown>): string | null {
  * twice. The app's transcript reducer keys the same dedup on `final`
  * (TranscriptModels) but drops EVERY final — it renders the answer in its own
  * bubble. The CLI has no such bubble: the live stream IS the answer, so a final
- * is suppressed only when its text is already on screen. A final that adds new
+ * is suppressed only when it is already on screen. A final that adds new
  * text (claude/cursor, whose result never repeats narration) still prints.
+ *
+ * The dedup keys on the RENDERED line, not the raw text: the printer's
+ * contract is "never print a byte-identical answer line twice", and the
+ * 160-char title truncation means distinct texts can render identically
+ * (sol review of 00448bd8, major). The line is also bounded, so per-lane
+ * state never holds a full message body (ibid., minor).
+ *
+ * Only the TYPED final flag dedups; a rendered match between two narration
+ * messages is the harness genuinely saying the same thing twice, and stays.
  *
  * Text mode only — `--json`/NDJSON stay verbatim machine surfaces.
  */
 export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => string | null {
-  const lastMessageByLane = new Map<string, string>();
+  const lastMessageLineByLane = new Map<string, string>();
   return (ev) => {
     const line = formatRunEventLine(ev);
-    if (String(ev["type"] ?? "") !== "harness.event") return line;
+    if (line === null || String(ev["type"] ?? "") !== "harness.event") return line;
     const p = (ev["payload"] ?? {}) as Record<string, unknown>;
     if (String(p["type"] ?? "") !== "message") return line;
-    const identity = messageIdentity(p);
-    if (identity === null) return line;
     const lane = laneOf(p);
-    // Only the TYPED final flag dedups; a text match between two narration
-    // messages is the harness genuinely saying the same thing twice.
-    if (p["final"] === true && lastMessageByLane.get(lane) === identity) return null;
-    lastMessageByLane.set(lane, identity);
+    if (p["final"] === true && lastMessageLineByLane.get(lane) === line) return null;
+    lastMessageLineByLane.set(lane, line);
     return line;
   };
 }
