@@ -2692,7 +2692,7 @@ describe("DaemonControlApiServer", () => {
             ? {
                 harnessId: input.harnessId,
                 source: "api",
-                models: [{ id: "gpt-4o-mini", label: null, context_window: null }],
+                models: [{ id: "gpt-4o-mini", label: null, context_window: null, routes: null }],
               }
             : { harnessId: input.harnessId, source: "none", models: [] };
         },

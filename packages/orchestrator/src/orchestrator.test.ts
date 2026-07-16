@@ -2463,7 +2463,7 @@ describe("Orchestrator", () => {
             family === "anthropic"
               ? ["claude-opus-4-8", "opus"]
               : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M", "o-review"];
-          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null }));
+          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null, routes: null }));
         },
         async *run(spec) {
           const ts = new Date().toISOString();
@@ -2537,7 +2537,7 @@ describe("Orchestrator", () => {
             family === "anthropic"
               ? ["claude-opus-4-8"]
               : ["gemini-3.1-pro", "gemini-3.5-flash", "gpt-5.5-xhigh-1M"];
-          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null }));
+          return ids.map((modelId) => ({ id: modelId, label: null, context_window: null, routes: null }));
         },
         async *run(spec) {
           const ts = new Date().toISOString();
@@ -2614,7 +2614,7 @@ describe("Orchestrator", () => {
         });
       },
       async models() {
-        return [{ id: "gemini-3.1-pro", label: null, context_window: null }];
+        return [{ id: "gemini-3.1-pro", label: null, context_window: null, routes: null }];
       },
       async *run() {
         throw new Error("reviewer should not run when effort validation fails");
@@ -2669,7 +2669,7 @@ describe("Orchestrator", () => {
         });
       },
       async models() {
-        return [{ id: "configured-review-model", label: null, context_window: null }];
+        return [{ id: "configured-review-model", label: null, context_window: null, routes: null }];
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -2743,8 +2743,8 @@ describe("Orchestrator", () => {
       async models(spec) {
         modelSpecs.push(spec ?? { cwd: "" });
         return spec?.env?.["HOME"] && spec.authPreference === "api_key"
-          ? [{ id: "scoped-api-model", label: null, context_window: null }]
-          : [{ id: "native-model", label: null, context_window: null }];
+          ? [{ id: "scoped-api-model", label: null, context_window: null, routes: null }]
+          : [{ id: "native-model", label: null, context_window: null, routes: null }];
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -2932,7 +2932,7 @@ describe("Orchestrator", () => {
         modelCalls += 1;
         modelCallTimes.push(Date.now());
         if (modelCalls === 1) throw new Error("transient inventory crash");
-        return [{ id: "retry-model", label: null, context_window: null }];
+        return [{ id: "retry-model", label: null, context_window: null, routes: null }];
       },
       async *run(spec) {
         const ts = new Date().toISOString();
@@ -3082,7 +3082,12 @@ describe("Orchestrator", () => {
       if (!opts.omitModels) {
         adapter.models = async () => {
           if (opts.modelsThrow) throw new Error("inventory crashed");
-          return (opts.models ?? []).map((id) => ({ id, label: null, context_window: null }));
+          return (opts.models ?? []).map((id) => ({
+            id,
+            label: null,
+            context_window: null,
+            routes: null,
+          }));
         };
       }
       return adapter;

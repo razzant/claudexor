@@ -61,9 +61,11 @@ describe("raw-api models() — enumeration producer", () => {
     expect(url).toBe("https://api.openai.com/v1/models");
     expect(init.method).toBe("GET");
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-test");
+    // routes: null = unannotated (a live enumeration reflects the credentials
+    // it ran under; route scoping is a manifest-annotation concept, W11).
     expect(models).toEqual([
-      { id: "gpt-4o-mini", label: null, context_window: null },
-      { id: "gpt-4o", label: null, context_window: null },
+      { id: "gpt-4o-mini", label: null, context_window: null, routes: null },
+      { id: "gpt-4o", label: null, context_window: null, routes: null },
     ]);
   });
 

@@ -72,11 +72,11 @@ describe("cursor model inventory parsing", () => {
         "Available models\n\nWarning: API route - reconnecting\ngpt-5.5-extra-high - GPT-5.5 1M Extra High\ngpt-5.5-xhigh-1M - GPT-5.5 1M XHigh\nmeta-llama/llama_3.1-70b - Llama 3.1 70B\norg:model:v2 - Vendor Model V2\ngemini-3.1-pro - Gemini 3.1 Pro\n2026-06-29T17:00:00Z - log line\n\nTip: use --model <id>\n",
       ),
     ).toEqual([
-      { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null },
-      { id: "gpt-5.5-xhigh-1M", label: "GPT-5.5 1M XHigh", context_window: null },
-      { id: "meta-llama/llama_3.1-70b", label: "Llama 3.1 70B", context_window: null },
-      { id: "org:model:v2", label: "Vendor Model V2", context_window: null },
-      { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", context_window: null },
+      { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null, routes: null },
+      { id: "gpt-5.5-xhigh-1M", label: "GPT-5.5 1M XHigh", context_window: null, routes: null },
+      { id: "meta-llama/llama_3.1-70b", label: "Llama 3.1 70B", context_window: null, routes: null },
+      { id: "org:model:v2", label: "Vendor Model V2", context_window: null, routes: null },
+      { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", context_window: null, routes: null },
     ]);
   });
 
@@ -88,9 +88,9 @@ describe("cursor model inventory parsing", () => {
         ),
       ),
     ).toEqual([
-      { id: "GPT-4", label: "GPT 4", context_window: null },
-      { id: "O1", label: "O1", context_window: null },
-      { id: "1234", label: "Numeric", context_window: null },
+      { id: "GPT-4", label: "GPT 4", context_window: null, routes: null },
+      { id: "O1", label: "O1", context_window: null, routes: null },
+      { id: "1234", label: "Numeric", context_window: null, routes: null },
     ]);
   });
 });
@@ -904,7 +904,7 @@ describe("cursor adapter auth route wiring", () => {
       nativeAuthOk: async () => nativeProbe(true),
       cursorApiKey: () => "cursor-key",
       listCursorModels: async () => [
-        { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null },
+        { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null, routes: null },
       ],
       smokeIsolatedApiKey: async () => ({ ok: true, detail: "ok" }),
       runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
@@ -917,7 +917,7 @@ describe("cursor adapter auth route wiring", () => {
     });
 
     await expect(adapter.models?.({ cwd: "/repo" })).resolves.toEqual([
-      { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null },
+      { id: "gpt-5.5-extra-high", label: "GPT-5.5 1M Extra High", context_window: null, routes: null },
     ]);
   });
 
@@ -930,7 +930,7 @@ describe("cursor adapter auth route wiring", () => {
       cursorApiKey: () => "stale-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
-        return [{ id: "native-model", label: "Native Model", context_window: null }];
+        return [{ id: "native-model", label: "Native Model", context_window: null, routes: null }];
       },
       smokeIsolatedApiKey: async () => {
         smokeCalls += 1;
@@ -946,7 +946,7 @@ describe("cursor adapter auth route wiring", () => {
     });
 
     await expect(adapter.models?.({ cwd: "/repo" })).resolves.toEqual([
-      { id: "native-model", label: "Native Model", context_window: null },
+      { id: "native-model", label: "Native Model", context_window: null, routes: null },
     ]);
     expect(modelEnvs).toHaveLength(1);
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBeNull();
@@ -961,7 +961,7 @@ describe("cursor adapter auth route wiring", () => {
       cursorApiKey: () => "cursor-key",
       listCursorModels: async (env) => {
         modelEnvs.push(env);
-        return [{ id: "api-model", label: "API Model", context_window: null }];
+        return [{ id: "api-model", label: "API Model", context_window: null, routes: null }];
       },
       smokeIsolatedApiKey: async () => ({ ok: true, detail: "ok" }),
       runCliHarness: async function* (opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
@@ -974,7 +974,7 @@ describe("cursor adapter auth route wiring", () => {
     });
 
     await expect(adapter.models?.({ cwd: "/repo" })).resolves.toEqual([
-      { id: "api-model", label: "API Model", context_window: null },
+      { id: "api-model", label: "API Model", context_window: null, routes: null },
     ]);
     expect(modelEnvs).toHaveLength(1);
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBe("cursor-key");
@@ -989,7 +989,7 @@ describe("cursor adapter auth route wiring", () => {
       listCursorModels: async (env) => {
         modelEnvs.push(env);
         return env?.["CURSOR_API_KEY"] === "stale-key"
-          ? [{ id: "catalog-model", label: "Catalog Model", context_window: null }]
+          ? [{ id: "catalog-model", label: "Catalog Model", context_window: null, routes: null }]
           : [];
       },
       smokeIsolatedApiKey: async () => ({ ok: false, detail: "smoke failed" }),
@@ -1003,7 +1003,7 @@ describe("cursor adapter auth route wiring", () => {
     });
 
     await expect(adapter.models?.({ cwd: "/repo" })).resolves.toEqual([
-      { id: "catalog-model", label: "Catalog Model", context_window: null },
+      { id: "catalog-model", label: "Catalog Model", context_window: null, routes: null },
     ]);
     expect(modelEnvs).toHaveLength(1);
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBe("stale-key");
@@ -1018,7 +1018,7 @@ describe("cursor adapter auth route wiring", () => {
       listCursorModels: async (env) => {
         modelEnvs.push(env);
         if (env?.["CURSOR_API_KEY"] === "cursor-key" && !env?.["HOME"])
-          return [{ id: "catalog-model", label: "Catalog Model", context_window: null }];
+          return [{ id: "catalog-model", label: "Catalog Model", context_window: null, routes: null }];
         return [];
       },
       smokeIsolatedApiKey: async () => ({ ok: false, detail: "smoke failed" }),
@@ -1081,8 +1081,8 @@ describe("cursor adapter auth route wiring", () => {
       listCursorModels: async (env) => {
         modelEnvs.push(env);
         return env?.["CURSOR_API_KEY"] === "cursor-key"
-          ? [{ id: "api-review-model", label: "API Review Model", context_window: null }]
-          : [{ id: "native-review-model", label: "Native Review Model", context_window: null }];
+          ? [{ id: "api-review-model", label: "API Review Model", context_window: null, routes: null }]
+          : [{ id: "native-review-model", label: "Native Review Model", context_window: null, routes: null }];
       },
       smokeIsolatedApiKey: async () => {
         smokeCalls += 1;
@@ -1100,7 +1100,7 @@ describe("cursor adapter auth route wiring", () => {
     await expect(
       adapter.models?.({ cwd: "/repo", env: { HOME: "/tmp/scoped-home" }, authPreference: "auto" }),
     ).resolves.toEqual([
-      { id: "native-review-model", label: "Native Review Model", context_window: null },
+      { id: "native-review-model", label: "Native Review Model", context_window: null, routes: null },
     ]);
     expect(smokeCalls).toBe(0);
     expect(modelEnvs).toHaveLength(1);

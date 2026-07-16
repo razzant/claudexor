@@ -307,6 +307,9 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           id: m.id,
           label: m.label,
           context_window: m.context_window,
+          // A live enumeration reflects the credentials it ran under; route
+          // scoping is a manifest-annotation concept (W11), not an API fact.
+          routes: null,
         }));
       } catch {
         return [];

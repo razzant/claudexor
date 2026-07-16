@@ -164,7 +164,8 @@ export function parseCursorModelList(text: string): HarnessModel[] {
     const label = line.slice(sep + 3).trim() || null;
     if (!isCursorModelId(id) || seen.has(id)) continue;
     seen.add(id);
-    out.push({ id, label, context_window: null });
+    // routes: null = unannotated (route scoping is a manifest concept, W11).
+    out.push({ id, label, context_window: null, routes: null });
   }
   return out;
 }
