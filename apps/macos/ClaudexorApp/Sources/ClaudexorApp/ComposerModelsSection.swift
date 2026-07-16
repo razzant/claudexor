@@ -19,8 +19,26 @@ struct ComposerModelsSection: View {
     /// filtered here with an honest hidden-count note. nil = unfiltered.
     var route: String? = nil
     @Binding var selections: [String: String]
+    /// Keyed by `catalogKey(family, route:)` — a catalog is only valid for the
+    /// ROUTE it was fetched under, and caching per (family, route) means
+    /// reopening an unchanged popover refetches NOTHING (model enumeration can
+    /// invoke adapter CLIs — sol review #7).
     @Binding var catalogs: [String: HarnessModelsResponse]
     let fetch: (HarnessFamily) async -> HarnessModelsResponse?
+
+    /// Composite cache key: the same harness under another auth route is a
+    /// DIFFERENT truth source, never a cache hit.
+    static func catalogKey(_ family: HarnessFamily, route: String?) -> String {
+        family.rawValue + "|" + (route ?? "any")
+    }
+
+    /// Which families actually need a fetch: only those with no catalog cached
+    /// under the CURRENT route. Pure — unit-tested (reopen = no fetches; a
+    /// route change or a newly pooled family fetches exactly the missing ones).
+    static func familiesToFetch(_ families: [HarnessFamily], route: String?,
+                                cached: some Collection<String>) -> [HarnessFamily] {
+        families.filter { !cached.contains(catalogKey($0, route: route)) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
@@ -40,14 +58,15 @@ struct ComposerModelsSection: View {
                 }
             }
         }
-        // Refetch when the pool OR the effective route changes: an existing
-        // catalog was fetched under the PREVIOUS route, so a cache hit here
-        // would keep offering models the new route refuses. Existing rows stay
-        // visible until each replacement lands (no loading flash).
+        // Fetch when the pool OR the effective route changes — but ONLY the
+        // (family, route) pairs not already cached: reopening an unchanged
+        // popover is zero requests, a route flip fetches fresh truth (a stale
+        // same-key hit would keep offering models the new route refuses), and
+        // a failed fetch leaves the key missing so the next open retries.
         .task(id: families.map(\.rawValue).joined(separator: ",") + ":" + (route ?? "any")) {
-            for family in families {
+            for family in Self.familiesToFetch(families, route: route, cached: catalogs.keys) {
                 if let fetched = await fetch(family) {
-                    catalogs[family.rawValue] = fetched
+                    catalogs[Self.catalogKey(family, route: route)] = fetched
                 }
             }
         }
@@ -63,7 +82,8 @@ struct ComposerModelsSection: View {
 
     @ViewBuilder private func modelPicker(for family: HarnessFamily) -> some View {
         let id = family.rawValue
-        if let catalog = catalogs[id], catalog.canEnumerate {
+        let key = Self.catalogKey(family, route: route)
+        if let catalog = catalogs[key], catalog.canEnumerate {
             let visible = Self.visibleModels(catalog.models, route: route)
             Picker("", selection: bindingFor(id)) {
                 Text("Harness default").tag("")
@@ -82,7 +102,7 @@ struct ComposerModelsSection: View {
             .labelsHidden()
             .fixedSize()
             .help(pickerHelp(family, catalog, hiddenOnRoute: catalog.models.count - visible.count))
-        } else if catalogs[id] != nil {
+        } else if catalogs[key] != nil {
             // A LOADED catalog that cannot enumerate (source: none) — the
             // server's answer, honestly rendered.
             Text("Harness default only")

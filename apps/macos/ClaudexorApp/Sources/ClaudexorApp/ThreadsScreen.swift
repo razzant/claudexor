@@ -21,7 +21,7 @@ struct ThreadsScreen: View {
     @State var access: AccessProfile = .workspaceWrite
     @State var webPolicy = "auto"
     /// Per-turn auth route REQUEST (W18): auto | subscription | api_key. Not sticky.
-    @State var authRoutePreference = "auto"
+    @State var authRoutePreference = ""  // "" = Thread default; see authRouteRequest (sol #1)
     /// Per-turn reasoning effort ("" = harness default). Not sticky.
     @State var effortPreference = ""
     @State var untilClean = false
@@ -90,7 +90,7 @@ struct ThreadsScreen: View {
             models: composerModels,
             reviewerPanel: reviewerPanelEntries.isEmpty ? nil : reviewerPanelEntries,
             protectedPathApprovals: protectedPathApprovals.isEmpty ? nil : protectedPathApprovals,
-            authRoute: authRoutePreference == "auto" ? nil : authRoutePreference,
+            authRoute: Self.authRouteRequest(authRoutePreference),
             effort: effortPreference.isEmpty ? nil : effortPreference
         )
     }
@@ -530,7 +530,7 @@ struct ThreadsScreen: View {
                     if !threadHasProject { composerMode = .ask }
                     // Per-turn knobs are not sticky — don't carry one thread's budget
                     // cap / access / web / repair flags / model into the next thread.
-                    capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"; authRoutePreference = "auto"; effortPreference = ""
+                    capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
                     untilClean = false; maxAttempts = 3; showOptions = false; browser = false
                     reviewerPanelText = ""; protectedApprovalsText = ""
                     composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)

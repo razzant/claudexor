@@ -60,4 +60,64 @@ import Testing
         #expect(text.hasPrefix("HEAD"))
         #expect(r.truncatedChars == 4_004)
     }
+
+    private func toolCall(_ seq: Int, name: String = "bash", target: String, useId: String? = nil) -> BusEnvelope {
+        var tool: [String: JSONValue] = ["name": .string(name), "target": .string(target)]
+        if let useId { tool["use_id"] = .string(useId) }
+        return BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object(["type": .string("tool_call"), "tool": .object(tool)])
+        ]))
+    }
+
+    private func toolResult(_ seq: Int, useId: String, detail: String) -> BusEnvelope {
+        BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object(["type": .string("tool_result"), "tool": .object([
+                "use_id": .string(useId), "status": .string("ok"),
+                "content_summary": .string(detail)
+            ])])
+        ]))
+    }
+
+    /// Tool strings are harness-supplied and NOT engine-bounded: a single
+    /// multi-megabyte command target must not bypass the invariant (sol #2).
+    @Test func oversizedToolTargetIsBoundedCountedAndDisclosed() {
+        var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 10_000, toolFieldCap: 500)
+        r.apply(toolCall(1, target: String(repeating: "t", count: 2_000_000)))
+        guard case .tool(_, let block) = r.blocks.first else {
+            Issue.record("expected a tool block")
+            return
+        }
+        #expect((block.target?.count ?? 0) <= 500)
+        #expect(r.truncatedChars >= 1_999_500)
+        // Tool text COUNTS toward the invariant — no zero-rated escape hatch.
+        #expect(r.textChars == block.name.count + (block.target?.count ?? 0))
+    }
+
+    @Test func oversizedToolResultDetailStaysBoundedThroughTheInPlaceUpdate() {
+        var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 10_000, toolFieldCap: 500)
+        r.apply(toolCall(1, target: "make build", useId: "u1"))
+        let before = r.textChars
+        r.apply(toolResult(2, useId: "u1", detail: String(repeating: "d", count: 100_000)))
+        guard case .tool(_, let block) = r.blocks.first else {
+            Issue.record("expected a tool block")
+            return
+        }
+        #expect((block.detail?.count ?? 0) <= 500)
+        #expect(r.textChars == before + (block.detail?.count ?? 0))
+        #expect(r.truncatedChars == 99_500)
+    }
+
+    @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {
+        var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 3_000, toolFieldCap: 500)
+        for i in 1...20 { r.apply(toolCall(i, target: String(repeating: "c", count: 500))) }
+        #expect(r.textChars <= 3_000)
+        #expect(r.trimmed > 0)
+        let held = r.blocks.reduce(0) { sum, block in
+            guard case .tool(_, let b) = block else { return sum }
+            return sum + b.name.count + (b.kind?.count ?? 0) + (b.target?.count ?? 0) + (b.detail?.count ?? 0)
+        }
+        #expect(held == r.textChars)
+    }
 }

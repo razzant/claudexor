@@ -138,6 +138,100 @@ struct AppModelRefreshTests {
         #expect(listCalls.count == 2)
     }
 
+    @MainActor
+    @Test func corruptedFractionalPingRevisionNeverBecomesAValidWatermark() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        let listCalls = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/threads" else { throw AppRefreshTestError.badRequest }
+            listCalls.increment()
+            return (appResponse(for: request), Data(#"{"threads":[]}"#.utf8))
+        }
+        func ping(_ revision: Double) -> JournalEvent {
+            JournalEvent(
+                cursor: "epoch:x", partition: "global", type: "thread.head.updated",
+                observedAt: "2026-07-16T00:00:00Z",
+                payload: .object([
+                    "thread_id": .string("th-1"), "project_id": .null,
+                    "revision": .number(revision)
+                ])
+            )
+        }
+
+        // A corrupted 1.6 must NOT round into watermark 2: it degrades to a
+        // plain refetch with no dedupe claim…
+        await model.handleGlobalEvent(ping(1.6))
+        await model.threadsRefreshTask?.value
+        #expect(model.threadHeadRevisions["th-1"] == nil)
+        #expect(listCalls.count == 1)
+        // …so the NEXT genuine revision 2 still refetches instead of being
+        // swallowed as "already reflected".
+        await model.handleGlobalEvent(ping(2))
+        await model.threadsRefreshTask?.value
+        #expect(listCalls.count == 2)
+        #expect(model.threadHeadRevisions["th-1"] == 2)
+
+        // Negative garbage also degrades to refetch-without-watermark.
+        await model.handleGlobalEvent(ping(-3))
+        await model.threadsRefreshTask?.value
+        #expect(model.threadHeadRevisions["th-1"] == 2)
+        #expect(listCalls.count == 3)
+    }
+
+    @MainActor
+    @Test func failedPingRefetchStaysDirtyAndRetriesUntilTheListHeals() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        let listCalls = AppRefreshCallCounter()
+        // The daemon dies right after delivering the ping: the FIRST list
+        // request fails, and no second ping will ever arrive (the cursor
+        // already consumed the only one).
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/threads" else { throw AppRefreshTestError.badRequest }
+            listCalls.increment()
+            return (
+                HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)!,
+                Data(#"{"error":"daemon restarting"}"#.utf8)
+            )
+        }
+        await model.handleGlobalEvent(JournalEvent(
+            cursor: "epoch:1", partition: "global", type: "thread.head.updated",
+            observedAt: "2026-07-16T00:00:00Z",
+            payload: .object(["thread_id": .string("th-1"), "project_id": .null, "revision": .number(1)])
+        ))
+        await model.threadsRefreshTask?.value
+        #expect(listCalls.count == 1)
+        // The invalidation is durable: dirty holds and a retry is re-armed.
+        #expect(model.threadsRefresh.dirty)
+        #expect(model.threadsRefreshTask != nil)
+
+        // The daemon comes back: the retry heals the list WITHOUT a new ping.
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/threads" else { throw AppRefreshTestError.badRequest }
+            listCalls.increment()
+            let json = #"{"threads":[{"id":"th-1","title":"Healed","repoRoot":"/tmp/project","mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-16T00:00:00Z"}]}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+        await model.threadsRefreshTask?.value
+        #expect(listCalls.count == 2)
+        #expect(!model.threadsRefresh.dirty)
+        #expect(model.threads.map(\.id) == ["th-1"])
+        #expect(model.threadsRefreshTask == nil)
+    }
+
     @Test func taggedUnlimitedBudgetRendersUnlimitedInsteadOfUnknown() {
         var task = TaskRun(
             id: "run", title: "Run", prompt: "", mode: .agent, status: .running,
@@ -242,6 +336,54 @@ struct AppModelRefreshTests {
         #expect(model.fullAccessGranted(repoRoot: "/tmp/project"))
         // A grant never leaks to another repo.
         #expect(!model.fullAccessGranted(repoRoot: "/tmp/other"))
+    }
+
+    /// Plain dollars are the metered api_key claim ONLY: an unknown or
+    /// not-yet-landed route must stay an estimate (sol review #4).
+    @MainActor
+    @Test func spendPrefixReservesPlainDollarsForTheConfirmedKeyRoute() {
+        #expect(TurnCard.spendPrefix(route: "api_key") == "$")
+        #expect(TurnCard.spendPrefix(route: "local_session") == "≈$")
+        #expect(TurnCard.spendPrefix(route: nil) == "≈$")
+        #expect(TurnCard.spendPrefix(route: "future_route") == "≈$")
+    }
+
+    /// Per-turn auth route honesty (sol review #1): "Thread default" (empty)
+    /// sends NO override; explicit Auto rides the wire and beats a pinned
+    /// thread preference instead of silently inheriting it.
+    @MainActor
+    @Test func perTurnAuthRouteSendsExplicitAutoAndOnlyEmptyInherits() {
+        #expect(ThreadsScreen.authRouteRequest("") == nil)
+        #expect(ThreadsScreen.authRouteRequest("auto") == "auto")
+        #expect(ThreadsScreen.authRouteRequest("subscription") == "subscription")
+        #expect(ThreadsScreen.authRouteRequest("api_key") == "api_key")
+
+        #expect(ThreadsScreen.authRouteCaption("") == "Thread default")
+        #expect(ThreadsScreen.authRouteCaption("auto") == "Auto")
+        #expect(ThreadsScreen.authRouteCaption("api_key") == "API key")
+        #expect(ThreadsScreen.authRouteCaption("subscription") == "Subscription")
+    }
+
+    /// Model catalogs cache per (family, route): reopening an unchanged
+    /// popover fetches NOTHING; a route flip or newly pooled family fetches
+    /// exactly the missing entries (sol review #7).
+    @MainActor
+    @Test func modelCatalogFetchPlanSkipsCachedFamilyRoutePairs() {
+        let claude = HarnessFamily.claude, codex = HarnessFamily.codex
+        // Nothing cached: fetch everything.
+        #expect(ComposerModelsSection.familiesToFetch([claude, codex], route: nil, cached: [String]())
+                == [claude, codex])
+        // Reopen with both cached under the SAME route: zero fetches.
+        let cached = [ComposerModelsSection.catalogKey(claude, route: nil),
+                      ComposerModelsSection.catalogKey(codex, route: nil)]
+        #expect(ComposerModelsSection.familiesToFetch([claude, codex], route: nil, cached: cached).isEmpty)
+        // A route change is a different truth source: everything refetches.
+        #expect(ComposerModelsSection.familiesToFetch([claude, codex], route: "api_key", cached: cached)
+                == [claude, codex])
+        // A newly pooled family fetches alone.
+        #expect(ComposerModelsSection.familiesToFetch([claude, codex], route: nil,
+                                                      cached: [ComposerModelsSection.catalogKey(claude, route: nil)])
+                == [codex])
     }
 
     @MainActor

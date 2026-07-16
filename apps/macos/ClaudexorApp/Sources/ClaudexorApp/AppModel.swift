@@ -194,9 +194,8 @@ final class AppModel {
     var globalEventCursor: String?
     /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     var lastEventIds: [String: Int] = [:]
-    /// Highest sequence reflected by detail snapshots currently being merged.
-    /// This must stay separate from `lastEventIds`: the stream cursor may
-    /// advance past a still-in-flight snapshot when a newer event arrives.
+    /// Highest sequence reflected by in-flight detail snapshots — separate
+    /// from `lastEventIds`: the cursor may pass a still-loading snapshot.
     private var snapshotReplayFences: [String: Int] = [:]
     /// Reentrancy depth of in-flight detail loads per run (see loadRunDetail).
     var snapshotLoadDepth: [String: Int] = [:]
@@ -221,6 +220,7 @@ final class AppModel {
     /// global stream replays the whole journal on a fresh connect, so a burst
     /// of pings must fold into ONE listThreads call.
     @ObservationIgnored var threadsRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var threadsRefresh = ThreadsRefreshState()  // dirty-until-success + backoff (AppModel+Streams)
     /// TERMINAL chat transcripts per run (live transcripts stream in the run's
     /// RunLiveBox; foldLiveBox moves the final reducer here at terminal).
     var transcripts: [String: TranscriptReducer] = [:]

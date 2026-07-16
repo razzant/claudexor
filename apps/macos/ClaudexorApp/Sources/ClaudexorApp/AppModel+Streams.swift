@@ -10,6 +10,20 @@ import ClaudexorKit
 // their `private` became module-internal because this extension now lives in
 // its own file).
 
+/// Durable sidebar-list invalidation (sol review #3): `dirty` holds from "a
+/// ping invalidated the list" until a refetch SUCCEEDS — the global cursor
+/// consumed the ping, so nothing else would replay it. `delay` is the next
+/// attempt's pacing: the coalescing window while healthy, doubling per failure
+/// (capped) while the daemon is unreachable — a heartbeat, never a hot loop.
+struct ThreadsRefreshState {
+    /// Coalescing window while healthy; the backoff cap bounds the retry
+    /// heartbeat while the daemon is unreachable (one cheap GET per beat).
+    static let coalesce: TimeInterval = 0.2
+    static let maxBackoff: TimeInterval = 5.0
+    var dirty = false
+    var delay: TimeInterval = Self.coalesce
+}
+
 extension AppModel {
     // MARK: Live SSE stream
 
@@ -122,18 +136,28 @@ extension AppModel {
     /// Coalesce ping-driven refetches: schedule ONE authoritative listThreads
     /// call after a short window instead of one per ping (a fresh global
     /// stream replays the journal, so pings arrive in bursts). Single-flight:
-    /// while a refetch is pending, further pings fold into it.
+    /// while a refetch is pending, further pings fold into it. The
+    /// invalidation is DURABLE: `threadsListDirty` holds until a refetch
+    /// succeeds, retrying with bounded backoff — the cursor consumed the ping,
+    /// so nothing else would replay it (sol review #3).
     func scheduleThreadsRefresh() {
+        threadsRefresh.dirty = true
         guard threadsRefreshTask == nil else { return }
+        let delay = threadsRefresh.delay
         threadsRefreshTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
             self.threadsRefreshTask = nil
-            // The watermark promises "revisions REFLECTED": a failed refetch
-            // must surrender it so the next ping retries instead of being
-            // silently dropped against a never-applied revision.
-            if !(await self.refreshThreads()) {
+            if await self.refreshThreads() {
+                self.threadsRefresh = ThreadsRefreshState()
+            } else {
+                // The watermark promises "revisions REFLECTED": a failed
+                // refetch must surrender it so a replayed ping retries instead
+                // of being dropped against a never-applied revision — and the
+                // dirty flag re-arms the refetch itself with backoff.
                 self.threadHeadRevisions.removeAll()
+                self.threadsRefresh.delay = min(self.threadsRefresh.delay * 2, ThreadsRefreshState.maxBackoff)
+                if self.threadsRefresh.dirty { self.scheduleThreadsRefresh() }
             }
         }
     }
@@ -156,6 +180,7 @@ extension AppModel {
         globalEventCursor = nil
         threadsRefreshTask?.cancel()
         threadsRefreshTask = nil
+        threadsRefresh = ThreadsRefreshState()   // a fresh client starts with a full snapshot
         threadHeadRevisions.removeAll()
         for task in streamTasks.values { task.cancel() }
         streamTasks.removeAll()
@@ -232,10 +257,11 @@ extension AppModel {
         // (monotonic per thread) drops duplicate deliveries.
         if event.type == "thread.head.updated" {
             guard let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty else { return }
-            // Clamped conversion: the wire is validated by OUR emitter, but a
-            // corrupted frame must degrade (revision 0 = no dedupe), never trap.
-            let raw = event.payload["revision"]?.doubleValue ?? 0
-            let revision = Int(exactly: raw.rounded()) ?? 0
+            // Exact conversion: the wire is validated by OUR emitter, but a
+            // corrupted frame must degrade (revision 0 = refetch, no dedupe),
+            // never trap — and never ROUND into a valid future watermark that
+            // would swallow the next genuine revision (sol review #6).
+            let revision = event.payload["revision"]?.doubleValue.flatMap { Int(exactly: $0) } ?? 0
             if revision > 0 {
                 if revision <= (threadHeadRevisions[threadId] ?? 0) { return }
                 threadHeadRevisions[threadId] = revision

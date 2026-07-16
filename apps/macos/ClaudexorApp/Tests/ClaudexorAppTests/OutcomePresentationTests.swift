@@ -48,6 +48,29 @@ import ClaudexorKit
         #expect(line.tone == .neutral)
     }
 
+    /// Result-LESS terminals (a failure that produced no work product) still
+    /// get their reconciled line — the mapper leads with the status, and the
+    /// card calls it outside the result guard (sol review #5).
+    @Test func resultlessFailureCancellationAndBlockStillProduceTheHonestLine() throws {
+        let failed = try #require(OutcomePresentation.line(
+            status: .failed, result: nil, reviewVerdict: .notRun
+        ))
+        #expect(failed.headline == "Failed")
+        #expect(failed.tone == .failure)
+
+        let cancelled = try #require(OutcomePresentation.line(
+            status: .cancelled, result: nil, reviewVerdict: .notRun
+        ))
+        #expect(cancelled.headline == "Cancelled")
+        #expect(cancelled.tone == .neutral)
+
+        let blocked = try #require(OutcomePresentation.line(
+            status: .blocked, result: nil, reviewVerdict: .running
+        ))
+        #expect(blocked.headline == "Blocked on your decision")
+        #expect(blocked.tone == .warning)
+    }
+
     @Test func adoptedWinnerSaysSo() throws {
         let line = try #require(OutcomePresentation.line(
             status: .succeeded, result: patch(applyState: "applied", adopted: true),

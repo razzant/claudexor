@@ -60,7 +60,7 @@ struct TurnCard: View {
                     let spend = model.spendDisplay(run)
                     if spend.known {
                         let route = run.authRoute?.effective
-                        Text((route == "local_session" ? "≈$" : "$") + String(format: "%.2f", spend.usd))
+                        Text(Self.spendPrefix(route: route) + String(format: "%.2f", spend.usd))
                             .font(.caption).foregroundStyle(.secondary)
                             .help(route == "local_session"
                                   ? "Estimated compute valuation on the subscription route — nothing is billed to an API key."
@@ -102,10 +102,11 @@ struct TurnCard: View {
                 // its diffstat (and whether a race winner was auto-applied).
                 if let result = turn.run?.result {
                     outcomeRow(result)
-                    // Honest apply-state label: never a green "succeeded" next to an
-                    // applied-but-review-blocked turn. Offers Revert while revertable.
-                    applyStateRow(result, run: run)
                 }
+                // Honest apply-state label: never a green "succeeded" next to
+                // applied-review-blocked. Called even with NO work product — a
+                // result-less failure still owes its W21 line (sol review #5).
+                applyStateRow(turn.run?.result, run: run)
                 // Server-derived: a persisted operator decision (from ANY surface,
                 // surviving reloads) unblocks apply; `riskAccepted` only bridges
                 // the moment between decide() and the refreshed run detail.
@@ -291,11 +292,12 @@ struct TurnCard: View {
     /// "succeeded". While the mutation is still safely revertable, offers
     /// Revert (server-owned; refuses on tree divergence, surfaced verbatim).
     @ViewBuilder
-    private func applyStateRow(_ result: RunResult, run: TaskRun) -> some View {
-        // Local revert wins immediately; otherwise read the honest server state.
+    private func applyStateRow(_ result: RunResult?, run: TaskRun) -> some View {
+        // Local revert wins immediately; otherwise read the honest server
+        // state. nil result = status-only outcome (the mapper handles it).
         let effective = reverted
-            ? RunResult(kind: result.kind, diffStat: result.diffStat, blockers: result.blockers,
-                        adopted: result.adopted, applyState: "reverted")
+            ? result.map { RunResult(kind: $0.kind, diffStat: $0.diffStat, blockers: $0.blockers,
+                                     adopted: $0.adopted, applyState: "reverted") }
             : result
         if let line = OutcomePresentation.line(status: run.status, result: effective,
                                                reviewVerdict: run.reviewVerdict) {
@@ -314,7 +316,7 @@ struct TurnCard: View {
                 // An ungated / review-blocked outcome must offer its NEXT STEP
                 // right in the chat — the findings and decisions live in the
                 // run's Review tab, not behind a dead end.
-                if run.status == .ungated || effective.applyState == "applied_review_blocked" {
+                if run.status == .ungated || effective?.applyState == "applied_review_blocked" {
                     Button("Review & decide") { model.openRun(run.id) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -323,7 +325,7 @@ struct TurnCard: View {
                 Spacer()
                 // Offer Revert only while the server still says it's safe (tree
                 // unchanged since) and we haven't already reverted this turn.
-                if result.revertable && !reverted {
+                if result?.revertable == true && !reverted {
                     Button(reverting ? "Reverting…" : "Revert") {
                         guard let runId = turn.runId else { return }
                         reverting = true
@@ -346,6 +348,12 @@ struct TurnCard: View {
     /// A final answer long enough to start collapsed (chat stays scannable).
     static func isLongAnswer(_ answer: String) -> Bool {
         answer.count > 1200 || answer.filter { $0 == "\n" }.count > 14
+    }
+
+    /// Plain dollars = the METERED claim, reserved for a confirmed api_key
+    /// route; everything else is an estimate and carries "≈" (sol review #4).
+    static func spendPrefix(route: String?) -> String {
+        route == "api_key" ? "$" : "≈$"
     }
 
     private func applyBar(_ run: TaskRun) -> some View {

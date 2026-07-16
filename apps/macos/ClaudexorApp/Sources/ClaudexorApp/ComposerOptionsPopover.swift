@@ -15,7 +15,8 @@ extension ThreadsScreen {
     var composerModelsRoute: String? {
         // The per-turn Auth route picker (W18) WINS over the sticky thread /
         // global preference: it is the route this very turn will request.
-        let preference = authRoutePreference != "auto"
+        // Empty = "Thread default" — no override, the sticky preference governs.
+        let preference = !authRoutePreference.isEmpty
             ? authRoutePreference
             : (model.currentThread?.authPreference ?? model.settingsSnapshot?.routing.authPreference)
         return modelsRouteParam(forAuthPreference: preference)
@@ -110,17 +111,21 @@ extension ThreadsScreen {
             // Per-turn auth route REQUEST (W18/Р20) over the thread preference.
             // Honest language: this is what we ASK for — auto may switch routes
             // (typed fallback), and the run badge discloses the effective route.
+            // "Thread default" (empty) sends NO override; every other choice —
+            // Auto included — rides the turn explicitly, so Auto genuinely
+            // overrides an api_key-pinned thread instead of inheriting it.
             OptionRow(label: "Auth route") {
                 Picker("", selection: $authRoutePreference) {
+                    Text("Thread default").tag("")
                     Text("Auto").tag("auto")
                     Text("Subscription").tag("subscription")
                     Text("API key").tag("api_key")
                 }
                 .labelsHidden()
                 .fixedSize()
-                .help("Requested auth route for THIS turn. Auto prefers the native subscription session with a typed, policy-governed fallback.")
+                .help("Requested auth route for THIS turn. Thread default keeps the thread/global preference; Auto prefers the native subscription session with a typed, policy-governed fallback.")
             }
-            Text("Requested route: \(authRoutePreference == "api_key" ? "API key" : authRoutePreference.capitalized). Auto may switch routes; the run's badge shows the route actually taken.")
+            Text("Requested route: \(Self.authRouteCaption(authRoutePreference)). Auto may switch routes; the run's badge shows the route actually taken.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 2)
@@ -213,6 +218,23 @@ extension ThreadsScreen {
         }
         .padding(Theme.Spacing.lg)
         .frame(width: Theme.Layout.composerOptionsWidth, alignment: .leading)
+    }
+
+    /// The wire value the per-turn picker sends: empty ("Thread default") is
+    /// NO override; everything else — explicit "auto" included — rides the
+    /// turn and beats the sticky thread/global preference (sol review #1).
+    static func authRouteRequest(_ preference: String) -> String? {
+        preference.isEmpty ? nil : preference
+    }
+
+    /// Human caption for the requested-route disclosure line. Static + pure
+    /// so the request vocabulary has a unit test.
+    static func authRouteCaption(_ preference: String) -> String {
+        switch preference {
+        case "": return "Thread default"
+        case "api_key": return "API key"
+        default: return preference.capitalized
+        }
     }
 
     private func togglePool(_ family: HarnessFamily) {

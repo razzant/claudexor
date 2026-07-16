@@ -38,8 +38,9 @@ public struct TranscriptReducer: Sendable {
     /// Characters cut from OVERLONG single blocks (the per-block byte bound) —
     /// disclosed alongside `trimmed`, never a silent truncation (W23).
     public private(set) var truncatedChars: Int = 0
-    /// Live text characters currently held (thinking/message text + tool detail)
-    /// — the MEASURABLE W23 invariant: never exceeds `totalCharBudget`.
+    /// Live text characters currently held across EVERY retained string —
+    /// thinking/message text AND tool name/kind/target/detail — the MEASURABLE
+    /// W23 invariant: never exceeds `totalCharBudget`.
     public private(set) var textChars: Int = 0
 
     /// Highest seq already folded — idempotent replay without an unbounded Set.
@@ -54,11 +55,17 @@ public struct TranscriptReducer: Sendable {
     /// the transcript's total text are now hard-bounded in characters.
     private let blockCharCap: Int
     private let totalCharBudget: Int
+    /// Tool strings (name/kind/target/detail) are harness-supplied and NOT
+    /// engine-bounded — one multi-megabyte command target rendered by `Text`
+    /// reopens the same hang class, so each field gets its own hard cap.
+    private let toolFieldCap: Int
 
-    public init(cap: Int = 200, blockCharCap: Int = 100_000, totalCharBudget: Int = 600_000) {
+    public init(cap: Int = 200, blockCharCap: Int = 100_000, totalCharBudget: Int = 600_000,
+                toolFieldCap: Int = 2_048) {
         self.cap = cap
         self.blockCharCap = blockCharCap
         self.totalCharBudget = totalCharBudget
+        self.toolFieldCap = toolFieldCap
     }
 
     /// Apply one envelope. Only `harness.event` run events contribute; everything
@@ -101,7 +108,7 @@ public struct TranscriptReducer: Sendable {
             return true
         case "tool_call":
             let tool = payload["tool"]
-            let block = ToolBlock(
+            let block = boundedTool(
                 name: tool?["name"]?.stringValue ?? "tool",
                 kind: tool?["kind"]?.stringValue,
                 target: tool?["target"]?.stringValue,
@@ -126,14 +133,21 @@ public struct TranscriptReducer: Sendable {
             let exit = tool?["exit_code"]?.doubleValue.map { Int($0) }
             if let i = idx, i < blocks.count, case .tool(let id, var b) = blocks[i] {
                 b.status = status
-                if let detail { b.detail = detail }
+                if let detail {
+                    // The result's detail replaces the call's: re-bound and
+                    // re-count the delta so the invariant stays true.
+                    let bounded = bound(detail, cap: toolFieldCap, keepTail: false)
+                    textChars += bounded.count - (b.detail?.count ?? 0)
+                    b.detail = bounded
+                }
                 if let exit { b.exitCode = exit }
                 blocks[i] = .tool(id: id, b)
                 if let useId { toolIndexByUseId.removeValue(forKey: useId) }
                 if let name { lastOpenToolByName.removeValue(forKey: name) }
+                enforceBudget()
             } else {
                 // A result with no matching call (e.g. reconnect mid-tool): show it standalone.
-                append(.tool(id: "tool-\(seqKey)", ToolBlock(name: name ?? "tool", kind: tool?["kind"]?.stringValue, target: tool?["target"]?.stringValue, status: status, detail: detail, exitCode: exit)))
+                append(.tool(id: "tool-\(seqKey)", boundedTool(name: name ?? "tool", kind: tool?["kind"]?.stringValue, target: tool?["target"]?.stringValue, status: status, detail: detail, exitCode: exit)))
             }
             return true
         default:
@@ -143,25 +157,43 @@ public struct TranscriptReducer: Sendable {
 
     /// Keep the newest `blockCharCap` characters (live-progress semantics).
     private mutating func boundTail(_ text: String) -> String {
-        guard text.count > blockCharCap else { return text }
-        truncatedChars += text.count - blockCharCap
-        return String(text.suffix(blockCharCap))
+        bound(text, cap: blockCharCap, keepTail: true)
     }
 
     /// Keep the first `blockCharCap` characters (one-shot message semantics).
     private mutating func boundHead(_ text: String) -> String {
-        guard text.count > blockCharCap else { return text }
-        truncatedChars += text.count - blockCharCap
-        return String(text.prefix(blockCharCap))
+        bound(text, cap: blockCharCap, keepTail: false)
     }
 
-    /// Counted text of a block. Tool details are engine-bounded summaries and
-    /// deliberately excluded: the invariant tracks the two unbounded inputs.
+    /// One accounting choke-point for every cut: the cost is always disclosed.
+    private mutating func bound(_ text: String, cap: Int, keepTail: Bool) -> String {
+        guard text.count > cap else { return text }
+        truncatedChars += text.count - cap
+        return String(keepTail ? text.suffix(cap) : text.prefix(cap))
+    }
+
+    /// A tool block with EVERY harness-supplied string hard-bounded (they are
+    /// not engine-bounded: a raw command target can be megabytes).
+    private mutating func boundedTool(name: String, kind: String?, target: String?,
+                                      status: ToolBlock.Status, detail: String?, exitCode: Int?) -> ToolBlock {
+        ToolBlock(
+            name: bound(name, cap: toolFieldCap, keepTail: false),
+            kind: kind.map { bound($0, cap: toolFieldCap, keepTail: false) },
+            target: target.map { bound($0, cap: toolFieldCap, keepTail: false) },
+            status: status,
+            detail: detail.map { bound($0, cap: toolFieldCap, keepTail: false) },
+            exitCode: exitCode
+        )
+    }
+
+    /// Counted text of a block — every retained string, tool fields included
+    /// (the invariant must cover ALL unbounded inputs, review sol #2).
     private func chars(of block: TranscriptBlock) -> Int {
         switch block {
         case .thinking(_, let text): return text.count
         case .message(_, let text): return text.count
-        case .tool: return 0
+        case .tool(_, let b):
+            return b.name.count + (b.kind?.count ?? 0) + (b.target?.count ?? 0) + (b.detail?.count ?? 0)
         }
     }
 
