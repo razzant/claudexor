@@ -12,7 +12,7 @@
   "packages/cli/src/command-registry.ts": 679,
   "packages/cli/src/plugins.ts": 1865,
   "packages/cli/src/setup-jobs.ts": 1223,
-  "packages/control-api/src/daemon-server.ts": 2827,
+  "packages/control-api/src/daemon-server.ts": 2831,
   "packages/daemon/src/journal-manager.ts": 582,
   "packages/daemon/src/server.ts": 629,
   "packages/harness-claude/src/index.ts": 1039,
