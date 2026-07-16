@@ -13,6 +13,8 @@ struct TranscriptView: View {
     var trimmedOlder: Int = 0
     /// Characters the reducer's per-block byte bound cut (W23) — disclosed.
     var truncatedChars: Int = 0
+    /// Image/file scope for narration markdown (thread repoRoot / run dir).
+    var fileScopeRoots: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
@@ -39,7 +41,7 @@ struct TranscriptView: View {
                     // Mid-run NARRATION (a typed final never reaches the
                     // transcript): markdown, but dimmed — the finish must not
                     // compete with its own progress notes.
-                    MarkdownOutputView(markdown: text)
+                    MarkdownOutputView(markdown: text, fileScopeRoots: fileScopeRoots)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .opacity(0.7)
                 }

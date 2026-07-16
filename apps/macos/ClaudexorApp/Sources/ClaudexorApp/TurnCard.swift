@@ -90,7 +90,8 @@ struct TurnCard: View {
                             set: { transcriptExpanded = $0 }
                         )) {
                             TranscriptView(blocks: blocks, trimmedOlder: model.transcriptTrimmedCount(runId),
-                                           truncatedChars: model.transcriptTruncatedChars(runId))
+                                           truncatedChars: model.transcriptTruncatedChars(runId),
+                                           fileScopeRoots: [run.repoRoot, run.runDir].compactMap { $0 })
                         } label: {
                             Label(live ? "Working…" : "Transcript (\(blocks.count))", systemImage: "waveform")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -143,7 +144,8 @@ struct TurnCard: View {
                         // Collapsed = a bounded PREFIX: frame+clipped alone still
                         // lays out the full text on the main thread (the W23
                         // hang class); the whole answer renders on Show more.
-                        MarkdownOutputView(markdown: long && !answerExpanded ? String(answer.prefix(4_000)) : answer)
+                        MarkdownOutputView(markdown: long && !answerExpanded ? String(answer.prefix(4_000)) : answer,
+                                           fileScopeRoots: [run.repoRoot, run.runDir].compactMap { $0 })
                             .frame(maxHeight: long && !answerExpanded ? 260 : nil, alignment: .top)
                             .clipped()
                         if long {

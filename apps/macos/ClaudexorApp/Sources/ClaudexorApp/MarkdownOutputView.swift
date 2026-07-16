@@ -8,6 +8,10 @@ import SwiftUI
 /// message renders markdown, not flat text — the v0.10 chat regression fix).
 struct MarkdownOutputView: View {
     let markdown: String
+    /// Roots (thread repoRoot / run dir) whose images may render INLINE and
+    /// whose file links may open (Ф2.5 W-C7). Empty = no local-file access:
+    /// an image degrades to its visible markdown text, honestly.
+    var fileScopeRoots: [String] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -17,6 +21,8 @@ struct MarkdownOutputView: View {
                     inline(block.text, font: level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
                 case .paragraph:
                     inline(block.text, font: .callout)
+                case .image(let alt, let target):
+                    ScopedInlineImage(target: target, alt: alt, roots: fileScopeRoots)
                 case .list:
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                         ForEach(Array(block.text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, item in
@@ -39,6 +45,19 @@ struct MarkdownOutputView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // W-C7: FILE links open via NSWorkspace, but ONLY inside the thread's
+        // scope roots — a link into arbitrary FS is refused with a beep (the
+        // web keeps its normal browser behavior).
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.isFileURL || url.scheme == nil else { return .systemAction }
+            let raw = url.isFileURL ? url.path : url.absoluteString
+            if let path = ScopedInlineImage.scopedFilePath(raw, roots: fileScopeRoots) {
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            } else {
+                NSSound.beep()   // refused: out-of-scope local target
+            }
+            return .handled
+        })
     }
 
     @ViewBuilder
@@ -125,7 +144,10 @@ struct MarkdownOutputView: View {
             if inCode { code.append(line); continue }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { flushParagraph(); flushList(); continue }
-            if let headingLevel = headingLevel(trimmed) {
+            if let image = imageLine(trimmed) {
+                flushParagraph(); flushList()
+                out.append(MarkdownBlock(id: out.count, kind: .image(alt: image.alt, target: image.target), text: trimmed))
+            } else if let headingLevel = headingLevel(trimmed) {
                 flushParagraph(); flushList()
                 out.append(MarkdownBlock(id: out.count, kind: .heading(headingLevel.level), text: headingLevel.text))
             } else if isListItem(trimmed) {
@@ -139,6 +161,20 @@ struct MarkdownOutputView: View {
         if !code.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n"))) }
         flushParagraph(); flushList()
         return out.isEmpty ? [MarkdownBlock(id: 0, kind: .paragraph, text: markdown)] : out
+    }
+
+    /// A whole-line markdown image: `![alt](target)`. Plain syntax walk (the
+    /// same style as the rest of this parser) — internal for the W-C7 tests.
+    static func imageLine(_ line: String) -> (alt: String, target: String)? {
+        guard line.hasPrefix("!["), line.hasSuffix(")"),
+              let altEnd = line.range(of: "](")
+        else { return nil }
+        let alt = String(line[line.index(line.startIndex, offsetBy: 2)..<altEnd.lowerBound])
+        let rawTarget = String(line[altEnd.upperBound..<line.index(before: line.endIndex)])
+        // An optional markdown title (`path "title"`) rides after the first space.
+        let target = rawTarget.split(separator: " ", maxSplits: 1).first.map(String.init) ?? rawTarget
+        guard !target.isEmpty else { return nil }
+        return (alt, target)
     }
 
     private static func headingLevel(_ line: String) -> (level: Int, text: String)? {
@@ -165,7 +201,7 @@ struct MarkdownOutputView: View {
     }
 
     struct MarkdownBlock: Identifiable, Equatable {
-        enum Kind: Equatable { case heading(Int), paragraph, list, code }
+        enum Kind: Equatable { case heading(Int), paragraph, list, code, image(alt: String, target: String) }
         let id: Int
         let kind: Kind
         let text: String

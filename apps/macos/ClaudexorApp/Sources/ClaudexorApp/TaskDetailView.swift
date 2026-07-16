@@ -312,7 +312,8 @@ struct TaskDetailView: View {
             SectionLabel(task.mode == .ask ? "Answer" : "Outcome", systemImage: "text.bubble")
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    MarkdownOutputView(markdown: answer)
+                    MarkdownOutputView(markdown: answer,
+                                       fileScopeRoots: [task.repoRoot, task.runDir].compactMap { $0 })
                 } else {
                     Text(task.outputReadyState == "finalizing" ? "Run is terminal; output is still finalizing. Open Diagnostics for events and artifact paths." : "No answer artifact yet. Open Diagnostics for engine state, events, and artifact paths.")
                         .font(.callout).foregroundStyle(.secondary)
