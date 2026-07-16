@@ -85,6 +85,36 @@ export const AuthSourceReadiness = z
 export type AuthSourceReadiness = z.infer<typeof AuthSourceReadiness>;
 
 /**
+ * Pre-spawn ESTIMATE of the credential route a run will take, projected
+ * deterministically from the requested preference and the doctor's source
+ * readiness — the same native/OAuth-first doctrine the adapters follow
+ * (INV-061), never a guess from manifests. Null when no usable source is
+ * known (or the preferred route has none): consumers must stay fail-closed
+ * on null, never assume a route. The per-attempt disclosure remains the
+ * post-spawn truth; this estimate exists for PRE-spawn gates (model x route).
+ */
+export function estimateEffectiveAuthRoute(
+  requested: "subscription" | "api_key" | "auto",
+  sources: readonly AuthSourceReadiness[],
+): "local_session" | "api_key" | null {
+  const usable = (s: AuthSourceReadiness) =>
+    s.availability === "available" && s.verification !== "failed";
+  const hasNative = sources.some(
+    (s) => usable(s) && (s.source === "native_session" || s.source === "oauth_token_env"),
+  );
+  const hasApiKey = sources.some(
+    (s) =>
+      usable(s) &&
+      (s.source === "api_key_env" || s.source === "api_key_flag" || s.source === "provider_auth_file"),
+  );
+  if (requested === "subscription") return hasNative ? "local_session" : null;
+  if (requested === "api_key") return hasApiKey ? "api_key" : null;
+  if (hasNative) return "local_session";
+  if (hasApiKey) return "api_key";
+  return null;
+}
+
+/**
  * Exact point-in-time readiness request for one harness credential source.
  * The harness id is carried by the route/service input, so the body cannot
  * disagree with the selected adapter. A refresh always bypasses readiness

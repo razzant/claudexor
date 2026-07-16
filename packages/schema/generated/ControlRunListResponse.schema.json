@@ -490,6 +490,31 @@
                           "null"
                         ],
                         "default": null
+                      },
+                      "modelMismatch": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "requested": {
+                                "type": "string"
+                              },
+                              "observed": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "requested",
+                              "observed"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Requested-vs-observed model mismatch; null when none."
                       }
                     },
                     "required": [

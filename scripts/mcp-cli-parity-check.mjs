@@ -119,6 +119,8 @@ const CLI_ONLY_EXEMPT = {
     "per-run deny globs; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
   "output-schema":
     "per-run structured-output contract; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
+  route:
+    "models-subcommand credential-route filter (read-only listing), not a run-control knob; MCP has no models tool today",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",
   attempts: "convergence knob; MCP one-shot surface exposes race width (n) only today",
   synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",

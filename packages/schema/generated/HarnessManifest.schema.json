@@ -340,10 +340,41 @@
             "known_models": {
               "type": "array",
               "items": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Model id/alias."
+                      },
+                      "routes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "enum": [
+                            "local_session",
+                            "api_key"
+                          ]
+                        },
+                        "minItems": 1,
+                        "description": "Credential routes this model is available on."
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "routes"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
               },
               "default": [],
-              "description": "Manifest-declared model ids/aliases this harness accepts, used as the model truth source when the adapter has no live inventory; explicit models outside the truth source are refused."
+              "description": "Manifest-declared model ids/aliases this harness accepts (bare string = every credential route; object form scopes a model to specific routes), used as the model truth source when the adapter has no live inventory; explicit models outside the truth source are refused."
             },
             "known_models_verified_against": {
               "type": [

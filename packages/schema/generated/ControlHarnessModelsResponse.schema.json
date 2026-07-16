@@ -37,6 +37,25 @@
                 ],
                 "default": null,
                 "description": "Context window in tokens; null when the enumeration source does not report it."
+              },
+              "routes": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "local_session",
+                        "api_key"
+                      ]
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Credential routes the model is scoped to; null = every route."
               }
             },
             "required": [

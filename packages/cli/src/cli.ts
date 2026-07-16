@@ -1313,6 +1313,11 @@ async function main(): Promise<number> {
           print(
             `auth route: requested=${route.requested} effective=${route.effective ?? "undisclosed"} source=${route.source ?? "undisclosed"} reason=${route.reason}${route.harness_id ? ` (${route.harness_id}/${route.attempt_id ?? "?"})` : ""}`,
           );
+          if (route.model_mismatch) {
+            print(
+              `model mismatch: requested=${route.model_mismatch.requested} observed=${route.model_mismatch.observed}`,
+            );
+          }
         }
       }
       if (telemetry && (telemetry.web.attempted || telemetry.web.required)) {

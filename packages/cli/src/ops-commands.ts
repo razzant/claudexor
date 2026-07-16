@@ -284,10 +284,16 @@ export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<nu
   }
   const ids =
     requested ?? statuses.harnesses.filter((s) => s.status !== "unavailable").map((s) => s.id);
+  const route = flagStr(args, "route");
+  if (route !== undefined && route !== "local_session" && route !== "api_key") {
+    return printUsageError(json, "claudexor: --route must be local_session or api_key");
+  }
   const results = await Promise.all(
     ids.map(async (id) =>
       ControlHarnessModelsResponse.parse(
-        await daemonGet(`/harnesses/${encodeURIComponent(id)}/models`),
+        await daemonGet(
+          `/harnesses/${encodeURIComponent(id)}/models${route ? `?route=${route}` : ""}`,
+        ),
       ),
     ),
   );
@@ -304,7 +310,8 @@ export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<nu
     for (const m of r.models) {
       const ctx = m.context_window ? ` (${m.context_window} ctx)` : "";
       const label = m.label && m.label !== m.id ? ` — ${m.label}` : "";
-      print(`    ${m.id}${label}${ctx}`);
+      const routes = m.routes ? ` [routes: ${m.routes.join(", ")}]` : "";
+      print(`    ${m.id}${label}${ctx}${routes}`);
     }
   }
   return 0;

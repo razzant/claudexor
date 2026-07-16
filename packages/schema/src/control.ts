@@ -633,6 +633,13 @@ export const ControlRunSummary = z
         reason: AuthRouteReason,
         harnessId: z.string().nullable().default(null),
         attemptId: z.string().nullable().default(null),
+        /** Requested-vs-observed model mismatch on the deciding attempt; null
+         * when they match or either side is unknown. */
+        modelMismatch: z
+          .object({ requested: z.string(), observed: z.string() })
+          .nullable()
+          .default(null)
+          .describe("Requested-vs-observed model mismatch; null when none."),
       })
       .nullable()
       .optional()

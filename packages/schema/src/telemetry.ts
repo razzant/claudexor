@@ -222,6 +222,13 @@ export const AttemptTelemetryRecord = z
       .describe(
         "Concrete credential source the attempt disclosed (native_session/api_key_env/...); null when never disclosed.",
       ),
+    /** Model hint the engine actually SENT this attempt (requested side of the
+     * model x route truth; observed_model is the disclosed side). */
+    requested_model: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Model hint the engine sent the attempt; null when the route ran on its default."),
     request_requirements: z
       .array(RequestRequirementResolution)
       .default([])
@@ -333,6 +340,20 @@ export const RunTelemetry = z
         reason: AuthRouteReason,
         harness_id: z.string().nullable().default(null),
         attempt_id: z.string().nullable().default(null),
+        /** Typed model mismatch on the deciding attempt (Квиз-2a): the engine
+         * SENT requested but the stream DISCLOSED observed. Null when they
+         * match or either side is unknown — never inferred. Distinct from the
+         * reviewer-panel same_model_fallback route proof. */
+        model_mismatch: z
+          .object({
+            requested: z.string(),
+            observed: z.string(),
+          })
+          .nullable()
+          .default(null)
+          .describe(
+            "Requested-vs-observed model mismatch on the deciding attempt; null when they match or either side is unknown.",
+          ),
       })
       .nullable()
       .default(null)

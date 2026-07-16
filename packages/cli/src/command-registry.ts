@@ -87,6 +87,11 @@ const FROZEN_REVIEW_FLAG_NAMES = FROZEN_REVIEW_FLAGS.map((flag) => flag.name);
 export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("harness", "<id[,id...]>", "Force harness(es)"),
   valueFlag(
+    "route",
+    "<local_session|api_key>",
+    "Credential route filter for route-annotated model lists (models command)",
+  ),
+  valueFlag(
     "mode",
     "<mode>",
     "agent verb: ask | plan | audit | agent | orchestrate (strategies are flags, not modes);\n                           apply verb: delivery mode apply | commit | branch | pr",
@@ -474,10 +479,10 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "models",
-    usageArgs: "[--harness <id>] [--all]",
+    usageArgs: "[--harness <id>] [--route <local_session|api_key>] [--all]",
     summary:
-      "List a harness's enumerable models (raw-api: OpenAI GET /v1/models; --all includes fakes)",
-    flags: ["harness", "all", "json"],
+      "List a harness's enumerable models (raw-api: OpenAI GET /v1/models; --route filters route-annotated manifest models; --all includes fakes)",
+    flags: ["harness", "route", "all", "json"],
     mutability: "read",
     stability: "stable",
   },

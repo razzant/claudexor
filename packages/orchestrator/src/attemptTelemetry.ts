@@ -63,6 +63,9 @@ export interface AttemptTelemetry {
   authMode: "local_session" | "api_key" | null;
   /** Concrete credential source disclosed alongside the route (never guessed). */
   authSource: AuthSourceKind | null;
+  /** Model hint the engine SENT this attempt (requested side; observedModel is
+   * the disclosed side of the model x route truth). */
+  requestedModel: string | null;
   /** Adapter-declared transient failures seen during this attempt. */
   transientFailures: {
     kind: NonNullable<HarnessEvent["transient"]>["kind"];
@@ -87,6 +90,7 @@ export function createAttemptTelemetry(
   webRequired: boolean,
   effectiveMode: ExternalContextPolicy = policy,
   requestRequirements: RequestRequirementResolution[] = [],
+  requestedModel: string | null = null,
 ): AttemptTelemetry {
   return {
     requestRequirements,
@@ -107,6 +111,7 @@ export function createAttemptTelemetry(
     observedModel: null,
     authMode: null,
     authSource: null,
+    requestedModel,
     transientFailures: [],
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
@@ -355,6 +360,7 @@ export function attemptTelemetryRecord(
     observed_model: t.observedModel,
     auth_mode: t.authMode,
     auth_source: t.authSource,
+    requested_model: t.requestedModel,
     request_requirements: t.requestRequirements,
     web: {
       required: t.web.required,

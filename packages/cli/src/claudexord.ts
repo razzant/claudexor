@@ -623,8 +623,8 @@ function controlServices(
         ),
       };
     },
-    harnessModels: async (input: { harnessId: string }) =>
-      harnessModels(input.harnessId, NO_PROJECT_ROOT, true),
+    harnessModels: async (input: { harnessId: string; route?: "local_session" | "api_key" }) =>
+      harnessModels(input.harnessId, NO_PROJECT_ROOT, true, input.route),
     authReadiness: async (input: { harnessId: string; request: unknown }) =>
       authReadiness.refresh(input.harnessId, input.request),
     agentCapabilities: async () => buildAgentCapabilityCatalog(),

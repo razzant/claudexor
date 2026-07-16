@@ -227,6 +227,14 @@
                 "description": "Concrete credential source the attempt disclosed (native_session/api_key_env/...); null when never disclosed.",
                 "default": null
               },
+              "requested_model": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Model hint the engine sent the attempt; null when the route ran on its default."
+              },
               "request_requirements": {
                 "type": "array",
                 "items": {
@@ -623,6 +631,31 @@
                     "null"
                   ],
                   "default": null
+                },
+                "model_mismatch": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "requested": {
+                          "type": "string"
+                        },
+                        "observed": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "requested",
+                        "observed"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Requested-vs-observed model mismatch on the deciding attempt; null when they match or either side is unknown."
                 }
               },
               "required": [

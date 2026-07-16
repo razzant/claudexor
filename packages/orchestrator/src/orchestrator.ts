@@ -6,6 +6,7 @@ import type {
   ConformanceReport,
   ControlReviewerPanelEntry,
   EffortHint,
+  KnownModelEntry,
   ExternalContextPolicy,
   GateResult,
   HarnessEvent,
@@ -53,6 +54,8 @@ import {
   orchestratePlanJsonSchema,
   normalizeUserOutputSchema,
   deriveAuthRouteReason,
+  estimateEffectiveAuthRoute,
+  knownModelIdsForRoute,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
@@ -464,7 +467,10 @@ interface RoutedAdapter {
    * requested effort is then DISCLOSED as ignored, never silently dropped). */
   effortLevels: readonly EffortHint[];
   /** Manifest model truth source (used when the adapter has no live models()). */
-  knownModels: readonly string[];
+  knownModels: readonly KnownModelEntry[];
+  /** Pre-spawn credential-route estimate (INV-061 projection of preference x
+   * doctor source readiness); null = undecidable, model gates stay fail-closed. */
+  authRouteEstimate: "local_session" | "api_key" | null;
   /** Manifest `interactive` capability: only such routes are OFFERED an
    * InteractionChannel (gate). */
   supportsInteractive: boolean;
@@ -700,7 +706,10 @@ export class Orchestrator {
               ? (await adapter.models({ cwd, env: reviewHome.env, authPreference })).map(
                   (x) => x.id,
                 )
-              : m.capabilities.known_models,
+              : knownModelIdsForRoute(
+                  m.capabilities.known_models,
+                  estimateEffectiveAuthRoute(authPreference, report.auth_sources),
+                ),
             typeof adapter.models === "function" ? "api" : "manifest",
           );
           if (check.status !== "ok") {
@@ -1128,6 +1137,10 @@ export class Orchestrator {
           ),
           effortLevels: manifest.capabilities.effort_levels,
           knownModels: manifest.capabilities.known_models,
+          authRouteEstimate: estimateEffectiveAuthRoute(
+            this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
+            status.authSources,
+          ),
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
           implementationTransport: manifest.capabilities.implementation_transport,
@@ -1730,6 +1743,7 @@ export class Orchestrator {
         knobs.webPolicy === "live",
       effectiveWebMode ?? knobs.webPolicy,
       [routed.browserRequirement, routed.denyRequirement],
+      knobs.model,
     );
     let activeSessionId = spec.session_id;
     const onAbort = () => {
@@ -2515,6 +2529,7 @@ export class Orchestrator {
             contract.external_context.web_required,
             effectiveWeb,
             [slot.routed.browserRequirement, slot.routed.denyRequirement],
+            knobs.model,
           ),
           infraPhase,
         };
@@ -3339,6 +3354,8 @@ export class Orchestrator {
           records.find((r) => r.auth_mode !== null) ??
           finalRecord ??
           records[0];
+        const requestedModel = disclosing?.requested_model ?? null;
+        const observedModel = disclosing?.observed_model ?? null;
         return {
           requested: contract.auth_preference,
           effective: disclosing?.auth_mode ?? null,
@@ -3346,6 +3363,11 @@ export class Orchestrator {
           reason: deriveAuthRouteReason(contract.auth_preference, disclosing?.auth_mode ?? null),
           harness_id: disclosing?.harness_id ?? null,
           attempt_id: disclosing?.attempt_id ?? null,
+          // Typed mismatch, only when BOTH sides are known and differ.
+          model_mismatch:
+            requestedModel !== null && observedModel !== null && requestedModel !== observedModel
+              ? { requested: requestedModel, observed: observedModel }
+              : null,
         };
       })(),
       generated_at: nowIso(),
@@ -4120,6 +4142,7 @@ export class Orchestrator {
               contract.external_context.web_required,
               effectiveWeb,
               [routed.browserRequirement, routed.denyRequirement],
+              knobs.model,
             ),
           };
         }

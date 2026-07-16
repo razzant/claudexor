@@ -8,7 +8,13 @@
  * HarnessUnavailableError; the orchestrator turns them into review_preflight
  * failure ARTIFACTS after run-dir creation, before candidates spend money.
  */
-import type { AuthPreference, ControlReviewerPanelEntry, Intent } from "@claudexor/schema";
+import type {
+  AuthPreference,
+  AuthSourceReadiness,
+  ControlReviewerPanelEntry,
+  Intent,
+} from "@claudexor/schema";
+import { estimateEffectiveAuthRoute, knownModelIdsForRoute } from "@claudexor/schema";
 import type { HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
 import { WorkspaceManager } from "@claudexor/workspace";
@@ -42,6 +48,7 @@ export async function resolveExplicitReviewerPanel(
       status: "ok" | "degraded" | "unavailable";
       enabledIntents: Intent[];
       reasons: string[];
+      authSources: AuthSourceReadiness[];
     }
   >();
   const specs: ReviewerSpec[] = [];
@@ -81,6 +88,7 @@ export async function resolveExplicitReviewerPanel(
             status: report.status,
             enabledIntents: report.enabled_intents,
             reasons: report.reasons ?? [],
+            authSources: report.auth_sources ?? [],
           });
         } catch (err) {
           statusByRoute.set(routeKey, {
@@ -88,6 +96,7 @@ export async function resolveExplicitReviewerPanel(
             status: "unavailable",
             enabledIntents: [],
             reasons: [err instanceof Error ? err.message : String(err)],
+            authSources: [],
           });
         }
       }
@@ -124,7 +133,10 @@ export async function resolveExplicitReviewerPanel(
           // model is refused (validateModel phrases both refusals).
           const check = validateModel(
             requestedModel,
-            manifest.capabilities.known_models,
+            knownModelIdsForRoute(
+              manifest.capabilities.known_models,
+              estimateEffectiveAuthRoute(authPreference, status.authSources),
+            ),
             "manifest",
           );
           if (check.status !== "ok") {

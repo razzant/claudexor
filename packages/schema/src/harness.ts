@@ -180,10 +180,25 @@ export const HarnessCapabilities = z
      * routing logic.
      */
     known_models: z
-      .array(z.string())
+      .array(
+        z.union([
+          z.string(),
+          z
+            .object({
+              id: z.string().min(1).describe("Model id/alias."),
+              /** Credential routes this model is available on. A bare string
+               * entry means ALL routes (backward shape). */
+              routes: z
+                .array(z.enum(["local_session", "api_key"]))
+                .min(1)
+                .describe("Credential routes this model is available on."),
+            })
+            .strict(),
+        ]),
+      )
       .default([])
       .describe(
-        "Manifest-declared model ids/aliases this harness accepts, used as the model truth source when the adapter has no live inventory; explicit models outside the truth source are refused.",
+        "Manifest-declared model ids/aliases this harness accepts (bare string = every credential route; object form scopes a model to specific routes), used as the model truth source when the adapter has no live inventory; explicit models outside the truth source are refused.",
       ),
     /**
      * Vendor CLI version this `known_models` hint set was last verified against
@@ -202,6 +217,23 @@ export const HarnessCapabilities = z
     "Declared harness capabilities the engine actually consumes for intent gating, routing, knob support, and disclosure.",
   );
 export type HarnessCapabilities = z.infer<typeof HarnessCapabilities>;
+
+export type KnownModelEntry = HarnessCapabilities["known_models"][number];
+
+/** Model ids from a known_models list that are valid on `route`. ONE owner for
+ * the route filter (INV-122): a bare string entry is valid on every route;
+ * `route: null` (undecidable pre-spawn) returns only the route-UNRESTRICTED
+ * ids — fail-closed, a route-scoped model never leaks past an unknown route. */
+export function knownModelIdsForRoute(
+  entries: readonly KnownModelEntry[],
+  route: "local_session" | "api_key" | null,
+): string[] {
+  return entries
+    .filter((entry) =>
+      typeof entry === "string" ? true : route !== null && entry.routes.includes(route),
+    )
+    .map((entry) => (typeof entry === "string" ? entry : entry.id));
+}
 
 export const CredentialTransportKind = z
   .enum(["config_file", "env_var", "oauth_token_env", "os_keychain", "http_header", "none"])
@@ -329,6 +361,13 @@ export const HarnessModel = z
       .nullable()
       .default(null)
       .describe("Context window in tokens; null when the enumeration source does not report it."),
+    /** Credential routes the model is scoped to per the manifest annotation;
+     * null = unannotated (available on every route). */
+    routes: z
+      .array(z.enum(["local_session", "api_key"]))
+      .nullable()
+      .default(null)
+      .describe("Credential routes the model is scoped to; null = every route."),
   })
   .describe(
     "One enumerable model offered by a harness, limited to fields a real enumeration source can honestly populate.",

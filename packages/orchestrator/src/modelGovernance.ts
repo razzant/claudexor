@@ -10,11 +10,16 @@
  */
 import type { HarnessAdapter } from "@claudexor/core";
 import { HarnessUnavailableError, validateModel } from "@claudexor/core";
+import { knownModelIdsForRoute, type KnownModelEntry } from "@claudexor/schema";
 
 export interface ModelGovernedRoute {
   adapter: HarnessAdapter;
   /** Manifest model truth source (used when the adapter has no live models()). */
-  knownModels: readonly string[];
+  knownModels: readonly KnownModelEntry[];
+  /** Pre-spawn credential-route estimate: route-annotated manifest models are
+   * filtered by it, and stay EXCLUDED when it is null (fail-closed — a
+   * route-scoped model never passes the gate on an undecidable route). */
+  authRouteEstimate: "local_session" | "api_key" | null;
   settings: { defaultModel: string | null; fallbackModel: string | null } | null;
 }
 
@@ -39,13 +44,18 @@ export async function assertRouteModelsAllowed(
       const inventory = await routed.adapter.models({ cwd });
       truth = { list: inventory.map((m) => m.id), source: "api" };
     } else {
-      truth = { list: routed.knownModels, source: "manifest" };
+      // Route-aware manifest truth (INV-104 x INV-061): route-annotated models
+      // count only on their routes; an undecidable route excludes them.
+      truth = {
+        list: knownModelIdsForRoute(routed.knownModels, routed.authRouteEstimate),
+        source: "manifest",
+      };
     }
     for (const { role, model } of candidates) {
       const check = validateModel(model, truth.list, truth.source);
       if (check.status !== "ok") {
         throw new HarnessUnavailableError(
-          `harness '${id}' refused ${role} '${model}' (truth source: ${truth.source}): ${check.message}; ` +
+          `harness '${id}' refused ${role} '${model}' (truth source: ${truth.source}${truth.source === "manifest" ? `, route: ${routed.authRouteEstimate ?? "undecided"}` : ""}): ${check.message}; ` +
             `run \`claudexor models --harness ${id}\``,
         );
       }

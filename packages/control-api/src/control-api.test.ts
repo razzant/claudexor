@@ -2666,7 +2666,10 @@ describe("DaemonControlApiServer", () => {
           models: { id: string; label: string | null; context_window: number | null }[];
         };
         expect(body).toMatchObject({ harnessId: "raw-api", source: "api" });
-        expect(body.models).toEqual([{ id: "gpt-4o-mini", label: null, context_window: null }]);
+        // routes: null = unannotated (available on every credential route, W11).
+        expect(body.models).toEqual([
+          { id: "gpt-4o-mini", label: null, context_window: null, routes: null },
+        ]);
 
         // A harness that cannot enumerate -> honest source "none" with [].
         const none = await apiFetch(`${base}/harnesses/codex/models`, {

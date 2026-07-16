@@ -202,7 +202,10 @@ export interface DaemonControlApiOptions {
       }) => Promise<unknown>;
       agentCapabilities?: () => Promise<unknown>;
       preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
-      harnessModels?: (input: { harnessId: string }) => Promise<unknown>;
+      harnessModels?: (input: {
+        harnessId: string;
+        route?: "local_session" | "api_key";
+      }) => Promise<unknown>;
       authReadiness?: (input: {
         harnessId: string;
         request: ControlAuthReadinessRefreshRequest;
@@ -1309,12 +1312,24 @@ export class DaemonControlApiServer {
       return this.service(res, "agentCapabilities", undefined, AgentCapabilityCatalog);
     const harnessModelsMatch = /^\/harnesses\/([^/]+)\/models$/.exec(path);
     if (method === "GET" && harnessModelsMatch) {
-      return this.service(
-        res,
-        "harnessModels",
-        { harnessId: decodeURIComponent(harnessModelsMatch[1] as string) },
-        ControlHarnessModelsResponse,
-      );
+      try {
+        assertOnlyQueryParams(url, ["route"]);
+        const routeParam = url.searchParams.get("route");
+        if (routeParam !== null && routeParam !== "local_session" && routeParam !== "api_key") {
+          throw new Error("route must be exactly local_session or api_key");
+        }
+        return this.service(
+          res,
+          "harnessModels",
+          {
+            harnessId: decodeURIComponent(harnessModelsMatch[1] as string),
+            ...(routeParam ? { route: routeParam } : {}),
+          },
+          ControlHarnessModelsResponse,
+        );
+      } catch (error) {
+        return this.requestError(res, error);
+      }
     }
     const authReadinessMatch = /^\/harnesses\/([^/]+)\/auth-readiness$/.exec(path);
     if (method === "POST" && authReadinessMatch) {
@@ -2293,6 +2308,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
           reason: telemetry.auth_route.reason,
           harnessId: telemetry.auth_route.harness_id,
           attemptId: telemetry.auth_route.attempt_id,
+          modelMismatch: telemetry.auth_route.model_mismatch,
         }
       : null,
     access: effectiveAccess ?? parsedAccess,

@@ -4210,6 +4210,84 @@ describe("Orchestrator", () => {
     expect(t2).toContain("reason: no_native_session_fallback");
   });
 
+  it("records a typed model mismatch when observed differs from requested (W11)", async () => {
+    const repo = await initRepo();
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("drifting-lane"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "drifting-lane",
+          display_name: "drifting-lane",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, known_models: ["model-x"] },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        // The stream discloses a DIFFERENT model than the hint it was sent.
+        yield { type: "started", session_id: spec.session_id, ts, observed_model: "model-y" };
+        writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+        yield {
+          type: "file_change",
+          session_id: spec.session_id,
+          ts,
+          payload: { path: "CHANGED.txt", action: "create" },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({ registry: new Map([[adapter.id, adapter]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [adapter.id],
+      models: { "drifting-lane": "model-x" },
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("requested_model: model-x");
+    expect(telemetry).toContain("model_mismatch:");
+    expect(telemetry).toContain("observed: model-y");
+  });
+
+  it("refuses a route-scoped model on an undecidable route, fail-closed (W11)", async () => {
+    const repo = await initRepo();
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("route-scoped-lane"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "route-scoped-lane",
+          display_name: "route-scoped-lane",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: {
+            implement: true,
+            known_models: [{ id: "sub-model", routes: ["local_session"] }],
+          },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+    };
+    const orch = new Orchestrator({ registry: new Map([[adapter.id, adapter]]), reviewers: [] });
+    // The fixture adapter's doctor reports no usable auth sources → the route
+    // estimate is null → a local_session-scoped model must be refused.
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [adapter.id],
+      models: { "route-scoped-lane": "sub-model" },
+      n: 1,
+    });
+    expect(res.status).toBe("failed");
+    expect(res.summary).toContain("sub-model");
+    expect(res.summary).toContain("route");
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

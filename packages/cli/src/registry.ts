@@ -60,23 +60,39 @@ export async function harnessModels(
   harnessId: string,
   cwd: string,
   includeFakes = false,
+  route?: "local_session" | "api_key",
 ): Promise<ControlHarnessModelsResponse> {
   const adapter = buildRegistry({ includeFakes }).get(harnessId);
   if (!adapter) {
     return { harnessId, models: [], source: "none", verifiedAgainst: null };
   }
   if (typeof adapter.models === "function") {
+    // A live enumeration already reflects the credentials it ran under; the
+    // route filter applies to manifest annotations only.
     const models = await adapter.models({ cwd });
-    return { harnessId, models, source: "api", verifiedAgainst: null };
+    return {
+      harnessId,
+      models: models.map((m) => ({ ...m, routes: m.routes ?? null })),
+      source: "api",
+      verifiedAgainst: null,
+    };
   }
   const manifest = await adapter.discover();
-  const known = manifest.capabilities.known_models;
+  const known = manifest.capabilities.known_models.filter((entry) =>
+    // Route filter (one matcher shape with the governance gate): a bare string
+    // is every-route; an annotated entry must include the requested route.
+    typeof entry === "string" ? true : route === undefined || entry.routes.includes(route),
+  );
   if (known.length === 0) {
     return { harnessId, models: [], source: "none", verifiedAgainst: null };
   }
   return {
     harnessId,
-    models: known.map((id) => ({ id, label: null, context_window: null })),
+    models: known.map((entry) =>
+      typeof entry === "string"
+        ? { id: entry, label: null, context_window: null, routes: null }
+        : { id: entry.id, label: null, context_window: null, routes: entry.routes },
+    ),
     source: "manifest",
     verifiedAgainst: manifest.capabilities.known_models_verified_against,
   };
