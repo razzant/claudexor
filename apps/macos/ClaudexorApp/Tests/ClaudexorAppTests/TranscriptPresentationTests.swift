@@ -50,4 +50,11 @@ import ClaudexorKit
         #expect(TranscriptView.thinkingLabel(seconds: 12) == "Thinking · 12s")
         #expect(TranscriptView.thinkingLabel(seconds: 125) == "Thinking · 2m 05s")
     }
+
+    /// W-C5 status line: the terminal turn's frozen duration label.
+    @Test func turnDurationLabelFormatsSecondsAndMinutes() {
+        #expect(TurnCard.durationLabel(seconds: 41) == "41s")
+        #expect(TurnCard.durationLabel(seconds: 60) == "1m 00s")
+        #expect(TurnCard.durationLabel(seconds: 125) == "2m 05s")
+    }
 }

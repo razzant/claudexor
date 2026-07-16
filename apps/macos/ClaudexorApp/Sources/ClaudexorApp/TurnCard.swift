@@ -43,15 +43,38 @@ struct TurnCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            // W-C5: the user's message is a right-aligned BUBBLE above the
+            // assistant card — the feed reads as a conversation, not a stack
+            // of uniform cards with a person icon.
             HStack(alignment: .top) {
-                Image(systemName: "person.circle.fill").foregroundStyle(.secondary)
-                Text(turn.prompt).font(.body).textSelection(.enabled)
-                Spacer()
+                Spacer(minLength: 48)
+                Text(turn.prompt)
+                    .font(.body)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, Theme.Spacing.md)
+                    .padding(.vertical, Theme.Spacing.sm)
+                    .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.Radius.control))
             }
+            assistantSection
+        }
+    }
+
+    /// The assistant side of the turn — its own card surface under the user
+    /// bubble (W-C5: the feed reads as a conversation, not uniform cards).
+    @ViewBuilder
+    private var assistantSection: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             if let run {
-                Divider()
                 HStack(spacing: Theme.Spacing.sm) {
+                    // Status line: «Codex · Working · 2m» — the harness that
+                    // answers, the honest state pill, and a live elapsed clock.
+                    if let family = run.harnesses.first {
+                        Label(family.label, systemImage: family.glyph)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(family.color)
+                    }
                     StatusPill(status: run.status)
+                    elapsedText(run)
                     Text(run.mode.label).font(.caption).foregroundStyle(.secondary)
                     // Live-first spend (the run's streaming box while live).
                     // Subscription-routed compute is a VALUATION, not billed
@@ -157,6 +180,18 @@ struct TurnCard: View {
                             .help(answerExpanded ? "Collapse the final answer" : "Show the whole final answer")
                         }
                     }
+                    // W-C5: the FINAL answer is the loudest element of the turn
+                    // — its own leading bubble, visually distinct from the
+                    // dimmed narration in the transcript disclosure above.
+                    .padding(Theme.Spacing.md)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Theme.accent.opacity(0.5))
+                            .frame(width: 2)
+                            .padding(.vertical, Theme.Spacing.xs)
+                    }
                 }
                 // Inline failure card: a terminal-FAILED turn with nothing to show
                 // (no answer, no transcript, no diff — e.g. an unauthed harness wrote
@@ -176,12 +211,36 @@ struct TurnCard: View {
             }
         }
         .padding(Theme.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(hover: run != nil)
         .contentShape(Rectangle())
         // Click the card to open the run inspector (the "Open run" link does the
         // same). Buttons inside the card take the tap first (SwiftUI priority), so
         // decide/apply/Implement-plan are unaffected.
         .onTapGesture { if let run { model.openRun(run.id) } }
+    }
+
+    /// Live elapsed clock while the run works («2 min»); the frozen duration
+    /// once terminal. Auto-updating via Text(_:style:) — no timer plumbing.
+    @ViewBuilder
+    private func elapsedText(_ run: TaskRun) -> some View {
+        if run.status.isActive {
+            Text(run.createdAt, style: .relative)
+                .font(.caption).foregroundStyle(.secondary)
+                .help("Time since the run started")
+        } else {
+            let seconds = Int(run.updatedAt.timeIntervalSince(run.createdAt))
+            if seconds >= 1 {
+                Text(Self.durationLabel(seconds: seconds))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("How long the run took")
+            }
+        }
+    }
+
+    /// «41s» / «2m 05s» — the terminal turn's frozen duration (unit-tested).
+    static func durationLabel(seconds: Int) -> String {
+        seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
     }
 
     /// A turn that finished in a genuinely FAILURE-shaped terminal state but

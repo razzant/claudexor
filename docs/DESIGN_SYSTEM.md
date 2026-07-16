@@ -322,9 +322,14 @@ frequency and volume are. The contracts:
     route + freshness dot + nearest reset, an active cooldown is an overlay
     badge on the chip (never a standalone card), and only superseded window
     copies / expired cooldowns are hidden — a window is never quietly dropped.
-  - **Conversation (frosted cards; code solid):** the turns — prompt, live
-    transcript (reasoning + tool calls), honest outcome (plan badge / diffstat /
-    winner adopted), decision/apply actions, and the always-live composer.
+  - **Conversation (a message feed; code solid):** each turn is a right-aligned
+    accent USER BUBBLE over the assistant's frosted card (Чат-V2, Ф2.5): a
+    status line (harness identity + honest status pill + live elapsed clock),
+    the live transcript disclosure (reasoning segments with duration timers,
+    DIMMED mid-run narration, humane tool rows), the reconciled outcome line,
+    decision/apply actions, and the FINAL ANSWER as the loudest element — its
+    own accent-edged bubble rendering markdown with scope-gated inline images.
+    The always-live composer closes the feed.
   - **Workbench (trailing region, glass chrome):** a two-plane switch,
     `[Run Detail | Canvas]`. **Run Detail** (`.inspector`) is the selected run's
     tabbed detail over Claudexor's internal run evidence (§5). **Canvas** is the
@@ -363,7 +368,19 @@ views in the shared design-system files; screens compose them.
   - **Timeline feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
     Summary; thinking/tool/file/message rendered distinctly; compact bubbles are collapsed by
     default, raw native details expand inline, and code/log text sits on `surface/code`. It is
-    the live transcript on the turn and the inspector's Timeline tab.
+    the live transcript on the turn and the inspector's Timeline tab. Чат-V2
+    vocabulary (Ф2.5): reasoning SEGMENTS merge between tool calls and disclose
+    their observed duration («Thinking · 12s»); mid-run narration renders
+    dimmed (a TYPED final message never enters the transcript — it is the
+    answer bubble); tool rows lead with a status glyph + typed-kind icon +
+    humane short title (a command shows its binary's basename; the full
+    command line is the subtitle and the result detail expands on demand);
+    typed `status` events (e.g. claude api_retry) go to the activity feed,
+    never the reasoning disclosure; with `stream_deltas` the current message
+    grows live and the complete text replaces it. Agent images render inline
+    ONLY inside the thread's repoRoot / run dir (canonical-path scope, bounded
+    decode, disclosed refusal outside the scope); file links open through the
+    same gate.
   - **"What changed since this turn"** marker + an **attention state** (working /
     blocked / needs-permission / done) on the turn card and its thread row.
 - **Chat composer.** ONE floating Liquid-Glass panel
