@@ -35,7 +35,8 @@
     "@claudexor/schema": "workspace:*",
     "@claudexor/synthesis": "workspace:*",
     "@claudexor/util": "workspace:*",
-    "@claudexor/workspace": "workspace:*"
+    "@claudexor/workspace": "workspace:*",
+    "ajv": "^8.20.0"
   },
   "devDependencies": {
     "@claudexor/harness-fake": "workspace:*"

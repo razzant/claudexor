@@ -228,6 +228,19 @@ export const TaskContract = z
       .string()
       .optional()
       .describe("Caller-supplied per-run system-level instructions for task-producing lanes."),
+    /** Caller-supplied JSON Schema the run's final ANSWER must conform to,
+     * already normalized/strictified at the engine boundary. Mandatory when
+     * present: every answer-producing lane is constrained natively
+     * (HarnessRunSpec.output_schema) and ONE engine validator writes
+     * final/output.json + a typed conformance receipt; a non-conformant answer
+     * ends success-with-warnings (outputConformance failed), never a hard fail. */
+    output_schema: z
+      .record(z.unknown())
+      .nullable()
+      .default(null)
+      .describe(
+        "Normalized caller-supplied JSON Schema for the final answer; null when the run has no structured-output contract.",
+      ),
     spec: z
       .object({
         id: Id.optional().describe("SpecPack id."),

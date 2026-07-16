@@ -464,6 +464,11 @@
             "minLength": 1
           },
           "description": "Per-run globs no candidate may touch at all; envelope-only (in-place runs are refused), enforced by the engine post-diff gate, disclosed per lane via path_deny receipts. accept_risk may still deliver (INV-111)."
+        },
+        "outputSchema": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "JSON Schema for the run's final answer; mandatory (incapable lane => preflight refusal), engine-validated into final/output.json with a typed outputConformance receipt."
         }
       },
       "additionalProperties": false,

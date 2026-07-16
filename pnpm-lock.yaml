@@ -445,6 +445,9 @@ importers:
       '@claudexor/workspace':
         specifier: workspace:*
         version: link:../workspace
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
     devDependencies:
       '@claudexor/harness-fake':
         specifier: workspace:*

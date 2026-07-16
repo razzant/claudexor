@@ -722,8 +722,13 @@ async function* runCodex(
       }
       outputSchemaPath = join(dir, `claudexor-output-schema-${spec.session_id}.json`);
       writeFileSync(outputSchemaPath, JSON.stringify(spec.output_schema));
-    } catch {
-      outputSchemaPath = null; // fail-open to fenced-JSON parsing
+    } catch (err) {
+      // FAIL-CLOSED (Квиз-6a): output_schema is a contract — running the
+      // child UNCONSTRAINED because a local schema file failed to write would
+      // silently drop it. Fail loudly; the caller retries or reroutes.
+      throw new Error(
+        `codex output-schema file could not be written (${err instanceof Error ? err.message : String(err)}); refusing to run unconstrained`,
+      );
     }
   }
   const args = codexExecArgs(spec, {

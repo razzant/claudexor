@@ -3958,6 +3958,195 @@ describe("Orchestrator", () => {
     ).rejects.toThrow(/denyPaths requires an isolated\/envelope run/);
   });
 
+  it("validates a conforming structured answer into final/output.json with a passed receipt (W8)", async () => {
+    const repo = await initRepo();
+    let seenSchema: unknown;
+    const adapter: HarnessAdapter = {
+      id: "schema-capable",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "schema-capable",
+          display_name: "schema-capable",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, json_schema_output: true },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "schema-capable",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        seenSchema = spec.output_schema;
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: JSON.stringify({ verdict: "ok", score: 7 }),
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "grade this repo",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 1,
+      outputSchema: {
+        type: "object",
+        properties: { verdict: { type: "string" }, score: { type: "number" } },
+        required: ["verdict", "score"],
+      },
+    });
+    // An answer-only agent run (no diff) ends no_op with the answer delivered.
+    expect(res.status).toBe("no_op");
+    // The lane received the NORMALIZED (strictified) schema.
+    expect(seenSchema).toMatchObject({ type: "object", additionalProperties: false });
+    const output = JSON.parse(readFileSync(join(res.runDir, "final", "output.json"), "utf8"));
+    expect(output).toEqual({ verdict: "ok", score: 7 });
+    const receipt = readFileSync(join(res.runDir, "final", "structured_output.yaml"), "utf8");
+    expect(receipt).toContain("status: passed");
+    const types = readRunEvents(res.runDir).map((e) => e.type);
+    expect(types).toContain("output.ready");
+  });
+
+  it("reports a failed conformance receipt for a non-conformant answer without failing the run (W8)", async () => {
+    const repo = await initRepo();
+    const adapter: HarnessAdapter = {
+      id: "schema-capable",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "schema-capable",
+          display_name: "schema-capable",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, json_schema_output: true },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "schema-capable",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: JSON.stringify({ verdict: 42 }),
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "grade this repo",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 1,
+      outputSchema: {
+        type: "object",
+        properties: { verdict: { type: "string" } },
+        required: ["verdict"],
+      },
+    });
+    // Non-conformant answer = the run TERMINAL is unaffected (the receipt is
+    // the warning); an answer-only run stays no_op, never a hard fail.
+    expect(res.status).toBe("no_op");
+    const receipt = readFileSync(join(res.runDir, "final", "structured_output.yaml"), "utf8");
+    expect(receipt).toContain("status: failed");
+    expect(receipt).toContain("/verdict");
+    // Parsed-but-invalid JSON is still materialized for the embedder to inspect.
+    expect(existsSync(join(res.runDir, "final", "output.json"))).toBe(true);
+  });
+
+  it("refuses outputSchema at preflight when a selected lane cannot constrain natively (W8)", async () => {
+    const repo = await initRepo();
+    const adapter = diffImplementer("no-schema-lane");
+    const orch = new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    });
+    // Post-announce preflight refusals terminalize as failure ARTIFACTS
+    // (loud-request contract), not bare throws.
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 1,
+      outputSchema: { type: "object", properties: {} },
+    });
+    expect(res.status).toBe("failed");
+    expect(res.summary).toContain("cannot constrain output natively");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "json_schema_output",
+    );
+  });
+
+  it("refuses an unsupported outputSchema shape at the boundary (W8)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-implement"],
+        outputSchema: {
+          type: "object",
+          properties: { item: { $ref: "#/definitions/thing" } },
+        },
+      }),
+    ).rejects.toThrow(/\$ref/);
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "plan",
+        harnesses: ["fake-implement"],
+        outputSchema: { type: "object", properties: {} },
+      }),
+    ).rejects.toThrow(/applies to agent\/ask/);
+    // `format` is refused while the pinned claude (<2.1.205) silently drops
+    // the whole schema when it is present (doc-verified).
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["fake-implement"],
+        outputSchema: {
+          type: "object",
+          properties: { when: { type: "string", format: "date-time" } },
+        },
+      }),
+    ).rejects.toThrow(/format/);
+  });
+
   it("forwards abort into the harness process for silent active runs", async () => {
     const repo = await initRepo();
     const marker = join(repo, "survived.txt");

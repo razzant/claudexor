@@ -297,6 +297,56 @@ export function orchestratePlanJsonSchema(): Record<string, unknown> {
   return orchestratePlanJsonSchemaCache;
 }
 
+/** A caller-supplied output schema the structured-output routes cannot carry. */
+export class UnsupportedOutputSchemaError extends Error {}
+
+/**
+ * Normalize a CALLER-supplied per-run output schema for the same native
+ * structured-output routes the orchestrate planner uses (one owner: the same
+ * strictify transform). Refuses — typed, at the boundary — the shapes those
+ * routes are LIVE-VERIFIED to reject rather than let a vendor 400 surface
+ * mid-run: the root must be an inline `type: "object"` (claude materializes
+ * --json-schema as a StructuredOutput tool whose input_schema needs a
+ * top-level type; a $ref-wrapped root 400s), and `$ref` is refused anywhere
+ * (no ref resolution on the tool-input path).
+ */
+export function normalizeUserOutputSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  if (schema["type"] !== "object" || typeof schema["properties"] !== "object") {
+    throw new UnsupportedOutputSchemaError(
+      'outputSchema root must be an inline object schema ({"type":"object","properties":{...}}); $ref-wrapped or non-object roots are rejected by the native structured-output routes',
+    );
+  }
+  const hasRef = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(hasRef);
+    if (!value || typeof value !== "object") return false;
+    const obj = value as Record<string, unknown>;
+    if ("$ref" in obj) return true;
+    return Object.values(obj).some(hasRef);
+  };
+  if (hasRef(schema)) {
+    throw new UnsupportedOutputSchemaError(
+      "outputSchema must not contain $ref (native structured-output routes do not resolve references); inline the referenced shapes",
+    );
+  }
+  // `format` is refused while the pinned claude CLI is < 2.1.205: those
+  // versions treat any schema containing `format` as invalid and SILENTLY run
+  // unconstrained (doc-verified) — under a mandatory contract that silent
+  // degradation is exactly what the boundary must refuse. Lift when repinned.
+  const hasFormat = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(hasFormat);
+    if (!value || typeof value !== "object") return false;
+    const obj = value as Record<string, unknown>;
+    if (typeof obj["format"] === "string") return true;
+    return Object.values(obj).some(hasFormat);
+  };
+  if (hasFormat(schema)) {
+    throw new UnsupportedOutputSchemaError(
+      "outputSchema must not use `format`: the pinned claude CLI (<2.1.205) silently drops the whole schema when format is present; express the constraint with pattern/enum instead",
+    );
+  }
+  return strictifyForStructuredOutput(schema);
+}
+
 /**
  * Vendor STRICT structured-output mode (LIVE-VERIFIED against codex 0.137 /
  * the OpenAI Responses API): every object must list ALL property keys in

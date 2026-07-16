@@ -100,6 +100,32 @@ describe("parseClaudeEvent", () => {
     expect(realError.map((e) => e.type)).toEqual(["usage", "error"]);
   });
 
+  it("surfaces structured_output as the final message and treats retry exhaustion as benign (W8)", () => {
+    // --json-schema runs: the typed structured_output value IS the answer —
+    // pure JSON for the engine's single validator, never the prose result.
+    const structured = parseClaudeEvent(
+      {
+        type: "result",
+        subtype: "success",
+        result: "Here is your answer in prose.",
+        structured_output: { verdict: "ok", score: 7 },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(structured.map((e) => e.type)).toEqual(["usage", "message"]);
+    expect(JSON.parse(structured[1]?.text ?? "")).toEqual({ verdict: "ok", score: 7 });
+    expect(structured[1]?.payload?.["structured_output"]).toBe(true);
+
+    // Exhausted structured-output retries = a CONFORMANCE failure (the engine
+    // receipt reports it), never a run failure.
+    const exhausted = parseClaudeEvent(
+      { type: "result", subtype: "error_max_structured_output_retries" },
+      "s1",
+    ) as HarnessEvent[];
+    expect(exhausted.map((e) => e.type)).toEqual(["usage", "thinking"]);
+    expect(exhausted[1]?.payload?.["structured_output_retries_exhausted"]).toBe(true);
+  });
+
   it("emits typed tool_result with redacted detail resolved to the originating tool", () => {
     const parse = createClaudeParser();
     parse(

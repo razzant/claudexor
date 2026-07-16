@@ -51,6 +51,7 @@ import {
   FrozenTaskContractArtifact as TaskContractSchema,
   isBlocking,
   orchestratePlanJsonSchema,
+  normalizeUserOutputSchema,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
@@ -70,6 +71,7 @@ import {
   guardAnnouncedRun,
   writeFailure,
 } from "./runTerminals.js";
+import { finalizeStructuredOutput } from "./structuredOutput.js";
 import {
   transientRetryDelayMs,
   promptWithProtectedPathConstraint,
@@ -336,6 +338,15 @@ export interface RunInput {
    */
   denyPaths?: string[];
   /**
+   * JSON Schema the run's final ANSWER must conform to (normalized at the
+   * engine boundary). MANDATORY when present: every answer-producing lane is
+   * constrained natively, an incapable lane is a typed preflight refusal, and
+   * ONE engine validator writes final/output.json + a conformance receipt. A
+   * non-conformant answer ends success-with-warnings, never a hard fail.
+   * Applies to agent race/ask answers; other strategies refuse loudly.
+   */
+  outputSchema?: Record<string, unknown> | null;
+  /**
    * How much the orchestrate planner may act without confirmation
    * (suggest/auto_safe/auto_full). Honored ONLY by mode=orchestrate; the
    * executor over the typed plan classifies each tool_call via toolRisk and
@@ -565,6 +576,25 @@ export class Orchestrator {
       throw new Error(
         "denyPaths requires an isolated/envelope run: the post-diff policy gate blocks a violating patch before delivery, which an in-place run cannot guarantee; drop --deny-path or run isolated",
       );
+    }
+    // outputSchema constrains the run's final ANSWER. It is honored exactly
+    // where a final answer is delivered (agent race incl. synthesis, and ask);
+    // every other strategy refuses loudly rather than carrying a contract the
+    // engine would not validate (INV-023). The schema itself is normalized for
+    // the native structured-output routes here at the boundary — unsupported
+    // shapes ($ref, non-object root) are a typed refusal, not a mid-run 400.
+    if (resolved.outputSchema !== undefined && resolved.outputSchema !== null) {
+      if (mode !== "agent" && mode !== "ask") {
+        throw new Error(
+          `outputSchema constrains the final answer and applies to agent/ask runs (got mode=${mode}); drop the schema or switch modes`,
+        );
+      }
+      if (resolved.untilClean || (resolved.attempts !== undefined && resolved.attempts !== null)) {
+        throw new Error(
+          "outputSchema is not supported with convergence flags (--until-clean/--attempts): convergence delivers a gated patch, not a structured answer; drop the schema or the convergence flags",
+        );
+      }
+      resolved.outputSchema = normalizeUserOutputSchema(resolved.outputSchema);
     }
     // P1: a versioned `mandatory_files` contract is enforced UNIFORMLY here, for
     // every mode, so the same repo state can't pass `run`/`ask` while failing
@@ -1136,6 +1166,27 @@ export class Orchestrator {
       input.browser === true,
       out.map((lane) => lane.browserRequirement),
     );
+    // outputSchema is MANDATORY (Квиз-6a): a selected lane that cannot
+    // natively constrain its final message would deliver best-effort text —
+    // that is a typed preflight refusal, never silent degradation. The
+    // interactive stream-json transport x --json-schema is an unverified
+    // vendor combination, so lanes that would ride it refuse too.
+    if (input.outputSchema !== undefined && input.outputSchema !== null) {
+      const incapable = out.filter((lane) => !lane.supportsJsonSchemaOutput);
+      if (incapable.length > 0) {
+        throw new HarnessUnavailableError(
+          `outputSchema is mandatory but selected lane(s) cannot constrain output natively: ${[...new Set(incapable.map((lane) => lane.adapter.id))].join(", ")} (manifest capabilities.json_schema_output=false); choose schema-capable harnesses or drop the schema`,
+        );
+      }
+      const interactive = Boolean(input.onInteraction)
+        ? out.filter((lane) => lane.supportsInteractive)
+        : [];
+      if (interactive.length > 0) {
+        throw new HarnessUnavailableError(
+          `outputSchema cannot ride the interactive transport yet (unverified vendor combination) for: ${[...new Set(interactive.map((lane) => lane.adapter.id))].join(", ")}; run without an interaction channel or drop the schema`,
+        );
+      }
+    }
     // Strict pre-run model gate (INV-104) — see modelGovernance.ts.
     await assertRouteModelsAllowed(out, input.models, this.execRootOf(input));
     return out;
@@ -1415,6 +1466,9 @@ export class Orchestrator {
       // ingress incl. this engine boundary), so task-producing lanes read back
       // the real instructions via harnessSpecKnobs().
       instructions: input.instructions === undefined ? undefined : redactSecrets(input.instructions),
+      // Already normalized/strictified at the engine boundary (run() refuses
+      // unsupported shapes before any run dir exists).
+      output_schema: input.outputSchema ?? null,
       spec:
         input.specId || input.specHash || input.specPath
           ? {
@@ -1496,6 +1550,7 @@ export class Orchestrator {
     | "effort_hint"
     | "max_turns"
     | "instructions"
+    | "output_schema"
   > {
     return {
       external_context_policy: knobs.webPolicy,
@@ -1508,6 +1563,12 @@ export class Orchestrator {
       effort_hint: knobs.effort,
       max_turns: knobs.maxTurns,
       ...(intent === "synthesize" ? {} : { instructions: contract.instructions }),
+      // The user's answer contract rides every answer-producing lane INCLUDING
+      // synthesis (its answer can become the final one); the orchestrate
+      // planner owns its own plan schema instead (set at its spec site).
+      ...(intent !== "orchestrate" && contract.output_schema
+        ? { output_schema: contract.output_schema }
+        : {}),
     };
   }
 
@@ -2976,6 +3037,18 @@ export class Orchestrator {
       const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
       if (!hasDiff && winnerAnswer.length > 0) {
         store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
+      }
+      // The run's structured-output contract: ONE engine validator, called on
+      // the winner's answer regardless of diff presence (a non-conformant
+      // answer stays success-with-warnings; the receipt is the truth).
+      if (contract.output_schema) {
+        finalizeStructuredOutput({
+          store,
+          finalDir: paths.finalDir,
+          log,
+          schema: contract.output_schema,
+          answerText: winnerAnswer,
+        });
       }
       // Only a fully verified success may auto-adopt; ungated remains an artifact.
       const adoptable = status === "success";
@@ -6084,6 +6157,18 @@ export class Orchestrator {
         ].join("\n")
       : (succeeded[0]?.report ?? "(no output)");
     store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${report}\n`);
+    // ask is the only read-only strategy that can carry a structured-output
+    // contract (the boundary refuses the rest); validate the RAW answer text,
+    // not the titled artifact wrapper.
+    if (opts.mode === "ask" && contract.output_schema) {
+      finalizeStructuredOutput({
+        store,
+        finalDir: paths.finalDir,
+        log,
+        schema: contract.output_schema,
+        answerText: succeeded[0]?.report ?? "",
+      });
+    }
     // orchestrate: the planner's plan is a TYPED artifact, not just prose. Extract
     // the required fenced JSON block, validate it against the tool belt, and
     // persist final/orchestration.yaml; a missing/invalid block is disclosed in

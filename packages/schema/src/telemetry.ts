@@ -142,6 +142,36 @@ export const AttemptOutcome = z
   );
 export type AttemptOutcome = z.infer<typeof AttemptOutcome>;
 
+/**
+ * Typed conformance receipt for a run started with an output schema, persisted
+ * as final/structured_output.yaml by the ONE engine validator. Surfaces project
+ * it (summary.outputConformance) and never re-validate the answer themselves.
+ */
+export const StructuredOutputConformance = z
+  .object({
+    schema_version: SchemaVersion,
+    status: z
+      .enum(["passed", "failed"])
+      .describe("Whether the final answer conformed to the run's output schema."),
+    reason: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Why conformance failed (missing/unparsable answer, validator errors); null on pass."),
+    /** Present when the answer parsed as JSON at all (even non-conformant JSON
+     * is materialized to help the embedder debug and retry). */
+    output_path: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Artifact path of the materialized structured output (final/output.json); null when the answer never parsed."),
+    generated_at: IsoTimestamp.describe("When the receipt was generated."),
+  })
+  .describe(
+    "Structured-output conformance receipt (final/structured_output.yaml): the single engine validator's verdict on the final answer.",
+  );
+export type StructuredOutputConformance = z.infer<typeof StructuredOutputConformance>;
+
 export const TokenUsage = z
   .object({
     input_tokens: z.number().int().nonnegative().nullable().default(null),

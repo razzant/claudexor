@@ -119,6 +119,7 @@ import {
   RunEventType,
   RunFailure,
   RunTelemetry,
+  StructuredOutputConformance,
   TaskContract,
   ProtectedPathApproval,
   type FinalVerifyRecord,
@@ -2220,6 +2221,11 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const parsedAccess = parseAccessMaybe(p["access"]);
   const task = safeReadStructuredArtifact(rec, "context/task.yaml", TaskContract);
   const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
+  const outputConformance = safeReadStructuredArtifact(
+    rec,
+    "final/structured_output.yaml",
+    StructuredOutputConformance,
+  );
   // Access truth comes from engine artifacts ONLY (contract/telemetry); client
   // params can request but never assert what was effectively enforced.
   const requestedAccess =
@@ -2275,6 +2281,9 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     inputTokens: telemetry?.usage_totals.input_tokens ?? null,
     outputTokens: telemetry?.usage_totals.output_tokens ?? null,
     cachedInputTokens: telemetry?.usage_totals.cached_input_tokens ?? null,
+    // The single engine validator's receipt, projected verbatim — surfaces
+    // never re-validate the answer (null = no structured-output contract).
+    outputConformance: outputConformance?.status ?? null,
     access: effectiveAccess ?? parsedAccess,
     requestedAccess,
     effectiveAccess,
@@ -2399,7 +2408,12 @@ function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
   const mode = typeof p["mode"] === "string" ? p["mode"] : "";
   const candidates =
     mode === "ask"
-      ? [{ kind: "answer" as const, path: "final/answer.md" }]
+      ? [
+          // A structured-output run's deliverable is the schema-conformant
+          // JSON; it exists only when the run carried an outputSchema.
+          { kind: "structured_output" as const, path: "final/output.json" },
+          { kind: "answer" as const, path: "final/answer.md" },
+        ]
       : mode === "plan"
         ? [{ kind: "plan" as const, path: "final/plan.md" }]
         : mode === "audit"
@@ -2414,6 +2428,7 @@ function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
                 { kind: "summary" as const, path: "final/summary.md" },
               ]
             : [
+                { kind: "structured_output" as const, path: "final/output.json" },
                 // An agent answer-only turn (empty diff + prose) writes final/answer.md;
                 // it must win over the arbitration summary so the chat shows the answer,
                 // not "# Run … no_op … Candidates …" (review #1).

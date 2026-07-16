@@ -337,7 +337,19 @@ function parseClaudeEventStateful(
         cost_usd: numberOrUndef(obj.total_cost_usd),
       },
     });
-    if (typeof obj.result === "string" && obj.result.trim()) {
+    // Structured-output runs (--json-schema): the typed `structured_output`
+    // value IS the answer — surface it verbatim as the final message so the
+    // engine's single validator receives pure JSON (never the prose result,
+    // which may narrate around it).
+    if (obj.structured_output !== undefined && obj.structured_output !== null) {
+      out.push({
+        type: "message",
+        session_id: sessionId,
+        ts,
+        text: JSON.stringify(obj.structured_output),
+        payload: { structured_output: true },
+      });
+    } else if (typeof obj.result === "string" && obj.result.trim()) {
       out.push({ type: "message", session_id: sessionId, ts, text: obj.result });
     }
     if (obj.subtype && obj.subtype !== "success") {
@@ -354,6 +366,17 @@ function parseClaudeEventStateful(
           ts,
           text: "turn ended at the configured max-turns limit (partial work preserved)",
           payload: { max_turns_reached: true, num_turns: numberOrUndef(obj.num_turns) },
+        });
+      } else if (obj.subtype === "error_max_structured_output_retries") {
+        // The model exhausted its structured-output retries: a CONFORMANCE
+        // failure, not a run failure — the engine validator reports it as
+        // outputConformance failed and the run stays success-with-warnings.
+        out.push({
+          type: "thinking",
+          session_id: sessionId,
+          ts,
+          text: "structured-output retries exhausted; the final answer may not conform to the requested schema",
+          payload: { structured_output_retries_exhausted: true },
         });
       } else {
         out.push({

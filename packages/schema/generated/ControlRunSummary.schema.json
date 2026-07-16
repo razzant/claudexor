@@ -393,6 +393,21 @@
           ],
           "description": "Cached input tokens summed across all attempts; null when no harness reported them."
         },
+        "outputConformance": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "passed",
+                "failed"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Structured-output conformance receipt (passed/failed); null when the run had no outputSchema."
+        },
         "access": {
           "type": "string",
           "enum": [

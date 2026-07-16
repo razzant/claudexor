@@ -94,6 +94,19 @@
           "type": "string",
           "description": "Caller-supplied per-run system-level instructions for task-producing lanes."
         },
+        "output_schema": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Normalized caller-supplied JSON Schema for the final answer; null when the run has no structured-output contract."
+        },
         "spec": {
           "type": "object",
           "properties": {

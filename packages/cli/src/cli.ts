@@ -30,6 +30,7 @@ import {
   type ModeKind,
   type ProviderFamily,
   RunTelemetry,
+  StructuredOutputConformance,
   TaskContract,
   type TestCommandInvocation,
   type ResourceAttachmentRef,
@@ -397,6 +398,7 @@ async function orchestrate(
   let resolvedInstructions: string | undefined;
   let resolvedMaxSeconds: number | undefined;
   let resolvedDenyPaths: string[] | undefined;
+  let resolvedOutputSchema: Record<string, unknown> | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedReviewerModels = reviewerModels(args);
@@ -420,6 +422,27 @@ async function orchestrate(
     resolvedMaxSeconds = intFlag(args, "max-seconds");
     const denyPathFlags = flagStringList(args, "deny-path");
     resolvedDenyPaths = denyPathFlags.length > 0 ? denyPathFlags : undefined;
+    const outputSchemaPath = flagStr(args, "output-schema");
+    if (outputSchemaPath !== undefined) {
+      let raw: string;
+      try {
+        raw = readFileSync(outputSchemaPath, "utf8");
+      } catch (err) {
+        throw new Error(
+          `--output-schema: cannot read ${outputSchemaPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      let parsedSchema: unknown;
+      try {
+        parsedSchema = JSON.parse(raw);
+      } catch {
+        throw new Error(`--output-schema: ${outputSchemaPath} is not valid JSON`);
+      }
+      if (!parsedSchema || typeof parsedSchema !== "object" || Array.isArray(parsedSchema)) {
+        throw new Error(`--output-schema: ${outputSchemaPath} must contain a JSON Schema object`);
+      }
+      resolvedOutputSchema = parsedSchema as Record<string, unknown>;
+    }
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -471,6 +494,7 @@ async function orchestrate(
     instructions: resolvedInstructions,
     maxSeconds: resolvedMaxSeconds,
     denyPaths: resolvedDenyPaths,
+    outputSchema: resolvedOutputSchema,
     tests,
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
@@ -503,6 +527,7 @@ interface DaemonRunParams {
   instructions: string | undefined;
   maxSeconds: number | undefined;
   denyPaths: string[] | undefined;
+  outputSchema: Record<string, unknown> | undefined;
   tests: TestCommandInvocation[] | undefined;
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
@@ -572,6 +597,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.instructions ? { instructions: p.instructions } : {}),
     ...(p.maxSeconds !== undefined ? { maxSeconds: p.maxSeconds } : {}),
     ...(p.denyPaths?.length ? { denyPaths: p.denyPaths } : {}),
+    ...(p.outputSchema !== undefined ? { outputSchema: p.outputSchema } : {}),
     ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
@@ -1252,6 +1278,18 @@ async function main(): Promise<number> {
         );
       }
       print(`output: ${outputReadyState}${primary ? ` ${primary.path}` : ""}`);
+      {
+        // Structured-output contract receipt (only present when the run was
+        // started with --output-schema); projected, never re-validated here.
+        const conformance = StructuredOutputConformance.safeParse(
+          store.readYaml(join(paths.finalDir, "structured_output.yaml")),
+        );
+        if (conformance.success) {
+          print(
+            `structured output: ${conformance.data.status}${conformance.data.output_path ? ` ${conformance.data.output_path}` : ""}${conformance.data.reason ? ` (${conformance.data.reason})` : ""}`,
+          );
+        }
+      }
       if (parsedDecision.success) {
         const vb = parsedDecision.data.verification_basis;
         print(
