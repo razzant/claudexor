@@ -16,6 +16,12 @@ interface LifecycleDeps {
   signals?: Pick<NodeJS.Process, "on" | "off">;
   snapshot?: (path: string) => void;
   onStopFailure?: (error: unknown) => void;
+  /** Injectable force-exit (tests); defaults to process.exit. */
+  forceExit?: (code: number) => void;
+  /** Graceful-stop deadline before the escalation exit (default 15s). */
+  stopDeadlineMs?: number;
+  /** Post-stop grace for the event loop to drain before the sweep exit (default 2s). */
+  drainGraceMs?: number;
 }
 
 const logLine = (path: string, message: string): void => {
@@ -69,19 +75,53 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
   const pidsTimer = setInterval(writeSnapshot, 2_000);
   pidsTimer.unref?.();
 
+  // Escalation ladder (Ф2.5 W-C8, the immortal-daemon class): once a SIGTERM
+  // handler is registered, node no longer default-exits — a hung stop() (or a
+  // leaked handle after a clean stop) used to leave daemons alive until
+  // SIGKILL. Every rung is DISCLOSED in the log and every timer is unref'd so
+  // the ladder itself never keeps a clean process alive.
+  const forceExit = deps.forceExit ?? ((code: number) => process.exit(code));
+  const stopDeadlineMs = deps.stopDeadlineMs ?? 15_000;
+  const drainGraceMs = deps.drainGraceMs ?? 2_000;
+  const armExitTimer = (ms: number, reason: string, code: number): void => {
+    const t = setTimeout(() => {
+      logLine(deps.logPath, reason);
+      forceExit(code);
+    }, ms);
+    t.unref?.();
+  };
+
   let stopping = false;
   const onShutdownSignal = (sig: string): void => {
+    // Duplicate deliveries coalesce (launchd/tooling may re-signal); the
+    // deadline timer below already guarantees termination.
     if (stopping) return;
     stopping = true;
     logLine(deps.logPath, `${sig} received; stopping daemon`);
-    void deps.stop().catch((error) => {
-      if (deps.onStopFailure) deps.onStopFailure(error);
-      else process.exitCode = 1;
-      logLine(
-        deps.logPath,
-        `shutdown FAILED: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    armExitTimer(
+      stopDeadlineMs,
+      `graceful stop exceeded ${stopDeadlineMs}ms; forcing exit`,
+      1,
+    );
+    void deps.stop().then(
+      () => {
+        // Clean stop: if the loop drains, the process exits before this
+        // fires (unref'd); if a leaked handle holds it open, sweep it.
+        armExitTimer(
+          drainGraceMs,
+          `event loop still alive ${drainGraceMs}ms after a clean stop (leaked handle); forcing exit`,
+          Number(process.exitCode ?? 0),
+        );
+      },
+      (error: unknown) => {
+        if (deps.onStopFailure) deps.onStopFailure(error);
+        else process.exitCode = 1;
+        logLine(
+          deps.logPath,
+          `shutdown FAILED: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    );
   };
   const onSigterm = () => onShutdownSignal("SIGTERM");
   const onSigint = () => onShutdownSignal("SIGINT");

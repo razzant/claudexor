@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -39,6 +39,53 @@ describe("armDaemonLifecycle", () => {
     expect(signals.listenerCount("SIGTERM")).toBe(0);
     expect(signals.listenerCount("SIGINT")).toBe(0);
     expect(snapshots).toBe(1);
+  });
+
+  it("escalates a HUNG stop() to a forced exit after the disclosed deadline (Ф2.5 W-C8)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
+    const exits: number[] = [];
+    const lifecycle = armDaemonLifecycle({
+      daemonDir: root,
+      logPath: join(root, "daemon.log"),
+      signals,
+      snapshot: () => {},
+      forceExit: (code) => exits.push(code),
+      stopDeadlineMs: 20,
+      stop: () => new Promise<void>(() => {}), // never resolves — the immortal-daemon class
+    });
+
+    signals.emit("SIGTERM");
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    expect(exits).toEqual([1]);
+    const log = readFileSync(join(root, "daemon.log"), "utf8");
+    expect(log).toContain("graceful stop exceeded 20ms; forcing exit");
+    lifecycle.finalize();
+  });
+
+  it("sweeps a leaked handle after a CLEAN stop with a disclosed drain-grace exit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
+    const exits: number[] = [];
+    const lifecycle = armDaemonLifecycle({
+      daemonDir: root,
+      logPath: join(root, "daemon.log"),
+      signals,
+      snapshot: () => {},
+      forceExit: (code) => exits.push(code),
+      stopDeadlineMs: 5_000,
+      drainGraceMs: 20,
+      stop: async () => {},
+    });
+
+    signals.emit("SIGTERM");
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    // In-process the loop is naturally alive (the test runner holds it), so
+    // the sweep fires: a real clean daemon exits first and never reaches it.
+    expect(exits).toEqual([0]);
+    const log = readFileSync(join(root, "daemon.log"), "utf8");
+    expect(log).toContain("leaked handle");
+    lifecycle.finalize();
   });
 
   it("does not let diagnostic log or snapshot failures suppress shutdown", async () => {
