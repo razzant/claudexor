@@ -52,19 +52,8 @@ extension ThreadsScreen {
                 }
                 .help("Per-turn budget cap (USD). Empty = engine / thread default.")
             }
-            OptionRow(label: "Access") {
-                Picker("", selection: $access) {
-                    ForEach(AccessProfile.composerCases) { Label($0.label, systemImage: $0.glyph).tag($0) }
-                }
-                .labelsHidden()
-                .fixedSize()
-                // Spec is a read-only GROUNDING intent but collects options for its
-                // eventual WRITE (Implement) turn — so access stays settable for it.
-                .disabled(composerMode.isReadOnly && composerMode != .spec)
-                .help(composerMode.isReadOnly && composerMode != .spec
-                      ? "Read-only intents never write"
-                      : "How much this turn may touch (Spec: applies to the Implement turn)")
-            }
+            // The Access control moved to the composer's main controls row
+            // (AccessChip, W19) — the popover keeps only the secondary knobs.
             OptionRow(label: "Web") {
                 Picker("", selection: $webPolicy) {
                     Text("Auto").tag("auto"); Text("Off").tag("off")

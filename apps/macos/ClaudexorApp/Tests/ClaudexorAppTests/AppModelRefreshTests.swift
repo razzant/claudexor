@@ -230,6 +230,20 @@ struct AppModelRefreshTests {
         #expect(!model.needsOnboarding(userDismissed: false))
     }
 
+    @MainActor
+    @Test func fullAccessGrantDrivesTheComposerCTAOnlyForTheExactRepo() throws {
+        let model = AppModel(requestNotificationAuthorization: false)
+        // No entries: nothing is granted — the CTA must show for Full access.
+        #expect(!model.fullAccessGranted(repoRoot: "/tmp/project"))
+        model.trustEntries = [try JSONDecoder().decode(
+            TrustEntry.self,
+            from: Data(#"{"repoRoot":"/tmp/project","path":"/tmp/trust.json","allowFullAccess":true,"accessDefault":"full"}"#.utf8)
+        )]
+        #expect(model.fullAccessGranted(repoRoot: "/tmp/project"))
+        // A grant never leaks to another repo.
+        #expect(!model.fullAccessGranted(repoRoot: "/tmp/other"))
+    }
+
     @Test func quotaDatesParseFractionalIsoBeforePlainIso() {
         let fractional = "2026-07-15T10:00:01.123Z"
         let plain = "2026-07-15T10:00:01Z"

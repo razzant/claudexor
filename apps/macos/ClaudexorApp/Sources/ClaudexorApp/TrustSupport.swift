@@ -21,6 +21,12 @@ extension AppModel {
         }
     }
 
+    /// True when the repo already carries the persistent full-access grant —
+    /// drives the composer's up-front grant CTA (W19).
+    func fullAccessGranted(repoRoot: String) -> Bool {
+        trustEntries.first { $0.repoRoot == repoRoot }?.allowFullAccess == true
+    }
+
     /// Grant/revoke full access for one repo (the narrow user-level trust
     /// write). Returns true on success; the entries list is refreshed either way.
     @discardableResult

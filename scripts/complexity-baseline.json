@@ -3,7 +3,7 @@
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AuthSheet.swift": 598,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/DomainModels.swift": 784,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/OpsScreens.swift": 391,
-  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/ThreadsScreen.swift": 692,
+  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/ThreadsScreen.swift": 697,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/GatewayClient.swift": 664,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 852,
   "packages/acp-server/src/index.ts": 374,

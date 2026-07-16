@@ -181,7 +181,7 @@ struct ThreadsScreen: View {
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.leading, sidebarGap)
         }
-        .task { await model.refreshThreads(); await model.refreshQuota() }
+        .task { await model.refreshThreads(); await model.refreshQuota(); await model.refreshTrust() }
         .navigationTitle(navTitle)
         .navigationSubtitle(navSubtitle)
     }
@@ -491,6 +491,10 @@ struct ThreadsScreen: View {
                         PrimaryHarnessChip(current: primaryFamily, pool: resolvedPoolFamilies) { picked in
                             Task { await model.setPrimaryHarness(picked?.rawValue) }
                         }
+                        // W19: the per-turn write scope is a first-class chip
+                        // (moved out of "⋯"); " · Browser" appends while armed.
+                        AccessChip(access: $access, browserArmed: browser,
+                                   writeDisabled: composerMode.isReadOnly && composerMode != .spec)
                     }
                     // The "⋯" options button is ALWAYS available — a no-project Ask is
                     // still entitled to a per-turn model / web / budget. `composerOptions`
@@ -538,6 +542,7 @@ struct ThreadsScreen: View {
                     composerModels = composerModels.filter { ids.contains($0.key) }
                 }
 
+                composerGrantCTA
                 if !composerAttachments.isEmpty { attachmentChips }
                 HStack(alignment: .center, spacing: Theme.Spacing.sm) {
                     attachButton
