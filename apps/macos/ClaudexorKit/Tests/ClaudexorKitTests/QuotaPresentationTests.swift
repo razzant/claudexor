@@ -114,4 +114,35 @@ import Testing
         #expect(humanizeCredentialRoute("local") == "Local")
         #expect(humanizeCredentialRoute("future_route") == "Future Route")
     }
+
+    @Test func modelsRouteParamMapsPreferencesAndLeavesAutoUnfiltered() {
+        #expect(modelsRouteParam(forAuthPreference: "subscription") == "local_session")
+        #expect(modelsRouteParam(forAuthPreference: "api_key") == "api_key")
+        #expect(modelsRouteParam(forAuthPreference: "auto") == nil)
+        #expect(modelsRouteParam(forAuthPreference: nil) == nil)
+    }
+
+    @Test func harnessModelDecodesRouteAnnotationsAndRunSummaryDecodesAuthRoute() throws {
+        let annotated = try JSONDecoder().decode(
+            HarnessModel.self,
+            from: Data(#"{"id":"gpt-5.6-sol","label":null,"context_window":null,"routes":["api_key"]}"#.utf8)
+        )
+        #expect(annotated.routes == ["api_key"])
+        let bare = try JSONDecoder().decode(
+            HarnessModel.self, from: Data(#"{"id":"gpt-5.6-sol"}"#.utf8)
+        )
+        #expect(bare.routes == nil)
+
+        let summary = try JSONDecoder().decode(RunSummary.self, from: Data(#"""
+        {"runId":"run-1","state":"succeeded","authRoute":{
+          "requested":"auto","effective":"subscription","source":"native_session",
+          "reason":"native_first","harnessId":"claude","attemptId":"a01",
+          "modelMismatch":{"requested":"claude-fable-5","observed":"claude-opus-4-8"}
+        }}
+        """#.utf8))
+        #expect(summary.authRoute?.effective == "subscription")
+        #expect(summary.authRoute?.modelMismatch == RunAuthRoute.ModelMismatch(
+            requested: "claude-fable-5", observed: "claude-opus-4-8"
+        ))
+    }
 }

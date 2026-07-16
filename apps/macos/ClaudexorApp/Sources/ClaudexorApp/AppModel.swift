@@ -501,9 +501,9 @@ final class AppModel {
         return values.compactMap(\.stringValue)
     }
 
-    func harnessModels(for family: HarnessFamily) async -> HarnessModelsResponse? {
+    func harnessModels(for family: HarnessFamily, route: String? = nil) async -> HarnessModelsResponse? {
         guard let client else { return nil }
-        return try? await client.harnessModels(harnessId: family.rawValue)
+        return try? await client.harnessModels(harnessId: family.rawValue, route: route)
     }
 
     func refreshSettings() async {
@@ -1683,6 +1683,7 @@ final class AppModel {
                 task.observedModel = route.observedModel
                 task.routeProof = route.verified == true ? .verified : .unverified
             }
+            task.authRoute = detail.summary.authRoute ?? task.authRoute
             task.requestedAccess = detail.summary.requestedAccess
             task.effectiveAccess = detail.summary.effectiveAccess
             task.externalContextPolicy = detail.summary.externalContextPolicy

@@ -14,6 +14,10 @@ import ClaudexorKit
 struct ComposerModelsSection: View {
     let families: [HarnessFamily]
     let primary: HarnessFamily?
+    /// Effective per-turn credential route (W20): the server filters
+    /// manifest-annotated models by it; api-sourced per-model annotations are
+    /// filtered here with an honest hidden-count note. nil = unfiltered.
+    var route: String? = nil
     @Binding var selections: [String: String]
     @Binding var catalogs: [String: HarnessModelsResponse]
     let fetch: (HarnessFamily) async -> HarnessModelsResponse?
@@ -36,7 +40,9 @@ struct ComposerModelsSection: View {
                 }
             }
         }
-        .task(id: families.map(\.rawValue).joined(separator: ",")) {
+        // Refetch when the pool OR the effective route changes (a stale
+        // other-route catalog would offer models this route refuses).
+        .task(id: families.map(\.rawValue).joined(separator: ",") + ":" + (route ?? "any")) {
             for family in families where catalogs[family.rawValue] == nil {
                 if let fetched = await fetch(family) {
                     catalogs[family.rawValue] = fetched
@@ -45,25 +51,35 @@ struct ComposerModelsSection: View {
         }
     }
 
+    /// Models offerable on the effective route: an annotated model whose
+    /// routes exclude it is HIDDEN (the engine's strict preflight would refuse
+    /// it anyway); unannotated models ride every route. Pure — unit-tested.
+    static func visibleModels(_ models: [HarnessModel], route: String?) -> [HarnessModel] {
+        guard let route else { return models }
+        return models.filter { $0.routes == nil || $0.routes?.contains(route) == true }
+    }
+
     @ViewBuilder private func modelPicker(for family: HarnessFamily) -> some View {
         let id = family.rawValue
         if let catalog = catalogs[id], catalog.canEnumerate {
+            let visible = Self.visibleModels(catalog.models, route: route)
             Picker("", selection: bindingFor(id)) {
                 Text("Harness default").tag("")
-                // A previously-chosen id the truth source no longer lists stays
-                // visible so the user can SEE and clear it (the engine refuses
-                // it at preflight either way — never silently dropped).
+                // A previously-chosen id the truth source no longer lists (or
+                // the current route hides) stays visible so the user can SEE
+                // and clear it (the engine refuses it at preflight either way
+                // — never silently dropped).
                 if let current = selections[id], !current.isEmpty,
-                   !catalog.models.contains(where: { $0.id == current }) {
-                    Text("\(current) (not in \(catalog.source) list)").tag(current)
+                   !visible.contains(where: { $0.id == current }) {
+                    Text("\(current) (not offered here)").tag(current)
                 }
-                ForEach(catalog.models) { m in
+                ForEach(visible) { m in
                     Text(menuLabel(m)).tag(m.id)
                 }
             }
             .labelsHidden()
             .fixedSize()
-            .help(pickerHelp(family, catalog))
+            .help(pickerHelp(family, catalog, hiddenOnRoute: catalog.models.count - visible.count))
         } else if catalogs[id] != nil {
             // A LOADED catalog that cannot enumerate (source: none) — the
             // server's answer, honestly rendered.
@@ -97,8 +113,11 @@ struct ComposerModelsSection: View {
         return name == m.id ? name : "\(name) (\(m.id))"
     }
 
-    private func pickerHelp(_ family: HarnessFamily, _ catalog: HarnessModelsResponse) -> String {
+    private func pickerHelp(_ family: HarnessFamily, _ catalog: HarnessModelsResponse, hiddenOnRoute: Int) -> String {
         let freshness = catalog.verifiedAgainst.map { " (verified against CLI \($0))" } ?? ""
-        return "Model for \(family.label) on THIS turn; source: \(catalog.source)\(freshness). Default keeps the harness/settings choice."
+        let hidden = hiddenOnRoute > 0
+            ? " \(hiddenOnRoute) model\(hiddenOnRoute == 1 ? " is" : "s are") hidden on the current auth route."
+            : ""
+        return "Model for \(family.label) on THIS turn; source: \(catalog.source)\(freshness).\(hidden) Default keeps the harness/settings choice."
     }
 }

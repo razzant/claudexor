@@ -81,7 +81,11 @@ struct HarnessDefaultsRow: View {
                     .onChange(of: enabled) { _, _ in scheduleSave(immediate: true) }
             }
             HStack(spacing: Theme.Spacing.sm) {
-                HarnessModelOverrideField(family: family, modelDraft: $modelDraft, fetch: model.harnessModels(for:), models: $models)
+                // Settings default-model enumeration stays UNfiltered: the
+                // global truth source, not a per-turn route (W11 — strictness
+                // lives at run preflight, not settings-write).
+                HarnessModelOverrideField(family: family, modelDraft: $modelDraft,
+                                          fetch: { await model.harnessModels(for: $0) }, models: $models)
                 if !effortLevels.isEmpty {
                     Picker("Effort", selection: $effort) {
                         Text("Default").tag("__default")

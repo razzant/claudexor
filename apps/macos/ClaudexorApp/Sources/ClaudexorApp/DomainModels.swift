@@ -654,6 +654,8 @@ struct TaskRun: Identifiable, Hashable {
     var protectedPathApprovals: [ProtectedPathApproval]?
     /// Model identity the harness stream actually reported (route evidence).
     var observedModel: String?
+    /// Auth route receipt incl. requested-vs-observed model mismatch (W20/W18).
+    var authRoute: RunAuthRoute?
     /// Live harness questions awaiting the user (waiting_on_user).
     var pendingInteractions: [PendingInteraction] = []
     var waitingOnUser: Bool = false

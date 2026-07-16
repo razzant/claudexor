@@ -213,9 +213,11 @@ public final class GatewayClient: Sendable {
     /// Enumerable models for one harness (the ADP4 consumer of the adapter
     /// models() producer). `source == "none"` (or an empty list) means the
     /// harness cannot enumerate — the caller should fall back to free text.
-    public func harnessModels(harnessId: String) async throws -> HarnessModelsResponse {
+    public func harnessModels(harnessId: String, route: String? = nil) async throws -> HarnessModelsResponse {
         let escaped = harnessId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? harnessId
-        let req = request("harnesses/\(escaped)/models", method: "GET")
+        // ?route= filters manifest-annotated models by credential route (W11/W20).
+        let query = route.map { "?route=\($0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0)" } ?? ""
+        let req = request("harnesses/\(escaped)/models\(query)", method: "GET")
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1

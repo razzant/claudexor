@@ -91,16 +91,20 @@ public struct HarnessModel: Codable, Sendable, Identifiable, Equatable, Hashable
     public let id: String
     public let label: String?
     public let contextWindow: Int?
+    /// Credential routes this model is annotated for (W11: "local_session" /
+    /// "api_key"). nil = unannotated, offered on every route.
+    public let routes: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, label
+        case id, label, routes
         case contextWindow = "context_window"
     }
 
-    public init(id: String, label: String? = nil, contextWindow: Int? = nil) {
+    public init(id: String, label: String? = nil, contextWindow: Int? = nil, routes: [String]? = nil) {
         self.id = id
         self.label = label
         self.contextWindow = contextWindow
+        self.routes = routes
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,6 +112,7 @@ public struct HarnessModel: Codable, Sendable, Identifiable, Equatable, Hashable
         id = try c.decode(String.self, forKey: .id)
         label = try c.decodeIfPresent(String.self, forKey: .label)
         contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow)
+        routes = try c.decodeIfPresent([String].self, forKey: .routes)
     }
 }
 

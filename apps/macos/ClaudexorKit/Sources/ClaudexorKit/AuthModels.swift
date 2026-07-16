@@ -6,6 +6,18 @@ public enum CredentialRoute: String, Codable, Sendable {
     case local
 }
 
+/// Maps a run/thread auth PREFERENCE onto the known-model route vocabulary of
+/// `GET /harnesses/:id/models?route=` (W11/W20): subscription rides the native
+/// session ("local_session"), api_key the managed key. Auto (or unknown)
+/// filters nothing — either route may win at run time, so no model is hidden.
+public func modelsRouteParam(forAuthPreference preference: String?) -> String? {
+    switch preference {
+    case "subscription": return "local_session"
+    case "api_key": return "api_key"
+    default: return nil
+    }
+}
+
 public enum AuthAvailability: String, Codable, Sendable {
     case available, unavailable, unknown
 }

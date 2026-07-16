@@ -527,7 +527,7 @@ struct ThreadsScreen: View {
                     capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"
                     untilClean = false; maxAttempts = 3; showOptions = false; browser = false
                     reviewerPanelText = ""; protectedApprovalsText = ""
-                    composerModels = [:]
+                    composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)
                 }
                 // The no-project gate also fires when the project changes under a draft
                 // (clearing it from Settings, etc.) — fall back to read-only Ask.

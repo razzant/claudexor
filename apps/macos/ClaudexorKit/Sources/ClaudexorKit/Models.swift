@@ -447,6 +447,8 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     /// True while at least one harness question awaits the user's answer.
     public let waitingOnUser: Bool?
     public let route: RouteInfo?
+    /// Auth route receipt incl. requested-vs-observed model mismatch (W10/W20).
+    public let authRoute: RunAuthRoute?
     public let tests: [TestCommandInvocation]?
     public let specId: String?
     public let specHash: String?

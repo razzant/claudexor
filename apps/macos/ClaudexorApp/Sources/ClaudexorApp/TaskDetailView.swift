@@ -136,6 +136,14 @@ struct TaskDetailView: View {
                 }
                 RouteProofBadge(proof: task.routeProof)
                     .help(task.observedModel.map { "Observed model: \($0)" } ?? "No model identity was disclosed by the harness stream.")
+                // W20: the typed requested-vs-observed model mismatch from the
+                // route receipt (a vendor downgrade must be visible, never quiet).
+                if let mismatch = task.authRoute?.modelMismatch {
+                    Label("\(mismatch.observed) ≠ \(mismatch.requested)", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .help("The vendor served \(mismatch.observed) instead of the requested \(mismatch.requested) on the deciding attempt.")
+                }
                 if task.waitingOnUser {
                     Label("Needs your answer", systemImage: "questionmark.bubble.fill")
                         .font(.caption.weight(.medium))
@@ -324,57 +332,6 @@ struct TaskDetailView: View {
         }
     }
 
-    // MARK: Badge label/glyph mappers (no raw wire strings in the UI)
-
-    static func outputReadyLabel(_ state: String) -> String {
-        switch state {
-        case "pending": return "Output pending"
-        case "finalizing": return "Output finalizing"
-        case "diagnostic": return "Diagnostic output"
-        case "ready": return "Output ready"
-        default: return state
-        }
-    }
-
-    /// Honest apply-state badge mapping (shared shape across detail + chat surfaces).
-    /// nil => not_applied/unknown: render nothing (envelope-only, plan/answer, no change).
-    static func applyStateBadge(_ state: String) -> (String, String, Color)? {
-        switch state {
-        case "applied": return ("Applied", "checkmark.seal.fill", Theme.status(.succeeded))
-        case "applied_review_blocked": return ("Applied · review blocked", "exclamationmark.triangle.fill", Theme.status(.blocked))
-        case "reverted": return ("Reverted", "arrow.uturn.backward.circle", .secondary)
-        default: return nil
-        }
-    }
-
-    static func webEvidenceLabel(_ status: String) -> String {
-        switch status {
-        case "satisfied": return "Web verified"
-        case "failed": return "Web failed"
-        case "attempted": return "Web attempted"
-        case "unverified": return "Web unverified"
-        default: return status
-        }
-    }
-
-    static func webEvidenceGlyph(_ status: String) -> String {
-        switch status {
-        case "satisfied": return "network"
-        case "failed": return "exclamationmark.icloud"
-        case "unverified": return "questionmark.diamond" // a policy gap, not a benign attempt
-        default: return "icloud"
-        }
-    }
-
-    static func webEvidenceColor(_ status: String) -> Color {
-        switch status {
-        case "satisfied": return Theme.status(.succeeded)
-        case "failed": return Theme.status(.failed)
-        case "unverified": return Theme.status(.blocked)
-        default: return .secondary
-        }
-    }
-
     private var verbosityMenu: some View {
         Menu {
             // .inline renders the options DIRECTLY in the menu (no nested
@@ -426,39 +383,6 @@ struct TaskDetailView: View {
             if !task.findings.isEmpty {
                 ForEach(task.findings) { FindingCard(finding: $0) }
             }
-        }
-    }
-
-    private func reviewVerdictText(_ verdict: ReviewVerdict) -> String {
-        switch verdict {
-        case .clean: return "Verified final review clean."
-        case .findings: return "Review produced findings."
-        case .running: return "Review is running."
-        case .failed: return "Review failed."
-        case .error: return "Review ended with an error."
-        case .ungated: return "Run is ungated; no clean-review claim is available."
-        case .notRun: return "Final review was not run."
-        }
-    }
-
-    private func reviewVerdictGlyph(_ verdict: ReviewVerdict) -> String {
-        switch verdict {
-        case .clean: return "checkmark.seal.fill"
-        case .findings: return "exclamationmark.bubble.fill"
-        case .running: return "circle.dotted"
-        case .failed, .error: return "xmark.octagon.fill"
-        case .ungated: return "shield.slash"
-        case .notRun: return "person.2.slash"
-        }
-    }
-
-    private func reviewVerdictColor(_ verdict: ReviewVerdict) -> Color {
-        switch verdict {
-        case .clean: return Theme.status(.succeeded)
-        case .findings, .ungated: return Theme.status(.blocked)
-        case .running: return Theme.status(.running)
-        case .failed, .error: return Theme.status(.failed)
-        case .notRun: return .secondary
         }
     }
 

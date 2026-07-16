@@ -8,6 +8,16 @@ import ClaudexorKit
 // small, single-owner unit. Pure move — zero behavior change.
 
 extension ThreadsScreen {
+    /// The effective per-turn credential route for MODEL enumeration (W20):
+    /// the thread's sticky auth preference (falling back to the global
+    /// default) mapped onto the ?route= vocabulary. Auto = nil = unfiltered —
+    /// either route may win at run time, so nothing is hidden.
+    var composerModelsRoute: String? {
+        let preference = model.currentThread?.authPreference
+            ?? model.settingsSnapshot?.routing.authPreference
+        return modelsRouteParam(forAuthPreference: preference)
+    }
+
     /// The advanced options popover ("⋯"): clean SOLID sections on the popover's
     /// own material — harness pool, per-turn budget/access/web, agent repair strategies.
     var composerOptions: some View {
@@ -32,9 +42,12 @@ extension ThreadsScreen {
                 ComposerModelsSection(
                     families: resolvedPoolFamilies.isEmpty ? [primaryFamily].compactMap { $0 } : resolvedPoolFamilies,
                     primary: primaryFamily,
+                    route: composerModelsRoute,
                     selections: $composerModels,
                     catalogs: $poolModelCatalogs,
-                    fetch: { family in await model.harnessModels(for: family) }
+                    fetch: { [route = composerModelsRoute] family in
+                        await model.harnessModels(for: family, route: route)
+                    }
                 )
             }
             OptionRow(label: "Budget") {

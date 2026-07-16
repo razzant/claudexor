@@ -4,6 +4,26 @@ import Foundation
 // satellites (candidates, live plan checklist). Split from Models.swift —
 // one coherent owner for the /runs/:id projection shapes.
 
+/// Auth ROUTE RECEIPT (INV-061 disclosure, W10/W11): the requested auth
+/// preference, the effective route/source the deciding attempt disclosed, a
+/// deterministic typed reason, and the requested-vs-observed model mismatch
+/// (nil when they match or either side is unknown). Projected verbatim from
+/// engine telemetry; nil on runs whose telemetry predates the receipt.
+public struct RunAuthRoute: Codable, Sendable, Equatable, Hashable {
+    public struct ModelMismatch: Codable, Sendable, Equatable, Hashable {
+        public let requested: String
+        public let observed: String
+    }
+
+    public let requested: String
+    public let effective: String?
+    public let source: String?
+    public let reason: String
+    public let harnessId: String?
+    public let attemptId: String?
+    public let modelMismatch: ModelMismatch?
+}
+
 /// Live plan checklist item (server-projected from plan.progress events).
 public struct PlanProgressItem: Codable, Sendable, Identifiable, Equatable {
     public let id: String

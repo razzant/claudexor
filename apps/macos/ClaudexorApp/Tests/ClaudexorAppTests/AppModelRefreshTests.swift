@@ -244,6 +244,21 @@ struct AppModelRefreshTests {
         #expect(!model.fullAccessGranted(repoRoot: "/tmp/other"))
     }
 
+    @Test func routeScopedModelVisibilityHidesOnlyForeignAnnotatedModels() {
+        let models = [
+            HarnessModel(id: "native-only", routes: ["local_session"]),
+            HarnessModel(id: "api-only", routes: ["api_key"]),
+            HarnessModel(id: "everywhere"),
+        ]
+        // Subscription route: api-only models are hidden (the strict preflight
+        // would refuse them), unannotated ride every route.
+        #expect(ComposerModelsSection.visibleModels(models, route: "local_session").map(\.id)
+                == ["native-only", "everywhere"])
+        // Auto (nil): nothing is hidden — either route may win at run time.
+        #expect(ComposerModelsSection.visibleModels(models, route: nil).map(\.id)
+                == ["native-only", "api-only", "everywhere"])
+    }
+
     @Test func quotaDatesParseFractionalIsoBeforePlainIso() {
         let fractional = "2026-07-15T10:00:01.123Z"
         let plain = "2026-07-15T10:00:01Z"
