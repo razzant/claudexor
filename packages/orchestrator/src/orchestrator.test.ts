@@ -3883,6 +3883,10 @@ describe("Orchestrator", () => {
     // output.ready precedes the terminal (INV-116), even on the cancel path.
     expect(failIdx).toBeGreaterThan(outIdx);
     expect(events[failIdx].payload?.["reason"]).toBe("wall_clock_exceeded");
+    // The announced diagnostic summary is MATERIALIZED, not a dangling path.
+    const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
+    expect(summary).toContain("cancelled");
+    expect(summary).toContain("wall_clock_exceeded");
   });
 
   it("forwards abort into the harness process for silent active runs", async () => {

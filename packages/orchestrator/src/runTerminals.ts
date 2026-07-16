@@ -78,6 +78,8 @@ export function cancelledResult(
    * `wall_clock_exceeded` from the maxSeconds deadline) is surfaced; a plain
    * user cancel aborts with a DOMException reason and stays a bare cancel. */
   cancelSignal?: AbortSignal,
+  /** Materializes the diagnostic summary the output.ready below announces. */
+  store?: ArtifactStore,
 ): OrchestratorResult {
   if (writeTelemetry) {
     try {
@@ -88,9 +90,23 @@ export function cancelledResult(
   }
   const cancelReason =
     typeof cancelSignal?.reason === "string" && cancelSignal.reason ? cancelSignal.reason : undefined;
-  // output.ready MUST precede the terminal in every mode (INV-116): a cancelled
-  // run's partial telemetry/summary is diagnostic, so an observer that applied
-  // the terminal already knows the (partial) output is materialized.
+  const summaryText =
+    cancelReason === "wall_clock_exceeded"
+      ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
+      : "run cancelled";
+  // Materialize the diagnostic summary BEFORE announcing it — output.ready must
+  // point at a file that exists (partial-output honesty), and it must precede
+  // the terminal in every mode (INV-116).
+  if (store) {
+    try {
+      store.writeText(
+        join(runDir, "final", "summary.md"),
+        `# Run ${runId} (${mode})\n\n- Status: cancelled\n${cancelReason ? `- Reason: ${cancelReason}\n` : ""}\n${summaryText}\n`,
+      );
+    } catch {
+      /* best-effort: a write failure must not mask the cancel terminal */
+    }
+  }
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
   log.emit("run.failed", { status: "cancelled", ...(cancelReason ? { reason: cancelReason } : {}) });
   return {
@@ -100,10 +116,7 @@ export function cancelledResult(
     status: "cancelled",
     winner: null,
     runDir,
-    summary:
-      cancelReason === "wall_clock_exceeded"
-        ? "run cancelled: wall-clock deadline (maxSeconds) exceeded"
-        : "run cancelled",
+    summary: summaryText,
     candidates,
     ...(spendUsd !== undefined ? { spendUsd } : {}),
     ...(cancelReason ? { cancelReason } : {}),
@@ -197,6 +210,10 @@ export async function guardAnnouncedRun(
         [],
         undefined,
         spendUsd,
+        // A wall-clock abort surfaced as a throw must keep its reason and
+        // materialize the diagnostic summary, exactly like the checkpoint paths.
+        signal,
+        a.store,
       );
     }
     return failTerminally(

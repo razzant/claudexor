@@ -2481,6 +2481,7 @@ export class Orchestrator {
           ),
         ledger.spend(),
         input.signal,
+        store,
       );
     }
 
@@ -2668,6 +2669,7 @@ export class Orchestrator {
           ),
         ledger.spend(),
         input.signal,
+        store,
       );
     }
 
@@ -2802,6 +2804,7 @@ export class Orchestrator {
                   ),
                 ledger.spend(),
                 input.signal,
+                store,
               );
             }
           } finally {
@@ -2846,6 +2849,7 @@ export class Orchestrator {
           ),
         ledger.spend(),
         input.signal,
+        store,
       );
     }
 
@@ -4834,6 +4838,7 @@ export class Orchestrator {
           ),
         ledger.spend(),
         input.signal,
+        store,
       );
     }
 
@@ -4996,6 +5001,7 @@ export class Orchestrator {
           ),
         ledger.spend(),
         input.signal,
+        store,
       );
     }
 
@@ -5823,6 +5829,7 @@ export class Orchestrator {
           ),
         ledger.spend(),
         input.signal,
+        store,
       );
     }
 
