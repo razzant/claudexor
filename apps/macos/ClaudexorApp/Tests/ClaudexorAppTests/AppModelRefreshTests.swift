@@ -197,6 +197,39 @@ struct AppModelRefreshTests {
         #expect(model.availability(for: .claude, mode: .agent).available)
     }
 
+    @MainActor
+    @Test func onboardingIsDerivedFromServerRoutabilityNotStickyState() throws {
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.health = .connected
+        // Doctor rows not loaded yet: no verdict — the wizard must not flash.
+        #expect(!model.needsOnboarding(userDismissed: false))
+
+        // Rows loaded, none routable, a STALE SECRET present: onboarding is
+        // needed — a stored key is not readiness (Р18).
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .degraded, version: "1", auth: "session expired",
+            intents: ["implement"], routableIntents: []
+        )]
+        model.storedSecrets = [try JSONDecoder().decode(
+            SecretInfo.self, from: Data(#"{"name":"stale","backend":"file","present":true}"#.utf8)
+        )]
+        #expect(model.needsOnboarding(userDismissed: false))
+
+        // The user's explicit dismissal wins and never auto-resets.
+        #expect(!model.needsOnboarding(userDismissed: true))
+
+        // One routable harness ends onboarding without any sticky flag.
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "native",
+            intents: ["implement"], routableIntents: ["implement"]
+        )]
+        #expect(!model.needsOnboarding(userDismissed: false))
+
+        // Offline again: the projection is gone, no verdict — no wizard.
+        model.health = .offline
+        #expect(!model.needsOnboarding(userDismissed: false))
+    }
+
     @Test func quotaDatesParseFractionalIsoBeforePlainIso() {
         let fractional = "2026-07-15T10:00:01.123Z"
         let plain = "2026-07-15T10:00:01Z"

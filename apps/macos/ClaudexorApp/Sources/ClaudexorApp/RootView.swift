@@ -8,7 +8,12 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var inspectorPresented = false
     @State private var workbenchMode: WorkbenchMode = .runDetail
-    @AppStorage("claudexor.onboardingComplete") private var onboardingComplete = false
+    /// The user's EXPLICIT wizard dismissal (W15/Р18) — the only sticky bit.
+    /// Whether onboarding is NEEDED is derived from the server's routability
+    /// projection each launch (the old `onboardingComplete` flag hid the
+    /// wizard forever even when a fresh v2 runtime had no routable harness).
+    /// Never auto-reset; Settings → Harness Doctor is the way back in.
+    @AppStorage("claudexor.onboardingDismissed") private var onboardingDismissed = false
 
     enum WorkbenchMode: String, CaseIterable, Identifiable {
         case runDetail = "Run Detail", canvas = "Canvas"
@@ -51,8 +56,11 @@ struct RootView: View {
         .sheet(item: $model.authSheetHarness) { family in
             AuthSheet(family: family).environment(model)
         }
-        .sheet(isPresented: Binding(get: { !onboardingComplete }, set: { _ in })) {
-            OnboardingView(completed: $onboardingComplete).environment(model)
+        .sheet(isPresented: Binding(
+            get: { model.needsOnboarding(userDismissed: onboardingDismissed) },
+            set: { presented in if !presented { onboardingDismissed = true } }
+        )) {
+            OnboardingView(dismissed: $onboardingDismissed).environment(model)
                 .interactiveDismissDisabled(true)
         }
         // Opening a run from a turn reveals its detail in the inspector.

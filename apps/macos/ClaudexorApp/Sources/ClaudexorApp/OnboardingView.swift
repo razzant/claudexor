@@ -2,7 +2,10 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
-    @Binding var completed: Bool
+    /// The user's explicit dismissal bit (W15/Р18): setting it is the ONLY
+    /// way this sheet closes — whether onboarding is NEEDED stays derived
+    /// from the server routability projection in RootView.
+    @Binding var dismissed: Bool
 
     private var routableHarnesses: Set<HarnessFamily> {
         Set(model.selectableHarnesses.filter { $0 != .fake && $0 != .raw })
@@ -126,7 +129,7 @@ struct OnboardingView: View {
                             capUsd: 0.25,
                             access: "readonly"
                         )
-                        completed = true
+                        dismissed = true
                     }
                 } label: {
                     Label("Smoke Test Ask", systemImage: "checkmark.seal")
@@ -144,7 +147,7 @@ struct OnboardingView: View {
 
     private var footer: some View {
         HStack {
-            Button("Skip") { completed = true }
+            Button("Skip") { dismissed = true }
                 .buttonStyle(.bordered)
             Spacer()
             Button { step = max(0, step - 1) } label: { Label("Back", systemImage: "chevron.left") }
@@ -162,13 +165,14 @@ struct OnboardingView: View {
     }
 
     private func advance() async {
-        if step >= 2 { completed = true }
+        if step >= 2 { dismissed = true }
         else { step += 1 }
     }
 
     private func nativeAuthRow(_ family: HarnessFamily) -> some View {
         let info = model.harnessInfo(for: family)
-        let available = info?.health == .ok
+        // Server routability truth (Р8/W14), not a locally-derived health check.
+        let available = !(info?.routableIntents.isEmpty ?? true)
         let health = info?.health ?? .unavailable
         return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             HStack(spacing: Theme.Spacing.sm) {

@@ -9,6 +9,24 @@ import ClaudexorKit
 // `routableIntents` projection.)
 
 extension AppModel {
+    /// True when at least one REAL harness is currently routable per the
+    /// SERVER projection (W15/Р18). Secrets are deliberately not consulted:
+    /// a stored key is not readiness.
+    var hasRoutableHarness: Bool {
+        liveHarnesses.contains { $0.family != .fake && $0.family != .raw && !$0.routableIntents.isEmpty }
+    }
+
+    /// Onboarding is DERIVED, never a sticky completion flag (W15/Р18):
+    /// needed exactly while the connected engine reports harness rows and
+    /// NONE of them is routable — unless the user explicitly dismissed the
+    /// wizard (their choice persists; the Doctor is the way back in).
+    /// While connecting / before the first doctor load there is no verdict,
+    /// so the wizard must not flash.
+    func needsOnboarding(userDismissed: Bool) -> Bool {
+        guard health == .connected, !liveHarnesses.isEmpty else { return false }
+        return !userDismissed && !hasRoutableHarness
+    }
+
     func harnessInfo(for family: HarnessFamily) -> HarnessInfo? {
         harnesses.first { $0.family == family }
     }
