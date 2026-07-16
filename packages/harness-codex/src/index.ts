@@ -88,7 +88,7 @@ function tomlBasicString(value: string): string {
     else if (code === 10) out += "\\n";
     else if (code === 13) out += "\\r";
     else if (code === 9) out += "\\t";
-    else if (code < 32) out += "\\u" + code.toString(16).padStart(4, "0");
+    else if (code < 32 || code === 127) out += "\\u" + code.toString(16).padStart(4, "0");
     else out += ch;
   }
   return out + '"';

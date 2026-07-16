@@ -1,4 +1,13 @@
-import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -103,7 +112,21 @@ export function isLaunchableExecutable(path: string): boolean {
     if (!info.isRegularFile || !info.identityStable) return false;
     if (process.platform !== "win32") accessSync(info.realpath, constants.X_OK);
     return true;
-  } catch {
+  } catch (err) {
+    // An exec-only binary (mode 0o111, not readable) cannot be O_RDONLY-opened
+    // by inspectExecutable, but the old resolver accepted it — execution does
+    // not require read. Fall back to the classic spawn-faithful probe (a
+    // regular file the process may execute) so resolution behavior is unchanged.
+    if ((err as NodeJS.ErrnoException | undefined)?.code === "EACCES") {
+      try {
+        const real = realpathSync(resolve(path));
+        if (!statSync(real).isFile()) return false;
+        if (process.platform !== "win32") accessSync(real, constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    }
     return false;
   }
 }

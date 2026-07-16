@@ -34,18 +34,21 @@ describe("codex developer_instructions (W5)", () => {
     });
   }
 
-  it("TOML-escapes quotes, backslashes, and newlines so codex config parses", () => {
-    const instructions = "Be terse." + NL + 'Use "double" and a ' + BS + " backslash.";
+  it("TOML-escapes quotes, backslashes, newlines, and DEL so codex config parses", () => {
+    const DEL = String.fromCharCode(127);
+    const instructions = "Be terse." + NL + 'Use "double" and a ' + BS + " backslash." + DEL;
     const args = codexExecArgs({ ...base, instructions });
     const arg = args.find((a) => a.startsWith("developer_instructions="));
     expect(arg).toBeDefined();
     const value = arg!;
-    // A valid TOML basic string carries no raw newline...
+    // A valid TOML basic string carries no raw newline or raw DEL...
     expect(value.includes(NL)).toBe(false);
-    // ...and escapes the newline, the quotes, and the backslash.
+    expect(value.includes(DEL)).toBe(false);
+    // ...and escapes the newline, the quotes, the backslash, and DEL ().
     expect(value).toContain(BS + "n");
     expect(value).toContain(BS + '"');
     expect(value).toContain(BS + BS);
+    expect(value).toContain(BS + "u007f");
     // It is a quoted basic string.
     expect(value.startsWith('developer_instructions="')).toBe(true);
     expect(value.endsWith('"')).toBe(true);

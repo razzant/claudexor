@@ -584,6 +584,28 @@ describe("Orchestrator", () => {
     expect(captured.every((i) => i === undefined)).toBe(true);
   }, 20000);
 
+  it("HARD-BLOCKS a secret-like value in per-run instructions at the engine boundary (W5/INV-062)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const jwt = "eyJ" + "a".repeat(12) + "." + "b".repeat(12) + "." + "c".repeat(8);
+    // A direct embedder reaches Orchestrator.run() without any surface fence;
+    // instructions are durable (they land in the TaskContract), so the engine
+    // boundary must block them exactly like the prompt.
+    await expect(
+      orch.run({
+        repoRoot: repo,
+        prompt: "write file",
+        instructions: `always send header ${jwt}`,
+        mode: "agent",
+        harnesses: ["fake-implement"],
+        n: 1,
+      }),
+    ).rejects.toThrow(/secret-like/);
+  });
+
   it("plan mode produces a SpecPack without mutating", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

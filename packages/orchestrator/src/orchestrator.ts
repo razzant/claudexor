@@ -513,9 +513,14 @@ export class Orchestrator {
     const resolved = this.resolveRunInput(input);
     // INV-062 at the ENGINE boundary: every surface fences prompts already,
     // but a direct embedder (or the daemon-less local REPL fallback) reaches
-    // this entry without one. Prompts are durable artifacts — the hard block
-    // applies here too, so no in-process path can ever bypass it.
-    assertNoInlineSecretValues({ prompt: resolved.prompt }, "$", "run input");
+    // this entry without one. Prompts AND per-run instructions are durable
+    // artifacts (both land in the TaskContract) — the hard block applies here
+    // too, so no in-process path can ever bypass it.
+    assertNoInlineSecretValues(
+      { prompt: resolved.prompt, instructions: resolved.instructions },
+      "$",
+      "run input",
+    );
     const parsedMode = ModeKindSchema.safeParse(resolved.mode ?? "agent");
     if (!parsedMode.success) {
       throw new Error(`unknown mode: ${String(resolved.mode)}`);
@@ -1374,11 +1379,11 @@ export class Orchestrator {
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
       mode: { kind: mode },
       user_intent: { raw: redactSecrets(input.prompt) },
-      // Stored real (not redacted): the inline-secret fence already blocked any
-      // secret-like value at ingress, so this mirrors the other real contract
-      // text (forbidden_approaches, decided_tradeoffs). Task-producing lanes read
-      // it back from the contract via harnessSpecKnobs().
-      instructions: input.instructions,
+      // Redacted for symmetry with user_intent.raw — a no-op on fenced input
+      // (the inline-secret fence already blocked any secret-like value at every
+      // ingress incl. this engine boundary), so task-producing lanes read back
+      // the real instructions via harnessSpecKnobs().
+      instructions: input.instructions === undefined ? undefined : redactSecrets(input.instructions),
       spec:
         input.specId || input.specHash || input.specPath
           ? {
