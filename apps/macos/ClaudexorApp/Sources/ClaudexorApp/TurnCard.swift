@@ -60,7 +60,7 @@ struct TurnCard: View {
                     }
                     Spacer()
                     Button("Open run") {
-                        model.route = .task(run.id)
+                        model.openRun(run.id)
                     }
                     .buttonStyle(.link)
                     .help("Open this run in the inspector — diff, timeline, review")
@@ -129,7 +129,10 @@ struct TurnCard: View {
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
                     let long = Self.isLongAnswer(answer)
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                        MarkdownOutputView(markdown: answer)
+                        // Collapsed = a bounded PREFIX: frame+clipped alone still
+                        // lays out the full text on the main thread (the W23
+                        // hang class); the whole answer renders on Show more.
+                        MarkdownOutputView(markdown: long && !answerExpanded ? String(answer.prefix(4_000)) : answer)
                             .frame(maxHeight: long && !answerExpanded ? 260 : nil, alignment: .top)
                             .clipped()
                         if long {
@@ -165,7 +168,7 @@ struct TurnCard: View {
         // Click the card to open the run inspector (the "Open run" link does the
         // same). Buttons inside the card take the tap first (SwiftUI priority), so
         // decide/apply/Implement-plan are unaffected.
-        .onTapGesture { if let run { model.route = .task(run.id) } }
+        .onTapGesture { if let run { model.openRun(run.id) } }
     }
 
     /// A turn that finished in a genuinely FAILURE-shaped terminal state but
@@ -214,7 +217,7 @@ struct TurnCard: View {
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
             Spacer()
-            Button("Open run") { model.route = .task(run.id) }
+            Button("Open run") { model.openRun(run.id) }
                 .buttonStyle(.link)
                 .help("Open this run in the inspector — failure detail, timeline, logs")
         }
@@ -296,6 +299,15 @@ struct TurnCard: View {
                         .padding(.horizontal, Theme.Spacing.xs)
                         .background(chip.tone.color.opacity(0.12), in: Capsule())
                         .foregroundStyle(chip.tone.color)
+                }
+                // An ungated / review-blocked outcome must offer its NEXT STEP
+                // right in the chat — the findings and decisions live in the
+                // run's Review tab, not behind a dead end.
+                if run.status == .ungated || effective.applyState == "applied_review_blocked" {
+                    Button("Review & decide") { model.openRun(run.id) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Open the run's review findings and decision actions")
                 }
                 Spacer()
                 // Offer Revert only while the server still says it's safe (tree

@@ -87,6 +87,8 @@ export class DaemonClient {
       runDir?: string;
       result?: unknown;
       error?: string;
+      errorCode?: string;
+      errorStatus?: number;
       createdAt?: string;
       startedAt?: string;
       finishedAt?: string;
@@ -113,6 +115,8 @@ export class DaemonClient {
         taskId?: string;
         runDir?: string;
         error?: string;
+        errorCode?: string;
+        errorStatus?: number;
         createdAt?: string;
         startedAt?: string;
         finishedAt?: string;

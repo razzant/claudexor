@@ -40,10 +40,12 @@ struct ComposerModelsSection: View {
                 }
             }
         }
-        // Refetch when the pool OR the effective route changes (a stale
-        // other-route catalog would offer models this route refuses).
+        // Refetch when the pool OR the effective route changes: an existing
+        // catalog was fetched under the PREVIOUS route, so a cache hit here
+        // would keep offering models the new route refuses. Existing rows stay
+        // visible until each replacement lands (no loading flash).
         .task(id: families.map(\.rawValue).joined(separator: ",") + ":" + (route ?? "any")) {
-            for family in families where catalogs[family.rawValue] == nil {
+            for family in families {
                 if let fetched = await fetch(family) {
                     catalogs[family.rawValue] = fetched
                 }

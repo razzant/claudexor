@@ -87,7 +87,8 @@ enum OutcomePresentation {
             chipOnly.append(Chip(text: "\(blockers) blocker\(blockers == 1 ? "" : "s")", tone: .warning))
         }
 
-        guard !facts.isEmpty || !chipOnly.isEmpty else { return nil }
+        // Chip-only facts without a headline fact have nothing to attach to:
+        // a bare "review clean" row would just duplicate the status pill.
         guard !facts.isEmpty else { return nil }
         let head = facts.prefix(2)
         let overflow = facts.dropFirst(2).map { Chip(text: $0.text, tone: $0.tone) }

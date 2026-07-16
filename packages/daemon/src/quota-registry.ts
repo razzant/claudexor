@@ -41,12 +41,22 @@ export class QuotaRegistry {
     });
   }
 
-  /** Freshness-annotated snapshots with expired (>24h) observations pruned. */
+  /** Freshness-annotated snapshots with expired (>24h) observations pruned.
+   * An old observation whose constraint still EXTENDS into the future (a
+   * weekly cooldown/reset seen once) is kept and stale-marked: pruning it
+   * would hide a live cap from both the footer and the router's ledger. */
   private activeSnapshots(now: number): QuotaSnapshot[] {
     return [...this.snapshots.values()]
       .filter((snapshot) => {
         const observed = Date.parse(snapshot.observed_at);
-        return Number.isFinite(observed) && now - observed <= MAX_SNAPSHOT_AGE_MS;
+        if (!Number.isFinite(observed)) return false;
+        if (now - observed <= MAX_SNAPSHOT_AGE_MS) return true;
+        return snapshot.constraints.some((constraint) =>
+          [constraint.cooldown_until, constraint.resets_at].some((raw) => {
+            const at = raw ? Date.parse(raw) : Number.NaN;
+            return Number.isFinite(at) && at > now;
+          }),
+        );
       })
       .map((snapshot) => staleAt(snapshot, now));
   }

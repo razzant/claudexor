@@ -537,6 +537,12 @@ struct ThreadsScreen: View {
                 .onChange(of: threadHasProject) { _, has in
                     if !has { composerMode = .ask; showOptions = false }
                 }
+                // An armed Browser cannot ride a read-only intent (Spec keeps it
+                // for its Implement turn): the toggle hides in ⋯ for read-only
+                // modes, so disarm here — never send browser:true on an Ask.
+                .onChange(of: composerMode) { _, mode in
+                    if mode.isReadOnly && mode != .spec { browser = false }
+                }
                 // Models are harness-scoped now: a primary switch keeps each
                 // harness's own selection valid. Only prune entries for harnesses
                 // that LEFT the pool, so a dropped chip can't smuggle a model in.

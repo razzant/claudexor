@@ -129,8 +129,24 @@ extension AppModel {
             try? await Task.sleep(for: .milliseconds(200))
             guard let self, !Task.isCancelled else { return }
             self.threadsRefreshTask = nil
-            await self.refreshThreads()
+            // The watermark promises "revisions REFLECTED": a failed refetch
+            // must surrender it so the next ping retries instead of being
+            // silently dropped against a never-applied revision.
+            if !(await self.refreshThreads()) {
+                self.threadHeadRevisions.removeAll()
+            }
         }
+    }
+
+    /// A cursor reset means the global partition's epoch may have changed —
+    /// e.g. a journal quarantine restarted the emitter's revision counter at 1
+    /// while our watermarks still hold the OLD epoch's high marks. Keeping
+    /// them would silently drop every new ping (the W16 fix would regress),
+    /// so surrender the watermarks and refetch the authoritative list once.
+    private func resetGlobalCursorState() {
+        globalEventCursor = nil
+        threadHeadRevisions.removeAll()
+        scheduleThreadsRefresh()
     }
 
     /// Cancel every live stream (daemon/client about to be replaced).
@@ -189,13 +205,13 @@ extension AppModel {
                     }
                 } catch let GatewayError.http(status, _) where status == 400 || status == 409 || status == 410 {
                     // Stale opaque cursor: resnapshot, then restart the partition stream.
-                    self.globalEventCursor = nil
+                    self.resetGlobalCursorState()
                     await self.refreshRuns()
                 } catch is DecodingError {
-                    self.globalEventCursor = nil
+                    self.resetGlobalCursorState()
                     await self.refreshRuns()
                 } catch GatewayError.decoding {
-                    self.globalEventCursor = nil
+                    self.resetGlobalCursorState()
                     await self.refreshRuns()
                 } catch {
                     if Task.isCancelled { break }
@@ -216,7 +232,10 @@ extension AppModel {
         // (monotonic per thread) drops duplicate deliveries.
         if event.type == "thread.head.updated" {
             guard let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty else { return }
-            let revision = Int(event.payload["revision"]?.doubleValue ?? 0)
+            // Clamped conversion: the wire is validated by OUR emitter, but a
+            // corrupted frame must degrade (revision 0 = no dedupe), never trap.
+            let raw = event.payload["revision"]?.doubleValue ?? 0
+            let revision = Int(exactly: raw.rounded()) ?? 0
             if revision > 0 {
                 if revision <= (threadHeadRevisions[threadId] ?? 0) { return }
                 threadHeadRevisions[threadId] = revision

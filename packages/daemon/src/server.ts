@@ -83,6 +83,11 @@ export interface JobRecord {
    * trust_full_access_required) — lets surfaces key remedies on the CODE,
    * never on substring-matching the human message. */
   errorCode?: string;
+  /** HTTP status carried by a typed throw (400-599). Refusal semantics are
+   * born AT THE THROW (trust=403, requirements=400, journal recovery=503) —
+   * a bare errno-style `code` without a status is an infra failure and must
+   * not masquerade as a client-actionable 4xx. */
+  errorStatus?: number;
   createdAt: string;
   /** Surfaced as soon as the run starts so a client can tail the external run's events.jsonl. */
   runId?: string;
@@ -504,10 +509,19 @@ export class DaemonServer {
         err && typeof err === "object" && "code" in err
           ? (err as { code: unknown }).code
           : undefined;
+      const status =
+        err && typeof err === "object" && "status" in err
+          ? (err as { status: unknown }).status
+          : undefined;
+      const typedStatus =
+        typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
+          ? status
+          : undefined;
       rec = this.updateRecord(rec, {
         state: controller.signal.aborted ? "cancelled" : "failed",
         error: redactSecrets(err instanceof Error ? err.message : String(err)),
         ...(typeof code === "string" && code ? { errorCode: code } : {}),
+        ...(typedStatus !== undefined ? { errorStatus: typedStatus } : {}),
         finishedAt: nowIso(),
       });
     } finally {

@@ -73,6 +73,16 @@ final class AppModel {
         // arrays (reopening reloads from the server).
         didSet { if oldValue != route { evictBackgroundRunData() } }
     }
+    /// Monotonic reveal signal: every "Open run" click bumps it so the
+    /// inspector re-presents even when the route ALREADY points at that run
+    /// (setting the same route fires no onChange — the old silent-click bug).
+    private(set) var inspectorRevealSeq = 0
+
+    /// Open a run in the inspector — the ONE owner of the reveal semantics.
+    func openRun(_ id: String) {
+        route = .task(id)
+        inspectorRevealSeq += 1
+    }
     var appearance: AppearanceMode = .dark {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }
     }
@@ -298,6 +308,7 @@ final class AppModel {
         liveBoxes.removeAll()
         snapshotLoadDepth.removeAll()
         deferredEnvelopes.removeAll()
+        deferredOverflow.removeAll()
         turnSubmitting = false
 
         threads.removeAll()
@@ -371,6 +382,8 @@ final class AppModel {
                         if task.pendingInteractions.isEmpty, task.waitingOnUser { task.pendingInteractions = existing.pendingInteractions }
                         task.observedModel = task.observedModel ?? existing.observedModel
                         if task.routeProof == .unverified, existing.routeProof != .unverified { task.routeProof = existing.routeProof }
+                        task.authRoute = task.authRoute ?? existing.authRoute
+                        task.failureCategory = task.failureCategory ?? existing.failureCategory
                     }
                     return task
                 }
@@ -654,6 +667,10 @@ final class AppModel {
             task.observedModel = route.observedModel
             task.routeProof = route.verified == true ? .verified : .unverified
         }
+        // W18/W20 disclosures ride the LIST summary too — a refresh must not
+        // erase the route/mismatch badges or the failure category chip.
+        task.authRoute = s.authRoute
+        task.failureCategory = s.failure?.category
         task.requestedAccess = s.requestedAccess
         task.effectiveAccess = s.effectiveAccess
         task.externalContextPolicy = s.externalContextPolicy
@@ -859,8 +876,12 @@ final class AppModel {
 
     // MARK: Threads (chat/session-first)
 
-    func refreshThreads() async {
-        guard let client else { return }
+    /// Returns true when the list now REFLECTS server truth (incl. the honest
+    /// 501 empty state); false on transport failure (last-known rows kept) so
+    /// the ping watermark can surrender instead of dropping future pings.
+    @discardableResult
+    func refreshThreads() async -> Bool {
+        guard let client else { return false }
         do {
             let list = try await client.listThreads()
             threads = list.threads
@@ -872,13 +893,16 @@ final class AppModel {
                 // The condition is gone; a stale warning must not linger.
                 threadStatus = nil
             }
+            return true
         } catch let GatewayError.http(status, _) where status == 501 {
             // Engine builds without thread support: honestly empty.
             threads = []
+            return true
         } catch {
             // A transport/decode failure is NOT an empty thread list: keep the
             // last-known rows and surface the error.
             threadStatus = "Could not refresh threads: \(userMessage(for: error))"
+            return false
         }
     }
 

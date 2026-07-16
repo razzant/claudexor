@@ -55,14 +55,17 @@ struct MarkdownOutputView: View {
     /// changes, so it parses once (same policy as the block cache below).
     private final class InlineBox { let value: AttributedString; init(_ v: AttributedString) { value = v } }
     private static let inlineCache: NSCache<NSString, InlineBox> = {
-        let c = NSCache<NSString, InlineBox>(); c.countLimit = 2048; return c
+        // Byte-costed (W23 class): unbounded keys/values must not pool megabytes.
+        let c = NSCache<NSString, InlineBox>(); c.countLimit = 2048
+        c.totalCostLimit = 8 * 1024 * 1024
+        return c
     }()
 
     static func inlineAttributed(_ raw: String) -> AttributedString {
         let key = raw as NSString
         if let hit = inlineCache.object(forKey: key) { return hit.value }
         let parsed = (try? AttributedString(markdown: raw, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(raw)
-        inlineCache.setObject(InlineBox(parsed), forKey: key)
+        inlineCache.setObject(InlineBox(parsed), forKey: key, cost: raw.utf16.count)
         return parsed
     }
 
@@ -74,7 +77,10 @@ struct MarkdownOutputView: View {
 
     private final class BlocksBox { let blocks: [MarkdownBlock]; init(_ b: [MarkdownBlock]) { blocks = b } }
     private static let cache: NSCache<NSString, BlocksBox> = {
-        let c = NSCache<NSString, BlocksBox>(); c.countLimit = 256; return c
+        // Byte-costed (W23 class): 256 multi-megabyte answers must not pool.
+        let c = NSCache<NSString, BlocksBox>(); c.countLimit = 256
+        c.totalCostLimit = 16 * 1024 * 1024
+        return c
     }()
 
     /// Internal (not private) so the W22 acceptance fixtures can assert the
@@ -83,7 +89,7 @@ struct MarkdownOutputView: View {
         let key = markdown as NSString
         if let hit = cache.object(forKey: key) { return hit.blocks }
         let out = parseUncached(markdown)
-        cache.setObject(BlocksBox(out), forKey: key)
+        cache.setObject(BlocksBox(out), forKey: key, cost: markdown.utf16.count)
         return out
     }
 

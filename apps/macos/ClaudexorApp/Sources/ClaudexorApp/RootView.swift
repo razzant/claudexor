@@ -67,6 +67,12 @@ struct RootView: View {
         .onChange(of: model.route) { _, new in
             if case .task = new { inspectorPresented = true }
         }
+        // openRun() bumps the reveal seq on EVERY click — re-presenting the
+        // inspector even when the route already pointed at that run (a same-
+        // route click fires no route onChange; it used to look dead).
+        .onChange(of: model.inspectorRevealSeq) {
+            if case .task = model.route { inspectorPresented = true }
+        }
     }
 
     /// The trailing Workbench: ONE region with a [Run Detail | Canvas] switch.

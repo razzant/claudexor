@@ -13,8 +13,11 @@ extension ThreadsScreen {
     /// default) mapped onto the ?route= vocabulary. Auto = nil = unfiltered —
     /// either route may win at run time, so nothing is hidden.
     var composerModelsRoute: String? {
-        let preference = model.currentThread?.authPreference
-            ?? model.settingsSnapshot?.routing.authPreference
+        // The per-turn Auth route picker (W18) WINS over the sticky thread /
+        // global preference: it is the route this very turn will request.
+        let preference = authRoutePreference != "auto"
+            ? authRoutePreference
+            : (model.currentThread?.authPreference ?? model.settingsSnapshot?.routing.authPreference)
         return modelsRouteParam(forAuthPreference: preference)
     }
 

@@ -148,6 +148,9 @@ export interface DaemonRunRecord {
    * trust_full_access_required) — surfaces key remedies on the CODE and the
    * turn-turn route maps it to a client-actionable 4xx (W24). */
   errorCode?: string;
+  /** HTTP status persisted from the typed throw (refusal semantics are born
+   * at the throw); the turn route serves it verbatim when 400-599. */
+  errorStatus?: number;
   params?: unknown;
   createdAt?: string;
   startedAt?: string;

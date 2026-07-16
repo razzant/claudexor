@@ -77,17 +77,21 @@ function errStatus(err: unknown, fallback = 400): number {
 }
 
 /**
- * HTTP status for a pre-start terminal turn (W24). A TYPED refusal code is
- * client-actionable — the inline card keys its remedy on the code and must not
- * be retried as a transient failure: the trust gate needs a one-time grant
- * (403), any other typed refusal (e.g. browser_unavailable) is a 400. A
- * terminal with NO typed code is an infra failure and stays 500 so genuine
- * transient failures are still retried.
+ * HTTP status for a pre-start terminal turn (W24). Refusal semantics are born
+ * AT THE THROW: a typed refusal carries its status (trust=403,
+ * requirements=400, journal recovery=503) and the daemon persists it onto the
+ * job record — that persisted status wins. Without one, only the known trust
+ * code keeps its legacy 403; any OTHER bare `code` (an errno like ENOENT, an
+ * ABORT_ERR) is an infra failure and stays 500 so genuine transient failures
+ * are still retried — a string code alone never proves a client-actionable
+ * refusal.
  */
-function preStartRefusalStatus(errorCode: string | undefined): number {
-  if (!errorCode) return 500;
+function preStartRefusalStatus(errorCode: string | undefined, errorStatus?: number): number {
+  if (typeof errorStatus === "number" && errorStatus >= 400 && errorStatus <= 599) {
+    return errorStatus;
+  }
   if (errorCode === TRUST_FULL_ACCESS_CODE) return 403;
-  return 400;
+  return 500;
 }
 
 /** A typed throw's machine code (e.g. the trust gate's), null when absent or
@@ -168,7 +172,7 @@ async function respondToTurnJob(
     // inline turn card keys its one-click remedy on the CODE, and a 500 would
     // make embedders retry an unretryable refusal. Infra terminals (no typed
     // code) stay 5xx so genuine transient failures are still retried.
-    return ctx.json(res, preStartRefusalStatus(rec.errorCode), {
+    return ctx.json(res, preStartRefusalStatus(rec.errorCode, rec.errorStatus), {
       jobId: rec.id,
       turnId,
       threadId,

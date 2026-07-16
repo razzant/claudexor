@@ -258,4 +258,42 @@ describe("QuotaRegistry", () => {
     journal.close();
     rmSync(root, { recursive: true, force: true });
   });
+
+  it("keeps an old observation whose constraint still extends into the future (live weekly cooldown)", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-live-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowIso = "2026-07-16T12:00:00.000Z";
+    const registry = new QuotaRegistry(journal, [], () => new Date(nowIso));
+    registry.upsert({
+      subject: {
+        harness: "codex",
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: null,
+      },
+      constraints: [
+        {
+          id: "weekly",
+          label: "Weekly",
+          used_ratio: 1,
+          window_seconds: 604_800,
+          resets_at: "2026-07-20T00:00:00.000Z",
+          cooldown_until: "2026-07-20T00:00:00.000Z",
+        },
+      ],
+      source: "codex_rollout",
+      observed_at: "2026-07-14T12:00:00.000Z", // 2 days old — past the 24h horizon
+      freshness: "fresh",
+    });
+    // The cap is still LIVE (resets in the future): kept and stale-marked —
+    // hiding it would blind both the footer and the router's ledger.
+    expect(registry.read().snapshots).toHaveLength(1);
+    expect(registry.read().snapshots[0]?.freshness).toBe("stale");
+    // Once the window itself expires, the old observation finally prunes.
+    nowIso = "2026-07-21T00:00:00.000Z";
+    expect(registry.read().snapshots).toEqual([]);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
 });

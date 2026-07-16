@@ -1424,7 +1424,9 @@ export class Orchestrator {
           `access profile 'full' requires allow_full_access: true in the user-level trust file for this repo ` +
             `(${trustConfigPath(input.repoRoot)}); enable it with \`claudexor trust --allow-full-access\` — refusing to run unsandboxed`,
         ),
-        { code: TRUST_FULL_ACCESS_CODE },
+        // Refusal semantics are born at the throw (W24): the one-time grant is
+        // a 403, and the daemon persists this status onto the job record.
+        { code: TRUST_FULL_ACCESS_CODE, status: 403 },
       );
     }
     const externalContextPolicy = input.web ?? input.externalContextPolicy ?? "auto";
@@ -3084,7 +3086,12 @@ export class Orchestrator {
       // Prose from an empty-diff winner is an answer, never a patch.
       const winnerAnswer = winnerRun.answerText?.trim() ?? "";
       const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
-      if (!hasDiff && winnerAnswer.length > 0) {
+      // The winner's final MESSAGE is the human-facing answer and materializes
+      // for diff-ful runs too: the chat renders final/answer.md (the projection
+      // prefers it), never the arbitration summary — "Run … Winner: a01 …" is
+      // machine telemetry, not what the agent said. The diff stays in the
+      // Diff tab; summary.md remains a diagnostics artifact.
+      if (winnerAnswer.length > 0) {
         store.writeText(join(paths.finalDir, "answer.md"), winnerAnswer + "\n");
       }
       // The run's structured-output contract: ONE engine validator, called on

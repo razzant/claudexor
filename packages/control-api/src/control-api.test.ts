@@ -1315,6 +1315,78 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("threads: refusal status is born at the throw — persisted errorStatus wins, a bare errno code stays 500 (W24)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-status-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-st",
+      created_at: now,
+      updated_at: now,
+      repo: { root: repo, base_ref: "HEAD" },
+      title: "status thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const cases = [
+      // A typed 503 (journal recovery) persisted from the throw is served
+      // verbatim — retryable infra, never a client-actionable 400.
+      { errorCode: "journal_recovery_required", errorStatus: 503, expected: 503 },
+      // A bare errno-style code without a typed status proves nothing: infra 500.
+      { errorCode: "ENOENT", errorStatus: undefined, expected: 500 },
+    ];
+    for (const { errorCode, errorStatus, expected } of cases) {
+      const turns: Record<string, unknown>[] = [];
+      const daemon: DaemonFacadeClient = {
+        async enqueue() {
+          return { id: "job-st", state: "queued" };
+        },
+        async status() {
+          return {
+            id: "job-st",
+            state: "failed",
+            error: "pre-start failure",
+            errorCode,
+            ...(errorStatus !== undefined ? { errorStatus } : {}),
+          };
+        },
+        async list() {
+          return [];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      const services: DaemonControlApiOptions["services"] = {
+        threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+        createThreadTurn: async (id, prompt) => {
+          const turn = { id: "tn-st", thread_id: id, run_id: null, prompt, created_at: now };
+          turns.push(turn);
+          return turn;
+        },
+      };
+      await withDaemonServer(
+        daemon,
+        async (base) => {
+          const res = await apiFetch(`${base}/threads/th-st/turns`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ prompt: "any work" }),
+          });
+          expect(res.status).toBe(expected);
+        },
+        undefined,
+        services,
+      );
+    }
+  });
+
   it("threads: a preflight refusal lands on the created turn, not raw JSON with no turn (W19)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-preflight-"));
     const now = new Date().toISOString();
