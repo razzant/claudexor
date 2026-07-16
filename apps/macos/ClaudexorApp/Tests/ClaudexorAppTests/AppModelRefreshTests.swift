@@ -244,6 +244,7 @@ struct AppModelRefreshTests {
         #expect(!model.fullAccessGranted(repoRoot: "/tmp/other"))
     }
 
+    @MainActor
     @Test func routeScopedModelVisibilityHidesOnlyForeignAnnotatedModels() {
         let models = [
             HarnessModel(id: "native-only", routes: ["local_session"]),
