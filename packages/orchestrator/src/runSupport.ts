@@ -229,6 +229,12 @@ export function harnessEventPayload(
     rate_limit: safe.rate_limit,
     tool: safe.tool,
     interaction: safe.interaction,
+    // Typed finality/status MUST survive this projection (W-C1/W-C2): the
+    // app's transcript reducer keys the answer-dedup on `final` and the
+    // activity feed on `status` — dropping them here silently killed both
+    // on the LIVE path (caught by the Ф2.5 E2E smoke, not unit tests).
+    final: safe.final,
+    status: safe.status,
     payload: safe.payload,
   };
 }
