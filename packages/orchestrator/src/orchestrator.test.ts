@@ -4191,18 +4191,32 @@ describe("Orchestrator", () => {
     const bad = await new Orchestrator({
       registry: new Map([["schema-capable", makeAdapter(JSON.stringify({ note: null }))]]),
       reviewers: [],
-    }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["schema-capable"], n: 1, outputSchema: schema });
-    expect(
-      readFileSync(join(bad.runDir, "final", "structured_output.yaml"), "utf8"),
-    ).toContain("status: failed");
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["schema-capable"],
+      n: 1,
+      outputSchema: schema,
+    });
+    expect(readFileSync(join(bad.runDir, "final", "structured_output.yaml"), "utf8")).toContain(
+      "status: failed",
+    );
     // The same schema with the field ABSENT (its optionality) is conformant.
     const ok = await new Orchestrator({
       registry: new Map([["schema-capable", makeAdapter(JSON.stringify({}))]]),
       reviewers: [],
-    }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["schema-capable"], n: 1, outputSchema: schema });
-    expect(
-      readFileSync(join(ok.runDir, "final", "structured_output.yaml"), "utf8"),
-    ).toContain("status: passed");
+    }).run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["schema-capable"],
+      n: 1,
+      outputSchema: schema,
+    });
+    expect(readFileSync(join(ok.runDir, "final", "structured_output.yaml"), "utf8")).toContain(
+      "status: passed",
+    );
     expect(existsSync(join(ok.runDir, "final", "output.json"))).toBe(true);
   });
 

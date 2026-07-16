@@ -235,7 +235,9 @@ describe("Control API schemas", () => {
     // > 7 days is rejected — a larger delay would wrap setTimeout to ~1ms and
     // cancel the run almost immediately.
     expect(() => ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 604_801 })).toThrow();
-    expect(() => ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 3_000_000_000 })).toThrow();
+    expect(() =>
+      ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 3_000_000_000 }),
+    ).toThrow();
   });
 
   it("accepts reviewer effort overrides on run start requests", () => {
