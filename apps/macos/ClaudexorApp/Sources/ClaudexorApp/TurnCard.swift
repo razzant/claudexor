@@ -79,7 +79,8 @@ struct TurnCard: View {
                             get: { transcriptExpanded ?? live },
                             set: { transcriptExpanded = $0 }
                         )) {
-                            TranscriptView(blocks: blocks, trimmedOlder: model.transcriptTrimmedCount(runId))
+                            TranscriptView(blocks: blocks, trimmedOlder: model.transcriptTrimmedCount(runId),
+                                           truncatedChars: model.transcriptTruncatedChars(runId))
                         } label: {
                             Label(live ? "Working…" : "Transcript (\(blocks.count))", systemImage: "waveform")
                                 .font(.caption).foregroundStyle(.secondary)
@@ -440,11 +441,13 @@ private struct TranscriptView: View {
     let blocks: [TranscriptBlock]
     /// Oldest blocks the reducer's cap dropped (honest truncation marker).
     var trimmedOlder: Int = 0
+    /// Characters the reducer's per-block byte bound cut (W23) — disclosed.
+    var truncatedChars: Int = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            if trimmedOlder > 0 {
-                Text("\(trimmedOlder) earlier transcript blocks collapsed — the full stream lives in the run's events.jsonl artifact.")
+            if trimmedOlder > 0 || truncatedChars > 0 {
+                Text(truncationNote)
                     .font(.caption2).foregroundStyle(.tertiary)
             }
             ForEach(blocks) { block in
@@ -483,6 +486,13 @@ private struct TranscriptView: View {
             }
         }
         .padding(.vertical, Theme.Spacing.xxs)
+    }
+
+    private var truncationNote: String {
+        var parts: [String] = []
+        if trimmedOlder > 0 { parts.append("\(trimmedOlder) earlier transcript blocks collapsed") }
+        if truncatedChars > 0 { parts.append("\(truncatedChars) characters of overlong blocks bounded") }
+        return parts.joined(separator: " · ") + " — the full stream lives in the run's events.jsonl artifact."
     }
 
     private func glyph(_ s: ToolBlock.Status) -> String {

@@ -261,10 +261,20 @@ extension AppModel {
     /// `review.finding.proposed`, `run.completed`, …) and sends the full record as data;
     /// the in-proc bus uses a normalized kind. We classify off the record's own `type`,
     /// falling back to the SSE kind — so it works against both servers.
+    /// W23 memory bound for the snapshot-fence buffer: a flooding run during a
+    /// slow detail load must not hoard envelopes without limit (part of the
+    /// 30GB-hang class). On overflow the buffer resets and the load's defer
+    /// fetches a FRESH snapshot instead of replaying an incomplete tail.
+    static let deferredEnvelopeCap = 512
+
     func apply(_ env: BusEnvelope, to runId: String) {
         // Snapshot fence, write side: never interleave with an in-flight
         // detail load; the load's defer re-applies these in arrival order.
         if snapshotLoadDepth[runId] ?? 0 > 0 {
+            if (deferredEnvelopes[runId]?.count ?? 0) >= Self.deferredEnvelopeCap {
+                deferredEnvelopes[runId] = []
+                deferredOverflow.insert(runId)
+            }
             deferredEnvelopes[runId, default: []].append(env)
             return
         }

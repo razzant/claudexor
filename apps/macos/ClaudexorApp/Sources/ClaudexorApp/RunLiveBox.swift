@@ -108,6 +108,11 @@ extension AppModel {
         liveBoxes[runId]?.transcript.trimmed ?? transcripts[runId]?.trimmed ?? 0
     }
 
+    /// Characters the reducer's per-block byte bound cut (W23 honest marker).
+    func transcriptTruncatedChars(_ runId: String) -> Int {
+        liveBoxes[runId]?.transcript.truncatedChars ?? transcripts[runId]?.truncatedChars ?? 0
+    }
+
     /// Live-first spend for meters/cards: the box once it has spend evidence,
     /// the task snapshot otherwise.
     func spendDisplay(_ task: TaskRun) -> (usd: Double, known: Bool, estimated: Bool) {

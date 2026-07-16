@@ -35,14 +35,31 @@ public struct TranscriptReducer: Sendable {
     public private(set) var blocks: [TranscriptBlock] = []
     /// Number of oldest blocks dropped to stay under `cap` (shown as "N earlier…").
     public private(set) var trimmed: Int = 0
+    /// Characters cut from OVERLONG single blocks (the per-block byte bound) —
+    /// disclosed alongside `trimmed`, never a silent truncation (W23).
+    public private(set) var truncatedChars: Int = 0
+    /// Live text characters currently held (thinking/message text + tool detail)
+    /// — the MEASURABLE W23 invariant: never exceeds `totalCharBudget`.
+    public private(set) var textChars: Int = 0
 
     /// Highest seq already folded — idempotent replay without an unbounded Set.
     private var lastSeq: Int = -1
     private var toolIndexByUseId: [String: Int] = [:]
     private var lastOpenToolByName: [String: Int] = [:]
     private let cap: Int
+    /// W23 P0-hang bounds: the block COUNT cap alone let a single merged
+    /// thinking block grow to megabytes — SwiftUI then laid out that Text on
+    /// the main thread every SSE batch (the sampled hang: 100% in
+    /// LayoutEngineBox.sizeThatFits, 30.4 GB footprint). Any single block and
+    /// the transcript's total text are now hard-bounded in characters.
+    private let blockCharCap: Int
+    private let totalCharBudget: Int
 
-    public init(cap: Int = 200) { self.cap = cap }
+    public init(cap: Int = 200, blockCharCap: Int = 100_000, totalCharBudget: Int = 600_000) {
+        self.cap = cap
+        self.blockCharCap = blockCharCap
+        self.totalCharBudget = totalCharBudget
+    }
 
     /// Apply one envelope. Only `harness.event` run events contribute; everything
     /// else is ignored. Returns true if the transcript changed.
@@ -66,14 +83,21 @@ public struct TranscriptReducer: Sendable {
         case "thinking":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
             if case .thinking(let id, let prev) = blocks.last {
-                blocks[blocks.count - 1] = .thinking(id: id, text: prev + "\n" + text)
+                // Keep the TAIL of an overlong merge: the live feed shows the
+                // newest reasoning; the cut is counted, never silent.
+                let bounded = boundTail(prev + "\n" + text)
+                textChars += bounded.count - prev.count
+                blocks[blocks.count - 1] = .thinking(id: id, text: bounded)
+                enforceBudget()
             } else {
-                append(.thinking(id: "th-\(seqKey)", text: text))
+                append(.thinking(id: "th-\(seqKey)", text: boundTail(text)))
             }
             return true
         case "message":
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
-            append(.message(id: "msg-\(seqKey)", text: text))
+            // A message is a one-shot: keep the HEAD (the answer's beginning);
+            // the full text lives in the run's artifacts.
+            append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
             return true
         case "tool_call":
             let tool = payload["tool"]
@@ -117,18 +141,53 @@ public struct TranscriptReducer: Sendable {
         }
     }
 
+    /// Keep the newest `blockCharCap` characters (live-progress semantics).
+    private mutating func boundTail(_ text: String) -> String {
+        guard text.count > blockCharCap else { return text }
+        truncatedChars += text.count - blockCharCap
+        return String(text.suffix(blockCharCap))
+    }
+
+    /// Keep the first `blockCharCap` characters (one-shot message semantics).
+    private mutating func boundHead(_ text: String) -> String {
+        guard text.count > blockCharCap else { return text }
+        truncatedChars += text.count - blockCharCap
+        return String(text.prefix(blockCharCap))
+    }
+
+    /// Counted text of a block. Tool details are engine-bounded summaries and
+    /// deliberately excluded: the invariant tracks the two unbounded inputs.
+    private func chars(of block: TranscriptBlock) -> Int {
+        switch block {
+        case .thinking(_, let text): return text.count
+        case .message(_, let text): return text.count
+        case .tool: return 0
+        }
+    }
+
+    /// Evict oldest whole blocks until both bounds hold (count AND text chars).
+    private mutating func enforceBudget() {
+        var drop = 0
+        var remaining = textChars
+        while (blocks.count - drop > cap) || (remaining > totalCharBudget && blocks.count - drop > 1) {
+            remaining -= chars(of: blocks[drop])
+            drop += 1
+        }
+        guard drop > 0 else { return }
+        blocks.removeFirst(drop)
+        textChars = remaining
+        trimmed += drop
+        // Surviving blocks shifted down by `drop`: SHIFT the open-tool indices
+        // to match (clearing them would orphan still-open tools so their
+        // tool_result lands as a duplicate block — review r2 #5). Entries that
+        // fell out of the window are dropped.
+        toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
+        lastOpenToolByName = lastOpenToolByName.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
+    }
+
     private mutating func append(_ block: TranscriptBlock) {
         blocks.append(block)
-        if blocks.count > cap {
-            let drop = blocks.count - cap
-            blocks.removeFirst(drop)
-            trimmed += drop
-            // Surviving blocks shifted down by `drop`: SHIFT the open-tool indices
-            // to match (clearing them would orphan still-open tools so their
-            // tool_result lands as a duplicate block — review r2 #5). Entries that
-            // fell out of the window are dropped.
-            toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
-            lastOpenToolByName = lastOpenToolByName.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
-        }
+        textChars += chars(of: block)
+        enforceBudget()
     }
 }

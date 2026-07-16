@@ -672,3 +672,18 @@ private final class AppRequestStubURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+@Suite(.serialized) struct DeferredEnvelopeBoundTests {
+    /// W23: the snapshot-fence buffer is hard-capped; overflow flags the run
+    /// for a FRESH snapshot instead of hoarding envelopes without limit.
+    @MainActor
+    @Test func deferredEnvelopesNeverExceedTheCapAndFlagOverflow() {
+        let model = AppModel(requestNotificationAuthorization: false)
+        model.snapshotLoadDepth["run-flood"] = 1
+        for seq in 1...(AppModel.deferredEnvelopeCap * 3) {
+            model.apply(BusEnvelope(seq: seq, kind: "harness.event", event: .object([:])), to: "run-flood")
+        }
+        #expect((model.deferredEnvelopes["run-flood"]?.count ?? 0) <= AppModel.deferredEnvelopeCap)
+        #expect(model.deferredOverflow.contains("run-flood"))
+    }
+}

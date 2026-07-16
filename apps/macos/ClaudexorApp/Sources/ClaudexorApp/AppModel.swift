@@ -190,8 +190,11 @@ final class AppModel {
     private var snapshotReplayFences: [String: Int] = [:]
     /// Reentrancy depth of in-flight detail loads per run (see loadRunDetail).
     var snapshotLoadDepth: [String: Int] = [:]
-    /// Stream envelopes deferred while a snapshot load is in flight.
+    /// Stream envelopes deferred while a snapshot load is in flight. Hard-capped
+    /// (W23): runs whose buffer overflowed are flagged here and get a FRESH
+    /// snapshot instead of a replay — dropped envelopes are never reconstructed.
     var deferredEnvelopes: [String: [BusEnvelope]] = [:]
+    var deferredOverflow: Set<String> = []
     /// SSE coalescing: events buffer here and flush in adaptive batches, so a burst
     /// of harness events (10+/sec) causes ONE SwiftUI re-render per batch instead of
     /// one per event. `@ObservationIgnored` so buffering never itself triggers a render.
@@ -1645,6 +1648,11 @@ final class AppModel {
                 // and duplicate timeline rows.
                 let fence = snapshotReplayFences.removeValue(forKey: id) ?? 0
                 for env in deferred where !(env.seq > 0 && env.seq <= fence) { apply(env, to: id) }
+                if deferredOverflow.remove(id) != nil {
+                    // W23: envelopes were dropped at the cap — a replay would be
+                    // incomplete, so a FRESH snapshot supersedes them instead.
+                    Task { await self.loadRunDetail(id) }
+                }
             }
         }
         do {
