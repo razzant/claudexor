@@ -47,6 +47,8 @@ const RUN_FLAGS: readonly string[] = [
   "routing-goal",
   "in-place",
   "spec",
+  "instructions",
+  "instructions-file",
   "attach",
   "image",
   "json",
@@ -138,6 +140,16 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   ),
   valueFlag("answers", "<file>", "Answers JSON for claudexor spec (batch mode)"),
   valueFlag("spec", "<spec.json>", "Frozen SpecPack context for agent/best-of/create/convergence"),
+  valueFlag(
+    "instructions",
+    '"<text>"',
+    "System-level instructions layered onto task-producing lanes (not reviewers/synthesis)",
+  ),
+  valueFlag(
+    "instructions-file",
+    "<file>",
+    "Read --instructions from a file (avoids ARG_MAX and ps leakage)",
+  ),
   valueFlag("attach", "<path[,path...]>", "Attach file(s) to ask/agent/best-of/plan/audit"),
   valueFlag(
     "image",

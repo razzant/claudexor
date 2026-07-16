@@ -344,7 +344,14 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
           body: JSON.stringify({
             model,
-            messages: [{ role: "user", content: rawApiUserContent(spec) }],
+            messages: [
+              // Per-run instructions ride the OpenAI-style `system` role (the
+              // engine already withheld them from synthesis/reviewers).
+              ...(spec.instructions && spec.instructions.trim()
+                ? [{ role: "system", content: spec.instructions }]
+                : []),
+              { role: "user", content: rawApiUserContent(spec) },
+            ],
           }),
           signal,
         });

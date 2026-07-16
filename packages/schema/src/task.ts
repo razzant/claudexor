@@ -209,6 +209,13 @@ export const TaskContract = z
           .describe("Optional normalized restatement of the prompt."),
       })
       .describe("The user's request this run is held to."),
+    /** Caller-supplied per-run system-level instructions layered onto every
+     *  TASK-PRODUCING lane's prompt (primary, candidate, planner, explorer,
+     *  orchestrate-planner) — never reviewers, synthesis, or the auth smoke. */
+    instructions: z
+      .string()
+      .optional()
+      .describe("Caller-supplied per-run system-level instructions for task-producing lanes."),
     spec: z
       .object({
         id: Id.optional().describe("SpecPack id."),

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { createReadStream, existsSync, lstatSync, readdirSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -145,6 +145,29 @@ function testCommands(args: ParsedArgs): TestCommandInvocation[] | undefined {
 /** Typed approval for protected gate/test path changes; never inferred from prompt text. */
 function protectedPathApprovals(args: ParsedArgs): ProtectedPathApproval[] | undefined {
   return parseProtectedPathApprovalFlags(flagValues(args, "allow-protected-path"));
+}
+
+/**
+ * Per-run system instructions from `--instructions "<text>"` or
+ * `--instructions-file <path>` (mutually exclusive; the file form avoids
+ * ARG_MAX and keeps long instructions out of the process argv / `ps`).
+ */
+function resolveInstructions(args: ParsedArgs): string | undefined {
+  const inline = flagStr(args, "instructions");
+  const file = flagStr(args, "instructions-file");
+  if (inline !== undefined && file !== undefined) {
+    throw new Error("pass either --instructions or --instructions-file, not both");
+  }
+  if (file !== undefined) {
+    try {
+      return readFileSync(file, "utf8");
+    } catch (err) {
+      throw new Error(
+        `could not read --instructions-file ${file}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return inline;
 }
 
 const ACCESS_PROFILES = new Set([
@@ -371,6 +394,7 @@ async function orchestrate(
   let resolvedModel: string | undefined;
   let attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   let resolvedProtectedPathApprovals: ProtectedPathApproval[] | undefined;
+  let resolvedInstructions: string | undefined;
   try {
     reviewerEffortOverrides = reviewerEfforts(args);
     resolvedReviewerModels = reviewerModels(args);
@@ -390,6 +414,7 @@ async function orchestrate(
     resolvedSynthesis = synthesisMode(args);
     attachmentRequest = attachmentInputs(args);
     resolvedProtectedPathApprovals = protectedPathApprovals(args);
+    resolvedInstructions = resolveInstructions(args);
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -399,6 +424,7 @@ async function orchestrate(
     tests = resolveRunTestCommands(cliTests, spec);
     assertCliRunParamsHaveNoInlineSecrets({
       prompt,
+      instructions: resolvedInstructions,
       attachments: attachmentRequest,
       mode,
       harnesses: resolvedHarnesses,
@@ -437,6 +463,7 @@ async function orchestrate(
     mode,
     autonomy,
     prompt: prompt || "audit this repository",
+    instructions: resolvedInstructions,
     tests,
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
@@ -466,6 +493,7 @@ interface DaemonRunParams {
   mode: ModeKind;
   autonomy: OrchestrateAutonomy | undefined;
   prompt: string;
+  instructions: string | undefined;
   tests: TestCommandInvocation[] | undefined;
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
@@ -532,6 +560,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   }
   const body: Record<string, unknown> = {
     prompt: p.prompt,
+    ...(p.instructions ? { instructions: p.instructions } : {}),
     ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
     ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),

@@ -109,6 +109,10 @@ const BOOLEAN_FLAG_MAP = {
 // CLI run-control flags with NO MCP argument: each needs a stated reason.
 // (Non-run-control CLI flags — subcommand plumbing — are structurally exempt.)
 const CLI_ONLY_EXEMPT = {
+  instructions:
+    "embedder contract is CLI/HTTP-first (v2.1 W5, DECIDED_TRADEOFFS DT2.1-1); MCP exposure of per-run system instructions is deferred",
+  "instructions-file":
+    "file form of --instructions; MCP exposure deferred with it (DT2.1-1)",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",
   attempts: "convergence knob; MCP one-shot surface exposes race width (n) only today",
   synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",

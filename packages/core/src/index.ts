@@ -16,6 +16,7 @@ export * from "./auth-capability-verifier.js";
 export * from "./env-scope.js";
 export * from "./runtime-env.js";
 export * from "./executable-inspection.js";
+export * from "./instructions.js";
 export * from "./browser-mcp.js";
 export * from "./process-identity.js";
 export * from "./process-group.js";

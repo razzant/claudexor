@@ -436,6 +436,19 @@ export const HarnessRunSpec = z
     session_id: Id.describe("Session id this run belongs to."),
     intent: Intent,
     prompt: z.string().describe("Prompt text delivered to the harness."),
+    /**
+     * Optional caller-supplied system-level instructions layered on top of the
+     * prompt for TASK-PRODUCING lanes (primary, candidate, planner, explorer,
+     * orchestrate-planner) — never reviewers, synthesis, or the auth smoke.
+     * Adapters deliver it natively (claude `--append-system-prompt`, codex
+     * `developer_instructions`) or as a delimited prompt prefix.
+     */
+    instructions: z
+      .string()
+      .optional()
+      .describe(
+        "Caller-supplied system-level instructions for task-producing lanes; delivered natively (append-system-prompt / developer_instructions) or as a delimited prompt prefix.",
+      ),
     cwd: z.string().describe("Working directory the harness process runs in."),
     access: AccessProfile.default("workspace_write"),
     external_context_policy: ExternalContextPolicy.default("auto"),

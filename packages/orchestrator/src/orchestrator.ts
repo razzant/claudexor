@@ -227,6 +227,10 @@ export interface RunInput {
    */
   executionRoot?: string;
   prompt: string;
+  /** Caller-supplied system-level instructions layered onto every task-producing
+   *  lane (primary, candidate, planner, explorer, orchestrate-planner) — never
+   *  reviewers, synthesis, or the auth smoke. */
+  instructions?: string;
   /** Files/images attached to this turn, resolved to scoped on-disk paths. */
   attachments?: Attachment[];
   /**
@@ -1370,6 +1374,11 @@ export class Orchestrator {
       repo: { root: input.repoRoot, base_ref: input.baseRef ?? "HEAD", dirty_policy: "snapshot" },
       mode: { kind: mode },
       user_intent: { raw: redactSecrets(input.prompt) },
+      // Stored real (not redacted): the inline-secret fence already blocked any
+      // secret-like value at ingress, so this mirrors the other real contract
+      // text (forbidden_approaches, decided_tradeoffs). Task-producing lanes read
+      // it back from the contract via harnessSpecKnobs().
+      instructions: input.instructions,
       spec:
         input.specId || input.specHash || input.specPath
           ? {
@@ -1421,6 +1430,50 @@ export class Orchestrator {
    * defaults, max_turns, tool lists). Knobs the manifest does not support are
    * RETURNED as ignored reasons (disclosed by the caller), never silently sent.
    */
+  /**
+   * The HarnessRunSpec fields every TASK-PRODUCING lane shares (primary,
+   * candidate, planner, explorer, orchestrate-planner). Extracting the identical
+   * block into ONE owner means a new task-producing field lands here once —
+   * never forgotten in one of the HarnessRunSpec.parse sites (the multi-path
+   * trap). Per-run `instructions` ride every task-producing lane but are withheld
+   * from `synthesize` (a merge of existing candidates, not a fresh task
+   * execution — owner Квиз-5a); reviewers and the auth smoke build their own
+   * specs and never call this.
+   */
+  private harnessSpecKnobs(
+    contract: TaskContract,
+    knobs: {
+      webPolicy: ExternalContextPolicy;
+      toolsAllow: string[];
+      toolsDeny: string[];
+      model: string | null;
+      effort: EffortHint | null;
+      maxTurns: number | null;
+    },
+    intent: Intent,
+  ): Pick<
+    HarnessRunSpec,
+    | "external_context_policy"
+    | "tool_permission_policy"
+    | "model_hint"
+    | "effort_hint"
+    | "max_turns"
+    | "instructions"
+  > {
+    return {
+      external_context_policy: knobs.webPolicy,
+      tool_permission_policy: {
+        web: knobs.webPolicy,
+        allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
+        deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
+      },
+      model_hint: knobs.model,
+      effort_hint: knobs.effort,
+      max_turns: knobs.maxTurns,
+      ...(intent === "synthesize" ? {} : { instructions: contract.instructions }),
+    };
+  }
+
   private routeSpecKnobs(
     routed: RoutedAdapter,
     contract: TaskContract,
@@ -1534,15 +1587,7 @@ export class Orchestrator {
       ),
       cwd: envelope.worktree_path,
       access: routed.adapterAccess,
-      external_context_policy: knobs.webPolicy,
-      tool_permission_policy: {
-        web: knobs.webPolicy,
-        allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
-        deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
-      },
-      model_hint: knobs.model,
-      effort_hint: knobs.effort,
-      max_turns: knobs.maxTurns,
+      ...this.harnessSpecKnobs(contract, knobs, intent),
       env_inheritance: envInheritance(this.config(contract.repo.root)),
       ...(sessionFields ? { auth_preference: sessionFields.auth_preference } : {}),
       ...(inPlaceEnvelope && sessionFields?.resume_session_id
@@ -4591,15 +4636,7 @@ export class Orchestrator {
           // what's in this screenshot"), not just agent/race runs.
           attachments: input.attachments ?? [],
           ...this.sessionSpecFields(input, adapter.id),
-          external_context_policy: knobs.webPolicy,
-          tool_permission_policy: {
-            web: knobs.webPolicy,
-            allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
-            deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
-          },
-          model_hint: knobs.model,
-          effort_hint: knobs.effort,
-          max_turns: knobs.maxTurns,
+          ...this.harnessSpecKnobs(contract, knobs, "plan"),
           env_inheritance: envInheritance(this.config(input.repoRoot)),
           env: roHome.env,
         });
@@ -5408,15 +5445,7 @@ export class Orchestrator {
         attachments: input.attachments ?? [],
         auth_preference: sessionFields.auth_preference,
         resume_session_id: grantResume ? sessionFields.resume_session_id : null,
-        external_context_policy: knobs.webPolicy,
-        tool_permission_policy: {
-          web: knobs.webPolicy,
-          allow: [...new Set([...contract.tool_permission_policy.allow, ...knobs.toolsAllow])],
-          deny: [...new Set([...contract.tool_permission_policy.deny, ...knobs.toolsDeny])],
-        },
-        model_hint: knobs.model,
-        effort_hint: knobs.effort,
-        max_turns: knobs.maxTurns,
+        ...this.harnessSpecKnobs(contract, knobs, opts.intent),
         env_inheritance: envInheritance(this.config(input.repoRoot)),
         env: roHome.env,
         // Structured output: the orchestrate PLANNER's deliverable IS the

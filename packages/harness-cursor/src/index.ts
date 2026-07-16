@@ -23,6 +23,7 @@ import {
   abortSignalFromSpec,
   HarnessUnavailableError,
   needsScopedHomeKeychainBridge,
+  promptWithInstructions,
   providerScrubEnv,
   runCapture,
   runCliHarness as runCliHarnessDefault,
@@ -732,7 +733,9 @@ async function* runCursor(
   if (spec.model_hint) args.push("--model", spec.model_hint);
   // Resume the thread's native cursor chat as a follow-up turn.
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
-  args.push(spec.prompt);
+  // Cursor has no native system-prompt flag; layer instructions as a delimited
+  // prompt prefix (the engine already withheld them from synthesis/reviewers).
+  args.push(promptWithInstructions(spec));
   const { route, env, key, nativeAuthed, scopedHome } = await resolveCursorAuthRoute(deps, {
     env: spec.env,
     authPreference: spec.auth_preference,

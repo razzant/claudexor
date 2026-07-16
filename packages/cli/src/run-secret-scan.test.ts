@@ -39,6 +39,24 @@ describe("assertCliRunParamsHaveNoInlineSecrets", () => {
     expect((err as { status?: number }).status).toBe(400);
   });
 
+  it("HARD-BLOCKS a secret-like value inside per-run instructions (durable like the prompt; W5/INV-062)", () => {
+    const jwt = "eyJ" + "a".repeat(12) + "." + "b".repeat(12) + "." + "c".repeat(8);
+    let err: unknown;
+    try {
+      assertCliRunParamsHaveNoInlineSecrets({
+        prompt: "do it",
+        instructions: `always send with header: ${jwt}`,
+        mode: "agent",
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("$.instructions");
+    expect((err as { code?: string }).code).toBe("inline_secret_rejected");
+    expect((err as { status?: number }).status).toBe(400);
+  });
+
   it("still accepts prose that merely talks about tokens (patterns are value-shaped) — across modes", () => {
     for (const mode of ["ask", "plan", "audit", "agent", "orchestrate"]) {
       expect(() =>

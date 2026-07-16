@@ -65,6 +65,16 @@ export type ControlReviewerPanelEntry = z.infer<typeof ControlReviewerPanelEntry
 export const ControlRunStartRequest = z
   .object({
     prompt: z.string().default("").describe("The user's prompt for the run."),
+    /** Caller-supplied system-level instructions layered onto every
+     * task-producing lane (primary, candidate, planner, explorer,
+     * orchestrate-planner) — never reviewers, synthesis, or the auth smoke.
+     * Scanned by the inline-secret fence like the prompt (INV-062). */
+    instructions: z
+      .string()
+      .optional()
+      .describe(
+        "System-level instructions layered onto every task-producing lane; delivered natively (append-system-prompt / developer_instructions) or as a delimited prompt prefix.",
+      ),
     /** Immutable daemon resource ids; upload/finalize happens before enqueue. */
     attachments: z
       .array(ResourceAttachmentRef)

@@ -12,6 +12,7 @@ import {
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   HarnessUnavailableError,
+  promptWithInstructions,
   providerScrubEnv,
   runCapture,
   runCliHarness,
@@ -285,7 +286,9 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   if (spec.model_hint) args.push("--model", spec.model_hint);
   // Resume the thread's native opencode session (ses_...) as a follow-up turn.
   if (spec.resume_session_id) args.push("--session", spec.resume_session_id);
-  args.push(spec.prompt);
+  // opencode has no native system-prompt flag; layer instructions as a delimited
+  // prompt prefix (the engine already withheld them from synthesis/reviewers).
+  args.push(promptWithInstructions(spec));
   // Doctor/run symmetry: resolve the key from the same sources doctor credits
   // (spec env first, then process env, then stored secrets) so a doctor "ok"
   // cannot precede a guaranteed-unauthenticated run.

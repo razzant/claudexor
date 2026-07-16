@@ -803,6 +803,11 @@ export function claudeArgsForSpec(
   if (eff) args.push("--effort", eff);
   if (spec.max_turns !== null && spec.max_turns > 0)
     args.push("--max-turns", String(spec.max_turns));
+  // Per-run caller instructions APPEND to (never replace) the default system
+  // prompt, current-invocation-only. The engine withholds them from synthesis,
+  // reviewers, and the auth smoke.
+  if (spec.instructions && spec.instructions.trim())
+    args.push("--append-system-prompt", spec.instructions);
   // Structured output: constrain the FINAL message to the caller's JSON
   // Schema. LIVE-VERIFIED (2.1.165): `--json-schema <inline JSON>` with
   // --output-format stream-json. Passed only when the engine set it (the

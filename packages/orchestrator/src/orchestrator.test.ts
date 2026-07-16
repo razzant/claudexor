@@ -532,6 +532,58 @@ describe("Orchestrator", () => {
     expect(attempt).toContain("network");
   });
 
+  it("delivers per-run instructions to a task-producing candidate lane (W5)", async () => {
+    const repo = await initRepo();
+    const captured: (string | undefined)[] = [];
+    const base = createFakeHarness("fake-implement");
+    // Record what the candidate lane's spec actually carries.
+    const recording: HarnessAdapter = {
+      ...base,
+      async *run(spec) {
+        captured.push(spec.instructions);
+        yield* base.run(spec);
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([["fake-implement", recording]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      instructions: "always add a trailing newline",
+      mode: "agent",
+      harnesses: ["fake-implement"],
+      n: 1,
+    });
+    expect(res.status).not.toBe("failed");
+    // The candidate (task-producing) lane received the caller's instructions;
+    // synthesis (intent === "synthesize") and reviewers build their own specs
+    // and are excluded by harnessSpecKnobs / the review engine.
+    expect(captured).toContain("always add a trailing newline");
+  }, 20000);
+
+  it("omits instructions from a candidate lane when the run declares none (W5 control)", async () => {
+    const repo = await initRepo();
+    const captured: (string | undefined)[] = [];
+    const base = createFakeHarness("fake-implement");
+    const recording: HarnessAdapter = {
+      ...base,
+      async *run(spec) {
+        captured.push(spec.instructions);
+        yield* base.run(spec);
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([["fake-implement", recording]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      mode: "agent",
+      harnesses: ["fake-implement"],
+      n: 1,
+    });
+    expect(captured.every((i) => i === undefined)).toBe(true);
+  }, 20000);
+
   it("plan mode produces a SpecPack without mutating", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

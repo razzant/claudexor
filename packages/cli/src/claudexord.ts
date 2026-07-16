@@ -207,6 +207,7 @@ async function main(): Promise<void> {
             interactions.answer(subRunId, interactionId, answers).status === "delivered",
           repoRoot,
           prompt: String(p.prompt ?? ""),
+          instructions: typeof p.instructions === "string" ? p.instructions : undefined,
           attachments: turnId
             ? (threads.getTurn(turnId)?.attachments ?? [])
             : resources.resolve((p as { attachments?: ResourceAttachmentRef[] }).attachments),

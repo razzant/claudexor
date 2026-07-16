@@ -90,6 +90,10 @@
           "additionalProperties": false,
           "description": "The user's request this run is held to."
         },
+        "instructions": {
+          "type": "string",
+          "description": "Caller-supplied per-run system-level instructions for task-producing lanes."
+        },
         "spec": {
           "type": "object",
           "properties": {
