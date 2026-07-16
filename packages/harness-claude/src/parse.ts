@@ -539,9 +539,7 @@ function claudeRetryCategory(
   | undefined {
   if (raw === undefined || raw === null) return undefined;
   const s = String(raw);
-  return CLAUDE_RETRY_CATEGORIES.has(s)
-    ? (s as ReturnType<typeof claudeRetryCategory>)
-    : "unknown";
+  return CLAUDE_RETRY_CATEGORIES.has(s) ? (s as ReturnType<typeof claudeRetryCategory>) : "unknown";
 }
 
 function sumOrUndef(...values: unknown[]): number | undefined {

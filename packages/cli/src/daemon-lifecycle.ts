@@ -89,7 +89,11 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
   // failure setting it during the grace window still exits nonzero.
   let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   let drainTimer: ReturnType<typeof setTimeout> | null = null;
-  const armExitTimer = (ms: number, reason: string, code?: number): ReturnType<typeof setTimeout> => {
+  const armExitTimer = (
+    ms: number,
+    reason: string,
+    code?: number,
+  ): ReturnType<typeof setTimeout> => {
     const t = setTimeout(() => {
       logLine(deps.logPath, reason);
       forceExit(code ?? Number(process.exitCode ?? 0));
