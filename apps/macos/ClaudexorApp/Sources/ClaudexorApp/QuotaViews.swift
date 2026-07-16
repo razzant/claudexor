@@ -1,20 +1,17 @@
 import SwiftUI
 import ClaudexorKit
 
-private struct QuotaWindowRow: Identifiable {
-    let snapshot: QuotaSnapshot
-    let constraint: QuotaConstraint
-    var id: String { "\(snapshot.id):\(constraint.id)" }
-}
-
+/// Sidebar quota footer (W17, Р15/Квиз-6a): a VERTICAL stack of route groups —
+/// one chip per (harness, credential route) with every primary window preserved
+/// as its own row, the route + freshness + nearest reset on the chip, and an
+/// active cooldown as an overlay badge (never a standalone card). Grouping /
+/// dedupe / expiry semantics live in `QuotaPresentation` (Kit, unit-tested).
 struct QuotaFooterView: View {
     @Environment(AppModel.self) private var model
     @State private var showDetails = false
 
-    private var rows: [QuotaWindowRow] {
-        (model.quotaResponse?.snapshots ?? []).flatMap { snapshot in
-            snapshot.constraints.map { QuotaWindowRow(snapshot: snapshot, constraint: $0) }
-        }
+    private var groups: [QuotaPresentation.Group] {
+        QuotaPresentation.groups(from: model.quotaResponse?.snapshots ?? [])
     }
 
     var body: some View {
@@ -24,7 +21,7 @@ struct QuotaFooterView: View {
                 Label("Quota unavailable offline", systemImage: "wifi.slash")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else if rows.isEmpty {
+            } else if groups.isEmpty {
                 HStack {
                     Label("Quota unknown", systemImage: "gauge.with.dots.needle.0percent")
                         .font(.caption)
@@ -33,14 +30,16 @@ struct QuotaFooterView: View {
                     refreshButton
                 }
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Theme.Spacing.xs) {
-                        ForEach(rows) { row in
-                            Button { showDetails = true } label: { capsule(row) }
-                                .buttonStyle(.plain)
-                                .help("Show all quota windows and provenance")
-                        }
-                        refreshButton
+                HStack {
+                    Text("Quota").font(.caption2).foregroundStyle(.secondary)
+                    Spacer()
+                    refreshButton
+                }
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                    ForEach(groups) { group in
+                        Button { showDetails = true } label: { groupChip(group) }
+                            .buttonStyle(.plain)
+                            .help("Show all quota windows and provenance")
                     }
                 }
             }
@@ -64,24 +63,64 @@ struct QuotaFooterView: View {
         .help("Refresh quota from official provider sources")
     }
 
-    private func capsule(_ row: QuotaWindowRow) -> some View {
-        HStack(spacing: Theme.Spacing.xxs) {
-            Circle()
-                .fill(freshnessColor(row.snapshot.freshness))
-                .frame(width: 6, height: 6)
-            Text(row.snapshot.subject.harness).fontWeight(.medium)
-            Text(row.constraint.label).foregroundStyle(.secondary)
-            Text(usageText(row.constraint.usedRatio)).monospacedDigit()
+    /// One route group: harness + humanized route + freshness dot + nearest
+    /// reset on the header line; every usage window keeps its own row.
+    private func groupChip(_ group: QuotaPresentation.Group) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            HStack(spacing: Theme.Spacing.xxs) {
+                Circle()
+                    .fill(freshnessColor(group.freshness))
+                    .frame(width: 6, height: 6)
+                Text(group.harness).fontWeight(.medium)
+                Text(group.routeLabel).foregroundStyle(.secondary)
+                Spacer()
+                if let reset = formattedDate(group.nextResetAt) {
+                    Text("resets \(reset)").foregroundStyle(.secondary)
+                }
+            }
+            ForEach(group.windows) { window in
+                HStack(spacing: Theme.Spacing.xs) {
+                    Text(window.label).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(usageText(window.usedRatio)).monospacedDigit()
+                }
+            }
+            if group.windows.isEmpty {
+                Text("No usage windows reported")
+                    .foregroundStyle(.secondary)
+            }
         }
         .font(.caption2)
         .padding(.horizontal, Theme.Spacing.sm)
         .padding(.vertical, Theme.Spacing.xs)
-        .background(Theme.surfaceRaised, in: Capsule())
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        // Cooldown is an OVERLAY BADGE on the group chip — never its own card;
+        // expired cooldowns are already dropped by the projection.
+        .overlay(alignment: .topTrailing) {
+            if let cooldown = formattedDate(group.cooldownUntil) {
+                Label("Cooldown · \(cooldown)", systemImage: "hourglass")
+                    .font(.caption2)
+                    .padding(.horizontal, Theme.Spacing.xs)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.orange)
+                    .offset(x: -Theme.Spacing.xxs, y: -Theme.Spacing.xxs)
+                    .help("This route is cooling down until \(cooldown); other windows stay visible.")
+            }
+        }
     }
 }
 
+/// The detail popover mirrors the SAME grouped projection (one section per
+/// route group — a cooldown never duplicates the subject into a second card),
+/// plus per-snapshot provenance the footer has no room for.
 struct QuotaDetailView: View {
     @Environment(AppModel.self) private var model
+
+    private var groups: [QuotaPresentation.Group] {
+        QuotaPresentation.groups(from: model.quotaResponse?.snapshots ?? [])
+    }
 
     var body: some View {
         ScrollView {
@@ -96,9 +135,9 @@ struct QuotaDetailView: View {
                 }
                 if model.health != .connected {
                     ContentUnavailableView("Engine offline", systemImage: "wifi.slash")
-                } else if let snapshots = model.quotaResponse?.snapshots, !snapshots.isEmpty {
-                    ForEach(snapshots) { snapshot in
-                        snapshotSection(snapshot)
+                } else if !groups.isEmpty {
+                    ForEach(groups) { group in
+                        groupSection(group)
                     }
                 } else {
                     ContentUnavailableView(
@@ -112,44 +151,49 @@ struct QuotaDetailView: View {
         }
     }
 
-    private func snapshotSection(_ snapshot: QuotaSnapshot) -> some View {
+    private func groupSection(_ group: QuotaPresentation.Group) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             HStack {
-                Text(snapshot.subject.harness).font(.headline)
-                if let plan = snapshot.subject.planLabel { Text(plan).foregroundStyle(.secondary) }
+                Text(group.harness).font(.headline)
+                Text(group.routeLabel).foregroundStyle(.secondary)
+                if let plan = group.planLabel { Text(plan).foregroundStyle(.secondary) }
                 Spacer()
-                Text(snapshot.freshness.capitalized)
+                Text(group.freshness.capitalized)
                     .font(.caption)
-                    .foregroundStyle(freshnessColor(snapshot.freshness))
+                    .foregroundStyle(freshnessColor(group.freshness))
             }
-            Text("\(snapshot.subject.credentialRoute.replacingOccurrences(of: "_", with: " ")) · \(snapshot.source.replacingOccurrences(of: "_", with: " "))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            ForEach(snapshot.constraints) { constraint in
+            if let cooldown = formattedDate(group.cooldownUntil) {
+                Label("Cooling down until \(cooldown)", systemImage: "hourglass")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            ForEach(group.windows) { window in
                 VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                     HStack {
-                        Text(constraint.label)
+                        Text(window.label)
                         Spacer()
-                        Text(usageText(constraint.usedRatio)).monospacedDigit()
+                        Text(usageText(window.usedRatio)).monospacedDigit()
                     }
-                    if let ratio = constraint.usedRatio {
+                    if let ratio = window.usedRatio {
                         ProgressView(value: ratio, total: 1).tint(ratio >= 0.9 ? .orange : Theme.accent)
                     } else {
                         Text("Provider did not report usage for this window.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
-                    HStack {
-                        if let reset = formattedDate(constraint.resetsAt) { Text("Resets \(reset)") }
-                        if let cooldown = formattedDate(constraint.cooldownUntil) { Text("Cooldown until \(cooldown)") }
+                    if let reset = formattedDate(window.resetsAt) {
+                        Text("Resets \(reset)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
                 }
                 .padding(Theme.Spacing.sm)
                 .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
             }
-            Text("Observed \(formattedDate(snapshot.observedAt) ?? snapshot.observedAt)")
-                .font(.caption2).foregroundStyle(.secondary)
+            ForEach(group.sources) { source in
+                Text("\(source.source.replacingOccurrences(of: "_", with: " ")) · observed \(formattedDate(source.observedAt) ?? source.observedAt)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

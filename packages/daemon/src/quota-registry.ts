@@ -10,6 +10,10 @@ import {
 const UPSERTED = "quota.snapshot.upserted";
 const POLL_BACKOFF_MS = 60_000;
 const MAX_POLL_BACKOFF_MS = 15 * 60_000;
+/** Snapshots older than this are pruned from every projection read (W17):
+ * a day-old observation is no longer quota truth — surfacing it as a "stale"
+ * row forever just clutters the footer with dead subjects. */
+const MAX_SNAPSHOT_AGE_MS = 24 * 60 * 60_000;
 
 export type QuotaRefresher = () => Promise<QuotaSnapshot[]>;
 
@@ -31,11 +35,20 @@ export class QuotaRegistry {
   }
 
   read() {
-    const now = this.now().getTime();
     return ControlQuotaResponse.parse({
-      snapshots: [...this.snapshots.values()].map((snapshot) => staleAt(snapshot, now)),
+      snapshots: this.activeSnapshots(this.now().getTime()),
       refreshed_at: null,
     });
+  }
+
+  /** Freshness-annotated snapshots with expired (>24h) observations pruned. */
+  private activeSnapshots(now: number): QuotaSnapshot[] {
+    return [...this.snapshots.values()]
+      .filter((snapshot) => {
+        const observed = Date.parse(snapshot.observed_at);
+        return Number.isFinite(observed) && now - observed <= MAX_SNAPSHOT_AGE_MS;
+      })
+      .map((snapshot) => staleAt(snapshot, now));
   }
 
   async refresh() {
@@ -62,9 +75,7 @@ export class QuotaRegistry {
       });
     }
     return ControlQuotaResponse.parse({
-      snapshots: [...this.snapshots.values()].map((snapshot) =>
-        staleAt(snapshot, this.now().getTime()),
-      ),
+      snapshots: this.activeSnapshots(this.now().getTime()),
       refreshed_at: this.now().toISOString(),
     });
   }
@@ -72,7 +83,7 @@ export class QuotaRegistry {
   /** Background official-source refresh for empty/stale projections with bounded backoff. */
   async pollStale(): Promise<boolean> {
     const now = this.now().getTime();
-    const snapshots = [...this.snapshots.values()].map((snapshot) => staleAt(snapshot, now));
+    const snapshots = this.activeSnapshots(now);
     if (snapshots.length > 0 && snapshots.every((snapshot) => snapshot.freshness === "fresh"))
       return false;
     if (now < this.pollNotBefore) return false;

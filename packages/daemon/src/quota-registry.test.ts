@@ -63,7 +63,8 @@ describe("QuotaRegistry", () => {
     slot.current().ingest("claude", {
       type: "thinking",
       session_id: "session-claude",
-      ts: "2026-07-15T12:00:00.000Z",
+      // Recent: observations older than 24h are pruned from reads (W17).
+      ts: new Date().toISOString(),
       text: "api_retry",
       payload: { api_retry: true },
       credential_route: "managed_api_key",
@@ -98,7 +99,9 @@ describe("QuotaRegistry", () => {
         subject_id: null,
       },
       source: "codex_app_server",
-      observed_at: "2026-07-15T10:00:00.000Z",
+      // Old enough to be STALE (>5min, reset passed) but well inside the 24h
+      // prune horizon — the row must be kept and honestly marked, not hidden.
+      observed_at: new Date(Date.now() - 10 * 60_000).toISOString(),
       freshness: "fresh",
       constraints: [
         {
@@ -106,7 +109,7 @@ describe("QuotaRegistry", () => {
           label: "5 hour",
           used_ratio: 0.42,
           window_seconds: 18_000,
-          resets_at: "2026-07-15T11:00:00.000Z",
+          resets_at: new Date(Date.now() - 5 * 60_000).toISOString(),
           cooldown_until: null,
         },
         {
@@ -202,7 +205,7 @@ describe("QuotaRegistry", () => {
             },
           ],
           source: "claude_statusline",
-          observed_at: "2026-07-15T12:00:00.000Z",
+          observed_at: new Date().toISOString(),
           freshness: "fresh",
         },
       ],
@@ -212,6 +215,45 @@ describe("QuotaRegistry", () => {
       snapshots: [expect.objectContaining({ source: "claude_statusline" })],
     });
     expect(registry.read().snapshots[0]?.subject.harness).toBe("claude");
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("prunes snapshots older than 24h from every projection read (W17)", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-prune-")));
+    const journal = new DurableJournal({ rootDir: root, partition: "global" });
+    let nowIso = "2026-07-16T12:00:00.000Z";
+    const registry = new QuotaRegistry(journal, [], () => new Date(nowIso));
+    const snapshot = (observedAt: string, harness: string) => ({
+      subject: {
+        harness,
+        credential_route: "vendor_native" as const,
+        plan_label: null,
+        subject_id: null,
+      },
+      constraints: [
+        {
+          id: "primary",
+          label: "5 hour",
+          used_ratio: 0.4,
+          window_seconds: 18000,
+          resets_at: null,
+          cooldown_until: null,
+        },
+      ],
+      source: "claude_statusline" as const,
+      observed_at: observedAt,
+      freshness: "fresh" as const,
+    });
+    // A day-old observation is pruned; a merely stale one is kept and marked.
+    registry.upsert(snapshot("2026-07-15T11:00:00.000Z", "claude"));
+    registry.upsert(snapshot("2026-07-16T11:00:00.000Z", "codex"));
+    expect(registry.read().snapshots.map((item) => item.subject.harness)).toEqual(["codex"]);
+    expect(registry.read().snapshots[0]?.freshness).toBe("stale");
+    // Time passing prunes the survivor too — nothing dead lingers in the footer.
+    nowIso = "2026-07-17T12:00:00.000Z";
+    expect(registry.read().snapshots).toEqual([]);
 
     journal.close();
     rmSync(root, { recursive: true, force: true });
