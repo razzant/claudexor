@@ -1003,6 +1003,74 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("POST /runs + threadId runs in the THREAD's project, not the caller's scope (W13/G6)", async () => {
+    const { daemon, record } = fakeDaemon();
+    const threadRepo = mkdtempSync(join(tmpdir(), "claudexor-thread-proj-"));
+    const otherRepo = mkdtempSync(join(tmpdir(), "claudexor-other-proj-"));
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-x",
+      created_at: now,
+      updated_at: now,
+      // The thread is anchored to threadRepo.
+      repo: { root: threadRepo, base_ref: "HEAD" },
+      title: "anchored thread",
+      mode: "agent",
+      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+      auth_preference: "auto",
+      primary_harness: null,
+      routingGoal: "auto",
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params: unknown, options) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params, options);
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
+      createThreadTurn: async (id, prompt) => ({
+        id: "tn-x",
+        thread_id: id,
+        run_id: null,
+        parent_run_id: null,
+        plan_run_id: null,
+        kind: "followup",
+        prompt,
+        created_at: now,
+      }),
+    };
+    await withDaemonServer(
+      wrapped,
+      async (base) => {
+        // The caller submits a run for th-x but with a MISMATCHED scope (otherRepo,
+        // e.g. the CLI's cwd). The server must anchor to the thread's project.
+        const res = await apiFetch(`${base}/runs`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "idempotency-key": "idem-g6" },
+          body: JSON.stringify({
+            prompt: "continue",
+            threadId: "th-x",
+            scope: { kind: "project", root: otherRepo },
+          }),
+        });
+        expect(res.status).toBe(200);
+        expect(record).toBeDefined();
+        // The enqueued run runs in the THREAD's project, never the caller's.
+        expect(enqueued?.["scope"]).toEqual({ kind: "project", root: threadRepo, context: "auto" });
+        expect(enqueued?.["turnId"]).toBe("tn-x");
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("threads: a refused enqueue persists the error on the turn; the detail projection renders enqueueError", async () => {
     const { daemon } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-refuse-"));

@@ -29,6 +29,7 @@ import {
   RoutingGoal,
   type ModeKind,
   type ProviderFamily,
+  ControlThreadListResponse,
   RunTelemetry,
   StructuredOutputConformance,
   TaskContract,
@@ -44,7 +45,7 @@ import {
   requiredStringFlagError,
   type ParsedArgs,
 } from "./args.js";
-import { print, printJson, printUsageError, statusGlyph } from "./cli-io.js";
+import { print, printJson, printJsonLine, printUsageError, statusGlyph } from "./cli-io.js";
 import {
   KNOWN_FLAGS,
   VALUE_FLAGS,
@@ -619,10 +620,12 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         headers: { Authorization: `Bearer ${addr.token}` },
       });
       if (!res.ok) throw new Error(`GET /threads failed: ${res.status}`);
-      const list = (await res.json()) as { threads?: { id: string; updated_at: string }[] };
-      const newest = [...(list.threads ?? [])].sort((a, b) =>
-        b.updated_at.localeCompare(a.updated_at),
-      )[0];
+      // Parse through the typed DTO — the field is camelCase `updatedAt`, and a
+      // hand-rolled `updated_at` read silently sorts undefined and throws.
+      const list = ControlThreadListResponse.parse(await res.json());
+      const newest = [...list.threads]
+        .filter((t) => t.state === "active")
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       if (!newest) {
         const message = "claudexor: --resume found no threads to continue";
         if (json || jsonStream) printJson({ ok: false, exitCode: 1, error: message });
@@ -705,7 +708,9 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // its exactly-one-object contract untouched.
       const started = await enqueueAndAwait(client, addr, body, { waitForTerminal: false });
       if (!started.runId) {
-        printJson({
+        // Even the early-failure path stays valid NDJSON (compact, one line).
+        printJsonLine({
+          frame: "run.terminal",
           runId: "",
           runDir: started.runDir,
           status: runStatusForCli(started.status),
@@ -715,13 +720,15 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         });
         return exitCodeForState(started.status);
       }
-      printJson({
+      printJsonLine({
         frame: "run.started",
         runId: started.runId,
         runDir: started.runDir,
         jobId: started.jobId,
         mode: p.mode,
       });
+      // Per-event lines: followRun(json=true) already writes one COMPACT object
+      // per event via print(JSON.stringify(ev)).
       await followRun(started.runId, true);
       const final = started.jobId ? await client.status(started.jobId) : null;
       const status = final?.state ?? started.status;
@@ -734,7 +741,8 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       };
       const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
       const applyEligibility = await fetchApplyEligibility(addr, started.runId);
-      printJson({
+      printJsonLine({
+        frame: "run.terminal",
         runId: out.runId,
         runDir: out.runDir,
         status: out.status,

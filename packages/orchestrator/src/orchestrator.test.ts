@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { repoHash } from "@claudexor/config";
@@ -3955,6 +3962,54 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("reason: postdiff_only");
   });
 
+  it("blocks a rename OUT of a denied path — the deletion side is not a bypass (W7/G1)", async () => {
+    const repo = await initRepo();
+    // Seed a committed file inside the soon-to-be-denied directory.
+    mkdirSync(join(repo, "secrets"), { recursive: true });
+    writeFileSync(join(repo, "secrets", "key.txt"), "old\n");
+    await runCapture("git", ["-C", repo, "add", "secrets/key.txt"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "seed",
+    ]);
+    // The adapter renames the denied file OUT to an allowed path. stats.paths
+    // would carry only the new (allowed) side; the deny gate must still catch
+    // the denied SOURCE via existingPaths.
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("rename-out"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        renameSync(join(spec.cwd, "secrets", "key.txt"), join(spec.cwd, "public.txt"));
+        yield { type: "message", session_id: spec.session_id, ts, text: "moved it" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "reorganize",
+      mode: "agent",
+      harnesses: [adapter.id],
+      tests: [shellGate("true")],
+      n: 1,
+      denyPaths: ["secrets/**"],
+    });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("secrets/key.txt");
+    expect(review).toContain("severity: BLOCK");
+  });
+
   it("refuses denyPaths on an in-place run at preflight (W7)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
@@ -4091,8 +4146,64 @@ describe("Orchestrator", () => {
     const receipt = readFileSync(join(res.runDir, "final", "structured_output.yaml"), "utf8");
     expect(receipt).toContain("status: failed");
     expect(receipt).toContain("/verdict");
-    // Parsed-but-invalid JSON is still materialized for the embedder to inspect.
-    expect(existsSync(join(res.runDir, "final", "output.json"))).toBe(true);
+    // G4: a non-conformant answer is NEVER the primary output.json — it goes to
+    // the diagnostic sidecar so a consumer never receives known-invalid data.
+    expect(existsSync(join(res.runDir, "final", "output.json"))).toBe(false);
+    expect(existsSync(join(res.runDir, "final", "output.invalid.json"))).toBe(true);
+  });
+
+  it("validates the ORIGINAL schema, not the strictified transport form (W8/G3)", async () => {
+    const repo = await initRepo();
+    const makeAdapter = (answer: string): HarnessAdapter => ({
+      id: "schema-capable",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "schema-capable",
+          display_name: "schema-capable",
+          kind: "local_cli",
+          provider_family: "local",
+          capabilities: { implement: true, json_schema_output: true },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "schema-capable",
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: answer };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    });
+    // `note` is OPTIONAL string in the CALLER's schema. Strictify would make it
+    // `string|null` required, so `{"note":null}` would falsely PASS the vendor
+    // form. Validated against the ORIGINAL, null is not a string → failed.
+    const schema = {
+      type: "object",
+      properties: { note: { type: "string" } },
+      required: [],
+    };
+    const bad = await new Orchestrator({
+      registry: new Map([["schema-capable", makeAdapter(JSON.stringify({ note: null }))]]),
+      reviewers: [],
+    }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["schema-capable"], n: 1, outputSchema: schema });
+    expect(
+      readFileSync(join(bad.runDir, "final", "structured_output.yaml"), "utf8"),
+    ).toContain("status: failed");
+    // The same schema with the field ABSENT (its optionality) is conformant.
+    const ok = await new Orchestrator({
+      registry: new Map([["schema-capable", makeAdapter(JSON.stringify({}))]]),
+      reviewers: [],
+    }).run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["schema-capable"], n: 1, outputSchema: schema });
+    expect(
+      readFileSync(join(ok.runDir, "final", "structured_output.yaml"), "utf8"),
+    ).toContain("status: passed");
+    expect(existsSync(join(ok.runDir, "final", "output.json"))).toBe(true);
   });
 
   it("refuses outputSchema at preflight when a selected lane cannot constrain natively (W8)", async () => {

@@ -235,9 +235,13 @@ export const ControlRunStartRequest = z
       .number()
       .int()
       .positive()
+      // 7 days. Bounded so `maxSeconds * 1000` never exceeds setTimeout's 32-bit
+      // ms ceiling (~24.8 days), where an over-large delay silently wraps to 1ms
+      // and cancels the run almost immediately.
+      .max(604_800)
       .optional()
       .describe(
-        "Hard wall-clock deadline for the whole run (seconds, from scheduler start); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept.",
+        "Hard wall-clock deadline for the whole run (seconds, from scheduler start, max 7 days); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept.",
       ),
     /** Per-run globs no candidate may touch at all (create/modify/delete).
      * Envelope/isolated runs only: enforced by the engine's authoritative

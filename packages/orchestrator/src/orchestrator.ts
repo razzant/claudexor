@@ -53,6 +53,7 @@ import {
   isBlocking,
   orchestratePlanJsonSchema,
   normalizeUserOutputSchema,
+  strictifyOutputSchema,
   deriveAuthRouteReason,
   estimateEffectiveAuthRoute,
   knownModelIdsForRoute,
@@ -75,7 +76,7 @@ import {
   guardAnnouncedRun,
   writeFailure,
 } from "./runTerminals.js";
-import { finalizeStructuredOutput } from "./structuredOutput.js";
+import { assertOutputSchemaCompiles, finalizeStructuredOutput } from "./structuredOutput.js";
 import {
   transientRetryDelayMs,
   promptWithProtectedPathConstraint,
@@ -555,11 +556,18 @@ export class Orchestrator {
     const resolved = this.resolveRunInput(input);
     // INV-062 at the ENGINE boundary: every surface fences prompts already,
     // but a direct embedder (or the daemon-less local REPL fallback) reaches
-    // this entry without one. Prompts AND per-run instructions are durable
-    // artifacts (both land in the TaskContract) — the hard block applies here
-    // too, so no in-process path can ever bypass it.
+    // this entry without one. Prompts, per-run instructions, AND outputSchema
+    // are durable artifacts (all land in the TaskContract) — the hard block
+    // applies here too, so no in-process path can ever bypass it. outputSchema
+    // rides the schema-aware branch: its property NAMES are field names (a
+    // `token` field is legitimate), but string VALUES (const/default/enum) are
+    // scanned for real secrets, matching the HTTP boundary exactly.
     assertNoInlineSecretValues(
-      { prompt: resolved.prompt, instructions: resolved.instructions },
+      {
+        prompt: resolved.prompt,
+        instructions: resolved.instructions,
+        outputSchema: resolved.outputSchema ?? undefined,
+      },
       "$",
       "run input",
     );
@@ -607,7 +615,13 @@ export class Orchestrator {
           "outputSchema is not supported with convergence flags (--until-clean/--attempts): convergence delivers a gated patch, not a structured answer; drop the schema or the convergence flags",
         );
       }
+      // Shape-refuse unsupported schemas, then PROVE it compiles under the same
+      // ajv the engine validator uses — a malformed schema is a preflight
+      // refusal here (before any run dir), never a mid-run validator crash. The
+      // contract keeps the ORIGINAL (conformance authority); strictify is a
+      // transport-only transform applied per-lane in harnessSpecKnobs.
       resolved.outputSchema = normalizeUserOutputSchema(resolved.outputSchema);
+      assertOutputSchemaCompiles(resolved.outputSchema);
     }
     // P1: a versioned `mandatory_files` contract is enforced UNIFORMLY here, for
     // every mode, so the same repo state can't pass `run`/`ask` while failing
@@ -1198,12 +1212,18 @@ export class Orchestrator {
           `outputSchema is mandatory but selected lane(s) cannot constrain output natively: ${[...new Set(incapable.map((lane) => lane.adapter.id))].join(", ")} (manifest capabilities.json_schema_output=false); choose schema-capable harnesses or drop the schema`,
         );
       }
+      // NOTE (DT2.1-16): the daemon ALWAYS arms an interaction channel, so an
+      // interactive-capable lane (claude) is refused for outputSchema on every
+      // daemon/CLI run today — the --json-schema x stream-json interactive combo
+      // is not yet live-verified. Structured-output runs therefore route through
+      // a non-interactive lane (codex). The message names that reality instead
+      // of pointing at a channel a daemon caller cannot turn off.
       const interactive = Boolean(input.onInteraction)
         ? out.filter((lane) => lane.supportsInteractive)
         : [];
       if (interactive.length > 0) {
         throw new HarnessUnavailableError(
-          `outputSchema cannot ride the interactive transport yet (unverified vendor combination) for: ${[...new Set(interactive.map((lane) => lane.adapter.id))].join(", ")}; run without an interaction channel or drop the schema`,
+          `outputSchema is not yet available on interactive-transport lane(s): ${[...new Set(interactive.map((lane) => lane.adapter.id))].join(", ")} (the --json-schema x stream-json combination is unverified). Route structured-output runs through a non-interactive schema-capable harness (e.g. codex), or drop the schema`,
         );
       }
     }
@@ -1588,9 +1608,11 @@ export class Orchestrator {
       ...(intent === "synthesize" ? {} : { instructions: contract.instructions }),
       // The user's answer contract rides every answer-producing lane INCLUDING
       // synthesis (its answer can become the final one); the orchestrate
-      // planner owns its own plan schema instead (set at its spec site).
+      // planner owns its own plan schema instead (set at its spec site). The
+      // adapter gets the vendor-STRICT transport form; the engine validator
+      // keeps the ORIGINAL contract as the conformance authority.
       ...(intent !== "orchestrate" && contract.output_schema
-        ? { output_schema: contract.output_schema }
+        ? { output_schema: strictifyOutputSchema(contract.output_schema) }
         : {}),
     };
   }
@@ -3366,11 +3388,22 @@ export class Orchestrator {
           records[0];
         const requestedModel = disclosing?.requested_model ?? null;
         const observedModel = disclosing?.observed_model ?? null;
+        // The requested route is the RESOLVED per-harness preference of the
+        // disclosing lane (run-level scalar → per-harness config → global),
+        // not the bare run-level scalar — otherwise a configured
+        // harnesses.<id>.auth_preference=api_key reads as requested=auto.
+        const requestedRoute = disclosing?.harness_id
+          ? this.authPreferenceForHarness(
+              contract.repo.root,
+              disclosing.harness_id,
+              contract.auth_preference,
+            )
+          : contract.auth_preference;
         return {
-          requested: contract.auth_preference,
+          requested: requestedRoute,
           effective: disclosing?.auth_mode ?? null,
           source: disclosing?.auth_source ?? null,
-          reason: deriveAuthRouteReason(contract.auth_preference, disclosing?.auth_mode ?? null),
+          reason: deriveAuthRouteReason(requestedRoute, disclosing?.auth_mode ?? null),
           harness_id: disclosing?.harness_id ?? null,
           attempt_id: disclosing?.attempt_id ?? null,
           // Typed mismatch, only when BOTH sides are known and differ.
@@ -3404,10 +3437,14 @@ export class Orchestrator {
     risk: { level: string; reasons: string[]; changedFiles: number };
   } {
     const stats = diffStats(run.diff);
-    // deny_paths: ANY touch (create/modify/delete) of a denied glob is a
-    // violation — stricter than protected paths, which gate only tampering
-    // with existing files. Same matcher as every other path policy (INV-122).
-    const denyViolation = requireHuman(stats.paths, denyPaths);
+    // deny_paths: ANY touch of a denied glob is a violation — create, modify,
+    // delete, OR either end of a rename. stats.paths carries only the new side,
+    // so a rename OUT of a denied dir (git mv denied/x allowed/x) would slip
+    // past a paths-only check; stats.existingPaths carries the old side of every
+    // rename/modify, so the union is the true touched set. Same matcher as every
+    // other path policy (INV-122).
+    const touchedPaths = [...new Set([...stats.paths, ...stats.existingPaths])];
+    const denyViolation = requireHuman(touchedPaths, denyPaths);
     const approvalPatterns = protectedPathApprovals.map((approval) => approval.path);
     const unapprovedExistingAutoProtectedPaths = stats.existingPaths.filter(
       (path) => !matchAny(path, approvalPatterns),
@@ -4872,6 +4909,10 @@ export class Orchestrator {
             knobs.webPolicy === "cached" ||
             knobs.webPolicy === "live",
           effectiveWeb,
+          [],
+          // Requested-model capture: a plan lane silently downgraded to another
+          // model surfaces the mismatch in its route receipt, just like agent.
+          knobs.model,
         );
         const onAbort = () => {
           void adapter.cancel?.(spec.session_id)?.catch(() => {});
@@ -5697,6 +5738,10 @@ export class Orchestrator {
           knobs.webPolicy === "cached" ||
           knobs.webPolicy === "live",
         effectiveWeb,
+        [],
+        // Requested-model capture so ask/audit route receipts detect a silent
+        // model downgrade (typed model_mismatch), not just agent runs.
+        knobs.model,
       );
       const retryPolicy = transientRetryPolicy(this.config(input.repoRoot));
       let activeSessionId = spec.session_id;

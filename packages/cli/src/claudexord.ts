@@ -186,7 +186,11 @@ async function main(): Promise<void> {
         // deadline that aborts with a typed STRING reason so the terminal is
         // `cancelled` + wall_clock_exceeded rather than a bare user cancel.
         const maxSeconds =
-          typeof p.maxSeconds === "number" && p.maxSeconds > 0 ? p.maxSeconds : null;
+          typeof p.maxSeconds === "number" && p.maxSeconds > 0
+            ? // Defense in depth against a setTimeout 32-bit-ms overflow (the
+              // schema already caps at 7 days for the control-API path).
+              Math.min(p.maxSeconds, 604_800)
+            : null;
         let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
         let runSignal: AbortSignal | undefined = ctx.signal;
         if (maxSeconds !== null) {

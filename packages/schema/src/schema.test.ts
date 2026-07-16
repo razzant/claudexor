@@ -228,6 +228,16 @@ describe("Control API schemas", () => {
     expect(() => GlobalConfig.parse({ default_portfolio: "daily-rich" })).toThrow();
   });
 
+  it("bounds maxSeconds to avoid a setTimeout 32-bit-ms overflow (W6/G10)", () => {
+    expect(ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 604_800 }).maxSeconds).toBe(
+      604_800,
+    );
+    // > 7 days is rejected — a larger delay would wrap setTimeout to ~1ms and
+    // cancel the run almost immediately.
+    expect(() => ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 604_801 })).toThrow();
+    expect(() => ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 3_000_000_000 })).toThrow();
+  });
+
   it("accepts reviewer effort overrides on run start requests", () => {
     const req = ControlRunStartRequest.parse({
       prompt: "review it",

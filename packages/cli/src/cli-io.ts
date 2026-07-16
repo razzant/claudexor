@@ -11,6 +11,12 @@ export function printJson(value: unknown): void {
   process.stdout.write(JSON.stringify(value, null, 2) + "\n");
 }
 
+/** One COMPACT JSON object per line — the NDJSON contract (--json-stream). A
+ *  pretty multi-line object would break `for line in stream: json.loads(line)`. */
+export function printJsonLine(value: unknown): void {
+  process.stdout.write(JSON.stringify(value) + "\n");
+}
+
 export function printUsageError(json: boolean, error: string): number {
   if (json) printJson({ ok: false, exitCode: 2, error });
   else process.stderr.write(`${error}\n`);

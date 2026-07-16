@@ -301,14 +301,19 @@ export function orchestratePlanJsonSchema(): Record<string, unknown> {
 export class UnsupportedOutputSchemaError extends Error {}
 
 /**
- * Normalize a CALLER-supplied per-run output schema for the same native
- * structured-output routes the orchestrate planner uses (one owner: the same
- * strictify transform). Refuses — typed, at the boundary — the shapes those
- * routes are LIVE-VERIFIED to reject rather than let a vendor 400 surface
- * mid-run: the root must be an inline `type: "object"` (claude materializes
- * --json-schema as a StructuredOutput tool whose input_schema needs a
- * top-level type; a $ref-wrapped root 400s), and `$ref` is refused anywhere
- * (no ref resolution on the tool-input path).
+ * Validate a CALLER-supplied per-run output schema and return it UNCHANGED —
+ * it stays the CONFORMANCE AUTHORITY (the engine validates the final answer
+ * against exactly what the caller asked for). The vendor transport separately
+ * strictifies via `strictifyOutputSchema`; NEVER validate the answer against
+ * the strictified form — strictify turns an optional string into a required
+ * `string|null`, so `{"field":null}` would falsely pass a schema that forbids it.
+ *
+ * Refuses — typed, at the boundary — the shapes the native routes are
+ * LIVE-VERIFIED to reject rather than let a vendor 400 surface mid-run: the
+ * root must be an inline `type: "object"` (claude materializes --json-schema as
+ * a StructuredOutput tool whose input_schema needs a top-level type; a
+ * $ref-wrapped root 400s), `$ref` is refused anywhere, and `format` is refused
+ * while the pinned claude (<2.1.205) silently drops a format-bearing schema.
  */
 export function normalizeUserOutputSchema(
   schema: Record<string, unknown>,
@@ -330,10 +335,6 @@ export function normalizeUserOutputSchema(
       "outputSchema must not contain $ref (native structured-output routes do not resolve references); inline the referenced shapes",
     );
   }
-  // `format` is refused while the pinned claude CLI is < 2.1.205: those
-  // versions treat any schema containing `format` as invalid and SILENTLY run
-  // unconstrained (doc-verified) — under a mandatory contract that silent
-  // degradation is exactly what the boundary must refuse. Lift when repinned.
   const hasFormat = (value: unknown): boolean => {
     if (Array.isArray(value)) return value.some(hasFormat);
     if (!value || typeof value !== "object") return false;
@@ -346,6 +347,13 @@ export function normalizeUserOutputSchema(
       "outputSchema must not use `format`: the pinned claude CLI (<2.1.205) silently drops the whole schema when format is present; express the constraint with pattern/enum instead",
     );
   }
+  return schema;
+}
+
+/** Vendor-strict transport form of a validated output schema (all keys
+ *  required, additionalProperties:false, optionals nullable). Used ONLY to
+ *  constrain the harness — NEVER to judge conformance (see normalizeUserOutputSchema). */
+export function strictifyOutputSchema(schema: Record<string, unknown>): Record<string, unknown> {
   return strictifyForStructuredOutput(schema);
 }
 

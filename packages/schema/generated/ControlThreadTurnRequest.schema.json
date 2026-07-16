@@ -371,7 +371,8 @@
         "maxSeconds": {
           "type": "integer",
           "exclusiveMinimum": 0,
-          "description": "Hard wall-clock deadline for the whole run (seconds, from scheduler start); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept."
+          "maximum": 604800,
+          "description": "Hard wall-clock deadline for the whole run (seconds, from scheduler start, max 7 days); on expiry the run is cancelled with reason wall_clock_exceeded and partial artifacts are kept."
         },
         "denyPaths": {
           "type": "array",

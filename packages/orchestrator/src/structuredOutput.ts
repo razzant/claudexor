@@ -16,17 +16,34 @@ export interface StructuredOutputVerdict {
   reason: string | null;
 }
 
+/** Preflight: prove a caller schema COMPILES under the same ajv the validator
+ *  uses, so a malformed schema is refused before any run dir exists instead of
+ *  crashing the validator mid-run. Throws on a schema ajv cannot build. */
+export function assertOutputSchemaCompiles(schema: Record<string, unknown>): void {
+  const ajv = new Ajv({ allErrors: true, strict: false });
+  try {
+    ajv.compile(schema);
+  } catch (err) {
+    throw new Error(
+      `outputSchema is not a compilable JSON Schema: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 /**
  * The ONE engine validator for a run's structured-output contract (Квиз-6a).
- * Every capable lane was constrained natively at preflight; this is the single
- * authority that turns the winner's answer text into final/output.json plus a
+ * The `schema` here is the CALLER's ORIGINAL contract (the conformance
+ * authority) — NEVER the vendor-strictified transport form, which would falsely
+ * pass e.g. `{"field":null}` for an optional string. Every capable lane was
+ * constrained natively at preflight; this turns the winner's answer text into a
  * typed conformance receipt (final/structured_output.yaml). A non-conformant
  * answer is a FAILED receipt, never a failed run — the run stays
  * success-with-warnings and the embedder retries on the receipt.
  *
- * Parsed-but-non-conformant JSON is still materialized to final/output.json
- * (state diagnostic) so the embedder can inspect what the model actually
- * produced; an unparsable answer materializes nothing (output_path null).
+ * Only a CONFORMANT answer becomes final/output.json (the primary
+ * structured_output artifact must never surface known-invalid data). A
+ * parsed-but-non-conformant answer is preserved under final/output.invalid.json
+ * (diagnostic) for the embedder to inspect; an unparsable answer writes nothing.
  */
 export function finalizeStructuredOutput(opts: {
   store: ArtifactStore;
@@ -52,13 +69,10 @@ export function finalizeStructuredOutput(opts: {
     }
   }
   let status: "passed" | "failed" = "failed";
-  let outputPath: string | null = null;
   if (parsed) {
-    opts.store.writeText(join(opts.finalDir, "output.json"), JSON.stringify(value, null, 2) + "\n");
-    outputPath = "final/output.json";
-    // strict:false — the boundary already normalized the schema for the
-    // vendor routes; the validator must accept exactly that dialect rather
-    // than re-litigate meta-schema strictness.
+    // strict:false — accept the JSON Schema dialect as-authored; do not
+    // re-litigate meta-schema strictness (the boundary already proved it
+    // compiles). This validates the ORIGINAL caller schema.
     const ajv = new Ajv({ allErrors: true, strict: false });
     try {
       const validate = ajv.compile(opts.schema);
@@ -74,6 +88,19 @@ export function finalizeStructuredOutput(opts: {
     } catch (err) {
       reason = `output schema failed to compile: ${err instanceof Error ? err.message : String(err)}`;
     }
+  }
+  // Conformant → the canonical output.json (a valid primary artifact).
+  // Parsed-but-invalid → a DIAGNOSTIC file, never the primary structured output.
+  let outputPath: string | null = null;
+  if (parsed && status === "passed") {
+    opts.store.writeText(join(opts.finalDir, "output.json"), JSON.stringify(value, null, 2) + "\n");
+    outputPath = "final/output.json";
+  } else if (parsed) {
+    opts.store.writeText(
+      join(opts.finalDir, "output.invalid.json"),
+      JSON.stringify(value, null, 2) + "\n",
+    );
+    outputPath = "final/output.invalid.json";
   }
   const receipt = StructuredOutputConformance.parse({
     schema_version: SCHEMA_VERSION,

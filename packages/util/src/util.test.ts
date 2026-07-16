@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertNoInlineSecretValues,
   containsSecretLikeToken,
   hashJson,
   newId,
@@ -8,6 +9,41 @@ import {
   stableStringify,
   userConfigDir,
 } from "./index.js";
+
+describe("assertNoInlineSecretValues schema-awareness (W8/G7)", () => {
+  const secret = "sk-or-v1-" + "c".repeat(40);
+
+  it("rejects a secret-like VALUE anywhere, including inside outputSchema", () => {
+    expect(() => assertNoInlineSecretValues({ prompt: `use ${secret}` })).toThrow();
+    // A secret hidden in a schema const/default/enum literal is still caught.
+    expect(() =>
+      assertNoInlineSecretValues({
+        outputSchema: { type: "object", properties: { k: { const: secret } } },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects secret-NAMED keys OUTSIDE a schema (env/token/password)", () => {
+    expect(() => assertNoInlineSecretValues({ env: { X: "1" } })).toThrow();
+    expect(() => assertNoInlineSecretValues({ api_key: "whatever" })).toThrow();
+  });
+
+  it("ALLOWS legitimate schema property names token/password/env (field names, not secrets)", () => {
+    expect(() =>
+      assertNoInlineSecretValues({
+        outputSchema: {
+          type: "object",
+          properties: {
+            token: { type: "string" },
+            password: { type: "string" },
+            env: { type: "string" },
+          },
+          required: ["token"],
+        },
+      }),
+    ).not.toThrow();
+  });
+});
 
 describe("util", () => {
   it("hashes JSON stably regardless of key order", () => {

@@ -260,10 +260,17 @@ export function containsSecretLikeToken(text: string): boolean {
   return sensitiveResourcePolicy.containsSensitiveContent(text);
 }
 
+/** Keys whose subtree is a caller-authored JSON SCHEMA: its object keys are
+ *  field NAMES (a `token` or `password` property is legitimate), so the
+ *  key-based secret check must not fire there — but string VALUES inside it
+ *  (const/default/enum literals) are still scanned for real secrets. */
+const SCHEMA_VALUE_SUBTREE_KEYS = new Set(["outputSchema", "output_schema"]);
+
 export function assertNoInlineSecretValues(
   value: unknown,
   path = "$",
   context = "run params",
+  valuesOnly = false,
 ): void {
   if (typeof value === "string") {
     if (containsSecretLikeToken(value)) {
@@ -287,14 +294,16 @@ export function assertNoInlineSecretValues(
   }
   if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
-    value.forEach((v, i) => assertNoInlineSecretValues(v, `${path}[${i}]`, context));
+    value.forEach((v, i) => assertNoInlineSecretValues(v, `${path}[${i}]`, context, valuesOnly));
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    // Inside a JSON Schema subtree, keys are field names — scan values only.
     if (
-      key === "env" ||
-      key === "secrets" ||
-      /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key)
+      !valuesOnly &&
+      (key === "env" ||
+        key === "secrets" ||
+        /(^|[_-])(secret|token|password|api[_-]?key)($|[_-])/i.test(key))
     ) {
       throw Object.assign(
         new Error(
@@ -303,7 +312,12 @@ export function assertNoInlineSecretValues(
         { status: 400, code: "inline_secret_rejected" },
       );
     }
-    assertNoInlineSecretValues(child, `${path}.${key}`, context);
+    assertNoInlineSecretValues(
+      child,
+      `${path}.${key}`,
+      context,
+      valuesOnly || SCHEMA_VALUE_SUBTREE_KEYS.has(key),
+    );
   }
 }
 

@@ -174,9 +174,23 @@ export async function handleRunCreate(
   const submit = async (): Promise<void> => {
     let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
     if (directThreadId && ctx.createThreadTurn) {
+      // A thread turn ALWAYS runs in the THREAD's own project, never the
+      // caller's scope/cwd — otherwise `--thread <A>` launched from project B's
+      // cwd would execute (and mutate) B while recording the run as a turn of A
+      // (cross-project execution + broken lineage). The dedicated
+      // POST /threads/:id/turns route already derives scope this way; the
+      // direct POST /runs + threadId path must match it exactly.
+      let threadScope: ControlRunStartRequest["scope"] = params.scope;
       if (ctx.threadDetail) {
         try {
-          await ctx.threadDetail(directThreadId);
+          const detail = (await ctx.threadDetail(directThreadId)) as {
+            thread?: { repo?: { root?: string } | null } | null;
+          };
+          const threadRoot = detail?.thread?.repo?.root;
+          threadScope =
+            typeof threadRoot === "string" && threadRoot.length > 0
+              ? { kind: "project", root: threadRoot, context: "auto" }
+              : { kind: "none" };
         } catch (error) {
           const status =
             error && typeof error === "object" && "status" in error
@@ -198,7 +212,7 @@ export async function handleRunCreate(
         },
       })) as { id: string };
       const { attachments: _attachments, ...rest } = params;
-      enqueueParams = { ...rest, turnId: turn.id };
+      enqueueParams = { ...rest, turnId: turn.id, scope: threadScope };
     }
     const preCreatedTurnId = enqueueParams.turnId;
     let job: { id: string };
