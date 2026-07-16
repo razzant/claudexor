@@ -37,7 +37,7 @@ export interface DaemonOptions {
   /** Called when a job reaches a terminal state (any path) with its runId —
    * used to drop pending interactions so a dead run never advertises
    * waiting_on_user. */
-  onRunTerminal?: (runId: string) => void;
+  onRunTerminal?: (runId: string, threadId?: string) => void;
   /** Called when a job that carried a pre-created thread turn (params.turnId)
    * settles failure-shaped WITHOUT ever binding a run — i.e. the refusal
    * happened before the run materialized (trust gate, preflight validation).
@@ -515,7 +515,7 @@ export class DaemonServer {
       this.active -= 1;
       if (rec.runId) {
         try {
-          this.opts.onRunTerminal?.(rec.runId);
+          this.opts.onRunTerminal?.(rec.runId, this.threadIdOf(rec));
         } catch {
           /* observer failure must not corrupt terminal bookkeeping */
         }

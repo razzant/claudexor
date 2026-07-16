@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
 import { describe, expect, it } from "vitest";
-import { ThreadStore } from "./threads.js";
+import { ThreadStore, type ThreadHeadPingSink } from "./threads.js";
 
 function store(): { root: string; journal: DurableJournal; s: ThreadStore } {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-threads-")));
@@ -283,5 +283,70 @@ describe("ThreadStore", () => {
     // A FOREIGN turn (belongs to thread A, claimed for thread B) — refused:
     // context would come from B while A's conversation head advances.
     expect(() => s.assertKnownIds(b.id, turnA.id)).toThrow(/belongs to thread/);
+  });
+});
+
+describe("ThreadStore thread.head.updated ping (W12)", () => {
+  function pingStore(partition = "global") {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-threads-ping-")));
+    const pings: Array<{ threadId: string; projectId: string | null }> = [];
+    const sink: ThreadHeadPingSink = (ping) => pings.push(ping);
+    const journal = new DurableJournal({ rootDir: root, partition });
+    return { root, journal, pings, s: new ThreadStore(journal, sink) };
+  }
+
+  it("pings exactly once per persisted mutation on every path", () => {
+    const { pings, s } = pingStore();
+    const thread = s.createThread({ repoRoot: "/tmp/proj" });
+    expect(pings).toEqual([{ threadId: thread.id, projectId: null }]);
+
+    s.updateThread(thread.id, { title: "renamed" });
+    expect(pings).toHaveLength(2);
+    s.updateThread(thread.id, { state: "closed" });
+    expect(pings).toHaveLength(3);
+    s.updateThread(thread.id, { state: "active" });
+    expect(pings).toHaveLength(4);
+
+    // turn-add touches the thread AND the turn: still ONE ping (deduped per commit)
+    const turn = s.createTurn(thread.id, "first move");
+    expect(pings).toHaveLength(5);
+    s.bindTurnRun(turn.id, "run-1");
+    expect(pings).toHaveLength(6);
+
+    const refused = s.createTurn(thread.id, "risky move");
+    expect(pings).toHaveLength(7);
+    s.setTurnEnqueueError(refused.id, "trust refused", "trust_full_access_required");
+    expect(pings).toHaveLength(8);
+
+    s.recordSession(thread.id, "claude", "native-session-1");
+    expect(pings).toHaveLength(9);
+    s.trashThread(thread.id);
+    expect(pings).toHaveLength(10);
+    expect(pings.every((ping) => ping.threadId === thread.id)).toBe(true);
+  });
+
+  it("stamps the owning project id from the store partition", () => {
+    const { pings, s } = pingStore("project:proj-42");
+    const thread = s.createThread({ repoRoot: "/tmp/proj" });
+    expect(pings).toEqual([{ threadId: thread.id, projectId: "proj-42" }]);
+  });
+
+  it("journal replay never pings, and an idempotent duplicate does not ping", () => {
+    const { root, journal, pings, s } = pingStore();
+    const input = {
+      repoRoot: "/tmp/proj",
+      idempotency: { key: "thread-1", client: "test", request: { root: "/tmp/proj" } },
+    };
+    s.createThread(input);
+    expect(pings).toHaveLength(1);
+    // Same idempotency key returns the existing thread: nothing persisted, no ping.
+    s.createThread(input);
+    expect(pings).toHaveLength(1);
+    journal.close();
+    const replayed: Array<{ threadId: string; projectId: string | null }> = [];
+    void new ThreadStore(new DurableJournal({ rootDir: root, partition: "global" }), (ping) =>
+      replayed.push(ping),
+    );
+    expect(replayed).toEqual([]);
   });
 });

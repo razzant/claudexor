@@ -9,6 +9,7 @@ import { operatorDecisionProjection } from "./operator-decisions.js";
 import { ProjectPartitions } from "./project-partitions.js";
 import { projectProjection } from "./projects.js";
 import { runEventProjection } from "./run-events.js";
+import { threadHeadPingProjection } from "./thread-head-ping.js";
 import { threadProjection } from "./threads.js";
 
 const roots: string[] = [];
@@ -26,7 +27,10 @@ function fixture() {
   const decisions = manager.registerProjection(operatorDecisionProjection());
   const runEvents = manager.registerProjection(runEventProjection());
   const projects = manager.registerProjection(projectProjection());
-  const threads = manager.registerProjection(threadProjection());
+  const headPingSlot = manager.registerProjection(threadHeadPingProjection());
+  const headPing = (ping: { threadId: string; projectId: string | null }) =>
+    headPingSlot.current().ping(ping);
+  const threads = manager.registerProjection(threadProjection(headPing));
   manager.start();
   return {
     root,
@@ -40,6 +44,7 @@ function fixture() {
       decisions,
       runEvents,
       threads,
+      headPing,
     ),
   };
 }
@@ -213,6 +218,52 @@ describe("ProjectPartitions", () => {
     const thread = f.partitions.createThread({ repoRoot: project });
     expect(f.partitions.getThread(thread.id)?.repo?.root).toBe(realpathSync(project));
     expect(f.projects.current().list()).toHaveLength(1);
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("pings thread.head.updated into the GLOBAL partition for project-thread mutations (W12)", () => {
+    const f = fixture();
+    const project = join(f.root, "pinged-project");
+    mkdirSync(project);
+    const thread = f.partitions.createThread({ repoRoot: project });
+    const projectId = f.projects.current().findByRoot(realpathSync(project))!.id;
+
+    const globalPings = () =>
+      f.manager.events().filter((event) => event.type === "thread.head.updated");
+    // The mutation record stays in the OWNING project partition; the
+    // invalidation ping is the only thread trace on the global stream.
+    expect(
+      f.partitions
+        .journal(`project:${projectId}`)
+        .events()
+        .some((event) => event.type === "thread.entities_upserted"),
+    ).toBe(true);
+    expect(
+      f.partitions
+        .journal(`project:${projectId}`)
+        .events()
+        .some((event) => event.type === "thread.head.updated"),
+    ).toBe(false);
+    expect(globalPings().map((event) => event.payload)).toEqual([
+      { thread_id: thread.id, project_id: projectId, revision: 1 },
+    ]);
+
+    f.partitions.updateThread(thread.id, { title: "renamed" });
+    expect(globalPings().at(-1)?.payload).toEqual({
+      thread_id: thread.id,
+      project_id: projectId,
+      revision: 2,
+    });
+
+    // Run-terminal path: no store mutation exists to ride, so the daemon
+    // pings the owning store's head directly.
+    f.partitions.pingThreadHead(thread.id);
+    expect(globalPings().at(-1)?.payload).toEqual({
+      thread_id: thread.id,
+      project_id: projectId,
+      revision: 3,
+    });
     f.partitions.close();
     f.manager.close();
   });

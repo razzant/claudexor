@@ -119,11 +119,28 @@ extension AppModel {
         for env in batch { apply(env, to: runId) }
     }
 
+    /// Coalesce ping-driven refetches: schedule ONE authoritative listThreads
+    /// call after a short window instead of one per ping (a fresh global
+    /// stream replays the journal, so pings arrive in bursts). Single-flight:
+    /// while a refetch is pending, further pings fold into it.
+    func scheduleThreadsRefresh() {
+        guard threadsRefreshTask == nil else { return }
+        threadsRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard let self, !Task.isCancelled else { return }
+            self.threadsRefreshTask = nil
+            await self.refreshThreads()
+        }
+    }
+
     /// Cancel every live stream (daemon/client about to be replaced).
     func cancelAllStreams() {
         globalStreamTask?.cancel()
         globalStreamTask = nil
         globalEventCursor = nil
+        threadsRefreshTask?.cancel()
+        threadsRefreshTask = nil
+        threadHeadRevisions.removeAll()
         for task in streamTasks.values { task.cancel() }
         streamTasks.removeAll()
         lastEventIds.removeAll()
@@ -191,6 +208,22 @@ extension AppModel {
 
     func handleGlobalEvent(_ event: JournalEvent) async {
         if event.type == "quota.snapshot.upserted" { await refreshQuota(); return }
+        // Sidebar staleness (W12+W16): the engine pings the GLOBAL partition on
+        // every thread mutation (create/rename/archive/turn-add/run-terminal —
+        // any surface, incl. the CLI). Handled BEFORE the run_id guard below
+        // (a ping carries no run_id). Content-free contract: never read thread
+        // data off the ping — refetch the authoritative summaries; `revision`
+        // (monotonic per thread) drops duplicate deliveries.
+        if event.type == "thread.head.updated" {
+            guard let threadId = event.payload["thread_id"]?.stringValue, !threadId.isEmpty else { return }
+            let revision = Int(event.payload["revision"]?.doubleValue ?? 0)
+            if revision > 0 {
+                if revision <= (threadHeadRevisions[threadId] ?? 0) { return }
+                threadHeadRevisions[threadId] = revision
+            }
+            scheduleThreadsRefresh()
+            return
+        }
         guard let runId = event.payload["run_id"]?.stringValue, !runId.isEmpty else { return }
         let type = event.payload["type"]?.stringValue ?? ""
         let isTerminalEvent = type == "run.completed" || type == "run.failed" || type == "run.blocked"

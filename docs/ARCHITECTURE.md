@@ -658,6 +658,15 @@ epoch is rejected so the client can re-snapshot that scope. The API does not
 claim a total order across partitions. There is no live-only compatibility
 multiplex in v2.
 
+The global partition additionally carries `thread.head.updated` — a
+content-free invalidation ping `{thread_id, project_id, revision}` emitted on
+every thread mutation from any surface (create, rename, archive, turn-add,
+run-terminal). Thread mutations persist to their owning partition, so this
+ping is how a single global subscription learns that a thread summary went
+stale; consumers refetch the authoritative summary rather than reading state
+off the event. `revision` is monotonic per thread so duplicate or replayed
+pings can be dropped.
+
 A QUEUED job's per-run stream does not 404: `GET /v2/runs/:id/events` opens the
 SSE response immediately, heartbeats while the job waits for a slot, and binds
 to the run directory when it materializes — a client can subscribe at enqueue

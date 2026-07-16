@@ -1,5 +1,5 @@
 {
-  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift": 1895,
+  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift": 1904,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AuthSheet.swift": 598,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/DomainModels.swift": 780,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/OpsScreens.swift": 391,
@@ -7,7 +7,7 @@
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/GatewayClient.swift": 664,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 852,
   "packages/acp-server/src/index.ts": 374,
-  "packages/cli/src/claudexord.ts": 765,
+  "packages/cli/src/claudexord.ts": 786,
   "packages/cli/src/cli.ts": 1676,
   "packages/cli/src/command-registry.ts": 679,
   "packages/cli/src/plugins.ts": 1865,

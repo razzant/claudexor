@@ -18,7 +18,9 @@ import {
   ResourceStore,
   QuotaRegistry,
   quotaProjection,
+  threadHeadPingProjection,
   threadProjection,
+  type ThreadHeadPingSink,
   daemonDir,
   defaultSocketPath,
   acquireDaemonWriterLease,
@@ -96,7 +98,20 @@ async function main(): Promise<void> {
     const quotaStoreSlot = journalManager.registerProjection(
       quotaProjection([refreshCodexQuota, refreshClaudeStatuslineQuota]),
     );
-    const threadStoreSlot = journalManager.registerProjection(threadProjection());
+    // Sidebar invalidation ping (W12): a GLOBAL-partition emitter every
+    // ThreadStore (global + per-project) writes through, so any thread
+    // mutation reaches the app's single global stream. The ping is auxiliary
+    // invalidation — it must never fail the mutation that triggered it
+    // (mirrors the runner's turn-binding policy).
+    const threadHeadPingSlot = journalManager.registerProjection(threadHeadPingProjection());
+    const threadHeadPing: ThreadHeadPingSink = (ping) => {
+      try {
+        threadHeadPingSlot.current().ping(ping);
+      } catch {
+        /* invalidation ping must never fail the thread mutation */
+      }
+    };
+    const threadStoreSlot = journalManager.registerProjection(threadProjection(threadHeadPing));
     const setupStoreSlot = journalManager.registerProjection({
       name: "setup",
       create: (journal) => new SetupJobStore(daemonDir(), { journal }),
@@ -118,6 +133,7 @@ async function main(): Promise<void> {
       operatorDecisionStoreSlot,
       runEventStoreSlot,
       threadStoreSlot,
+      threadHeadPing,
     );
     const interactions = new InteractionRegistry({
       forRequest: (params) => threads.interactionsForRequest(params),
@@ -129,7 +145,12 @@ async function main(): Promise<void> {
       socketPath,
       token,
       commands: threads,
-      onRunTerminal: (runId) => interactions.dropForRun(runId),
+      onRunTerminal: (runId, threadId) => {
+        interactions.dropForRun(runId);
+        // Run-terminal is the one W12 path with no thread-store mutation to
+        // ride — the terminal changes the thread's presented state, so ping.
+        if (threadId) threads.pingThreadHead(threadId);
+      },
       onTurnEnqueueFailed: (turnId, error, code) =>
         threads.setTurnEnqueueError(turnId, error, code),
       onShutdownRequested: () => requestRootShutdown(),

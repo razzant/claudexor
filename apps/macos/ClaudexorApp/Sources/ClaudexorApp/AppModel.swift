@@ -200,6 +200,14 @@ final class AppModel {
     /// Rolling per-run event rate estimate driving the ADAPTIVE flush window
     /// (64ms when calm, up to ~250ms under sustained bursts).
     @ObservationIgnored var flushRates: [String: (window: TimeInterval, lastAt: Date)] = [:]
+    /// Highest `thread.head.updated` revision REFLECTED per thread (W12+W16
+    /// sidebar-staleness ping). Dedupes duplicate/replayed pings within one
+    /// connected stream; cleared with the rest of the stream state.
+    @ObservationIgnored var threadHeadRevisions: [String: Int] = [:]
+    /// Single-flight coalescer for ping-driven thread-list refetches: the
+    /// global stream replays the whole journal on a fresh connect, so a burst
+    /// of pings must fold into ONE listThreads call.
+    @ObservationIgnored var threadsRefreshTask: Task<Void, Never>?
     /// TERMINAL chat transcripts per run (live transcripts stream in the run's
     /// RunLiveBox; foldLiveBox moves the final reducer here at terminal).
     var transcripts: [String: TranscriptReducer] = [:]

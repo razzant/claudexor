@@ -6,21 +6,22 @@ import {
   Thread as ThreadSchema,
   ThreadTurn as ThreadTurnSchema,
 } from "@claudexor/schema";
-import { hashJson, newId, nowIso, redactSecrets } from "@claudexor/util";
+import { newId, nowIso, redactSecrets } from "@claudexor/util";
 import { reduceThreadLifecycle, type ThreadLifecycleAction } from "./thread-lifecycle.js";
+import {
+  assertUnique,
+  idempotencyConflict,
+  parseMutation,
+  threadCreationIdempotency,
+  turnIdempotency,
+  upsert,
+  type ThreadMutation,
+} from "./thread-store-support.js";
 
 interface ThreadStoreState {
   threads: Thread[];
   sessions: Session[];
   turns: ThreadTurn[];
-}
-
-interface ThreadMutation {
-  threads?: Thread[];
-  sessions?: Session[];
-  turns?: ThreadTurn[];
-  idempotency?: { keyDigest: string; requestDigest: string; turnId: string };
-  threadCreation?: { keyDigest: string; requestDigest: string; threadId: string };
 }
 
 const UPSERTED = "thread.entities_upserted";
@@ -69,13 +70,23 @@ function coercePrimaryToPool(primary: string | null, pool: string[]): string | n
   return primary;
 }
 
+/**
+ * Sink for the content-free `thread.head.updated` invalidation ping (W12).
+ * Bound at composition time to the GLOBAL-partition emitter, so a mutation in
+ * a project partition still reaches the app's single global stream.
+ */
+export type ThreadHeadPingSink = (ping: { threadId: string; projectId: string | null }) => void;
+
 /** Journal-backed thread/session projection. Returned mutations are fsynced. */
 export class ThreadStore {
   private state: ThreadStoreState = { threads: [], sessions: [], turns: [] };
   private readonly turnIdByKey = new Map<string, { turnId: string; requestDigest: string }>();
   private readonly threadIdByKey = new Map<string, { threadId: string; requestDigest: string }>();
 
-  constructor(private readonly journal: DurableJournal) {
+  constructor(
+    private readonly journal: DurableJournal,
+    private readonly headPing?: ThreadHeadPingSink,
+  ) {
     this.replay();
   }
 
@@ -106,6 +117,29 @@ export class ThreadStore {
     const parsed = parseMutation(mutation);
     this.journal.append(UPSERTED, parsed);
     this.apply(parsed);
+    // Every PERSISTED mutation invalidates the touched threads' summaries —
+    // pinging here (the single writer) covers create/rename/archive/turn-add/
+    // enqueue-error/session/worktree without per-call-site wiring, so a future
+    // mutation path cannot forget the ping. Replay never pings (it goes
+    // through apply(), not commit()); the run-terminal path pings via
+    // pingHead() directly because no store mutation happens at terminal.
+    const touched = new Set<string>([
+      ...(parsed.threads ?? []).map((thread) => thread.id),
+      ...(parsed.turns ?? []).map((turn) => turn.thread_id),
+      ...(parsed.sessions ?? []).map((session) => session.thread_id),
+    ]);
+    for (const threadId of touched) this.pingHead(threadId);
+  }
+
+  /**
+   * Emit the content-free head-invalidation ping for one thread. The owning
+   * partition name is this store's journal partition — the single source of
+   * the thread->project mapping.
+   */
+  pingHead(threadId: string): void {
+    const partition = this.journal.options.partition;
+    const projectId = partition.startsWith("project:") ? partition.slice("project:".length) : null;
+    this.headPing?.({ threadId, projectId });
   }
 
   private apply(mutation: ThreadMutation): void {
@@ -465,115 +499,10 @@ export class ThreadStore {
   }
 }
 
-export function threadProjection() {
+export function threadProjection(headPing?: ThreadHeadPingSink) {
   return {
     name: "threads",
-    create: (journal: DurableJournal) => new ThreadStore(journal),
+    create: (journal: DurableJournal) => new ThreadStore(journal, headPing),
     validate: (store: ThreadStore) => store.validateProjection(),
   };
-}
-
-function parseMutation(value: unknown): ThreadMutation {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("invalid thread mutation");
-  }
-  const mutation = value as ThreadMutation;
-  const idempotency = mutation.idempotency;
-  const threadCreation = mutation.threadCreation;
-  if (
-    idempotency !== undefined &&
-    (!idempotency ||
-      typeof idempotency.keyDigest !== "string" ||
-      typeof idempotency.requestDigest !== "string" ||
-      typeof idempotency.turnId !== "string")
-  ) {
-    throw new Error("invalid thread idempotency record");
-  }
-  if (
-    threadCreation !== undefined &&
-    (!threadCreation ||
-      typeof threadCreation.keyDigest !== "string" ||
-      typeof threadCreation.requestDigest !== "string" ||
-      typeof threadCreation.threadId !== "string")
-  ) {
-    throw new Error("invalid thread creation idempotency record");
-  }
-  return {
-    ...(mutation.threads
-      ? { threads: mutation.threads.map((item) => ThreadSchema.parse(item)) }
-      : {}),
-    ...(mutation.sessions
-      ? { sessions: mutation.sessions.map((item) => SessionSchema.parse(item)) }
-      : {}),
-    ...(mutation.turns
-      ? { turns: mutation.turns.map((item) => ThreadTurnSchema.parse(item)) }
-      : {}),
-    ...(idempotency ? { idempotency: { ...idempotency } } : {}),
-    ...(threadCreation ? { threadCreation: { ...threadCreation } } : {}),
-  };
-}
-
-function threadCreationIdempotency(
-  partition: string,
-  input: CreateThreadInput["idempotency"],
-): ThreadMutation["threadCreation"] {
-  if (!input) return undefined;
-  validateIdempotencyKey(input.key);
-  return {
-    keyDigest: hashJson({
-      client: input.client,
-      partition,
-      operation: "thread.create",
-      key: input.key,
-    }),
-    requestDigest: hashJson(input.request),
-    threadId: "",
-  };
-}
-
-function turnIdempotency(
-  partition: string,
-  threadId: string,
-  input: CreateTurnInput["idempotency"],
-): ThreadMutation["idempotency"] {
-  if (!input) return undefined;
-  validateIdempotencyKey(input.key);
-  return {
-    keyDigest: hashJson({
-      client: input.client,
-      partition,
-      operation: "thread.turn.create",
-      key: input.key,
-    }),
-    requestDigest: hashJson(input.request),
-    turnId: "",
-  };
-}
-
-function validateIdempotencyKey(key: string): void {
-  if (!key || key.length > 256) {
-    throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
-      code: "invalid_idempotency_key",
-      status: 400,
-    });
-  }
-}
-
-function idempotencyConflict(): Error & { code: string; status: number } {
-  return Object.assign(new Error("idempotency key was already used with a different request"), {
-    code: "idempotency_conflict",
-    status: 409,
-  });
-}
-
-function upsert<T extends { id: string }>(items: T[], value: T): void {
-  const index = items.findIndex((item) => item.id === value.id);
-  if (index < 0) items.push(value);
-  else items[index] = value;
-}
-
-function assertUnique(items: Array<{ id: string }>, kind: string): void {
-  if (new Set(items.map((item) => item.id)).size !== items.length) {
-    throw new Error(`duplicate ${kind} id in journal projection`);
-  }
 }

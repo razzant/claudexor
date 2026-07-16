@@ -8,6 +8,7 @@ export * from "./operator-decisions.js";
 export * from "./run-events.js";
 export * from "./spec-sessions.js";
 export * from "./threads.js";
+export * from "./thread-head-ping.js";
 export * from "./projects.js";
 export * from "./journal-manager.js";
 export * from "./command-store.js";

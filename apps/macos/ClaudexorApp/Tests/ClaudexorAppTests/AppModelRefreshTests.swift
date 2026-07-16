@@ -88,6 +88,56 @@ struct AppModelRefreshTests {
         #expect(model.quotaStatus == nil)
     }
 
+    @MainActor
+    @Test func threadHeadPingRefetchesThreadListOnceAndDropsStaleRevisions() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!,
+            token: "test",
+            session: URLSession(configuration: config)
+        )
+        let model = AppModel(client: client, requestNotificationAuthorization: false)
+        model.health = .connected
+        let listCalls = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/threads" else { throw AppRefreshTestError.badRequest }
+            listCalls.increment()
+            let json = #"{"threads":[{"id":"th-1","title":"Pinged","repoRoot":"/tmp/project","mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":null,"eligibleHarnesses":[],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":["run-1"],"headRunId":"run-1","needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-16T00:00:00Z"}]}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+        func ping(_ revision: Int) -> JournalEvent {
+            JournalEvent(
+                cursor: "epoch:\(revision)", partition: "global", type: "thread.head.updated",
+                observedAt: "2026-07-16T00:00:00Z",
+                payload: .object([
+                    "thread_id": .string("th-1"),
+                    "project_id": .null,
+                    "revision": .number(Double(revision))
+                ])
+            )
+        }
+
+        // A replayed burst folds into ONE refetch (single-flight coalescer +
+        // per-thread revision watermark).
+        await model.handleGlobalEvent(ping(1))
+        await model.handleGlobalEvent(ping(2))
+        await model.handleGlobalEvent(ping(2)) // duplicate delivery — dropped
+        await model.threadsRefreshTask?.value
+        #expect(model.threads.map(\.id) == ["th-1"])
+        #expect(listCalls.count == 1)
+
+        // An already-reflected revision schedules nothing at all.
+        await model.handleGlobalEvent(ping(2))
+        #expect(model.threadsRefreshTask == nil)
+
+        // A newer revision refetches again.
+        await model.handleGlobalEvent(ping(3))
+        await model.threadsRefreshTask?.value
+        #expect(listCalls.count == 2)
+    }
+
     @Test func taggedUnlimitedBudgetRendersUnlimitedInsteadOfUnknown() {
         var task = TaskRun(
             id: "run", title: "Run", prompt: "", mode: .agent, status: .running,
@@ -473,6 +523,18 @@ private func appSetupJob(
 }
 
 private enum AppRefreshTestError: Error { case badRequest }
+
+/// Thread-safe request counter (the URLProtocol handler runs off the main actor).
+private final class AppRefreshCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.lock(); value += 1; lock.unlock() }
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
 
 private func appResponse(for request: URLRequest) -> HTTPURLResponse {
     HTTPURLResponse(

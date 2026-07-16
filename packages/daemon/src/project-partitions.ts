@@ -15,6 +15,7 @@ import {
   threadProjection,
   type CreateThreadInput,
   type CreateTurnInput,
+  type ThreadHeadPingSink,
   type ThreadStore,
   type UpdateThreadInput,
 } from "./threads.js";
@@ -41,6 +42,8 @@ export class ProjectPartitions implements CommandAuthority {
     private readonly globalDecisions: JournalProjectionSlot<OperatorDecisionStore>,
     private readonly globalRunEvents: JournalProjectionSlot<RunEventStore>,
     private readonly globalThreads: JournalProjectionSlot<ThreadStore>,
+    /** Global-partition `thread.head.updated` sink, threaded into every project ThreadStore. */
+    private readonly headPing?: ThreadHeadPingSink,
   ) {
     this.sync();
   }
@@ -275,6 +278,15 @@ export class ProjectPartitions implements CommandAuthority {
     this.requireThreadStore(id).recordSession(id, harnessId, nativeSessionId, observedModel);
   }
 
+  /**
+   * Run-terminal invalidation (the W12 path with no store mutation to ride):
+   * a terminal changes the thread's presented state (needs-me, outcome), so
+   * the daemon pings the owning store's head directly.
+   */
+  pingThreadHead(id: string): void {
+    this.threadStoreForThread(id)?.pingHead(id);
+  }
+
   close(): void {
     for (const entry of this.partitions.values()) entry.manager.close();
     this.partitions.clear();
@@ -304,7 +316,7 @@ export class ProjectPartitions implements CommandAuthority {
     const decisions = manager.registerProjection(operatorDecisionProjection());
     const runEvents = manager.registerProjection(runEventProjection());
     const specs = manager.registerProjection(specSessionProjection());
-    const threads = manager.registerProjection(threadProjection());
+    const threads = manager.registerProjection(threadProjection(this.headPing));
     manager.start();
     const entry = { manager, commands, interactions, decisions, runEvents, specs, threads };
     this.partitions.set(projectId, entry);

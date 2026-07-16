@@ -15,6 +15,29 @@ export const ControlJournalEvent = z
   .describe("One durable event from a global or project journal partition.");
 export type ControlJournalEvent = z.infer<typeof ControlJournalEvent>;
 
+export const ThreadHeadPing = z
+  .object({
+    thread_id: Id,
+    project_id: z
+      .string()
+      .min(1)
+      .nullable()
+      .describe("Owning project id, or null for a no-project (global-partition) thread."),
+    revision: z
+      .number()
+      .int()
+      .positive()
+      .describe("Monotonic per-thread mutation counter; consumers drop stale/duplicate pings."),
+  })
+  .strict()
+  .describe(
+    "Payload of the `thread.head.updated` GLOBAL-partition journal event: a content-free " +
+      "sidebar invalidation ping emitted on every thread mutation (create / rename / archive / " +
+      "turn-add / run-terminal, from any surface). It carries identity only — consumers refetch " +
+      "the authoritative thread summary instead of trusting event content.",
+  );
+export type ThreadHeadPing = z.infer<typeof ThreadHeadPing>;
+
 export const RunEventType = z
   .enum([
     "run.created",
