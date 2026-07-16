@@ -2,8 +2,13 @@ import { createServer, type Server } from "node:http";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { controlApiFetch, followRun, formatRunEventLine } from "./live.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  controlApiFetch,
+  createRunEventLineFormatter,
+  followRun,
+  formatRunEventLine,
+} from "./live.js";
 
 /** Stub control API speaking just enough SSE for the follow contract. */
 function sseServer(
@@ -153,6 +158,140 @@ describe("claudexor follow", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("live formatter typed-final dedup", () => {
+  const message = (
+    attemptId: string,
+    text: string,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> => ({
+    type: "harness.event",
+    payload: {
+      type: "message",
+      harness_id: "codex",
+      attempt_id: attemptId,
+      text,
+      title: text,
+      ...extra,
+    },
+  });
+
+  it("prints the codex answer once when the typed final repeats the narration", () => {
+    const format = createRunEventLineFormatter();
+    expect(format(message("a01", "The bug is in the retry loop."))).toBe(
+      "[a01/codex] The bug is in the retry loop.",
+    );
+    expect(
+      format(
+        message("a01", "The bug is in the retry loop.", {
+          final: true,
+          final_source: "codex_last_agent_message",
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("prints a final that carries text the narration never showed", () => {
+    const format = createRunEventLineFormatter();
+    format(message("a01", "Looking at the retry loop…"));
+    expect(format(message("a01", "The bug is in the retry loop.", { final: true }))).toBe(
+      "[a01/codex] The bug is in the retry loop.",
+    );
+  });
+
+  it("prints a final with no narration before it (claude/cursor result)", () => {
+    const format = createRunEventLineFormatter();
+    expect(format(message("a01", "Done.", { final: true }))).toBe("[a01/codex] Done.");
+  });
+
+  it("keeps a genuine repeat when neither copy is typed final", () => {
+    const format = createRunEventLineFormatter();
+    format(message("a01", "Retrying."));
+    expect(format(message("a01", "Retrying."))).toBe("[a01/codex] Retrying.");
+  });
+
+  it("dedups per lane: a final never suppresses another attempt's identical text", () => {
+    const format = createRunEventLineFormatter();
+    format(message("a01", "Same answer."));
+    expect(format(message("a02", "Same answer.", { final: true }))).toBe(
+      "[a02/codex] Same answer.",
+    );
+  });
+
+  it("leaves non-message events untouched", () => {
+    const format = createRunEventLineFormatter();
+    expect(format({ type: "run.completed", payload: { status: "success" } })).toBe(
+      "run completed: success",
+    );
+  });
+});
+
+describe("claudexor follow text mode", () => {
+  let dir: string;
+  let prevConfigDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(realpathSync(tmpdir()), "claudexor-follow-text-"));
+    prevConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+  });
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = prevConfigDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("prints the doubled codex answer once on the live stream", async () => {
+    const answer = "The bug is in the retry loop.";
+    const { server, port } = await sseServer((_last, res) => {
+      res.write(
+        frame(1, "harness.event", {
+          type: "message",
+          harness_id: "codex",
+          attempt_id: "a01",
+          text: answer,
+          title: answer,
+        }),
+      );
+      res.write(
+        frame(2, "harness.event", {
+          type: "message",
+          harness_id: "codex",
+          attempt_id: "a01",
+          text: answer,
+          title: answer,
+          final: true,
+          final_source: "codex_last_agent_message",
+        }),
+      );
+      res.write(frame(3, "run.completed", { status: "success" }));
+      res.write("event: end\ndata: {}\n\n");
+      res.end();
+    });
+    const daemonDir = join(dir, "daemon");
+    mkdirSync(daemonDir, { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(daemonDir, "control-api.json"),
+      JSON.stringify({ host: "127.0.0.1", port }),
+      {
+        mode: 0o600,
+      },
+    );
+    writeFileSync(join(daemonDir, "token"), "tkn-follow", { mode: 0o600 });
+    const written: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      expect(await followRun("run-f", false)).toBe(0);
+    } finally {
+      spy.mockRestore();
+      server.close();
+    }
+    expect(written.filter((line) => line.includes(answer))).toHaveLength(1);
   });
 });
 

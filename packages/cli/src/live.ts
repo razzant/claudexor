@@ -82,6 +82,55 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
+/** Lane key for per-attempt dedup state — the same pair the line renders. */
+function laneOf(p: Record<string, unknown>): string {
+  return [p["attempt_id"], p["harness_id"]].filter(Boolean).join("/");
+}
+
+/**
+ * Typed identity of a harness message. `text` is the full body; `title` is the
+ * projection's 500-char shortcut and the only field present when the event
+ * carries no text. Both copies of a doubled answer travel the same projection,
+ * so comparing the same field on both is what makes the dedup exact.
+ */
+function messageIdentity(p: Record<string, unknown>): string | null {
+  const raw =
+    typeof p["text"] === "string" ? p["text"] : typeof p["title"] === "string" ? p["title"] : null;
+  const normalized = raw?.trim() ?? "";
+  return normalized === "" ? null : normalized;
+}
+
+/**
+ * Stateful live formatter: `formatRunEventLine` plus the typed-final dedup.
+ *
+ * Codex narrates its answer mid-run (agent_message) and then repeats the SAME
+ * text as its typed final message, so a stateless printer prints the answer
+ * twice. The app's transcript reducer keys the same dedup on `final`
+ * (TranscriptModels) but drops EVERY final — it renders the answer in its own
+ * bubble. The CLI has no such bubble: the live stream IS the answer, so a final
+ * is suppressed only when its text is already on screen. A final that adds new
+ * text (claude/cursor, whose result never repeats narration) still prints.
+ *
+ * Text mode only — `--json`/NDJSON stay verbatim machine surfaces.
+ */
+export function createRunEventLineFormatter(): (ev: Record<string, unknown>) => string | null {
+  const lastMessageByLane = new Map<string, string>();
+  return (ev) => {
+    const line = formatRunEventLine(ev);
+    if (String(ev["type"] ?? "") !== "harness.event") return line;
+    const p = (ev["payload"] ?? {}) as Record<string, unknown>;
+    if (String(p["type"] ?? "") !== "message") return line;
+    const identity = messageIdentity(p);
+    if (identity === null) return line;
+    const lane = laneOf(p);
+    // Only the TYPED final flag dedups; a text match between two narration
+    // messages is the harness genuinely saying the same thing twice.
+    if (p["final"] === true && lastMessageByLane.get(lane) === identity) return null;
+    lastMessageByLane.set(lane, identity);
+    return line;
+  };
+}
+
 /**
  * Prompt the questions on the controlling TTY. Returns null on a non-TTY
  * stdin or when the deadline passes (the engine then declines benignly).
@@ -240,6 +289,9 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
   let sawTerminal = false;
   let lastSeq = 0;
   const maxReconnects = 5;
+  // One formatter for the whole follow, reconnects included: a resumed stream
+  // replays from Last-Event-ID, and the dedup state has to span that seam.
+  const formatLine = createRunEventLineFormatter();
 
   const handleFrame = async (name: string, data: string): Promise<"continue" | "end"> => {
     if (name === "end") return "end";
@@ -254,7 +306,7 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
     if (json) {
       print(JSON.stringify(ev));
     } else {
-      const line = formatRunEventLine(ev);
+      const line = formatLine(ev);
       if (line) print(line);
     }
     const type = String(ev["type"] ?? "");
