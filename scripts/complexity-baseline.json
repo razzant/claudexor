@@ -8,7 +8,7 @@
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 986,
   "packages/acp-server/src/index.ts": 374,
   "packages/cli/src/claudexord.ts": 765,
-  "packages/cli/src/cli.ts": 1673,
+  "packages/cli/src/cli.ts": 1676,
   "packages/cli/src/command-registry.ts": 679,
   "packages/cli/src/plugins.ts": 1865,
   "packages/cli/src/setup-jobs.ts": 1223,
