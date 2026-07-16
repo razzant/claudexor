@@ -20,6 +20,9 @@ export class AnswerAssembly {
   }): void {
     if (ev.type !== "message" || !ev.text) return;
     if (ev.payload?.["auth_switched"] === true) return;
+    // Live deltas are DISPLAY-stream chunks (W-C4): the complete message
+    // always follows — joining chunks here would shred the answer.
+    if (ev.payload?.["delta"] === true) return;
     if (ev.final === true) this.finalText = ev.text.trim() || undefined;
     else pushUniqueText(this.parts, ev.text);
   }

@@ -98,11 +98,7 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
     if (stopping) return;
     stopping = true;
     logLine(deps.logPath, `${sig} received; stopping daemon`);
-    armExitTimer(
-      stopDeadlineMs,
-      `graceful stop exceeded ${stopDeadlineMs}ms; forcing exit`,
-      1,
-    );
+    armExitTimer(stopDeadlineMs, `graceful stop exceeded ${stopDeadlineMs}ms; forcing exit`, 1);
     void deps.stop().then(
       () => {
         // Clean stop: if the loop drains, the process exits before this

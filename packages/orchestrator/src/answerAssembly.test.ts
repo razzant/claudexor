@@ -31,6 +31,14 @@ describe("AnswerAssembly (Ф2.5 W-C1 typed finality)", () => {
     expect(b.text()).toBe("kept narration");
   });
 
+  it("never joins display-stream delta chunks into the answer (W-C4)", () => {
+    const a = new AnswerAssembly();
+    a.observe({ type: "message", text: "The ", payload: { delta: true } });
+    a.observe({ type: "message", text: "answer.", payload: { delta: true } });
+    a.observe({ type: "message", text: "The answer." });
+    expect(a.text()).toBe("The answer.");
+  });
+
   it("ignores non-message events and auth_switched disclosures", () => {
     const a = new AnswerAssembly();
     a.observe({ type: "thinking", text: "reasoning" });

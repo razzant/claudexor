@@ -404,6 +404,33 @@ function parseClaudeEventStateful(
     return out;
   }
 
+  if (type === "stream_event") {
+    // --include-partial-messages (Ф2.5 W-C4): raw API stream frames. Only
+    // MAIN-conversation text deltas become delta messages (subagent frames
+    // carry parent_tool_use_id); every other frame (message_start, thinking
+    // deltas, block boundaries) is recognized plumbing — the complete
+    // assistant/result events still deliver the authoritative text.
+    const delta = obj.event?.delta;
+    if (
+      obj.parent_tool_use_id == null &&
+      obj.event?.type === "content_block_delta" &&
+      delta?.type === "text_delta" &&
+      typeof delta.text === "string" &&
+      delta.text
+    ) {
+      return [
+        {
+          type: "message",
+          session_id: sessionId,
+          ts,
+          text: delta.text,
+          payload: { delta: true },
+        },
+      ];
+    }
+    return [];
+  }
+
   if (type === "system") return []; // recognized but uninteresting system subtypes
 
   // Control-protocol plumbing frames. Incoming control_requests are consumed

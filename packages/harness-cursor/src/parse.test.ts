@@ -42,6 +42,28 @@ describe("parseCursorEvent", () => {
     const finalMsg = events.find((e) => e.type === "message" && e.final === true);
     expect(finalMsg?.text).toBe("All done");
 
+    // --stream-partial-output taxonomy (W-C4): delta = timestamp_ms without
+    // model_call_id; buffered duplicate = both (skipped); final flush =
+    // neither (a plain message).
+    const delta = parse(
+      { type: "assistant", timestamp_ms: 123, message: { content: [{ text: "chu" }] } },
+      "s1",
+    );
+    expect(delta?.[0]?.payload?.["delta"]).toBe(true);
+    expect(delta?.[0]?.text).toBe("chu");
+    const buffered = parse(
+      {
+        type: "assistant",
+        timestamp_ms: 124,
+        model_call_id: "mc1",
+        message: { content: [{ text: "chu" }] },
+      },
+      "s1",
+    );
+    expect(buffered).toEqual([]);
+    const flush = parse({ type: "assistant", message: { content: [{ text: "chunk" }] } }, "s1");
+    expect(flush?.[0]?.payload?.["delta"]).toBeUndefined();
+
     expect(events.find((e) => e.type === "started")?.observed_model).toBe("gpt-5");
     const call = events.find((e) => e.type === "tool_call");
     expect(call?.tool?.name).toBe("write");

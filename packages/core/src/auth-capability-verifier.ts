@@ -197,6 +197,7 @@ export class AuthCapabilityVerifier {
           env: {},
           attachments: [],
           browser: null,
+          stream_deltas: false,
           extra: request.abortSignal ? { abortSignal: request.abortSignal } : {},
         } satisfies HarnessRunSpec);
         for await (const raw of adapter.run(spec)) {

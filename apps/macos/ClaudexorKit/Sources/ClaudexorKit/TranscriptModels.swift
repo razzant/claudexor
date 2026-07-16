@@ -63,6 +63,9 @@ public struct TranscriptReducer: Sendable {
     /// Wall-clock start of the OPEN thinking segment (from the events' own
     /// `ts`), so the merged block can disclose how long the reasoning ran.
     private var openThinkingStart: Date?
+    /// True while the last block is a delta-built streaming message (W-C4):
+    /// deltas append into it; the complete message REPLACES it (no doubling).
+    private var openStreamingMessage = false
     private let cap: Int
     /// W23 P0-hang bounds: the block COUNT cap alone let a single merged
     /// thinking block grow to megabytes — SwiftUI then laid out that Text on
@@ -125,6 +128,28 @@ public struct TranscriptReducer: Sendable {
             // last agent message) IS the answer bubble — repeating it in the
             // live transcript would double the text the user just read.
             if payload["final"]?.boolValue == true { return false }
+            // Live deltas (W-C4) grow ONE streaming block; the complete
+            // message then REPLACES it (authoritative text, no doubling).
+            if payload["delta"]?.boolValue == true {
+                if openStreamingMessage, case .message(let id, let prev) = blocks.last {
+                    let bounded = boundHead(prev + text)
+                    textChars += bounded.count - prev.count
+                    blocks[blocks.count - 1] = .message(id: id, text: bounded)
+                    enforceBudget()
+                } else {
+                    append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
+                    openStreamingMessage = true
+                }
+                return true
+            }
+            if openStreamingMessage, case .message(let id, let prev) = blocks.last {
+                let bounded = boundHead(text)
+                textChars += bounded.count - prev.count
+                blocks[blocks.count - 1] = .message(id: id, text: bounded)
+                openStreamingMessage = false
+                enforceBudget()
+                return true
+            }
             // A message is a one-shot: keep the HEAD (the answer's beginning);
             // the full text lives in the run's artifacts.
             append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
@@ -242,8 +267,10 @@ public struct TranscriptReducer: Sendable {
 
     private mutating func append(_ block: TranscriptBlock) {
         // Anything but a thinking-merge CLOSES the open reasoning segment: the
-        // next thinking event starts a new segment (and a new timer).
+        // next thinking event starts a new segment (and a new timer). Any
+        // non-message block likewise closes the open streaming message.
         if case .thinking = block {} else { openThinkingStart = nil }
+        if case .message = block {} else { openStreamingMessage = false }
         blocks.append(block)
         textChars += chars(of: block)
         enforceBudget()

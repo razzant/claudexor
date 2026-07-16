@@ -797,6 +797,8 @@ export function claudeArgsForSpec(
         ...permissionArgs(spec.access),
       ];
   if (spec.model_hint) args.push("--model", spec.model_hint);
+  // W-C4 live deltas (engine-gated to single-candidate lanes; parser tags payload.delta).
+  if (spec.stream_deltas) args.push("--include-partial-messages");
   // Clamp onto claude's declared effort ladder; null = not
   // requested OR not tunable -> pass no flag. Never sends an invalid level.
   const eff = normalizeEffort(spec.effort_hint, CLAUDE_EFFORT_LEVELS);

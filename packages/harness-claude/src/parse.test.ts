@@ -47,6 +47,45 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out)).not.toThrow();
   });
 
+  it("maps stream_event text deltas to delta messages and skips other frames (W-C4)", () => {
+    const delta = parseClaudeEvent(
+      {
+        type: "stream_event",
+        parent_tool_use_id: null,
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "chu" } },
+      },
+      "s1",
+    );
+    expect(delta?.[0]?.type).toBe("message");
+    expect(delta?.[0]?.text).toBe("chu");
+    expect(delta?.[0]?.payload?.["delta"]).toBe(true);
+    expect(() => HarnessEvent.parse(delta?.[0])).not.toThrow();
+
+    // Subagent frames and non-text frames are recognized plumbing, never text.
+    expect(
+      parseClaudeEvent(
+        {
+          type: "stream_event",
+          parent_tool_use_id: "tu_1",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "sub" } },
+        },
+        "s1",
+      ),
+    ).toEqual([]);
+    expect(
+      parseClaudeEvent({ type: "stream_event", event: { type: "message_start" } }, "s1"),
+    ).toEqual([]);
+    expect(
+      parseClaudeEvent(
+        {
+          type: "stream_event",
+          event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "x" } },
+        },
+        "s1",
+      ),
+    ).toEqual([]);
+  });
+
   it("splits an assistant message into text + typed edit/tool events", () => {
     const out = parseClaudeEvent(
       {

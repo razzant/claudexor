@@ -170,6 +170,46 @@ import Testing
         #expect(unknownSpan == 0)
     }
 
+    private func deltaMessage(_ seq: Int, _ text: String) -> BusEnvelope {
+        BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object(["type": .string("message"), "text": .string(text), "delta": .bool(true)])
+        ]))
+    }
+
+    /// Ф2.5 W-C4: deltas grow ONE streaming block; the complete message then
+    /// REPLACES it — never a duplicated paragraph; a tool block closes it.
+    @Test func deltasGrowOneStreamingBlockAndTheFullMessageReplacesIt() {
+        var r = TranscriptReducer()
+        r.apply(deltaMessage(1, "The "))
+        r.apply(deltaMessage(2, "answer"))
+        r.apply(deltaMessage(3, " is 42."))
+        #expect(r.blocks.count == 1)
+        guard case .message(_, let streaming) = r.blocks.last else {
+            Issue.record("expected the streaming message block")
+            return
+        }
+        #expect(streaming == "The answer is 42.")
+
+        r.apply(message(4, "The answer is 42."))
+        #expect(r.blocks.count == 1)
+        guard case .message(_, let replaced) = r.blocks.last else {
+            Issue.record("expected the replaced message block")
+            return
+        }
+        #expect(replaced == "The answer is 42.")
+        let held = r.blocks.reduce(0) { sum, block in
+            if case .message(_, let t) = block { return sum + t.count }
+            return sum
+        }
+        #expect(held == r.textChars)
+
+        // A tool block closes the stream: the next full message is its own block.
+        r.apply(toolCall(5, target: "ls"))
+        r.apply(message(6, "separate note"))
+        #expect(r.blocks.count == 3)
+    }
+
     @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {
         var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 3_000, toolFieldCap: 500)
         for i in 1...20 { r.apply(toolCall(i, target: String(repeating: "c", count: 500))) }

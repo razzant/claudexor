@@ -1710,6 +1710,7 @@ export class Orchestrator {
     interaction?: InteractionChannel,
     budgetGuard?: (streamedUsd: number) => boolean,
     runInput?: RunInput,
+    streamDeltas = false,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(routed, contract, modelHint, effortHint);
@@ -1744,6 +1745,7 @@ export class Orchestrator {
       // native environment so the resumed vendor session is actually reachable.
       ...(inPlaceEnvelope ? {} : { env: wsm.envFor(envelope) }),
       raw_context_packet: rawContextPacket,
+      stream_deltas: streamDeltas,
     });
     if (!inPlaceEnvelope && runInput?.threadId && sessionFields?.resume_session_id) {
       log?.emit(
@@ -2489,6 +2491,7 @@ export class Orchestrator {
             return true;
           },
           input,
+          requestedSingleCandidate, // W-C4 deltas: single-candidate chat lane only (racing = noise x N)
         );
         ledger.settle(
           slot.leaseId,
@@ -4147,6 +4150,7 @@ export class Orchestrator {
               return ledger.tier() === "hard";
             },
             input,
+            true, // convergence runs one candidate: live deltas on (W-C4)
           );
           ledger.settle(
             lease.lease?.lease_id ?? "",

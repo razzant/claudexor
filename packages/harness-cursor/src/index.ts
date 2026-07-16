@@ -731,6 +731,8 @@ async function* runCursor(
     return;
   }
   const args = ["-p", "--output-format", "stream-json", ...accessArgs(spec.access)];
+  // W-C4 live deltas (engine-gated; the parser applies the documented taxonomy).
+  if (spec.stream_deltas) args.push("--stream-partial-output");
   if (spec.model_hint) args.push("--model", spec.model_hint);
   // Resume the thread's native cursor chat as a follow-up turn.
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
