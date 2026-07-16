@@ -1,0 +1,40 @@
+{
+  "$ref": "#/definitions/ThreadHeadPing",
+  "definitions": {
+    "ThreadHeadPing": {
+      "type": "object",
+      "properties": {
+        "thread_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Owning project id, or null for a no-project (global-partition) thread."
+        },
+        "revision": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Monotonic per-thread mutation counter; consumers drop stale/duplicate pings."
+        }
+      },
+      "required": [
+        "thread_id",
+        "project_id",
+        "revision"
+      ],
+      "additionalProperties": false,
+      "description": "Payload of the `thread.head.updated` GLOBAL-partition journal event: a content-free sidebar invalidation ping emitted on every thread mutation (create / rename / archive / turn-add / run-terminal, from any surface). It carries identity only — consumers refetch the authoritative thread summary instead of trusting event content."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1341,6 +1341,16 @@ describe("DaemonControlApiServer", () => {
         enqueueCalled = true;
         return { id: "job-x", state: "queued" };
       },
+      // A preflight-refused turn never reaches the daemon: any lookup is a bug.
+      async status() {
+        throw new Error("status must not be called for a preflight-refused turn");
+      },
+      async list() {
+        throw new Error("list must not be called for a preflight-refused turn");
+      },
+      async cancel() {
+        throw new Error("cancel must not be called for a preflight-refused turn");
+      },
     };
     const services: DaemonControlApiOptions["services"] = {
       threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
