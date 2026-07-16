@@ -19,8 +19,16 @@ struct RetryStatusNote: Hashable {
             parts.append(errorCategory.replacingOccurrences(of: "_", with: " "))
         }
         if let retryDelayMs, retryDelayMs > 0 {
-            parts.append(retryDelayMs >= 1000 ? "in \(retryDelayMs / 1000)s" : "in \(retryDelayMs)ms")
+            parts.append("in \(Self.humanizeDelay(retryDelayMs))")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// «2.5s» / «800ms» — fractional seconds are preserved, not truncated
+    /// (confirm #6: integer 2500/1000 rendered a misleading «2s»).
+    static func humanizeDelay(_ ms: Int) -> String {
+        guard ms >= 1000 else { return "\(ms)ms" }
+        if ms % 1000 == 0 { return "\(ms / 1000)s" }
+        return String(format: "%.1fs", Double(ms) / 1000.0)
     }
 }

@@ -62,10 +62,15 @@ import ClaudexorKit
     @Test func retryStatusLabelRendersTypedDetailAndOmitsUnknowns() {
         let full = RetryStatusNote(kind: "api_retry", attempt: 2, maxRetries: 10,
                                    retryDelayMs: 2500, errorCategory: "rate_limit")
-        #expect(full.label == "Retrying 2/10 · rate limit · in 2s")
+        // confirm #6: fractional seconds are preserved (not integer-truncated to «2s»).
+        #expect(full.label == "Retrying 2/10 · rate limit · in 2.5s")
 
         let sparse = RetryStatusNote(kind: "api_retry", attempt: nil, maxRetries: nil,
                                      retryDelayMs: nil, errorCategory: nil)
         #expect(sparse.label == "Retrying")
+
+        #expect(RetryStatusNote.humanizeDelay(800) == "800ms")
+        #expect(RetryStatusNote.humanizeDelay(2000) == "2s")
+        #expect(RetryStatusNote.humanizeDelay(1999) == "2.0s")
     }
 }

@@ -103,6 +103,7 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
   };
 
   let stopping = false;
+  let finalized = false;
   const onShutdownSignal = (sig: string): void => {
     // Duplicate deliveries coalesce (launchd/tooling may re-signal); the
     // deadline timer below already guarantees termination.
@@ -116,9 +117,11 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
     );
     void deps.stop().then(
       () => {
-        // stop() settled: cancel the deadline. If the loop then drains the
-        // process exits before the drain timer fires (unref'd); a leaked
-        // handle is swept with the exit code prevailing AT that time.
+        // If finalize() already ran (a clean shutdown reached main()'s tail
+        // before stop() settled), do NOT arm a fresh, uncancellable drain
+        // timer (confirm #5). Otherwise cancel the deadline and, if the loop
+        // does not drain, sweep a leaked handle with the exit code prevailing.
+        if (finalized) return;
         if (deadlineTimer) clearTimeout(deadlineTimer);
         deadlineTimer = null;
         drainTimer = armExitTimer(
@@ -127,6 +130,7 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
         );
       },
       (error: unknown) => {
+        if (finalized) return;
         if (deps.onStopFailure) deps.onStopFailure(error);
         else process.exitCode = 1;
         logLine(
@@ -142,7 +146,6 @@ export function armDaemonLifecycle(deps: LifecycleDeps): { finalize: () => void 
   signals.on("SIGTERM", onSigterm);
   signals.on("SIGINT", onSigint);
 
-  let finalized = false;
   return {
     finalize: () => {
       if (finalized) return;

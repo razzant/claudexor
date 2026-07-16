@@ -116,6 +116,27 @@ describe("armDaemonLifecycle", () => {
     }
   });
 
+  it("finalize() called SYNCHRONOUSLY after the signal wins the microtask race (confirm #5)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
+    const exits: number[] = [];
+    const lifecycle = armDaemonLifecycle({
+      daemonDir: root,
+      logPath: join(root, "daemon.log"),
+      signals,
+      snapshot: () => {},
+      forceExit: (code) => exits.push(code),
+      stopDeadlineMs: 40,
+      drainGraceMs: 40,
+      stop: async () => {}, // already-resolved: its .then runs on a later microtask
+    });
+    // finalize() runs BEFORE stop()'s success microtask arms the drain timer.
+    signals.emit("SIGTERM");
+    lifecycle.finalize();
+    await new Promise<void>((resolve) => setTimeout(resolve, 90));
+    expect(exits).toEqual([]); // the post-finalize callback must not re-arm
+  });
+
   it("finalize() before any timer fires cancels the escalation (sol #17)", async () => {
     const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
     const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;

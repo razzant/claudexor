@@ -32,6 +32,9 @@ struct ScopedInlineImage: View {
     var body: some View {
         content
             .task(id: target + "|" + roots.joined(separator: ":")) {
+                // A new (target, roots) resets to loading so a prior image is
+                // never shown for the new identity (confirm #4).
+                load = .loading
                 // Scope resolution + metadata + thumbnail decode all run off the
                 // main actor; only the bounded result publishes back.
                 let t = target, r = roots
@@ -44,6 +47,10 @@ struct ScopedInlineImage: View {
                     }
                     return Decoded(kind: .ready, image: image, path: path)
                 }.value
+                // The detached decode does NOT inherit `.task(id:)` cancellation
+                // — a stale slow decode must not overwrite a newer one (confirm
+                // #4), so publish only if this task is still current.
+                if Task.isCancelled { return }
                 switch decoded.kind {
                 case .ready: load = .ready(decoded.image!, decoded.path!)
                 case .failed: load = .failed
@@ -121,12 +128,14 @@ struct ScopedInlineImage: View {
 
     /// Documents/images safe to hand to `NSWorkspace.open` directly. Being
     /// inside repoRoot does NOT make agent output trusted — a `.command` /
-    /// `.app` / `.sh` link would launch agent-produced CODE on click (review
-    /// sol #11), so opening is allowed ONLY for this allowlist; anything else
-    /// is refused (reveal-in-Finder stays a safe manual fallback).
+    /// `.app` / `.sh` link would launch agent-produced CODE on click (sol #11),
+    /// so opening is allowed ONLY for this allowlist; anything else is refused
+    /// (reveal-in-Finder stays a safe manual fallback). ACTIVE formats that
+    /// execute in the default handler — .html/.htm/.svg run JavaScript in the
+    /// browser — are deliberately EXCLUDED (confirm #3).
     nonisolated static let openableExtensions: Set<String> = imageExtensions.union([
         "txt", "md", "markdown", "json", "yaml", "yml", "csv", "log",
-        "pdf", "html", "htm", "svg", "rtf", "xml", "toml",
+        "pdf", "rtf", "xml", "toml",
     ])
 
     /// Decide how a scoped file-link click resolves: `.open` for an in-scope

@@ -234,6 +234,47 @@ import Testing
         #expect(text == "streaming")
     }
 
+    private func emptyFinalMessage(_ seq: Int) -> BusEnvelope {
+        BusEnvelope(seq: seq, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object(["type": .string("message"), "text": .string(""), "final": .bool(true)])
+        ]))
+    }
+
+    /// confirm #2: an EMPTY-text final must ALSO seal the stream (the old
+    /// non-empty guard ran first, letting a post-empty-final delta through).
+    @Test func anEmptyFinalStillSealsTheStream() {
+        var r = TranscriptReducer()
+        r.apply(deltaMessage(1, "streaming"))
+        r.apply(emptyFinalMessage(2))     // empty final — must still seal
+        r.apply(deltaMessage(3, " GHOST"))
+        #expect(r.blocks.count == 1)
+        guard case .message(_, let text) = r.blocks.last else {
+            Issue.record("expected the sealed streaming block")
+            return
+        }
+        #expect(text == "streaming")
+    }
+
+    /// confirm #1: deltas, THEN a tool block, THEN the authoritative full
+    /// flush — the flush must RECONCILE the delta-built block by id (across
+    /// the tool), not append a duplicate paragraph.
+    @Test func aFullFlushReconcilesAcrossAnInterveningToolBlock() {
+        var r = TranscriptReducer()
+        r.apply(deltaMessage(1, "Hel"))
+        r.apply(deltaMessage(2, "lo"))
+        r.apply(toolCall(3, target: "ls"))         // orphans the streaming block from the tail
+        r.apply(message(4, "Hello"))               // complete flush of the SAME message
+        // The message block is replaced in place; no "Hel...lo" + "Hello" dup.
+        let messages = r.blocks.filter { if case .message = $0 { return true }; return false }
+        #expect(messages.count == 1)
+        guard case .message(_, let text) = messages.first else {
+            Issue.record("expected one reconciled message block")
+            return
+        }
+        #expect(text == "Hello")
+    }
+
     @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {
         var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 3_000, toolFieldCap: 500)
         for i in 1...20 { r.apply(toolCall(i, target: String(repeating: "c", count: 500))) }

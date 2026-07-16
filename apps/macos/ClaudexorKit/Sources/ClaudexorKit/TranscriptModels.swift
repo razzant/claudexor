@@ -63,10 +63,14 @@ public struct TranscriptReducer: Sendable {
     /// Wall-clock start of the OPEN thinking segment (from the events' own
     /// `ts`), so the merged block can disclose how long the reasoning ran.
     private var openThinkingStart: Date?
-    /// Block id of the delta-built streaming message awaiting its authoritative
-    /// full flush (W-C4): tracked by id so an intervening tool block cannot
-    /// orphan it, and the complete message reconciles in place (no doubling).
+    /// Block id of the currently-APPENDABLE delta block: a delta continues it
+    /// only while it is still last; a tool/thinking block clears it so the
+    /// next delta starts fresh (correct feed order).
     private var streamingMessageId: String?
+    /// Block id awaiting its authoritative full flush (W-C4): survives an
+    /// intervening tool block so the complete message reconciles by id instead
+    /// of appending a duplicate (confirm #1). Cleared on reconcile / final.
+    private var pendingFlushId: String?
     /// Set once a TYPED final message arrives: seals the delta stream so a
     /// late stray delta never appends after the answer is final (sol #9).
     private var finalized = false
@@ -127,23 +131,24 @@ public struct TranscriptReducer: Sendable {
             }
             return true
         case "message":
-            guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
-            // A TYPED final message (claude/cursor result, codex finalized
-            // last agent message) IS the answer bubble — repeating it in the
-            // live transcript would double the text the user just read. It also
-            // SEALS the delta stream so a late stray delta cannot append to a
-            // stale block after the answer is final (review sol #9).
+            // A TYPED final message (claude/cursor result, codex finalized last
+            // agent message) IS the answer bubble — never rendered here. It
+            // SEALS the delta stream so a late stray delta cannot append after
+            // the answer is final. Checked BEFORE the non-empty guard so an
+            // EMPTY final still seals (review confirm #2).
             if payload["final"]?.boolValue == true {
                 streamingMessageId = nil
+                pendingFlushId = nil
                 finalized = true
                 return true
             }
-            // Live deltas (W-C4) grow ONE streaming block. After a final the
-            // stream is SEALED (a late stray delta is dropped, sol #9). A
-            // delta continues the streaming block only while it is still LAST
-            // (real vendor protocols stream a message's deltas contiguously,
-            // ended by the complete flush before any tool block); otherwise it
-            // starts a fresh streaming block.
+            guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
+            // Live deltas (W-C4) grow ONE streaming block; after a final the
+            // stream is SEALED (a late stray delta is dropped). A delta
+            // continues the block only while it is still LAST (out-of-order
+            // append would corrupt the feed); otherwise it starts a fresh one.
+            // `pendingFlushId` remembers the block awaiting its authoritative
+            // full flush EVEN across an intervening tool block (confirm #1).
             if payload["delta"]?.boolValue == true {
                 if finalized { return false }
                 if let sid = streamingMessageId, blocks.last?.id == sid,
@@ -157,16 +162,19 @@ public struct TranscriptReducer: Sendable {
                     append(.message(id: id, text: boundHead(text)))
                     streamingMessageId = id
                 }
+                pendingFlushId = streamingMessageId
                 return true
             }
             // The complete (non-delta) message REPLACES its delta-built block
-            // in place when that block is still last (no doubled paragraph);
-            // otherwise it is a standalone message.
-            if let sid = streamingMessageId, blocks.last?.id == sid,
-               case .message(let id, let prev) = blocks.last {
+            // by id — even after an intervening tool block orphaned it from the
+            // tail (confirm #1) — instead of appending a duplicate paragraph.
+            if let pid = pendingFlushId,
+               let i = blocks.lastIndex(where: { $0.id == pid }),
+               case .message(let id, let prev) = blocks[i] {
                 let bounded = boundHead(text)
                 textChars += bounded.count - prev.count
-                blocks[blocks.count - 1] = .message(id: id, text: bounded)
+                blocks[i] = .message(id: id, text: bounded)
+                pendingFlushId = nil
                 streamingMessageId = nil
                 enforceBudget()
                 return true
@@ -291,8 +299,9 @@ public struct TranscriptReducer: Sendable {
         // next thinking event starts a new segment (and a new timer). Any
         // non-message block likewise closes the open streaming message.
         if case .thinking = block {} else { openThinkingStart = nil }
-        // A non-message block ends the delta stream: the next delta is a new
-        // message, not a continuation of the pre-tool one.
+        // A non-message block ends the APPENDABLE delta stream (the next delta
+        // is a new message), but `pendingFlushId` survives so a later complete
+        // flush still reconciles the pre-tool block by id (confirm #1).
         if case .message = block {} else { streamingMessageId = nil }
         blocks.append(block)
         textChars += chars(of: block)

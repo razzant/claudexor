@@ -88,6 +88,14 @@ import Testing
         if case .refuse = ScopedInlineImage.openDecision(base + "/run.sh", roots: [base]) {} else {
             Issue.record(".sh must be refused")
         }
+        // confirm #3: active formats that execute in the default handler
+        // (.html/.svg run JavaScript in the browser) are refused, not opened.
+        for active in ["page.html", "vec.svg", "x.htm"] {
+            try Data("<script>".utf8).write(to: URL(fileURLWithPath: base + "/" + active))
+            if case .refuse = ScopedInlineImage.openDecision(base + "/" + active, roots: [base]) {} else {
+                Issue.record("\(active) must be refused (active format)")
+            }
+        }
         if case .refuse(let r) = ScopedInlineImage.openDecision("/etc/hosts", roots: [base]) {
             #expect(r.contains("scope"))
         } else { Issue.record("out-of-scope must be refused") }
