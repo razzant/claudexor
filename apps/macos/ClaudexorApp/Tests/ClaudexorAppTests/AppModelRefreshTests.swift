@@ -174,6 +174,29 @@ struct AppModelRefreshTests {
         #expect(model.liveTasks[0].capKnown)
     }
 
+    @MainActor
+    @Test func availabilityReadsServerRoutableIntentsNotLocalDerivation() {
+        let model = AppModel(requestNotificationAuthorization: false)
+        // Healthy + intent enabled, but the SERVER says not routable (e.g.
+        // auth died between doctor runs): the chip must be unavailable — the
+        // client never re-derives routability from health + enabled intents.
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "native",
+            intents: ["implement"], routableIntents: [],
+            reasons: ["claude session expired"]
+        )]
+        let unavailable = model.availability(for: .claude, mode: .agent)
+        #expect(!unavailable.available)
+        #expect(unavailable.reason == "claude session expired")
+
+        // The server's routable verdict is sufficient for availability.
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "native",
+            intents: ["implement"], routableIntents: ["implement"]
+        )]
+        #expect(model.availability(for: .claude, mode: .agent).available)
+    }
+
     @Test func quotaDatesParseFractionalIsoBeforePlainIso() {
         let fractional = "2026-07-15T10:00:01.123Z"
         let plain = "2026-07-15T10:00:01Z"

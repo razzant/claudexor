@@ -27,13 +27,15 @@ extension AppModel {
                                        reason: "\(family.label) is disabled in Settings (Per-Harness Defaults).",
                                        intent: intent, info: info)
         }
-        guard info.health == .ok else {
-            return HarnessAvailability(family: family, available: false,
-                                       reason: info.reasons.first ?? info.auth,
-                                       intent: intent, info: info)
-        }
-        guard info.intents.contains(intent) else {
-            let reason = info.reasons.first ?? "\(family.label) is not enabled for \(intent). Fix auth/install status in Harness Doctor."
+        // Server-side routability truth (Р8/W14): the doctor gates
+        // routableIntents on the engine, so a degraded/unauth'd harness ships
+        // an EMPTY list. The app formats that verdict — it no longer
+        // re-derives availability from health + enabled intents.
+        guard info.routableIntents.contains(intent) else {
+            let reason = info.reasons.first
+                ?? (info.health == .ok
+                    ? "\(family.label) is not routable for \(intent). Fix auth/install status in Harness Doctor."
+                    : info.auth)
             return HarnessAvailability(family: family, available: false,
                                        reason: reason, intent: intent, info: info)
         }

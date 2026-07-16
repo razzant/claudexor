@@ -751,6 +751,10 @@ struct HarnessInfo: Identifiable, Hashable {
     var auth: String
     var authSources: [HarnessAuthSource] = []
     var intents: [String]
+    /// Server-side doctor-gated routability truth (Р8/W14): the intents this
+    /// harness will ACTUALLY route right now. Empty = routes nothing. The app
+    /// formats this field; it never re-derives availability from health+intents.
+    var routableIntents: [String] = []
     var reasons: [String] = []
     var checks: [String] = []
     /// True when the harness manifest declares a finite image attachment input —

@@ -10,6 +10,12 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let status: String
     public let manifest: JSONValue?
     public let enabledIntents: [String]
+    /// Intents this harness is ACTUALLY routable for right now — the SERVER's
+    /// doctor-gated availability truth (Р8/W14). Surfaces read this field and
+    /// never re-derive availability from status+intents. An empty array means
+    /// "routes nothing" (degraded/unauth'd harness, or a legacy daemon that
+    /// predates the field) — fail-closed, never "ready".
+    public let routableIntents: [String]
     public let disabledIntents: [String]
     public let checks: [HarnessCheck]
     public let reasons: [String]?
@@ -24,7 +30,7 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let configuredModelCheck: HarnessModelCheck?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, manifest, enabledIntents, disabledIntents, checks, reasons, authSources, configuredModel, configuredModelCheck
+        case id, status, manifest, enabledIntents, routableIntents, disabledIntents, checks, reasons, authSources, configuredModel, configuredModelCheck
     }
 
     public init(from decoder: Decoder) throws {
@@ -33,6 +39,7 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
         status = try c.decode(String.self, forKey: .status)
         manifest = try c.decodeIfPresent(JSONValue.self, forKey: .manifest)
         enabledIntents = try c.decodeIfPresent([String].self, forKey: .enabledIntents) ?? []
+        routableIntents = try c.decodeIfPresent([String].self, forKey: .routableIntents) ?? []
         disabledIntents = try c.decodeIfPresent([String].self, forKey: .disabledIntents) ?? []
         checks = try c.decodeIfPresent([HarnessCheck].self, forKey: .checks) ?? []
         reasons = try c.decodeIfPresent([String].self, forKey: .reasons)

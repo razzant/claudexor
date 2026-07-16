@@ -243,7 +243,8 @@ import Testing
           "id": "codex",
           "status": "degraded",
           "manifest": null,
-          "enabledIntents": [],
+          "enabledIntents": ["implement"],
+          "routableIntents": [],
           "disabledIntents": ["review"],
           "checks": [{"id":"isolated_api_smoke","status":"fail","detail":"401"}],
           "reasons": ["isolated smoke failed"]
@@ -251,13 +252,18 @@ import Testing
         """
         let status = try JSONDecoder().decode(HarnessStatus.self, from: Data(rich.utf8))
         #expect(status.id == "codex")
-        #expect(status.enabledIntents.isEmpty)
+        #expect(status.enabledIntents == ["implement"])
+        // Enabled but NOT routable: the server's doctor-gated verdict decodes
+        // as-is — the degraded harness honestly routes nothing (Р8/W14).
+        #expect(status.routableIntents.isEmpty)
         #expect(status.disabledIntents == ["review"])
         #expect(status.checks == [HarnessCheck(id: "isolated_api_smoke", status: "fail", detail: "401")])
 
         let legacy = #"{"id":"claude","status":"ok","manifest":null}"#
         let legacyStatus = try JSONDecoder().decode(HarnessStatus.self, from: Data(legacy.utf8))
         #expect(legacyStatus.enabledIntents.isEmpty)
+        // Legacy daemon without the field = routes nothing (fail-closed).
+        #expect(legacyStatus.routableIntents.isEmpty)
         #expect(legacyStatus.disabledIntents.isEmpty)
         #expect(legacyStatus.checks.isEmpty)
     }
