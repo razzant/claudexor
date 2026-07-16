@@ -14,6 +14,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { withExecutableInspection, isBoundedRegularExecutable } from "@claudexor/core";
 import {
   SetupLoginManifest as SetupLoginManifestSchema,
   SetupLoginPermit as SetupLoginPermitSchema,
@@ -75,39 +76,26 @@ export function readLoginManifest(path: string): SetupLoginManifest {
 }
 
 export function captureExecutableEvidence(path: string): SetupExecutableEvidence {
-  const canonical = realpathSync(resolve(path));
-  const fd = openSync(canonical, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = fstatSync(fd, { bigint: true });
-    if (
-      !stat.isFile() ||
-      stat.nlink !== 1n ||
-      stat.size < 0n ||
-      stat.size > 1024n * 1024n * 1024n
-    ) {
-      throw new Error("setup executable is not a bounded singly-linked regular file");
-    }
-    const named = lstatSync(canonical, { bigint: true });
-    if (
-      named.isSymbolicLink() ||
-      !named.isFile() ||
-      named.dev !== stat.dev ||
-      named.ino !== stat.ino
-    ) {
-      throw new Error("setup executable changed during safe open");
+  // Shared fact producer (identity + facts, O_NOFOLLOW canonical, same fd handed
+  // back for a byte-faithful hash). Evidence pins dev+inode+sha256, which fully
+  // identify the exact bytes that will run; the link count is deliberately NOT a
+  // rejection here (the official vendor installer hard-links its platform binary,
+  // nlink === 2, and Claudexor never writes it). nlink === 1 stays strict only
+  // for daemon-OWNED mutable files at their own call-sites (journal, token).
+  return withExecutableInspection(path, (info, fd) => {
+    if (!isBoundedRegularExecutable(info)) {
+      throw new Error("setup executable is not a stable bounded regular file");
     }
     const bytes = readFileSync(fd);
     return {
-      realpath: canonical,
+      realpath: info.realpath,
       sha256: createHash("sha256").update(bytes).digest("hex"),
-      size: Number(stat.size),
-      mode: Number(stat.mode & 0o7777n),
-      device: String(stat.dev),
-      inode: String(stat.ino),
+      size: info.size,
+      mode: info.mode,
+      device: info.device,
+      inode: info.inode,
     };
-  } finally {
-    closeSync(fd);
-  }
+  });
 }
 
 export function commandDigest(

@@ -1,6 +1,6 @@
-import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import { isLaunchableExecutable } from "./executable-inspection.js";
 
 /**
  * Single producer for the PATH every local harness discovery/run surface should
@@ -49,14 +49,14 @@ export function resolveHarnessBinary(
 ): string | null {
   const names = binaryNameCandidates(bin, source);
   if (isAbsolute(bin)) {
-    for (const name of names) if (isExecutableFile(name)) return name;
+    for (const name of names) if (isLaunchableExecutable(name)) return name;
     return null;
   }
   for (const dir of normalizedHarnessPath(source).split(delimiter)) {
     if (!dir) continue;
     for (const name of names) {
       const candidate = join(dir, name);
-      if (isExecutableFile(candidate)) return candidate;
+      if (isLaunchableExecutable(candidate)) return candidate;
     }
   }
   return null;
@@ -74,18 +74,6 @@ function binaryNameCandidates(bin: string, source: NodeJS.ProcessEnv): string[] 
   const lower = bin.toLowerCase();
   if (exts.some((e) => lower.endsWith(e.toLowerCase()))) return [bin];
   return [bin, ...exts.map((e) => bin + e)];
-}
-
-/** Spawn-faithful candidate test: a regular file the process may execute
- *  (a directory or chmod-x file on PATH must not be reported as the binary). */
-function isExecutableFile(path: string): boolean {
-  try {
-    if (!statSync(path).isFile()) return false;
-    if (process.platform !== "win32") accessSync(path, constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**

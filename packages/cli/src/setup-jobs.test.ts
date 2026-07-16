@@ -401,6 +401,22 @@ describe("setup jobs", () => {
     }
   });
 
+  it("keeps the manual command selectable on a pre-launch failure (W2)", () => {
+    // Non-darwin bails before any Terminal, the same shape as any pre-manifest
+    // failure: the operator must still see the exact command to run by hand
+    // (DESIGN_SYSTEM setup contract, INV-093) — never a null command.
+    const manager = createSetupJobManager({
+      rootDir: join(root, "prelaunch-command"),
+      platform: "linux",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: () => fakeOpener(),
+    });
+    const job = manager.create(LOGIN_REQUEST);
+    expect(job.outcome?.reason).toBe("launch_failed");
+    expect(job.command).toBeTruthy();
+    expect(job.command).toContain("codex");
+  });
+
   it("fences late opener callbacks and journal writes once shutdown begins", async () => {
     const opener = fakeOpener();
     const manager = createSetupJobManager({

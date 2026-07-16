@@ -182,6 +182,10 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     reason: NonNullable<ControlSetupJob["outcome"]>["reason"],
     message: string,
     evidence: { exitCode?: number | null; signal?: string | null } = {},
+    // A pre-launch failure still keeps the operator's manual command selectable
+    // (DESIGN_SYSTEM setup contract, INV-093) — never a null command with the
+    // reason buried in one HTTP response.
+    command?: string,
   ): ControlSetupJob {
     const done = update(jobId, {
       state,
@@ -189,6 +193,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       outcome: { reason, ...evidence },
       finishedAt: iso(),
       message,
+      ...(command ? { command } : {}),
     });
     logAfterMutation(jobId, message);
     return done;
@@ -942,6 +947,8 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         "failed",
         "launch_failed",
         `Terminal-handoff login is macOS-only. Run it yourself, then recheck Harness Doctor: ${spec.displayCommand}`,
+        {},
+        spec.displayCommand,
       );
     }
     try {
@@ -995,6 +1002,8 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
           "failed",
           "launch_failed",
           `Could not open Terminal for ${job.harness} login: ${detail}.`,
+          {},
+          spec.displayCommand,
         );
       };
       opener.once("error", (err) => failLaunch(err.message));
@@ -1009,6 +1018,8 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         "failed",
         "launch_failed",
         `Could not prepare or open Terminal for ${job.harness} login: ${err instanceof Error ? err.message : String(err)}.`,
+        {},
+        spec.displayCommand,
       );
     }
   }

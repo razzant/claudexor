@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -15,6 +16,8 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ProcessGroupService,
+  inspectExecutable,
+  resolveHarnessBinary,
   type KnownProcessIdentity,
   type ProcessIdentityReader,
 } from "@claudexor/core";
@@ -361,5 +364,61 @@ describe("setup-login sidecar protocol v2", () => {
     });
     expect(readFileSync(outside, "utf8")).toBe("do-not-touch\n");
     expect(readRunnerResult(destination)).toMatchObject({ exitCode: 0, commandStarted: true });
+  });
+});
+
+// W2: the official vendor installer (e.g. @anthropic-ai/claude-code) hard-links
+// its platform binary into the launcher, so a legitimate CLI has nlink >= 2.
+// Setup-login must accept it (dev+inode+sha256 identify the exact bytes) and
+// must agree with the PATH resolver — the parity break that shipped in v2.0.0.
+describe("setup-login executable evidence — hard-link tolerance (W2)", () => {
+  function writeExecutable(dir: string, name: string): string {
+    mkdirSync(dir, { mode: 0o700, recursive: true });
+    const p = join(dir, name);
+    writeFileSync(p, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    chmodSync(p, 0o755);
+    return p;
+  }
+
+  it("accepts a hard-linked (nlink=2) vendor binary and pins its exact bytes", () => {
+    const primary = writeExecutable(join(root, "vendor"), "claude-code");
+    const launcher = join(root, "vendor", "claude.exe");
+    linkSync(primary, launcher); // second hard link → both inodes are nlink=2
+
+    const facts = inspectExecutable(launcher);
+    expect(facts.nlink).toBe(2); // captured as a FACT, not a rejection
+    expect(facts.isRegularFile).toBe(true);
+    expect(facts.identityStable).toBe(true);
+
+    const evidence = captureExecutableEvidence(launcher);
+    const primaryEvidence = captureExecutableEvidence(primary);
+    // Same inode/device/bytes: the two links are the same file.
+    expect(evidence.inode).toBe(primaryEvidence.inode);
+    expect(evidence.device).toBe(primaryEvidence.device);
+    expect(evidence.sha256).toBe(primaryEvidence.sha256);
+  });
+
+  it("resolveHarnessBinary and evidence agree on the same hard-linked binary (parity)", () => {
+    const dir = join(root, "path-vendor");
+    const primary = writeExecutable(dir, "claude-code");
+    const onPath = join(dir, "claude");
+    linkSync(primary, onPath);
+
+    // Resolver (cheap launchable probe) accepts it...
+    const resolvedAbsolute = resolveHarnessBinary(onPath, { HOME: root, PATH: "" });
+    expect(resolvedAbsolute).toBe(onPath);
+    const resolvedByName = resolveHarnessBinary("claude", { HOME: root, PATH: dir });
+    expect(resolvedByName).toBe(onPath);
+    // ...and the evidence gate accepts the very same file (no nlink rejection).
+    expect(() => captureExecutableEvidence(onPath)).not.toThrow();
+  });
+
+  it("realpath-resolves a symlinked launcher before capturing evidence", () => {
+    const primary = writeExecutable(join(root, "sym-vendor"), "claude-code");
+    const link = join(root, "sym-vendor", "claude");
+    symlinkSync(primary, link);
+    const evidence = captureExecutableEvidence(link);
+    expect(evidence.realpath).toBe(realpathSync(primary));
+    expect(evidence.sha256).toBe(captureExecutableEvidence(primary).sha256);
   });
 });
