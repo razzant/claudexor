@@ -63,6 +63,10 @@ export interface AttemptTelemetry {
   authMode: "local_session" | "api_key" | null;
   /** Concrete credential source disclosed alongside the route (never guessed). */
   authSource: AuthSourceKind | null;
+  /** Credential profile the attempt ACTUALLY ran under (INV-135), first-wins
+   * from the adapter's per-event stamp — rotation makes this differ from the
+   * contract's requested id, and the receipt must carry the effective truth. */
+  profileId: string | null;
   /** Model hint the engine SENT this attempt (requested side; observedModel is
    * the disclosed side of the model x route truth). */
   requestedModel: string | null;
@@ -114,6 +118,7 @@ export function createAttemptTelemetry(
     observedModel: null,
     authMode: null,
     authSource: null,
+    profileId: null,
     requestedModel,
     transientFailures: [],
     rateLimits: [],
@@ -145,6 +150,10 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   }
   // First-wins like the route: the source is decided once before spawn.
   if (!t.authSource && ev.credential_source) t.authSource = ev.credential_source;
+  // LAST-wins (unlike the route): W5.4 failover rotates the profile between
+  // native tries of ONE attempt, and the receipt must name the try that
+  // produced the deliverable.
+  if (ev.credential_profile_id) t.profileId = ev.credential_profile_id;
   if (ev.transient) {
     t.transientFailures.push({
       kind: ev.transient.kind,
@@ -370,6 +379,7 @@ export function attemptTelemetryRecord(
     observed_model: t.observedModel,
     auth_mode: t.authMode,
     auth_source: t.authSource,
+    profile_id: t.profileId,
     requested_model: t.requestedModel,
     request_requirements: t.requestRequirements,
     web: {

@@ -226,6 +226,16 @@ export const AttemptTelemetryRecord = z
       .describe(
         "Concrete credential source the attempt disclosed (native_session/api_key_env/...); null when never disclosed.",
       ),
+    /** Credential profile the attempt ACTUALLY ran under (INV-135), from the
+     * adapter's per-event stamp; rotation makes this differ from the run's
+     * requested id. Null = engine-default credentials or never disclosed. */
+    profile_id: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Credential profile the attempt actually ran under (adapter-stamped); null = engine default or undisclosed.",
+      ),
     /** Model hint the engine actually SENT this attempt (requested side of the
      * model x route truth; observed_model is the disclosed side). */
     requested_model: z

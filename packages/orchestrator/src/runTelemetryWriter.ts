@@ -77,7 +77,10 @@ export function writeRunTelemetryArtifact(args: {
           reason: deriveAuthRouteReason(requestedRoute, disclosing?.auth_mode ?? null),
           harness_id: disclosing?.harness_id ?? null,
           attempt_id: disclosing?.attempt_id ?? null,
-          profile_id: contract.credential_profile_id,
+          // The DECIDING attempt's disclosed profile (adapters stamp it on
+          // stream events; rotation makes it differ from the contract's
+          // requested id) — never the frozen request.
+          profile_id: disclosing?.profile_id ?? null,
           // Typed mismatch, only when BOTH sides are known and differ.
           model_mismatch:
             requestedModel !== null && observedModel !== null && requestedModel !== observedModel

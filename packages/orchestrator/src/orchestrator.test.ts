@@ -1651,7 +1651,12 @@ describe("Orchestrator", () => {
             profile: spec.credential_profile?.profile_id ?? null,
             session: spec.session_id,
           });
-          yield { type: "started", session_id: spec.session_id, ts };
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            credential_profile_id: spec.credential_profile?.profile_id,
+          };
           if (spawns.length === 1) {
             // The TYPED vendor-limit signal, then a terminating error with an
             // EMPTY deliverable — exactly the rotation_retry_eligible shape.
@@ -1695,6 +1700,13 @@ describe("Orchestrator", () => {
       // Failover is a NEW vendor session under the new credential.
       expect(new Set(spawns.map((s) => s.session)).size).toBe(2);
       expect(events).toContain("route.profile.rotated");
+      // The run's auth-route receipt carries the EFFECTIVE profile of the
+      // deciding attempt (release scope review, cross_module_bugs): after the
+      // a→b failover the receipt must say "b", never the requested "a".
+      const telemetry = new ArtifactStore(repo).readYaml<{
+        auth_route?: { profile_id?: string | null };
+      }>(join(res.runDir, "final", "telemetry.yaml"));
+      expect(telemetry.auth_route?.profile_id).toBe("b");
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;

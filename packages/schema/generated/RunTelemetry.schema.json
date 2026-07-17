@@ -227,6 +227,14 @@
                 "description": "Concrete credential source the attempt disclosed (native_session/api_key_env/...); null when never disclosed.",
                 "default": null
               },
+              "profile_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Credential profile the attempt actually ran under (adapter-stamped); null = engine default or undisclosed."
+              },
               "requested_model": {
                 "type": [
                   "string",
