@@ -42,7 +42,7 @@ jobs:
       # (the Node-20-compatible pinned pnpm version). Specifying both causes
       # ERR_PNPM_BAD_PM_VERSION.
       - name: Install pnpm
-        uses: pnpm/action-setup@7088e561eb65bb68695d245aa206f005ef30921d # v4.1.0
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
