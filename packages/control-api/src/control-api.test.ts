@@ -5201,6 +5201,47 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("budget snapshot prefers the ledger's CASH disclosure over valuation observations (W4.3)", async () => {
+    // A decision-less subscription run (plan/ask): valuation ticks are
+    // NON-ZERO while the cash truth is $0. Summing them as spend showed
+    // valuation under a "real money" label (Ф4 review); budget.cash — the
+    // ledger's cumulative disclosure — wins, last-write.
+    const { daemon, record } = fakeDaemon();
+    rmSync(join(record.runDir as string, "arbitration", "decision.yaml"), { force: true });
+    appendFileSync(
+      join(record.runDir as string, "events.jsonl"),
+      [
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "budget.observation",
+          payload: { kind: "spend", usd: 2.5, estimated: true },
+        }),
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "budget.cash",
+          payload: { cash_spend_usd: 0, valuation_usd: 2.5 },
+        }),
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as {
+        budget: { spendUsd?: number | null; source: string; estimated: boolean };
+      };
+      expect(body.budget.spendUsd).toBe(0); // the cash truth, not the $2.50 valuation
+      expect(body.budget.source).toBe("events");
+      expect(body.budget.estimated).toBe(false); // settled ledger cash is exact
+    });
+  });
+
   it("keeps readiness-preferred auth disclosures informational in the timeline", async () => {
     const { daemon, record } = fakeDaemon();
     appendFileSync(

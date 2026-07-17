@@ -16,7 +16,6 @@ struct HarnessReadinessPresentation: Equatable {
     var health: HarnessHealth
     var summary: String
     var rows: [ReadinessCheck]
-    var modelIssue: String?
     /// The un-normalized evidence (reasons + raw probe ids) for "copy raw".
     var rawEvidence: String
 
@@ -27,7 +26,6 @@ struct HarnessReadinessPresentation: Equatable {
             health: info?.health ?? .unavailable,
             summary: info?.auth ?? "Harness Doctor has not loaded this harness.",
             rows: info?.readiness ?? [],
-            modelIssue: info?.configuredModelIssue,
             rawEvidence: ((info?.reasons ?? []) + (info?.checks ?? [])).joined(separator: "\n")
         )
     }
@@ -80,14 +78,6 @@ struct HarnessReadinessCard<Actions: View>: View {
                         }
                     }
                 }
-            }
-            // The doctor's strict model verdict: a green harness must never
-            // hide a doomed configured default model.
-            if let issue = presentation.modelIssue {
-                Label(issue, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-                    .lineLimit(3)
-                    .help("The configured default model fails this harness's model truth source; runs would be refused at preflight.")
             }
             HStack(spacing: Theme.Spacing.sm) {
                 actions()

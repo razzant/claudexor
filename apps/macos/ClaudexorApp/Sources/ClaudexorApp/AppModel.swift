@@ -424,20 +424,15 @@ final class AppModel {
                     guard case .array(let values) = status.manifest?["capabilities"]?["effort_levels"] else { return [] }
                     return values.compactMap(\.stringValue)
                 }()
-                // The doctor's configured-model verdict rides the DTO —
-                // surface a rejection so a doomed default is visible in Settings.
-                let modelIssue: String? = {
-                    guard let check = status.configuredModelCheck, check.status == "rejected" else { return nil }
-                    let model = status.configuredModel ?? "configured model"
-                    return "\(model): \(check.message ?? "refused by the model truth source")"
-                }()
+                // The configured-model verdict is a typed `configured_model`
+                // readiness row (daemon-normalized) — the ONE owner; no
+                // separate string projection here (Ф4 review lane 2 #2).
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
                                    authSources: status.authSources,
                                    intents: status.enabledIntents, routableIntents: status.routableIntents,
                                    reasons: status.reasons ?? [], checks: checks, readiness: status.readiness,
                                    acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
-                                   effortLevels: effortLevels,
-                                   configuredModelIssue: modelIssue)
+                                   effortLevels: effortLevels)
             }
             return true
         } catch {
@@ -449,7 +444,11 @@ final class AppModel {
     @discardableResult
     func refreshAuthReadinessAfterSetupLifecycle(for family: HarnessFamily, job: SetupJob?) async -> Bool {
         guard let request = family.authReadinessRequest(after: job) else { return false }
-        return await refreshAuthReadiness(for: family, request: request)
+        let refreshed = await refreshAuthReadiness(for: family, request: request)
+        // The card renders daemon-NORMALIZED rows, which only a harness-list
+        // refresh rebuilds — else the sheet's own recheck left them stale.
+        _ = await refreshHarnesses(fresh: true)
+        return refreshed
     }
 
     @discardableResult

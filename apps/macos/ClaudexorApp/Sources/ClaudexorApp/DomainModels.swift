@@ -775,9 +775,6 @@ struct HarnessInfo: Identifiable, Hashable {
     var acceptsBrowser: Bool = false
     /// Adapter-declared effort ladder. Empty means the control must stay hidden.
     var effortLevels: [String] = []
-    /// The doctor's strict verdict on the user's configured default model
-    /// (nil = no model configured or check ok): the actionable refusal text.
-    var configuredModelIssue: String? = nil
     var id: String { family.rawValue }
     var nativeSessionReady: Bool {
         authSources.first { $0.source == "native_session" }?.isVerifiedNativeSession == true

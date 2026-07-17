@@ -2454,25 +2454,35 @@ function budgetSnapshot(
   let source: "decision" | "events" | "settings" | "unknown" =
     spendUsd === null ? "unknown" : "decision";
   if (spendUsd === null) {
-    // budget.observation is the engine's authoritative spend stream (it covers
-    // harness AND reviewer-panel spend, e.g. plan review which never writes a
-    // decision record). Fall back to raw usage events only for legacy runs
-    // that predate observations — never sum both (each usage cost is mirrored
-    // as one observation).
+    // The CASH truth for a decision-less run (plan/ask/explore — they never
+    // write a decision record) is the ledger's own `budget.cash` disclosure:
+    // cumulative, last-wins, subscription work settles to 0 there (W4.3).
+    // budget.observation ticks are vendor VALUATION — for a subscription run
+    // they are NON-ZERO while the cash truth is $0.00, so summing them as
+    // spend showed valuation under a "real money" label (Ф4 review lane 1).
+    // They remain only as the LEGACY fallback for runs predating budget.cash
+    // (every new run settles at least once), disclosed as estimated.
+    let lastCash: number | null = null;
     let observationSpend = 0;
     let sawObservation = false;
+    let observationEstimated = false;
     let eventSpend = 0;
     let sawCost = false;
     let sawUsage = false;
     for (const ev of readRunEvents(rec)) {
       const payload = eventPayload(ev);
+      if (ev["type"] === "budget.cash") {
+        const cash = payload["cash_spend_usd"];
+        if (typeof cash === "number" && Number.isFinite(cash)) lastCash = cash;
+        continue;
+      }
       if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {
         const usd = payload["usd"];
         if (typeof usd === "number" && Number.isFinite(usd)) {
           observationSpend += usd;
           sawObservation = true;
         }
-        if (payload["estimated"] === true) estimated = true;
+        if (payload["estimated"] === true) observationEstimated = true;
         continue;
       }
       if (ev["type"] !== "harness.event") continue;
@@ -2484,18 +2494,24 @@ function budgetSnapshot(
           eventSpend += cost;
           sawCost = true;
         }
-        if ((usage as Record<string, unknown>)["estimated"] === true) estimated = true;
+        if ((usage as Record<string, unknown>)["estimated"] === true) observationEstimated = true;
       }
     }
-    if (sawObservation) {
+    if (lastCash !== null) {
+      spendUsd = lastCash;
+      source = "events";
+    } else if (sawObservation) {
       spendUsd = observationSpend;
       source = "events";
+      estimated = true; // valuation-derived: at best an estimate of cash
     } else if (sawCost) {
       spendUsd = eventSpend;
       source = "events";
+      estimated = true;
     } else if (sawUsage) {
       source = "events";
     }
+    if (observationEstimated && lastCash === null) estimated = true;
   }
   const remainingUsd =
     paidBudget.kind === "finite" && spendUsd !== null

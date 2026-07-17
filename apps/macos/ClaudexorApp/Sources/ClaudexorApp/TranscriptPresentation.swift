@@ -3,7 +3,7 @@ import ClaudexorKit
 
 /// PURE fold of transcript blocks into the flat rows the chat renders (W4.4
 /// В9а): one line per tool, runs of >3 same-name OK tools collapse into one
-/// group row («Read · 6 files»), thinking is a single timer line, and raw
+/// group row («Read · 6 calls»), thinking is a single timer line, and raw
 /// output lives ONLY in the inspector. No inline chevrons anywhere. Honest
 /// degradation: a stream without an event kind simply has no such rows.
 enum TranscriptPresentation {
