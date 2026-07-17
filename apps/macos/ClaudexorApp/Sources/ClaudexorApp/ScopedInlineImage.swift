@@ -175,12 +175,31 @@ struct ScopedInlineImage: View {
         let key = "\(path)|\(size)|\(mtime)" as NSString
         if let hit = previewCache.object(forKey: key) { return hit.image }
         if size > maxSourceBytes { return nil }
-        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                  kCGImageSourceCreateThumbnailFromImageAlways: true,
-                  kCGImageSourceThumbnailMaxPixelSize: maxThumbnailPixels,
-                  kCGImageSourceCreateThumbnailWithTransform: true,
-              ] as CFDictionary)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil)
+        else { return nil }
+        return cachedThumbnail(source: source, key: key)
+    }
+
+    /// The same bounded decode for ALREADY-FETCHED bytes (artifact gallery,
+    /// W3.7): identical thumbnail bound and byte-costed cache — a gallery of
+    /// full-resolution screenshots must not decode unbounded on the main
+    /// actor. `cacheKey` carries the caller's identity (run + path); the byte
+    /// count disambiguates a re-produced artifact at the same path.
+    nonisolated static func boundedPreview(data: Data, cacheKey: String) -> NSImage? {
+        let key = "data|\(cacheKey)|\(data.count)" as NSString
+        if let hit = previewCache.object(forKey: key) { return hit.image }
+        if data.count > maxSourceBytes { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return cachedThumbnail(source: source, key: key)
+    }
+
+    /// One owner of the thumbnail bound + cache insert for both source kinds.
+    private nonisolated static func cachedThumbnail(source: CGImageSource, key: NSString) -> NSImage? {
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxThumbnailPixels,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ] as CFDictionary)
         else { return nil }
         let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         previewCache.setObject(ImageBox(image), forKey: key, cost: cg.bytesPerRow * cg.height)

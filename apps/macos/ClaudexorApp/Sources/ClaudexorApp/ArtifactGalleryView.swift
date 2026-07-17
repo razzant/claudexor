@@ -192,6 +192,10 @@ private struct ArtifactCard: View {
         }
     }
 
+    /// Off-main handoff of an already-bounded decode (same Swift 6 actor-
+    /// crossing box as ScopedInlineImage).
+    private struct DecodedCard: @unchecked Sendable { let image: NSImage? }
+
     private func loadImage() async {
         guard image == nil, !imageLoadFailed else { return }
         let data = produced
@@ -201,7 +205,14 @@ private struct ArtifactCard: View {
             imageLoadFailed = true
             return
         }
-        if let loaded = NSImage(data: data) {
+        // W3.7: the SAME bounded decode as inline chat previews (thumbnail
+        // bound + byte-costed cache), OFF the main actor — a gallery of
+        // full-resolution screenshots must not full-decode in `body`'s task.
+        let key = "\(runId)|\(produced ? "produced" : "run")|\(art.path)"
+        let decoded = await Task.detached(priority: .userInitiated) {
+            DecodedCard(image: ScopedInlineImage.boundedPreview(data: data, cacheKey: key))
+        }.value
+        if let loaded = decoded.image {
             image = loaded
         } else {
             imageLoadFailed = true

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import ClaudexorApp
@@ -124,5 +125,36 @@ import Testing
         // Regular text/links stay non-image blocks.
         #expect(MarkdownOutputView.imageLine("[link](/tmp/a.png)") == nil)
         #expect(MarkdownOutputView.imageLine("plain text") == nil)
+    }
+
+    /// W3.7: the artifact gallery decodes already-fetched bytes through the
+    /// SAME bounded thumbnail path as inline previews — a full-resolution
+    /// screenshot comes back capped at maxThumbnailPixels, oversize bytes are
+    /// refused outright, and non-image bytes fail honestly.
+    @Test func dataPreviewIsBoundedAndRefusesOversizeOrGarbage() {
+        // A real 2000×1400 PNG (bigger than the 1200px bound) built in-memory.
+        let size = NSSize(width: 2000, height: 1400)
+        let big = NSImage(size: size)
+        big.lockFocus()
+        NSColor.systemTeal.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        big.unlockFocus()
+        let tiff = big.tiffRepresentation!
+        let png = NSBitmapImageRep(data: tiff)!.representation(using: NSBitmapImageRep.FileType.png, properties: [:])!
+
+        let preview = ScopedInlineImage.boundedPreview(data: png, cacheKey: "test|big.png")
+        #expect(preview != nil)
+        if let preview {
+            #expect(max(preview.size.width, preview.size.height)
+                    <= CGFloat(ScopedInlineImage.maxThumbnailPixels))
+        }
+        // Cache hit: the same (key, byte-count) returns without re-decoding.
+        #expect(ScopedInlineImage.boundedPreview(data: png, cacheKey: "test|big.png") != nil)
+        // Garbage bytes fail honestly (imageLoadFailed path, never a crash).
+        #expect(ScopedInlineImage.boundedPreview(data: Data("not an image".utf8),
+                                                 cacheKey: "test|junk") == nil)
+        // Oversize payloads are refused before any decode.
+        let oversize = Data(count: ScopedInlineImage.maxSourceBytes + 1)
+        #expect(ScopedInlineImage.boundedPreview(data: oversize, cacheKey: "test|huge") == nil)
     }
 }
