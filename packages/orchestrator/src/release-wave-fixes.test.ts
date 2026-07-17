@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { candidateStatusInRouteContext } from "./routeContext.js";
 import { cancelledResult } from "./runTerminals.js";
-import type { EventLog } from "./runSupport.js";
 
 describe("scoped route probe fails CLOSED on absent evidence (release wave sol #1)", () => {
   it("a null scoped probe never admits the route via host readiness", async () => {
@@ -39,7 +38,7 @@ describe("cancel summary is announced only when it exists (release wave sol #3)"
   it("a failed summary write suppresses output.ready but keeps the terminal", () => {
     const sink = log();
     cancelledResult(
-      sink as unknown as EventLog,
+      sink as never,
       "run-1",
       "task-1",
       "ask",
@@ -61,7 +60,7 @@ describe("cancel summary is announced only when it exists (release wave sol #3)"
   it("a successful write announces output.ready before the terminal", () => {
     const sink = log();
     cancelledResult(
-      sink as unknown as EventLog,
+      sink as never,
       "run-1",
       "task-1",
       "ask",
