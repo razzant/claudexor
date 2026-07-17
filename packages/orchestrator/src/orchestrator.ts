@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import {
+  observeNativeSessionEvent,
   planReactiveRotation,
   preflightCredentialProfile,
   resolveCredentialProfile,
@@ -7,6 +8,7 @@ import {
   type ProfilePolicy,
 } from "./credential-profiles.js";
 import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
+
 import { join } from "node:path";
 import type {
   AccessProfile,
@@ -312,12 +314,12 @@ export interface RunInput {
    */
   resumeSessions?: Record<string, { sessionId: string; profileId: string | null }>;
   /** Called when a harness emits its native session id (recorded for future resume). */
+  /** profileId = the EFFECTIVE profile the session was created under
+   * (adapter-stamped; rotation makes it differ from the requested id). */
   onSessionObserved?: (
     harnessId: string,
     nativeSessionId: string,
     observedModel?: string | null,
-    /** The EFFECTIVE profile the session was created under (adapter-stamped;
-     * rotation makes it differ from the requested id) — INV-135 cache truth. */
     profileId?: string | null,
   ) => void;
   /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
@@ -874,28 +876,6 @@ export class Orchestrator {
       snapshots: this.deps.quotaSnapshots?.() ?? [],
       emit: (type, payload) => log?.emit(type, payload),
     });
-  }
-
-  /** Record a harness-emitted native session id for future thread resume (observer never fails the run). */
-  private observeNativeSession(
-    input: RunInput | undefined,
-    harnessId: string,
-    ev: HarnessEvent,
-  ): void {
-    if (!input?.onSessionObserved || ev.type !== "started") return;
-    const nid = ev.payload?.["native_session_id"];
-    if (typeof nid === "string" && nid.length > 0) {
-      try {
-        input.onSessionObserved(
-          harnessId,
-          nid,
-          ev.observed_model ?? null,
-          ev.credential_profile_id ?? null,
-        );
-      } catch {
-        /* observer errors must never fail the run */
-      }
-    }
   }
 
   /**
@@ -1861,7 +1841,7 @@ export class Orchestrator {
             // ISOLATED envelope-born session lives in the scoped home that dispose()
             // deletes, so observing it would poison the thread resume map with
             // unreachable ids — skip it there.
-            if (inPlaceEnvelope) this.observeNativeSession(runInput, adapter.id, safeEv);
+            if (inPlaceEnvelope) observeNativeSessionEvent(runInput, adapter.id, safeEv);
             observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             observeAttemptTelemetry(telemetry, safeEv);
             // Live plan checklist: forward the adapter's typed plan

@@ -1,4 +1,4 @@
-import type { CredentialProfile, QuotaSnapshot } from "@claudexor/schema";
+import type { CredentialProfile, HarnessEvent, QuotaSnapshot } from "@claudexor/schema";
 
 /**
  * The ONE resolve owner for credential profiles (INV-135): explicit id →
@@ -230,4 +230,39 @@ export function resumeSessionForProfile(
 ): string | null {
   if (!cached) return null;
   return (cached.profileId ?? null) === (profile?.profile_id ?? null) ? cached.sessionId : null;
+}
+
+/**
+ * Record a harness-emitted native session id for future thread resume; the
+ * observer never fails the run. profileId is the adapter's per-event stamp —
+ * the EFFECTIVE profile (rotation makes it differ from the requested id).
+ */
+export function observeNativeSessionEvent(
+  input:
+    | {
+        onSessionObserved?: (
+          harnessId: string,
+          nativeSessionId: string,
+          observedModel?: string | null,
+          profileId?: string | null,
+        ) => void;
+      }
+    | undefined,
+  harnessId: string,
+  ev: HarnessEvent,
+): void {
+  if (!input?.onSessionObserved || ev.type !== "started") return;
+  const nid = ev.payload?.["native_session_id"];
+  if (typeof nid === "string" && nid.length > 0) {
+    try {
+      input.onSessionObserved(
+        harnessId,
+        nid,
+        ev.observed_model ?? null,
+        ev.credential_profile_id ?? null,
+      );
+    } catch {
+      /* observer errors must never fail the run */
+    }
+  }
 }
