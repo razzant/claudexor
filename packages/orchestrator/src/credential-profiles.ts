@@ -204,3 +204,17 @@ export function planReactiveRotation(args: {
   });
   return next;
 }
+
+/**
+ * INV-135 at the engine boundary: a cached vendor session resumes ONLY under
+ * exactly the profile it was recorded with (null-default equality included) —
+ * regardless of what the caller's map claims. Preflight rotation changing the
+ * profile therefore starts fresh.
+ */
+export function resumeSessionForProfile(
+  cached: { sessionId: string; profileId: string | null } | undefined,
+  profile: CredentialProfile | null,
+): string | null {
+  if (!cached) return null;
+  return (cached.profileId ?? null) === (profile?.profile_id ?? null) ? cached.sessionId : null;
+}

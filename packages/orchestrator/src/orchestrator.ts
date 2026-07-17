@@ -3,6 +3,7 @@ import {
   planReactiveRotation,
   preflightCredentialProfile,
   resolveCredentialProfile,
+  resumeSessionForProfile,
   type ProfilePolicy,
 } from "./credential-profiles.js";
 import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
@@ -843,17 +844,7 @@ export class Orchestrator {
         explicit(cfg?.harnesses?.[harnessId]?.auth_preference) ??
         explicit(cfg?.routing?.auth_preference) ??
         "auto",
-      // INV-135 at the ENGINE boundary (release wave sol #2): a cached vendor
-      // session resumes ONLY under exactly the profile it was recorded with —
-      // including null-default equality — regardless of what the caller's map
-      // claims. Preflight rotation changing the profile therefore starts fresh.
-      resume_session_id: (() => {
-        const cached = input.resumeSessions?.[harnessId];
-        if (!cached) return null;
-        return (cached.profileId ?? null) === (profile?.profile_id ?? null)
-          ? cached.sessionId
-          : null;
-      })(),
+      resume_session_id: resumeSessionForProfile(input.resumeSessions?.[harnessId], profile),
       credential_profile: profile,
     };
   }
@@ -869,11 +860,7 @@ export class Orchestrator {
     return policy ?? { limit_action: "fail", rotation_eligible: [], headroom_threshold: 0.9 };
   }
 
-  private preflightProfile(
-    input: RunInput,
-    harnessId: string,
-    log?: EventLog,
-  ): CredentialProfile | null {
+  private preflightProfile(input: RunInput, harnessId: string, log?: EventLog) {
     const profile = this.resolveCredentialProfile(input, harnessId);
     if (!profile) return null;
     return preflightCredentialProfile({
@@ -1939,8 +1926,8 @@ export class Orchestrator {
         const currentDiff = await wsm.diff(envelope);
         const currentAnswer = answer.text();
         const deliverableEmpty = currentDiff.trim().length === 0 && currentAnswer.length === 0;
-        // W5.4 reactive failover (vendor_limit_rejected): a hit rebuilds the
-        // spec on a NEW vendor session under the next profile with provenance.
+        // W5.4 failover: a typed-limit hit rebuilds the spec on a NEW vendor
+        // session under the next profile with provenance (vendor_limit_rejected).
         if (harnessErrored && spec.credential_profile && runInput && !signal?.aborted) {
           const rotation = planReactiveRotation({
             currentProfile: spec.credential_profile,
