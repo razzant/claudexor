@@ -66,4 +66,32 @@ describe("claude adapter conformance fixtures", () => {
       }
     });
   }
+
+  /**
+   * The control-protocol fixture is a DIRECTIONAL wire recording, not a plain
+   * CLI stream, so it lives in `protocol/` and cannot ride the loop above (it
+   * has no tool calls to assert). Its manifest expectations were unenforced
+   * until this pin: the class it guards — control plumbing leaking into the
+   * timeline — is exactly what INTEGRATIONS.md cites it for.
+   */
+  it("consumes control-protocol plumbing without leaking timeline events", () => {
+    const name = "protocol/control-handshake.jsonl";
+    const expectations = manifest.fixtures[name]?.expectations;
+    expect(expectations, `manifest expectations missing for ${name}`).toBeTruthy();
+    const parse = createClaudeParser();
+    const events: unknown[] = [];
+    let controlFrames = 0;
+    for (const line of readFileSync(join(FIXTURES, name), "utf8").split("\n").filter(Boolean)) {
+      const record = JSON.parse(line) as { direction: string; frame: Record<string, unknown> };
+      // Only what the CLI emits reaches the parser; client->cli frames are ours.
+      if (record.direction !== "cli->client") continue;
+      const type = record.frame["type"];
+      if (type === "control_response" || type === "control_cancel_request") controlFrames += 1;
+      events.push(...(parse(record.frame, "ses-fixture") ?? []));
+    }
+    // The recording really does carry the plumbing this pins (guards against a
+    // future re-record silently dropping the frames and passing vacuously).
+    expect(controlFrames).toBeGreaterThan(0);
+    expect(streamExpectationViolations(events, expectations!)).toEqual([]);
+  });
 });

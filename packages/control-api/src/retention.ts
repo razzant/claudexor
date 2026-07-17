@@ -8,7 +8,7 @@
  * both bugs. The CLI (`claudexor gc`) and the startup maintenance pass are
  * thin callers of this one owner.
  */
-import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import {
@@ -84,6 +84,7 @@ export async function runRetentionPass(
   let examined = 0;
   let freedBytes = 0;
   let deletions = 0;
+  let truncated = false;
 
   for (const project of deps.projects()) {
     const candidates: { runId: string; root: string; ageStamp: number }[] = [];
@@ -128,9 +129,7 @@ export async function runRetentionPass(
     kept.recent += spared.length;
     for (const candidate of candidates.slice(policy.keepLastRunsPerProject)) {
       if (deletions >= maxDeletions) {
-        errors.push(
-          `pass truncated at ${maxDeletions} deletions (bounded batch); run gc again to continue`,
-        );
+        truncated = true;
         break;
       }
       try {
@@ -165,17 +164,38 @@ export async function runRetentionPass(
         );
       }
     }
-    if (deletions >= maxDeletions) break;
+    if (deletions >= maxDeletions) {
+      truncated = true;
+      break;
+    }
   }
 
   for (const project of deps.projects()) {
-    if (!project.reviewsDir) continue;
-    for (const name of listSubdirs(project.reviewsDir)) {
+    if (!project.reviewsDir) break; // no reviews dir; and once truncated below, stop
+    if (deletions >= maxDeletions) {
+      truncated = true;
+      break;
+    }
+    // `.claudexor/reviews` lives inside the USER repo: fence the PARENT before
+    // ever walking it. A repo that ships `.claudexor` or `.claudexor/reviews`
+    // as a symlink must not redirect readdir/rmSync outside the repo (a real
+    // rm -rf-outside-repo hole). realpath both the dir and its canonical
+    // in-repo location; a mismatch (symlinked parent) skips the whole tree.
+    const reviewsDir = canonicalInRepoReviewsDir(project);
+    if (!reviewsDir) {
+      errors.push(`reviews: ${project.reviewsDir} is not a canonical in-repo directory; skipped`);
+      continue;
+    }
+    for (const name of listSubdirs(reviewsDir)) {
+      if (deletions >= maxDeletions) {
+        truncated = true;
+        break;
+      }
       // Standalone diff-review trees only — `.claudexor/` in a user repo is
       // user-owned config; the engine deletes nothing there but its own
-      // `diff-*` runtime debris, never following symlinks.
+      // `diff-*` runtime debris, never following a symlinked leaf either.
       if (!name.startsWith("diff-")) continue;
-      const path = join(project.reviewsDir, name);
+      const path = join(reviewsDir, name);
       try {
         if (lstatSync(path).isSymbolicLink()) continue;
         if (statSync(path).mtimeMs > reviewCutoff) continue;
@@ -183,10 +203,19 @@ export async function runRetentionPass(
         if (!dryRun) rmSync(path, { recursive: true, force: true });
         deletedReviews.push({ path, freed_bytes: bytes });
         freedBytes += bytes;
+        deletions += 1;
+        // Same bounded-batch discipline as the runs loop: yield so a large
+        // reviews sweep never blocks the daemon's event loop.
+        await new Promise<void>((resolve) => setImmediate(resolve));
       } catch (error) {
         errors.push(`reviews/${name}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+  }
+  if (truncated) {
+    errors.push(
+      `pass truncated at ${maxDeletions} deletions (bounded batch); run gc again to continue`,
+    );
   }
 
   return ControlGcReceipt.parse({
@@ -223,6 +252,27 @@ export function readRunTombstone(runDir: string): RunTombstone | null {
     return value && typeof value.run_id === "string" && typeof value.deleted_at === "string"
       ? { run_id: value.run_id, deleted_at: value.deleted_at, reason: String(value.reason ?? "") }
       : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The reviews dir ONLY if it is a real in-repo directory: its canonical
+ * (symlink-resolved) path must equal the canonical `<repo>/.claudexor/reviews`
+ * built from the canonical repo root. A symlinked `.claudexor` or
+ * `.claudexor/reviews` (committed by a hostile/misconfigured repo) resolves
+ * elsewhere and returns null — the engine never rm -rf's outside the repo it
+ * was pointed at. Missing dir also returns null (nothing to sweep).
+ */
+function canonicalInRepoReviewsDir(project: RetentionProject): string | null {
+  if (!project.reviewsDir) return null;
+  try {
+    if (!existsSync(project.reviewsDir)) return null;
+    const canonicalRoot = realpathSync(project.root);
+    const expected = join(canonicalRoot, ".claudexor", "reviews");
+    const actual = realpathSync(project.reviewsDir);
+    return actual === expected ? actual : null;
   } catch {
     return null;
   }

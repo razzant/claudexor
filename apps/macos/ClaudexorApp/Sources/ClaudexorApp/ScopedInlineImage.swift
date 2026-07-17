@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CryptoKit
 import ImageIO
 
 /// Inline preview of an agent-produced image (Ф2.5 W-C7, the "он не смог мне
@@ -183,10 +184,14 @@ struct ScopedInlineImage: View {
     /// The same bounded decode for ALREADY-FETCHED bytes (artifact gallery,
     /// W3.7): identical thumbnail bound and byte-costed cache — a gallery of
     /// full-resolution screenshots must not decode unbounded on the main
-    /// actor. `cacheKey` carries the caller's identity (run + path); the byte
-    /// count disambiguates a re-produced artifact at the same path.
+    /// actor. `cacheKey` carries the caller's identity (run + path). The bytes
+    /// themselves are fingerprinted into the key: the file-path twin above uses
+    /// size+mtime to invalidate an OVERWRITTEN artifact, and a byte COUNT alone
+    /// would serve a stale preview for re-produced bytes of identical length.
+    /// Hashing costs one pass over data we are about to decode anyway.
     nonisolated static func boundedPreview(data: Data, cacheKey: String) -> NSImage? {
-        let key = "data|\(cacheKey)|\(data.count)" as NSString
+        let fingerprint = SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+        let key = "data|\(cacheKey)|\(fingerprint)" as NSString
         if let hit = previewCache.object(forKey: key) { return hit.image }
         if data.count > maxSourceBytes { return nil }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }

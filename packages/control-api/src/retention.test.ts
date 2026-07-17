@@ -167,6 +167,26 @@ describe("runRetentionPass", () => {
     expect(receipt.deleted_runs.map((d) => d.run_id)).toEqual(["run-applied"]);
   });
 
+  it("refuses to sweep a reviews dir reached through a symlinked parent (path-safety)", async () => {
+    const { project, root } = sandbox();
+    // A hostile/misconfigured repo ships `.claudexor/reviews` as a symlink to
+    // an out-of-repo dir holding an aged diff-* tree. The GC must NOT follow it.
+    const { mkdirSync: mkd, rmSync: rm, symlinkSync, utimesSync } = await import("node:fs");
+    rm(project.reviewsDir!, { recursive: true, force: true });
+    const outside = join(root, "outside-reviews");
+    const victim = join(outside, "diff-2026-05-01T00-00-00");
+    mkd(victim, { recursive: true });
+    writeFileSync(join(victim, "evidence.md"), "e");
+    const past = new Date(NOW - 60 * DAY_MS);
+    utimesSync(victim, past, past);
+    symlinkSync(outside, project.reviewsDir!);
+
+    const receipt = await runRetentionPass(POLICY, { dry_run: false }, deps(project));
+    expect(receipt.deleted_reviews).toEqual([]);
+    expect(existsSync(victim)).toBe(true); // never rm -rf'd through the symlink
+    expect(receipt.errors.join("\n")).toContain("canonical in-repo directory");
+  });
+
   it("prunes only aged diff-* review trees and never follows other names", async () => {
     const { project } = sandbox();
     const oldReview = join(project.reviewsDir!, "diff-2026-05-01T00-00-00");
@@ -178,11 +198,15 @@ describe("runRetentionPass", () => {
     }
     // Age the old tree on disk (mtime is the age source for review trees).
     const past = new Date(NOW - 60 * DAY_MS);
-    const { utimesSync } = await import("node:fs");
+    const { utimesSync, realpathSync } = await import("node:fs");
     utimesSync(oldReview, past, past);
+    // The swept path is the CANONICAL one: the parent fence resolves symlinks
+    // (on macOS /var -> /private/var) before walking, so the receipt reports
+    // the real path the engine deleted. Resolve it BEFORE the sweep removes it.
+    const canonicalOldReview = realpathSync(oldReview);
 
     const receipt = await runRetentionPass(POLICY, { dry_run: false }, deps(project));
-    expect(receipt.deleted_reviews.map((d) => d.path)).toEqual([oldReview]);
+    expect(receipt.deleted_reviews.map((d) => d.path)).toEqual([canonicalOldReview]);
     expect(existsSync(freshReview)).toBe(true);
     expect(existsSync(foreign)).toBe(true);
   });
@@ -201,6 +225,32 @@ describe("runRetentionPass", () => {
         ],
         maxDeletionsPerPass: 1,
       }),
+    );
+    expect(receipt.deleted_runs).toHaveLength(1);
+    expect(receipt.errors.join("\n")).toContain("truncated at 1");
+  });
+
+  it("discloses truncation even when the cap falls on a project's LAST candidate", async () => {
+    // Two projects, each with one aged deletable run; cap = 1. The cap is hit
+    // as project A's last (only) candidate, so A's inner loop ends normally —
+    // the disclosure must still fire for the skipped project B.
+    const a = sandbox();
+    const b = sandbox();
+    seedRun(a.project.runsDir, "run-a");
+    seedRun(b.project.runsDir, "run-b");
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      {
+        projects: () => [a.project, b.project],
+        records: () => [
+          { runId: "run-a", state: "succeeded", finishedAt: daysAgo(90) },
+          { runId: "run-b", state: "succeeded", finishedAt: daysAgo(90) },
+        ],
+        referencedRunIds: () => new Set(),
+        now: () => NOW,
+        maxDeletionsPerPass: 1,
+      },
     );
     expect(receipt.deleted_runs).toHaveLength(1);
     expect(receipt.errors.join("\n")).toContain("truncated at 1");

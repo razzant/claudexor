@@ -24,7 +24,12 @@ export type RetentionRunner = (request: ControlGcRequest) => Promise<ControlGcRe
 
 export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunner {
   const noProjectRoot = noProjectRepoRoot();
-  return async (request) => {
+  // Serialize passes (review sol #7): the startup pass and any concurrent
+  // `claudexor gc` / control-op invocation must not interleave rmSync +
+  // tombstone writes on the same candidates, which would double-count
+  // freed_bytes and cross-report deletions between receipts.
+  let inFlight: Promise<ControlGcReceipt> | null = null;
+  const runOnce = async (request: ControlGcRequest): Promise<ControlGcReceipt> => {
     // Policy is read fresh per pass (configurable without restart); the
     // reference set spans EVERY non-purged thread's full run lineage.
     const retention = loadConfig(noProjectRoot).global.retention;
@@ -47,12 +52,22 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       }
       return referenced;
     };
+    // Fail CLOSED on a quarantined partition (review sol #6/#7): the
+    // reference set (listThreads/turnsFor) and job records both come ONLY
+    // from ready partitions. A project whose partition journal is not ready
+    // contributes an EMPTY reference set — GC'ing its runs against that would
+    // delete runs a live thread still references. So GC only project roots
+    // whose partition is ready; a quarantined project's runs are protected
+    // until it recovers. The no-project root has no partition and is always
+    // eligible.
+    const healthyRoots = new Set(deps.threads.healthyProjectRoots());
     const roots = [
       ...new Set([
         ...deps
           .projects()
           .list()
-          .map((p) => p.root),
+          .map((p) => p.root)
+          .filter((root) => healthyRoots.has(root)),
         noProjectRoot,
       ]),
     ];
@@ -72,6 +87,16 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       request,
       { projects: () => gcProjects, records: () => records, referencedRunIds },
     );
+  };
+  return (request) => {
+    const chained = (inFlight ?? Promise.resolve()).then(
+      () => runOnce(request),
+      () => runOnce(request),
+    );
+    inFlight = chained;
+    return chained.finally(() => {
+      if (inFlight === chained) inFlight = null;
+    });
   };
 }
 

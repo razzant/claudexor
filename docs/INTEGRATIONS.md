@@ -403,7 +403,7 @@ structured-output-retries-exhausted are benign turn-control outcomes, not run
 failures. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
 frames surface (flagged `delta`); subagent frames (`parent_tool_use_id`) and
 block/lifecycle frames never do — the complete message always follows.
-Plumbing: other `system` subtypes and `control_response`/`control_cancel`
+Plumbing: other `system` subtypes and `control_response`/`control_cancel_request`
 frames are recognized and consumed, never timeline events.
 
 **Codex** — wire: `codex exec --json … [-i <img>… --] "<prompt>"` (resume:
@@ -466,8 +466,12 @@ Known traps (class → CURRENT rule → pin):
   prose. Pin: `session-resume-rate-limit.jsonl` + `typed_rate_limit`
   expectations.
 - Control-protocol leakage: handshake/permission frames surfacing as
-  timeline events. Rule: recognized plumbing is consumed, producing ZERO
-  events. Pin: `protocol/control-handshake.jsonl` all-zero expectations.
+  timeline events. Rule: recognized plumbing (`control_response`,
+  `control_cancel_request`) is consumed, producing ZERO events; only the
+  session's own frames become timeline events. Pin:
+  `protocol/control-handshake.jsonl` — an AskUserQuestion round trip whose
+  expectations admit exactly the session's events (one terminal final, no
+  thinking, no deltas) while its control frames leak nothing.
 
 ## Storage
 

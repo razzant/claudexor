@@ -2,8 +2,7 @@
  * Answer assembly with TYPED finality (W-C1): a harness's `final` message
  * (claude/cursor terminal `result`, codex's finalized last agent message) IS
  * the answer, verbatim — mid-run narration never bleeds into it. The joined
- * narration remains the fallback for adapters/versions without the marker,
- * and the mid-attempt `soFar()` view feeds deliverable-empty retry checks.
+ * narration remains the fallback for adapters/versions without the marker.
  */
 export class AnswerAssembly {
   private readonly parts: string[] = [];

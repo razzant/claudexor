@@ -3448,8 +3448,15 @@ export class Orchestrator {
         ...new Set([...specProtectedOnly.matchedPaths, ...autoProtectedOnly.matchedPaths]),
       ],
     };
+    // classifyRisk keeps its pre-existing per-FILE view (`stats.paths`, one
+    // entry per changed file): its size heuristic and the "large diff (N
+    // files)" reason it emits are a file COUNT, and touchedPaths carries both
+    // ends of every rename — a rename-heavy diff would report ~2x the files it
+    // changed and escalate early, disagreeing with the `changedFiles` fact
+    // reported from the same result (one owner per fact). The G1 union belongs
+    // to the path-policy GATES above, which is where it is applied.
     const risk = classifyRisk({
-      changedPaths: stats.touchedPaths,
+      changedPaths: stats.paths,
       additions: stats.additions,
       deletions: stats.deletions,
       protectedPaths: protectedOnly.matchedPaths,

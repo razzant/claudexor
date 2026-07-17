@@ -333,6 +333,25 @@ export class ProjectPartitions implements CommandAuthority {
     return [...this.partitions.values()].filter((entry) => entry.manager.ready());
   }
 
+  /**
+   * Canonical roots whose partition journal is READY — the set whose thread
+   * lineage / job records are trustworthy. Retention (W3.6) fails CLOSED on a
+   * quarantined partition: its runs are protected, never GC'd against an empty
+   * reference set (a non-ready partition contributes nothing to listThreads,
+   * so its referenced runs would otherwise look unreferenced).
+   */
+  healthyProjectRoots(): string[] {
+    this.sync();
+    const registry = this.projects.current();
+    const roots: string[] = [];
+    for (const [id, entry] of this.partitions) {
+      if (!entry.manager.ready()) continue;
+      const root = registry.get(id)?.root;
+      if (root) roots.push(root);
+    }
+    return roots;
+  }
+
   private partitionForRoot(root: string): ProjectPartition {
     const project = this.projects.current().findByRoot(root);
     if (!project) {

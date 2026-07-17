@@ -148,8 +148,23 @@ import Testing
             #expect(max(preview.size.width, preview.size.height)
                     <= CGFloat(ScopedInlineImage.maxThumbnailPixels))
         }
-        // Cache hit: the same (key, byte-count) returns without re-decoding.
-        #expect(ScopedInlineImage.boundedPreview(data: png, cacheKey: "test|big.png") != nil)
+        // Re-produced artifact at the SAME cache key: different bytes must
+        // yield the new image, never the cached one. Pinned observably — the
+        // replacement is a different SIZE, so a stale cache hit is visible
+        // (a byte-count-only key could not tell these apart if lengths matched).
+        let small = NSImage(size: NSSize(width: 300, height: 300))
+        small.lockFocus()
+        NSColor.systemPink.setFill()
+        NSRect(origin: .zero, size: NSSize(width: 300, height: 300)).fill()
+        small.unlockFocus()
+        let smallPNG = NSBitmapImageRep(data: small.tiffRepresentation!)!
+            .representation(using: NSBitmapImageRep.FileType.png, properties: [:])!
+        let replaced = ScopedInlineImage.boundedPreview(data: smallPNG, cacheKey: "test|big.png")
+        #expect(replaced != nil)
+        // The stale entry was capped at the 1200px bound; the replacement is
+        // strictly smaller, so serving the cached preview here would fail.
+        #expect(max(replaced!.size.width, replaced!.size.height)
+                < max(preview!.size.width, preview!.size.height))
         // Garbage bytes fail honestly (imageLoadFailed path, never a crash).
         #expect(ScopedInlineImage.boundedPreview(data: Data("not an image".utf8),
                                                  cacheKey: "test|junk") == nil)
