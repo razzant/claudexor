@@ -673,6 +673,8 @@ struct TaskRun: Identifiable, Hashable {
     /// not_applied | applied | applied_review_blocked | reverted. Decoupled from the
     /// terminal status so a green "Succeeded" never sits next to a review-blocked apply.
     var applyState: String = "not_applied"
+    /// True when the race winner's patch was adopted (wire result.adopted).
+    var adopted: Bool = false
     /// True when this turn's in-place mutation can still be safely reverted (server-owned).
     var revertable: Bool = false
     /// Last immutable delivery receipt returned by the server for this run.

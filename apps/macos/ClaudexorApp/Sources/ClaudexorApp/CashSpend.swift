@@ -9,12 +9,18 @@ import Foundation
 enum CashSpend {
     /// "$0.00" while the run stays on subscription routes; real dollars once
     /// a paid API route settles. Sub-cent cash keeps enough precision to not
-    /// read as zero.
-    static func label(_ usd: Double) -> String {
-        usd > 0 && usd < 0.01 ? String(format: "$%.4f", usd) : String(format: "$%.2f", usd)
+    /// read as zero. `estimated` (legacy runs predating the ledger's
+    /// budget.cash disclosure) prefixes "~" — every surface shows the same
+    /// hedging, never plain dollars for an estimate (INV-134).
+    static func label(_ usd: Double, estimated: Bool = false) -> String {
+        let base = usd > 0 && usd < 0.01 ? String(format: "$%.4f", usd) : String(format: "$%.2f", usd)
+        return estimated ? "~" + base : base
     }
 
     /// The one hover explanation of what the number IS.
-    static let help =
-        "Real money billed to an API key. $0.00 while the run stays entirely on subscription routes."
+    static func help(estimated: Bool = false) -> String {
+        estimated
+            ? "Estimated spend from vendor usage (a run predating the settled cash ledger) — not settled billing truth."
+            : "Real money billed to an API key. $0.00 while the run stays entirely on subscription routes."
+    }
 }

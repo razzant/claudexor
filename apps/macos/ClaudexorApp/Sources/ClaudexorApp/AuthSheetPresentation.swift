@@ -44,9 +44,12 @@ enum AuthSheetPresentation {
         if streamLost || blocksReplacement { return .reconnect }
         if jobActive { return .done }
         if healthOk { return .done }
-        if nativeSupported && !nativeReady { return .login }
-        if !keyStored { return .storeKey }
-        return .retryProbe
+        // Native path: the cause is the session — log in, or re-probe a
+        // verified-but-degraded one. Storing a key belongs to the NON-native
+        // path only: a missing fallback key is normalized as `skip`, never
+        // evidence that the key caused the degraded state (Ф4 triad sol #1).
+        if nativeSupported { return nativeReady ? .retryProbe : .login }
+        return keyStored ? .retryProbe : .storeKey
     }
 
     /// ONE human status for a setup job: the phase while it lives, a single

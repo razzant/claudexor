@@ -100,9 +100,9 @@ struct TurnCard: View {
                     // route settles. No route inference, no valuation essay.
                     let spend = model.spendDisplay(run)
                     if spend.known {
-                        Text(CashSpend.label(spend.usd))
+                        Text(CashSpend.label(spend.usd, estimated: spend.estimated))
                             .font(.caption).foregroundStyle(.secondary)
-                            .help(CashSpend.help)
+                            .help(CashSpend.help(estimated: spend.estimated))
                     }
                     Button {
                         model.openRun(run.id)

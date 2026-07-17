@@ -82,7 +82,7 @@ enum RunFacts {
                 help: "Auth route taken: \(authModeLabel(effective)). Requested: \(route.requested)\(route.source.map { " · source: \($0)" } ?? "") · reason: \(route.reason)."
             ))
         }
-        if let (text, glyph, tone) = applyFact(state: task.applyState, adopted: false) {
+        if let (text, glyph, tone) = applyFact(state: task.applyState, adopted: task.adopted) {
             facts.append(Fact(id: "apply", text: text, glyph: glyph, tone: tone,
                               help: "Honest application state of this turn's in-place change."))
         }

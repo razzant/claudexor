@@ -204,7 +204,7 @@ struct BudgetMini: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 3) {
             HStack(spacing: 3) {
-                Text(spendKnown ? "\(spendEstimated ? "~" : "")\(CashSpend.label(spend))" : "Unknown").font(.system(.caption, design: .monospaced))
+                Text(spendKnown ? CashSpend.label(spend, estimated: spendEstimated) : "Unknown").font(.system(.caption, design: .monospaced))
                 Text("/").foregroundStyle(.tertiary)
                 Text(capUnlimited ? "Unlimited" : capKnown ? String(format: "$%.2f", cap) : "Unknown").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }

@@ -1699,6 +1699,7 @@ final class AppModel {
             if let result = detail.summary.result {
                 task.applyState = result.applyState
                 task.revertable = result.revertable
+                task.adopted = result.adopted == true
             }
             task.prompt = detail.summary.prompt ?? task.prompt
             if !task.prompt.isEmpty { task.title = String(task.prompt.prefix(64)) }

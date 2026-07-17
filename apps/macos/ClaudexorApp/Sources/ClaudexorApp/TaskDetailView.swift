@@ -132,10 +132,10 @@ struct TaskDetailView: View {
             // W4.5: a PRIMARY row of 3-4 facts (route / apply / attention +
             // budget), composed from the one facts owner. Everything else
             // lives behind Details — the header no longer retells the card.
+            // W4.5 + triad sol #2: the primary row is ONLY the material facts
+            // (route / apply / attention) + budget + cancel; provenance and
+            // the proof badge are evidence — they live in Details.
             HStack(spacing: Theme.Spacing.md) {
-                ProvenanceTag(isLive: task.isLive)
-                RouteProofBadge(proof: task.routeProof)
-                    .help(task.observedModel.map { "Observed model: \($0)" } ?? "No model identity was disclosed by the harness stream.")
                 ForEach(RunFacts.headerPrimary(task)) { fact in
                     factLabel(fact)
                 }
@@ -154,6 +154,9 @@ struct TaskDetailView: View {
             }
             DisclosureGroup(isExpanded: $detailsExpanded) {
                 FlowLayout(spacing: Theme.Spacing.md) {
+                    ProvenanceTag(isLive: task.isLive)
+                    RouteProofBadge(proof: task.routeProof)
+                        .help(task.observedModel.map { "Observed model: \($0)" } ?? "No model identity was disclosed by the harness stream.")
                     ForEach(RunFacts.headerDetails(task)) { fact in
                         factLabel(fact)
                     }

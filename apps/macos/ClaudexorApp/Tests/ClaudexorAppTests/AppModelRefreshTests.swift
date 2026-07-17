@@ -347,6 +347,8 @@ struct AppModelRefreshTests {
         #expect(CashSpend.label(1.234) == "$1.23")
         #expect(CashSpend.label(0.0043) == "$0.0043")
         #expect(CashSpend.label(0.01) == "$0.01")
+        // A legacy estimate hedges in EVERY surface (never plain dollars).
+        #expect(CashSpend.label(1.234, estimated: true) == "~$1.23")
     }
 
     /// Per-turn auth route honesty (sol review #1): "Thread default" (empty)

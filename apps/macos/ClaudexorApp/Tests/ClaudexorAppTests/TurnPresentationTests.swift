@@ -182,14 +182,15 @@ import ClaudexorKit
         #expect(cta(jobActive: true) == .done)
         // Healthy sheet: closing is the only primary act.
         #expect(cta(healthOk: true, nativeReady: true) == .done)
-        // The readiness ladder: login first, then key, then re-probe.
+        // The readiness ladder: the CTA addresses the CAUSE. Native path:
+        // no verified session -> log in; verified but degraded -> re-probe
+        // (a missing fallback key is `skip`, never the cause — triad sol #1).
         #expect(cta() == .login)
+        #expect(cta(nativeReady: true) == .retryProbe)
+        #expect(cta(nativeReady: true, keyStored: true) == .retryProbe)
+        // Non-native path: the key IS the credential — store it, then re-probe.
         #expect(cta(nativeSupported: false) == .storeKey)
         #expect(cta(nativeSupported: false, keyStored: true) == .retryProbe)
-        // Native ready but doctor not ok (e.g. smoke failed): re-probe…
-        #expect(cta(nativeReady: true, keyStored: true) == .retryProbe)
-        // …unless no key is stored yet — then storing it is the next step.
-        #expect(cta(nativeReady: true) == .storeKey)
     }
 
     @Test func jobStatusLineNeverContradictsItself() {
