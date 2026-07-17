@@ -1327,3 +1327,11 @@ code touching one of these areas must honor it or change it explicitly here.
   first-wins auth-route receipt would misvalue metered usage as subscription
   entitlement against a finite cash cap. `nextEligibleProfile` skips
   cross-kind candidates; rotate between accounts of the SAME transport only.
+- `claudexor profiles login` deliberately spawns the vendor's own login
+  command IN the operator's terminal (no daemon setup job): vendor OAuth
+  needs the user's TTY/browser interactively, the mutated state is the
+  VENDOR's own scoped config dir (never Claudexor-owned state, so there is
+  no Claudexor receipt to journal), and the post-exit doctor probe against
+  the profile dir is the verification truth (exit code non-zero unless the
+  probe passes). The daemon-owned setup jobs remain the path for
+  non-interactive/GUI-driven logins.

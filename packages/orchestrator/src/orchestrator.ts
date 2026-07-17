@@ -854,6 +854,21 @@ export class Orchestrator {
     return resolveCredentialProfile(registry, input.credentialProfileId, harnessId);
   }
 
+  /** The typed effective auth route for a SELECTED credential profile
+   * (round-18 #2): adapters execute strictly by credential_kind, so routing,
+   * billing classification, model truth, and quota lookup must share this
+   * one fact — never the default store's sources or a previous default-route
+   * metric. null = no profile selected or it does not resolve here. */
+  private profileAuthRoute(input: RunInput, harnessId: string): "local_session" | "api_key" | null {
+    try {
+      const profile = this.resolveCredentialProfile(input, harnessId);
+      if (!profile) return null;
+      return profile.credential_kind === "api_key" ? "api_key" : "local_session";
+    } catch {
+      return null;
+    }
+  }
+
   private profilePolicy(repoRoot: string, harnessId: string): ProfilePolicy {
     const policy = this.config(repoRoot)?.global.harnesses?.[harnessId]?.profile_policy;
     return policy ?? { limit_action: "fail", rotation_eligible: [], headroom_threshold: 0.9 };
@@ -1011,18 +1026,38 @@ export class Orchestrator {
       probeIds.length > 0 ? await this.gateway.statusAll({ cwd: input.repoRoot }, probeIds) : [];
     const statusById = new Map(statuses.map((s) => [s.id, s]));
     if (!ids || ids.length === 0) {
-      // Auto-pools take only doctor-OK harnesses (BIBLE §2: doctor decides
-      // readiness; a key string or degraded route is visible but not routable).
-      ids = statuses
-        .filter(
-          (s) =>
-            s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.includes(intent),
-        )
-        .map((s) => s.id);
-      if (ids.length === 0) {
-        throw new HarnessUnavailableError(
-          "no doctor-ok harness for this mode; install/login codex/claude/cursor/opencode (see `claudexor doctor`), or pass --harness explicitly",
-        );
+      // INV-135 (round-18 BLOCK): an explicit credential profile NAMES its
+      // harness — the implicit pool is exactly the profile's enabled
+      // harness(es) from the registry, and the profile probe (below) is the
+      // auth verdict. Deriving the pool from default doctor-OK status would
+      // exclude a valid profile whose default store is logged out while
+      // keeping unrelated harnesses that later fail profile resolution.
+      const profilePool = input.credentialProfileId
+        ? [
+            ...new Set(
+              (this.config(input.repoRoot)?.global.credential_profiles ?? [])
+                .filter((p) => p.enabled && p.profile_id === input.credentialProfileId)
+                .map((p) => p.harness_id)
+                .filter((hid) => !disabledHarnessIds.has(hid) && this.deps.registry.has(hid)),
+            ),
+          ]
+        : [];
+      if (profilePool.length > 0) {
+        ids = profilePool;
+      } else {
+        // Auto-pools take only doctor-OK harnesses (BIBLE §2: doctor decides
+        // readiness; a key string or degraded route is visible but not routable).
+        ids = statuses
+          .filter(
+            (s) =>
+              s.manifest?.kind !== "fake" && s.status === "ok" && s.enabledIntents.includes(intent),
+          )
+          .map((s) => s.id);
+        if (ids.length === 0) {
+          throw new HarnessUnavailableError(
+            "no doctor-ok harness for this mode; install/login codex/claude/cursor/opencode (see `claudexor doctor`), or pass --harness explicitly",
+          );
+        }
       }
     }
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
@@ -1073,32 +1108,39 @@ export class Orchestrator {
       // unproven by isolated smoke) is admitted only by explicit user
       // selection — degraded means usable-with-caveats, and the caveats are
       // visible in doctor output and run events.
-      if (status.status === "unavailable") {
-        // INV-135 (release wave round-13): an EXPLICIT profile is
-        // authenticated by ITS store — a logged-out default must not reject
-        // a valid isolated profile. The profile probe overrides the default
-        // auth verdict; capability/manifest gating above still applies.
+      // INV-135 (round-13, extended by the round-18 BLOCK): an EXPLICIT
+      // profile is authenticated by ITS store — the profile probe overrides
+      // the default auth verdict for ANY non-ok default status, and a
+      // profile-admitted route joins even an AUTO pool (the run spawns with
+      // the profile's transport, so the default store's state is not the
+      // routing truth). Capability/manifest gating above still applies.
+      let profileAdmitted = false;
+      if (status.status !== "ok") {
         const profileVerdict = await this.profileAvailabilityOverride(input, id);
-        if (profileVerdict !== "available") {
-          const why =
-            profileVerdict === null
-              ? `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`
-              : `${id} credential profile is not ready: ${profileVerdict}`;
+        if (profileVerdict === "available") {
+          // The default-store failure may have zeroed enabled_intents; with
+          // the profile probe as the auth verdict, MANIFEST capabilities are
+          // the honest intent truth (degraded = usable-with-caveats).
+          status = {
+            ...status,
+            status: "degraded",
+            enabledIntents: capabilityIntents(manifest.capabilities),
+          };
+          statusById.set(id, status);
+          profileAdmitted = true;
+        } else if (profileVerdict !== null) {
+          const why = `${id} credential profile is not ready: ${profileVerdict}`;
+          if (explicitPool) throw new HarnessUnavailableError(why);
+          dropped.push(why);
+          continue;
+        } else if (status.status === "unavailable") {
+          const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
           if (explicitPool) throw new HarnessUnavailableError(why);
           dropped.push(why);
           continue;
         }
-        // The default-store failure also zeroed enabled_intents; with the
-        // profile probe as the auth verdict, MANIFEST capabilities are the
-        // honest intent truth (degraded = usable-with-caveats, disclosed).
-        status = {
-          ...status,
-          status: "degraded",
-          enabledIntents: capabilityIntents(manifest.capabilities),
-        };
-        statusById.set(id, status);
       }
-      if (status.status !== "ok" && !explicitPool) {
+      if (status.status !== "ok" && !explicitPool && !profileAdmitted) {
         dropped.push(
           `${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`,
         );
@@ -1172,10 +1214,14 @@ export class Orchestrator {
           ),
           effortLevels: manifest.capabilities.effort_levels,
           knownModels: manifest.capabilities.known_models,
-          authRouteEstimate: estimateEffectiveAuthRoute(
-            this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
-            status.authSources,
-          ),
+          // A selected profile's credential_kind IS the route (round-18 #2);
+          // the default store's sources apply only to profile-less runs.
+          authRouteEstimate:
+            this.profileAuthRoute(input, id) ??
+            estimateEffectiveAuthRoute(
+              this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
+              status.authSources,
+            ),
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
           implementationTransport: manifest.capabilities.implementation_transport,
@@ -1279,12 +1325,16 @@ export class Orchestrator {
           : authModes.includes("api_key")
             ? ("api_key" as const)
             : ("unknown" as const);
+        // A selected profile's credential_kind decides the route outright
+        // (round-18 #2): an api_key profile must never inherit a
+        // subscription classification from the default store's metric.
         const authMode =
-          input.authPreference === "api_key"
+          this.profileAuthRoute(input, r.adapter.id) ??
+          (input.authPreference === "api_key"
             ? ("api_key" as const)
             : input.authPreference === "subscription"
               ? ("local_session" as const)
-              : (metric?.last_auth_mode ?? guessedAuthMode);
+              : (metric?.last_auth_mode ?? guessedAuthMode));
         // The quota subject this candidate would actually run as (release
         // wave round-16 #2): the resolved profile id, or null for the engine
         // default — so profile A's cooldown never excludes profile B or the
@@ -5280,6 +5330,9 @@ export class Orchestrator {
   }
 
   private routeBillingKnowledge(input: RunInput, harnessId: string): "metered" | "unknown" {
+    // A selected profile's credential_kind decides billing (round-18 #2).
+    const profileRoute = this.profileAuthRoute(input, harnessId);
+    if (profileRoute) return profileRoute === "api_key" ? "metered" : "unknown";
     if (input.authPreference === "api_key") return "metered";
     if (input.authPreference === "subscription") return "unknown";
     return loadHarnessMetrics(globalConfigDir())[harnessId]?.last_auth_mode === "api_key"

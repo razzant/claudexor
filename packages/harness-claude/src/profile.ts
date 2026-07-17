@@ -1,9 +1,7 @@
-import { realpathSync } from "node:fs";
-import { resolve } from "node:path";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
-import { canonicalIsolationLocator } from "@claudexor/core";
+import { canonicalIsolationLocator, normalizeThroughExistingAncestor } from "@claudexor/core";
 import { namespacedSecretRefBase } from "@claudexor/secrets";
 import {
   claudeNativeEnv,
@@ -20,12 +18,7 @@ import {
  */
 export function canonicalProfileConfigDir(locator: string): string {
   const dir = canonicalIsolationLocator(locator, "credential profile config dir");
-  let defaultDir = resolve(defaultNativeClaudeConfigDir());
-  try {
-    defaultDir = realpathSync(defaultDir);
-  } catch {
-    /* default dir may not exist; compare resolved paths */
-  }
+  const defaultDir = normalizeThroughExistingAncestor(defaultNativeClaudeConfigDir());
   if (dir === defaultDir) {
     throw new Error(
       "credential profile config dir must not be the default native Claude dir (profiles are additive; INV-135)",

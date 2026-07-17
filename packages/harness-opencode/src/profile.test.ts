@@ -74,3 +74,32 @@ describe("opencode credential-profile doctor probe (INV-135)", () => {
     expect(typeof createOpenCodeAdapter().probeCredentialProfile).toBe("function");
   });
 });
+
+// Round-18 scope: INV-135 refusals ride ONE mechanism across the five
+// adapters — the typed stream shape (error then completed), never a throw.
+describe("opencode profile refusal rides the TYPED stream", () => {
+  it("a mis-bound profile yields error+completed instead of throwing", async () => {
+    const spec = {
+      session_id: "s1",
+      intent: "implement",
+      prompt: "do it",
+      cwd: "/repo",
+      access: "full",
+      external_context_policy: "auto",
+      tool_permission_policy: { web: "auto", allow: [], deny: [] },
+      model_hint: null,
+      effort_hint: null,
+      max_turns: null,
+      auth_preference: "auto",
+      resume_session_id: null,
+      env: {},
+      extra: {},
+      credential_profile: profile({ credential_kind: "oauth_token" }),
+    } as never;
+    const events: Array<{ type: string; error?: string }> = [];
+    for await (const ev of createOpenCodeAdapter().run(spec))
+      events.push(ev as { type: string; error?: string });
+    expect(events.map((e) => e.type)).toEqual(["error", "completed"]);
+    expect(events[0]?.error).toContain("api_key transport");
+  });
+});

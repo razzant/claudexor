@@ -248,15 +248,24 @@ export class BudgetLedger {
     credentialSubjectId?: string | null,
     now: number = Date.now(),
   ): boolean {
-    // Live observations are subject-scoped like snapshots (round-17 #2): a
-    // profiled run's rate-limit must never cool the whole harness for other
-    // subjects. `undefined` caller subject = conservative any-subject.
+    // Live observations are subject- AND route-scoped like snapshots
+    // (rounds 17-18): a profiled or API-key rate-limit must never cool the
+    // same harness's other subjects or its healthy other route. `undefined`
+    // caller subject/route = conservative any; a LEGACY observation without
+    // a route stamp stays conservative (applies to every route).
     const liveObservation = this.observationsFor(harnessId).some((observation) => {
       if (
         credentialSubjectId !== undefined &&
         (observation.subject_id ?? null) !== credentialSubjectId
       )
         return false;
+      if (
+        credentialRoute !== undefined &&
+        observation.credential_route !== undefined &&
+        observation.credential_route !== credentialRoute
+      )
+        return false;
+
       if (!observation.cooldown_until) return false;
       const time = Date.parse(observation.cooldown_until);
       return Number.isFinite(time) && time > now;
@@ -290,13 +299,24 @@ export class BudgetLedger {
     const latest = new Map<string, BudgetObservation>();
     for (const observation of this.observationsFor(harnessId)) {
       if (observation.kind !== "quota_constraint" || !observation.constraint_id) continue;
-      // Subject-scoped like cooldowns (round-17 #2).
+      // Subject- and route-scoped like cooldowns (rounds 17-18); the latest
+      // key includes route+subject so two routes' same-named windows never
+      // overwrite each other.
       if (
         credentialSubjectId !== undefined &&
         (observation.subject_id ?? null) !== credentialSubjectId
       )
         continue;
-      latest.set(observation.constraint_id, observation);
+      if (
+        credentialRoute !== undefined &&
+        observation.credential_route !== undefined &&
+        observation.credential_route !== credentialRoute
+      )
+        continue;
+      latest.set(
+        `${observation.credential_route ?? ""}\0${observation.subject_id ?? ""}\0${observation.constraint_id}`,
+        observation,
+      );
     }
     const slacks: number[] = [];
     for (const observation of latest.values()) {

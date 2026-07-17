@@ -1787,6 +1787,141 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("an IMPLICIT pool with --profile routes to the PROFILE's harness even when its default store is logged out (round-18 BLOCK)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-implicit-pool-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const answered: string[] = [];
+      const mkAsker = (id: string) =>
+        askAdapter(id, function* (sessionId) {
+          const ts = new Date().toISOString();
+          answered.push(id);
+          yield { type: "started", session_id: sessionId, ts };
+          yield { type: "message", session_id: sessionId, ts, text: "4" };
+          yield { type: "completed", session_id: sessionId, ts };
+        });
+      const asker = mkAsker("asker");
+      // The profile's harness has a LOGGED-OUT default store...
+      asker.doctor = async () =>
+        ConformanceReport.parse({
+          harness_id: "asker",
+          status: "unavailable",
+          enabled_intents: [],
+          reasons: ["not authenticated (default store logged out)"],
+        });
+      asker.probeCredentialProfile = async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: "asker",
+        availability: "available",
+        verification: "not_run",
+        detail: "secret stored",
+        last_verified_at: null,
+      });
+      // ...while an UNRELATED harness is doctor-OK. The old pool derivation
+      // excluded asker (not doctor-OK) and kept other (which would later
+      // fail profile resolution) — breaking `--profile` without `--harness`.
+      const other = mkAsker("other");
+      const res = await new Orchestrator({
+        registry: new Map([
+          ["asker", asker],
+          ["other", other],
+        ]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        credentialProfileId: "b",
+        // NO harnesses: the implicit pool must be derived FROM the profile.
+      });
+      expect(res.status, res.summary).toBe("success");
+      expect(answered).toEqual(["asker"]);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("a selected api_key profile classifies the route by ITS kind — the default subscription cooldown does not apply (round-18 #2)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-route-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "  - profile_id: b",
+        "    harness_id: helper",
+        "    display_name: B2",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const base = asker.discover.bind(asker);
+      asker.discover = async () =>
+        HarnessManifest.parse({
+          ...(await base()),
+          // A native session exists, so WITHOUT the profile the estimated
+          // route is local_session — under which the api_key-only model
+          // below is NOT in the manifest truth and the run refuses.
+          auth_modes: ["local_session"],
+          capabilities: {
+            plan: true,
+            review: true,
+            read_files: true,
+            web_policy: "tools",
+            known_models: [{ id: "m-key-only", routes: ["api_key"] }],
+          },
+        });
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "b",
+        models: { asker: "m-key-only" },
+      });
+      // The api_key profile IS the route: the route-annotated model is valid
+      // under it. A stale default-route classification (local_session from
+      // auth_modes) would refuse the model against the manifest truth.
+      expect(res.status, res.summary).toBe("success");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("a selected profile is authenticated by ITS store, not the default doctor verdict (round-13)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-override-config-"));

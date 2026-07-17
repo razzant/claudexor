@@ -302,3 +302,36 @@ pnpm test
 - Emit reviewer progress events (`reviewer.started`, `reviewer.first_event`,
   `reviewer.completed`, `reviewer.timed_out`, `reviewer.failed`) so a concurrent
   panel is diagnosable and does not look like a hang.
+
+### Convergence rules (owner-locked after the 2.1.0 release loop)
+
+The 2.1.0 release ran 18 wave rounds without converging (findings oscillated
+1–7 per round; ~40% were re-surfacings of earlier "accepted" fixes; ~26% of
+the whole release diff was authored by the loop itself). These rules bound
+the loop; they are process law, not advisory:
+
+- **Wave budget: three.** Wave 1 accepts every verified finding. Wave 2
+  accepts only BLOCK-severity findings that are data-loss, security, or
+  reachable in the DEFAULT configuration. Wave 3 accepts only
+  release-stopping findings. Everything else becomes a `docs/FEATURES.md`
+  row or a backlog entry in the same commit — recorded, never silently
+  dropped, never fixed mid-freeze.
+- **Reachability caps severity.** A finding on a path unreachable in the
+  default configuration (an opt-in policy nobody enables, a knob with no
+  producer) caps at WARN regardless of its theoretical class.
+- **Delta review after wave 1.** Tier-1 reviews the FULL diff exactly once;
+  later waves review the delta since the previous wave plus any file a fix
+  touched. Re-reviewing a 25k-line diff every round invites unbounded depth.
+- **Fix minimalism.** One owner per invariant — a fix never duplicates the
+  same check into additional layers. A fix may not add a schema field
+  without its consumer in the same commit. A fix disproportionate to its
+  finding (new abstraction, new config knob, cross-cutting rename) is
+  answered with a decided-tradeoff entry instead.
+- **Ship rule.** Tier-2 pass + every open tier-1 finding at WARN-or-below
+  (each with its FEATURES/backlog row) is releasable. A perfectly clean
+  same-wave board is not required.
+- **Review-harness self-test.** The checklist validator is exercised in CI
+  against a synthetic deep review (multi-row items, hostile JSON escapes).
+  A quorum failure is a diagnosis task — read the parse errors and raw
+  outputs before any retry; two identical failures from different models
+  mean the PROTOCOL is wrong, not the models.

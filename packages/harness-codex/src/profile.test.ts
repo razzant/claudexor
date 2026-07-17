@@ -1,5 +1,4 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CredentialProfile, HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
@@ -42,7 +41,9 @@ function profile(over: Partial<CredentialProfile> = {}): CredentialProfile {
   } as CredentialProfile;
 }
 
-const ownedTmp = join(homedir(), ".claudexor", "test-tmp");
+// Under the vitest CLAUDEXOR_CONFIG_DIR sandbox the override IS the
+// confinement root (round-18 #4).
+const ownedTmp = join(process.env.CLAUDEXOR_CONFIG_DIR as string, "test-tmp");
 mkdirSync(ownedTmp, { recursive: true });
 
 const dirs: string[] = [];

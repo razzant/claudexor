@@ -1,12 +1,12 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { namespacedSecretRefBase } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth } from "./auth.js";
-import { canonicalIsolationLocator } from "@claudexor/core";
+import { canonicalIsolationLocator, normalizeThroughExistingAncestor } from "@claudexor/core";
 import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
 
 /**
@@ -16,12 +16,7 @@ import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
  */
 export function canonicalCodexProfileHome(locator: string): string {
   const dir = canonicalIsolationLocator(locator, "credential profile CODEX_HOME");
-  let defaultDir = resolve(defaultNativeCodexHome());
-  try {
-    defaultDir = realpathSync(defaultDir);
-  } catch {
-    /* default home may not exist; compare resolved paths */
-  }
+  const defaultDir = normalizeThroughExistingAncestor(defaultNativeCodexHome());
   if (dir === defaultDir) {
     throw new Error(
       "credential profile CODEX_HOME must not be the default native codex home (profiles are additive; INV-135)",

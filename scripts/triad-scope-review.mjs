@@ -197,12 +197,24 @@ function loadFrozenPacket(candidateRoot, candidateSha, candidateTree, packetMani
   const sections = sealed.files
     .filter((file) => file !== "DIFF.patch")
     .map((file) => `### ${file}\n\n${readFileSync(join(packet, file), "utf8")}`);
+  // The reviewer must be able to VERIFY the binding it is told to check
+  // (round-18 sol critical): show the complete MANIFEST.sha256 and the
+  // expected digest inside the prompt instead of asserting them offstage.
+  const bindingHeader =
+    `Binding (machine-verified before this prompt was built): candidate ${candidateSha} ` +
+    `(tree ${candidateTree}), base ${sealed.baseSha}. The packet's complete MANIFEST.sha256 ` +
+    `is reproduced below; its own SHA-256 (the packet-manifest digest recorded in the panel ` +
+    `lock and attestation) is ${sealed.manifestSha256}. Every packet file below hashed to its ` +
+    `manifest entry, and DIFF.patch matched git diff base..candidate exactly.`;
   return {
     base: sealed.baseSha,
     diff: sealed.diff,
     manifestSha256: sealed.manifestSha256,
     packet,
-    prompt: `## Sealed evidence packet\n\n${sections.join("\n\n")}`,
+    prompt:
+      `## Sealed evidence packet\n\n${bindingHeader}\n\n` +
+      `### MANIFEST.sha256\n\n${readFileSync(join(packet, "MANIFEST.sha256"), "utf8")}\n\n` +
+      sections.join("\n\n"),
   };
 }
 

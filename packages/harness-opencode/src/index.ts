@@ -21,7 +21,7 @@ import {
   runCliHarness,
 } from "@claudexor/core";
 import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
-import { CLAUDEXOR_VERSION, redactSecrets } from "@claudexor/util";
+import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
 const BIN = process.env.CLAUDEXOR_OPENCODE_BIN || "opencode";
@@ -384,9 +384,15 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   let key: { envVar: string; value: string } | null;
   if (profile) {
     // INV-135 strict profile routing — the same single owner the doctor
-    // probe consults (opencodeProfileKeyOrRefusal).
+    // probe consults (opencodeProfileKeyOrRefusal). The refusal rides the
+    // TYPED stream shape (error then completed) like every other adapter's
+    // profile gate (round-18 scope) — one refusal mechanism across the five.
     const gate = opencodeProfileKeyOrRefusal(profile);
-    if ("refusal" in gate) throw new HarnessUnavailableError(gate.refusal);
+    if ("refusal" in gate) {
+      yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: gate.refusal };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
     key = gate;
   } else {
     key = providerKey({ ...process.env, ...spec.env });

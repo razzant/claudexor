@@ -465,6 +465,27 @@ describe("router", () => {
     expect(led.bindingPaceSlack("claude", "vendor_native", "a")).not.toBeNull();
   });
 
+  it("LIVE observations are ROUTE-scoped too (round-18 #3): an api_key limit never cools the same subject's vendor-native route", () => {
+    const led = new BudgetLedger();
+    const [obs] = observationsFromEvent("claude", {
+      type: "error",
+      session_id: "s",
+      ts: new Date().toISOString(),
+      error: "rate limited",
+      credential_route: "managed_api_key",
+      credential_profile_id: "r",
+      rate_limit: {
+        resets_at: new Date(Date.now() + 3_600_000).toISOString(),
+        retry_delay_ms: null,
+      },
+    });
+    led.observe(obs as NonNullable<typeof obs>);
+    expect(led.cooldownActive("claude", "managed_api_key", "r")).toBe(true);
+    expect(led.cooldownActive("claude", "vendor_native", "r")).toBe(false);
+    // Unknown caller route stays conservatively any-route.
+    expect(led.cooldownActive("claude", undefined, "r")).toBe(true);
+  });
+
   it("excludes a rate-limited harness via the typed rate_limit signal", () => {
     const led = new BudgetLedger();
     const [obs] = observationsFromEvent("codex", {

@@ -47,9 +47,10 @@ function profile(over: Partial<CredentialProfile> = {}): CredentialProfile {
   } as CredentialProfile;
 }
 
-// The round-11 confinement requires locators under ~/.claudexor — tests
-// exercise the REAL discipline, not a bypass.
-const ownedTmp = join(homedir(), ".claudexor", "test-tmp");
+// The round-11 confinement requires locators under the Claudexor-owned tree;
+// under the vitest CLAUDEXOR_CONFIG_DIR sandbox that override IS the root
+// (round-18 #4) — tests exercise the REAL discipline, not a bypass.
+const ownedTmp = join(process.env.CLAUDEXOR_CONFIG_DIR as string, "test-tmp");
 mkdirSync(ownedTmp, { recursive: true });
 
 const dirs: string[] = [];
@@ -62,11 +63,20 @@ describe("canonicalProfileConfigDir (INV-135)", () => {
     expect(() => canonicalProfileConfigDir("relative/dir")).toThrow(/absolute/);
   });
 
-  it("refuses the default native Claude dir and any dir outside ~/.claudexor", () => {
+  it("refuses the default native Claude dir and any dir outside the owned tree", () => {
     // ~/.claude is outside the Claudexor-owned tree: the confinement fires
     // first (also covering arbitrary user/repo dirs).
     expect(() => canonicalProfileConfigDir(join(homedir(), ".claude"))).toThrow(/must live under/);
     expect(() => canonicalProfileConfigDir("/tmp/anywhere")).toThrow(/must live under/);
+  });
+
+  it("under a CLAUDEXOR_CONFIG_DIR override, the override IS the root — the host's real ~/.claudexor is rejected (round-18 #4)", () => {
+    // The vitest sandbox override is active for this whole suite: a profile
+    // under the disposable root is accepted (ownedTmp tests above), while a
+    // host-home locator must NOT leak host credential state into it.
+    expect(() => canonicalProfileConfigDir(join(homedir(), ".claudexor", "profiles", "x"))).toThrow(
+      /must live under/,
+    );
   });
 
   it("resolves symlinked existing dirs to one canonical path", () => {
