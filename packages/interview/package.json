@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/interview",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "license": "MIT",
   "description": "Spec interview: a hierarchical clarify-quiz that turns a vague task into a frozen, versioned, diffable SpecPack which maps deterministically into a TaskContract.",
   "type": "module",

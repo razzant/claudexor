@@ -1,5 +1,14 @@
 # @claudexor/harness-opencode
 
+## 2.0.1
+
+### Patch Changes
+
+- @claudexor/core@2.0.1
+- @claudexor/schema@2.0.1
+- @claudexor/secrets@2.0.1
+- @claudexor/util@2.0.1
+
 ## 2.0.0
 
 ### Patch Changes
