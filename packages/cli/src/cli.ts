@@ -13,8 +13,7 @@ import {
   userConfigDir,
 } from "@claudexor/util";
 import { checkName } from "./release.js";
-import { defaultClaudexorTools, serveClaudexorMcp } from "@claudexor/mcp-server";
-import { AcpServer } from "@claudexor/acp-server";
+import { serveAcpBridge, serveMcpBridge } from "./bridge-serve.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
@@ -86,7 +85,6 @@ import {
   type PluginVerb,
 } from "./plugins.js";
 import { buildRegistry } from "./registry.js";
-import { mcpSurfaceRunner } from "./mcp-runner.js";
 import { settingsCommand } from "./settings-command.js";
 import { quotaCommand } from "./quota-command.js";
 import { trustCommand } from "./trust-command.js";
@@ -1252,30 +1250,12 @@ async function main(): Promise<number> {
       return trustCommand(args, json);
 
     case "mcp": {
-      if (args._[1] === "serve") {
-        // SDK-owned protocol core; mutating verbs are daemon-tracked, so a
-        // run started from an MCP host is visible/unblockable like a CLI run.
-        serveClaudexorMcp({
-          version: CLAUDEXOR_VERSION,
-          tools: defaultClaudexorTools(mcpSurfaceRunner()),
-          transport: { read: process.stdin, write: process.stdout },
-        });
-        // Serve until stdin closes (the SDK handle owns the transport).
-        await new Promise<void>((resolve) => process.stdin.once("close", resolve));
-        return 0;
-      }
+      if (args._[1] === "serve") return serveMcpBridge();
       return printUsageError(json, "usage: claudexor mcp serve");
     }
 
     case "acp": {
-      if (args._[1] === "serve") {
-        await new AcpServer({
-          version: CLAUDEXOR_VERSION,
-          runner: mcpSurfaceRunner(),
-          transport: { read: process.stdin, write: process.stdout },
-        }).serve();
-        return 0;
-      }
+      if (args._[1] === "serve") return serveAcpBridge();
       return printUsageError(json, "usage: claudexor acp serve");
     }
 

@@ -30,7 +30,7 @@ import {
   socketAlive,
 } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
-import { armDaemonLifecycle, runStartupCrashGc } from "./daemon-lifecycle.js";
+import { armDaemonLifecycle, logLine, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
@@ -77,9 +77,6 @@ async function main(): Promise<void> {
   let quotaPollTimer: NodeJS.Timeout | null = null;
   try {
     const token = ensureToken();
-    let requestRootShutdown: () => Promise<void> = async () => {
-      throw new Error("daemon shutdown coordinator is not initialized");
-    };
 
     if (await socketAlive(socketPath)) {
       throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
@@ -153,7 +150,9 @@ async function main(): Promise<void> {
       },
       onTurnEnqueueFailed: (turnId, error, code) =>
         threads.setTurnEnqueueError(turnId, error, code),
-      onShutdownRequested: () => requestRootShutdown(),
+      onShutdownRequested: () =>
+        shutdownRuntime?.beginShutdown("socket-rpc stop") ??
+        Promise.reject(new Error("daemon shutdown coordinator is not initialized")),
       runner: async (params, ctx) => {
         const p = normalizeRunStartRequest(params);
         const mode = p.mode;
@@ -323,8 +322,8 @@ async function main(): Promise<void> {
           journalManager.close();
         },
       },
+      log: (message) => logLine(logPath(), message),
     });
-    requestRootShutdown = () => shutdownRuntime!.request();
     control =
       process.env.CLAUDEXOR_NO_CONTROL_API === "1"
         ? null
@@ -347,7 +346,7 @@ async function main(): Promise<void> {
     lifecycle = armDaemonLifecycle({
       daemonDir: daemonDir(),
       logPath: logPath(),
-      stop: () => shutdownRuntime!.request(),
+      beginShutdown: (reason) => shutdownRuntime!.beginShutdown(reason),
     });
 
     await setupBinding.start();
@@ -379,7 +378,7 @@ async function main(): Promise<void> {
     }
     await shutdownRuntime.wait();
     lifecycle.finalize();
-    lifecycle = null;
+    shutdownRuntime.finalize();
     appendFileSync(logPath(), `[${new Date().toISOString()}] claudexord shut down\n`);
   } catch (error) {
     try {
@@ -394,9 +393,9 @@ async function main(): Promise<void> {
     }
     if (shutdownRuntime) {
       try {
-        await shutdownRuntime.request();
+        await shutdownRuntime.beginShutdown("startup failure");
         lifecycle?.finalize();
-        lifecycle = null;
+        shutdownRuntime.finalize();
       } catch (shutdownError) {
         try {
           appendFileSync(

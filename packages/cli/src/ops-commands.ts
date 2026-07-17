@@ -9,6 +9,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DaemonClient,
+  awaitDaemonTermination,
   defaultSocketPath,
   ensureDaemonRuntimeRoot,
   logPath,
@@ -162,8 +163,22 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     }
     if (sub === "stop") {
       await client.shutdown();
-      if (json) printJson({ ok: true, stopping: true });
-      else print("claudexord shutting down");
+      // "stop requested" is not "stopped" (W3.5): confirm the daemon's death
+      // before reporting success, so scripts and test disposers can trust the
+      // exit code instead of racing a still-live process.
+      const termination = await awaitDaemonTermination(defaultSocketPath());
+      if (termination.outcome === "still_alive") {
+        if (json) printJson({ ok: false, stopping: true, stopped: false, ...termination });
+        else process.stderr.write(`claudexord stop FAILED: ${termination.detail}\n`);
+        return 1;
+      }
+      if (json) printJson({ ok: true, stopping: true, stopped: true, ...termination });
+      else
+        print(
+          termination.outcome === "killed"
+            ? `claudexord stopped (${termination.detail})`
+            : "claudexord stopped",
+        );
       return 0;
     }
     if (sub === "rotate-token") {

@@ -686,9 +686,20 @@ lost" when the stream ends without a terminal event.
 
 ### Daemon lifecycle (signals, orphans, crash GC)
 
-`claudexord` shuts down gracefully on SIGTERM/SIGINT (same path as the
-`claudexor.shutdown` RPC: abort in-flight runs and complete their journaled
-terminal transitions). No-project command state, setup, and the project registry
+Every shutdown trigger — SIGTERM/SIGINT, the `claudexor.shutdown` socket RPC,
+a startup failure — enters ONE state machine (`DaemonRuntimeShutdown
+.beginShutdown(reason)`): abort in-flight runs, complete their journaled
+terminal transitions, close the journal, under a shared bounded escalation
+ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
+disclosed in the log). A hung participant cannot immortalize the daemon
+whichever trigger asked it to die. The daemon records its birth identity in
+the writer lease at startup; `claudexor daemon stop` then CONFIRMS death
+(released lease, gone pid, or identity-verified SIGKILL escalation — a
+recycled pid is never signalled) before reporting success, so scripts and
+test disposers can trust its exit code. Stdio bridges (`mcp serve`/`acp
+serve`) bound their life to their host's with a reparent watchdog — a dead
+host whose pipe stays open (inherited fds) no longer leaves an idle bridge.
+No-project command state, setup, and the project registry
 are frames in the checksummed global journal. Each registered project's commands,
 threads, turns, and vendor-session cache live in `project:<stable-project-id>`;
 one corrupt project partition does not make healthy projects unreadable. The

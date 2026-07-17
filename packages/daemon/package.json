@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@claudexor/core": "workspace:*",
     "@claudexor/journal": "workspace:*",
     "@claudexor/schema": "workspace:*",
     "@claudexor/util": "workspace:*"

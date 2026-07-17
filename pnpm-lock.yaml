@@ -232,6 +232,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@claudexor/core':
+        specifier: workspace:*
+        version: link:../core
       '@claudexor/journal':
         specifier: workspace:*
         version: link:../journal

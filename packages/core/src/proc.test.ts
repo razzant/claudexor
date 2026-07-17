@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { labelStreams, spawnProcess } from "./proc.js";
+import { armOrphanExit, labelStreams, spawnProcess } from "./proc.js";
 
 const tempDirs: string[] = [];
 
@@ -102,5 +102,41 @@ describe("labelStreams", () => {
   it("never splits a surrogate pair at the truncation boundary", () => {
     const out = labelStreams("🙂".repeat(400), "", { maxLen: 301 });
     expect(out).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+});
+
+describe("armOrphanExit", () => {
+  it("exits when the bridge reparents to pid 1 (dead host) and discloses once", async () => {
+    const exits: number[] = [];
+    let disclosed = 0;
+    let ppid = 777;
+    const watchdog = armOrphanExit({
+      intervalMs: 5,
+      getppid: () => ppid,
+      exit: (code) => exits.push(code),
+      onOrphaned: () => {
+        disclosed += 1;
+      },
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(exits).toEqual([]); // live host: never exits
+    ppid = 1;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    expect(exits.length).toBeGreaterThan(0);
+    expect(exits[0]).toBe(0);
+    expect(disclosed).toBeGreaterThan(0);
+    watchdog.stop();
+  });
+
+  it("stop() cancels the watchdog", async () => {
+    const exits: number[] = [];
+    const watchdog = armOrphanExit({
+      intervalMs: 5,
+      getppid: () => 1,
+      exit: (code) => exits.push(code),
+    });
+    watchdog.stop();
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    expect(exits).toEqual([]);
   });
 });

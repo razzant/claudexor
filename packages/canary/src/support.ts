@@ -87,8 +87,12 @@ export function makeSandbox(): Sandbox {
     env,
     dispose: () => {
       // Stop a sandbox daemon if one was auto-started by an acting command.
+      // `daemon stop` CONFIRMS the daemon's death (or escalates an
+      // identity-verified SIGKILL) before exiting, so the sandbox removal
+      // below never races a live process (W3.5). The timeout covers the
+      // stop's own worst-case confirmation budget (~20s) with slack.
       try {
-        spawnSync(process.execPath, [CLI, "daemon", "stop"], { env, cwd: repo, timeout: 15_000 });
+        spawnSync(process.execPath, [CLI, "daemon", "stop"], { env, cwd: repo, timeout: 30_000 });
       } catch {
         /* best effort */
       }
