@@ -1706,7 +1706,7 @@ describe("Orchestrator", () => {
       const telemetry = new ArtifactStore(repo).readYaml<{
         auth_route?: { profile_id?: string | null };
       }>(join(res.runDir, "final", "telemetry.yaml"));
-      expect(telemetry.auth_route?.profile_id).toBe("b");
+      expect(telemetry?.auth_route?.profile_id).toBe("b");
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
