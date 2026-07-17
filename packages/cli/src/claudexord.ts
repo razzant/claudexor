@@ -51,6 +51,11 @@ async function main(): Promise<void> {
   const socketPath = defaultSocketPath();
   const writerLease = acquireDaemonWriterLease(socketPath);
   let shutdownRuntime: DaemonRuntimeShutdown | null = null;
+  // Release wave round-12 BLOCK: the single-writer lease may only be released
+  // after a CLEAN shutdown — a failed/partial shutdown keeps components that
+  // can still write, and releasing would let a successor acquire ownership
+  // beside them. On failure the lease dies with the process instead.
+  let releaseWriterLease = true;
   let lifecycle: ReturnType<typeof armDaemonLifecycle> | null = null;
   let quotaPollTimer: NodeJS.Timeout | null = null;
   try {
@@ -422,6 +427,7 @@ async function main(): Promise<void> {
         } catch {
           /* preserve the shutdown failure */
         }
+        releaseWriterLease = false;
         throw new AggregateError(
           [error, shutdownError],
           "claudexord failed and could not complete shutdown",
@@ -431,7 +437,7 @@ async function main(): Promise<void> {
     throw error;
   } finally {
     if (quotaPollTimer) clearInterval(quotaPollTimer);
-    writerLease.release();
+    if (releaseWriterLease) writerLease.release();
   }
 }
 

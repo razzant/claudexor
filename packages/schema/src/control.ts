@@ -212,9 +212,11 @@ export const ControlRunStartRequest = z
      * typed refusal, never a silent default. */
     credentialProfileId: z
       .string()
+      .min(1)
+      .nullable()
       .optional()
       .describe(
-        "Explicit per-run credential profile id; unknown/disabled ids refuse, never default.",
+        "Explicit per-run credential profile id; null FORCES the engine-default ladder past a thread-sticky profile; unknown/disabled ids refuse, never default.",
       ),
     /** How much the orchestrate planner may act without confirmation
      * (suggest/auto_safe/auto_full). Only meaningful for mode=orchestrate;

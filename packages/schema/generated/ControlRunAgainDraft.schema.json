@@ -446,8 +446,16 @@
               "description": "Per-run auth route override."
             },
             "credentialProfileId": {
-              "type": "string",
-              "description": "Explicit per-run credential profile id; unknown/disabled ids refuse, never default."
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit per-run credential profile id; null FORCES the engine-default ladder past a thread-sticky profile; unknown/disabled ids refuse, never default."
             },
             "autonomy": {
               "type": "string",

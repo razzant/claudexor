@@ -1583,6 +1583,12 @@ final class AppModel {
             // have reordered liveTasks, and a stale index would merge this
             // snapshot into (and copy hydrated fields from) a DIFFERENT run.
             guard let baseIdx = liveTasks.firstIndex(where: { $0.id == id }) else { return }
+            // Concurrent detail loads race (release wave round-12): an OLDER
+            // response resolving after a newer one must not roll the task
+            // back — deferred events at or below the newer fence were already
+            // consumed and cannot repair it. Older-than-fence responses are
+            // no-ops.
+            if detail.lastSeq < (snapshotReplayFences[id] ?? 0) { return }
             // Snapshot truth and stream progress are related but distinct: the
             // resume cursor may already be newer than this response.
             snapshotReplayFences[id] = max(snapshotReplayFences[id] ?? 0, detail.lastSeq)
