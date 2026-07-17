@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   DaemonControlApiServer,
   normalizeRunStartRequest,
-  producedRepoRoot,
   type DaemonControlApiOptions,
   type DaemonFacadeClient,
   type DaemonRunRecord,
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
+import { producedRepoRoot } from "./artifact-serve-routes.js";
 import {
   appendFileSync,
   mkdtempSync,

@@ -248,6 +248,32 @@
           "default": {},
           "description": "Global runtime timeouts and retry policy."
         },
+        "retention": {
+          "type": "object",
+          "properties": {
+            "runs_max_age_days": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 30,
+              "description": "Delete terminal, unreferenced run trees older than this many days."
+            },
+            "reviews_max_age_days": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "default": 14,
+              "description": "Delete standalone diff-review trees older than this many days."
+            },
+            "keep_last_runs_per_project": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 20,
+              "description": "The newest N runs per project always survive, regardless of age."
+            }
+          },
+          "additionalProperties": false,
+          "default": {},
+          "description": "Disk retention policy for engine-owned runtime artifacts."
+        },
         "harnesses": {
           "type": "object",
           "additionalProperties": {

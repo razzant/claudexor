@@ -1,0 +1,294 @@
+/**
+ * Daemon-owned disk retention (W3.6): bounded GC over engine-owned runtime
+ * artifacts. Deletes ONLY terminal, unreferenced, non-actionable run trees
+ * past their age window — and standalone diff-review trees past theirs —
+ * leaving a tombstone projection behind so an old thread fails honestly
+ * ("expired by retention"), never a mysterious 404. Every survivor is
+ * counted with its keep reason: silent deletion and silent retention are
+ * both bugs. The CLI (`claudexor gc`) and the startup maintenance pass are
+ * thin callers of this one owner.
+ */
+import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { parse as yamlParse, stringify as yamlStringify } from "yaml";
+import {
+  ControlGcReceipt,
+  ControlGcRequest,
+  type GcKeepCounts,
+  type GcRunDeletion,
+} from "@claudexor/schema";
+import { readTextSafe, writeText } from "@claudexor/util";
+
+export interface RetentionPolicy {
+  runsMaxAgeDays: number;
+  reviewsMaxAgeDays: number;
+  keepLastRunsPerProject: number;
+}
+
+export interface RetentionProject {
+  /** Canonical project root (or the no-project root). */
+  root: string;
+  /** The ArtifactStore runs directory for this root. */
+  runsDir: string;
+  /** Standalone diff-review trees dir (`<root>/.claudexor/reviews`); null = none. */
+  reviewsDir: string | null;
+}
+
+export interface RetentionRunRecord {
+  runId: string;
+  state: string;
+  finishedAt?: string;
+}
+
+export interface RetentionDeps {
+  projects: () => RetentionProject[];
+  /** The daemon's journal-projected command records (terminality truth). */
+  records: () => RetentionRunRecord[];
+  /** Every run id referenced by a non-purged thread (lineage, heads, turns). */
+  referencedRunIds: () => Set<string>;
+  now?: () => number;
+  /** Bounded batches: one pass deletes at most this many trees (disclosed). */
+  maxDeletionsPerPass?: number;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TOMBSTONE = "tombstone.yaml";
+/** Daemon-record states with an operator or scheduler still attached. */
+const LIVE_STATES = new Set(["running", "queued"]);
+
+export async function runRetentionPass(
+  policy: RetentionPolicy,
+  request: ControlGcRequest,
+  deps: RetentionDeps,
+): Promise<ControlGcReceipt> {
+  const now = deps.now ?? Date.now;
+  const startedAt = new Date(now()).toISOString();
+  const dryRun = request.dry_run;
+  const maxDeletions = deps.maxDeletionsPerPass ?? 500;
+  const runCutoff = now() - policy.runsMaxAgeDays * DAY_MS;
+  const reviewCutoff = now() - policy.reviewsMaxAgeDays * DAY_MS;
+  const recordsById = new Map(deps.records().map((record) => [record.runId, record]));
+  const referenced = deps.referencedRunIds();
+
+  const kept: GcKeepCounts = {
+    active: 0,
+    recent: 0,
+    young: 0,
+    referenced: 0,
+    actionable: 0,
+    unknown_state: 0,
+  };
+  const deletedRuns: GcRunDeletion[] = [];
+  const deletedReviews: { path: string; freed_bytes: number }[] = [];
+  const errors: string[] = [];
+  let examined = 0;
+  let freedBytes = 0;
+  let deletions = 0;
+
+  for (const project of deps.projects()) {
+    const candidates: { runId: string; root: string; ageStamp: number }[] = [];
+    for (const runId of listSubdirs(project.runsDir)) {
+      const root = join(project.runsDir, runId);
+      if (existsSync(join(root, TOMBSTONE))) continue; // already reclaimed
+      examined += 1;
+      const record = recordsById.get(runId);
+      if (record && LIVE_STATES.has(record.state)) {
+        kept.active += 1;
+        continue;
+      }
+      if (referenced.has(runId)) {
+        kept.referenced += 1;
+        continue;
+      }
+      // Blocked runs stay operator-visible; an undelivered/applyable patch
+      // (or a review-blocked delivery) is work the operator may still act
+      // on. The decision RECORDS themselves are journal-durable and survive
+      // independently of the tree.
+      if (record?.state === "blocked" || hasActionableWorkProduct(root)) {
+        kept.actionable += 1;
+        continue;
+      }
+      // Terminality is evidence, never an assumption: without a daemon record
+      // the tree itself must prove it finished (a final summary / failure /
+      // work product). An unproven tree is protected, not deleted.
+      if (!record && !hasTerminalEvidence(root)) {
+        kept.unknown_state += 1;
+        continue;
+      }
+      const ageStamp = ageStampOf(root, record);
+      if (ageStamp > runCutoff) {
+        kept.young += 1;
+        continue;
+      }
+      candidates.push({ runId, root, ageStamp });
+    }
+    // The newest N per project survive regardless of age.
+    candidates.sort((a, b) => b.ageStamp - a.ageStamp);
+    const spared = candidates.slice(0, policy.keepLastRunsPerProject);
+    kept.recent += spared.length;
+    for (const candidate of candidates.slice(policy.keepLastRunsPerProject)) {
+      if (deletions >= maxDeletions) {
+        errors.push(
+          `pass truncated at ${maxDeletions} deletions (bounded batch); run gc again to continue`,
+        );
+        break;
+      }
+      try {
+        const bytes = treeBytes(candidate.root);
+        if (!dryRun) {
+          rmSync(candidate.root, { recursive: true, force: true });
+          writeText(
+            join(candidate.root, TOMBSTONE),
+            yamlStringify({
+              run_id: candidate.runId,
+              deleted_at: new Date(now()).toISOString(),
+              reason: "retention",
+              policy: {
+                runs_max_age_days: policy.runsMaxAgeDays,
+                keep_last_runs_per_project: policy.keepLastRunsPerProject,
+              },
+            }),
+          );
+        }
+        deletedRuns.push({
+          run_id: candidate.runId,
+          project_root: project.root,
+          freed_bytes: bytes,
+        });
+        freedBytes += bytes;
+        deletions += 1;
+        // Bounded batches must not starve the event loop under the daemon.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      } catch (error) {
+        errors.push(
+          `runs/${candidate.runId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (deletions >= maxDeletions) break;
+  }
+
+  for (const project of deps.projects()) {
+    if (!project.reviewsDir) continue;
+    for (const name of listSubdirs(project.reviewsDir)) {
+      // Standalone diff-review trees only — `.claudexor/` in a user repo is
+      // user-owned config; the engine deletes nothing there but its own
+      // `diff-*` runtime debris, never following symlinks.
+      if (!name.startsWith("diff-")) continue;
+      const path = join(project.reviewsDir, name);
+      try {
+        if (lstatSync(path).isSymbolicLink()) continue;
+        if (statSync(path).mtimeMs > reviewCutoff) continue;
+        const bytes = treeBytes(path);
+        if (!dryRun) rmSync(path, { recursive: true, force: true });
+        deletedReviews.push({ path, freed_bytes: bytes });
+        freedBytes += bytes;
+      } catch (error) {
+        errors.push(`reviews/${name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  return ControlGcReceipt.parse({
+    schema_version: 1,
+    dry_run: dryRun,
+    started_at: startedAt,
+    finished_at: new Date(now()).toISOString(),
+    policy: {
+      runs_max_age_days: policy.runsMaxAgeDays,
+      reviews_max_age_days: policy.reviewsMaxAgeDays,
+      keep_last_runs_per_project: policy.keepLastRunsPerProject,
+    },
+    examined_runs: examined,
+    deleted_runs: deletedRuns,
+    kept,
+    deleted_reviews: deletedReviews,
+    freed_bytes: freedBytes,
+    errors,
+  });
+}
+
+export interface RunTombstone {
+  run_id: string;
+  deleted_at: string;
+  reason: string;
+}
+
+/** The honest post-GC projection: why this run's artifacts are gone. */
+export function readRunTombstone(runDir: string): RunTombstone | null {
+  const text = readTextSafe(join(runDir, TOMBSTONE));
+  if (text === null) return null;
+  try {
+    const value = yamlParse(text) as Partial<RunTombstone> | null;
+    return value && typeof value.run_id === "string" && typeof value.deleted_at === "string"
+      ? { run_id: value.run_id, deleted_at: value.deleted_at, reason: String(value.reason ?? "") }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function listSubdirs(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+function hasTerminalEvidence(runRoot: string): boolean {
+  return (
+    existsSync(join(runRoot, "final", "summary.md")) ||
+    existsSync(join(runRoot, "final", "failure.yaml")) ||
+    existsSync(join(runRoot, "final", "work_product.yaml"))
+  );
+}
+
+function hasActionableWorkProduct(runRoot: string): boolean {
+  const text = readTextSafe(join(runRoot, "final", "work_product.yaml"));
+  if (text === null) return false;
+  try {
+    const meta = ((yamlParse(text) as { meta?: unknown })?.meta ?? {}) as Record<string, unknown>;
+    if (meta["result_kind"] !== "patch") return false;
+    const applyState = meta["apply_state"];
+    // Same value set controlRunResult projects: an undelivered patch or a
+    // review-blocked delivery is still the operator's to act on; applied and
+    // reverted patches have completed their lifecycle.
+    return applyState !== "applied" && applyState !== "reverted";
+  } catch {
+    return true; // unreadable work product: fail closed, keep the tree
+  }
+}
+
+function ageStampOf(runRoot: string, record: RetentionRunRecord | undefined): number {
+  const finished = Date.parse(record?.finishedAt ?? "");
+  if (Number.isFinite(finished)) return finished;
+  try {
+    return statSync(runRoot).mtimeMs;
+  } catch {
+    return Date.now();
+  }
+}
+
+function treeBytes(root: string): number {
+  let total = 0;
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) walk(path);
+        else if (entry.isFile()) total += statSync(path).size;
+      } catch {
+        /* a racing unlink must not fail the measurement */
+      }
+    }
+  };
+  try {
+    walk(root);
+  } catch {
+    /* tree vanished mid-walk */
+  }
+  return total;
+}

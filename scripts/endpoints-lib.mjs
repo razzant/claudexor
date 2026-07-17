@@ -95,6 +95,7 @@ const READ_ONLY_NON_GET = new Set([
 // fails loudly instead of shipping a dangling ref.
 const ROUTE_RESPONSE_OVERRIDES = new Map([
   ["GET /v2/operations", "ControlOperationCatalog"],
+  ["POST /v2/maintenance/gc", "ControlGcReceipt"],
   ["GET /v2/projects", "ControlProjectListResponse"],
   ["POST /v2/projects", "ControlProject"],
   ["POST /v2/projects/:id/relink", "ControlProject"],

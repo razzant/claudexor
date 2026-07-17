@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from "node:http";
-import { basename, extname, join, relative, sep } from "node:path";
+import { basename, extname, join } from "node:path";
 import {
   type ApplyGateInput,
   deriveApplyEligibility,
@@ -55,7 +55,9 @@ import { candidatesFor } from "./candidates.js";
 import { handleProjectRoute } from "./project-routes.js";
 import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute } from "./journal-event-routes.js";
+import { handleMaintenanceRoute, type MaintenanceRouteServices } from "./maintenance-routes.js";
 import { handleResourceRoute, type ResourceRouteServices } from "./resource-routes.js";
+import { handleArtifactServeRoute, listArtifacts } from "./artifact-serve-routes.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { controlProblemError } from "./problem-response.js";
@@ -70,7 +72,6 @@ import {
   ResourceAttachmentRef,
   ControlApplyCheckRequest,
   ControlApplyRequest,
-  ControlArtifactListResponse,
   AgentCapabilityCatalog,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
@@ -87,7 +88,6 @@ import {
   ControlRunControlRequest,
   ControlRunControlResponse,
   ControlReviewerPanelEntry,
-  type ControlArtifactInfo,
   ControlRunDetail,
   ControlRunListResponse,
   ControlRunSummary,
@@ -194,7 +194,8 @@ export interface DaemonControlApiOptions {
   runStartTimeoutMs?: number;
   bus?: { subscribe(listener: (event: { run_id: string }) => void): () => void };
   services?: DeliveryCommandServices &
-    Partial<ResourceRouteServices> & {
+    Partial<ResourceRouteServices> &
+    Partial<MaintenanceRouteServices> & {
       listProjects?: () => Promise<{ projects: unknown[] }>;
       registerProject?: (input: {
         root: string;
@@ -310,8 +311,7 @@ export interface DaemonControlApiOptions {
 }
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
-const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
-const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
+
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
 interface ValidatedSetupEventBatch {
@@ -691,6 +691,21 @@ export class DaemonControlApiServer {
     )
       return;
     if (
+      await handleMaintenanceRoute(
+        {
+          services: this.opts.services,
+          readBody: (request) => this.readBody(request),
+          json: (response, status, body) => this.json(response, status, body),
+          requestError: (response, error) => this.requestError(response, error),
+        },
+        method,
+        path,
+        req,
+        res,
+      )
+    )
+      return;
+    if (
       await handleProjectRoute(
         {
           services: this.opts.services,
@@ -988,97 +1003,18 @@ export class DaemonControlApiServer {
       }
     }
 
-    const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
-    if (method === "GET" && artifactsRootMatch) {
-      const rec = await this.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
-      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      return this.json(
+    if (
+      await handleArtifactServeRoute(
+        {
+          findRun: (id) => this.findRun(id),
+          json: (response, status, body) => this.json(response, status, body),
+        },
+        method,
+        path,
         res,
-        200,
-        ControlArtifactListResponse.parse({
-          runId: rec.runId ?? rec.id,
-          artifacts: listArtifacts(rec.runDir),
-        }),
-      );
-    }
-
-    const artifactFetchMatch = /^\/runs\/([^/]+)\/artifacts\/(.+)$/.exec(path);
-    if (method === "GET" && artifactFetchMatch) {
-      const rec = await this.findRun(decodeURIComponent(artifactFetchMatch[1] as string));
-      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      const target = safeArtifactPath(
-        rec.runDir,
-        decodeURIComponent(artifactFetchMatch[2] as string),
-      );
-      if (!target || !existsSync(target) || lstatSync(target).isDirectory())
-        return this.json(res, 404, { error: "no such artifact" });
-      const stats = lstatSync(target);
-      const isText = isTextArtifact(target);
-      const cap = isText ? MAX_ARTIFACT_FETCH_BYTES : MAX_ARTIFACT_BINARY_FETCH_BYTES;
-      if (stats.size > cap) {
-        return this.json(res, 413, {
-          error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`,
-          bytes: stats.size,
-        });
-      }
-      let data = readFileSync(target);
-      if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8"))) {
-        return this.json(res, 409, {
-          error: "artifact contains secret-like token; refusing to serve patch",
-        });
-      }
-      if (isTextArtifact(target)) {
-        data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
-      }
-      res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
-      res.end(data);
+      )
+    )
       return;
-    }
-
-    const producedRootMatch = /^\/runs\/([^/]+)\/produced$/.exec(path);
-    if (method === "GET" && producedRootMatch) {
-      const rec = await this.findRun(decodeURIComponent(producedRootMatch[1] as string));
-      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      const repoRoot = producedRepoRoot(rec);
-      const artifacts = repoRoot ? listArtifacts(join(repoRoot, "artifacts")) : [];
-      return this.json(
-        res,
-        200,
-        ControlArtifactListResponse.parse({ runId: rec.runId ?? rec.id, artifacts }),
-      );
-    }
-
-    const producedFetchMatch = /^\/runs\/([^/]+)\/produced\/(.+)$/.exec(path);
-    if (method === "GET" && producedFetchMatch) {
-      const rec = await this.findRun(decodeURIComponent(producedFetchMatch[1] as string));
-      if (!rec?.runDir) return this.json(res, 404, { error: "no such run" });
-      const repoRoot = producedRepoRoot(rec);
-      if (!repoRoot) return this.json(res, 404, { error: "no project root for run" });
-      const target = safeArtifactPath(
-        join(repoRoot, "artifacts"),
-        decodeURIComponent(producedFetchMatch[2] as string),
-      );
-      if (!target || !existsSync(target) || lstatSync(target).isDirectory())
-        return this.json(res, 404, { error: "no such artifact" });
-      const stats = lstatSync(target);
-      const cap = isTextArtifact(target)
-        ? MAX_ARTIFACT_FETCH_BYTES
-        : MAX_ARTIFACT_BINARY_FETCH_BYTES;
-      if (stats.size > cap)
-        return this.json(res, 413, {
-          error: `artifact is ${stats.size} bytes (limit ${cap}); read it from disk at ${target}`,
-          bytes: stats.size,
-        });
-      let data = readFileSync(target);
-      if (isPatchArtifact(target) && containsSecretLikeToken(data.toString("utf8")))
-        return this.json(res, 409, {
-          error: "artifact contains secret-like token; refusing to serve patch",
-        });
-      if (isTextArtifact(target)) data = Buffer.from(redactSecrets(data.toString("utf8")), "utf8");
-      res.writeHead(200, { "content-type": contentType(target), "content-length": data.length });
-      res.end(data);
-      return;
-    }
 
     if (await handleRunApplyRoutes(this.runApplyRouteCtx(), method, path, req, res)) return;
 
@@ -2583,40 +2519,6 @@ function readStructured<T>(
   throw new Error(`unsupported structured artifact extension: ${ext}`);
 }
 
-function listArtifacts(root: string): ControlArtifactInfo[] {
-  const safeRoot = safeArtifactRoot(root);
-  if (!safeRoot) return [];
-  const out: ControlArtifactInfo[] = [];
-  const walk = (dir: string) => {
-    for (const name of readdirSync(dir)) {
-      const abs = join(dir, name);
-      const st = lstatSync(abs);
-      if (st.isSymbolicLink()) continue;
-      const rel = relative(safeRoot, abs).split(sep).join("/");
-      out.push({
-        path: rel,
-        kind: st.isDirectory() ? "directory" : "file",
-        bytes: st.isDirectory() ? undefined : st.size,
-        mime: st.isDirectory() ? undefined : artifactMime(rel),
-      });
-      if (st.isDirectory()) walk(abs);
-    }
-  };
-  walk(safeRoot);
-  return out.sort((a, b) => a.path.localeCompare(b.path));
-}
-
-/** A run's project root, taken from its TYPED scope — NOT by path-slicing the
- *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
- *  is `~/.claudexor/v2/runs/<id>`) to the user's HOME and let /produced list
- *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs. */
-export function producedRepoRoot(rec: DaemonRunRecord): string | null {
-  const scope = (rec.params as { scope?: { kind?: string; root?: string } } | undefined)?.scope;
-  return scope?.kind === "project" && typeof scope.root === "string" && scope.root.trim()
-    ? scope.root
-    : null;
-}
-
 function readPatch(rec: DaemonRunRecord): string | null {
   return readRawTextArtifact(rec, "final/patch.diff");
 }
@@ -2773,55 +2675,6 @@ function readReviewFindings(rec: DaemonRunRecord): ReviewFinding[] {
     }
   }
   return out;
-}
-
-function contentType(path: string): string {
-  switch (extname(path).toLowerCase()) {
-    case ".json":
-      return "application/json; charset=utf-8";
-    case ".md":
-    case ".txt":
-    case ".jsonl":
-    case ".log":
-    case ".diff":
-    case ".patch":
-    case ".yaml":
-    case ".yml":
-      return "text/plain; charset=utf-8";
-    case ".html":
-    case ".htm":
-      return "text/html; charset=utf-8";
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".gif":
-      return "image/gif";
-    case ".webp":
-      return "image/webp";
-    case ".svg":
-      return "image/svg+xml";
-    case ".pdf":
-      return "application/pdf";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-/** Clean MIME (no charset) for the artifact listing DTO. */
-function artifactMime(path: string): string {
-  return contentType(path).split(";")[0] as string;
-}
-
-function isPatchArtifact(path: string): boolean {
-  const ext = extname(path);
-  return ext === ".diff" || ext === ".patch";
-}
-
-function isTextArtifact(path: string): boolean {
-  const type = contentType(path);
-  return type.startsWith("text/") || type.startsWith("application/json");
 }
 
 function redactPrompt(prompt: string): string {

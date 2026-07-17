@@ -484,6 +484,7 @@ files.
 - `GET /v2/harnesses`
 - `POST /v2/harnesses/:id/auth-readiness`
 - `GET /v2/harnesses/:id/models`
+- `POST /v2/maintenance/gc`
 - `GET /v2/operations`
 - `GET /v2/projects`
 - `POST /v2/projects`
@@ -714,6 +715,19 @@ projects the same surface as `claudexor project list|register|relink` and
 auto-registers the current root before a run; no v1 config, thread, or run path
 is imported as a project registration. Relink updates project-thread root
 projections without changing their partition identity.
+The daemon also owns DISK RETENTION (W3.6): a bounded GC pass over
+engine-owned runtime artifacts — per-project run trees and standalone
+`.claudexor/reviews/diff-*` debris — scheduled once after ownership+ready
+(never blocking boot) and exposed as the schema-first control op
+`POST /v2/maintenance/gc` (dry-run first-class, typed receipt disclosing
+every deletion AND why every survivor survived); `claudexor gc` is its thin
+client. It deletes ONLY terminal, unreferenced, non-actionable trees past
+the configured age (`retention.*` in the global config: runs 30d, reviews
+14d, newest N per project always survive): live/blocked records, runs
+referenced by any non-purged thread's lineage, undelivered/applyable
+patches, and trees with no terminal evidence are protected fail-closed. A
+reclaimed run leaves a tombstone projection behind, so its artifacts answer
+with a typed 410 `run_expired_by_retention` — never a mysterious 404.
 While running it snapshots its live harness child process groups to
 `daemon/pids.json`; the NEXT startup reaps recorded orphans that survived a
 crash (pid liveness + command-name recycling guard) and sweeps workspace

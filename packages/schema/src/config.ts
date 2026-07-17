@@ -226,6 +226,37 @@ export const GlobalConfig = z
       .strict()
       .default({})
       .describe("Global runtime timeouts and retry policy."),
+    /**
+     * Disk retention for engine-owned runtime artifacts (W3.6). The daemon's
+     * retention service deletes ONLY terminal, unreferenced run trees past
+     * their age — active/queued/blocked runs, runs referenced by live
+     * threads, and undelivered/applyable work products always survive, and
+     * the newest N runs per project survive regardless of age.
+     */
+    retention: z
+      .object({
+        runs_max_age_days: z
+          .number()
+          .int()
+          .positive()
+          .default(30)
+          .describe("Delete terminal, unreferenced run trees older than this many days."),
+        reviews_max_age_days: z
+          .number()
+          .int()
+          .positive()
+          .default(14)
+          .describe("Delete standalone diff-review trees older than this many days."),
+        keep_last_runs_per_project: z
+          .number()
+          .int()
+          .nonnegative()
+          .default(20)
+          .describe("The newest N runs per project always survive, regardless of age."),
+      })
+      .strict()
+      .default({})
+      .describe("Disk retention policy for engine-owned runtime artifacts."),
     harnesses: z
       .record(
         z.string(),

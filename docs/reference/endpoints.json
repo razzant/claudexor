@@ -58,6 +58,14 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "POST",
+      "path": "/v2/maintenance/gc",
+      "mutating": true,
+      "request_schema": "ControlGcRequest",
+      "response_schema": "ControlGcReceipt",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "GET",
       "path": "/v2/operations",
       "mutating": false,

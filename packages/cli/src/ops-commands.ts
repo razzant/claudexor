@@ -18,6 +18,7 @@ import {
 } from "@claudexor/daemon";
 import { atRiskNodeAdvisory, harnessRuntimeEnv } from "@claudexor/core";
 import {
+  ControlGcReceipt,
   ControlHarnessListResponse,
   ControlHarnessModelsResponse,
   ControlHarnessSetupHarness,
@@ -56,6 +57,8 @@ export function dispatchOpsCommand(
       return daemonCommand(args, json);
     case "doctor":
       return doctorCommand(args, json);
+    case "gc":
+      return gcCommand(args, json);
     case "models":
       return modelsCommand(args, json);
     case "recovery":
@@ -489,6 +492,32 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
     return 0;
   }
   return printUsageError(json, "usage: claudexor secrets list|set|delete");
+}
+
+/** Thin client of the daemon-owned retention service (W3.6). */
+export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const dryRun = flagBool(args, "dry-run") === true;
+  const { addr } = await ensureDaemon();
+  const response = await controlApiFetch(addr, "/maintenance/gc", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ dry_run: dryRun }),
+  });
+  if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);
+  const receipt = ControlGcReceipt.parse(await response.json());
+  if (json) {
+    printJson(receipt);
+    return 0;
+  }
+  const verb = receipt.dry_run ? "would free" : "freed";
+  const mb = (receipt.freed_bytes / (1024 * 1024)).toFixed(1);
+  print(
+    `${verb} ${mb} MiB: ${receipt.deleted_runs.length} run tree(s), ${receipt.deleted_reviews.length} review tree(s) ` +
+      `(examined ${receipt.examined_runs}; kept active=${receipt.kept.active} recent=${receipt.kept.recent} young=${receipt.kept.young} ` +
+      `referenced=${receipt.kept.referenced} actionable=${receipt.kept.actionable} unknown=${receipt.kept.unknown_state})`,
+  );
+  for (const error of receipt.errors) print(`warning: ${error}`);
+  return 0;
 }
 
 export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<number> {

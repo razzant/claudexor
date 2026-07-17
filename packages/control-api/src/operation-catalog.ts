@@ -143,6 +143,9 @@ const operations: ControlOperationDescriptor[] = [
   ),
   j("POST", "/v2/handshake", "read_only", "ControlHandshakeRequest", "ControlHandshakeResponse"),
   j("GET", "/v2/operations", "read_only", null, "ControlOperationCatalog"),
+  j("POST", "/v2/maintenance/gc", "mutating", "ControlGcRequest", "ControlGcReceipt", {
+    idempotency: "natural",
+  }),
   j("GET", "/v2/agent-capabilities", "read_only", null, "AgentCapabilityCatalog"),
   j("GET", "/v2/global/events", "read_only", null, null, { responseKind: "stream" }),
   j("GET", "/v2/quota", "read_only", null, "ControlQuotaResponse"),

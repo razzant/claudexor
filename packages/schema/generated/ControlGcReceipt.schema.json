@@ -1,0 +1,170 @@
+{
+  "$ref": "#/definitions/ControlGcReceipt",
+  "definitions": {
+    "ControlGcReceipt": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 1,
+          "default": 1
+        },
+        "dry_run": {
+          "type": "boolean",
+          "description": "Whether disk was left untouched."
+        },
+        "started_at": {
+          "type": "string",
+          "description": "Pass start (ISO 8601)."
+        },
+        "finished_at": {
+          "type": "string",
+          "description": "Pass end (ISO 8601)."
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "runs_max_age_days": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "reviews_max_age_days": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "keep_last_runs_per_project": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "runs_max_age_days",
+            "reviews_max_age_days",
+            "keep_last_runs_per_project"
+          ],
+          "additionalProperties": false,
+          "description": "The effective retention policy this pass applied."
+        },
+        "examined_runs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Run trees examined."
+        },
+        "deleted_runs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "description": "Deleted (or would-be-deleted) run id."
+              },
+              "project_root": {
+                "type": "string",
+                "description": "Canonical project root owning the run tree."
+              },
+              "freed_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Bytes the tree occupied."
+              }
+            },
+            "required": [
+              "run_id",
+              "project_root",
+              "freed_bytes"
+            ],
+            "additionalProperties": false
+          },
+          "default": [],
+          "description": "Run trees deleted (or would-be under dry_run), tombstones left behind."
+        },
+        "kept": {
+          "type": "object",
+          "properties": {
+            "active": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "recent": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "young": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "referenced": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "actionable": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            },
+            "unknown_state": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          "additionalProperties": false,
+          "description": "Why every surviving candidate survived."
+        },
+        "deleted_reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Deleted standalone diff-review tree."
+              },
+              "freed_bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "path",
+              "freed_bytes"
+            ],
+            "additionalProperties": false
+          },
+          "default": [],
+          "description": "Standalone diff-review trees deleted (or would-be under dry_run)."
+        },
+        "freed_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total bytes freed (or reclaimable under dry_run)."
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Non-fatal per-tree failures; the pass continues past them."
+        }
+      },
+      "required": [
+        "dry_run",
+        "started_at",
+        "finished_at",
+        "policy",
+        "examined_runs",
+        "kept",
+        "freed_bytes"
+      ],
+      "additionalProperties": false,
+      "description": "Typed receipt of one retention pass."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
