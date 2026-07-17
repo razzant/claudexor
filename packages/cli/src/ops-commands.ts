@@ -27,13 +27,10 @@ import {
   ControlJournalQuarantineReceipt,
   ControlJournalQuarantineRequest,
   ControlJournalValidation,
-  ControlSecretListResponse,
-  ControlSecretMutationResponse,
-  ControlSecretSetRequest,
   ControlSetupJob,
 } from "@claudexor/schema";
-import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
+import { profilesCommand, secretsCommand } from "./credential-commands.js";
 import {
   authSourceAvailability,
   checksSummary,
@@ -65,6 +62,8 @@ export function dispatchOpsCommand(
       return recoveryCommand(args, json);
     case "secrets":
       return secretsCommand(args, json);
+    case "profiles":
+      return profilesCommand(args, json);
     default:
       return undefined;
   }
@@ -218,7 +217,7 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
   }
 }
 
-async function daemonGet(path: string): Promise<unknown> {
+export async function daemonGet(path: string): Promise<unknown> {
   const { addr } = await ensureDaemon();
   const response = await controlApiFetch(addr, path, {
     headers: { Authorization: `Bearer ${addr.token}` },
@@ -410,88 +409,6 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
 
 export function isKnownAuthLoginHarness(harness: string): boolean {
   return ControlHarnessSetupHarness.safeParse(harness).success;
-}
-
-async function stdinText(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8").trim();
-}
-
-export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<number> {
-  const sub = args._[1] ?? "list";
-  if (sub === "list") {
-    const result = ControlSecretListResponse.parse(await daemonGet("/secrets"));
-    if (json) printJson(result);
-    else {
-      if (result.secrets.length === 0) print(`no stored secrets (${result.backend})`);
-      for (const secret of result.secrets) print(`${secret.name} [${secret.backend}]`);
-    }
-    return 0;
-  }
-  if (sub === "set") {
-    const name = args._[2];
-    if (!name) {
-      return printUsageError(
-        json,
-        "usage: claudexor secrets set <name> --from-env <ENV_VAR>  # or pipe value on stdin",
-      );
-    }
-    if (!isManagedSecretName(name)) {
-      return printUsageError(
-        json,
-        `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
-      );
-    }
-    const envVar = flagStr(args, "from-env");
-    const value = envVar ? process.env[envVar] : process.stdin.isTTY ? "" : await stdinText();
-    if (!value) {
-      return printUsageError(
-        json,
-        "secret value required via --from-env or stdin; values are not accepted as positional args",
-      );
-    }
-    const body = ControlSecretSetRequest.parse({ name, value });
-    const { addr } = await ensureDaemon();
-    const response = await controlApiFetch(addr, "/secrets", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok)
-      throw new Error(`secret write failed (${response.status}): ${await response.text()}`);
-    const receipt = ControlSecretMutationResponse.parse(await response.json());
-    if (json) printJson(receipt);
-    else {
-      print(`stored ${name} in ${receipt.backend}`);
-      if (receipt.warning) print(`warning: ${receipt.warning}`);
-    }
-    return 0;
-  }
-  if (sub === "delete" || sub === "rm") {
-    const name = args._[2];
-    if (!name) {
-      return printUsageError(json, "usage: claudexor secrets delete <name>");
-    }
-    if (!isManagedSecretName(name)) {
-      return printUsageError(
-        json,
-        `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
-      );
-    }
-    const { addr } = await ensureDaemon();
-    const response = await controlApiFetch(addr, `/secrets/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${addr.token}` },
-    });
-    if (!response.ok)
-      throw new Error(`secret delete failed (${response.status}): ${await response.text()}`);
-    const receipt = ControlSecretMutationResponse.parse(await response.json());
-    if (json) printJson(receipt);
-    else print(`deleted ${name}`);
-    return 0;
-  }
-  return printUsageError(json, "usage: claudexor secrets list|set|delete");
 }
 
 /** Thin client of the daemon-owned retention service (W3.6). */

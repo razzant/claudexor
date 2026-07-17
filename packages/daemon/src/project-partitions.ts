@@ -270,8 +270,8 @@ export class ProjectPartitions implements CommandAuthority {
     this.requireTurnStore(id).setTurnEnqueueError(id, message, code, retryable);
   }
 
-  resumeMap(id: string): Record<string, string> {
-    return this.requireThreadStore(id).resumeMap(id);
+  resumeMap(id: string, profileId: string | null = null): Record<string, string> {
+    return this.requireThreadStore(id).resumeMap(id, profileId);
   }
 
   recordSession(
@@ -279,8 +279,15 @@ export class ProjectPartitions implements CommandAuthority {
     harnessId: string,
     nativeSessionId: string,
     observedModel?: string | null,
+    profileId: string | null = null,
   ): void {
-    this.requireThreadStore(id).recordSession(id, harnessId, nativeSessionId, observedModel);
+    this.requireThreadStore(id).recordSession(
+      id,
+      harnessId,
+      nativeSessionId,
+      observedModel,
+      profileId,
+    );
   }
 
   /**

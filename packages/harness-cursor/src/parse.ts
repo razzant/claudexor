@@ -2,6 +2,7 @@ import type {
   AuthSourceKind,
   CredentialRoute,
   HarnessEvent,
+  HarnessModel,
   ToolKind,
   ToolRef,
 } from "@claudexor/schema";
@@ -274,4 +275,42 @@ function parseCursorEventStateful(
   }
 
   return null;
+}
+
+function isCursorModelId(id: string): boolean {
+  if (!id) return false;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(id)) return false;
+  for (const ch of id) {
+    if (
+      (ch >= "a" && ch <= "z") ||
+      (ch >= "A" && ch <= "Z") ||
+      (ch >= "0" && ch <= "9") ||
+      ch === "-" ||
+      ch === "." ||
+      ch === "_" ||
+      ch === "/" ||
+      ch === ":"
+    )
+      continue;
+    return false;
+  }
+  return true;
+}
+
+export function parseCursorModelList(text: string): HarnessModel[] {
+  const out: HarnessModel[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of text.replaceAll("\r", "").split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line === "Available models" || line.startsWith("Tip:")) continue;
+    const sep = line.indexOf(" - ");
+    if (sep <= 0) continue;
+    const id = line.slice(0, sep).trim();
+    const label = line.slice(sep + 3).trim() || null;
+    if (!isCursorModelId(id) || seen.has(id)) continue;
+    seen.add(id);
+    // routes: null = unannotated (route scoping is a manifest concept, W11).
+    out.push({ id, label, context_window: null, routes: null });
+  }
+  return out;
 }

@@ -117,6 +117,20 @@
           "description": "Requested auth route for the run (subscription/api_key/auto); the telemetry auth_route receipt carries the effective truth.",
           "default": "auto"
         },
+        "credential_profile_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Requested credential profile for the run; null = engine-default credentials (INV-135 route evidence).",
+          "default": null
+        },
         "max_turns": {
           "anyOf": [
             {
@@ -134,8 +148,7 @@
           "type": "object",
           "properties": {
             "id": {
-              "type": "string",
-              "minLength": 1,
+              "$ref": "#/definitions/TaskContract/properties/credential_profile_id/anyOf/0",
               "description": "SpecPack id."
             },
             "hash": {
@@ -227,7 +240,7 @@
                       "depends_on": {
                         "type": "array",
                         "items": {
-                          "$ref": "#/definitions/TaskContract/properties/spec/properties/id"
+                          "$ref": "#/definitions/TaskContract/properties/credential_profile_id/anyOf/0"
                         },
                         "default": [],
                         "description": "Ids of tasks this node depends on (graph edges)."
@@ -245,7 +258,7 @@
                 "order": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/definitions/TaskContract/properties/spec/properties/id"
+                    "$ref": "#/definitions/TaskContract/properties/credential_profile_id/anyOf/0"
                   },
                   "default": [],
                   "description": "Topological execution order (node ids); empty when there are no tasks."

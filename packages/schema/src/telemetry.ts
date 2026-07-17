@@ -7,7 +7,7 @@ import {
   ModeKind,
   SchemaVersion,
 } from "./primitives.js";
-import { ToolKind } from "./harness.js";
+import { ToolKind } from "./tool-ref.js";
 import { AuthMode } from "./budget.js";
 import { AuthPreference } from "./primitives.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
@@ -344,6 +344,15 @@ export const RunTelemetry = z
         reason: AuthRouteReason,
         harness_id: z.string().nullable().default(null),
         attempt_id: z.string().nullable().default(null),
+        /** Credential profile the deciding attempt ran under (INV-135);
+         * null = engine-default credentials. */
+        profile_id: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe(
+            "Credential profile the deciding attempt ran under; null = engine-default credentials.",
+          ),
         /** Typed model mismatch on the deciding attempt (Квиз-2a): the engine
          * SENT requested but the stream DISCLOSED observed. Null when they
          * match or either side is unknown — never inferred. Distinct from the

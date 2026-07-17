@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AccessProfile, AuthPreference, ExternalContextPolicy } from "./primitives.js";
 import { EffortHint } from "./harness.js";
+import { CredentialProfile } from "./credential-profile.js";
 import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 import { TestCommandGrant, TestCommandInvocation } from "./task.js";
 
@@ -257,6 +258,30 @@ export const GlobalConfig = z
       .strict()
       .default({})
       .describe("Disk retention policy for engine-owned runtime artifacts."),
+    /**
+     * Durable NON-SECRET credential-profile registry (INV-135): additional
+     * credential identities per harness beyond the engine default. Uniqueness
+     * of (harness_id, profile_id) is enforced here; secret material lives in
+     * the vendor dir or the secret store, never in config.
+     */
+    credential_profiles: z
+      .array(CredentialProfile)
+      .default([])
+      .superRefine((profiles, ctx) => {
+        const seen = new Set<string>();
+        for (const p of profiles) {
+          const key = `${p.harness_id}\u0000${p.profile_id}`;
+          if (seen.has(key))
+            ctx.addIssue({
+              code: "custom",
+              message: `duplicate credential profile ${p.profile_id} for harness ${p.harness_id}`,
+            });
+          seen.add(key);
+        }
+      })
+      .describe(
+        "Durable non-secret credential-profile registry; secret material lives in the vendor dir or the secret store, never in config.",
+      ),
     harnesses: z
       .record(
         z.string(),

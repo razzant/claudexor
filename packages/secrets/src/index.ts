@@ -152,8 +152,19 @@ export const MANAGED_SECRET_NAMES = [
   "raw",
 ] as const;
 
+/**
+ * Managed names accept an optional per-profile namespace suffix (INV-135):
+ * `<base>` (the engine-default slot) or `<base>:<profile>` where base stays in
+ * the allowlist and profile is a bounded slug. One grammar for CLI, HTTP, and
+ * adapters — a profile's secret_ref is exactly such a name.
+ */
+const PROFILE_SUFFIX = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
 export function isManagedSecretName(name: string): boolean {
-  return (MANAGED_SECRET_NAMES as readonly string[]).includes(name);
+  const sep = name.indexOf(":");
+  const base = sep === -1 ? name : name.slice(0, sep);
+  if (!(MANAGED_SECRET_NAMES as readonly string[]).includes(base)) return false;
+  return sep === -1 || PROFILE_SUFFIX.test(name.slice(sep + 1));
 }
 
 export interface ResolveOptions {

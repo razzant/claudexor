@@ -519,3 +519,17 @@ process below. Never paper over the conflict.
   only through an explicit DESIGN_SYSTEM section; layouts use fixed
   grids/anchors — an element's position and size never drift with the
   length of its text. verify: DESIGN_SYSTEM §1.1; review.
+- **INV-135** Credential profiles: a profile is a durable NON-SECRET registry
+  entry {profile_id, harness_id, display_name, credential_kind,
+  isolation_locator|secret_ref, enabled} — secret material lives only in the
+  vendor-owned dir or the namespaced secret store, readiness only in the
+  doctor's projection. Profiles are ADDITIVE identities: the default vendor
+  stores (~/.claude, the native codex home) are never a profile target and are
+  never mutated by profile operations. ONE resolve owner (the orchestrator)
+  turns an explicit profile id into the spec's typed profile; unknown,
+  disabled, or harness-mismatched ids refuse — an explicit profile never
+  silently becomes the default credential ladder, and an adapter given an
+  unsupported transport refuses typed. Native-session resume never crosses
+  profiles. verify: schema credential-profile.ts; orchestrator
+  credential-profiles.ts; adapter profile tests; threads resume-isolation
+  test.

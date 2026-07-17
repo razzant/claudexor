@@ -2,6 +2,8 @@ import type {
   AuthPreference,
   AuthSourceKind,
   ConformanceReport,
+  CredentialProfile,
+  CredentialProfileStatus,
   HarnessEvent,
   HarnessManifest,
   HarnessModel,
@@ -54,6 +56,17 @@ export interface HarnessAdapter {
 
   /** Optional cancellation. */
   cancel?(sessionId: string): Promise<void>;
+
+  /**
+   * Optional per-profile readiness probe (INV-135): the doctor projection for
+   * one credential profile, without asserting anything about other routes.
+   * Adapters that support no profile transport simply omit it — the service
+   * layer reports `unknown` availability for their profiles.
+   */
+  probeCredentialProfile?(
+    profile: CredentialProfile,
+    abortSignal?: AbortSignal,
+  ): Promise<CredentialProfileStatus>;
 }
 
 /** A registry of available adapters keyed by harness id. */

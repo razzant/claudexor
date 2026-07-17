@@ -248,6 +248,13 @@ export const TaskContract = z
     auth_preference: AuthPreference.default("auto").describe(
       "Requested auth route for the run (subscription/api_key/auto); the telemetry auth_route receipt carries the effective truth.",
     ),
+    /** The credential profile the caller REQUESTED for this run (INV-135);
+     * null = engine-default credentials. Route evidence for profile identity. */
+    credential_profile_id: Id.nullable()
+      .default(null)
+      .describe(
+        "Requested credential profile for the run; null = engine-default credentials (INV-135 route evidence).",
+      ),
     /** Caller-requested per-run turn cap. Run-level beats per-harness settings
      * (specific beats general); a lane whose manifest lacks max_turns support
      * discloses the ignored knob instead of silently dropping it. */

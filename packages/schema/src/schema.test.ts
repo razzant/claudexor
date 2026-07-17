@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CredentialProfile,
   ControlRunDecisionRequest,
   ControlRunStartRequest,
   ControlSetupJob,
@@ -725,5 +726,70 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
     });
     expect(tc.convergence.require_no_accepted_needs_human_open).toBe(true);
     expect(tc.task_graph).toBeNull();
+  });
+});
+
+describe("CredentialProfile validation (INV-135)", () => {
+  const base = {
+    profile_id: "work",
+    harness_id: "claude",
+    display_name: "Work",
+    enabled: true,
+  };
+
+  it("config_dir_login requires isolation_locator and refuses secret_ref", () => {
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "config_dir_login",
+        isolation_locator: "/abs/dir",
+      }).success,
+    ).toBe(true);
+    expect(
+      CredentialProfile.safeParse({ ...base, credential_kind: "config_dir_login" }).success,
+    ).toBe(false);
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "config_dir_login",
+        isolation_locator: "/abs/dir",
+        secret_ref: "claude_oauth:work",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("secret-ref kinds require secret_ref and refuse isolation_locator", () => {
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "oauth_token",
+        secret_ref: "claude_oauth:work",
+      }).success,
+    ).toBe(true);
+    expect(CredentialProfile.safeParse({ ...base, credential_kind: "api_key" }).success).toBe(
+      false,
+    );
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "api_key",
+        secret_ref: "anthropic:work",
+        isolation_locator: "/abs/dir",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the config registry refuses duplicate (harness, profile) ids", () => {
+    const entry = {
+      ...base,
+      credential_kind: "config_dir_login",
+      isolation_locator: "/abs/dir",
+    };
+    const dup = GlobalConfig.safeParse({ credential_profiles: [entry, entry] });
+    expect(dup.success).toBe(false);
+    const distinct = GlobalConfig.safeParse({
+      credential_profiles: [entry, { ...entry, harness_id: "codex" }],
+    });
+    expect(distinct.success).toBe(true);
   });
 });

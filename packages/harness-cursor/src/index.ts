@@ -30,8 +30,10 @@ import {
 } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
-import { createCursorParser } from "./parse.js";
+import { createCursorParser, parseCursorModelList } from "./parse.js";
+export { parseCursorModelList } from "./parse.js";
 import {
+  cursorProfileKeyOrRefusal,
   probeCursorNativeAuth,
   selectCursorAuthRoute,
   shouldDiscloseCursorAutoApiRoute,
@@ -131,44 +133,6 @@ type CursorRuntimeDeps = {
   nowMs: () => number;
   runCliHarness: typeof runCliHarnessDefault;
 };
-
-function isCursorModelId(id: string): boolean {
-  if (!id) return false;
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(id)) return false;
-  for (const ch of id) {
-    if (
-      (ch >= "a" && ch <= "z") ||
-      (ch >= "A" && ch <= "Z") ||
-      (ch >= "0" && ch <= "9") ||
-      ch === "-" ||
-      ch === "." ||
-      ch === "_" ||
-      ch === "/" ||
-      ch === ":"
-    )
-      continue;
-    return false;
-  }
-  return true;
-}
-
-export function parseCursorModelList(text: string): HarnessModel[] {
-  const out: HarnessModel[] = [];
-  const seen = new Set<string>();
-  for (const rawLine of text.replaceAll("\r", "").split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line === "Available models" || line.startsWith("Tip:")) continue;
-    const sep = line.indexOf(" - ");
-    if (sep <= 0) continue;
-    const id = line.slice(0, sep).trim();
-    const label = line.slice(sep + 3).trim() || null;
-    if (!isCursorModelId(id) || seen.has(id)) continue;
-    seen.add(id);
-    // routes: null = unannotated (route scoping is a manifest concept, W11).
-    out.push({ id, label, context_window: null, routes: null });
-  }
-  return out;
-}
 
 export function cursorApiSmokeFinalText(stdout: string): string | null {
   const replies: string[] = [];
@@ -739,9 +703,20 @@ async function* runCursor(
   // Cursor has no native system-prompt flag; layer instructions as a delimited
   // prompt prefix (the engine already withheld them from synthesis/reviewers).
   args.push(promptWithInstructions(spec));
-  const { route, env, key, nativeAuthed, scopedHome } = await resolveCursorAuthRoute(deps, {
+  // INV-135 strict profile routing: cursor's native login is a singleton, so
+  // a profile is exactly its secret-ref API key (smoked before use like the
+  // default key route); other kinds refuse typed.
+  const profile = spec.credential_profile;
+  const profileGate = profile ? cursorProfileKeyOrRefusal(profile) : null;
+  if (profileGate && "refusal" in profileGate) {
+    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: profileGate.refusal };
+    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+    return;
+  }
+  const routeDeps = profileGate ? { ...deps, cursorApiKey: () => profileGate.key } : deps;
+  const { route, env, key, nativeAuthed, scopedHome } = await resolveCursorAuthRoute(routeDeps, {
     env: spec.env,
-    authPreference: spec.auth_preference,
+    authPreference: profile ? "api_key" : spec.auth_preference,
     abortSignal: abortSignalFromSpec(spec),
   });
   if (route === "api_key" && key) {
@@ -772,14 +747,20 @@ async function* runCursor(
       type: "error",
       session_id: spec.session_id,
       ts: nowIso(),
-      error: scopedHome
-        ? "scoped Cursor HOME requires either a bridged native session or a smoke-proven Cursor API key fallback"
-        : "Cursor requires either a native session or a smoke-proven Cursor API key fallback",
+      error: profile
+        ? `credential profile "${profile.profile_id}": the Cursor API-key smoke did not pass for its stored key`
+        : scopedHome
+          ? "scoped Cursor HOME requires either a bridged native session or a smoke-proven Cursor API key fallback"
+          : "Cursor requires either a native session or a smoke-proven Cursor API key fallback",
     };
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
     return;
   }
 
+  const cursorParser = createCursorParser(
+    route === "local_session" ? "vendor_native" : "managed_api_key",
+    route === "local_session" ? "native_session" : "api_key_env",
+  );
   yield* deps.runCliHarness({
     bin: BIN,
     args,
@@ -787,9 +768,10 @@ async function* runCursor(
     env,
     label: "cursor-agent",
     redact: redactSecrets,
-    parseEvent: createCursorParser(
-      route === "local_session" ? "vendor_native" : "managed_api_key",
-      route === "local_session" ? "native_session" : "api_key_env",
-    ),
+    parseEvent: (obj, sessionId) => {
+      const out = cursorParser(obj, sessionId);
+      if (out && profile) for (const ev of out) ev.credential_profile_id = profile.profile_id;
+      return out;
+    },
   });
 }

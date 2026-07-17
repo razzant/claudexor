@@ -207,6 +207,15 @@ export const ControlRunStartRequest = z
       ),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional().describe("Per-run auth route override."),
+    /** Explicit per-run credential profile (INV-135); resolved against the
+     * durable registry by the engine — an unknown/disabled/mismatched id is a
+     * typed refusal, never a silent default. */
+    credentialProfileId: z
+      .string()
+      .optional()
+      .describe(
+        "Explicit per-run credential profile id; unknown/disabled ids refuse, never default.",
+      ),
     /** How much the orchestrate planner may act without confirmation
      * (suggest/auto_safe/auto_full). Only meaningful for mode=orchestrate;
      * consumed by the executor in runOrchestrate. */

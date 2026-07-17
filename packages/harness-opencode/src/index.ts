@@ -292,7 +292,33 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   // Doctor/run symmetry: resolve the key from the same sources doctor credits
   // (spec env first, then process env, then stored secrets) so a doctor "ok"
   // cannot precede a guaranteed-unauthenticated run.
-  const key = providerKey({ ...process.env, ...spec.env });
+  const profile = spec.credential_profile;
+  let key: { envVar: string; value: string } | null;
+  if (profile) {
+    // INV-135 strict profile routing: opencode supports only secret-ref API
+    // keys; the ref's base name selects the provider env var it rides.
+    if (profile.credential_kind !== "api_key") {
+      throw new HarnessUnavailableError(
+        `credential profile "${profile.profile_id}": opencode supports only the api_key transport`,
+      );
+    }
+    const ref = profile.secret_ref ?? "";
+    const base = ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : ref;
+    const envVar = {
+      opencode: "OPENCODE_API_KEY",
+      openai: "OPENAI_API_KEY",
+      anthropic: "ANTHROPIC_API_KEY",
+    }[base];
+    const value = ref ? resolveSecret(ref) : null;
+    if (!envVar || !value) {
+      throw new HarnessUnavailableError(
+        `credential profile "${profile.profile_id}": secret "${ref || "(missing ref)"}" is not stored or names no opencode provider`,
+      );
+    }
+    key = { envVar, value };
+  } else {
+    key = providerKey({ ...process.env, ...spec.env });
+  }
   // Unified provider scrub (cross-provider leak fix): clear EVERY known provider
   // secret/redirect from the child, then re-add ONLY the single key opencode's
   // chosen provider route needs. The shared runner starts from process.env, so

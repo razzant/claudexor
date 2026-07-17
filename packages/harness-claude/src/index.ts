@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   AccessProfile,
   AuthSourceReadiness,
   ConformanceReport,
+  CredentialProfile,
+  CredentialProfileStatus,
   EffortHint,
   HarnessCapabilityProfile,
   HarnessEvent,
@@ -37,6 +38,9 @@ import {
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { createClaudeParser } from "./parse.js";
+import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profile.js";
+export { canonicalProfileConfigDir } from "./profile.js";
+import { smokeIsolatedApiKey, smokeIsolatedOAuthToken } from "./smoke.js";
 import {
   claudeAttachmentBlocks,
   handleControlRequestFrame,
@@ -45,8 +49,10 @@ import {
   isResultFrame,
 } from "./interactive.js";
 
-const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
-const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter((k) => k !== "ANTHROPIC_API_KEY");
+export const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
+export const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter(
+  (k) => k !== "ANTHROPIC_API_KEY",
+);
 
 const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityProfileSchema.parse({
   auth: {
@@ -205,13 +211,14 @@ export interface ClaudeAuthStatusProbeOptions {
   runCapture?: typeof runCapture;
 }
 
-function claudeNativeEnv(
+export function claudeNativeEnv(
   base?: Record<string, string | null | undefined>,
+  configDir?: string,
 ): Record<string, string | null | undefined> {
   return {
     ...(base ?? {}),
     ...providerScrubEnv(),
-    CLAUDE_CONFIG_DIR: defaultNativeClaudeConfigDir(),
+    CLAUDE_CONFIG_DIR: configDir ?? defaultNativeClaudeConfigDir(),
   };
 }
 
@@ -257,7 +264,7 @@ export async function probeAuthStatus(
   }
 }
 
-function anthropicApiKey(): string | null {
+export function anthropicApiKey(): string | null {
   return (
     process.env.CLAUDEXOR_ANTHROPIC_API_KEY ||
     resolveSecret("anthropic") ||
@@ -278,107 +285,6 @@ export function defaultNativeClaudeConfigDir(): string {
   const override = process.env.CLAUDEXOR_CLAUDE_NATIVE_DIR;
   if (override && override.trim()) return override;
   return join(homedir(), ".claude");
-}
-
-async function smokeIsolatedApiKey(
-  abortSignal?: AbortSignal,
-): Promise<{ ok: boolean; detail: string }> {
-  const key = anthropicApiKey();
-  if (!key) return { ok: false, detail: "no API key fallback available" };
-  const dir = mkdtempSync(`${tmpdir()}/claudexor-claude-smoke-`);
-  try {
-    const env: Record<string, string | null | undefined> = Object.fromEntries(
-      CLAUDE_PROVIDER_ENV_DENYLIST.map((name) => [name, null]),
-    );
-    env.HOME = dir;
-    env.XDG_CONFIG_HOME = `${dir}/.config`;
-    env.CLAUDE_CONFIG_DIR = dir;
-    env.ANTHROPIC_API_KEY = key;
-    const r = await runCapture(
-      BIN,
-      [
-        "-p",
-        "Reply exactly OK",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "plan",
-      ],
-      {
-        cwd: dir,
-        env,
-        timeoutMs: 60_000,
-        abortSignal,
-        cancelSignal: "SIGTERM",
-        cancelKillDelayMs: 0,
-      },
-    );
-    const text = `${r.stdout}\n${r.stderr}`;
-    if (r.code === 0 && text.includes("OK"))
-      return { ok: true, detail: "isolated CLAUDE_CONFIG_DIR smoke passed" };
-    return {
-      ok: false,
-      detail: redactClaudeDoctorDetail(text || `claude exited with code ${r.code}`),
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      detail: redactClaudeDoctorDetail(err instanceof Error ? err.message : String(err)),
-    };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-async function smokeIsolatedOAuthToken(
-  token: string,
-  abortSignal?: AbortSignal,
-): Promise<{ ok: boolean; detail: string }> {
-  const dir = mkdtempSync(`${tmpdir()}/claudexor-claude-oauth-smoke-`);
-  try {
-    const env: Record<string, string | null | undefined> = {
-      ...providerScrubEnv(),
-      HOME: dir,
-      XDG_CONFIG_HOME: `${dir}/.config`,
-      CLAUDE_CONFIG_DIR: dir,
-      CLAUDE_CODE_OAUTH_TOKEN: token,
-    };
-    const r = await runCapture(
-      BIN,
-      [
-        "-p",
-        "Reply exactly OK",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        "plan",
-      ],
-      {
-        cwd: dir,
-        env,
-        timeoutMs: 60_000,
-        abortSignal,
-        cancelSignal: "SIGTERM",
-        cancelKillDelayMs: 0,
-      },
-    );
-    const text = `${r.stdout}\n${r.stderr}`;
-    if (r.code === 0 && text.includes("OK"))
-      return { ok: true, detail: "isolated Claude setup-token smoke passed" };
-    return {
-      ok: false,
-      detail: redactClaudeDoctorDetail(text || `claude exited with code ${r.code}`),
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      detail: redactClaudeDoctorDetail(err instanceof Error ? err.message : String(err)),
-    };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 }
 
 export function claudeAuthSourceReadiness(input: {
@@ -429,15 +335,24 @@ export function claudeAuthSourceReadiness(input: {
   ];
 }
 
-function redactClaudeDoctorDetail(text: string): string {
+export function redactClaudeDoctorDetail(text: string): string {
   return redactSecrets(text).slice(0, 500);
 }
+
+/** The runtime surface the profile module needs (test-stubbable). */
+export type ClaudeProfileRuntimeDeps = Pick<
+  ClaudeRuntimeDeps,
+  "probeAuthStatus" | "resolveProfileSecret"
+>;
 
 type ClaudeRuntimeDeps = {
   detectVersion: typeof detectVersion;
   probeAuthStatus: typeof probeAuthStatus;
   anthropicApiKey: typeof anthropicApiKey;
   claudeOAuthToken: typeof claudeOAuthToken;
+  /** Profile-scoped secret resolution (INV-135): reads exactly the profile's
+   * namespaced ref, never the engine-default ladder. */
+  resolveProfileSecret: (ref: string) => string | null;
   smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
   smokeIsolatedOAuthToken: typeof smokeIsolatedOAuthToken;
   probeReadonlyProfile: typeof probeClaudeReadonlyProfile;
@@ -450,6 +365,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
     probeAuthStatus,
     anthropicApiKey,
     claudeOAuthToken,
+    resolveProfileSecret: (ref) => resolveSecret(ref),
     smokeIsolatedApiKey,
     smokeIsolatedOAuthToken,
     probeReadonlyProfile: probeClaudeReadonlyProfile,
@@ -749,6 +665,13 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
     review(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       return runClaude(spec, runtime);
     },
+
+    probeCredentialProfile(
+      profile: CredentialProfile,
+      abortSignal?: AbortSignal,
+    ): Promise<CredentialProfileStatus> {
+      return probeClaudeCredentialProfile(profile, runtime, abortSignal);
+    },
   };
 }
 
@@ -922,70 +845,84 @@ async function* runClaude(
   // the interactive path even with no interaction channel (control frames then
   // auto-decline). claudeArgsForSpec(interactive) selects --input-format stream-json.
   const interactive = channel !== undefined || attachmentBlocks.length > 0;
-  const nativeEnv = claudeNativeEnv(spec.env);
+  const profile = spec.credential_profile;
   const authPreference = spec.auth_preference ?? "auto";
-  const native: ClaudeAuthStatusProbe =
-    authPreference === "api_key"
-      ? { loggedIn: false, authed: false, authMethod: null, probeError: null }
-      : await runtime.probeAuthStatus(BIN, {
-          env: nativeEnv,
-          abortSignal,
-        });
+  let nativeEnv = claudeNativeEnv(spec.env);
   let key: string | null = null;
   let oauthToken: string | null = null;
-
-  // Explicit routes are strict; auto is subscription-first and alone may fall
-  // back to API-key auth. Preserve the exact selected subscription source so a
-  // native session can never be silently replaced by an OAuth-token env route.
   let subscriptionSource: "native_session" | "oauth_token_env" | null = null;
-  const trySub = (): boolean => {
-    if (native.authed) {
-      subscriptionSource = "native_session";
-      return true;
-    }
-    if (authPreference === "auto") oauthToken ??= runtime.claudeOAuthToken();
-    if (authPreference === "auto" && oauthToken !== null) {
-      subscriptionSource = "oauth_token_env";
-      return true;
-    }
-    return false;
-  };
-  const route = selectClaudeRunAuthRoute(authPreference, trySub, () => {
-    key ??= runtime.anthropicApiKey();
-    return key !== null;
-  });
+  let route: "subscription" | "api_key" | null;
 
-  // Auto selecting its API-key fallback is a paid-route switch and must remain
-  // typed/visible; explicit routes never fall back.
-  if (authPreference === "auto" && route === "api_key") {
-    yield {
-      type: "message",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      text: "[auth] native subscription route unavailable; auto selected api_key",
-      payload: {
-        auth_switched: true,
-        from_auth_mode: "local_session",
-        to_auth_mode: "api_key",
-        reason: "readiness_preferred",
-      },
-    };
-  }
+  if (profile) {
+    const resolved = await resolveClaudeProfileRoute(profile, spec.env, runtime, abortSignal);
+    if (resolved.refusal !== null) {
+      yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: resolved.refusal };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
+    ({ nativeEnv, key, oauthToken, subscriptionSource } = resolved);
+    route = resolved.route;
+  } else {
+    const native: ClaudeAuthStatusProbe =
+      authPreference === "api_key"
+        ? { loggedIn: false, authed: false, authMethod: null, probeError: null }
+        : await runtime.probeAuthStatus(BIN, {
+            env: nativeEnv,
+            abortSignal,
+          });
 
-  if (route === null) {
-    yield {
-      type: "error",
-      session_id: spec.session_id,
-      ts: nowIso(),
-      error:
-        authPreference === "subscription"
-          ? "Claude subscription auth was explicitly requested but a verified claude.ai native session is not ready"
-          : authPreference === "api_key"
-            ? "Claude API-key auth was explicitly requested but no Anthropic API key route is ready"
-            : "no usable Claude auth: native/setup-token subscription routes and API-key fallback are unavailable",
+    // Explicit routes are strict; auto is subscription-first and alone may fall
+    // back to API-key auth. Preserve the exact selected subscription source so a
+    // native session can never be silently replaced by an OAuth-token env route.
+    const trySub = (): boolean => {
+      if (native.authed) {
+        subscriptionSource = "native_session";
+        return true;
+      }
+      if (authPreference === "auto") oauthToken ??= runtime.claudeOAuthToken();
+      if (authPreference === "auto" && oauthToken !== null) {
+        subscriptionSource = "oauth_token_env";
+        return true;
+      }
+      return false;
     };
-    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-    return;
+    route = selectClaudeRunAuthRoute(authPreference, trySub, () => {
+      key ??= runtime.anthropicApiKey();
+      return key !== null;
+    });
+
+    // Auto selecting its API-key fallback is a paid-route switch and must remain
+    // typed/visible; explicit routes never fall back.
+    if (authPreference === "auto" && route === "api_key") {
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        text: "[auth] native subscription route unavailable; auto selected api_key",
+        payload: {
+          auth_switched: true,
+          from_auth_mode: "local_session",
+          to_auth_mode: "api_key",
+          reason: "readiness_preferred",
+        },
+      };
+    }
+
+    if (route === null) {
+      yield {
+        type: "error",
+        session_id: spec.session_id,
+        ts: nowIso(),
+        error:
+          authPreference === "subscription"
+            ? "Claude subscription auth was explicitly requested but a verified claude.ai native session is not ready"
+            : authPreference === "api_key"
+              ? "Claude API-key auth was explicitly requested but no Anthropic API key route is ready"
+              : "no usable Claude auth: native/setup-token subscription routes and API-key fallback are unavailable",
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
   }
 
   const useSubscription = route === "subscription";
@@ -1022,6 +959,7 @@ async function* runClaude(
           // a later api_retry/quota record remains independently attributable.
           ev.credential_route = credentialRoute;
           ev.credential_source = credentialSource;
+          if (profile) ev.credential_profile_id = profile.profile_id;
         }
       }
       return out;

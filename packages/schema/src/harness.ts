@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { AuthSourceKind, AuthSourceReadiness, CredentialRoute } from "./auth.js";
+import { CredentialProfile } from "./credential-profile.js";
+import { ToolRef } from "./tool-ref.js";
 import {
   AccessProfile,
   AuthPreference,
@@ -521,6 +523,19 @@ export const HarnessRunSpec = z
      */
     auth_preference: AuthPreference.default("auto"),
     /**
+     * The RESOLVED credential profile for this attempt (INV-135), stamped by
+     * the orchestrator (the one resolve owner) from the durable registry —
+     * adapters consume the typed transport and never read config. Null = the
+     * engine-default credential ladder. An explicit profile is STRICT: the
+     * adapter uses exactly its transport or refuses with a typed error, never
+     * a silent fallback to default credentials.
+     */
+    credential_profile: CredentialProfile.nullable()
+      .default(null)
+      .describe(
+        "Resolved credential profile for this attempt; null = engine-default credentials. Explicit profiles are strict: exact transport or typed refusal.",
+      ),
+    /**
      * Native CLI session id to resume into (codex `exec resume`, claude `--resume`,
      * cursor `agent --resume`, opencode `run --session`). Null starts a fresh session.
      */
@@ -605,57 +620,6 @@ export const HarnessRunSpec = z
     "Spec passed to a harness adapter's run(): prompt, working directory, access, policies, routing hints, and wiring.",
   );
 export type HarnessRunSpec = z.infer<typeof HarnessRunSpec>;
-
-/**
- * Coarse tool classification used for typed governance (no tool-name string
- * matching outside adapters). Adapters map native tool names to a kind.
- */
-export const ToolKind = z
-  .enum(["web", "file", "command", "mcp", "search", "other"])
-  .describe(
-    "Coarse tool classification used for typed governance; adapters map native tool names to a kind.",
-  );
-export type ToolKind = z.infer<typeof ToolKind>;
-
-/**
- * Typed tool reference attached to `tool_call` / `tool_result` events.
- * `status` is REQUIRED on `tool_result` events (adapter conformance enforces it);
- * a missing status on a result is treated as a dropped/diagnostic event, never as ok.
- */
-export const ToolRef = z
-  .object({
-    name: z.string().describe("Native tool name as the harness reports it."),
-    kind: ToolKind.default("other"),
-    use_id: z.string().optional().describe("Correlates a tool_result with its tool_call."),
-    /** Redacted, bounded human-readable target (query/url/path/command). */
-    target: z
-      .string()
-      .optional()
-      .describe("Redacted, bounded human-readable target (query/url/path/command)."),
-    status: z
-      .enum(["ok", "error", "cancelled", "denied"])
-      .optional()
-      .describe(
-        "Outcome of the tool use; required on tool_result events (a missing status is never treated as ok).",
-      ),
-    /** Redacted, bounded error detail for status=error results. */
-    error_summary: z
-      .string()
-      .optional()
-      .describe("Redacted, bounded error detail for status=error results."),
-    /** Redacted, bounded content detail for results (success or failure). */
-    content_summary: z
-      .string()
-      .optional()
-      .describe("Redacted, bounded content detail for results (success or failure)."),
-    exit_code: z
-      .number()
-      .int()
-      .optional()
-      .describe("Process exit code for command tools, when known."),
-  })
-  .describe("Typed tool reference attached to tool_call/tool_result events.");
-export type ToolRef = z.infer<typeof ToolRef>;
 
 /**
  * One multiple-choice option of an interactive question (AskUserQuestion-style).
@@ -810,6 +774,12 @@ export const HarnessEvent = z
     ),
     credential_source: AuthSourceKind.optional().describe(
       "Concrete credential source selected before spawn; exact native subscription requires native_session, never an OAuth token or API key.",
+    ),
+    /** Credential profile the attempt runs under (INV-135); stamped by the
+     * adapter alongside credential_route so quota/api_retry records stay
+     * independently attributable to the profile. Absent = engine default. */
+    credential_profile_id: Id.optional().describe(
+      "Credential profile the attempt runs under; absent = engine-default credentials (INV-135 attribution).",
     ),
     /** Vendor-owned quota windows. All reported windows remain independent. */
     quota: z

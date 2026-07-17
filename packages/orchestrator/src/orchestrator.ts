@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolveCredentialProfile } from "./credential-profiles.js";
 import { join } from "node:path";
 import type {
   AccessProfile,
@@ -26,6 +27,7 @@ import type {
   TestCommandInvocation,
   ProviderFamily,
   AuthPreference,
+  CredentialProfile,
   ImplementationTransport,
   RawGitPatchEnvelope,
   WebPolicySupport,
@@ -298,6 +300,9 @@ export interface RunInput {
   threadId?: string;
   /** Preferred auth route for harness attempts (subscription/api_key/auto). */
   authPreference?: "subscription" | "api_key" | "auto";
+  /** Explicit credential profile for this turn (INV-135): resolved once per
+   * routed harness; unknown/disabled/mismatched ids refuse, never default. */
+  credentialProfileId?: string | null;
   /**
    * Native CLI session ids to resume, keyed by harness id (the thread's vendor
    * session cache). A routed harness with an entry continues its own native
@@ -822,7 +827,11 @@ export class Orchestrator {
   private sessionSpecFields(
     input: RunInput,
     harnessId: string,
-  ): { auth_preference: "subscription" | "api_key" | "auto"; resume_session_id: string | null } {
+  ): {
+    auth_preference: "subscription" | "api_key" | "auto";
+    resume_session_id: string | null;
+    credential_profile: CredentialProfile | null;
+  } {
     const cfg = this.config(input.repoRoot)?.global;
     const explicit = (
       v?: "subscription" | "api_key" | "auto",
@@ -836,7 +845,14 @@ export class Orchestrator {
         explicit(cfg?.routing?.auth_preference) ??
         "auto",
       resume_session_id: input.resumeSessions?.[harnessId] ?? null,
+      credential_profile: this.resolveCredentialProfile(input, harnessId),
     };
+  }
+
+  private resolveCredentialProfile(input: RunInput, harnessId: string): CredentialProfile | null {
+    if (!input.credentialProfileId) return null;
+    const registry = this.config(input.repoRoot)?.global.credential_profiles ?? [];
+    return resolveCredentialProfile(registry, input.credentialProfileId, harnessId);
   }
 
   /** Record a harness-emitted native session id for future thread resume (observer never fails the run). */
@@ -1470,6 +1486,7 @@ export class Orchestrator {
       // unsupported shapes before any run dir exists).
       output_schema: input.outputSchema ?? null,
       auth_preference: input.authPreference ?? "auto",
+      credential_profile_id: input.credentialProfileId ?? null,
       max_turns: input.maxTurns ?? null,
       spec:
         input.specId || input.specHash || input.specPath
@@ -1694,7 +1711,12 @@ export class Orchestrator {
       access: routed.adapterAccess,
       ...this.harnessSpecKnobs(contract, knobs, intent),
       env_inheritance: envInheritance(this.config(contract.repo.root)),
-      ...(sessionFields ? { auth_preference: sessionFields.auth_preference } : {}),
+      ...(sessionFields
+        ? {
+            auth_preference: sessionFields.auth_preference,
+            credential_profile: sessionFields.credential_profile,
+          }
+        : {}),
       ...(inPlaceEnvelope && sessionFields?.resume_session_id
         ? { resume_session_id: sessionFields.resume_session_id }
         : {}),
@@ -3391,6 +3413,7 @@ export class Orchestrator {
           reason: deriveAuthRouteReason(requestedRoute, disclosing?.auth_mode ?? null),
           harness_id: disclosing?.harness_id ?? null,
           attempt_id: disclosing?.attempt_id ?? null,
+          profile_id: contract.credential_profile_id,
           // Typed mismatch, only when BOTH sides are known and differ.
           model_mismatch:
             requestedModel !== null && observedModel !== null && requestedModel !== observedModel
@@ -5703,6 +5726,7 @@ export class Orchestrator {
         // the model honestly reported it saw nothing (the v0.13 attachment bug).
         attachments: input.attachments ?? [],
         auth_preference: sessionFields.auth_preference,
+        credential_profile: sessionFields.credential_profile,
         resume_session_id: grantResume ? sessionFields.resume_session_id : null,
         ...this.harnessSpecKnobs(contract, knobs, opts.intent),
         env_inheritance: envInheritance(this.config(input.repoRoot)),

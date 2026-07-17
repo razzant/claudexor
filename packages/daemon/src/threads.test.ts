@@ -262,6 +262,22 @@ describe("ThreadStore", () => {
     expect(s.resumeMap(t.id)).toEqual({ codex: "vendor-sess-1" });
   });
 
+  it("resume never crosses credential profiles (INV-135)", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj" });
+    s.recordSession(t.id, "claude", "sess-under-work", null, "work");
+    // The session recorded under profile "work" is invisible to the engine
+    // default (null) and to any other profile — exact match only.
+    expect(s.resumeMap(t.id)).toEqual({});
+    expect(s.resumeMap(t.id, "personal")).toEqual({});
+    expect(s.resumeMap(t.id, "work")).toEqual({ claude: "sess-under-work" });
+    expect(s.sessionsForThread(t.id)[0]?.profile_id).toBe("work");
+    // A default-ladder session stays default-only.
+    s.recordSession(t.id, "codex", "sess-default");
+    expect(s.resumeMap(t.id)).toEqual({ codex: "sess-default" });
+    expect(s.resumeMap(t.id, "work")).toEqual({ claude: "sess-under-work" });
+  });
+
   it("assertKnownIds fails loudly on bogus, foreign, and thread-less turn ids (socket-caller fence)", () => {
     const { s } = store();
     const a = s.createThread({ repoRoot: "/tmp/a" });

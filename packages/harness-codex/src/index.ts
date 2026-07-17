@@ -1,11 +1,14 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { codexTranscriptModel, codexTranscriptRateLimits } from "./transcript.js";
+import { resolveSecret } from "@claudexor/secrets";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   AccessProfile,
   AuthSourceReadiness,
   ConformanceReport,
+  CredentialProfile,
+  CredentialProfileStatus,
   EffortHint,
   HarnessEvent,
   HarnessManifest,
@@ -32,10 +35,13 @@ import {
 } from "@claudexor/core";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
+import { probeCodexCredentialProfile, resolveCodexProfileRoute } from "./profile.js";
+import { smokeIsolatedApiKey } from "./smoke.js";
+export { canonicalCodexProfileHome } from "./profile.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 import { codexImageArgs } from "./attachments.js";
 
-const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
+export const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
 /**
  * Ordered (weakest→strongest) reasoning-effort levels codex's
@@ -122,68 +128,18 @@ async function detectVersion(abortSignal?: AbortSignal): Promise<string | null> 
   }
 }
 
-async function smokeIsolatedApiKey(
-  abortSignal?: AbortSignal,
-): Promise<{ ok: boolean; detail: string }> {
-  if (!codexApiKey()) return { ok: false, detail: "no API key fallback available" };
-  const dir = mkdtempSync(join(tmpdir(), "claudexor-codex-smoke-"));
-  const codexHome = join(dir, ".codex");
-  try {
-    ensureCodexApiAuth({ CODEX_HOME: codexHome });
-    const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS];
-    args.push("--sandbox", "read-only", "--skip-git-repo-check", "Reply exactly OK");
-    const r = await runCapture(BIN, args, {
-      cwd: dir,
-      env: {
-        ...providerScrubEnv(),
-        HOME: dir,
-        XDG_CONFIG_HOME: join(dir, ".config"),
-        CODEX_HOME: codexHome,
-        OPENAI_API_KEY: null,
-        CODEX_API_KEY: null,
-        CLAUDEXOR_CODEX_API_KEY: null,
-      },
-      timeoutMs: 25_000,
-      abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-    });
-    const text = `${r.stdout}\n${r.stderr}`;
-    if (r.code === 0 && text.includes('"turn.completed"') && text.includes("OK")) {
-      return { ok: true, detail: "isolated CODEX_HOME smoke passed" };
-    }
-    return {
-      ok: false,
-      detail: redactCodexDoctorDetail(text || `codex exited with code ${r.code}`),
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      detail: redactCodexDoctorDetail(err instanceof Error ? err.message : String(err)),
-    };
-  } finally {
-    // codex can still be flushing session files into CODEX_HOME when the smoke
-    // returns. Cleanup is best-effort: a leaked OS tmp dir must never decide
-    // doctor/readiness truth (the smoke verdict is the codex run itself).
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    } catch {
-      /* OS tmp reaper owns the leftovers */
-    }
-  }
-}
-
-function redactCodexDoctorDetail(text: string): string {
+export function redactCodexDoctorDetail(text: string): string {
   return redactSecrets(text).slice(0, 500);
 }
 
-function codexNativeEnv(
+export function codexNativeEnv(
   base?: Record<string, string | null | undefined>,
+  codexHome?: string,
 ): Record<string, string | null | undefined> {
   return {
     ...(base ?? {}),
     ...providerScrubEnv(),
-    CODEX_HOME: defaultNativeCodexHome(),
+    CODEX_HOME: codexHome ?? defaultNativeCodexHome(),
   };
 }
 
@@ -370,11 +326,17 @@ function codexWebArgs(policy: HarnessRunSpec["external_context_policy"]): string
   }
 }
 
+/** The runtime surface the profile module needs (test-stubbable). */
+export type CodexProfileRuntimeDeps = Pick<CodexRuntimeDeps, "probeLogin" | "resolveProfileSecret">;
+
 type CodexRuntimeDeps = {
   detectVersion: typeof detectVersion;
   probeLogin: typeof probeLogin;
   hasApiKey: typeof hasApiKey;
   codexApiKey: typeof codexApiKey;
+  /** Profile-scoped secret resolution (INV-135): reads exactly the profile's
+   * namespaced ref, never the engine-default ladder. */
+  resolveProfileSecret: (ref: string) => string | null;
   smokeIsolatedApiKey: typeof smokeIsolatedApiKey;
   runCliHarness: typeof runCliHarness;
 };
@@ -385,6 +347,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     probeLogin,
     hasApiKey,
     codexApiKey,
+    resolveProfileSecret: (ref) => resolveSecret(ref),
     smokeIsolatedApiKey,
     runCliHarness,
     ...deps,
@@ -631,6 +594,13 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     review(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       return runCodex(spec, runtime);
     },
+
+    probeCredentialProfile(
+      profile: CredentialProfile,
+      abortSignal?: AbortSignal,
+    ): Promise<CredentialProfileStatus> {
+      return probeCodexCredentialProfile(profile, runtime, abortSignal);
+    },
   };
 }
 
@@ -638,45 +608,65 @@ async function* runCodex(
   spec: HarnessRunSpec,
   runtime: CodexRuntimeDeps,
 ): AsyncIterable<HarnessEvent> {
-  const nativeEnv = codexNativeEnv(spec.env);
+  const profile = spec.credential_profile;
   const authPreference = spec.auth_preference ?? "auto";
-  const nativeLogin: CodexLoginProbe =
-    authPreference === "api_key"
-      ? { authed: false, method: "logged_out", probeError: null }
-      : await runtime.probeLogin(BIN, {
-          env: nativeEnv,
-          abortSignal: abortSignalFromSpec(spec),
-        });
-  const nativeSessionReady = nativeLogin.method === "chatgpt" && nativeLogin.probeError === null;
+  let nativeEnv = codexNativeEnv(spec.env);
   let key: string | undefined;
   let tempCodexHome: string | null = null;
-  const trySubscription = (): boolean => nativeSessionReady;
-  const tryApiKey = (): boolean => {
-    key ??= runtime.codexApiKey();
-    if (!key) return false;
-    tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
-    ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
-    if (codexAuthModeAt(tempCodexHome) === "api_key") return true;
-    rmSync(tempCodexHome, { recursive: true, force: true });
-    tempCodexHome = null;
-    return false;
-  };
-  const authRoute = selectCodexRunAuthRoute(authPreference, trySubscription, tryApiKey);
-  if (authRoute === null) {
-    const error =
-      authPreference === "subscription"
-        ? "Codex subscription auth was explicitly requested but vendor status did not confirm a native ChatGPT session (run `codex login`)"
-        : authPreference === "api_key"
-          ? "Codex API-key auth was explicitly requested but no usable OpenAI API key route is ready"
-          : "no usable Codex auth: native ChatGPT session is not ready and no OpenAI API key fallback is ready";
-    yield { type: "error", session_id: spec.session_id, ts: nowIso(), error };
-    yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
-    return;
+  let authRoute: "subscription" | "api_key" | null;
+
+  if (profile) {
+    const resolved = await resolveCodexProfileRoute(
+      profile,
+      spec.env,
+      runtime,
+      abortSignalFromSpec(spec),
+    );
+    if (resolved.refusal !== null) {
+      yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: resolved.refusal };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
+    ({ nativeEnv, tempCodexHome } = resolved);
+    key = resolved.key ?? undefined;
+    authRoute = resolved.route;
+  } else {
+    const nativeLogin: CodexLoginProbe =
+      authPreference === "api_key"
+        ? { authed: false, method: "logged_out", probeError: null }
+        : await runtime.probeLogin(BIN, {
+            env: nativeEnv,
+            abortSignal: abortSignalFromSpec(spec),
+          });
+    const nativeSessionReady = nativeLogin.method === "chatgpt" && nativeLogin.probeError === null;
+    const trySubscription = (): boolean => nativeSessionReady;
+    const tryApiKey = (): boolean => {
+      key ??= runtime.codexApiKey();
+      if (!key) return false;
+      tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
+      ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
+      if (codexAuthModeAt(tempCodexHome) === "api_key") return true;
+      rmSync(tempCodexHome, { recursive: true, force: true });
+      tempCodexHome = null;
+      return false;
+    };
+    authRoute = selectCodexRunAuthRoute(authPreference, trySubscription, tryApiKey);
+    if (authRoute === null) {
+      const error =
+        authPreference === "subscription"
+          ? "Codex subscription auth was explicitly requested but vendor status did not confirm a native ChatGPT session (run `codex login`)"
+          : authPreference === "api_key"
+            ? "Codex API-key auth was explicitly requested but no usable OpenAI API key route is ready"
+            : "no usable Codex auth: native ChatGPT session is not ready and no OpenAI API key fallback is ready";
+      yield { type: "error", session_id: spec.session_id, ts: nowIso(), error };
+      yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+      return;
+    }
   }
 
   // Auto is subscription-first. Selecting its API-key fallback is a paid-route
   // switch and must remain typed/visible; explicit routes never fall back.
-  if (authPreference === "auto" && authRoute === "api_key") {
+  if (!profile && authPreference === "auto" && authRoute === "api_key") {
     yield {
       type: "message",
       session_id: spec.session_id,
@@ -781,6 +771,7 @@ async function* runCodex(
           // later usage/quota record remains independently attributable.
           ev.credential_route = credentialRoute;
           ev.credential_source = credentialSource;
+          if (profile) ev.credential_profile_id = profile.profile_id;
           // codex's --json stream never carries the model, but the CLI
           // records it in its own session rollout. Try to recover it as soon as
           // the rollout's turn_context appears, then attach the transcript-sourced

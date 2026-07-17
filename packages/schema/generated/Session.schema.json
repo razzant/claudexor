@@ -36,6 +36,20 @@
           "description": "How the session can be continued on its native CLI: resume_by_id when a native session id exists, none otherwise.",
           "default": "none"
         },
+        "profile_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Credential profile the vendor session was created under; resume never crosses profiles (null = engine-default credentials).",
+          "default": null
+        },
         "last_observed_model": {
           "type": [
             "string",

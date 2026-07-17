@@ -169,6 +169,14 @@ export const Session = z
         "The vendor CLI session id (codex thread id / claude session uuid / ...); null when none exists.",
       ),
     resume_kind: SessionResumeKind.default("none"),
+    /** Credential profile the vendor session was created under (INV-135).
+     * Resume must never cross profiles: a session recorded under profile A is
+     * ineligible for a turn running as profile B (or as the null default). */
+    profile_id: Id.nullable()
+      .default(null)
+      .describe(
+        "Credential profile the vendor session was created under; resume never crosses profiles (null = engine-default credentials).",
+      ),
     last_observed_model: z
       .string()
       .nullable()

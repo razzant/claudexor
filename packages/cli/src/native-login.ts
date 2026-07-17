@@ -83,6 +83,7 @@ export function nativeLoginTerminalExports(
 export function nativeLoginEnv(
   harness: string,
   source: NodeJS.ProcessEnv = process.env,
+  configDirOverride?: string,
 ): NodeJS.ProcessEnv {
   const runtime = harnessRuntimeEnv(source);
   const env: NodeJS.ProcessEnv = {};
@@ -118,8 +119,13 @@ export function nativeLoginEnv(
   // Login and post-exit verification must address the SAME vendor-owned store.
   // These are paths only; Claudexor never reads or copies credential contents.
   if (harness === "codex") {
-    env.CODEX_HOME = defaultNativeCodexHome();
+    env.CODEX_HOME = configDirOverride ?? defaultNativeCodexHome();
     ensureDir(env.CODEX_HOME);
-  } else if (harness === "claude") env.CLAUDE_CONFIG_DIR = defaultNativeClaudeConfigDir();
+  } else if (harness === "claude") {
+    env.CLAUDE_CONFIG_DIR = configDirOverride ?? defaultNativeClaudeConfigDir();
+    // A profile login (INV-135) creates its scoped dir on demand; the DEFAULT
+    // dir is vendor-owned and is never created or mutated here.
+    if (configDirOverride) ensureDir(configDirOverride);
+  }
   return env;
 }

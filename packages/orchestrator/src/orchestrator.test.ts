@@ -1522,6 +1522,105 @@ describe("Orchestrator", () => {
     expect(observedAttachments).toEqual([attachment]);
   });
 
+  it("stamps the resolved credential profile on BOTH the read-only and candidate lane specs (INV-135)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: work",
+        "    harness_id: asker",
+        "    display_name: Work",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:work'",
+        "  - profile_id: work",
+        "    harness_id: fake-impl",
+        "    display_name: Work",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:work'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const askSeen: unknown[] = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const askerRun = asker.run.bind(asker);
+      asker.run = (spec) => {
+        askSeen.push(spec.credential_profile);
+        return askerRun(spec);
+      };
+      const askRes = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "work",
+      });
+      expect(askRes.status).toBe("success");
+      expect(askSeen).toHaveLength(1);
+      expect(askSeen[0]).toMatchObject({ profile_id: "work", credential_kind: "api_key" });
+
+      const implSeen: unknown[] = [];
+      const impl = diffImplementer("fake-impl");
+      const implRun = impl.run.bind(impl);
+      impl.run = (spec) => {
+        implSeen.push(spec.credential_profile);
+        return implRun(spec);
+      };
+      const agentRes = await new Orchestrator({
+        registry: new Map([["fake-impl", impl]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "do it",
+        mode: "agent",
+        harnesses: ["fake-impl"],
+        n: 1,
+        credentialProfileId: "work",
+      });
+      expect(agentRes.status).not.toBe("failed");
+      expect(implSeen.length).toBeGreaterThan(0);
+      expect(implSeen[0]).toMatchObject({ profile_id: "work", credential_kind: "api_key" });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("an unknown explicit credential profile refuses before any adapter launches (INV-135)", async () => {
+    const repo = await initRepo();
+    let launches = 0;
+    const asker = askAdapter("asker", function* (sessionId) {
+      launches += 1;
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const res = await new Orchestrator({
+      registry: new Map([["asker", asker]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "2+2?",
+      mode: "ask",
+      harnesses: ["asker"],
+      credentialProfileId: "ghost",
+    });
+    expect(res.status).toBe("failed");
+    expect(launches).toBe(0);
+  });
+
   it("readonly routing probes readiness in the SAME scoped env its run spawns with (W3.3)", async () => {
     const repo = await initRepo();
     let ranSpecEnv: Record<string, string> | undefined;

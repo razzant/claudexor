@@ -1,3 +1,4 @@
+import { resolveSecret } from "@claudexor/secrets";
 import type { AuthPreference } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
@@ -100,4 +101,25 @@ export function shouldSmokeCursorApiKey(input: {
   if (!input.hasKey || input.authPreference === "subscription") return false;
   if (input.authPreference === "api_key") return true;
   return !input.nativeAuthed && input.nativeProbeError === null;
+}
+
+/**
+ * INV-135: a cursor profile is exactly its secret-ref API key; other kinds
+ * (and a missing secret) are a typed refusal, never the default ladder.
+ */
+export function cursorProfileKeyOrRefusal(profile: {
+  profile_id: string;
+  credential_kind: string;
+  secret_ref: string | null;
+}): { key: string } | { refusal: string } {
+  if (profile.credential_kind !== "api_key")
+    return {
+      refusal: `credential profile "${profile.profile_id}": cursor supports only the api_key transport`,
+    };
+  const key = profile.secret_ref ? resolveSecret(profile.secret_ref) : null;
+  if (!key)
+    return {
+      refusal: `credential profile "${profile.profile_id}": secret "${profile.secret_ref ?? "(missing ref)"}" is not stored`,
+    };
+  return { key };
 }

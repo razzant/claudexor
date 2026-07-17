@@ -445,6 +445,10 @@
               ],
               "description": "Per-run auth route override."
             },
+            "credentialProfileId": {
+              "type": "string",
+              "description": "Explicit per-run credential profile id; unknown/disabled ids refuse, never default."
+            },
             "autonomy": {
               "type": "string",
               "enum": [

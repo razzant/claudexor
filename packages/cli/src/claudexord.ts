@@ -188,6 +188,12 @@ async function main(): Promise<void> {
               // schema already caps at 7 days for the control-API path).
               Math.min(p.maxSeconds, 604_800)
             : null;
+        // INV-135: the turn's explicit credential profile scopes BOTH the run
+        // spec and the resume-session lookup (resume never crosses profiles).
+        const requestedProfileId =
+          typeof p.credentialProfileId === "string" && p.credentialProfileId
+            ? p.credentialProfileId
+            : null;
         let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
         let runSignal: AbortSignal | undefined = ctx.signal;
         if (maxSeconds !== null) {
@@ -215,12 +221,19 @@ async function main(): Promise<void> {
             interactionTimeoutMs: loadConfig(repoRoot).global.interaction_timeout_ms,
             threadId,
             executionRoot,
-            resumeSessions: threadId ? threads.resumeMap(threadId) : undefined,
+            resumeSessions: threadId ? threads.resumeMap(threadId, requestedProfileId) : undefined,
             onSessionObserved: threadId
               ? (harnessId, nativeSessionId, observedModel) =>
-                  threads.recordSession(threadId, harnessId, nativeSessionId, observedModel)
+                  threads.recordSession(
+                    threadId,
+                    harnessId,
+                    nativeSessionId,
+                    observedModel,
+                    requestedProfileId,
+                  )
               : undefined,
             authPreference: p.authPreference,
+            credentialProfileId: requestedProfileId,
             autonomy: p.autonomy,
             answerInteraction: async (subRunId, interactionId, answers) =>
               interactions.answer(subRunId, interactionId, answers).status === "delivered",

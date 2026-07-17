@@ -317,7 +317,35 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
     },
 
     async *run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
-      const key = apiKey({ ...process.env, ...spec.env });
+      // INV-135 strict profile routing: a raw-api profile is exactly its
+      // secret-ref API key; other kinds and missing secrets refuse typed.
+      const profile = spec.credential_profile;
+      let key: string | undefined;
+      if (profile) {
+        if (profile.credential_kind !== "api_key") {
+          yield {
+            type: "error",
+            session_id: spec.session_id,
+            ts: nowIso(),
+            error: `credential profile "${profile.profile_id}": ${id} supports only the api_key transport`,
+          };
+          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+          return;
+        }
+        key = (profile.secret_ref ? resolveSecret(profile.secret_ref) : null) ?? undefined;
+        if (!key) {
+          yield {
+            type: "error",
+            session_id: spec.session_id,
+            ts: nowIso(),
+            error: `credential profile "${profile.profile_id}": secret "${profile.secret_ref ?? "(missing ref)"}" is not stored`,
+          };
+          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+          return;
+        }
+      } else {
+        key = apiKey({ ...process.env, ...spec.env });
+      }
       if (!key) {
         yield {
           type: "error",
@@ -336,6 +364,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         ts: nowIso(),
         credential_route: "managed_api_key",
         credential_source: "api_key_env",
+        ...(profile ? { credential_profile_id: profile.profile_id } : {}),
         payload: { requested_model: model },
       };
       try {

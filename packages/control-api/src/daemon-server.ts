@@ -98,6 +98,7 @@ import {
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
   ControlQuotaResponse,
+  ControlCredentialProfilesResponse,
   ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
@@ -239,6 +240,7 @@ export interface DaemonControlApiOptions {
       updateSettings?: (patch: unknown) => Promise<unknown>;
       quota?: () => Promise<unknown>;
       refreshQuota?: () => Promise<unknown>;
+      credentialProfiles?: () => Promise<unknown>;
       listSecrets?: () => Promise<unknown>;
       setSecret?: (input: unknown) => Promise<unknown>;
       deleteSecret?: (name: string) => Promise<unknown>;
@@ -1447,6 +1449,8 @@ export class DaemonControlApiServer {
       return this.service(res, "quota", undefined, ControlQuotaResponse);
     if (method === "POST" && path === "/quota")
       return this.service(res, "refreshQuota", undefined, ControlQuotaResponse);
+    if (method === "GET" && path === "/credential-profiles")
+      return this.service(res, "credentialProfiles", undefined, ControlCredentialProfilesResponse);
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
     const controlMatch = /^\/runs\/([^/]+)\/control$/.exec(path);
     if (method === "POST" && controlMatch) {

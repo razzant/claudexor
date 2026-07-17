@@ -149,6 +149,7 @@ const operations: ControlOperationDescriptor[] = [
   j("GET", "/v2/agent-capabilities", "read_only", null, "AgentCapabilityCatalog"),
   j("GET", "/v2/global/events", "read_only", null, null, { responseKind: "stream" }),
   j("GET", "/v2/quota", "read_only", null, "ControlQuotaResponse"),
+  j("GET", "/v2/credential-profiles", "read_only", null, "ControlCredentialProfilesResponse"),
   j("POST", "/v2/quota", "mutating", null, "ControlQuotaResponse", {
     idempotency: "natural",
   }),

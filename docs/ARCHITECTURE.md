@@ -334,6 +334,34 @@ Scoped harness homes/config dirs live outside worktree `tree/`, so `git add -A`
 cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
 `patch.diff`.
 
+### Credential profiles (INV-135)
+
+A credential profile is an ADDITIVE identity for one harness beyond its
+engine-default credential ladder: `credential_profiles` in the global config
+holds durable NON-SECRET entries `{profile_id, harness_id, display_name,
+credential_kind, isolation_locator | secret_ref, enabled}`. `config_dir_login`
+profiles point at a Claudexor-scoped vendor config dir
+(`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, canonical absolute path, NEVER the default
+vendor store); `oauth_token`/`api_key` profiles point at a namespaced
+secret-store name (`claude_oauth:work`, `anthropic:acc2`, …). Readiness is the
+doctor's separate `CredentialProfileStatus` projection
+(`GET /v2/credential-profiles`, `claudexor profiles`), never durable config.
+
+The orchestrator is the ONE resolve owner: an explicit per-run
+`credentialProfileId` becomes the typed `credential_profile` on every
+`HarnessRunSpec` the run builds; unknown/disabled/harness-mismatched ids are a
+typed refusal before spawn. An explicit profile is STRICT in the adapter —
+exactly the profile's transport or a typed error event, never a fallback to
+default credentials (claude: config-dir login / stored token non-bare / stored
+key; codex: scoped `CODEX_HOME` login / scoped key `auth.json`; cursor,
+opencode, raw-api: secret-ref keys only). Adapters stamp
+`credential_profile_id` beside `credential_route` on stream events so quota
+and retry evidence stays profile-attributable, and the run's `auth_route`
+receipt carries `profile_id`. Vendor sessions record the profile they were
+created under; resume never crosses profiles. `claudexor profiles login
+<harness> <id>` runs the same vendor login command the setup jobs use,
+interactively, scoped to the profile dir.
+
 ## 6. Main Execution Paths
 
 Every public CLI mode (`ask`, `plan`, `audit`, `agent`, `orchestrate`) and the
@@ -479,6 +507,7 @@ files.
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /healthz`
 - `GET /v2/agent-capabilities`
+- `GET /v2/credential-profiles`
 - `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`

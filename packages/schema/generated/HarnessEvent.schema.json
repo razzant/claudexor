@@ -322,6 +322,11 @@
           ],
           "description": "Concrete credential source selected before spawn; exact native subscription requires native_session, never an OAuth token or API key."
         },
+        "credential_profile_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Credential profile the attempt runs under; absent = engine-default credentials (INV-135 attribution)."
+        },
         "quota": {
           "type": "object",
           "properties": {
@@ -355,9 +360,7 @@
                 "type": "object",
                 "properties": {
                   "id": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Non-empty identifier string."
+                    "$ref": "#/definitions/HarnessEvent/properties/credential_profile_id"
                   },
                   "label": {
                     "type": "string",

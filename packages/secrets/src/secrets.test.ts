@@ -2,7 +2,7 @@ import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SecretStore, resolveSecret } from "./index.js";
+import { SecretStore, isManagedSecretName, resolveSecret } from "./index.js";
 
 let prev: string | undefined;
 
@@ -53,5 +53,21 @@ describe("resolveSecret", () => {
     store.set("KEY", "from-store");
     expect(resolveSecret("KEY", { store })).toBe("from-store");
     expect(resolveSecret("MISSING", { store })).toBeNull();
+  });
+});
+
+describe("managed secret name namespacing (INV-135)", () => {
+  it("accepts bare managed names and profile-suffixed variants", () => {
+    expect(isManagedSecretName("claude_oauth")).toBe(true);
+    expect(isManagedSecretName("claude_oauth:work")).toBe(true);
+    expect(isManagedSecretName("anthropic:acc-2")).toBe(true);
+    expect(isManagedSecretName("openai:b2")).toBe(true);
+  });
+
+  it("rejects unknown bases, empty suffixes, and malformed suffixes", () => {
+    expect(isManagedSecretName("unknown:work")).toBe(false);
+    expect(isManagedSecretName("claude_oauth:")).toBe(false);
+    expect(isManagedSecretName("claude_oauth:Bad Suffix")).toBe(false);
+    expect(isManagedSecretName("claude_oauth:x:y")).toBe(false);
   });
 });

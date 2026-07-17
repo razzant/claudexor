@@ -196,6 +196,9 @@ export class AuthCapabilityVerifier {
           effort_hint: null,
           max_turns: 1,
           auth_preference: disclosure.requested,
+          // The capability smoke proves the DEFAULT credential ladder's route;
+          // profile readiness has its own probe (probeCredentialProfile).
+          credential_profile: null,
           resume_session_id: null,
           env_inheritance: "clean",
           evidence_policy: "stream_only",

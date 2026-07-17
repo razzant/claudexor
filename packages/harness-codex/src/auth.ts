@@ -33,14 +33,20 @@ export function codexApiKey(): string | undefined {
  * `codex login --with-api-key` produces. No-op when not isolated (use codex's
  * native auth), when no key is available, or when auth already exists.
  */
-export function ensureCodexApiAuth(env?: Record<string, string>, allowApiKey = true): void {
+export function ensureCodexApiAuth(
+  env?: Record<string, string>,
+  allowApiKey = true,
+  apiKeyOverride?: string | null,
+): void {
   if (!allowApiKey) return;
   const home = env?.["CODEX_HOME"];
   if (!home) return;
   if (resolve(home) === resolve(defaultNativeCodexHome())) {
     throw new Error("refusing to read or write the vendor-owned native Codex auth store");
   }
-  const apiKey = codexApiKey();
+  // A profile's namespaced key (INV-135) beats the engine-default slot; the
+  // override is exact — a missing profile secret never falls back.
+  const apiKey = apiKeyOverride !== undefined ? apiKeyOverride : codexApiKey();
   if (!apiKey) return;
   const authPath = join(home, "auth.json");
   if (existsSync(authPath)) return;

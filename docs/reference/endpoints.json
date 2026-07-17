@@ -19,6 +19,14 @@
     },
     {
       "method": "GET",
+      "path": "/v2/credential-profiles",
+      "mutating": false,
+      "request_schema": null,
+      "response_schema": "ControlCredentialProfilesResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "GET",
       "path": "/v2/global/events",
       "mutating": false,
       "request_schema": null,

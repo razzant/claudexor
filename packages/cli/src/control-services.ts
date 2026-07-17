@@ -341,6 +341,28 @@ export function controlServices(
     settings: async () => settingsSnapshot(NO_PROJECT_ROOT),
     quota: async () => quotaRegistry().read(),
     refreshQuota: async () => quotaRegistry().refresh(),
+    // INV-135: durable registry + live doctor projection, one probe per
+    // profile; adapters without profile support report honest unknown.
+    credentialProfiles: async () => {
+      const registry = buildRegistry();
+      const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
+      const out = [];
+      for (const profile of profiles) {
+        const adapter = registry.get(profile.harness_id);
+        const status = adapter?.probeCredentialProfile
+          ? await adapter.probeCredentialProfile(profile)
+          : {
+              profile_id: profile.profile_id,
+              harness_id: profile.harness_id,
+              availability: "unknown" as const,
+              verification: "not_run" as const,
+              detail: `harness "${profile.harness_id}" has no profile probe`,
+              last_verified_at: null,
+            };
+        out.push({ profile, status });
+      }
+      return { profiles: out };
+    },
     updateSettings: async (patch: unknown) => {
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
       await assertSettingsPatchValid(p);

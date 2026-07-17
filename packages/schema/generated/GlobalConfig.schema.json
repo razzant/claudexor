@@ -274,6 +274,83 @@
           "default": {},
           "description": "Disk retention policy for engine-owned runtime artifacts."
         },
+        "credential_profiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "profile_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Stable user-chosen profile identifier (unique per harness)."
+              },
+              "harness_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Harness family this profile belongs to."
+              },
+              "display_name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Human label shown wherever the profile appears."
+              },
+              "credential_kind": {
+                "type": "string",
+                "enum": [
+                  "config_dir_login",
+                  "oauth_token",
+                  "api_key"
+                ],
+                "description": "Credential transport a profile isolates: a scoped vendor config-dir login, a stored OAuth token, or a stored API key."
+              },
+              "isolation_locator": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Canonical absolute config-dir path for config_dir_login profiles; null for secret-ref kinds."
+              },
+              "secret_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Namespaced secret-store name (e.g. claude_oauth:work) for oauth_token/api_key profiles; null for config_dir_login."
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Disabled profiles are never routable."
+              },
+              "created_at": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "ISO-8601 timestamp string."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "When the profile was registered; null for hand-written config entries.",
+                "default": null
+              }
+            },
+            "required": [
+              "profile_id",
+              "harness_id",
+              "display_name",
+              "credential_kind"
+            ],
+            "additionalProperties": false,
+            "description": "Durable non-secret registry entry for one credential identity of one harness; secret material lives in the vendor dir or the secret store, never here."
+          },
+          "default": [],
+          "description": "Durable non-secret credential-profile registry; secret material lives in the vendor dir or the secret store, never in config."
+        },
         "harnesses": {
           "type": "object",
           "additionalProperties": {
