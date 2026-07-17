@@ -62,7 +62,11 @@ fixtures:
       final_messages: 1
       final_source: "terminal result (subtype success)"
       final_is_last_message: true
-      retry_class: "rate_limit"
+      # The vendor sends PROSE ("rate_limit_error: Number of request tokens
+      # has exceeded..."), not the bare label the mapper expects, so the
+      # category collapses to "unknown". Declared as the CURRENT truth: a
+      # mapper that learns to read the prose must update this deliberately.
+      retry_class: "unknown"
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: true

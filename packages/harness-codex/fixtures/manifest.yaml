@@ -44,7 +44,6 @@ fixtures:
       final_messages: 1
       final_source: "last agent_message finalized on turn.completed"
       final_is_last_message: true
-      retry_class: "rate_limit"
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: true

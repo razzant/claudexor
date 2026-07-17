@@ -465,6 +465,18 @@ Known traps (class → CURRENT rule → pin):
   typed `status` event for claude's `api_retry`); consumers never regex
   prose. Pin: `session-resume-rate-limit.jsonl` + `typed_rate_limit`
   expectations.
+- Retry CLASS silently degrading to `unknown`: the signal survives but its
+  classification does not, so bounded-retry policy sees "some transient" and
+  loses the reason. Rule: `retry_class` asserts the adapter's typed category
+  ONLY (`status.error_category`) — never the presence of a `rate_limit`
+  field, which `typed_rate_limit` already owns; a class derived from that
+  presence cannot fail independently. CURRENT truth worth knowing:
+  `claudeRetryCategory` expects `api_retry.error` to BE the bare enum label,
+  while the fixture's frame carries prose (`"rate_limit_error: Number of
+  request tokens…"`), so claude's rate-limit retries classify as `unknown`
+  today. Pin: `session-resume-rate-limit.jsonl` declares `retry_class:
+  "unknown"` — teaching the mapper to read the prose must update that
+  declaration deliberately, not silently.
 - Control-protocol leakage: handshake/permission frames surfacing as
   timeline events. Rule: recognized plumbing (`control_response`,
   `control_cancel_request`) is consumed, producing ZERO events; only the

@@ -131,15 +131,18 @@ export function streamExpectationViolations(
     if (ev.type === "message") {
       if (ev.final === true) finals += 1;
       if (ev.payload?.["delta"] === true) deltas += 1;
-      else lastMessageWasFinal = ev.final === true;
+      // EVERY message moves this, deltas included: a display chunk arriving
+      // AFTER the typed final means the final was not the last word.
+      lastMessageWasFinal = ev.final === true;
     }
     if (ev.type === "thinking") thinking += 1;
     if (ev.rate_limit !== undefined) rateLimits += 1;
-    // The typed retry CLASS, from either carrier the adapters use: a
-    // transient `status` event's vendor category, or the rate_limit signal.
+    // The typed retry CLASS is ONLY the adapter's classification. Deriving a
+    // class from the mere presence of a rate_limit signal would make this
+    // check a restatement of `typed_rate_limit` — true whenever that is, and
+    // unable to fail on its own (triad round 2, fable #1).
     const category = ev.status?.error_category;
     if (category) retryClasses.add(category);
-    if (ev.rate_limit !== undefined) retryClasses.add("rate_limit");
   }
   const violations: string[] = [];
   const check = (name: string, expected: number | undefined, actual: number): void => {
