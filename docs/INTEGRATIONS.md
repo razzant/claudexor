@@ -2,7 +2,7 @@
 
 This document is for tools, editors, and agents that want to drive Claudexor as a
 local control plane. It describes the current integration surfaces and their
-stability tier (the tiers are defined by "Stability at 1.0" in the repository
+stability tier (the tiers are defined by "Stability at 2.0" in the repository
 README). It is not a future target spec, and it is not contributor workflow for
 changing Claudexor.
 

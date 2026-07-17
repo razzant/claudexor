@@ -1,17 +1,43 @@
 # Claudexor
 
-Claudexor is a local-first control plane for AI coding harnesses. It runs Codex
-CLI, Claude Code, Cursor CLI, OpenCode, raw API adapters, and future harnesses
-behind one typed interface.
+Claudexor is a local-first control plane for the AI coding agents you already
+pay for. It runs Codex CLI, Claude Code, Cursor CLI, OpenCode, and raw API
+adapters behind one typed interface: a chat of turns where read-only questions
+resume the vendor's own native session, write turns land as inspectable
+patches, races pit harnesses against each other with cross-family review, and
+every claim — cost, quota, web evidence, auth route — is a typed fact you can
+audit, never a vibe.
 
-The core rule is simple: a harness is not a role. Roles are intents such as
-`explain`, `plan`, `spec`, `implement`, `create_from_scratch`, `repair`,
-`review`, `verify`, `synthesize`, `audit`, and `orchestrate`. Any harness
-that declares the capability can be assigned the intent.
+Compared to driving a bare Codex or Claude Code session, Claudexor adds the
+layer the vendors do not ship: best-of-N races with independent reviewers and
+arbitration; honest budget/quota accounting (unknown cost is never `$0`);
+deterministic gates and protected paths; and — since 2.1 — **credential
+profiles**: several Claude/Codex subscriptions registered side by side, each
+with its own isolated login and live subscription-quota tracking, with an
+opt-in policy that rotates a spent account out of the way on typed vendor
+limits only. Everything runs on your machine, files are the source of truth,
+and there is no telemetry.
 
-Current status: **v2.0.0**. See "Stability at 2.0" below for what is a
-stable contract and what remains experimental; retired verbs and mode ids
-hard-error with the new spelling instead of silently aliasing.
+Current status: **v2.1**. See "Stability at 2.0" below for what is a stable
+contract and what remains experimental; retired verbs and mode ids hard-error
+with the new spelling instead of silently aliasing.
+
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Modes](#modes)
+- [Credential Profiles And Quota](#credential-profiles-and-quota)
+- [Web, Budgets, And Gates](#web-budgets-and-gates)
+- [Routing, Auth, And Secrets](#routing-auth-and-secrets)
+- [Daemon And Control API](#daemon-and-control-api)
+- [Artifact Layout](#artifact-layout)
+- [Integrations](#integrations)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Stability at 2.0](#stability-at-20)
+- [For External Agents](#for-external-agents)
+- [Privacy](#privacy)
+- [Uninstall / where your data lives](#uninstall--where-your-data-lives)
 
 ## Prerequisites
 
@@ -138,135 +164,68 @@ claudexor audit "map artifact writers and secret risk"
 claudexor orchestrate "ship the v2 parser refactor across this repo"
 ```
 
-## Web, Tool Evidence, And Output Readiness
+## Credential Profiles And Quota
 
-External web context is a typed run policy, separate from shell/network
-sandboxing. The CLI-first contract is:
-
-```bash
-claudexor ask "google this library's current release" --web auto
-claudexor ask "use cached web context only" --web cached
-claudexor ask "force live search where supported" --web live
-claudexor ask "answer from local/project context only" --web off
-```
-
-The policy values are `off | auto | cached | live`. `auto` allows web-capable
-harness tools where supported and records whether the harness actually attempted
-`WebSearch`/`WebFetch`. A run that attempts a web tool and gets a tool error
-cannot be plain green success unless a later successful web result proves
-recovery. Read-only Ask/Audit can fall back to another eligible route and emits
-`route.fallback.*` events.
-
-Run terminal state is separate from output readiness. Control API, CLI, and app
-expose `outputReadyState` (`pending | finalizing | ready | diagnostic`),
-`webEvidence`, tool errors, non-blocking tool warnings, budget, and artifact paths. A
-finished answer/report/patch can be usable with warnings; failed required web
-evidence, terminal harness errors, failed apply/verify steps, and failed required
-gates remain blockers. `claudexor inspect
-<run_id>` is the CLI projection of the same run detail the macOS app renders.
-
-Paid budgets are explicit: the API accepts `{kind:"unlimited"}` or
-`{kind:"finite",maxUsd:N}`; CLI `--max-usd N` maps to the finite form, and zero
-means a real zero-cash cap. Unknown cost is never reported as `$0`: a finite run
-can end `cost_unverifiable`, while a late exact charge above its cap ends
-`exhausted_overshoot`.
-
-Deterministic gates use exact argv, never implicit shell parsing:
+A credential profile is an ADDITIVE identity for one harness beyond its
+default login: register several Claude or Codex subscriptions side by side,
+each in its own isolated vendor config dir (the default `~/.claude` / native
+codex home is never touched), or as namespaced secret-store keys
+(`anthropic:work`, `openai:acc2`). Profiles are durable non-secret entries in
+the global config's `credential_profiles`; secret material stays in the vendor
+dir or the secret store.
 
 ```bash
-claudexor agent "fix the parser" --test '["pnpm","test"]'
-claudexor trust --repo /path/to/project --grant-test '["pnpm","test"]'
+claudexor profiles                         # registry + per-profile doctor readiness
+claudexor profiles login claude work       # the vendor's own login, scoped to the profile dir
+claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
 ```
 
-The second command is required only for a test declared by versioned project
-config; the external grant is invalidated when the config, argv, executable,
-script bytes, project, or access profile changes.
+Selection is turn > thread-sticky > engine default, and an explicit profile is
+STRICT — exactly its transport or a typed refusal, never a silent fallback.
+Vendor-session resume never crosses profiles. Subscription quota is tracked
+per profile from the vendor's own `oauth/usage` endpoint (proactive
+five-hour/seven-day/per-model percentages in the app's quota footer, one chip
+per profile), and each harness may declare a typed `profile_policy`
+(`limit_action: fail|ask|rotate`): rotation is opt-in and fires ONLY on typed
+vendor-limit signals or a proactive headroom breach — never on ordinary
+network errors — with full provenance on the run record. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5 for the complete contract.
+
+## Web, Budgets, And Gates
+
+External web context is a typed run policy (`--web off|auto|cached|live`),
+separate from shell/network sandboxing; a run that attempted a web tool and
+failed cannot be plain green success without a proven recovery. Run terminal
+state is separate from output readiness (`outputReadyState`), so a finished
+answer with warnings stays usable while failed required evidence blocks.
+Paid budgets are explicit (`--max-usd N`; zero is a real zero-cash cap) and
+unknown cost is never reported as `$0` — a finite run can end
+`cost_unverifiable` or `exhausted_overshoot`. Deterministic gates use exact
+argv (`--test '["pnpm","test"]'`), and externally-granted test commands are
+invalidated when the config, argv, executable, script bytes, project, or
+access profile changes. The full semantics live in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Routing, Auth, And Secrets
 
-Routing is `Pool + Primary + Routing Goal`:
+Routing is `Pool + Primary + Routing Goal`: selected harnesses are the
+eligible pool, `--primary-harness <id>` biases single-route modes, and
+`--routing-goal auto|quality|economy` picks the pacing. In chat this is sticky
+per thread — the thread remembers its primary, pool, and (since 2.1) its
+credential profile; the engine owns routing, surfaces only send the choice.
+Reviewer panels are explicit when needed (`--reviewer-panel
+"claude=claude-opus-4-8:max,cursor=gemini-3.5-flash"`); a clean verified
+review/apply gate requires at least two distinct observed provider families.
 
-- selected harnesses are the eligible pool;
-- `--primary-harness <id>` biases single-route modes and the first candidate;
-- `--routing-goal auto|quality|economy` selects transparent pacing, exact
-  user-declared quality tiers, or minimum incremental paid spend. The nine v1
-  portfolio ids and `--portfolio` are hard errors.
-
-Reviewer selection is also explicit when needed. `--reviewer-panel` accepts an
-ordered list of harness entries and preserves repeated harness ids, so one pass
-can request multiple Cursor models without provider-family dedupe:
-
-```bash
-claudexor agent "fix the parser" --reviewer-panel "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro,cursor=gemini-3.5-flash,cursor=gpt-5.5-extra-high"
-```
-
-Each entry is `harness[:effort]` or `harness[=model[:effort]]`; a trailing
-`:low|medium|high|xhigh|max` suffix is parsed as effort, while other colons
-remain part of the model id when a model is present.
-Exact panels may intentionally contain several entries from the same provider,
-for example a Cursor-only diagnostics pass, but a clean verified review/apply
-gate still requires at least two distinct observed provider families. A
-same-provider-only panel can run and produce findings, but it remains ungated
-until another provider family participates.
-Legacy `--reviewer-model` and `--reviewer-effort` remain per-provider defaults
-for the automatic reviewer selector; an explicit panel is used verbatim and
-fails loudly if any requested harness is unknown, unavailable, disabled,
-fake-only, lacks review intent, or rejects an explicit model id that its adapter
-can enumerate. When an adapter has no enumerable model producer, the requested
-model must at least match the harness manifest's known-good model hints;
-otherwise the panel fails loudly instead of silently forwarding an unverifiable
-model to the native CLI. Use `claudexor models --harness <id>` to inspect the
-current model ids for adapters that expose inventory.
-
-In the chat surface this is sticky per thread: a thread remembers which harness
-answers in chat (its primary) and the eligible pool Best-of competes over. The macOS
-app sets them via `POST /v2/threads` / `PATCH /v2/threads/:id` and may override per turn
-— the engine still owns all routing; the surface only sends the choice.
-
-Harness chips in the macOS app are not decorative toggles: unavailable,
-unauthenticated, degraded, or intent-incompatible harnesses are shown with the
-reason and are gated out of launch.
-
-Claudexor mirrors native harness auth where that route is readiness-proven; API
-keys are fallback secret refs and live only in the v2-owned `0600` file store.
-`auto` is native-first for Codex, Claude, and Cursor in
-both host and scoped/envelope runs; it reaches an API-key fallback only when the
-native route is not ready (and, for Claude, no verified setup-token source is
-ready). A typed auth-route disclosure makes that paid-route switch visible. Run
-params, the daemon command journal, artifacts, summaries, patches, and PR text store
-only refs/metadata, not raw secret values.
-Subscription/native routes scrub provider API-key, token, and endpoint-override
-environment variables unless a distinct stored API-key or Claude setup-token
-route is selected.
-Doctor reports each produced auth source as two separate facts: credential
-`availability` (`available | unavailable | unknown`) and live `verification`
-(`passed | failed | not_run`). Explicit `subscription` never runs or accepts an
-API-key smoke, explicit `api_key` is never rescued by a native session, and
-`auto` remains native-first. A missing/logged-out source is
-`unavailable + not_run`; an indeterminate probe is `unknown + not_run`; source
-material that is present but wrong or unusable is `available + failed`.
-
-Native login stays vendor-owned: Claudexor launches the official CLI with an
-absolute executable and structured argv, inherits its TTY, and removes provider
-key/token variables from the child environment. The native-login path never
-receives an OAuth callback, copies a credential file, or receives/stores vendor
-session tokens. Codex owns a Claudexor-dedicated `CODEX_HOME` and is forced to
-file credential storage there, so login cannot replace the operator's ordinary
-Codex CLI/app Keychain session. Claude owns its config plus the macOS login
-Keychain, and Cursor owns its Keychain-backed native state. Claudexor's separate API-key and Claude
-setup-token routes remain explicit local-secret-store flows.
-A zero vendor exit is only provisional; Claudexor then performs a fresh,
-source-targeted native probe and an isolated same-harness capability smoke. The
-smoke must answer an unpredictable challenge over the normal adapter stream
-from the exact `vendor_native` / `native_session` route, with no tools, external
-context, workspace mutation, or provider-key fallback. A timeout or crash is
-`interrupted_unknown`, never success and never auto-replayed. This proves the
-selected credential transport can answer; it does not prove a subscription
-tier, entitlement, quota, or zero incremental cost.
-The command routes follow the official [Codex auth](https://developers.openai.com/codex/auth/),
-[Claude authentication](https://code.claude.com/docs/en/authentication), and
-[Cursor CLI authentication](https://docs.cursor.com/en/cli/reference/authentication)
-documentation.
+Native harness auth is preferred where readiness-proven; API keys are fallback
+secret refs in the v2-owned `0600` file store. `auto` is native-first, an
+explicit route never falls back, and every effective route is a typed
+disclosure — doctor reports credential `availability` and live `verification`
+as separate facts, and a zero vendor exit is only provisional until a fresh
+targeted probe plus an isolated capability smoke prove the exact selected
+transport. Native login stays vendor-owned (official CLI, structured argv,
+scrubbed env; Claudexor never sees or copies vendor tokens). The deep
+semantics live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.
 
 ```bash
 claudexor auth status
@@ -281,81 +240,17 @@ claudexor settings set paid_fallback when_unavailable
 claudexor quota --refresh --json
 ```
 
-Managed secrets use the v2-owned `0600` file store. A disposable
-`CLAUDEXOR_CONFIG_DIR` therefore contains every managed-secret operation. The
-public CLI cannot select a storage backend.
-
-`auth status` prints both typed readiness axes. Manifest auth sources say only
-what could be used; doctor source verification decides whether a route is
-actually ready.
-
 ## Daemon And Control API
 
 The managed daemon is the mandatory runtime authority and normally auto-starts
-when a product command needs it. It owns durable local command queueing over a
-Unix socket. A
-create is acknowledged only after its checksummed global-journal frame reaches
-`fsync`; `Idempotency-Key` binds retries to the original request. After a crash,
-an accepted nonterminal command becomes `interrupted_unknown` and is never
-auto-replayed. The
-loopback HTTP/SSE control API is a thin viewport over the daemon and run files.
-The canonical endpoint inventory lives in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7 and is generated from source;
-this README does not duplicate it.
-
-`GET /healthz` is the sole unversioned route. Every product call uses `/v2`:
-official clients negotiate `POST /v2/handshake`, send
-`X-Claudexor-Protocol-Major: 2`, and can inspect the implemented contract at
-`GET /v2/operations`. Missing/incompatible negotiation returns a typed `426`;
-there are no v1 aliases.
-
-Harness setup is server-owned. `/v2/setup/jobs` (create / status / reconcile /
-cancel / extend) is the only supported setup surface. Native login uses a
-bundled observable runner: 10-second launch watchdog, 15-minute user deadline,
-explicit unlimited `+15 min` extensions, identity-fenced TERM/KILL cancellation,
-and fresh post-exit capability verification. Before the detached runner may
-spawn, the daemon journals and fsyncs the exact executable/argv digests and a
-one-use permit; the runner's hash-bound result is journaled before verification.
-Cancel is asynchronous and becomes terminal only after termination is proven.
-Duplicate create returns the same active action, while a different active
-mutating action refuses instead of being laundered into success.
-A `termination_unconfirmed` fence clears only through the reconcile endpoint
-after a fresh server-side probe proves the recorded process group empty.
-
-The daemon's checksummed global journal is the only setup lifecycle authority.
-Per-job `0700` directories contain operational runner handshake files only;
-there is no `job.json`, `events.jsonl`, metadata snapshot, or imported v1
-authority. Full job snapshots stream over SSE with opaque request-relative
-cursor predecessors. Clients GET-resnapshot on every reconnect; malformed,
-duplicate, regressive, dropped, or prematurely ended streams are visible
-protocol errors. A capability smoke that was running at daemon restart becomes
-`interrupted_unknown` and is not replayed. Vendor output stays in Terminal,
-which remains open on the result until Return. Doctor verification runs
-in-process inside the daemon (no shell PATH dependency). UI surfaces must not
-invent setup commands or accept inline secrets.
-
-Run events carry a monotonic per-run `seq`; `GET /v2/runs/:id` returns the
-snapshot plus `lastSeq`, so clients subscribe to `GET /v2/runs/:id/events` with
-`Last-Event-ID` for gap-free live state (snapshot-then-subscribe). Run detail
-responses include `primaryOutput`, `timeline`, `budget`, `pendingInteractions`,
-and `summary.route` projections. Web/tool evidence is projected from the
-engine-owned `final/telemetry.yaml`. Clients should use those fields first
-instead of guessing artifact paths or displaying fake zero spend/quota values.
-`POST /v2/runs/:id/control` supports cancel for active daemon jobs.
-Interactive harnesses (Claude Code) can ask typed questions mid-run: the run
-parks as waiting_on_user, the macOS app or `claudexor follow` answers via the
-interactions endpoint, and unanswered questions decline benignly after the
-configurable timeout. The pending projection is journal-backed, so a daemon
-restart cannot resurrect a prompt whose live harness continuation is gone.
-
-Runtime resilience is evidence-driven: adapters can emit typed transient
-network/stream/timeout signals, the orchestrator retries them only within the
-bounded user-global `runtime.transient_retry` policy, and reviewer panels use the
-configurable `runtime.reviewer_timeout_ms` (default 10 minutes). Convergence that
-keeps producing the same diff while a required gate still fails stops as
-`stuck_no_progress` instead of burning attempts indefinitely.
-
-Start it:
+when a product command needs it: durable fsync-acknowledged command queueing
+over a Unix socket, idempotency-key retry binding, and a loopback HTTP/SSE
+control API as a thin viewport (`/v2` only; `POST /v2/handshake` negotiation;
+snapshot-then-subscribe run events). Harness setup/login is server-owned
+through observable setup jobs with typed phases, deadlines, and post-exit
+capability verification. The canonical endpoint inventory lives in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §7 and is generated from
+source; this README does not duplicate it.
 
 ```bash
 claudexor daemon start
@@ -418,7 +313,7 @@ future verified host-side-effect mode is explicitly selected.
 Claudexor can be driven by other tools through CLI JSON on supported commands, the
 local daemon/control API, MCP, and ACP. These surfaces are capability-gated;
 integrations should not assume every subcommand has JSON output or every
-harness supports live steering (see "Stability at 1.0").
+harness supports live steering (see "Stability at 2.0").
 
 The CLI accepts repeatable/comma-separated `--attach <path>` or `--image <path>`
 and immediately streams each regular, non-symlink file through `/v2/uploads`.
@@ -641,8 +536,8 @@ starts the new build).
 
 ## Version History
 
-The current version is **v2.0.0** (the root `package.json` is the version
-SSOT). The full release history lives in [`CHANGELOG.md`](CHANGELOG.md).
+The root `package.json` is the version SSOT. The full release history lives in
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 

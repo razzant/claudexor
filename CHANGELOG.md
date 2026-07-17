@@ -3,7 +3,31 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v2.0.0** (2026-07-15) — clean breaking reset. Claudexor now exposes one
+- **v2.1.0** (2026-07-17) — credential profiles (INV-135) and the honest-UI
+  finish of the 2.x cycle. Multiple subscriptions per harness: durable
+  non-secret `credential_profiles` registry, isolated vendor config dirs
+  (`claudexor profiles login`), namespaced secret slots, strict per-turn /
+  thread-sticky selection, profile-isolated native-session resume, and
+  per-profile doctor probes (`GET /v2/credential-profiles`). Subscription
+  quota is now read proactively per profile from the vendor `oauth/usage`
+  endpoint (token transient-only, never persisted or logged) with per-profile
+  chips in the quota footer, plus the live-verified codex
+  `rateLimitResetCredits` balance. One typed `profile_policy` per harness
+  (`fail|ask|rotate`): preflight headroom breaches and typed vendor-limit
+  rejections rotate with full provenance — never on plain network errors,
+  never mid-spawn, each profile at most once per attempt. Also in 2.0.1/2.0.2
+  (unpublished patch steps folded into this release): the honest-engine pass
+  (shutdown state-machine with an uncancellable drain sweep, daemon-owned
+  retention with tombstones, typed final-answer assembly, harness-stream
+  reference + manifest-declared stream conformance) and the simple-UI pass
+  (messenger chat cards, flat one-row-per-tool transcripts, RunFacts SSOT,
+  daemon-normalized readiness rows, cause-driven single-CTA auth sheet,
+  typed budget.cash disclosure; INV-134 presentation discipline). Claude
+  api_retry error prose now classifies onto the documented retry categories.
+
+- **v2.0.0** (2026-07-15; **unpublished** — superseded by v2.1.0 before any
+  tag, GitHub Release, or npm publish; kept here as the contract baseline) —
+  clean breaking reset. Claudexor now exposes one
   versioned `/v2` daemon authority over a checksummed durable journal, typed
   commands and scoped event streams; v1 project, trust, secret, run, and thread
   state is neither imported nor mutated. Delivery is preimage-bound and always

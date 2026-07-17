@@ -409,6 +409,28 @@ appear in that harness's live inventory or manifest known-good list, or it
 is refused up front with the harness, model, and truth source named. There
 is no global cross-harness model value.
 
+## Credential Profiles
+
+An account is not the harness either. A credential profile is an additive
+identity for one harness — a second Claude subscription in its own isolated
+vendor config dir, a scoped Codex home, a namespaced API key — registered as
+durable non-secret config while secret material stays in the vendor's own
+store. The default vendor login is never a profile target and is never
+mutated by profile operations; readiness is a doctor projection, never a
+stored assertion.
+
+Selection is explicit and layered: a turn's choice beats the thread's sticky
+profile beats the engine default, and an explicit profile is strict — exactly
+its transport or a typed refusal, never a silent fallback into someone else's
+credentials. Vendor-session resume never crosses profiles. Subscription quota
+is read per profile from the vendor's own usage endpoint, proactively, so the
+footer can show two subscriptions' real five-hour and seven-day headroom side
+by side. On top of that sits one typed policy per harness: on a limit, fail,
+ask, or rotate — and rotation fires only on typed vendor-limit evidence or a
+proactive headroom breach, terminates no partially-acted attempt, records
+from→to provenance with the quota evidence that justified it, and never
+touches a running spawn's credentials.
+
 ## macOS Design
 
 The app is a native projection over the engine. Liquid Glass belongs on chrome:

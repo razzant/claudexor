@@ -339,11 +339,14 @@ frequency and volume are. The contracts:
     Each row carries a context menu — Rename… (title sheet) and
     Archive/Reopen — riding the server-owned `PATCH /threads/:id`
     (`title`/`state`); no local-only thread state. The sidebar footer stacks
-    quota VERTICALLY, one chip per `(harness, credential route)` group: every
-    vendor window keeps its own row, the chip header carries the humanized
-    route + freshness dot + nearest reset, an active cooldown is an overlay
-    badge on the chip (never a standalone card), and only superseded window
-    copies / expired cooldowns are hidden — a window is never quietly dropped.
+    quota VERTICALLY, one chip per `(harness, credential route, profile)`
+    group: every vendor window keeps its own row, the chip header carries the
+    humanized route + freshness dot + nearest reset — and, for a credential
+    profile (INV-135), the profile id as an accent-tinted signature between
+    the harness name and the route, so two subscriptions of one vendor NEVER
+    merge into one chip. An active cooldown is an overlay badge on the chip
+    (never a standalone card), and only superseded window copies / expired
+    cooldowns are hidden — a window is never quietly dropped.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Чат-V2, Ф2.5): a
     status line (harness identity + honest status pill + live elapsed clock),
