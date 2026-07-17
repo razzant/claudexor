@@ -2057,3 +2057,26 @@ private final class RequestStubURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+extension ClaudexorKitTests {
+    /// W4.7: the daemon-normalized readiness list decodes typed — and a
+    /// legacy daemon without the field fails CLOSED to an empty list.
+    @Test func harnessStatusDecodesNormalizedReadiness() throws {
+        let json = """
+        {"id":"claude","status":"ok",
+         "readiness":[
+           {"kind":"smoke","id":"isolated_smoke","title":"Isolated API-key smoke","status":"pass","detail":null},
+           {"kind":"auth","id":"auth_source:native_session","title":"Native session","status":"pass"}
+         ]}
+        """
+        let status = try JSONDecoder().decode(HarnessStatus.self, from: Data(json.utf8))
+        #expect(status.readiness.count == 2)
+        #expect(status.readiness[0] == ReadinessCheck(
+            kind: "smoke", id: "isolated_smoke", title: "Isolated API-key smoke", status: "pass"))
+        #expect(status.readiness[1].kind == "auth")
+
+        let legacy = try JSONDecoder().decode(
+            HarnessStatus.self, from: Data(#"{"id":"claude","status":"ok"}"#.utf8))
+        #expect(legacy.readiness.isEmpty)
+    }
+}

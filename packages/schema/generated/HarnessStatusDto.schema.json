@@ -561,6 +561,60 @@
           "default": [],
           "description": "Doctor-backed readiness by authentication source; an empty array means readiness was not reported."
         },
+        "readiness": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable machine id of the check (adapter probe id or auth source)."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "binary",
+                  "auth",
+                  "smoke",
+                  "model",
+                  "probe"
+                ],
+                "description": "What KIND of readiness this is: binary presence, credential source, isolated smoke, configured-model validity, or a generic capability probe."
+              },
+              "title": {
+                "type": "string",
+                "description": "Human display name of the check."
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "skip"
+                ],
+                "description": "Outcome; skip = not run / not applicable."
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Redacted human-readable evidence for the outcome."
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "title",
+              "status"
+            ],
+            "additionalProperties": false,
+            "description": "One display-ready readiness check row (daemon-normalized)."
+          },
+          "default": [],
+          "description": "Display-ready readiness checks, daemon-normalized from the raw evidence."
+        },
         "configuredModel": {
           "type": [
             "string",

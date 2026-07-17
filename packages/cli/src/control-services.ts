@@ -29,7 +29,7 @@ import {
 } from "@claudexor/schema";
 import { createRetentionRunner } from "./retention-service.js";
 import { invalidateDoctorCache, validateModel } from "@claudexor/core";
-import { AuthReadinessService } from "@claudexor/gateway";
+import { AuthReadinessService, normalizeReadiness } from "@claudexor/gateway";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import {
@@ -275,14 +275,28 @@ export function controlServices(
         harnesses: await Promise.all(
           statuses.map(async (s) => {
             const configured = cfg.global.harnesses[s.id]?.default_model ?? null;
-            if (!configured) return { ...s, configuredModel: null, configuredModelCheck: null };
-            const truth = await harnessModels(s.id, NO_PROJECT_ROOT, true);
-            const check = validateModel(
-              configured,
-              truth.models.map((m) => m.id),
-              truth.source === "api" ? "api" : "manifest",
-            );
-            return { ...s, configuredModel: configured, configuredModelCheck: check };
+            let check: { status: "ok" | "rejected"; message?: string | null } | null = null;
+            if (configured) {
+              const truth = await harnessModels(s.id, NO_PROJECT_ROOT, true);
+              check = validateModel(
+                configured,
+                truth.models.map((m) => m.id),
+                truth.source === "api" ? "api" : "manifest",
+              );
+            }
+            return {
+              ...s,
+              configuredModel: configured,
+              configuredModelCheck: check,
+              // The display-ready readiness list (W4.7): normalized ONCE here;
+              // Swift renders it verbatim and never parses ids or strings.
+              readiness: normalizeReadiness({
+                checks: s.checks,
+                authSources: s.authSources,
+                configuredModel: configured,
+                configuredModelCheck: check,
+              }),
+            };
           }),
         ),
       };

@@ -12,21 +12,15 @@ import {
 } from "./primitives.js";
 import { AuthMode, PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 export { ControlQuotaResponse } from "./quota.js";
-import { AuthRouteReason, AuthSourceKind, AuthSourceReadiness } from "./auth.js";
-import {
-  AdapterStatus,
-  ConformanceCheck,
-  EffortHint,
-  HarnessManifest,
-  HarnessModel,
-  InteractionQuestion,
-} from "./harness.js";
+import { AuthRouteReason, AuthSourceKind } from "./auth.js";
+import { EffortHint, HarnessModel, InteractionQuestion } from "./harness.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy } from "./orchestrate.js";
 import { ResourceAttachmentRef } from "./attachment.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
 import { RunScope } from "./control-run-scope.js";
+import { HarnessStatusDto } from "./readiness.js";
 import { makeControlRunRetrySchemas } from "./control-run-retry.js";
 
 export const RunExecution = z
@@ -1216,68 +1210,6 @@ export const ControlThreadDetail = z
     "Full thread detail served by GET /threads/:id: the thread, its vendor sessions, and its turns.",
   );
 export type ControlThreadDetail = z.infer<typeof ControlThreadDetail>;
-
-export const HarnessStatusDto = z
-  .object({
-    id: z.string().describe("Harness id."),
-    status: AdapterStatus,
-    manifest: HarnessManifest.nullable()
-      .optional()
-      .describe("The harness's declared manifest, when available."),
-    enabledIntents: z
-      .array(z.string())
-      .default([])
-      .describe("Intents the gateway will route to this harness."),
-    /** Intents this harness is ACTUALLY routable for right now: enabledIntents
-     * gated by doctor readiness (a degraded/unauth'd harness routes nothing).
-     * The SERVER-side availability truth — surfaces read this field and never
-     * re-derive availability from status+intents business logic (Р8). */
-    routableIntents: z
-      .array(z.string())
-      .default([])
-      .describe(
-        "Intents the harness is actually routable for right now (doctor-gated); the server-side availability truth surfaces must read instead of re-deriving.",
-      ),
-    disabledIntents: z.array(z.string()).default([]).describe("Intents the doctor disabled."),
-    checks: z.array(ConformanceCheck).default([]).describe("Doctor probe results."),
-    reasons: z
-      .array(z.string())
-      .default([])
-      .describe("Human-readable reasons for degraded/unavailable status."),
-    authSources: z
-      .array(AuthSourceReadiness)
-      .default([])
-      .describe(
-        "Doctor-backed readiness by authentication source; an empty array means readiness was not reported.",
-      ),
-    /** The user's configured per-harness default model, if any. */
-    configuredModel: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe("The user's configured per-harness default model, if any."),
-    /** Strict truth-source check of `configuredModel`: null when no model
-     * is configured; a rejection carries the actionable message so UIs render
-     * the same honesty `claudexor doctor` prints. */
-    configuredModelCheck: z
-      .object({
-        status: z
-          .enum(["ok", "rejected"])
-          .describe("Whether the configured model passes the strict truth-source check."),
-        message: z
-          .string()
-          .nullable()
-          .default(null)
-          .describe("Actionable rejection message, when rejected."),
-      })
-      .nullable()
-      .default(null)
-      .describe("Strict truth-source check of configuredModel; null when no model is configured."),
-  })
-  .describe(
-    "Doctor-backed status row for one harness: status, intents, checks, and configured-model validity.",
-  );
-export type HarnessStatusDto = z.infer<typeof HarnessStatusDto>;
 
 export const ControlHarnessListResponse = z
   .object({

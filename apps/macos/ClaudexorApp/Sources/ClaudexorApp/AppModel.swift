@@ -483,7 +483,7 @@ final class AppModel {
     }
 
     private static func harnessReadinessText(status: HarnessStatus, health: HarnessHealth) -> String {
-        let smokeReady = status.checks.contains { $0.id.contains("smoke") && $0.status == "pass" }
+        let smokeReady = status.readiness.contains { $0.kind == "smoke" && $0.status == "pass" }
         let sourceText = authSourceAvailability(status: status)
         switch health {
         case .ok:

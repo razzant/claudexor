@@ -23,6 +23,11 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     /// empty array means a legacy daemon (or a probe that reported no source
     /// detail), never "ready".
     public let authSources: [HarnessAuthSource]
+    /// The daemon-normalized display list (W4.7): what surfaces RENDER —
+    /// typed rows (kind/title/status/detail), never parsed strings or
+    /// id-substring matches. Empty means a legacy daemon; raw checks/reasons
+    /// remain for "copy raw" evidence.
+    public let readiness: [ReadinessCheck]
     /// The user's configured per-harness default model, if any.
     public let configuredModel: String?
     /// Strict truth-source verdict for `configuredModel` ("ok"/"rejected" +
@@ -30,7 +35,7 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let configuredModelCheck: HarnessModelCheck?
 
     enum CodingKeys: String, CodingKey {
-        case id, status, manifest, enabledIntents, routableIntents, disabledIntents, checks, reasons, authSources, configuredModel, configuredModelCheck
+        case id, status, manifest, enabledIntents, routableIntents, disabledIntents, checks, reasons, authSources, readiness, configuredModel, configuredModelCheck
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,8 +49,29 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
         checks = try c.decodeIfPresent([HarnessCheck].self, forKey: .checks) ?? []
         reasons = try c.decodeIfPresent([String].self, forKey: .reasons)
         authSources = try c.decodeIfPresent([HarnessAuthSource].self, forKey: .authSources) ?? []
+        readiness = try c.decodeIfPresent([ReadinessCheck].self, forKey: .readiness) ?? []
         configuredModel = try c.decodeIfPresent(String.self, forKey: .configuredModel)
         configuredModelCheck = try c.decodeIfPresent(HarnessModelCheck.self, forKey: .configuredModelCheck)
+    }
+}
+
+/// One daemon-normalized readiness row (schema `ReadinessCheckDto`).
+public struct ReadinessCheck: Codable, Sendable, Equatable, Hashable {
+    /// "binary" | "auth" | "smoke" | "model" | "probe" — typed classification
+    /// from the daemon's table; the UI switches on it, never on id substrings.
+    public let kind: String
+    public let id: String
+    public let title: String
+    /// "pass" | "fail" | "skip".
+    public let status: String
+    public let detail: String?
+
+    public init(kind: String, id: String, title: String, status: String, detail: String? = nil) {
+        self.kind = kind
+        self.id = id
+        self.title = title
+        self.status = status
+        self.detail = detail
     }
 }
 
