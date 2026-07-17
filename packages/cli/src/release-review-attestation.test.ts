@@ -103,6 +103,12 @@ function writeAccessibilityFixture(
   ];
 }
 
+/** The tier-1 reviewer dir name the sealer derives: `NN-<route>` (round-22:
+ * both tier-1 slots ride the openrouter route). */
+function tier1SlotDir(index: number): string {
+  return `${String(index + 1).padStart(2, "0")}-${REQUIRED_RELEASE_REVIEW_SLOTS[index]!.route}`;
+}
+
 function makeFixture(
   accessibility: "valid" | "missing" | "forged" | "wrong_binding" = "valid",
   gateCommand: "valid" | "missing" | "wrong" = "valid",
@@ -363,10 +369,10 @@ function makeFixture(
     authority,
     packet,
     packetFiles,
-    missingArtifact: join(tier1, "01-codex", "transcript.md"),
-    nativeParsed: join(tier1, "01-codex", "parsed-json-blocks.json"),
-    nativeTranscript: join(tier1, "01-codex", "transcript.md"),
-    nativeParseError: join(tier1, "01-codex", "parse-error.json"),
+    missingArtifact: join(tier1, tier1SlotDir(0), "transcript.md"),
+    nativeParsed: join(tier1, tier1SlotDir(0), "parsed-json-blocks.json"),
+    nativeTranscript: join(tier1, tier1SlotDir(0), "transcript.md"),
+    nativeParseError: join(tier1, tier1SlotDir(0), "parse-error.json"),
     tier1Progress: join(tier1, "reviewer-progress.jsonl"),
     triadPrompt: join(triad, "triad-prompt.md"),
     triadMetadata: join(
@@ -732,7 +738,9 @@ describe("signed release review attestation sealer", () => {
     }
     for (const row of rows) {
       if (row.type === "reviewer.started") {
-        const index = row.harness_id === "codex" ? 0 : 1;
+        // Both tier-1 slots share the openrouter route, so distinguish them by
+        // model (round-22) — not by harness_id, which is now identical.
+        const index = row.requested_model === REQUIRED_RELEASE_REVIEW_SLOTS[0]!.model ? 0 : 1;
         row.at = `2026-07-15T00:00:20.${String(index * 100).padStart(3, "0")}Z`;
       }
     }

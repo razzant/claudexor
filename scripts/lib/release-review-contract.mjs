@@ -16,9 +16,29 @@ export const REQUIRED_TRIAD_MODELS = Object.freeze([
 
 export const REQUIRED_SCOPE_MODEL = "anthropic/claude-fable-5";
 
+// Tier-1 critics run on the OpenRouter route (same as the triad) rather than
+// the local claude/codex subscription CLIs. Rationale (owner-directed,
+// round-22): the local-subscription reviewers authenticate against a
+// keychain login that is NOT reachable under the review sandbox's scoped
+// read-only HOME, so tier1-claude fails "not authenticated" every wave. The
+// SAME models (gpt-5.6-sol, claude-fable-5) reviewed via the API key give
+// equivalent adversarial value on the sealed packet (diff + full named-file
+// contents); all six slots now use one key-only route with no local
+// subscription dependency. The review subject is the DIFF, which the packet
+// carries in full.
 export const REQUIRED_RELEASE_REVIEW_SLOTS = Object.freeze([
-  Object.freeze({ slot: "tier1-codex", route: "codex", model: "gpt-5.6-sol", effort: "xhigh" }),
-  Object.freeze({ slot: "tier1-claude", route: "claude", model: "claude-fable-5", effort: "max" }),
+  Object.freeze({
+    slot: "tier1-sol",
+    route: "openrouter",
+    model: "openai/gpt-5.6-sol",
+    effort: null,
+  }),
+  Object.freeze({
+    slot: "tier1-fable",
+    route: "openrouter",
+    model: "anthropic/claude-fable-5",
+    effort: null,
+  }),
   ...REQUIRED_TRIAD_MODELS.map((model, index) =>
     Object.freeze({ slot: `triad-${index + 1}`, route: "openrouter", model, effort: null }),
   ),
