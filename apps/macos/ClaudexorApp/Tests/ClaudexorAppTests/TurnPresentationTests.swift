@@ -129,3 +129,33 @@ import ClaudexorKit
         #expect(thinking == [.thinking(id: "t", seconds: 12)])
     }
 }
+
+/// W4.6 (sol #17): inspector visibility is a SIMPLE state machine — explicit
+/// open, manual close respected, no route-derived auto-present.
+@Suite struct InspectorVisibilityTests {
+    @MainActor
+    @Test func inspectorPresentsOnlyOnExplicitOpenAndRespectsManualClose() {
+        let model = AppModel(
+            client: GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test"),
+            requestNotificationAuthorization: false)
+        #expect(model.inspectorPresented == false)
+
+        // Derived navigation (launch bookkeeping, jobId->runId remap) must
+        // never pop the inspector.
+        model.route = .task("r1")
+        #expect(model.inspectorPresented == false)
+
+        // The explicit affordance opens it — including a same-route click.
+        model.openRun("r1")
+        #expect(model.inspectorPresented)
+
+        // A manual close STAYS closed through further navigation…
+        model.inspectorPresented = false
+        model.route = .task("r2")
+        #expect(model.inspectorPresented == false)
+
+        // …until the next explicit open.
+        model.openRun("r2")
+        #expect(model.inspectorPresented)
+    }
+}

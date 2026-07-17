@@ -73,15 +73,15 @@ final class AppModel {
         // arrays (reopening reloads from the server).
         didSet { if oldValue != route { evictBackgroundRunData() } }
     }
-    /// Monotonic reveal signal: every "Open run" click bumps it so the
-    /// inspector re-presents even when the route ALREADY points at that run
-    /// (setting the same route fires no onChange — the old silent-click bug).
-    private(set) var inspectorRevealSeq = 0
+    /// THE inspector visibility (W4.6 sol #17): explicit open (⧉/toolbar),
+    /// manual close respected, no route-derived auto-open, no reveal seqs.
+    var inspectorPresented = false
 
-    /// Open a run in the inspector — the ONE owner of the reveal semantics.
+    /// Open a run in the inspector — the ONE owner of the reveal semantics
+    /// (a direct assignment re-presents on same-route clicks; no counter).
     func openRun(_ id: String) {
         route = .task(id)
-        inspectorRevealSeq += 1
+        inspectorPresented = true
     }
     var appearance: AppearanceMode = .dark {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }

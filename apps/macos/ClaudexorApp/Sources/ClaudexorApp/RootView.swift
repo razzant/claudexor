@@ -6,7 +6,6 @@ import SwiftUI
 /// Doctor, and preferences live in the Settings scene (⌘,).
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @State private var inspectorPresented = false
     @State private var workbenchMode: WorkbenchMode = .runDetail
     /// The user's EXPLICIT wizard dismissal (W15/Р18) — the only sticky bit.
     /// Whether onboarding is NEEDED is derived from the server's routability
@@ -39,7 +38,7 @@ struct RootView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-                .inspector(isPresented: $inspectorPresented) {
+                .inspector(isPresented: Bindable(model).inspectorPresented) {
                     runInspector
                         .inspectorColumnWidth(min: 320, ideal: 420, max: 560)
                 }
@@ -62,16 +61,6 @@ struct RootView: View {
         )) {
             OnboardingView(dismissed: $onboardingDismissed).environment(model)
                 .interactiveDismissDisabled(true)
-        }
-        // Opening a run from a turn reveals its detail in the inspector.
-        .onChange(of: model.route) { _, new in
-            if case .task = new { inspectorPresented = true }
-        }
-        // openRun() bumps the reveal seq on EVERY click — re-presenting the
-        // inspector even when the route already pointed at that run (a same-
-        // route click fires no route onChange; it used to look dead).
-        .onChange(of: model.inspectorRevealSeq) {
-            if case .task = model.route { inspectorPresented = true }
         }
     }
 
@@ -125,7 +114,7 @@ struct RootView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             AppearanceMenu()
 
-            Button { withAnimation(.snappy) { inspectorPresented.toggle() } } label: {
+            Button { withAnimation(.snappy) { model.inspectorPresented.toggle() } } label: {
                 Label("Run inspector", systemImage: "sidebar.trailing")
             }
             .labelStyle(.iconOnly)
