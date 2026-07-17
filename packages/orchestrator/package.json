@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/orchestrator",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "license": "MIT",
   "description": "Hub that composes all subsystems and implements the five canonical modes (ask, plan, audit, agent, orchestrate) with their strategy flags (best-of-N race, attempt caps, until-clean, swarm, create).",
   "type": "module",

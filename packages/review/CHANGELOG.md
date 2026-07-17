@@ -1,5 +1,15 @@
 # @claudexor/review
 
+## 2.0.2
+
+### Patch Changes
+
+- @claudexor/config@2.0.2
+- @claudexor/context@2.0.2
+- @claudexor/core@2.0.2
+- @claudexor/schema@2.0.2
+- @claudexor/util@2.0.2
+
 ## 2.0.1
 
 ### Patch Changes

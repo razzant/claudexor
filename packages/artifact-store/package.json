@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/artifact-store",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "license": "MIT",
   "description": "Files-first canonical artifact store in an external per-project runtime namespace.",
   "type": "module",
