@@ -225,6 +225,7 @@ export function controlServices(
         title: patch.title,
         state: patch.state as any,
         primaryHarness: patch.primaryHarness,
+        credentialProfileId: patch.credentialProfileId,
         eligibleHarnesses: patch.eligibleHarnesses,
       }),
     trashThread: async (id: string) => threads.trashThread(id),
