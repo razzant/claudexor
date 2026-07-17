@@ -1,4 +1,10 @@
-import type { CredentialProfile, HarnessEvent, QuotaSnapshot } from "@claudexor/schema";
+import type {
+  CredentialProfile,
+  HarnessEvent,
+  HarnessRunSpec,
+  QuotaSnapshot,
+} from "@claudexor/schema";
+import { HarnessRunSpec as HarnessRunSpecSchema } from "@claudexor/schema";
 
 /**
  * The ONE resolve owner for credential profiles (INV-135): explicit id →
@@ -265,4 +271,46 @@ export function observeNativeSessionEvent(
       /* observer errors must never fail the run */
     }
   }
+}
+
+/**
+ * Shared reactive-failover step for BOTH lanes: given the attempt's typed
+ * evidence, plan a rotation and rebuild the spec on a NEW vendor session
+ * under the next profile — or return null when the attempt must fail as-is.
+ */
+export function rotateSpecOnTypedLimit(args: {
+  spec: HarnessRunSpec;
+  harnessId: string;
+  attemptId: string;
+  policy: ProfilePolicy;
+  registry: readonly CredentialProfile[];
+  snapshots: readonly QuotaSnapshot[];
+  triedProfiles: Set<string>;
+  sawTypedLimit: boolean;
+  deliverableEmpty: boolean;
+  lastLimit: { retryDelayMs: number | null; resetsAt: string | null } | null;
+  emit: EmitFn;
+  newSessionId: () => string;
+}): HarnessRunSpec | null {
+  if (!args.spec.credential_profile) return null;
+  const rotation = planReactiveRotation({
+    currentProfile: args.spec.credential_profile,
+    harnessId: args.harnessId,
+    attemptId: args.attemptId,
+    policy: args.policy,
+    registry: args.registry,
+    snapshots: args.snapshots,
+    triedProfiles: args.triedProfiles,
+    sawTypedLimit: args.sawTypedLimit,
+    deliverableEmpty: args.deliverableEmpty,
+    lastLimit: args.lastLimit,
+    emit: args.emit,
+  });
+  if (!rotation) return null;
+  return HarnessRunSpecSchema.parse({
+    ...args.spec,
+    session_id: args.newSessionId(),
+    credential_profile: rotation,
+    resume_session_id: null,
+  });
 }

@@ -332,8 +332,13 @@ function hasActionableWorkProduct(runRoot: string): boolean {
   const text = readTextSafe(join(runRoot, "final", "work_product.yaml"));
   if (text === null) return false;
   try {
-    const meta = ((yamlParse(text) as { meta?: unknown })?.meta ?? {}) as Record<string, unknown>;
-    if (meta["result_kind"] !== "patch") return false;
+    const doc = (yamlParse(text) ?? {}) as { kind?: unknown; meta?: unknown };
+    const meta = (doc.meta ?? {}) as Record<string, unknown>;
+    // The canonical discriminator is the TOP-LEVEL kind (release wave
+    // round-13): convergence writes kind: patch without meta.result_kind, and
+    // deleting its unapplied tree would destroy actionable work.
+    if (doc.kind !== "patch" && doc.kind !== "new_repo" && meta["result_kind"] !== "patch")
+      return false;
     const applyState = meta["apply_state"];
     // Same value set controlRunResult projects: an undelivered patch or a
     // review-blocked delivery is still the operator's to act on; applied and

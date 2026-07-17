@@ -1,4 +1,4 @@
-import { resolveSecret } from "@claudexor/secrets";
+import { isManagedSecretName, resolveSecret } from "@claudexor/secrets";
 import type { AuthPreference } from "@claudexor/schema";
 import { runCapture } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
@@ -115,6 +115,16 @@ export function cursorProfileKeyOrRefusal(profile: {
   if (profile.credential_kind !== "api_key")
     return {
       refusal: `credential profile "${profile.profile_id}": cursor supports only the api_key transport`,
+    };
+  const ref = profile.secret_ref ?? "";
+  const base = isManagedSecretName(ref)
+    ? ref.includes(":")
+      ? ref.slice(0, ref.indexOf(":"))
+      : ref
+    : null;
+  if (base !== "cursor")
+    return {
+      refusal: `credential profile "${profile.profile_id}": api_key secret_ref must use the cursor slot (got "${ref}")`,
     };
   const key = profile.secret_ref ? resolveSecret(profile.secret_ref) : null;
   if (!key)

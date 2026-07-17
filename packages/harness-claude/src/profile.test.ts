@@ -198,6 +198,39 @@ describe("Claude strict profile routing (INV-135)", () => {
     expect(runArgs).not.toContain("--bare");
   });
 
+  it("secret refs are provider-BOUND — a claude profile cannot read another vendor's slot", async () => {
+    const reads: string[] = [];
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => {
+        throw new Error("no native probe for a secret-ref profile");
+      },
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      resolveProfileSecret: (ref) => {
+        reads.push(ref);
+        return "leaked-key";
+      },
+      runCliHarness: async function* (): AsyncGenerator<HarnessEvent> {},
+    });
+    const events: HarnessEvent[] = [];
+    for await (const ev of adapter.run(
+      spec({
+        credential_profile: profile({
+          credential_kind: "api_key",
+          isolation_locator: null,
+          secret_ref: "openai:work",
+        }),
+      }),
+    ))
+      events.push(ev);
+    expect(events.map((e) => e.type)).toEqual(["error", "completed"]);
+    expect((events[0] as { error?: string }).error).toContain("anthropic slot");
+    // The foreign slot is never even read.
+    expect(reads).toEqual([]);
+  });
+
   it("api_key profile with an unstored secret refuses typed", async () => {
     const adapter = createClaudeAdapter({
       detectVersion: async () => "2.1.165",

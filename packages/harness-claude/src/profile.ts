@@ -4,6 +4,7 @@ import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/sche
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { canonicalIsolationLocator } from "@claudexor/core";
+import { isManagedSecretName } from "@claudexor/secrets";
 import {
   claudeNativeEnv,
   defaultNativeClaudeConfigDir,
@@ -74,6 +75,11 @@ export async function resolveClaudeProfileRoute(
       return { refusal: err instanceof Error ? err.message : String(err) };
     }
   } else if (profile.credential_kind === "oauth_token") {
+    const bind = profileRefBase(profile.secret_ref);
+    if (bind !== "claude_oauth")
+      return {
+        refusal: `credential profile "${profile.profile_id}": oauth_token secret_ref must use the claude_oauth slot (got "${profile.secret_ref ?? ""}")`,
+      };
     oauthToken = profile.secret_ref ? runtime.resolveProfileSecret(profile.secret_ref) : null;
     if (oauthToken) subscriptionSource = "oauth_token_env";
     else
@@ -81,6 +87,11 @@ export async function resolveClaudeProfileRoute(
         refusal: `credential profile "${profile.profile_id}": secret "${profile.secret_ref ?? "(missing ref)"}" is not stored`,
       };
   } else {
+    const bind = profileRefBase(profile.secret_ref);
+    if (bind !== "anthropic")
+      return {
+        refusal: `credential profile "${profile.profile_id}": api_key secret_ref must use the anthropic slot (got "${profile.secret_ref ?? ""}")`,
+      };
     key = profile.secret_ref ? runtime.resolveProfileSecret(profile.secret_ref) : null;
     if (!key)
       return {
@@ -149,4 +160,12 @@ export async function probeClaudeCredentialProfile(
       detail: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 300),
     });
   }
+}
+
+/** The managed BASE of a profile secret_ref, or null when malformed (INV-135:
+ * a profile's ref must be a managed slot BOUND to its own provider — a claude
+ * profile referencing openai:* would transmit that key to Anthropic). */
+function profileRefBase(ref: string | null): string | null {
+  if (!ref || !isManagedSecretName(ref)) return null;
+  return ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : ref;
 }

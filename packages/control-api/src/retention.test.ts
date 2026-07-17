@@ -129,6 +129,13 @@ describe("runRetentionPass", () => {
     seedRun(project.runsDir, "run-applyable", {
       workProduct: "meta:\n  result_kind: patch\n  apply_state: not_applied\n",
     });
+    // The CONVERGENCE writer shape (release wave round-13): top-level kind
+    // with NO meta.result_kind — its unapplied patch is equally actionable.
+    seedRun(project.runsDir, "run-convergence-patch", {
+      terminal: true,
+      old: true,
+      workProduct: "kind: patch\nmeta:\n  apply_state: not_applied\n",
+    });
     seedRun(project.runsDir, "run-unproven", { terminal: false });
     const receipt = await runRetentionPass(
       { ...POLICY, keepLastRunsPerProject: 0 },
@@ -139,6 +146,7 @@ describe("runRetentionPass", () => {
           { runId: "run-referenced", state: "succeeded", finishedAt: daysAgo(90) },
           { runId: "run-blocked", state: "blocked", finishedAt: daysAgo(90) },
           { runId: "run-applyable", state: "succeeded", finishedAt: daysAgo(90) },
+          { runId: "run-convergence-patch", state: "succeeded", finishedAt: daysAgo(90) },
         ],
         referencedRunIds: () => new Set(["run-referenced"]),
       }),
@@ -147,7 +155,7 @@ describe("runRetentionPass", () => {
     expect(receipt.kept).toMatchObject({
       active: 1,
       referenced: 1,
-      actionable: 2,
+      actionable: 3,
       unknown_state: 1,
     });
   });

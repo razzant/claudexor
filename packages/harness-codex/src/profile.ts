@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
+import { isManagedSecretName } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth } from "./auth.js";
 import { canonicalIsolationLocator } from "@claudexor/core";
@@ -67,6 +68,16 @@ export async function resolveCodexProfileRoute(
     }
   }
   if (profile.credential_kind === "api_key") {
+    const ref = profile.secret_ref ?? "";
+    const base = isManagedSecretName(ref)
+      ? ref.includes(":")
+        ? ref.slice(0, ref.indexOf(":"))
+        : ref
+      : null;
+    if (base !== "openai")
+      return {
+        refusal: `credential profile "${profile.profile_id}": api_key secret_ref must use the openai slot (got "${ref}")`,
+      };
     const key = profile.secret_ref ? runtime.resolveProfileSecret(profile.secret_ref) : null;
     if (!key)
       return {

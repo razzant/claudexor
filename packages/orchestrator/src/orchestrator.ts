@@ -1,13 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import {
   observeNativeSessionEvent,
-  planReactiveRotation,
   preflightCredentialProfile,
   resolveCredentialProfile,
   resumeSessionForProfile,
+  rotateSpecOnTypedLimit,
   type ProfilePolicy,
 } from "./credential-profiles.js";
 import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
+import { capabilityIntents } from "@claudexor/gateway";
+import { policyFindings } from "./policyFindings.js";
 
 import { join } from "node:path";
 import type {
@@ -55,7 +57,6 @@ import {
   SessionReboundLineage as SessionReboundLineageSchema,
   SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
-  ReviewFinding as ReviewFindingSchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
   FrozenTaskContractArtifact as TaskContractSchema,
@@ -144,7 +145,6 @@ import {
   assertMandatoryContext,
   buildContextPack,
   rawContextForEnvelope,
-  matchAny,
   preflightEvidence,
   writeEvidencePacket,
 } from "@claudexor/context";
@@ -189,12 +189,6 @@ import {
   usageCostSettlement,
   rankHarnesses,
 } from "@claudexor/budget";
-import {
-  classifyRisk,
-  DEFAULT_REQUIRE_HUMAN_PATHS,
-  requireHuman,
-  reviewDepthForRisk,
-} from "@claudexor/policy";
 import {
   appendLine,
   assertNoInlineSecretValues,
@@ -865,6 +859,29 @@ export class Orchestrator {
     return policy ?? { limit_action: "fail", rotation_eligible: [], headroom_threshold: 0.9 };
   }
 
+  /** null = no profile selected (default verdict stands); "available" = the
+   * profile's own probe admits the route; any other string = typed refusal. */
+  private async profileAvailabilityOverride(
+    input: RunInput,
+    harnessId: string,
+  ): Promise<string | null> {
+    if (!input.credentialProfileId) return null;
+    let profile: CredentialProfile | null;
+    try {
+      profile = this.resolveCredentialProfile(input, harnessId);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    if (!profile) return null;
+    const adapter = this.deps.registry.get(harnessId);
+    if (!adapter?.probeCredentialProfile) {
+      return `harness "${harnessId}" has no profile probe`;
+    }
+    const probe = await adapter.probeCredentialProfile(profile);
+    if (probe.availability === "available") return "available";
+    return probe.detail ?? `${probe.availability}/${probe.verification}`;
+  }
+
   private preflightProfile(input: RunInput, harnessId: string, log?: EventLog) {
     const profile = this.resolveCredentialProfile(input, harnessId);
     if (!profile) return null;
@@ -1038,7 +1055,7 @@ export class Orchestrator {
       }
       // W3.3 (ТЗ-1 §B): a route is admitted on readiness truth from the SAME
       // resolved env/cwd its run will spawn with (see routeContext.ts).
-      const status = await candidateStatusInRouteContext(
+      let status = await candidateStatusInRouteContext(
         this.gateway,
         routeContext,
         id,
@@ -1057,10 +1074,29 @@ export class Orchestrator {
       // selection — degraded means usable-with-caveats, and the caveats are
       // visible in doctor output and run events.
       if (status.status === "unavailable") {
-        const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
-        continue;
+        // INV-135 (release wave round-13): an EXPLICIT profile is
+        // authenticated by ITS store — a logged-out default must not reject
+        // a valid isolated profile. The profile probe overrides the default
+        // auth verdict; capability/manifest gating above still applies.
+        const profileVerdict = await this.profileAvailabilityOverride(input, id);
+        if (profileVerdict !== "available") {
+          const why =
+            profileVerdict === null
+              ? `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`
+              : `${id} credential profile is not ready: ${profileVerdict}`;
+          if (explicitPool) throw new HarnessUnavailableError(why);
+          dropped.push(why);
+          continue;
+        }
+        // The default-store failure also zeroed enabled_intents; with the
+        // profile probe as the auth verdict, MANIFEST capabilities are the
+        // honest intent truth (degraded = usable-with-caveats, disclosed).
+        status = {
+          ...status,
+          status: "degraded",
+          enabledIntents: capabilityIntents(manifest.capabilities),
+        };
+        statusById.set(id, status);
       }
       if (status.status !== "ok" && !explicitPool) {
         dropped.push(
@@ -1916,9 +1952,9 @@ export class Orchestrator {
         const deliverableEmpty = currentDiff.trim().length === 0 && currentAnswer.length === 0;
         // W5.4 failover: a typed-limit hit rebuilds the spec on a NEW vendor
         // session under the next profile with provenance (vendor_limit_rejected).
-        if (harnessErrored && spec.credential_profile && runInput && !signal?.aborted) {
-          const rotation = planReactiveRotation({
-            currentProfile: spec.credential_profile,
+        if (harnessErrored && runInput && !signal?.aborted) {
+          const rotated = rotateSpecOnTypedLimit({
+            spec,
             harnessId: adapter.id,
             attemptId,
             policy: this.profilePolicy(contract.repo.root, adapter.id),
@@ -1929,14 +1965,10 @@ export class Orchestrator {
             deliverableEmpty,
             lastLimit: telemetry.rateLimits.at(-1) ?? null,
             emit: (type, payload) => log?.emit(type, payload),
+            newSessionId: () => newId("ses"),
           });
-          if (rotation) {
-            spec = HarnessRunSpec.parse({
-              ...spec,
-              session_id: newId("ses"),
-              credential_profile: rotation,
-              resume_session_id: null,
-            });
+          if (rotated) {
+            spec = rotated;
             errors.length = 0;
             harnessErrored = false;
             continue;
@@ -3413,192 +3445,6 @@ export class Orchestrator {
   }
 
   /** Review a set of runs and return their evidence (with finalReviewClean + review_verified caveat). */
-  /**
-   * Deterministic policy findings from the typed diff (no LLM, no regex over
-   * prose): protected-path changes and critical-risk diffs escalate NEEDS_HUMAN;
-   * a high-risk diff without a cross-family panel escalates as well. Each
-   * finding cites the matched files as evidence (BIBLE: evidence beats summaries).
-   */
-  private policyFindings(
-    run: CandidateRun,
-    reviewVerified: boolean,
-    protectedPaths: string[] = [],
-    autoProtectedPaths: string[] = [],
-    protectedPathApprovals: ProtectedPathApproval[] = [],
-    denyPaths: string[] = [],
-  ): {
-    findings: ReviewFinding[];
-    risk: { level: string; reasons: string[]; changedFiles: number };
-  } {
-    const stats = diffStats(run.diff);
-    // Path policy gates match stats.touchedPaths — the one owner of "what the
-    // diff touches" (core diff.ts, G1 class); a gate matching a narrower
-    // projection is an EXPLICIT decision, never an accident. deny_paths: ANY
-    // touch of a denied glob is a violation — create, modify, delete, or
-    // either end of a rename. Contract protected_paths: creating a NEW file
-    // under a protected glob (or renaming into it) is tamper exactly like
-    // editing an existing one. Same matcher as every other path policy
-    // (INV-122).
-    const denyViolation = requireHuman(stats.touchedPaths, denyPaths);
-    const approvalPatterns = protectedPathApprovals.map((approval) => approval.path);
-    // AUTO-protected (gate/test files) deliberately matches existingPaths
-    // only: creating a new test/package file is the normal create/test-
-    // authoring flow, not tamper (pinned by test) — only touching an EXISTING
-    // gate input escalates.
-    const unapprovedAutoProtectedPaths = stats.existingPaths.filter(
-      (path) => !matchAny(path, approvalPatterns),
-    );
-    const specProtectedOnly = requireHuman(stats.touchedPaths, protectedPaths);
-    const autoProtectedOnly = requireHuman(unapprovedAutoProtectedPaths, autoProtectedPaths);
-    const protectedOnly = {
-      required: specProtectedOnly.required || autoProtectedOnly.required,
-      reasons: [...new Set([...specProtectedOnly.reasons, ...autoProtectedOnly.reasons])],
-      matchedPaths: [
-        ...new Set([...specProtectedOnly.matchedPaths, ...autoProtectedOnly.matchedPaths]),
-      ],
-    };
-    // classifyRisk's built-in pattern sets (sensitive resources, critical/high
-    // paths) are themselves a human-approval gate, so they match the TOUCHED
-    // set like every other path policy — `git mv .env config/settings.txt`
-    // must stay critical, and no other gate would recover it (G1 class,
-    // security commit 4e9e2270). Its file COUNT is a separate fact: renames
-    // touch two paths but change one file.
-    const risk = classifyRisk({
-      changedPaths: stats.touchedPaths,
-      fileCount: stats.paths.length,
-      additions: stats.additions,
-      deletions: stats.deletions,
-      protectedPaths: protectedOnly.matchedPaths,
-    });
-    const findings: ReviewFinding[] = [];
-    const reviewer = {
-      harness_id: "policy",
-      requested_model: null,
-      requested_effort: null,
-      observed_model: null,
-      route_proof_status: "verified" as const,
-    };
-    const evidenceFor = (reasons: string[]) => ({
-      files: stats.touchedPaths
-        .filter((p) => reasons.some((r) => r.includes(p)))
-        .map((path) => ({ path, lines: null })),
-    });
-    // Structured matched-path evidence (never reconstructed from prose).
-    const evidenceFromPaths = (paths: string[]) => ({
-      files: paths.map((path) => ({ path, lines: null })),
-    });
-    const denyReasons = denyViolation.matchedPaths.map(
-      (path) => `candidate touched denied path ${path}`,
-    );
-    const reportedRisk =
-      protectedOnly.required || denyViolation.required
-        ? {
-            level: "critical" as const,
-            reasons: [
-              ...new Set([
-                ...risk.reasons,
-                ...protectedOnly.reasons,
-                ...(denyViolation.required ? denyReasons : []),
-              ]),
-            ],
-            matchedPaths: [
-              ...new Set([
-                ...risk.matchedPaths,
-                ...protectedOnly.matchedPaths,
-                ...denyViolation.matchedPaths,
-              ]),
-            ],
-          }
-        : risk;
-    if (denyViolation.required) {
-      // Authoritative post-diff deny gate: a BLOCK finding keeps the patch
-      // undelivered (blocked); only an operator accept_risk decision may still
-      // deliver it (INV-111 — the human is the final authority).
-      findings.push(
-        ReviewFindingSchema.parse({
-          id: newId("find"),
-          severity: "BLOCK",
-          category: "security",
-          claim: `candidate touched denied path(s) (deny_paths): ${denyViolation.matchedPaths.join(", ")}`,
-          evidence: evidenceFromPaths(denyViolation.matchedPaths),
-          reviewer,
-          status: "accepted",
-        }),
-      );
-    }
-    if (protectedOnly.required) {
-      findings.push(
-        ReviewFindingSchema.parse({
-          id: newId("find"),
-          severity: "BLOCK",
-          category: "test_gap",
-          claim: `candidate changed protected path(s): ${protectedOnly.matchedPaths.join(", ")}`,
-          evidence: evidenceFromPaths(protectedOnly.matchedPaths),
-          reviewer,
-          status: "accepted",
-        }),
-      );
-    }
-    const builtInHuman = requireHuman(stats.touchedPaths, DEFAULT_REQUIRE_HUMAN_PATHS);
-    const human = {
-      required: builtInHuman.required || protectedOnly.required,
-      reasons: [...new Set([...builtInHuman.reasons, ...protectedOnly.reasons])],
-      matchedPaths: [...new Set([...builtInHuman.matchedPaths, ...protectedOnly.matchedPaths])],
-    };
-    if (human.required) {
-      findings.push(
-        ReviewFindingSchema.parse({
-          id: newId("find"),
-          severity: "NEEDS_HUMAN",
-          category: "security",
-          claim: `protected-path change requires human approval: ${human.reasons.join("; ")}`,
-          evidence: evidenceFromPaths(human.matchedPaths),
-          reviewer,
-          status: "accepted",
-        }),
-      );
-    }
-    const depth = reviewDepthForRisk(reportedRisk.level as never);
-    if (depth.humanApproval) {
-      findings.push(
-        ReviewFindingSchema.parse({
-          id: newId("find"),
-          severity: "NEEDS_HUMAN",
-          category: "security",
-          claim: `critical-risk diff requires human approval: ${reportedRisk.reasons.join("; ")}`,
-          evidence:
-            reportedRisk.matchedPaths.length > 0
-              ? evidenceFromPaths(reportedRisk.matchedPaths)
-              : evidenceFor(reportedRisk.reasons),
-          reviewer,
-          status: "accepted",
-        }),
-      );
-    } else if (depth.crossFamily && !reviewVerified) {
-      findings.push(
-        ReviewFindingSchema.parse({
-          id: newId("find"),
-          severity: "NEEDS_HUMAN",
-          category: "architecture",
-          claim: `high-risk diff requires a cross-family review panel (>=2 provider families), which is not available: ${reportedRisk.reasons.join("; ")}`,
-          evidence:
-            reportedRisk.matchedPaths.length > 0
-              ? evidenceFromPaths(reportedRisk.matchedPaths)
-              : evidenceFor(reportedRisk.reasons),
-          reviewer,
-          status: "accepted",
-        }),
-      );
-    }
-    return {
-      findings,
-      risk: {
-        level: reportedRisk.level,
-        reasons: reportedRisk.reasons,
-        changedFiles: stats.paths.length,
-      },
-    };
-  }
 
   /**
    * SINGLE funnel for every reviewer-panel invocation: run it inside a per-review
@@ -3724,7 +3570,7 @@ export class Orchestrator {
         const candidateReviewVerified =
           reviewVerified && result.crossFamilyHealthy && result.crossFamilyVerified;
         // Typed policy gate (risk + protected paths) merges with reviewer findings.
-        const policy = this.policyFindings(
+        const policy = policyFindings(
           run,
           candidateReviewVerified,
           contract.constraints.protected_paths,
@@ -4294,7 +4140,7 @@ export class Orchestrator {
                 evidenceDir: candidateReviewEvidenceDir,
               });
               // Typed policy gate (risk + protected paths) merges with reviewer findings.
-              const policy = this.policyFindings(
+              const policy = policyFindings(
                 run,
                 actualReviewVerified,
                 contract.constraints.protected_paths,
@@ -4568,6 +4414,7 @@ export class Orchestrator {
         producer_attempt_id: lastRun.attemptId,
         meta: {
           harness_id: lastRun.harnessId,
+          result_kind: "patch",
           mode,
           attempts: attempt,
           status,
@@ -5701,7 +5548,7 @@ export class Orchestrator {
       const grantResume =
         sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
       if (grantResume) resumeGranted.add(adapter.id);
-      const spec = HarnessRunSpec.parse({
+      let spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: opts.intent,
         prompt: explorerPrompt,
@@ -5770,6 +5617,7 @@ export class Orchestrator {
       let costEstimated = false;
       let harnessError: string | null = null;
       try {
+        const triedProfiles = new Set<string>(); // W5.4 failover: each profile at most once
         for (let nativeTry = 0; !input.signal?.aborted; nativeTry += 1) {
           const runSpec =
             nativeTry === 0
@@ -5782,6 +5630,7 @@ export class Orchestrator {
                 });
           activeSessionId = runSpec.session_id;
           const transientStart = telemetry.transientFailures.length;
+          const rateLimitStart = telemetry.rateLimits.length;
           log.emit("harness.started", {
             harness_id: adapter.id,
             attempt_id: attemptId,
@@ -5845,7 +5694,31 @@ export class Orchestrator {
 
           const transient = telemetry.transientFailures.at(-1) ?? null;
           const sawTransient = telemetry.transientFailures.length > transientStart;
+          const sawTypedLimit = telemetry.rateLimits.length > rateLimitStart;
           const reportSoFar = answer.text();
+          // W5.4 reactive failover, READ-ONLY lane (same contract as the
+          // candidate lane; typed limits only, never plain transients).
+          if (harnessError && !input.signal?.aborted) {
+            const rotated = rotateSpecOnTypedLimit({
+              spec,
+              harnessId: adapter.id,
+              attemptId,
+              policy: this.profilePolicy(input.repoRoot, adapter.id),
+              registry: this.config(input.repoRoot)?.global.credential_profiles ?? [],
+              snapshots: this.deps.quotaSnapshots?.() ?? [],
+              triedProfiles,
+              sawTypedLimit,
+              deliverableEmpty: reportSoFar.length === 0,
+              lastLimit: telemetry.rateLimits.at(-1) ?? null,
+              emit: (type, payload) => log.emit(type, payload),
+              newSessionId: () => newId("ses"),
+            });
+            if (rotated) {
+              spec = rotated;
+              harnessError = null;
+              continue;
+            }
+          }
           if (
             !harnessError ||
             !sawTransient ||

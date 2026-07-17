@@ -1787,6 +1787,138 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("a selected profile is authenticated by ITS store, not the default doctor verdict (round-13)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-override-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      // The DEFAULT store is logged out: doctor says unavailable.
+      asker.doctor = async () =>
+        ConformanceReport.parse({
+          harness_id: "asker",
+          status: "unavailable",
+          enabled_intents: [],
+          reasons: ["not authenticated (default store logged out)"],
+        });
+      asker.probeCredentialProfile = async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: "asker",
+        availability: "available",
+        verification: "not_run",
+        detail: "secret stored",
+        last_verified_at: null,
+      });
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "b",
+      });
+      // The profile's own probe is the auth verdict — the logged-out default
+      // must not reject a valid isolated profile.
+      expect(res.status).toBe("success");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("reactively rotates in the READ-ONLY lane too (release wave round-13)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-ro-rotate-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: a",
+        "    harness_id: asker",
+        "    display_name: A",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:a'",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "harnesses:",
+        "  asker:",
+        "    profile_policy:",
+        "      limit_action: rotate",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const profilesSeen: Array<string | null> = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        if (profilesSeen.length === 1) {
+          yield {
+            type: "status",
+            session_id: sessionId,
+            ts,
+            text: "api_retry: rate limited",
+            status: { kind: "api_retry", error_category: "rate_limit" },
+            rate_limit: { resets_at: null, retry_delay_ms: 60_000 },
+          };
+          yield { type: "error", session_id: sessionId, ts, error: "vendor rate limit exhausted" };
+          yield { type: "completed", session_id: sessionId, ts };
+          return;
+        }
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const askerRun = asker.run.bind(asker);
+      asker.run = (spec) => {
+        profilesSeen.push(spec.credential_profile?.profile_id ?? null);
+        return askerRun(spec);
+      };
+      const events: string[] = [];
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "a",
+        onEvent: (event) => events.push(event.type),
+      });
+      expect(res.status).toBe("success");
+      expect(profilesSeen).toEqual(["a", "b"]);
+      expect(events).toContain("route.profile.rotated");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("never rotates on a plain transient — typed-limit signals only (W5.4)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-transient-config-"));
