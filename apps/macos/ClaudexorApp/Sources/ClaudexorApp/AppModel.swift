@@ -434,7 +434,7 @@ final class AppModel {
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
                                    authSources: status.authSources,
                                    intents: status.enabledIntents, routableIntents: status.routableIntents,
-                                   reasons: status.reasons ?? [], checks: checks,
+                                   reasons: status.reasons ?? [], checks: checks, readiness: status.readiness,
                                    acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
                                    effortLevels: effortLevels,
                                    configuredModelIssue: modelIssue)

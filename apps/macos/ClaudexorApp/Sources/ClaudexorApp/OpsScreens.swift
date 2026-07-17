@@ -279,43 +279,22 @@ struct SettingsScreen: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous).stroke(Theme.separator, lineWidth: 1))
     }
 
+    /// W4.7-UI: the ONE readiness card; Settings passes ITS actions as a slot.
     private func nativeAuthRow(_ family: HarnessFamily) -> some View {
-        let info = model.harnessInfo(for: family)
-        let health = info?.health ?? .unavailable
-        return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack(alignment: .center, spacing: Theme.Spacing.sm) {
-                HarnessChip(family: family, selected: true, available: info?.health == .ok)
-                Text(info?.auth ?? "Harness Doctor has not loaded this harness.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer(minLength: Theme.Spacing.md)
-                Label(health.rawValue.capitalized, systemImage: health.glyph)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(health.color)
-                    .padding(.horizontal, Theme.Spacing.sm)
-                    .padding(.vertical, Theme.Spacing.xxs)
-                    .background(health.color.opacity(0.14), in: Capsule())
+        let presentation = HarnessReadinessPresentation.from(
+            family: family, info: model.harnessInfo(for: family))
+        return HarnessReadinessCard(presentation: presentation) {
+            Button { model.authSheetHarness = family } label: {
+                Label(presentation.available ? "Manage" : "Setup",
+                      systemImage: presentation.available ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
             }
-            // The doctor's strict model verdict: a green harness must
-            // never hide a doomed configured default model.
-            if let issue = info?.configuredModelIssue {
-                Label(issue, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption).foregroundStyle(.orange)
-                    .lineLimit(3)
-                    .help("The configured default model fails this harness's model truth source; runs would be refused at preflight. Fix it in the Model override above.")
+            .buttonStyle(.bordered).tint(Theme.accent)
+            .help(presentation.available ? "Open \(family.label) auth details and fallback key management." : "Open setup/auth actions for \(family.label).")
+            Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
+                Label("Recheck", systemImage: "arrow.clockwise")
             }
-            FlowLayout(spacing: Theme.Spacing.sm) {
-                Button { model.authSheetHarness = family } label: {
-                    Label(health == .ok ? "Manage" : "Setup", systemImage: health == .ok ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
-                }
-                .buttonStyle(.bordered).tint(Theme.accent)
-                .help(health == .ok ? "Open \(family.label) auth details and fallback key management." : "Open setup/auth actions for \(family.label).")
-                Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
-                    Label("Recheck", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .help("Refresh install/auth/capability status after setup.")
-            }
+            .buttonStyle(.bordered)
+            .help("Refresh install/auth/capability status after setup.")
         }
     }
 

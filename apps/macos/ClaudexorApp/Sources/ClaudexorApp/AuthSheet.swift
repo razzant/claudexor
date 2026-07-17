@@ -93,17 +93,35 @@ struct AuthSheet: View {
             }
 
             Divider().overlay(Theme.separator)
+            // W4.8: ONE prominent CTA by cause; Done is primary only when
+            // there is nothing to fix (healthy) or we're observing a job.
             HStack {
                 if let job, job.isActive {
-                    Label(phaseLabel(job.phase), systemImage: "circle.dotted")
+                    Label(AuthSheetPresentation.jobStatusLine(
+                        state: job.state, phase: job.phase,
+                        outcomeReason: job.outcome?.reason.rawValue,
+                        exitCode: job.outcome?.exitCode
+                    ), systemImage: "circle.dotted")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Done") { requestClose() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accentSolid)
-                    .help("Close this auth sheet. An active setup job asks whether to keep running or cancel.")
+                let cta = primaryCTA
+                if cta == .done {
+                    Button("Done") { requestClose() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accentSolid)
+                        .help("Close this auth sheet. An active setup job asks whether to keep running or cancel.")
+                } else {
+                    Button(cta.label) { Task { await performPrimary(cta) } }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accentSolid)
+                        .disabled(actionInFlight || (cta == .login && newSetupDisabled))
+                        .help(cta.help(family: family.label))
+                    Button("Done") { requestClose() }
+                        .buttonStyle(.bordered)
+                        .help("Close this auth sheet. An active setup job asks whether to keep running or cancel.")
+                }
             }
             .padding(Theme.Spacing.lg)
         }
@@ -140,53 +158,14 @@ struct AuthSheet: View {
         }
     }
 
+    /// W4.7-UI: the shared readiness card (typed rows + "copy raw").
     private var readinessPanel: some View {
         Panel {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                HStack {
-                    SectionLabel("Readiness", systemImage: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle")
-                    Spacer()
-                    Label(currentInfo?.health.rawValue.capitalized ?? "Unknown",
-                          systemImage: currentInfo?.health.glyph ?? "questionmark.circle")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(currentInfo?.health.color ?? .secondary)
-                }
-                Text(currentInfo?.auth ?? "Harness Doctor has not loaded this harness yet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Divider().overlay(Theme.separator)
-                if let native = nativeSource {
-                    HStack {
-                        Label("Native session", systemImage: native.isVerifiedNativeSession ? "checkmark.circle.fill" : "person.crop.circle.badge.exclamationmark")
-                        Spacer()
-                        Text(native.isVerifiedNativeSession ? "Verified ready" : "Not ready")
-                            .foregroundStyle(native.isVerifiedNativeSession ? Theme.status(.succeeded) : Theme.status(.blocked))
-                    }
-                    .font(.caption.weight(.medium))
-                    Text("Availability: \(humanize(native.availability)) · Verification: \(humanize(native.verification))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if let detail = native.detail, !detail.isEmpty {
-                        Text(detail).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-                    }
-                } else {
-                    Label("Native readiness not reported", systemImage: "questionmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Reconnect to a current engine and run Harness Doctor. Manifest auth modes are availability hints, not readiness proof.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let reasons = currentInfo?.reasons, !reasons.isEmpty {
-                    Text(reasons.joined(separator: "\n"))
-                        .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-                }
-                if let checks = currentInfo?.checks, !checks.isEmpty {
-                    Text("Doctor checks: \(checks.joined(separator: ", "))")
-                        .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
-                }
+                SectionLabel("Readiness", systemImage: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle")
+                HarnessReadinessCard(
+                    presentation: .from(family: family, info: currentInfo)
+                ) { EmptyView() }
             }
         }
     }
@@ -224,17 +203,16 @@ struct AuthSheet: View {
                 HStack {
                     SectionLabel("Setup job", systemImage: "list.bullet.rectangle")
                     Spacer()
-                    Label(humanize(job.state.rawValue), systemImage: setupJobGlyph(job.state))
+                    // W4.8: state + phase + outcome sewn into ONE human status
+                    // — never "Failed" beside "Completed" beside "exit 0".
+                    Label(AuthSheetPresentation.jobStatusLine(
+                        state: job.state, phase: job.phase,
+                        outcomeReason: job.outcome?.reason.rawValue,
+                        exitCode: job.outcome?.exitCode
+                    ), systemImage: setupJobGlyph(job.state))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(setupJobColor(job.state))
                 }
-                HStack {
-                    Text("Phase")
-                    Spacer()
-                    Text(phaseLabel(job.phase))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
                 Text(job.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
 
@@ -246,14 +224,11 @@ struct AuthSheet: View {
                     }
                 }
 
-                if let outcome = job.outcome {
-                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                        Text("Outcome: \(humanize(outcome.reason.rawValue))")
-                        if let code = outcome.exitCode { Text("Exit code: \(code)") }
-                        if let signal = outcome.signal { Text("Signal: \(signal)") }
-                    }
-                    .font(.caption2.weight(.medium))
-                    .textSelection(.enabled)
+                // The status line owns reason+exit; a SIGNAL is extra diagnostics.
+                if let signal = job.outcome?.signal {
+                    Text("Signal: \(signal)")
+                        .font(.caption2.weight(.medium))
+                        .textSelection(.enabled)
                 }
 
                 if job.blocksReplacement {
@@ -273,11 +248,12 @@ struct AuthSheet: View {
                         .textSelection(.enabled)
                 }
                 HStack(spacing: Theme.Spacing.sm) {
+                    // W4.8: named for what it extends (canExtend gates to a live login).
                     if job.canExtend {
-                        Button("Extend 15 min") { Task { await extendDeadline() } }
+                        Button("Extend login wait (15 min)") { Task { await extendDeadline() } }
                             .buttonStyle(.bordered)
                             .disabled(actionInFlight || activeStateUnknown)
-                            .help("Ask the engine to extend this native-login deadline by 15 minutes.")
+                            .help("Extend the wait for the native login you are completing by 15 minutes.")
                     }
                     if job.canCancel {
                         Button("Cancel Login", role: .destructive) {
@@ -362,6 +338,29 @@ struct AuthSheet: View {
                     .disabled(secretWriteDisabled)
                     .help("Store this fallback API key, then refresh exactly that credential source.")
             }
+        }
+    }
+
+    /// W4.8: the one state-derived primary action for the footer.
+    private var primaryCTA: AuthSheetPresentation.PrimaryCTA {
+        AuthSheetPresentation.primaryCTA(
+            healthOk: isReady,
+            nativeSupported: nativeHarness != nil,
+            nativeReady: nativeReady,
+            keyStored: secretName.map { name in model.storedSecrets.contains { $0.name == name } } ?? false,
+            streamLost: lifecycle.connection == .streamLost,
+            jobActive: hasActiveJob,
+            blocksReplacement: job?.blocksReplacement == true
+        )
+    }
+
+    private func performPrimary(_ cta: AuthSheetPresentation.PrimaryCTA) async {
+        switch cta {
+        case .login: await runLogin()
+        case .retryProbe: await recheck()
+        case .storeKey: if let secretName { await storeKey(secretName) }
+        case .reconnect: await reconnectSetupState()
+        case .done: requestClose()
         }
     }
 

@@ -159,3 +159,59 @@ import ClaudexorKit
         #expect(model.inspectorPresented)
     }
 }
+
+/// W4.8 (В21а): one primary CTA by cause; one merged job status — never
+/// contradictory combos.
+@Suite struct AuthSheetPresentationTests {
+    private func cta(
+        healthOk: Bool = false, nativeSupported: Bool = true, nativeReady: Bool = false,
+        keyStored: Bool = false, streamLost: Bool = false, jobActive: Bool = false,
+        blocksReplacement: Bool = false
+    ) -> AuthSheetPresentation.PrimaryCTA {
+        AuthSheetPresentation.primaryCTA(
+            healthOk: healthOk, nativeSupported: nativeSupported, nativeReady: nativeReady,
+            keyStored: keyStored, streamLost: streamLost, jobActive: jobActive,
+            blocksReplacement: blocksReplacement)
+    }
+
+    @Test func primaryCTAFollowsTheCauseLadder() {
+        // Unknown process state resolves before anything else.
+        #expect(cta(streamLost: true) == .reconnect)
+        #expect(cta(blocksReplacement: true) == .reconnect)
+        // An active job means the primary thing is already happening.
+        #expect(cta(jobActive: true) == .done)
+        // Healthy sheet: closing is the only primary act.
+        #expect(cta(healthOk: true, nativeReady: true) == .done)
+        // The readiness ladder: login first, then key, then re-probe.
+        #expect(cta() == .login)
+        #expect(cta(nativeSupported: false) == .storeKey)
+        #expect(cta(nativeSupported: false, keyStored: true) == .retryProbe)
+        // Native ready but doctor not ok (e.g. smoke failed): re-probe…
+        #expect(cta(nativeReady: true, keyStored: true) == .retryProbe)
+        // …unless no key is stored yet — then storing it is the next step.
+        #expect(cta(nativeReady: true) == .storeKey)
+    }
+
+    @Test func jobStatusLineNeverContradictsItself() {
+        // Active: the phase speaks, the state stays silent.
+        #expect(AuthSheetPresentation.jobStatusLine(
+            state: .waitingForInput, phase: .awaitingUser, outcomeReason: nil, exitCode: nil
+        ) == "Waiting for you to finish the login")
+        // Success is ONE phrase — no state+outcome+exit pileup.
+        #expect(AuthSheetPresentation.jobStatusLine(
+            state: .succeeded, phase: .completed, outcomeReason: "completed", exitCode: 0
+        ) == "Login verified")
+        // Failure folds its evidence into one phrase.
+        #expect(AuthSheetPresentation.jobStatusLine(
+            state: .failed, phase: .completed, outcomeReason: "command_failed", exitCode: 1
+        ) == "Failed (exit 1)")
+        #expect(AuthSheetPresentation.jobStatusLine(
+            state: .failed, phase: .completed, outcomeReason: "auth_not_ready", exitCode: 0
+        ) == "Failed (auth not ready)")
+        // The unconfirmed-termination special case keeps its exact warning.
+        #expect(AuthSheetPresentation.jobStatusLine(
+            state: .interruptedUnknown, phase: .completed,
+            outcomeReason: "termination_unconfirmed", exitCode: nil
+        ) == "Process termination is unconfirmed")
+    }
+}

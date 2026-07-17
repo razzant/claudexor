@@ -767,12 +767,11 @@ struct HarnessInfo: Identifiable, Hashable {
     var routableIntents: [String] = []
     var reasons: [String] = []
     var checks: [String] = []
-    /// True when the harness manifest declares a finite image attachment input —
-    /// drives honest composer gating for routes that can receive the same bytes.
+    var readiness: [ReadinessCheck] = []
+    /// Manifest declares a finite image attachment input (composer gating).
     var acceptsImages: Bool = false
-    /// True when the harness manifest declares the `browser_tool` capability —
-    /// drives the composer's agent-browser toggle (honest: only offered where the
-    /// adapter can inject Playwright MCP).
+    /// Manifest `browser_tool` capability — drives the composer's
+    /// agent-browser toggle (only offered where Playwright MCP can inject).
     var acceptsBrowser: Bool = false
     /// Adapter-declared effort ladder. Empty means the control must stay hidden.
     var effortLevels: [String] = []
@@ -780,8 +779,9 @@ struct HarnessInfo: Identifiable, Hashable {
     /// (nil = no model configured or check ok): the actionable refusal text.
     var configuredModelIssue: String? = nil
     var id: String { family.rawValue }
-    var nativeAuthSource: HarnessAuthSource? { authSources.first { $0.source == "native_session" } }
-    var nativeSessionReady: Bool { nativeAuthSource?.isVerifiedNativeSession == true }
+    var nativeSessionReady: Bool {
+        authSources.first { $0.source == "native_session" }?.isVerifiedNativeSession == true
+    }
 }
 
 struct HarnessAvailability: Hashable {

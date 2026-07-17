@@ -169,37 +169,24 @@ struct OnboardingView: View {
         else { step += 1 }
     }
 
+    /// W4.9: onboarding renders the SAME readiness card as Settings/AuthSheet
+    /// (the verbatim copy is gone); only the action slot is its own.
     private func nativeAuthRow(_ family: HarnessFamily) -> some View {
-        let info = model.harnessInfo(for: family)
-        // Server routability truth (Р8/W14), not a locally-derived health check.
-        let available = !(info?.routableIntents.isEmpty ?? true)
-        let health = info?.health ?? .unavailable
-        return VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack(spacing: Theme.Spacing.sm) {
-                HarnessChip(family: family, selected: true, available: available)
-                Text(info?.auth ?? "Not checked yet.")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                Spacer(minLength: Theme.Spacing.md)
-                Label(health.rawValue.capitalized, systemImage: health.glyph)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(health.color)
-                    .padding(.horizontal, Theme.Spacing.sm)
-                    .padding(.vertical, Theme.Spacing.xxs)
-                    .background(health.color.opacity(0.14), in: Capsule())
+        let presentation = HarnessReadinessPresentation.from(
+            family: family, info: model.harnessInfo(for: family))
+        return HarnessReadinessCard(presentation: presentation) {
+            Button { model.authSheetHarness = family } label: {
+                Label(presentation.available ? "Manage" : "Setup",
+                      systemImage: presentation.available ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
             }
-            FlowLayout(spacing: Theme.Spacing.sm) {
-                Button { model.authSheetHarness = family } label: {
-                    Label(available ? "Manage" : "Setup", systemImage: available ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
-                }
-                .buttonStyle(.bordered)
-                .tint(Theme.accent)
-                .help(available ? "Open \(family.label) auth details and fallback key management." : "Open native login and API-key fallback setup for \(family.label).")
-                Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
-                    Label("Recheck", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.bordered)
-                .help("Refresh \(family.label) install/auth/capability status.")
+            .buttonStyle(.bordered)
+            .tint(Theme.accent)
+            .help(presentation.available ? "Open \(family.label) auth details and fallback key management." : "Open native login and API-key fallback setup for \(family.label).")
+            Button { Task { await model.refreshHarnesses(fresh: true) } } label: {
+                Label("Recheck", systemImage: "arrow.clockwise")
             }
+            .buttonStyle(.bordered)
+            .help("Refresh \(family.label) install/auth/capability status.")
         }
     }
 

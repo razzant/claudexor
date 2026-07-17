@@ -1,0 +1,124 @@
+import SwiftUI
+import AppKit
+import ClaudexorKit
+
+/// ONE readiness presentation for the three surfaces that used to carry
+/// verbatim copies of the harness row (Settings, Onboarding, AuthSheet —
+/// W4.7/W4.9, sol #19). Pure derivation from HarnessInfo: identity, the
+/// server's routability truth, the daemon-normalized typed check rows, the
+/// configured-model verdict, and the raw evidence for "copy raw". Surfaces
+/// render it through HarnessReadinessCard and pass their OWN actions as a
+/// caller slot — three workflows never centralize into one conditional.
+struct HarnessReadinessPresentation: Equatable {
+    var family: HarnessFamily
+    /// Server routability truth (Р8): routes at least one intent right now.
+    var available: Bool
+    var health: HarnessHealth
+    var summary: String
+    var rows: [ReadinessCheck]
+    var modelIssue: String?
+    /// The un-normalized evidence (reasons + raw probe ids) for "copy raw".
+    var rawEvidence: String
+
+    static func from(family: HarnessFamily, info: HarnessInfo?) -> HarnessReadinessPresentation {
+        HarnessReadinessPresentation(
+            family: family,
+            available: !(info?.routableIntents.isEmpty ?? true),
+            health: info?.health ?? .unavailable,
+            summary: info?.auth ?? "Harness Doctor has not loaded this harness.",
+            rows: info?.readiness ?? [],
+            modelIssue: info?.configuredModelIssue,
+            rawEvidence: ((info?.reasons ?? []) + (info?.checks ?? [])).joined(separator: "\n")
+        )
+    }
+}
+
+/// The shared card (W4.7-UI): identity + health + the typed check rows +
+/// model verdict + "copy raw", with the CALLER's action row slotted in.
+/// Fixed geometry: the health capsule and row glyph columns have fixed
+/// widths so the card never drifts with text length (DESIGN_SYSTEM).
+struct HarnessReadinessCard<Actions: View>: View {
+    let presentation: HarnessReadinessPresentation
+    @ViewBuilder var actions: () -> Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            HStack(alignment: .center, spacing: Theme.Spacing.sm) {
+                HarnessChip(family: presentation.family, selected: true,
+                            available: presentation.available)
+                Text(presentation.summary)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: Theme.Spacing.md)
+                Label(presentation.health.rawValue.capitalized,
+                      systemImage: presentation.health.glyph)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(presentation.health.color)
+                    .padding(.horizontal, Theme.Spacing.sm)
+                    .padding(.vertical, Theme.Spacing.xxs)
+                    .frame(minWidth: 96) // fixed anchor — text length never moves the row
+                    .background(presentation.health.color.opacity(0.14), in: Capsule())
+            }
+            if !presentation.rows.isEmpty {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    ForEach(presentation.rows, id: \.id) { row in
+                        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.xs) {
+                            Image(systemName: Self.rowGlyph(row.status))
+                                .foregroundStyle(Self.rowColor(row.status))
+                                .font(.caption2)
+                                .frame(width: 14) // fixed glyph column
+                            Text(row.title)
+                                .font(.caption)
+                                .frame(width: 150, alignment: .leading) // fixed name column
+                            if let detail = row.detail, !detail.isEmpty {
+                                Text(detail)
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .textSelection(.enabled)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            }
+            // The doctor's strict model verdict: a green harness must never
+            // hide a doomed configured default model.
+            if let issue = presentation.modelIssue {
+                Label(issue, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+                    .lineLimit(3)
+                    .help("The configured default model fails this harness's model truth source; runs would be refused at preflight.")
+            }
+            HStack(spacing: Theme.Spacing.sm) {
+                actions()
+                if !presentation.rawEvidence.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(presentation.rawEvidence, forType: .string)
+                    } label: {
+                        Label("Copy raw", systemImage: "doc.on.doc")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .help("Copy the raw doctor reasons and probe ids for a bug report.")
+                }
+            }
+        }
+    }
+
+    static func rowGlyph(_ status: String) -> String {
+        switch status {
+        case "pass": return "checkmark.circle.fill"
+        case "fail": return "xmark.circle.fill"
+        default: return "minus.circle"
+        }
+    }
+
+    static func rowColor(_ status: String) -> Color {
+        switch status {
+        case "pass": return Theme.status(.succeeded)
+        case "fail": return Theme.status(.failed)
+        default: return .secondary
+        }
+    }
+}
