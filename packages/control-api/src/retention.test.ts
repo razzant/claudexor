@@ -133,7 +133,6 @@ describe("runRetentionPass", () => {
     // with NO meta.result_kind — its unapplied patch is equally actionable.
     seedRun(project.runsDir, "run-convergence-patch", {
       terminal: true,
-      old: true,
       workProduct: "kind: patch\nmeta:\n  apply_state: not_applied\n",
     });
     seedRun(project.runsDir, "run-unproven", { terminal: false });
