@@ -10,14 +10,15 @@
 # `expectations` (W3.8) are the STREAM SEMANTICS the conformance test asserts
 # through core streamExpectationViolations — exact counts on a deterministic
 # fixture pin the finality/dedup/delta/lifecycle regression classes.
-# `final_source` documents the vendor finality mechanism for humans.
+# `final_source` is the MACHINE-checked identity of the wire event finality
+# came from (the adapter stamps payload.final_source on final messages).
 cli: claude
 fixtures:
   basic-run.jsonl:
     source: synthetic
     expectations:
       final_messages: 1
-      final_source: "terminal result (subtype success)"
+      final_source: "result"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
@@ -28,7 +29,7 @@ fixtures:
       # The result frame carries usage but NO result text — an absent final
       # is the honest outcome, never invented from narration.
       final_messages: 0
-      final_source: "terminal result (absent here: no result text)"
+      # No final here (the result frame carries no text): source unasserted.
       final_is_last_message: false
       thinking_events: 0
       delta_messages: 0
@@ -39,7 +40,7 @@ fixtures:
       # 3 main-conversation text deltas surface flagged; the subagent delta
       # (parent_tool_use_id) and message_start plumbing never surface.
       final_messages: 1
-      final_source: "terminal result (subtype success)"
+      final_source: "result"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 3
@@ -51,7 +52,7 @@ fixtures:
     sanitized: "ids, signatures, environment fingerprint"
     expectations:
       final_messages: 1
-      final_source: "terminal result (subtype success)"
+      final_source: "result"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
@@ -60,7 +61,7 @@ fixtures:
     source: synthetic
     expectations:
       final_messages: 1
-      final_source: "terminal result (subtype success)"
+      final_source: "result"
       final_is_last_message: true
       # The vendor sends PROSE ("rate_limit_error: Number of request tokens
       # has exceeded..."), not the bare label the mapper expects, so the
@@ -83,7 +84,7 @@ fixtures:
       # the answer, usage, and the terminal result). The empty `thinking` block
       # in the assistant frame stays excluded.
       final_messages: 1
-      final_source: "terminal result event"
+      final_source: "result"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0

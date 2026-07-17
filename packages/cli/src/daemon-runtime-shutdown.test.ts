@@ -118,22 +118,31 @@ describe("DaemonRuntimeShutdown", () => {
     }
   });
 
-  it("finalize() called SYNCHRONOUSLY after the trigger wins the microtask race (confirm #5)", async () => {
-    const { runtime, exits } = machine({ stopDeadlineMs: 40, drainGraceMs: 40 });
-    // finalize() runs BEFORE the clean-stop continuation arms the drain timer.
-    void runtime.beginShutdown("test");
-    runtime.finalize();
-    await new Promise<void>((resolve) => setTimeout(resolve, 90));
-    expect(exits).toEqual([]); // the post-finalize continuation must not re-arm
+  it("the drain sweep SURVIVES finalize() in the production composition order (Ф3 gate)", async () => {
+    // The real tail is: await wait() -> finalize() -> return. Ф2.5's
+    // finalize() also cancelled the drain timer, which silently disabled the
+    // leaked-handle sweep in EVERY production shutdown (the tail always runs
+    // right after the clean-stop continuation). The sweep is unref'd — it
+    // cannot touch a naturally-draining process — so it must outlive
+    // finalize(): here the test runner holds the loop (the "leaked handle"),
+    // and the sweep still fires after the tail finalized.
+    const { runtime, exits, log } = machine({ stopDeadlineMs: 5_000, drainGraceMs: 20 });
+    await runtime.beginShutdown("test");
+    runtime.finalize(); // the composition root's tail, immediately after wait()
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    expect(exits).toEqual([0]);
+    expect(log.join("\n")).toContain("leaked handle");
   });
 
-  it("finalize() before any timer fires cancels the escalation (sol #17)", async () => {
-    const { runtime, exits } = machine({ stopDeadlineMs: 40, drainGraceMs: 40 });
+  it("finalize() cancels the hung-stop DEADLINE — a clean tail is never force-exited nonzero", async () => {
+    // The deadline (exit 1) is the timer a clean shutdown must escape; the
+    // drain sweep (exit 0, unref'd) is not a hazard to a clean process.
+    const { runtime, exits, log } = machine({ stopDeadlineMs: 40, drainGraceMs: 5_000 });
     await runtime.beginShutdown("test");
-    await new Promise<void>((resolve) => setTimeout(resolve, 10)); // let the drain timer arm
-    runtime.finalize(); // clean shutdown reached the composition root's tail
+    runtime.finalize();
     await new Promise<void>((resolve) => setTimeout(resolve, 90));
-    expect(exits).toEqual([]); // no forced exit — both timers cancelled
+    expect(exits).toEqual([]); // no exit-1 escalation after the clean tail
+    expect(log.join("\n")).not.toContain("forcing exit");
   });
 
   it("a failed stop keeps the deadline armed and reports through onStopFailure", async () => {

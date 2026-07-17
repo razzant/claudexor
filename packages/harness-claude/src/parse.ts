@@ -374,8 +374,13 @@ function parseClaudeEventStateful(
         session_id: sessionId,
         ts,
         text: JSON.stringify(obj.structured_output),
+        // The final_source stamp is the machine-checkable identity of the
+        // wire event finality came from (conformance asserts it per fixture).
         ...(successResult ? { final: true } : {}),
-        payload: { structured_output: true },
+        payload: {
+          structured_output: true,
+          ...(successResult ? { final_source: "structured_output" } : {}),
+        },
       });
     } else if (typeof obj.result === "string" && obj.result.trim()) {
       // The terminal `result` IS claude's typed final answer (docs: "the last
@@ -385,7 +390,7 @@ function parseClaudeEventStateful(
         session_id: sessionId,
         ts,
         text: obj.result,
-        ...(successResult ? { final: true } : {}),
+        ...(successResult ? { final: true, payload: { final_source: "result" } } : {}),
       });
     }
     if (obj.subtype && obj.subtype !== "success") {

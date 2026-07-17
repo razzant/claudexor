@@ -90,7 +90,13 @@ export function validateTypedStream(events: unknown[]): StreamConformanceStats {
 export interface FixtureStreamExpectations {
   /** Exact count of `final: true` messages (the typed final answer). */
   final_messages?: number;
-  /** Vendor mechanism carrying finality (documentation; e.g. "result"). */
+  /**
+   * The typed identity of the wire event finality came from — the adapter
+   * stamps `payload.final_source` on every final message ("result",
+   * "structured_output", "last_agent_message"). Machine-checked: a parser
+   * that starts finalizing from a different wire event fails this even when
+   * the count and position happen to survive (final sol review #5).
+   */
   final_source?: string;
   /**
    * Whether the typed final is the LAST message of the stream. Finality comes
@@ -125,11 +131,16 @@ export function streamExpectationViolations(
   let deltas = 0;
   let rateLimits = 0;
   let lastMessageWasFinal = false;
+  const finalSources = new Set<string>();
   const retryClasses = new Set<string>();
   for (const raw of events) {
     const ev = HarnessEvent.parse(raw);
     if (ev.type === "message") {
-      if (ev.final === true) finals += 1;
+      if (ev.final === true) {
+        finals += 1;
+        const source = ev.payload?.["final_source"];
+        finalSources.add(typeof source === "string" ? source : "unstamped");
+      }
       if (ev.payload?.["delta"] === true) deltas += 1;
       // EVERY message moves this, deltas included: a display chunk arriving
       // AFTER the typed final means the final was not the last word.
@@ -153,6 +164,14 @@ export function streamExpectationViolations(
   check("final_messages", expectations.final_messages, finals);
   check("thinking_events", expectations.thinking_events, thinking);
   check("delta_messages", expectations.delta_messages, deltas);
+  if (expectations.final_source !== undefined) {
+    const got = [...finalSources];
+    if (got.length !== 1 || got[0] !== expectations.final_source) {
+      violations.push(
+        `final_source: expected ${expectations.final_source}, got [${got.join(", ") || "none"}]`,
+      );
+    }
+  }
   if (
     expectations.final_is_last_message !== undefined &&
     lastMessageWasFinal !== expectations.final_is_last_message

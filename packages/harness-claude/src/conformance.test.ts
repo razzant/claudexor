@@ -86,8 +86,16 @@ describe("claude adapter conformance fixtures", () => {
       // Only what the CLI emits reaches the parser; client->cli frames are ours.
       if (record.direction !== "cli->client") continue;
       const type = record.frame["type"];
-      if (type === "control_response" || type === "control_cancel_request") controlFrames += 1;
-      events.push(...(parse(record.frame, "ses-fixture") ?? []));
+      const produced = parse(record.frame, "ses-fixture") ?? [];
+      if (type === "control_response" || type === "control_cancel_request") {
+        controlFrames += 1;
+        // The pinned claim itself: EACH control frame is consumed plumbing.
+        // The aggregate expectations below count finals/thinking/deltas only,
+        // so a control frame leaking a started/tool/status event would slip
+        // through them (final sol review #6).
+        expect(produced, `${String(type)} frame must produce zero events`).toEqual([]);
+      }
+      events.push(...produced);
     }
     // The recording really does carry the plumbing this pins (guards against a
     // future re-record silently dropping the frames and passing vacuously).

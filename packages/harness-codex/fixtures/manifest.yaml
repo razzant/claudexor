@@ -13,7 +13,7 @@ fixtures:
     source: synthetic
     expectations:
       final_messages: 1
-      final_source: "last agent_message finalized on turn.completed"
+      final_source: "last_agent_message"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
@@ -22,7 +22,7 @@ fixtures:
     source: synthetic
     expectations:
       final_messages: 1
-      final_source: "last agent_message finalized on turn.completed"
+      final_source: "last_agent_message"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
@@ -33,7 +33,7 @@ fixtures:
     recorded_at: "2026-07-13"
     expectations:
       final_messages: 1
-      final_source: "last agent_message finalized on turn.completed"
+      final_source: "last_agent_message"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
@@ -42,7 +42,7 @@ fixtures:
     source: synthetic
     expectations:
       final_messages: 1
-      final_source: "last agent_message finalized on turn.completed"
+      final_source: "last_agent_message"
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0

@@ -206,11 +206,13 @@ export async function runRetentionPass(
     // as a symlink must not redirect readdir/rmSync outside the repo (a real
     // rm -rf-outside-repo hole). realpath both the dir and its canonical
     // in-repo location; a mismatch (symlinked parent) skips the whole tree.
-    const reviewsDir = canonicalInRepoReviewsDir(project);
-    if (!reviewsDir) {
+    const fenced = canonicalInRepoReviewsDir(project);
+    if (fenced.verdict === "missing") continue; // no review debris — clean no-op
+    if (fenced.verdict === "unsafe") {
       errors.push(`reviews: ${project.reviewsDir} is not a canonical in-repo directory; skipped`);
       continue;
     }
+    const reviewsDir = fenced.path;
     for (const name of listSubdirs(reviewsDir)) {
       // Standalone diff-review trees only — `.claudexor/` in a user repo is
       // user-owned config; the engine deletes nothing there but its own
@@ -289,19 +291,22 @@ export function readRunTombstone(runDir: string): RunTombstone | null {
  * (symlink-resolved) path must equal the canonical `<repo>/.claudexor/reviews`
  * built from the canonical repo root. A symlinked `.claudexor` or
  * `.claudexor/reviews` (committed by a hostile/misconfigured repo) resolves
- * elsewhere and returns null — the engine never rm -rf's outside the repo it
- * was pointed at. Missing dir also returns null (nothing to sweep).
+ * elsewhere — the engine never rm -rf's outside the repo it was pointed at.
+ * "Missing" is a distinct verdict: MOST projects have no review debris, and
+ * reporting them as unsafe would put a false error in every pass receipt
+ * (final sol review #7).
  */
-function canonicalInRepoReviewsDir(project: RetentionProject): string | null {
-  if (!project.reviewsDir) return null;
+function canonicalInRepoReviewsDir(
+  project: RetentionProject,
+): { verdict: "ok"; path: string } | { verdict: "missing" } | { verdict: "unsafe" } {
+  if (!project.reviewsDir || !existsSync(project.reviewsDir)) return { verdict: "missing" };
   try {
-    if (!existsSync(project.reviewsDir)) return null;
     const canonicalRoot = realpathSync(project.root);
     const expected = join(canonicalRoot, ".claudexor", "reviews");
     const actual = realpathSync(project.reviewsDir);
-    return actual === expected ? actual : null;
+    return actual === expected ? { verdict: "ok", path: actual } : { verdict: "unsafe" };
   } catch {
-    return null;
+    return { verdict: "unsafe" };
   }
 }
 

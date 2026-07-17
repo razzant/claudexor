@@ -187,6 +187,16 @@ describe("runRetentionPass", () => {
     expect(receipt.deleted_runs.map((d) => d.run_id)).toEqual(["run-applied"]);
   });
 
+  it("a project WITHOUT review debris is a clean no-op, never a false error", async () => {
+    // Most projects have no .claudexor/reviews at all; the pass receipt must
+    // not carry an "unsafe directory" error for them (final sol review #7).
+    const { project } = sandbox();
+    rmSync(project.reviewsDir!, { recursive: true, force: true });
+    const receipt = await runRetentionPass(POLICY, { dry_run: false }, deps(project));
+    expect(receipt.errors).toEqual([]);
+    expect(receipt.deleted_reviews).toEqual([]);
+  });
+
   it("refuses to sweep a reviews dir reached through a symlinked parent (path-safety)", async () => {
     const { project, root } = sandbox();
     // A hostile/misconfigured repo ships `.claudexor/reviews` as a symlink to

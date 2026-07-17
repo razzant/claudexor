@@ -380,7 +380,10 @@ evidence rather than relying on final-answer claims.
 The per-harness wire truth every parser change must be checked against. Each
 claim here is pinned by a fixture + conformance expectation
 (`packages/harness-<x>/fixtures/manifest.yaml` declares per-fixture stream
-SEMANTICS — final-message count, thinking/delta counts, typed rate-limit —
+SEMANTICS — final-message count, the typed `final_source` stamp the adapter
+puts on final messages ("result" / "structured_output" /
+"last_agent_message"), whether the final is the stream's last message,
+thinking/delta counts, typed rate-limit, and the typed retry class — all
 asserted by the adapter's conformance test through
 `streamExpectationViolations` in `@claudexor/core`). When a vendor CLI moves,
 re-record the `recorded-*` fixture and re-verify the expectations; the

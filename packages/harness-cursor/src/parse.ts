@@ -248,7 +248,7 @@ function parseCursorEventStateful(
         session_id: sessionId,
         ts,
         text: obj.result,
-        ...(successResult ? { final: true } : {}),
+        ...(successResult ? { final: true, payload: { final_source: "result" } } : {}),
       });
     }
     if (obj.subtype && obj.subtype !== "success") {
