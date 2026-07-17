@@ -148,28 +148,61 @@ import Testing
             #expect(max(preview.size.width, preview.size.height)
                     <= CGFloat(ScopedInlineImage.maxThumbnailPixels))
         }
-        // Re-produced artifact at the SAME cache key: different bytes must
-        // yield the new image, never the cached one. Pinned observably — the
-        // replacement is a different SIZE, so a stale cache hit is visible
-        // (a byte-count-only key could not tell these apart if lengths matched).
-        let small = NSImage(size: NSSize(width: 300, height: 300))
-        small.lockFocus()
-        NSColor.systemPink.setFill()
-        NSRect(origin: .zero, size: NSSize(width: 300, height: 300)).fill()
-        small.unlockFocus()
-        let smallPNG = NSBitmapImageRep(data: small.tiffRepresentation!)!
-            .representation(using: NSBitmapImageRep.FileType.png, properties: [:])!
-        let replaced = ScopedInlineImage.boundedPreview(data: smallPNG, cacheKey: "test|big.png")
-        #expect(replaced != nil)
-        // The stale entry was capped at the 1200px bound; the replacement is
-        // strictly smaller, so serving the cached preview here would fail.
-        #expect(max(replaced!.size.width, replaced!.size.height)
-                < max(preview!.size.width, preview!.size.height))
         // Garbage bytes fail honestly (imageLoadFailed path, never a crash).
         #expect(ScopedInlineImage.boundedPreview(data: Data("not an image".utf8),
                                                  cacheKey: "test|junk") == nil)
         // Oversize payloads are refused before any decode.
         let oversize = Data(count: ScopedInlineImage.maxSourceBytes + 1)
         #expect(ScopedInlineImage.boundedPreview(data: oversize, cacheKey: "test|huge") == nil)
+    }
+
+    /// A flat-colour BMP: uncompressed, so two images of the same dimensions
+    /// have byte-IDENTICAL LENGTH and differ only in content — exactly the
+    /// shape a byte-count cache key cannot tell apart. The pixel buffer is
+    /// written directly (lockFocus drawing needs a window server and yields
+    /// blank, identical bitmaps under `swift test`).
+    private func flatBMP(r: UInt8, g: UInt8, b: UInt8) -> Data {
+        let side = 64
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: side * 3, bitsPerPixel: 24)!
+        let pixels = rep.bitmapData!
+        for i in stride(from: 0, to: side * side * 3, by: 3) {
+            pixels[i] = r; pixels[i + 1] = g; pixels[i + 2] = b
+        }
+        return rep.representation(using: NSBitmapImageRep.FileType.bmp, properties: [:])!
+    }
+
+    /// The colour at the centre of a decoded preview, in sRGB.
+    private func centreColour(_ image: NSImage) -> NSColor? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.colorAt(x: rep.pixelsWide / 2, y: rep.pixelsHigh / 2)?
+            .usingColorSpace(.sRGB)
+    }
+
+    /// W3.7 (wave-2): an artifact RE-PRODUCED at the same identity must never
+    /// serve the previous preview. The file-path twin keys on size+mtime; the
+    /// data path keys on a content fingerprint, because equal-length bytes are
+    /// a real shape (any two same-dimension screenshots in an uncompressed
+    /// format) that a byte COUNT cannot distinguish.
+    @Test func dataPreviewInvalidatesOnEqualLengthContentChange() {
+        let red = flatBMP(r: 255, g: 0, b: 0)
+        let blue = flatBMP(r: 0, g: 0, b: 255)
+        // The premise this pin rests on: same length, different bytes.
+        #expect(red.count == blue.count)
+        #expect(red != blue)
+
+        let key = "invalidation|shot.bmp"
+        guard let first = ScopedInlineImage.boundedPreview(data: red, cacheKey: key),
+              let second = ScopedInlineImage.boundedPreview(data: blue, cacheKey: key)
+        else { Issue.record("bounded preview refused a valid BMP"); return }
+
+        guard let firstColour = centreColour(first), let secondColour = centreColour(second)
+        else { Issue.record("could not sample the decoded previews"); return }
+        // A byte-count key would return the RED preview for the blue bytes.
+        #expect(firstColour.redComponent > 0.5 && firstColour.blueComponent < 0.5)
+        #expect(secondColour.blueComponent > 0.5 && secondColour.redComponent < 0.5)
     }
 }

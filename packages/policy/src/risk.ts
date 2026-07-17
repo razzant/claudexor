@@ -7,7 +7,22 @@ import { sensitiveResourcePolicy } from "@claudexor/util";
  * layered on top by callers) — never from keyword regex over human text.
  */
 export interface DiffMeta {
+  /**
+   * Every path the diff TOUCHES — including BOTH ends of a rename (G1 class,
+   * security commit 4e9e2270). Pattern matching runs over this set: renaming a
+   * sensitive/critical file OUT of its location is tamper exactly like editing
+   * it, and matching a narrower new-side-only projection silently drops it.
+   */
   changedPaths: string[];
+  /**
+   * How many FILES the diff changes (one per file; a rename is one). Optional:
+   * defaults to `changedPaths.length` for callers with no rename ambiguity.
+   * The size heuristic and its reason string are a file COUNT, so they must not
+   * consume the touched set — a rename-heavy diff would report ~2x the files it
+   * changed and escalate early. One owner per fact: the matcher gets the
+   * touched set, the counter gets the count.
+   */
+  fileCount?: number;
   additions?: number;
   deletions?: number;
   protectedPaths?: string[];
@@ -55,6 +70,7 @@ const LARGE_DIFF_LINES = 500;
 export function classifyRisk(meta: DiffMeta): RiskAssessment {
   const reasons: string[] = [];
   const paths = meta.changedPaths;
+  const fileCount = meta.fileCount ?? paths.length;
   const churn = (meta.additions ?? 0) + (meta.deletions ?? 0);
 
   const protectedHit = paths.filter((p) => matchAny(p, meta.protectedPaths ?? []));
@@ -86,16 +102,16 @@ export function classifyRisk(meta: DiffMeta): RiskAssessment {
   }
 
   const depHit = paths.filter((p) => matchAny(p, DEP_PATTERNS));
-  const large = paths.length >= LARGE_DIFF_FILES || churn >= LARGE_DIFF_LINES;
+  const large = fileCount >= LARGE_DIFF_FILES || churn >= LARGE_DIFF_LINES;
   if (depHit.length > 0)
     reasons.push(`dependency/manifest change: ${depHit.slice(0, 2).join(", ")}`);
-  if (large) reasons.push(`large diff (${paths.length} files, ${churn} lines)`);
+  if (large) reasons.push(`large diff (${fileCount} files, ${churn} lines)`);
   if (depHit.length > 0 && large) return { level: "high", reasons, matchedPaths: depHit };
   if (depHit.length > 0 || large) return { level: "medium", reasons, matchedPaths: depHit };
 
-  if (paths.length === 0) return { level: "low", reasons: ["no file changes"], matchedPaths: [] };
-  if (paths.length <= 2 && churn <= 50) {
-    reasons.push(`small change (${paths.length} files, ${churn} lines)`);
+  if (fileCount === 0) return { level: "low", reasons: ["no file changes"], matchedPaths: [] };
+  if (fileCount <= 2 && churn <= 50) {
+    reasons.push(`small change (${fileCount} files, ${churn} lines)`);
     return { level: "low", reasons, matchedPaths: [] };
   }
   reasons.push(`normal change (${paths.length} files, ${churn} lines)`);

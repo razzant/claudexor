@@ -78,6 +78,7 @@ export async function runRetentionPass(
     actionable: 0,
     unknown_state: 0,
   };
+  const projects = [...deps.projects()];
   const deletedRuns: GcRunDeletion[] = [];
   const deletedReviews: { path: string; freed_bytes: number }[] = [];
   const errors: string[] = [];
@@ -86,7 +87,7 @@ export async function runRetentionPass(
   let deletions = 0;
   let truncated = false;
 
-  for (const project of deps.projects()) {
+  for (const project of projects) {
     const candidates: { runId: string; root: string; ageStamp: number }[] = [];
     for (const runId of listSubdirs(project.runsDir)) {
       const root = join(project.runsDir, runId);
@@ -164,18 +165,18 @@ export async function runRetentionPass(
         );
       }
     }
-    if (deletions >= maxDeletions) {
-      truncated = true;
-      break;
-    }
+    // `truncated` is set ONLY where a real candidate was skipped (above), so
+    // exhausting the cap on the very last deletable tree never makes the pass
+    // claim "run gc again to continue" with nothing left to do.
+    if (truncated) break;
   }
 
-  for (const project of deps.projects()) {
-    if (!project.reviewsDir) break; // no reviews dir; and once truncated below, stop
-    if (deletions >= maxDeletions) {
-      truncated = true;
-      break;
-    }
+  for (const project of projects) {
+    // No reviews dir (the no-project root has none) — skip THIS project only.
+    // Checked BEFORE the cap so a project with nothing to sweep never makes
+    // the pass claim it was truncated.
+    if (!project.reviewsDir) continue;
+    if (truncated) break;
     // `.claudexor/reviews` lives inside the USER repo: fence the PARENT before
     // ever walking it. A repo that ships `.claudexor` or `.claudexor/reviews`
     // as a symlink must not redirect readdir/rmSync outside the repo (a real
@@ -187,10 +188,6 @@ export async function runRetentionPass(
       continue;
     }
     for (const name of listSubdirs(reviewsDir)) {
-      if (deletions >= maxDeletions) {
-        truncated = true;
-        break;
-      }
       // Standalone diff-review trees only — `.claudexor/` in a user repo is
       // user-owned config; the engine deletes nothing there but its own
       // `diff-*` runtime debris, never following a symlinked leaf either.
@@ -199,6 +196,12 @@ export async function runRetentionPass(
       try {
         if (lstatSync(path).isSymbolicLink()) continue;
         if (statSync(path).mtimeMs > reviewCutoff) continue;
+        // The cap is checked once this IS a real deletion candidate, so a
+        // truncation disclosure always means work was genuinely left behind.
+        if (deletions >= maxDeletions) {
+          truncated = true;
+          break;
+        }
         const bytes = treeBytes(path);
         if (!dryRun) rmSync(path, { recursive: true, force: true });
         deletedReviews.push({ path, freed_bytes: bytes });

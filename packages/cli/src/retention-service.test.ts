@@ -92,23 +92,34 @@ describe("retention service composition", () => {
     expect(run.deleted_runs.map((d) => d.run_id)).toEqual(["run-healthy"]);
   });
 
-  it("serializes concurrent passes so receipts never cross-report deletions", async () => {
+  it("serializes concurrent passes — two never run at once", async () => {
+    // Pinned on the property itself, not on its side effects: the tombstone
+    // guard makes overlapping passes idempotent on DISK regardless, so a
+    // deletion-count assertion would pass with no serialization at all. This
+    // observes concurrency directly through a dep the pass must call.
     const root = projectWithAgedRun("run-serial");
-    const runner = createRetentionRunner(
-      deps({
-        projectRoots: [root],
-        healthyRoots: [root],
-        records: [{ runId: "run-serial", state: "succeeded", finishedAt: ancient }],
-      }),
-    );
-    // Startup pass and an operator `gc` firing together: the second waits, so
-    // exactly one pass performs (and reports) the deletion.
-    const [first, second] = await Promise.all([
-      runner({ dry_run: false }),
-      runner({ dry_run: false }),
-    ]);
-    const deleted = [...first.deleted_runs, ...second.deleted_runs];
-    expect(deleted).toHaveLength(1);
-    expect(deleted[0]!.run_id).toBe("run-serial");
+    let active = 0;
+    let peak = 0;
+    const base = deps({
+      projectRoots: [root],
+      healthyRoots: [root],
+      records: [{ runId: "run-serial", state: "succeeded", finishedAt: ancient }],
+    });
+    const runner = createRetentionRunner({
+      ...base,
+      daemonJobs: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        try {
+          return await base.daemonJobs();
+        } finally {
+          active -= 1;
+        }
+      },
+    });
+    // The startup pass and an operator `gc` firing together.
+    await Promise.all([runner({ dry_run: true }), runner({ dry_run: true })]);
+    expect(peak).toBe(1);
   });
 });

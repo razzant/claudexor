@@ -230,6 +230,52 @@ describe("runRetentionPass", () => {
     expect(receipt.errors.join("\n")).toContain("truncated at 1");
   });
 
+  it("does not claim truncation when the cap lands exactly on the last work there was", async () => {
+    // Cap reached, but nothing remained to sweep: "run gc again to continue"
+    // would be a false disclosure (the daemon logs errors as a problem).
+    const { project } = sandbox();
+    seedRun(project.runsDir, "run-only");
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      {
+        projects: () => [project],
+        records: () => [{ runId: "run-only", state: "succeeded", finishedAt: daysAgo(90) }],
+        referencedRunIds: () => new Set(),
+        now: () => NOW,
+        maxDeletionsPerPass: 1,
+      },
+    );
+    expect(receipt.deleted_runs).toHaveLength(1);
+    expect(receipt.errors).toEqual([]);
+  });
+
+  it("sweeps EVERY project's reviews — a project without a reviews dir is not a stop", async () => {
+    // The no-project root carries reviewsDir: null. Skipping it must not skip
+    // the projects after it.
+    const withReviews = sandbox();
+    const old = join(withReviews.project.reviewsDir!, "diff-2026-05-01T00-00-00");
+    mkdirSync(old, { recursive: true });
+    writeFileSync(join(old, "evidence.md"), "e");
+    const { utimesSync, realpathSync } = await import("node:fs");
+    const past = new Date(NOW - 60 * DAY_MS);
+    utimesSync(old, past, past);
+    const canonicalOld = realpathSync(old);
+    const nullReviews = { ...sandbox().project, reviewsDir: null };
+
+    const receipt = await runRetentionPass(
+      POLICY,
+      { dry_run: false },
+      {
+        projects: () => [nullReviews, withReviews.project], // null one FIRST
+        records: () => [],
+        referencedRunIds: () => new Set(),
+        now: () => NOW,
+      },
+    );
+    expect(receipt.deleted_reviews.map((d) => d.path)).toEqual([canonicalOld]);
+  });
+
   it("discloses truncation even when the cap falls on a project's LAST candidate", async () => {
     // Two projects, each with one aged deletable run; cap = 1. The cap is hit
     // as project A's last (only) candidate, so A's inner loop ends normally —
