@@ -30,6 +30,7 @@ import {
 } from "@claudexor/schema";
 import { ensureCanonicalPrivateDirectory } from "@claudexor/util";
 import type { AdapterRegistry, HarnessAdapter } from "./adapter.js";
+import { AnswerAssembly } from "./answer-assembly.js";
 
 const MAX_RESPONSE_CHARS = 4_096;
 const ATTEMPT_ID = /^[A-Za-z0-9-]+$/;
@@ -133,10 +134,14 @@ export class AuthCapabilityVerifier {
     const requestMismatch =
       binding.challengeDigest !== sha256(expected) ||
       binding.requestDigest !== capabilityRequestDigest(disclosure, binding.challengeDigest);
-    const responseHash = createHash("sha256");
     const streamHash = createHash("sha256");
-    let response = "";
-    let responseOverflow = false;
+    // The challenge answer follows the engine's typed-finality semantics
+    // (AnswerAssembly, W-C1): harnesses narrate the answer mid-run and then
+    // repeat it as their typed `final` message — concatenating both would
+    // false-fail every compliant run with "expected+expected".
+    const answer = new AnswerAssembly();
+    let narrationChars = 0;
+    let narrationTruncated = false;
     let effective: CredentialRoute | null = null;
     let effectiveSource: AuthSourceKind | null = null;
     let routeConflict = false;
@@ -237,10 +242,18 @@ export class AuthCapabilityVerifier {
               }
               break;
             case "message": {
+              // Bound only the retained NARRATION (the no-final fallback); a
+              // typed final is a single already-materialized event text and
+              // makes narration irrelevant to the comparison.
               const text = event.text ?? "";
-              responseHash.update(text, "utf8");
-              if (response.length + text.length <= MAX_RESPONSE_CHARS) response += text;
-              else responseOverflow = true;
+              if (event.final !== true) {
+                if (narrationChars + text.length > MAX_RESPONSE_CHARS) {
+                  narrationTruncated = true;
+                  break;
+                }
+                narrationChars += text.length;
+              }
+              answer.observe(event);
               break;
             }
             case "error":
@@ -284,7 +297,12 @@ export class AuthCapabilityVerifier {
       }
     }
 
-    const responseDigest = responseHash.digest("hex");
+    // The digest binds the receipt to the response that was actually COMPARED
+    // (typed final verbatim, else joined narration) — the per-event text
+    // digests remain visible in streamDigest.
+    const response = answer.text();
+    const responseOverflow = !answer.hasFinal() && narrationTruncated;
+    const responseDigest = sha256(response);
     const streamDigest = streamHash.digest("hex");
     evidence.add(`response:sha256:${responseDigest}`);
     evidence.add(`stream:sha256:${streamDigest}`);

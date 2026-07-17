@@ -1,5 +1,3 @@
-import { pushUniqueText } from "./runSupport.js";
-
 /**
  * Answer assembly with TYPED finality (W-C1): a harness's `final` message
  * (claude/cursor terminal `result`, codex's finalized last agent message) IS
@@ -34,8 +32,26 @@ export class AnswerAssembly {
     }
   }
 
+  /** Whether a typed final answer has been accepted. */
+  hasFinal(): boolean {
+    return this.finalText !== undefined;
+  }
+
   /** The assembled answer: the typed final verbatim, else joined narration. */
   text(): string {
     return this.finalText ?? this.parts.join("\n").trim();
   }
+}
+
+/**
+ * Deduplicate the known "final result repeats the last streamed message" shape
+ * (adjacent only). Legitimately repeated earlier messages are preserved — a
+ * whole-array dedupe would silently merge real output.
+ */
+function pushUniqueText(parts: string[], text: string): void {
+  const normalized = text.trim();
+  if (!normalized) return;
+  const last = parts[parts.length - 1]?.trim();
+  if (last === normalized) return;
+  parts.push(normalized);
 }

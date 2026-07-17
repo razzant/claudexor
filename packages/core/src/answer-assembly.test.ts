@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AnswerAssembly } from "./answerAssembly.js";
+import { AnswerAssembly } from "./answer-assembly.js";
 
 describe("AnswerAssembly (Ф2.5 W-C1 typed finality)", () => {
   it("prefers the typed final message verbatim over joined narration", () => {

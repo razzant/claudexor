@@ -239,20 +239,6 @@ export function harnessEventPayload(
   };
 }
 
-/**
- * Deduplicate the known "final result repeats the last streamed message" shape
- * (adjacent only). Legitimately repeated earlier messages are preserved — a
- * whole-array dedupe would silently merge real output.
- */
-
-export function pushUniqueText(parts: string[], text: string): void {
-  const normalized = text.trim();
-  if (!normalized) return;
-  const last = parts[parts.length - 1]?.trim();
-  if (last === normalized) return;
-  parts.push(normalized);
-}
-
 export function formatFindings(findings: ReviewFinding[]): string {
   if (findings.length === 0) return "(no findings recorded)";
   return findings

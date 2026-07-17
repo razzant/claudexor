@@ -62,6 +62,7 @@ import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config"
 import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
+  AnswerAssembly,
   HarnessUnavailableError,
   summarizeDiffPaths as diffStats,
   validateModel,
@@ -100,7 +101,6 @@ import {
   deliveryRefusalFailure,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
-import { AnswerAssembly } from "./answerAssembly.js";
 import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
 import { orchestrateFailureFor, readRunStatus } from "./outcomeReducer.js";

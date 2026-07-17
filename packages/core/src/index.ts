@@ -11,6 +11,7 @@ export * from "./diff.js";
 export * from "./conformance.js";
 export * from "./capabilities.js";
 export * from "./doctor.js";
+export * from "./answer-assembly.js";
 export * from "./auth-readiness.js";
 export * from "./auth-capability-verifier.js";
 export * from "./env-scope.js";

@@ -66,6 +66,10 @@ function adapterWith(
   };
 }
 
+// The REAL claude/cursor emission shape: the assistant message narrates the
+// answer mid-run and the terminal `result` repeats the SAME text as the typed
+// final message (plus a usage event). Concatenating both message texts is the
+// W3.2 false-fail bug this fixture pins.
 async function exactEvents(spec: HarnessRunSpec) {
   return [
     {
@@ -80,6 +84,19 @@ async function exactEvents(spec: HarnessRunSpec) {
       session_id: spec.session_id,
       ts: now().toISOString(),
       text: expectedToken(spec),
+    },
+    {
+      type: "usage",
+      session_id: spec.session_id,
+      ts: now().toISOString(),
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+    {
+      type: "message",
+      session_id: spec.session_id,
+      ts: now().toISOString(),
+      text: expectedToken(spec),
+      final: true,
     },
     { type: "completed", session_id: spec.session_id, ts: now().toISOString() },
   ];
@@ -157,6 +174,94 @@ describe("AuthCapabilityVerifier", () => {
     await expect(
       subject.verify({ binding: prepare(subject), startedAt: now().toISOString() }),
     ).resolves.toMatchObject({ verification: "failed", selectionReason: reason });
+  });
+
+  it("passes a bare single-message response from an adapter without a finality marker", async () => {
+    const adapter = adapterWith(async function* (spec) {
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        credential_route: "vendor_native",
+        credential_source: "native_session",
+      };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        text: expectedToken(spec),
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
+    });
+    const { subject } = verifier(adapter);
+    const binding = prepare(subject);
+    await expect(
+      subject.verify({ binding, startedAt: now().toISOString() }),
+    ).resolves.toMatchObject({
+      verification: "passed",
+      selectionReason: "exact_requested_route",
+      responseDigest: binding.challengeDigest,
+    });
+  });
+
+  it("compares the challenge against the typed final, never the joined narration", async () => {
+    // Divergent narration must not poison a correct typed final…
+    const narrated = adapterWith(async function* (spec) {
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        credential_route: "vendor_native",
+        credential_source: "native_session",
+      };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        text: "Let me answer that challenge.",
+      };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        text: expectedToken(spec),
+        final: true,
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
+    });
+    const good = verifier(narrated);
+    await expect(
+      good.subject.verify({ binding: prepare(good.subject), startedAt: now().toISOString() }),
+    ).resolves.toMatchObject({ verification: "passed", selectionReason: "exact_requested_route" });
+
+    // …and a correct narration must never rescue a wrong typed final.
+    const wrongFinal = adapterWith(async function* (spec) {
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        credential_route: "vendor_native",
+        credential_source: "native_session",
+      };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        text: expectedToken(spec),
+      };
+      yield {
+        type: "message",
+        session_id: spec.session_id,
+        ts: now().toISOString(),
+        text: "not the nonce",
+        final: true,
+      };
+      yield { type: "completed", session_id: spec.session_id, ts: now().toISOString() };
+    });
+    const bad = verifier(wrongFinal);
+    await expect(
+      bad.subject.verify({ binding: prepare(bad.subject), startedAt: now().toISOString() }),
+    ).resolves.toMatchObject({ verification: "failed", selectionReason: "response_mismatch" });
   });
 
   it("refuses a registry key/adapter identity mismatch without running it", async () => {
