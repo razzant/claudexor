@@ -214,8 +214,12 @@ struct BudgetMini: View {
     }
 
     private var helpText: String {
-        let spendText = spendKnown ? "\(spendEstimated ? "Estimated " : "")spend \(CashSpend.label(spend))" : "Spend is not verified yet"
-        let capText = capUnlimited ? "paid budget is unlimited" : capKnown ? "cap \(String(format: "$%.2f", cap))" : "cap is unknown"
-        return "\(spendText); \(capText). Native provider quota is shown only when verified."
+        // The spend explanation comes from the ONE cash owner (INV-134) —
+        // no per-surface prose about what the number means.
+        let spendText = spendKnown
+            ? "Spend \(CashSpend.label(spend, estimated: spendEstimated)). \(CashSpend.help(estimated: spendEstimated))"
+            : "Spend is not verified yet."
+        let capText = capUnlimited ? "Paid budget is unlimited" : capKnown ? "Cap \(String(format: "$%.2f", cap))" : "Cap is unknown"
+        return "\(spendText) \(capText). Native provider quota is shown only when verified."
     }
 }
