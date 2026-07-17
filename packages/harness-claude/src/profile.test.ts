@@ -344,6 +344,45 @@ describe("Claude credential-profile doctor probe (INV-135)", () => {
     expect(probedEnv?.CLAUDE_CONFIG_DIR).toBe(canonicalProfileConfigDir(dir));
   });
 
+  it("maps the config-dir readiness edges to the documented contract (round-20)", async () => {
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
+    dirs.push(dir);
+    const mk = (probe: {
+      loggedIn: boolean;
+      authed: boolean;
+      authMethod: string | null;
+      probeError: string | null;
+    }) =>
+      createClaudeAdapter({
+        detectVersion: async () => "2.1.165",
+        probeReadonlyProfile: readonlySupported,
+        probeAuthStatus: async () => probe,
+        anthropicApiKey: () => null,
+        claudeOAuthToken: () => null,
+        resolveProfileSecret: () => null,
+      });
+    // Cleanly logged out = absent → unavailable + NOT_RUN (no login to fail).
+    expect(
+      await mk({ loggedIn: false, authed: false, authMethod: null, probeError: null })
+        .probeCredentialProfile!(profile({ isolation_locator: dir })),
+    ).toMatchObject({ availability: "unavailable", verification: "not_run" });
+    // Probe could not decide → unknown + not_run.
+    expect(
+      await mk({
+        loggedIn: false,
+        authed: false,
+        authMethod: null,
+        probeError: "cli exploded",
+      }).probeCredentialProfile!(profile({ isolation_locator: dir })),
+    ).toMatchObject({ availability: "unknown", verification: "not_run" });
+    // Logged in under the WRONG method (an API key, not claude.ai) =
+    // present-but-wrong → available + failed.
+    expect(
+      await mk({ loggedIn: true, authed: false, authMethod: "console", probeError: null })
+        .probeCredentialProfile!(profile({ isolation_locator: dir })),
+    ).toMatchObject({ availability: "available", verification: "failed" });
+  });
+
   it("a foreign or bare slot is unavailable at PROBE time — never admitted then refused at run (round-15 #4)", async () => {
     const reads: string[] = [];
     const adapter = createClaudeAdapter({

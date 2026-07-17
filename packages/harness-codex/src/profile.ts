@@ -119,12 +119,29 @@ export async function probeCodexCredentialProfile(
           detail: "ChatGPT login verified in the profile CODEX_HOME",
           last_verified_at: nowIso(),
         });
+      // Readiness-edge contract (ARCHITECTURE §auth / DEVELOPMENT): probe
+      // failure = unknown+not_run; a cleanly logged-out home is absent →
+      // unavailable+NOT_RUN; a home logged in under a NON-ChatGPT method
+      // (api_key / access_token) is present-but-wrong → available+failed.
+      if (login.probeError)
+        return CredentialProfileStatusSchema.parse({
+          ...base,
+          availability: "unknown",
+          verification: "not_run",
+          detail: login.probeError,
+        });
+      if (login.authed)
+        return CredentialProfileStatusSchema.parse({
+          ...base,
+          availability: "available",
+          verification: "failed",
+          detail: `logged in via ${login.method}, not ChatGPT subscription auth`,
+        });
       return CredentialProfileStatusSchema.parse({
         ...base,
-        availability: login.probeError ? "unknown" : "unavailable",
-        verification: login.probeError ? "not_run" : "failed",
-        detail:
-          login.probeError ?? "no ChatGPT login in the profile CODEX_HOME (run the profile login)",
+        availability: "unavailable",
+        verification: "not_run",
+        detail: "no ChatGPT login in the profile CODEX_HOME (run the profile login)",
       });
     }
     if (profile.credential_kind === "api_key") {

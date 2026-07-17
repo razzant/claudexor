@@ -299,3 +299,38 @@ describe("Codex strict profile routing (INV-135)", () => {
     }
   });
 });
+
+describe("Codex config-dir readiness edges (round-20 contract)", () => {
+  const mk = (login: {
+    authed: boolean;
+    method: "chatgpt" | "api_key" | "access_token" | "logged_out" | "unknown";
+    probeError: string | null;
+  }) =>
+    createCodexAdapter({
+      detectVersion: async () => "codex 0.1-test",
+      probeLogin: async () => login,
+      resolveProfileSecret: () => null,
+    });
+
+  it("maps logged-out / probe-error / wrong-method to the documented edges", async () => {
+    const home = mkdtempSync(join(ownedTmp, "claudexor-codex-edge-"));
+    dirs.push(home);
+    const p = () => profile({ isolation_locator: home });
+    // Cleanly logged out = absent → unavailable + NOT_RUN.
+    expect(
+      await mk({ authed: false, method: "logged_out", probeError: null }).probeCredentialProfile!(
+        p(),
+      ),
+    ).toMatchObject({ availability: "unavailable", verification: "not_run" });
+    // Probe could not decide → unknown + not_run.
+    expect(
+      await mk({ authed: false, method: "logged_out", probeError: "toml blew up" })
+        .probeCredentialProfile!(p()),
+    ).toMatchObject({ availability: "unknown", verification: "not_run" });
+    // Logged in via a NON-ChatGPT method (api_key) = present-but-wrong →
+    // available + failed.
+    expect(
+      await mk({ authed: true, method: "api_key", probeError: null }).probeCredentialProfile!(p()),
+    ).toMatchObject({ availability: "available", verification: "failed" });
+  });
+});

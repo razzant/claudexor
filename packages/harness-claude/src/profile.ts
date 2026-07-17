@@ -121,13 +121,30 @@ export async function probeClaudeCredentialProfile(
           detail: "claude.ai login verified in the profile config dir",
           last_verified_at: nowIso(),
         });
+      // Readiness-edge contract (ARCHITECTURE §auth / DEVELOPMENT): a probe
+      // that could not decide is unknown+not_run; a cleanly logged-out dir is
+      // absent → unavailable+NOT_RUN (there is no login to have failed); a dir
+      // logged in under the WRONG method (e.g. an API key, not claude.ai) is
+      // present-but-wrong → available+failed.
+      if (probe.probeError)
+        return CredentialProfileStatusSchema.parse({
+          ...base,
+          availability: "unknown",
+          verification: "not_run",
+          detail: probe.probeError,
+        });
+      if (!probe.loggedIn)
+        return CredentialProfileStatusSchema.parse({
+          ...base,
+          availability: "unavailable",
+          verification: "not_run",
+          detail: "no claude.ai login in the profile config dir (run the profile login)",
+        });
       return CredentialProfileStatusSchema.parse({
         ...base,
-        availability: probe.probeError ? "unknown" : "unavailable",
-        verification: probe.probeError ? "not_run" : "failed",
-        detail:
-          probe.probeError ??
-          "no verified claude.ai login in the profile config dir (run the profile login)",
+        availability: "available",
+        verification: "failed",
+        detail: `logged in via ${probe.authMethod ?? "an unknown method"}, not claude.ai subscription auth`,
       });
     }
     // Secret-ref kinds: the probe enforces the SAME slot binding as the run
