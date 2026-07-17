@@ -395,10 +395,10 @@ views in the shared design-system files; screens compose them.
   close stays closed (Ф4 В17а, one `inspectorPresented` binding).
 - **Run inspector (Run Detail).** A long run at a glance — the opened turn's
   detail in the trailing Workbench. Its header is a PRIMARY row of at most
-  the material facts (proof badge, route, apply, needs-answer + BudgetMini
-  and Cancel), with everything else behind a Details disclosure composed
-  from `RunFacts.headerDetails` — the header never retells the card (Ф4
-  В19а):
+  the material facts (route, apply, needs-answer + BudgetMini and Cancel);
+  provenance and the route-proof badge are EVIDENCE and live behind the
+  Details disclosure with everything else, composed from
+  `RunFacts.headerDetails` — the header never retells the card (Ф4 В19а):
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
     node animates (calm). It rides the active turn's transcript and the inspector's

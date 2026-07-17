@@ -56,11 +56,11 @@ import ClaudexorKit
         #expect(blocked == TurnPresentation.Attention(text: "Needs you", tone: .warning))
         #expect(line(.blocked).stateWord == nil)
 
-        // A pending question outranks everything.
+        // A pending question outranks everything — and the chip IS the state
+        // fact: the quiet word yields so the line stays at four facts.
         let waiting = TurnPresentation.attention(status: .running, waitingOnUser: true)
         #expect(waiting == TurnPresentation.Attention(text: "Needs your answer", tone: .warning))
-        // …and the active state word stays (the run IS still working).
-        #expect(line(.running, waiting: true).stateWord == "Working…")
+        #expect(line(.running, waiting: true).stateWord == nil)
     }
 
     @Test func activitySummaryCountsHonestlyAndDegradesToNil() {

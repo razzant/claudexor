@@ -138,23 +138,29 @@ import ClaudexorKit
         #expect(RunFacts.applyFact(state: nil, adopted: false) == nil)
     }
 
-    @Test func headerPrimaryIsAtMostFourMaterialFacts() throws {
-        // The primary row carries route/apply/attention only — the retelling
-        // FlowLayout is gone; everything else must come from headerDetails.
-        let json = """
-        {"summary":{"runId":"r1","state":"succeeded","mode":"agent",
-         "applyState":"applied","waitingOnUser":false}}
-        """
-        _ = json // TaskRun construction is exercised via decode-heavy tests elsewhere;
-        // here the pin is structural: the primary composer exposes exactly the
-        // route/apply/attention triplet plus nothing unbounded.
-        #expect(RunFacts.headerPrimary(TaskRun(
+    @Test func headerPrimaryCarriesExactlyTheMaterialFacts() throws {
+        // A populated run: route + adopted apply + a pending question. The
+        // pin asserts the EXACT fact set — an empty array can never pass
+        // (the old count<=4 check was vacuous, Ф4 final review #7).
+        var task = TaskRun(
             id: "r1", title: "t", prompt: "", mode: .agent, status: .succeeded,
             project: "p", specTitle: "spec", harnesses: [.claude, .codex], n: 2,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: true, capKnown: true,
             routeProof: .verified, attentionNote: nil, plan: [], activity: [],
             candidates: [], findings: [], diff: []
-        )).count <= 4)
+        )
+        task.authRoute = try JSONDecoder().decode(
+            RunAuthRoute.self,
+            from: Data(#"{"requested":"auto","effective":"api_key","reason":"readiness_preferred"}"#.utf8))
+        task.applyState = "applied"
+        task.adopted = true
+        task.waitingOnUser = true
+        let facts = RunFacts.headerPrimary(task)
+        #expect(facts.map(\.id) == ["auth_route", "apply", "needs_answer"])
+        #expect(facts.map(\.text) == ["API key", "Winner applied", "Needs your answer"])
+        #expect(facts.count <= 4)
+        // Non-primary evidence never leaks into the primary set.
+        #expect(!facts.contains { ["mode", "spec", "web", "access"].contains($0.id) })
     }
 }

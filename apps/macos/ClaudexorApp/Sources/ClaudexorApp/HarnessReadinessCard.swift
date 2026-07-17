@@ -26,7 +26,12 @@ struct HarnessReadinessPresentation: Equatable {
             health: info?.health ?? .unavailable,
             summary: info?.auth ?? "Harness Doctor has not loaded this harness.",
             rows: info?.readiness ?? [],
-            rawEvidence: ((info?.reasons ?? []) + (info?.checks ?? [])).joined(separator: "\n")
+            rawEvidence: (
+                (info?.reasons ?? [])
+                    + (info?.readiness ?? []).map { row in
+                        "\(row.id): \(row.status)\(row.detail.map { " — \($0)" } ?? "")"
+                    }
+            ).joined(separator: "\n")
         )
     }
 }

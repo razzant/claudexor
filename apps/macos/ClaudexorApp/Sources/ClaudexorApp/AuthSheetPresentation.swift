@@ -94,6 +94,16 @@ enum AuthSheetPresentation {
 }
 
 extension AuthSheetPresentation.PrimaryCTA {
+    /// INV-134: a disabled control explains why — the DISABLING cause wins
+    /// over the plain action description.
+    func help(family: String, busy: Bool = false, loginBlocked: Bool = false) -> String {
+        if busy { return "Wait for the current action to finish." }
+        if loginBlocked, self == .login {
+            return "Login is unavailable until setup state resolves (an active job, recovery, or an unconfirmed prior process)."
+        }
+        return help(family: family)
+    }
+
     func help(family: String) -> String {
         switch self {
         case .login: return "Start the native \(family) login flow."

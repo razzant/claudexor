@@ -386,7 +386,8 @@ final class AppModel {
                         task.failureCategory = task.failureCategory ?? existing.failureCategory
                         // List summaries carry no result: keep the last
                         // hydrated apply truth as ONE unit (no flicker).
-                        if task.applyState == "not_applied", existing.applyState != "not_applied" {
+                        if task.applyState == "not_applied",
+                           existing.applyState != "not_applied" || existing.adopted || existing.revertable {
                             task.applyState = existing.applyState
                             task.adopted = existing.adopted
                             task.revertable = existing.revertable

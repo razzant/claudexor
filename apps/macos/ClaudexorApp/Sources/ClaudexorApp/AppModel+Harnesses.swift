@@ -84,42 +84,14 @@ extension AppModel {
             ?? harnessInfo(for: family)?.authSources.first { $0.source == source.rawValue }
     }
 
+    /// One overall sentence — the ROWS own every smoke/source/model detail
+    /// (one presentational owner per fact, INV-134; Ф4 final review #3).
     private static func harnessReadinessText(status: HarnessStatus, health: HarnessHealth) -> String {
-        let smokeReady = status.readiness.contains { $0.kind == "smoke" && $0.status == "pass" }
-        let sourceText = authSourceAvailability(status: status)
         switch health {
-        case .ok:
-            return smokeReady ? "Ready: doctor smoke passed. Auth sources: \(sourceText)." : "Ready by doctor. Auth sources: \(sourceText)."
-        case .degraded:
-            return "Not ready: doctor degraded. Auth sources: \(sourceText)."
-        case .unavailable:
-            return "Unavailable: install/login/smoke check required. Auth sources: \(sourceText)."
+        case .ok: return "Ready by doctor."
+        case .degraded: return "Not ready: doctor degraded."
+        case .unavailable: return "Not ready: unavailable."
         }
-    }
-
-    private static func authSourceAvailability(status: HarnessStatus) -> String {
-        if !status.authSources.isEmpty {
-            return status.authSources.map { source in
-                "\(source.source): \(source.availability), verification \(source.verification)"
-            }.joined(separator: "; ")
-        }
-        // Legacy manifest auth_modes describe availability, never readiness.
-        let manifest = status.manifest
-        let auth = manifest?["capability_profile"]?["auth"]
-        let supported = stringArray(auth?["supported_sources"])
-        let present = stringArray(manifest?["auth_modes"])
-        let presentLabel = present.isEmpty ? "legacy readiness not reported" : "legacy availability \(present.joined(separator: ", ")); unverified"
-        if !supported.isEmpty {
-            let preferred = auth?["preferred_source"]?.stringValue
-            let supportedLabel = "supported \(supported.joined(separator: ", "))"
-            return preferred.map { "\(presentLabel); \(supportedLabel); preferred \($0)" } ?? "\(presentLabel); \(supportedLabel)"
-        }
-        return presentLabel
-    }
-
-    private static func stringArray(_ value: JSONValue?) -> [String] {
-        guard case .array(let values)? = value else { return [] }
-        return values.compactMap(\.stringValue)
     }
 
 }

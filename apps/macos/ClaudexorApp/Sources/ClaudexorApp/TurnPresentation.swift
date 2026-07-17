@@ -63,13 +63,14 @@ enum TurnPresentation {
             identity = nil
             family = nil
         }
-        let chip = attention(status: status, waitingOnUser: waitingOnUser)
+        // The attention chip IS the state fact (W4.1 caps the line at four
+        // facts): whenever a chip exists the quiet word yields — including a
+        // waiting-active run, where "Needs your answer" outranks "Working…".
         let stateWord: String?
-        if status.isActive {
-            stateWord = retryLabel ?? "Working…"
-        } else if let chip, chip.text == status.label || status == .blocked || status == .needsReview {
-            // The chip already voices this terminal state — no stutter.
+        if attention(status: status, waitingOnUser: waitingOnUser) != nil {
             stateWord = nil
+        } else if status.isActive {
+            stateWord = retryLabel ?? "Working…"
         } else {
             stateWord = status.label
         }

@@ -117,7 +117,8 @@ struct AuthSheet: View {
                         .buttonStyle(.borderedProminent)
                         .tint(Theme.accentSolid)
                         .disabled(actionInFlight || (cta == .login && newSetupDisabled))
-                        .help(cta.help(family: family.label))
+                        .help(cta.help(family: family.label, busy: actionInFlight,
+                                       loginBlocked: cta == .login && newSetupDisabled))
                     Button("Done") { requestClose() }
                         .buttonStyle(.bordered)
                         .help("Close this auth sheet. An active setup job asks whether to keep running or cancel.")
