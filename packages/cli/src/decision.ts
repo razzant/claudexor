@@ -12,8 +12,7 @@ const ACTION_FLAGS: { flag: string; action: string }[] = [
 const APPLY_MODES = ["artifact_only", "apply", "branch", "commit", "pr"];
 
 export type DecisionResolution =
-  | { ok: true; action: string; body: Record<string, unknown> }
-  | { ok: false; message: string };
+  { ok: true; action: string; body: Record<string, unknown> } | { ok: false; message: string };
 
 /**
  * Pure mapping of `claudexor decision` flags to a typed RunDecisionAction

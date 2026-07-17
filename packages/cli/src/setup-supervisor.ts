@@ -1,11 +1,5 @@
 export type SetupSupervisorState =
-  | "idle"
-  | "starting"
-  | "healthy"
-  | "failed"
-  | "recovery_required"
-  | "draining"
-  | "stopped";
+  "idle" | "starting" | "healthy" | "failed" | "recovery_required" | "draining" | "stopped";
 
 export interface SetupSupervisorHealth {
   state: SetupSupervisorState;

@@ -5566,8 +5566,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts };
         const channel = (spec.extra as Record<string, unknown>)["interactionChannel"] as
-          | { request(req: unknown): Promise<unknown> }
-          | undefined;
+          { request(req: unknown): Promise<unknown> } | undefined;
         if (channel) {
           const answers = await channel.request({
             interaction_id: "int-1",
@@ -5635,8 +5634,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts };
         const channel = (spec.extra as Record<string, unknown>)["interactionChannel"] as
-          | { request(req: unknown): Promise<unknown> }
-          | undefined;
+          { request(req: unknown): Promise<unknown> } | undefined;
         if (channel) {
           seen.push(
             await channel.request({
@@ -5694,8 +5692,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
         const ts = new Date().toISOString();
         yield { type: "started", session_id: spec.session_id, ts };
         const channel = (spec.extra as Record<string, unknown>)["interactionChannel"] as
-          | { request(req: unknown): Promise<unknown> }
-          | undefined;
+          { request(req: unknown): Promise<unknown> } | undefined;
         if (channel) {
           await channel.request({
             interaction_id: "int-c",

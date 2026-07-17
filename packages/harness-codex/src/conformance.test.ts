@@ -58,8 +58,7 @@ describe("codex adapter conformance fixtures", () => {
         // v0.9 contract: the native session id is surfaced for thread resume,
         // and a 429 becomes the TYPED rate_limit signal (never prose-matched).
         const started = events.find((e) => (e as { type?: string }).type === "started") as
-          | { payload?: Record<string, unknown> }
-          | undefined;
+          { payload?: Record<string, unknown> } | undefined;
         expect(started?.payload?.["native_session_id"]).toBeTruthy();
         const limited = events.find(
           (e) => (e as { rate_limit?: unknown }).rate_limit !== undefined,

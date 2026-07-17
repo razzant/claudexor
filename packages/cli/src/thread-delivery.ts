@@ -61,10 +61,7 @@ export async function applyThreadDiff(
     // Advisory only; the exact preimage check remains authoritative.
   }
   const mode = (["apply", "branch", "commit", "pr"].includes(opts.mode) ? opts.mode : "apply") as
-    | "apply"
-    | "branch"
-    | "commit"
-    | "pr";
+    "apply" | "branch" | "commit" | "pr";
   const delivered = await verifyAndDeliver(
     projectRoot,
     patch,

@@ -274,24 +274,31 @@ describe("SetupJobStore global-journal authority", () => {
     expect(readFileSync(outside, "utf8")).toBe("do-not-touch");
   });
 
-  it("retains terminal history and filters active projections without destructive pruning", () => {
-    const store = new SetupJobStore(root);
-    for (let index = 0; index < 510; index += 1) {
-      const id = `setup-terminal-${String(index).padStart(3, "0")}`;
-      store.create({
-        ...job(id),
-        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
-      });
-      store.update(id, {
-        state: "failed",
-        phase: "completed",
-        finishedAt: new Date(Date.UTC(2026, 1, 1, 0, 0, index)).toISOString(),
-        outcome: { reason: "launch_failed" },
-      });
-    }
-    store.create(job("setup-active"));
-    expect(store.list({ active: false })).toHaveLength(510);
-    expect(store.list({ active: true }).map((row) => row.jobId)).toEqual(["setup-active"]);
-    expect(new SetupJobStore(root).list()).toHaveLength(511);
-  });
+  // 510 create+update pairs = >1000 fsynced journal appends: ~15-20s of pure
+  // disk wait even in isolation, multiples of that under full-suite
+  // parallelism. Needs its own budget above the suite-wide hang detector.
+  it(
+    "retains terminal history and filters active projections without destructive pruning",
+    { timeout: 120_000 },
+    () => {
+      const store = new SetupJobStore(root);
+      for (let index = 0; index < 510; index += 1) {
+        const id = `setup-terminal-${String(index).padStart(3, "0")}`;
+        store.create({
+          ...job(id),
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        });
+        store.update(id, {
+          state: "failed",
+          phase: "completed",
+          finishedAt: new Date(Date.UTC(2026, 1, 1, 0, 0, index)).toISOString(),
+          outcome: { reason: "launch_failed" },
+        });
+      }
+      store.create(job("setup-active"));
+      expect(store.list({ active: false })).toHaveLength(510);
+      expect(store.list({ active: true }).map((row) => row.jobId)).toEqual(["setup-active"]);
+      expect(new SetupJobStore(root).list()).toHaveLength(511);
+    },
+  );
 });

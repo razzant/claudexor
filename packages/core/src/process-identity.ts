@@ -38,9 +38,7 @@ export interface UnknownProcessIdentity {
 }
 
 export type ProcessIdentity =
-  | KnownProcessIdentity
-  | MissingProcessIdentity
-  | UnknownProcessIdentity;
+  KnownProcessIdentity | MissingProcessIdentity | UnknownProcessIdentity;
 export type ProcessIdentityComparison = "same" | "different" | "missing" | "unknown";
 
 export interface ProcessIdentityReader {

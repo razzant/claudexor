@@ -31,8 +31,7 @@ import {
 } from "./frame-codec.js";
 export type { JournalRecord } from "./frame-codec.js";
 export type JournalRecoveryLocation =
-  | { kind: "byte"; byteOffset: number }
-  | { kind: "cursor"; epoch: string; seq: number };
+  { kind: "byte"; byteOffset: number } | { kind: "cursor"; epoch: string; seq: number };
 
 export type JournalRecoveryState =
   | { status: "ready"; discardedTailBytes: number }

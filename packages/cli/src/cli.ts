@@ -185,12 +185,7 @@ const ACCESS_PROFILES = new Set([
 function accessProfile(
   args: ParsedArgs,
 ):
-  | "readonly"
-  | "workspace_write"
-  | "full"
-  | "external_sandbox_full"
-  | "inherit_native"
-  | undefined {
+  "readonly" | "workspace_write" | "full" | "external_sandbox_full" | "inherit_native" | undefined {
   const v = flagStr(args, "access");
   if (v === undefined) return undefined;
   if (!ACCESS_PROFILES.has(v)) {

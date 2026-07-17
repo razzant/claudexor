@@ -1609,11 +1609,9 @@ export class DaemonControlApiServer {
     res: ServerResponse,
   ): Promise<void> {
     const statusFn = this.opts.services?.setupJobStatus as
-      | ((arg?: unknown) => Promise<unknown>)
-      | undefined;
+      ((arg?: unknown) => Promise<unknown>) | undefined;
     const eventsFn = this.opts.services?.setupJobEvents as
-      | ((arg?: unknown) => Promise<unknown>)
-      | undefined;
+      ((arg?: unknown) => Promise<unknown>) | undefined;
     if (!statusFn || !eventsFn) {
       return this.problem(
         res,
@@ -2169,8 +2167,7 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
       ? kindRaw
       : "none";
   const ds = meta["diffstat"] as
-    | { files?: unknown; additions?: unknown; deletions?: unknown }
-    | undefined;
+    { files?: unknown; additions?: unknown; deletions?: unknown } | undefined;
   const diffStat =
     ds && typeof ds.files === "number"
       ? {

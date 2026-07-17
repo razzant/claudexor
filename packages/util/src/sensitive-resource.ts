@@ -1,11 +1,7 @@
 import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 export type SensitiveResourcePathClass =
-  | "credential_file"
-  | "credential_store"
-  | "environment_file"
-  | "private_key"
-  | "secret_container";
+  "credential_file" | "credential_store" | "environment_file" | "private_key" | "secret_container";
 
 export interface SensitiveResourcePathDecision {
   readonly sensitive: boolean;

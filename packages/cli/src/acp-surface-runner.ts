@@ -98,8 +98,7 @@ export async function acpSessionQuery(
     const turns = (Array.isArray(detail["turns"]) ? detail["turns"] : []).map((turn) => {
       const value = turn as Record<string, unknown>;
       const result = (value["run"] as Record<string, unknown> | null)?.["result"] as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       return {
         prompt: typeof value["prompt"] === "string" ? value["prompt"] : "",
         summary: typeof result?.["summary"] === "string" ? result["summary"] : null,
