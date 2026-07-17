@@ -512,3 +512,10 @@ process below. Never paper over the conflict.
   version anchors (`v0.N`) belong to changelogs and explicit history
   sections, not to descriptions of the present. verify: docs-truth v2
   version-anchor lint.
+- **INV-134** UI presentation discipline: every displayed fact has ONE
+  presentational owner (one mapper — two surfaces showing the same fact
+  compose the same producer, never fork vocabularies); a disabled control
+  visibly explains why it is disabled; a new chip/badge/pill enters the UI
+  only through an explicit DESIGN_SYSTEM section; layouts use fixed
+  grids/anchors — an element's position and size never drift with the
+  length of its text. verify: DESIGN_SYSTEM §1.1; review.

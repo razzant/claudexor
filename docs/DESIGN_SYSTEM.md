@@ -44,6 +44,28 @@ Three design commitments:
    understandable in 3 seconds: phase, health, budget, "what changed since you last
    looked," and "does it need me."
 
+### 1.1 Presentation doctrine (INV-134)
+
+Four owner-locked rules every surface obeys:
+
+1. **One presentational owner per fact.** A displayed fact (apply state, auth
+   route, cash spend, readiness, outcome) is formatted by exactly ONE mapper
+   (`RunFacts`, `OutcomePresentation`, `TurnPresentation`,
+   `HarnessReadinessPresentation`, `CashSpend`, `AuthSheetPresentation`);
+   surfaces compose LAYOUT from those values. Two surfaces may lay a fact out
+   differently — they may never fork its vocabulary.
+2. **A disabled control explains why.** Every `.disabled(...)` carries a
+   `.help(...)` (or adjacent text) naming the reason; a dead-looking button
+   with no explanation is a defect, not a style.
+3. **New chips/badges/pills only through this document.** A status capsule,
+   badge, or chip enters the UI only when its section here names its states,
+   tones, and owner mapper. Ad-hoc capsules are how the 16-chip header
+   happened.
+4. **Fixed grids — nothing drifts with text length.** Icon and name columns
+   have fixed widths, capsules have fixed minimum widths, rows keep anchored
+   left/right clusters; a longer label truncates or wraps inside its cell and
+   never moves its neighbors.
+
 ---
 
 ## 2. Foundations
@@ -347,9 +369,36 @@ frequency and volume are. The contracts:
 Each component lists purpose + key tokens. Components are reusable SwiftUI
 views in the shared design-system files; screens compose them.
 
-- **Turn card + run inspector (the signature surface).** A long run at a glance —
-  not a separate dashboard screen, but the live turn in the conversation and its
-  detail in the trailing inspector:
+- **Turn card — the messenger layout (Ф4 В1а).** The card reads top-down as a
+  conversation and grows strictly downward; live and terminal are ONE shape:
+  1. the user's right-aligned bubble;
+  2. ONE status line — two anchored clusters: identity + quiet state word on
+     the left ("Codex · Working…", retry folds into the word: "Retrying
+     2/10"; a race says "Best-of N" — a losing candidate's name is never
+     guessed), time + cash-$ on the right, the explicit ⧉ inspector
+     affordance trailing. No permanent status pill (Ф4 В2а): attention
+     states raise ONE loud chip only when they exist ("Needs your answer" >
+     "Needs you" > the red terminal label), and the quiet state word goes
+     silent when the chip voices it. Success carries no chip — the outcome
+     row already says what happened. Owner mapper: `TurnPresentation`.
+  3. ONE labeled Activity strip — the counter «Thinking 40s · 9 tools ·
+     3 files» (components with no evidence are absent; empty stream = no
+     strip). Clicking the CARD toggles it; expanded while live by default; a
+     user toggle pins it.
+  4. the answer bubble (the loudest element, W22 markdown);
+  5. quiet outcome rows (plan/diffstat + the reconciled W21 line via
+     `OutcomePresentation` ← `RunFacts.applyFact`);
+  6. the action footer, fixed position last (decision bar, apply pre-flight,
+     apply/revert), then the silent-failure card when honest.
+  The inspector opens ONLY via the explicit ⧉ (or the toolbar toggle) —
+  never by clicking the card, never automatically on navigation; a manual
+  close stays closed (Ф4 В17а, one `inspectorPresented` binding).
+- **Run inspector (Run Detail).** A long run at a glance — the opened turn's
+  detail in the trailing Workbench. Its header is a PRIMARY row of at most
+  the material facts (proof badge, route, apply, needs-answer + BudgetMini
+  and Cancel), with everything else behind a Details disclosure composed
+  from `RunFacts.headerDetails` — the header never retells the card (Ф4
+  В19а):
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
     node animates (calm). It rides the active turn's transcript and the inspector's
@@ -366,21 +415,24 @@ views in the shared design-system files; screens compose them.
     Money values are typed currency fields when editable; never use a slider for dollar input.
     The live meter rides the run inspector; the editable budget cockpit is a Settings tab.
   - **Timeline feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
-    Summary; thinking/tool/file/message rendered distinctly; compact bubbles are collapsed by
-    default, raw native details expand inline, and code/log text sits on `surface/code`. It is
-    the live transcript on the turn and the inspector's Timeline tab. Чат-V2
-    vocabulary (Ф2.5): reasoning SEGMENTS merge between tool calls and disclose
-    their observed duration («Thinking · 12s»); mid-run narration renders
-    dimmed (a TYPED final message never enters the transcript — it is the
-    answer bubble); tool rows lead with a status glyph + typed-kind icon +
-    humane short title (a command shows its binary's basename; the full
-    command line is the subtitle and the result detail expands on demand);
-    typed `status` events (e.g. claude api_retry) go to the activity feed,
-    never the reasoning disclosure; with `stream_deltas` the current message
-    grows live and the complete text replaces it. Agent images render inline
-    ONLY inside the thread's repoRoot / run dir (canonical-path scope, bounded
-    decode, disclosed refusal outside the scope); file links open through the
-    same gate.
+    Summary in the inspector's Timeline tab; code/log text sits on `surface/code`.
+    The CHAT transcript (the card's Activity strip) is a FLAT log (Ф4 В9а,
+    `TranscriptPresentation`): one line per tool (status glyph + typed-kind
+    icon + humane title — a command shows its binary's basename, the full
+    command line is the subtitle); a FAILED tool stands alone and carries its
+    error summary (or "exit N") as a second dimmed line; runs of MORE THAN
+    THREE consecutive same-name OK tools collapse into one quiet group row
+    («Read · 6 calls»); thinking is a single timer row («◐ Thinking · 12s» —
+    the reasoning text and full tool output live only in the inspector); zero
+    inline chevrons. Honest degradation: a stream without an event kind has
+    no such rows, an empty stream renders nothing. Mid-run narration renders
+    dimmed markdown (a TYPED final never enters the transcript — it is the
+    answer bubble); typed `status` events (e.g. claude api_retry) fold into
+    the status line's state word, never the reasoning disclosure; with
+    `stream_deltas` the current message grows live and the complete text
+    replaces it. Agent images render inline ONLY inside the thread's
+    repoRoot / run dir (canonical-path scope, bounded decode, disclosed
+    refusal outside the scope); file links open through the same gate.
   - **"What changed since this turn"** marker + an **attention state** (working /
     blocked / needs-permission / done) on the turn card and its thread row.
 - **Chat composer.** ONE floating Liquid-Glass panel
@@ -609,11 +661,26 @@ views in the shared design-system files; screens compose them.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the run inspector.
-- **Harness Doctor (Settings tab).** Live `HarnessStatus` (ok/degraded/unavailable),
-  intents, auth — a Settings tab, not a top-level screen. Manifest auth modes are source
-  availability only; installed/session/key-present must not be rendered as ready unless
-  doctor/smoke checks pass. Rows should separate Installed, Auth source, Smoke-ready, and
-  Routable states.
+- **Harness Doctor — ONE readiness card, three surfaces (Ф4 В20а/В22а).**
+  Settings, Onboarding step 0, and the AuthSheet all render the same
+  `HarnessReadinessCard` from one `HarnessReadinessPresentation`: identity
+  chip, the SERVER routability truth, a fixed-width health capsule, the
+  daemon-normalized TYPED check rows (`readiness` on the DTO: icon by
+  pass/fail/skip in a fixed glyph column, name in a fixed name column,
+  detail), the strict configured-model verdict, and "Copy raw" for the
+  un-normalized evidence. Each surface passes its OWN actions as a
+  @ViewBuilder slot — workflows never centralize into one conditional.
+  Manifest auth modes are source availability only; nothing renders as ready
+  unless doctor/smoke checks pass. Swift renders the typed rows verbatim and
+  never parses id substrings or joined prose.
+- **AuthSheet (state-driven, Ф4 В21а).** ONE primary CTA derived from the
+  cause in a severity ladder (Reconnect > observe-the-active-job/Done >
+  Log in > Store key > Retry check), rendered prominent in the footer with
+  Done demoted beside it; secondary actions stay bordered in their panels.
+  A setup job speaks with ONE merged status line (state+phase+outcome —
+  "Waiting for you to finish the login", "Login verified", "Failed (exit
+  1)", "Process termination is unconfirmed"); "Extend login wait (15 min)"
+  is offered only for a live login. Owner mapper: `AuthSheetPresentation`.
 - **Workbench: Run Detail | Canvas.** The trailing region is a Workbench with the
   two labeled planes from §4.
   - **Run Detail** — every run's detail has explicit `Outcome`, `Timeline`,
