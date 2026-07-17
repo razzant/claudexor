@@ -36,6 +36,7 @@ extension AppModel {
         if case .task = route { route = .threads }
         draftPrimaryHarness = nil
         draftEligiblePool = []
+        draftCredentialProfileId = nil
         draftIsolatedWorkspace = false
     }
 

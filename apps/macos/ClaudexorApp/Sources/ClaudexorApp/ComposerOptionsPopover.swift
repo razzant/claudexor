@@ -129,6 +129,41 @@ extension ThreadsScreen {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 2)
+            // Sticky ACCOUNT for the thread (INV-135): which registered
+            // credential profile — a second Claude/Codex subscription or a
+            // stored key — this thread runs as. Default = the engine-default
+            // login. PATCHes the thread (persists); on a draft it rides the
+            // first message.
+            OptionRow(label: "Account") {
+                Picker("", selection: Binding(
+                    get: {
+                        (model.selectedThreadId == nil
+                            ? model.draftCredentialProfileId
+                            : model.currentThread?.credentialProfileId) ?? ""
+                    },
+                    set: { raw in
+                        let id = raw.isEmpty ? nil : raw
+                        Task { await model.setThreadCredentialProfile(id) }
+                    }
+                )) {
+                    Text("Default account").tag("")
+                    ForEach(model.credentialProfiles) { entry in
+                        Text("\(entry.profile.displayName) · \(entry.profile.harnessId)\(entry.status.availability == "available" ? "" : " (⚠︎ \(entry.status.availability))")")
+                            .tag(entry.profile.profileId)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("Sticky credential profile for this thread — another Claude/Codex subscription or stored key registered in Claudexor. Per-run --profile still wins for one turn.")
+            }
+            HStack(spacing: Theme.Spacing.sm) {
+                Button("Manage accounts…") { showProfilesSheet = true }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .help("List registered accounts, check their readiness, and add a new subscription")
+                Spacer()
+            }
+            .padding(.leading, 2)
             OptionSection(title: "Review controls") {
                 OptionRow(label: "Reviewers") {
                     HStack(spacing: Theme.Spacing.xs) {

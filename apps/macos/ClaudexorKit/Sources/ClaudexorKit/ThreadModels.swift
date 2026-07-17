@@ -15,6 +15,8 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     /// in_place (default) mutates the live tree; isolated keeps a thread worktree.
     public let workspaceMode: String?
     public let authPreference: String?
+    /// Sticky credential profile (INV-135); nil = engine-default credentials.
+    public let credentialProfileId: String?
     public let primaryHarness: String?
     /// Sticky eligible pool for the thread (absent on legacy payloads => nil).
     public let eligibleHarnesses: [String]?
@@ -228,10 +230,12 @@ public struct CreateThreadRequest: Codable, Sendable {
     public var primaryHarness: String?
     /// Sticky eligible harness pool for the thread (turns inherit it when unset).
     public var eligibleHarnesses: [String]?
+    /// Sticky credential profile for the thread (INV-135); per-turn wins.
+    public var credentialProfileId: String?
 
     public init(title: String? = nil, scope: RunScope = .none, mode: String? = nil,
                 workspace: String? = nil, authPreference: String? = nil, primaryHarness: String? = nil,
-                eligibleHarnesses: [String]? = nil) {
+                eligibleHarnesses: [String]? = nil, credentialProfileId: String? = nil) {
         self.title = title
         self.scope = scope
         self.mode = mode
@@ -239,6 +243,7 @@ public struct CreateThreadRequest: Codable, Sendable {
         self.authPreference = authPreference
         self.primaryHarness = primaryHarness
         self.eligibleHarnesses = eligibleHarnesses
+        self.credentialProfileId = credentialProfileId
     }
 }
 
@@ -250,15 +255,22 @@ public struct UpdateThreadRequest: Encodable, Sendable {
     /// Double-optional: .some(nil) clears primary back to auto; .none leaves unchanged.
     public var primaryHarness: String??
     public var eligibleHarnesses: [String]?
+    /// Double-optional (INV-135): .some(nil) clears the sticky profile back to
+    /// engine-default credentials; .none leaves it unchanged.
+    public var credentialProfileId: String??
     public init(title: String? = nil, state: String? = nil,
-                primaryHarness: String?? = nil, eligibleHarnesses: [String]? = nil) {
+                primaryHarness: String?? = nil, eligibleHarnesses: [String]? = nil,
+                credentialProfileId: String?? = nil) {
         self.title = title
         self.state = state
         self.primaryHarness = primaryHarness
         self.eligibleHarnesses = eligibleHarnesses
+        self.credentialProfileId = credentialProfileId
     }
 
-    enum CodingKeys: String, CodingKey { case title, state, primaryHarness, eligibleHarnesses }
+    enum CodingKeys: String, CodingKey {
+        case title, state, primaryHarness, eligibleHarnesses, credentialProfileId
+    }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -267,6 +279,7 @@ public struct UpdateThreadRequest: Encodable, Sendable {
         // .some(nil) encodes an explicit JSON null (= clear primary to auto).
         if let primaryHarness { try c.encode(primaryHarness, forKey: .primaryHarness) }
         try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
+        if let credentialProfileId { try c.encode(credentialProfileId, forKey: .credentialProfileId) }
     }
 }
 

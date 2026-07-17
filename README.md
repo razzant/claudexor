@@ -176,13 +176,19 @@ dir or the secret store.
 
 ```bash
 claudexor profiles                         # registry + per-profile doctor readiness
+claudexor profiles add claude work         # register a config-dir login profile
 claudexor profiles login claude work       # the vendor's own login, scoped to the profile dir
 claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
 claudexor agent "fix the parser" --profile work   # explicit per-run selection
 ```
 
-Selection is turn > thread-sticky > engine default, and an explicit profile is
-STRICT — exactly its transport or a typed refusal, never a silent fallback.
+In the macOS app the composer's "⋯" options panel has an **Account** picker
+(the sticky per-thread profile) and a **Manage accounts…** sheet that lists
+every registered account with its readiness and walks you through adding a new
+subscription (register, then the interactive vendor login in Terminal — vendor
+OAuth needs your own browser). Selection is turn > thread-sticky > engine
+default, and an explicit profile is STRICT — exactly its transport or a typed
+refusal, never a silent fallback.
 Vendor-session resume never crosses profiles. Subscription quota is tracked
 per profile from the vendor's own `oauth/usage` endpoint (proactive
 five-hour/seven-day/per-model percentages in the app's quota footer, one chip

@@ -147,6 +147,10 @@ final class AppModel {
     /// the global default from Settings.
     var draftPrimaryHarness: String?
     var draftEligiblePool: [String] = []
+    /// Draft sticky credential profile for a not-yet-created thread (INV-135).
+    var draftCredentialProfileId: String?
+    /// Registered credential profiles + doctor readiness (INV-135 picker/sheet).
+    var credentialProfiles: [CredentialProfileEntry] = []
     /// DRAFT-thread workspace mode: false => in_place (default; turns mutate the live
     /// tree), true => isolated (turns accumulate in a thread worktree, applied later via
     /// "Apply thread"). Fixed at thread creation, so it's only editable in the draft.
@@ -959,6 +963,29 @@ final class AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
+    /// Switch the thread's sticky credential profile (INV-135): PATCH persists
+    /// it; nil clears back to engine-default credentials. Per-turn selection
+    /// (CLI --profile) still wins over the sticky value at run time.
+    func setThreadCredentialProfile(_ profileId: String?) async {
+        guard let id = selectedThreadId else { draftCredentialProfileId = profileId; return }
+        guard let client else { threadStatus = "Engine offline — reconnect to change the account."; return }
+        do {
+            let updated = try await client.updateThread(
+                id: id, body: UpdateThreadRequest(credentialProfileId: .some(profileId)))
+            applyThreadUpdate(updated)
+        } catch { threadStatus = userMessage(for: error) }
+    }
+
+    /// Registered credential profiles + doctor readiness (INV-135). Loaded
+    /// lazily for the composer picker and the profiles sheet; a failing fetch
+    /// leaves the last snapshot (the picker degrades to "Default account").
+    func refreshCredentialProfiles() async {
+        guard let client else { return }
+        do { credentialProfiles = try await client.credentialProfiles().profiles } catch {
+            /* endpoint absent (older daemon) or offline — keep last snapshot */
+        }
+    }
+
     /// Replace the sticky eligible pool (PATCH on a real thread; draft otherwise).
     func setEligiblePool(_ pool: [String]) async {
         guard let id = selectedThreadId else {
@@ -1045,7 +1072,8 @@ final class AppModel {
                 // in_place is the engine default, so omit it rather than send it.
                 workspace: draftIsolatedWorkspace ? "isolated" : nil,
                 primaryHarness: effectivePrimaryHarness,
-                eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool
+                eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool,
+                credentialProfileId: draftCredentialProfileId
             ))
             threads.insert(thread, at: 0)
             await openThread(thread.id)
@@ -1483,6 +1511,15 @@ final class AppModel {
         return nil
     }
 
+    /// The revert guard's refusal carries raw (locale-translated) git stderr —
+    /// honest but unreadable. Map the known divergence refusal to plain
+    /// language; anything else passes through untouched (never invent).
+    static func humanRevertRefusal(_ message: String?) -> String? {
+        guard let message, message.contains("postimage no longer matches") else { return nil }
+        return "The files changed after this turn (a later run or a manual edit) — "
+            + "revert is no longer available. Restore via git if you need the old state."
+    }
+
     /// Typed operator decision on a blocked run (review queue actions).
     func decide(runId: String, action: String, feedback: String? = nil, acceptedRisks: [String]? = nil) async -> String? {
         guard let client else { return "Engine offline." }
@@ -1520,12 +1557,17 @@ final class AppModel {
         guard let client else { return "Engine offline." }
         do {
             let res = try await client.revertRun(runId: runId)
-            guard res.accepted else { return res.message ?? "Revert was refused (\(res.status))." }
+            guard res.accepted else {
+                return Self.humanRevertRefusal(res.message) ?? res.message
+                    ?? "Revert was refused (\(res.status))."
+            }
             await refreshRuns()
             await loadRunDetail(runId)
             if let tid = selectedThreadId { await openThread(tid) }
             return nil
         } catch {
+            if case GatewayError.http(_, let body) = error,
+               let human = Self.humanRevertRefusal(body) { return human }
             return userMessage(for: error)
         }
     }

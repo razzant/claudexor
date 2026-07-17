@@ -117,7 +117,7 @@ enum Theme {
 
     enum Radius {
         static let control: CGFloat = 8     // chips, segmented selection, small code wells
-        static let card: CGFloat = 8        // content cards
+        static let card: CGFloat = 12       // content cards (softened per owner visual QA, 2.1.0)
         static let hero: CGFloat = 22       // floating composer / hero glass
     }
 
@@ -201,7 +201,10 @@ private struct CardSurfaceModifier: ViewModifier {
                 } else {
                     // The shadow is cast by the card SHAPE (not the composite view)
                     // so the translucent fill never double-shadows the text.
-                    shape.fill(.thinMaterial)
+                    // DESIGN_SYSTEM §2.4 specifies .regularMaterial — the earlier
+                    // .thinMaterial let the behind-window glow bleed through and
+                    // muddy the card color (owner visual QA, 2.1.0).
+                    shape.fill(.regularMaterial)
                         .shadow(color: shadowColor, radius: shadowRadius, x: 0, y: shadowY)
                     // Light raised veil so cards read as surfaces over the glass.
                     shape.fill(Theme.surfaceRaised.opacity(dark ? (lifted ? 0.45 : 0.55) : 0.50))

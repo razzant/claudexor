@@ -150,7 +150,8 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   16; compact 12. Screen gutter is `xxl` (32). Use tokens — never off-scale literals
   (`1,3,5,6` etc.).
 - One **radius ladder** (`Theme.Radius`): `control 8` (chips/segments/small code wells),
-  `card 8`, `hero 22` (floating composer). Cards stay compact; controls inherit system
+  `card 12` (softened from 8 per owner visual QA, 2.1.0), `hero 22` (floating
+  composer). Cards stay compact; controls inherit system
   metrics — do not hardcode control heights. (Concentric radii via Apple's
   ConcentricRectangle are a tracked deferred refinement.)
 - Elevation — the ONE card recipe (centralized in `cardSurface`):
@@ -280,7 +281,7 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
   pair above instead of the most-transparent `.underWindowBackground`. Reduce
   Transparency → solid `surfaceBase`.
 - **Glass vs `Material`** — Liquid Glass is the FLOATING chrome layer; `Material`
-  (`.thinMaterial`/`.regularMaterial`, the `cardSurface` recipe) is the CONTENT
+  (`.regularMaterial`, the `cardSurface` recipe) is the CONTENT
   layer. Dense/input content (the composer text field, the "⋯" option rows, code,
   diffs) sits on a **SOLID inset** (`surfaceRaised`/`surfaceCode`) INSIDE the glass —
   never a second `glassEffect` and never a frosted card inside glass.
@@ -830,7 +831,7 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   `Spacing.sm` gaps — not one slab with inset dividers (the floating-rows
   doctrine). The thread sidebar is the exception: it uses
   the native `.sidebar` `List` inside the floating `sidebarGlass` panel per §3.
-- **Cards.** One recipe: `cardSurface()` (radius `Radius.card`, 8pt): frosted
+- **Cards.** One recipe: `cardSurface()` (radius `Radius.card`, 12pt): frosted
   `.regularMaterial` + `surfaceRaised` tint veil, top-lit gradient hairline, one
   scheme-aware separation shadow cast by the shape, optional `hover` lift, and a
   Reduce Transparency solid fallback. `Panel`, `FindingCard` (`clip: true` for its leading

@@ -168,7 +168,10 @@ struct TaskDetailView: View {
             }
         }
         .padding(.horizontal, Theme.Spacing.xxl)
-        .padding(.top, Theme.Spacing.xl)
+        // sm, not xl: the inspector already sits under the reserved (empty)
+        // titlebar band + the Workbench picker — a 24pt header inset on top
+        // of those read as dead space (owner QA, 2.1.0).
+        .padding(.top, Theme.Spacing.sm)
         .padding(.bottom, Theme.Spacing.md)
     }
 
@@ -358,6 +361,25 @@ struct TaskDetailView: View {
             Panel {
                 Label(reviewVerdictText(task.reviewVerdict), systemImage: reviewVerdictGlyph(task.reviewVerdict))
                     .foregroundStyle(reviewVerdictColor(task.reviewVerdict))
+            }
+            // "Review & decide" from the chat card lands HERE — so the
+            // decision actions must live here too, not only back on the card
+            // (the tab used to show findings with no way to act: a dead end,
+            // owner QA 2.1.0). Same server-owned decisions, same conditions.
+            let decidable =
+                (task.status == .blocked || task.status == .needsReview
+                    || task.applyState == "applied_review_blocked")
+                && task.operatorDecisionAction == nil
+            if decidable {
+                DecisionBar(runId: task.id) {
+                    await model.loadRunDetail(task.id)
+                }
+            } else if let action = task.operatorDecisionAction {
+                Label("Operator decision recorded: \(action)", systemImage: "checkmark.seal")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if task.status == .ungated {
+                Text("No blocking findings — apply this run from its chat card.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if !task.findings.isEmpty {
                 ForEach(task.findings) { FindingCard(finding: $0) }

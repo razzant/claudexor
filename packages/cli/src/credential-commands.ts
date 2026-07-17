@@ -5,6 +5,10 @@
  * interactive terminal, scoped to the profile's config dir.
  */
 import { spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { updateGlobalConfig } from "@claudexor/config";
+import { nowIso, userConfigDir, userHomeDir } from "@claudexor/util";
 import {
   ControlCredentialProfilesResponse,
   ControlSecretListResponse,
@@ -101,10 +105,73 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       );
     return status?.verification === "passed" ? 0 : 1;
   }
+  if (sub === "add") {
+    // Registration was previously "hand-edit config.yaml" — a guided append
+    // could silently duplicate the `credential_profiles` key and drop earlier
+    // entries. ONE owner instead: the locked, schema-validated global-config
+    // writer (updateGlobalConfig). The registry refuses duplicate
+    // (harness, profile) ids by schema, so a re-add fails loudly.
+    const harness = args._[2];
+    const profileId = args._[3];
+    if (!harness || !profileId) {
+      return printUsageError(
+        json,
+        "usage: claudexor profiles add <claude|codex> <profile-id> [--display-name NAME]",
+      );
+    }
+    if (harness !== "claude" && harness !== "codex") {
+      return printUsageError(
+        json,
+        `harness "${harness}" has no isolated config-dir login; add claude or codex profiles here (secret-ref profiles for other harnesses are hand-registered in the global config)`,
+      );
+    }
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(profileId)) {
+      return printUsageError(
+        json,
+        `profile id "${profileId}" must be a bounded slug ([a-z0-9][a-z0-9_-]{0,63})`,
+      );
+    }
+    // The locator must live inside the confinement root the engine enforces:
+    // the CLAUDEXOR_CONFIG_DIR override when set, else ~/.claudexor.
+    const ownedRoot = process.env.CLAUDEXOR_CONFIG_DIR?.trim()
+      ? userConfigDir()
+      : join(userHomeDir(), ".claudexor");
+    const locator = join(ownedRoot, "profiles", `${harness}-${profileId}`);
+    mkdirSync(locator, { recursive: true });
+    try {
+      const { path } = updateGlobalConfig((config) => ({
+        ...config,
+        credential_profiles: [
+          ...config.credential_profiles,
+          {
+            profile_id: profileId,
+            harness_id: harness,
+            display_name: flagStr(args, "display-name") ?? profileId,
+            credential_kind: "config_dir_login",
+            isolation_locator: locator,
+            secret_ref: null,
+            enabled: true,
+            created_at: nowIso(),
+          },
+        ],
+      }));
+      if (json) printJson({ registered: { harness, profileId, locator }, config: path });
+      else {
+        print(`registered ${harness}/${profileId} (login dir ${locator})`);
+        print(`next: claudexor profiles login ${harness} ${profileId}`);
+      }
+      return 0;
+    } catch (err) {
+      return printUsageError(
+        json,
+        `could not register the profile: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
   if (sub !== "list") {
     return printUsageError(
       json,
-      "usage: claudexor profiles [list | login <harness> <profile-id>]  # register profiles in the global config's credential_profiles",
+      "usage: claudexor profiles [list | add <harness> <profile-id> | login <harness> <profile-id>]",
     );
   }
   const result = ControlCredentialProfilesResponse.parse(await daemonGet("/credential-profiles"));

@@ -24,6 +24,7 @@ struct TurnCard: View {
     /// Set after a successful revert so the affordance collapses immediately; the
     /// SERVER (work_product apply_state) is the source of truth on the next refresh.
     @State private var reverted = false
+    @State private var revertRefused = false
     /// True while a Revert request is in flight (the server owns the outcome).
     @State private var reverting = false
     /// The apply gate reason from the pre-flight check (why apply would be refused),
@@ -77,9 +78,21 @@ struct TurnCard: View {
                     waitingOnUser: run.waitingOnUser)
                 HStack(spacing: Theme.Spacing.sm) {
                     if let identity = line.identity {
+                        // The identity renders with the designed chip finish
+                        // (capsule fill + border), not a bare colored glyph —
+                        // a raw Label read as an unfinished stray control
+                        // (owner visual QA, 2.1.0).
                         Label(identity, systemImage: line.family?.glyph ?? "flag.checkered.2.crossed")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(line.family?.color ?? .secondary)
+                            .padding(.horizontal, Theme.Spacing.sm)
+                            .padding(.vertical, 3)
+                            .background(
+                                (line.family?.color ?? Theme.separator).opacity(0.13), in: Capsule())
+                            .overlay(
+                                Capsule().stroke(
+                                    (line.family?.color ?? Theme.separator).opacity(0.35),
+                                    lineWidth: 1))
                     }
                     if let word = line.stateWord {
                         Text(word).font(.caption).foregroundStyle(.secondary)
@@ -225,9 +238,15 @@ struct TurnCard: View {
         // Clicking the card toggles its Activity strip (В16а) — the inspector
         // opens ONLY via the explicit ⧉ affordance in the status line. Buttons
         // inside the card take the tap first (SwiftUI priority), so
-        // decide/apply/Implement-plan are unaffected.
+        // decide/apply/Implement-plan are unaffected. When the run streamed NO
+        // transcript blocks the toggle would be an invisible no-op and the
+        // card felt dead — that case falls back to opening the inspector
+        // (owner QA, 2.1.0).
         .onTapGesture {
-            if let run, turn.runId != nil {
+            guard let run, let runId = turn.runId else { return }
+            if model.transcriptBlocks(runId).isEmpty {
+                model.openRun(run.id)
+            } else {
                 transcriptExpanded = !(transcriptExpanded ?? run.status.isActive)
             }
         }
@@ -399,7 +418,11 @@ struct TurnCard: View {
                 Spacer()
                 // Offer Revert only while the server still says it's safe (tree
                 // unchanged since) and we haven't already reverted this turn.
-                if result?.revertable == true && !reverted {
+                // After a divergence refusal the button DISAPPEARS for good —
+                // an enabled control that 409s on every press violates the
+                // "disabled control explains why" doctrine (INV-134); the
+                // explanation stays visible as the action error text.
+                if result?.revertable == true && !reverted && !revertRefused {
                     Button(reverting ? "Reverting…" : "Revert") {
                         guard let runId = turn.runId else { return }
                         reverting = true
@@ -407,7 +430,10 @@ struct TurnCard: View {
                             let err = await model.revertRun(runId: runId)
                             reverting = false
                             if err == nil { reverted = true; actionError = nil }
-                            else { actionError = err }
+                            else {
+                                actionError = err
+                                if err?.contains("no longer available") == true { revertRefused = true }
+                            }
                         }
                     }
                     .buttonStyle(.bordered)
@@ -455,136 +481,5 @@ struct TurnCard: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
-    }
-}
-
-/// Deliver an ISOLATED thread's accumulated worktree diff to its project. Renders
-/// the ControlThreadApplyResponse honestly (applied/branched/empty/conflict/rejected
-/// + a HEAD-moved warning) — the server owns whether the apply lands.
-struct ApplyThreadBar: View {
-    @Environment(AppModel.self) private var model
-    let threadId: String
-    @State private var applying = false
-    /// Honest outcome of the apply, distinguishing the three states unambiguously
-    /// (the old `String?` conflated "applied OK" and "no attempt" as empty-ish and
-    /// left the buttons live after success: repeat-click re-applied the thread).
-    private enum Outcome {
-        case idle              // no attempt yet — offer Apply / As branch
-        case applied           // a completed apply SUCCEEDED — lock the buttons
-        case failed(String)    // a completed apply returned an honest message
-    }
-    @State private var outcome: Outcome = .idle
-
-    private var isApplied: Bool { if case .applied = outcome { return true }; return false }
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            Image(systemName: isApplied ? "checkmark.seal.fill" : "arrow.up.doc.on.clipboard")
-                .foregroundStyle(isApplied ? Theme.status(.succeeded) : Theme.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Isolated workspace").font(.caption.weight(.medium))
-                switch outcome {
-                case .applied:
-                    Text("Applied to the project — this thread's worktree has been delivered.")
-                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
-                case .failed(let message):
-                    Text(message).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-                case .idle:
-                    Text("Turns are kept in a thread worktree — apply them to the project when ready.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-            // After a successful apply the thread is delivered — HIDE the apply actions
-            // so it can't be re-applied by mistake; show an explicit "Applied" state.
-            if isApplied {
-                Label("Applied", systemImage: "checkmark.seal.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Theme.status(.succeeded))
-            } else {
-                Button(applying ? "Applying…" : "Apply thread") {
-                    applying = true
-                    Task {
-                        let err = await model.applyThread(id: threadId)
-                        applying = false
-                        outcome = err.map(Outcome.failed) ?? .applied
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(applying)
-                .help("Deliver the thread's accumulated diff to the project (server-gated)")
-                Button("As branch") {
-                    applying = true
-                    Task {
-                        let err = await model.applyThread(id: threadId, mode: "branch")
-                        applying = false
-                        outcome = err.map(Outcome.failed) ?? .applied
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(applying)
-                .help("Deliver onto a new branch instead of the working tree")
-            }
-        }
-        .padding(.horizontal, Theme.Spacing.lg)
-        .padding(.vertical, Theme.Spacing.sm)
-    }
-}
-
-/// Renders a turn's live transcript: reasoning (collapsible), tool calls (compact
-/// mono rows with a status glyph), and assistant messages. Built from the
-/// `TranscriptReducer` fold of the SSE stream.
-/// The frozen-spec card: the SpecPack is sealed (id + hash + change count) and an
-/// Implement button (styled like "Implement plan") sends an agent turn that reads
-/// the spec FILE. The path is server-returned (never composed in Swift).
-struct SpecFrozenCard: View {
-    @Environment(AppModel.self) private var model
-    /// The OWNING thread (captured at render) so Implement targets it, not selection.
-    let threadId: String
-    let specId: String
-    let specPath: String
-    let specHash: String
-    let changes: Int
-    @State private var implementing = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack(spacing: Theme.Spacing.sm) {
-                Image(systemName: "snowflake").foregroundStyle(Theme.accent)
-                Text("Spec frozen").font(.subheadline.weight(.semibold))
-                Spacer()
-                // Dismiss the frozen card without implementing (otherwise the card is
-                // a dead-end — the user froze a spec but chose not to run it).
-                Button("Dismiss") { model.cancelSpec(threadId: threadId) }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(implementing)
-                    .help("Clear this frozen spec without implementing it")
-                Button(implementing ? "Implementing…" : "Implement") {
-                    implementing = true
-                    Task {
-                        await model.implementSpec(threadId: threadId, specPath: specPath)
-                        implementing = false
-                    }
-                }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-                // Can't start an Implement turn over a live head run (composerSend
-                // also rejects it; the button reflects the invariant).
-                .disabled(implementing || model.selectedThreadBusy)
-                .help("Run an agent turn that implements this frozen spec")
-            }
-            HStack(spacing: Theme.Spacing.md) {
-                Label(specId, systemImage: "doc.badge.gearshape")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Label(String(specHash.prefix(12)), systemImage: "number")
-                    .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                    .help("Spec hash \(specHash)")
-                Label("\(changes) change\(changes == 1 ? "" : "s")", systemImage: "plusminus")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(Theme.Spacing.lg)
-        .cardSurface(stroke: true, strokeColor: Theme.accent.opacity(0.5))
     }
 }

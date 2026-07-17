@@ -22,6 +22,7 @@ struct ThreadsScreen: View {
     @State var webPolicy = "auto"
     /// Per-turn auth route REQUEST (W18): auto | subscription | api_key. Not sticky.
     @State var authRoutePreference = ""  // "" = Thread default; see authRouteRequest (sol #1)
+    @State var showProfilesSheet = false  // INV-135 accounts sheet (list + guided add)
     /// Per-turn reasoning effort ("" = harness default). Not sticky.
     @State var effortPreference = ""
     @State var untilClean = false
@@ -260,70 +261,9 @@ struct ThreadsScreen: View {
         )) { renameSheet }
     }
 
-    @State private var renameDraft = ""
-    @State private var renameTargetId: String?
+    @State var renameDraft = ""
+    @State var renameTargetId: String?
 
-    private var renameSheet: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            Text("Rename thread").font(.headline)
-            TextField("Thread title", text: $renameDraft)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { submitRename() }
-            HStack {
-                Spacer()
-                Button("Cancel") { renameTargetId = nil }
-                Button("Rename") { submitRename() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
-                    .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(Theme.Spacing.lg)
-        .frame(width: 360)
-    }
-
-    private func submitRename() {
-        guard let id = renameTargetId else { return }
-        let title = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        renameTargetId = nil
-        Task { await model.renameThread(id, title: title) }
-    }
-
-    private func threadRow(_ thread: ThreadSummary) -> some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-            HStack(spacing: Theme.Spacing.xs) {
-                Text(thread.title ?? "Untitled thread").font(.body).lineLimit(1)
-                if thread.needsHuman {
-                    Image(systemName: "person.fill.questionmark")
-                        .foregroundStyle(Theme.status(.blocked))
-                        .help("This thread is blocked on your decision")
-                }
-            }
-            Text(threadSubtitle(thread)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }
-        // rename/archive ride the existing PATCH /threads/:id (server-owned
-        // title/state); the row finally exposes the affordance.
-        .contextMenu {
-            Button("Rename…") {
-                renameDraft = thread.title ?? ""
-                renameTargetId = thread.id
-            }
-            // ThreadState is active|closed (server enum) — "closed" is the
-            // archived state; Reopen PATCHes back to "active".
-            if thread.state != "closed" {
-                Button("Archive") { Task { await model.archiveThread(thread.id) } }
-            } else {
-                Button("Reopen") { Task { await model.reopenThread(thread.id) } }
-            }
-        }
-        .padding(.vertical, Theme.Spacing.xxs)
-    }
-
-    private func threadSubtitle(_ thread: ThreadSummary) -> String {
-        let project = thread.repoRoot.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "No project"
-        return "\(project) · \(thread.runIds.count) turn\(thread.runIds.count == 1 ? "" : "s")"
-    }
 
     // MARK: Conversation pane
 
@@ -521,7 +461,11 @@ struct ThreadsScreen: View {
                     .buttonStyle(.borderless)
                     .help("More options: harness pool, model, budget, access, web, repair strategies")
                     // Native dismissible popover — no inline glass-on-glass panel.
-                    .popover(isPresented: $showOptions, arrowEdge: .bottom) { composerOptions }
+                    .popover(isPresented: $showOptions, arrowEdge: .bottom) {
+                        composerOptions
+                            .task { await model.refreshCredentialProfiles() }
+                    }
+                    .sheet(isPresented: $showProfilesSheet) { ProfilesSheet() }
                     Spacer(minLength: Theme.Spacing.sm)
                     composerHint
                 }
