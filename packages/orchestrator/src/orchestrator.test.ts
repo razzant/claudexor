@@ -4105,6 +4105,126 @@ describe("Orchestrator", () => {
     expect(review).toContain("severity: BLOCK");
   });
 
+  it("blocks CREATING a new file under a protected glob — added paths are not a bypass (W3.4/G1)", async () => {
+    const repo = await initRepo();
+    const specPath = join(repo, "spec.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        schema_version: 2,
+        id: "spec-protected-add",
+        version: 1,
+        created_at: new Date().toISOString(),
+        intent: { raw: "work near guarded" },
+        summary: "guarded add",
+        success_criteria: [],
+        non_goals: [],
+        forbidden_approaches: [],
+        decided_tradeoffs: [],
+        constraints: { protected_paths: ["guarded/**"] },
+        tests: [],
+        tasks: [],
+        open_questions: [],
+        frozen: true,
+      }),
+    );
+    // The adapter creates a brand-new file INSIDE the protected glob. The
+    // pre-W3.4 gate matched only existingPaths, so an added file (or the
+    // added side of an undetected rename INTO the glob) sailed through.
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("protected-add-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        mkdirSync(join(spec.cwd, "guarded"), { recursive: true });
+        writeFileSync(join(spec.cwd, "guarded", "planted.txt"), "planted\n");
+        yield { type: "message", session_id: spec.session_id, ts, text: "planted a file" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "work near guarded",
+      mode: "agent",
+      harnesses: [adapter.id],
+      specPath,
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("guarded/planted.txt");
+    expect(review).toContain("severity: BLOCK");
+  });
+
+  it("blocks a rename OUT of a protected glob — the source side is not a bypass (W3.4/G1)", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, "guarded"), { recursive: true });
+    writeFileSync(join(repo, "guarded", "rules.txt"), "rules\n");
+    await runCapture("git", ["-C", repo, "add", "guarded/rules.txt"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "seed guarded",
+    ]);
+    const specPath = join(repo, "spec.json");
+    writeFileSync(
+      specPath,
+      JSON.stringify({
+        schema_version: 2,
+        id: "spec-protected-rename",
+        version: 1,
+        created_at: new Date().toISOString(),
+        intent: { raw: "reorganize" },
+        summary: "guarded rename",
+        success_criteria: [],
+        non_goals: [],
+        forbidden_approaches: [],
+        decided_tradeoffs: [],
+        constraints: { protected_paths: ["guarded/**"] },
+        tests: [],
+        tasks: [],
+        open_questions: [],
+        frozen: true,
+      }),
+    );
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("protected-rename-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        renameSync(join(spec.cwd, "guarded", "rules.txt"), join(spec.cwd, "free.txt"));
+        yield { type: "message", session_id: spec.session_id, ts, text: "moved it out" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([[adapter.id, adapter]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "reorganize",
+      mode: "agent",
+      harnesses: [adapter.id],
+      specPath,
+      tests: [shellGate("true")],
+      n: 1,
+    });
+    expect(res.status).toBe("blocked");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    expect(review).toContain("guarded/rules.txt");
+    expect(review).toContain("severity: BLOCK");
+  });
+
   it("refuses denyPaths on an in-place run at preflight (W7)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

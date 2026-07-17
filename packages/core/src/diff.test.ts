@@ -152,6 +152,35 @@ describe("parseUnifiedDiff — plain GNU diffs (non-git in-place fallback)", () 
     expect(paths.paths.some((p) => p.includes("/auth/"))).toBe(true);
   });
 
+  it("touchedPaths is the union every path gate must match: both rename sides AND added files (G1)", () => {
+    const rename = [
+      "diff --git a/secrets/key.txt b/public.txt",
+      "similarity index 100%",
+      "rename from secrets/key.txt",
+      "rename to public.txt",
+      "",
+    ].join("\n");
+    const renamed = summarizeDiffPaths(rename);
+    // A rename-out gate matching only the new side would miss the source…
+    expect(renamed.touchedPaths).toContain("secrets/key.txt");
+    expect(renamed.touchedPaths).toContain("public.txt");
+
+    const added = [
+      "diff --git a/secrets/evil.txt b/secrets/evil.txt",
+      "new file mode 100644",
+      "index 0000000..257cc56",
+      "--- /dev/null",
+      "+++ b/secrets/evil.txt",
+      "@@ -0,0 +1 @@",
+      "+evil",
+      "",
+    ].join("\n");
+    const summary = summarizeDiffPaths(added);
+    // …and an existing-only gate would miss a brand-new file under the glob.
+    expect(summary.existingPaths).toEqual([]);
+    expect(summary.touchedPaths).toEqual(["secrets/evil.txt"]);
+  });
+
   it("opens plain files only on the full ---/+++/@@ triple (SQL-comment content stays content)", () => {
     const tricky = [
       "--- /tmp/base/q.sql\t2026-07-08 10:00:00 +0300",

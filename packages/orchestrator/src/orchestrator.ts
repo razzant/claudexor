@@ -3422,23 +3422,25 @@ export class Orchestrator {
     risk: { level: string; reasons: string[]; changedFiles: number };
   } {
     const stats = diffStats(run.diff);
-    // deny_paths: ANY touch of a denied glob is a violation — create, modify,
-    // delete, OR either end of a rename. stats.paths carries only the new side,
-    // so a rename OUT of a denied dir (git mv denied/x allowed/x) would slip
-    // past a paths-only check; stats.existingPaths carries the old side of every
-    // rename/modify, so the union is the true touched set. Same matcher as every
-    // other path policy (INV-122).
-    const touchedPaths = [...new Set([...stats.paths, ...stats.existingPaths])];
-    const denyViolation = requireHuman(touchedPaths, denyPaths);
+    // Path policy gates match stats.touchedPaths — the one owner of "what the
+    // diff touches" (core diff.ts, G1 class); a gate matching a narrower
+    // projection is an EXPLICIT decision, never an accident. deny_paths: ANY
+    // touch of a denied glob is a violation — create, modify, delete, or
+    // either end of a rename. Contract protected_paths: creating a NEW file
+    // under a protected glob (or renaming into it) is tamper exactly like
+    // editing an existing one. Same matcher as every other path policy
+    // (INV-122).
+    const denyViolation = requireHuman(stats.touchedPaths, denyPaths);
     const approvalPatterns = protectedPathApprovals.map((approval) => approval.path);
-    const unapprovedExistingAutoProtectedPaths = stats.existingPaths.filter(
+    // AUTO-protected (gate/test files) deliberately matches existingPaths
+    // only: creating a new test/package file is the normal create/test-
+    // authoring flow, not tamper (pinned by test) — only touching an EXISTING
+    // gate input escalates.
+    const unapprovedAutoProtectedPaths = stats.existingPaths.filter(
       (path) => !matchAny(path, approvalPatterns),
     );
-    const specProtectedOnly = requireHuman(stats.existingPaths, protectedPaths);
-    const autoProtectedOnly = requireHuman(
-      unapprovedExistingAutoProtectedPaths,
-      autoProtectedPaths,
-    );
+    const specProtectedOnly = requireHuman(stats.touchedPaths, protectedPaths);
+    const autoProtectedOnly = requireHuman(unapprovedAutoProtectedPaths, autoProtectedPaths);
     const protectedOnly = {
       required: specProtectedOnly.required || autoProtectedOnly.required,
       reasons: [...new Set([...specProtectedOnly.reasons, ...autoProtectedOnly.reasons])],
@@ -3447,7 +3449,7 @@ export class Orchestrator {
       ],
     };
     const risk = classifyRisk({
-      changedPaths: stats.paths,
+      changedPaths: stats.touchedPaths,
       additions: stats.additions,
       deletions: stats.deletions,
       protectedPaths: protectedOnly.matchedPaths,
@@ -3461,7 +3463,7 @@ export class Orchestrator {
       route_proof_status: "verified" as const,
     };
     const evidenceFor = (reasons: string[]) => ({
-      files: stats.paths
+      files: stats.touchedPaths
         .filter((p) => reasons.some((r) => r.includes(p)))
         .map((path) => ({ path, lines: null })),
     });
@@ -3521,12 +3523,7 @@ export class Orchestrator {
         }),
       );
     }
-    // Contract protected_paths escalate the human gate only for tampering with
-    // existing protected files. Creating a new test/package file for create or
-    // test-authoring flows is not tamper by itself; built-in critical paths still
-    // apply to all changed paths.
-    const builtInHumanPaths = [...new Set([...stats.paths, ...stats.existingPaths])];
-    const builtInHuman = requireHuman(builtInHumanPaths, DEFAULT_REQUIRE_HUMAN_PATHS);
+    const builtInHuman = requireHuman(stats.touchedPaths, DEFAULT_REQUIRE_HUMAN_PATHS);
     const human = {
       required: builtInHuman.required || protectedOnly.required,
       reasons: [...new Set([...builtInHuman.reasons, ...protectedOnly.reasons])],

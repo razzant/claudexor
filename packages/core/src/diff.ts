@@ -317,6 +317,15 @@ export interface DiffPathSummary {
   addedPaths: string[];
   modifiedPaths: string[];
   existingPaths: string[];
+  /**
+   * EVERY path the diff touches: the new side of every file PLUS the old side
+   * of every rename/modify. This is the ONE set a path policy gate (deny,
+   * protected, built-in human) must match — any gate matching a narrower
+   * projection is bypassable by a diff shape it does not see (the G1 class:
+   * rename-out slipped past new-side-only, new-file-under-glob slipped past
+   * existing-only).
+   */
+  touchedPaths: string[];
   additions: number;
   deletions: number;
 }
@@ -351,6 +360,7 @@ export function summarizeDiffPaths(diff: string): DiffPathSummary {
     addedPaths,
     modifiedPaths,
     existingPaths: [...new Set(existingPaths)],
+    touchedPaths: [...new Set([...paths, ...existingPaths])],
     additions: parsed.additions,
     deletions: parsed.deletions,
   };
