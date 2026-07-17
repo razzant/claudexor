@@ -1138,7 +1138,7 @@ export class DaemonControlApiServer {
                     code: "revert_refused",
                   });
                 }
-                markRunReverted(rec);
+                markRunApplyState(rec, "reverted");
                 appendRunAuditEvent(rec, "control.applied", {
                   decision: "revert_run",
                   removed: revert.removed,
@@ -1199,6 +1199,7 @@ export class DaemonControlApiServer {
                     code: "delivery_refused",
                   });
                 }
+                if (delivered.applied) markRunApplyState(rec, "applied");
                 appendRunAuditEvent(rec, "control.applied", {
                   decision: body.action,
                   mode: body.applyMode ?? "apply",
@@ -1841,6 +1842,7 @@ export class DaemonControlApiServer {
       gateSpecs: gateSpecsForRun,
       chainMutation: (record, work) => this.chainRunMutation(record, work),
       appendAudit: appendRunAuditEvent,
+      markApplied: (record) => markRunApplyState(record, "applied"),
     };
   }
 
@@ -2146,11 +2148,13 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
   });
 }
 
-/** Flip the persisted work_product apply_state to `reverted` after a successful
- * revert so the run stops advertising a Revert affordance (single source: the
- * work_product meta that controlRunResult projects). Best-effort: the revert
- * already happened; a metadata write failure must not 500 the response. */
-function markRunReverted(rec: DaemonRunRecord): void {
+/** Flip the persisted work_product apply_state after a successful apply or
+ * revert — ONE owner of the durable outcome fact that controlRunResult
+ * projects AND retention's hasActionableWorkProduct consumes (round-15 #2: an
+ * applied-but-unmarked patch would read as actionable forever and pin the run
+ * against GC). Idempotent and best-effort: the delivery/revert already
+ * happened; a metadata write failure must not 500 the response. */
+function markRunApplyState(rec: DaemonRunRecord, state: "applied" | "reverted"): void {
   try {
     if (!rec.runDir) return;
     const root = safeArtifactRoot(rec.runDir);
@@ -2162,7 +2166,7 @@ function markRunReverted(rec: DaemonRunRecord): void {
       string,
       unknown
     >;
-    meta["apply_state"] = "reverted";
+    meta["apply_state"] = state;
     doc["meta"] = meta;
     // Atomic tmp+rename: a crash mid-write must never leave work_product.yaml
     // half-written (it would degrade the run projection to kind: none).

@@ -19,7 +19,7 @@ import {
   parseUnifiedDiff,
   readVerifiedAttachmentBytes,
 } from "@claudexor/core";
-import { resolveSecret } from "@claudexor/secrets";
+import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
 import {
   CLAUDEXOR_VERSION,
   nowIso,
@@ -335,16 +335,18 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
         // The instance secret fence holds for profiles too (release wave
         // round-11 BLOCK): the default instance may reference raw/openai
         // slots; a NAMED instance only its own — a profile must never route
-        // one provider's key to another provider's base URL.
+        // one provider's key to another provider's base URL. The ref must be
+        // NAMESPACED (round-15 #5): a bare ref would alias the engine-default
+        // slot, and profiles are additive identities.
         const ref = profile.secret_ref ?? "";
-        const base = ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : ref;
+        const base = namespacedSecretRefBase(ref);
         const allowed = id === "raw-api" ? ["raw", "openai"] : [id];
-        if (!allowed.includes(base)) {
+        if (!base || !allowed.includes(base)) {
           yield {
             type: "error",
             session_id: spec.session_id,
             ts: nowIso(),
-            error: `credential profile "${profile.profile_id}": secret "${ref || "(missing ref)"}" is outside ${id}'s instance fence (allowed bases: ${allowed.join(", ")})`,
+            error: `credential profile "${profile.profile_id}": secret "${ref || "(missing ref)"}" is outside ${id}'s instance fence (namespaced base:profile refs only; allowed bases: ${allowed.join(", ")})`,
           };
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;

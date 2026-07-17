@@ -288,6 +288,32 @@ describe("Claude credential-profile doctor probe (INV-135)", () => {
     expect(probedEnv?.CLAUDE_CONFIG_DIR).toBe(canonicalProfileConfigDir(dir));
   });
 
+  it("a foreign or bare slot is unavailable at PROBE time — never admitted then refused at run (round-15 #4)", async () => {
+    const reads: string[] = [];
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => {
+        throw new Error("no native probe for a secret-ref profile");
+      },
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      resolveProfileSecret: (ref) => {
+        reads.push(ref);
+        return "stored-anyway";
+      },
+    });
+    for (const secret_ref of ["openai:work", "anthropic", "claude_oauth:work"]) {
+      const status = await adapter.probeCredentialProfile!(
+        profile({ credential_kind: "api_key", isolation_locator: null, secret_ref }),
+      );
+      expect(status).toMatchObject({ availability: "unavailable", verification: "failed" });
+      expect(status.detail).toContain("anthropic slot");
+    }
+    // The mis-bound slots are never even read.
+    expect(reads).toEqual([]);
+  });
+
   it("reports secret-ref presence without claiming liveness", async () => {
     const adapter = createClaudeAdapter({
       detectVersion: async () => "2.1.165",

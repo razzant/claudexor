@@ -71,6 +71,20 @@
           "default": [],
           "description": "Sticky eligible harness pool; empty = the engine auto-pools."
         },
+        "credentialProfileId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
+          "default": null
+        },
         "state": {
           "type": "string",
           "enum": [
@@ -101,9 +115,7 @@
         "runIds": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Non-empty identifier string."
+            "$ref": "#/definitions/ControlThread/properties/credentialProfileId/anyOf/0"
           },
           "default": [],
           "description": "Ordered run lineage of the thread."
@@ -111,7 +123,7 @@
         "headRunId": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ControlThread/properties/runIds/items"
+              "$ref": "#/definitions/ControlThread/properties/credentialProfileId/anyOf/0"
             },
             {
               "type": "null"

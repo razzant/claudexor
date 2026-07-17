@@ -136,36 +136,15 @@ export class SecretStore {
   }
 }
 
-/**
- * The single allowlist of managed secret names (previously duplicated in
- * the CLI and the control API, and BOTH were missing `claude_oauth` — the
- * claude adapter reads it, so it must be settable). Names are secret REFS,
- * never values; adding a name here makes it settable via CLI and HTTP alike.
- */
-export const MANAGED_SECRET_NAMES = [
-  "openai",
-  "anthropic",
-  "claude_oauth",
-  "openrouter",
-  "cursor",
-  "opencode",
-  "raw",
-] as const;
-
-/**
- * Managed names accept an optional per-profile namespace suffix (INV-135):
- * `<base>` (the engine-default slot) or `<base>:<profile>` where base stays in
- * the allowlist and profile is a bounded slug. One grammar for CLI, HTTP, and
- * adapters — a profile's secret_ref is exactly such a name.
- */
-const PROFILE_SUFFIX = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-
-export function isManagedSecretName(name: string): boolean {
-  const sep = name.indexOf(":");
-  const base = sep === -1 ? name : name.slice(0, sep);
-  if (!(MANAGED_SECRET_NAMES as readonly string[]).includes(base)) return false;
-  return sep === -1 || PROFILE_SUFFIX.test(name.slice(sep + 1));
-}
+// The managed secret NAME grammar (allowlist + namespace rule) is owned by
+// the dependency-free util package so the schema layer can validate profile
+// secret_refs against the same single grammar; re-exported here for the
+// store's historical importers.
+export {
+  MANAGED_SECRET_NAMES,
+  isManagedSecretName,
+  namespacedSecretRefBase,
+} from "@claudexor/util";
 
 export interface ResolveOptions {
   /** Test seam: inject a scoped store. Production callers use the default. */

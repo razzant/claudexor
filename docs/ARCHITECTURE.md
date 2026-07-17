@@ -345,9 +345,15 @@ credential_kind, isolation_locator | secret_ref, enabled}`. `config_dir_login`
 profiles point at a Claudexor-scoped vendor config dir
 (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`, canonical absolute path, NEVER the default
 vendor store); `oauth_token`/`api_key` profiles point at a namespaced
-secret-store name (`claude_oauth:work`, `anthropic:acc2`, …). Readiness is the
-doctor's separate `CredentialProfileStatus` projection
-(`GET /v2/credential-profiles`, `claudexor profiles`), never durable config.
+secret-store name (`claude_oauth:work`, `anthropic:acc2`, …) — the namespace
+is REQUIRED (the schema refuses a bare engine-default slot like `anthropic`,
+which would silently alias the default credential), and each adapter binds the
+ref's base to its own provider slot so one provider's key is never sent to
+another. Readiness is the doctor's separate `CredentialProfileStatus`
+projection (`GET /v2/credential-profiles`, `claudexor profiles`), never
+durable config; every adapter's profile probe enforces the SAME slot binding
+as its run route, so a misconfigured profile reads `unavailable` instead of
+being admitted and refused mid-run.
 
 The orchestrator is the ONE resolve owner: an explicit per-run
 `credentialProfileId` becomes the typed `credential_profile` on every
@@ -1297,3 +1303,11 @@ code touching one of these areas must honor it or change it explicitly here.
   present but unproven by isolated smoke) is refused even when the user names
   it — reviewer verdicts must ride proven routes, unlike candidates where
   explicit selection admits degraded.
+- A credential profile cannot bootstrap a raw-API instance whose own key is
+  absent: raw-API discovery is key-gated (an instance without its configured
+  key is not a route, so no manifest exists for the profile probe to
+  override). CLI harnesses (claude/codex/cursor/opencode) discover
+  credential-neutrally, so their profile probes CAN admit a route past a
+  logged-out default store; for raw-API, set the instance key (env or its
+  managed slot) and use the profile for per-run key selection within the
+  instance fence.

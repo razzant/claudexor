@@ -120,6 +120,9 @@ export interface RunApplyRouteContext {
   gateSpecs(record: DaemonRunRecord): NonNullable<Parameters<typeof verifyAndDeliver>[3]>;
   chainMutation<T>(record: DaemonRunRecord, work: () => Promise<T>): Promise<T>;
   appendAudit(record: DaemonRunRecord, type: string, payload: Record<string, unknown>): void;
+  /** Persist apply_state=applied on the run's work product after a delivery
+   * reports applied=true (round-15 #2) — idempotent, best-effort. */
+  markApplied(record: DaemonRunRecord): void;
 }
 
 /** Own the generic manual run apply/check routes outside the daemon server shell. */
@@ -212,6 +215,11 @@ export async function handleRunApplyRoutes(
     if (!delivered.applied && delivered.detail?.includes("refusing")) {
       ctx.appendAudit(record, "control.rejected", { control: "apply", reason: delivered.detail });
     }
+    // Runs OUTSIDE work() so an idempotent replay of an already-delivered
+    // command still converges the durable apply_state (round-15 #2): without
+    // this flip, retention keeps classifying the delivered patch as
+    // actionable and preserves the run indefinitely.
+    if (delivered.applied) ctx.markApplied(record);
     ctx.json(res, 200, ControlDeliveryResponse.parse(delivered));
   } catch (error) {
     ctx.requestError(res, error);

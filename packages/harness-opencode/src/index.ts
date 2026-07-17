@@ -1,12 +1,15 @@
 import type {
   AccessProfile,
   ConformanceReport,
+  CredentialProfile,
+  CredentialProfileStatus,
   HarnessEvent,
   HarnessManifest,
   HarnessRunSpec,
 } from "@claudexor/schema";
 import {
   ConformanceReport as ConformanceReportSchema,
+  CredentialProfileStatus as CredentialProfileStatusSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
@@ -17,7 +20,7 @@ import {
   runCapture,
   runCliHarness,
 } from "@claudexor/core";
-import { resolveSecret } from "@claudexor/secrets";
+import { namespacedSecretRefBase, resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, redactSecrets } from "@claudexor/util";
 import { parseOpenCodeEvent } from "./parse.js";
 
@@ -75,6 +78,84 @@ function providerKeyAvailable(
   env: Record<string, string | null | undefined> = process.env,
 ): boolean {
   return providerKey(env) !== null;
+}
+
+/**
+ * INV-135 strict profile routing, ONE owner for the run route and the doctor
+ * probe: an opencode profile is exactly its secret-ref API key, and the ref's
+ * NAMESPACED base selects the provider env var it rides (opencode is
+ * multi-provider by design). A bare ref would alias the engine-default slot;
+ * other kinds and missing secrets refuse typed, never the default ladder.
+ */
+export function opencodeProfileKeyOrRefusal(
+  profile: {
+    profile_id: string;
+    credential_kind: string;
+    secret_ref: string | null;
+  },
+  resolve: (ref: string) => string | null = resolveSecret,
+):
+  | { envVar: string; value: string }
+  | { refusal: string; reason: "misconfigured" | "missing_secret" } {
+  if (profile.credential_kind !== "api_key")
+    return {
+      refusal: `credential profile "${profile.profile_id}": opencode supports only the api_key transport`,
+      reason: "misconfigured",
+    };
+  const ref = profile.secret_ref ?? "";
+  const base = namespacedSecretRefBase(ref);
+  const envVar = base
+    ? { opencode: "OPENCODE_API_KEY", openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY" }[
+        base
+      ]
+    : undefined;
+  if (!envVar)
+    return {
+      refusal: `credential profile "${profile.profile_id}": api_key secret_ref must use a namespaced opencode/openai/anthropic slot (base:profile, e.g. opencode:${profile.profile_id}; got "${ref}")`,
+      reason: "misconfigured",
+    };
+  const value = resolve(ref);
+  if (!value)
+    return {
+      refusal: `credential profile "${profile.profile_id}": secret "${ref}" is not stored`,
+      reason: "missing_secret",
+    };
+  return { envVar, value };
+}
+
+/**
+ * Doctor projection for one opencode profile (INV-135, release wave round-15
+ * #1): the SAME resolution the run route uses, mapped to a status. PRESENCE
+ * is the honest doctor fact for a stored key; liveness is the run's job.
+ */
+export function probeOpencodeCredentialProfile(
+  profile: CredentialProfile,
+  resolve: (ref: string) => string | null = resolveSecret,
+): CredentialProfileStatus {
+  const base = { profile_id: profile.profile_id, harness_id: "opencode" };
+  try {
+    const gate = opencodeProfileKeyOrRefusal(profile, resolve);
+    if ("refusal" in gate)
+      return CredentialProfileStatusSchema.parse({
+        ...base,
+        availability: "unavailable",
+        verification: gate.reason === "missing_secret" ? "not_run" : "failed",
+        detail: gate.refusal,
+      });
+    return CredentialProfileStatusSchema.parse({
+      ...base,
+      availability: "available",
+      verification: "not_run",
+      detail: `secret "${profile.secret_ref}" is stored`,
+    });
+  } catch (err) {
+    return CredentialProfileStatusSchema.parse({
+      ...base,
+      availability: "unavailable",
+      verification: "failed",
+      detail: redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 300),
+    });
+  }
 }
 
 const OPENCODE_ENABLED_INTENTS = [
@@ -260,6 +341,13 @@ export function createOpenCodeAdapter(): HarnessAdapter {
     review(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
       return runOpenCode(spec);
     },
+
+    // INV-135 (release wave round-15 #1): a valid opencode profile must admit
+    // the route even when no default provider key exists — the orchestrator
+    // consults THIS probe to override the default auth verdict.
+    async probeCredentialProfile(profile) {
+      return probeOpencodeCredentialProfile(profile);
+    },
   };
 }
 
@@ -295,27 +383,11 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
   const profile = spec.credential_profile;
   let key: { envVar: string; value: string } | null;
   if (profile) {
-    // INV-135 strict profile routing: opencode supports only secret-ref API
-    // keys; the ref's base name selects the provider env var it rides.
-    if (profile.credential_kind !== "api_key") {
-      throw new HarnessUnavailableError(
-        `credential profile "${profile.profile_id}": opencode supports only the api_key transport`,
-      );
-    }
-    const ref = profile.secret_ref ?? "";
-    const base = ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : ref;
-    const envVar = {
-      opencode: "OPENCODE_API_KEY",
-      openai: "OPENAI_API_KEY",
-      anthropic: "ANTHROPIC_API_KEY",
-    }[base];
-    const value = ref ? resolveSecret(ref) : null;
-    if (!envVar || !value) {
-      throw new HarnessUnavailableError(
-        `credential profile "${profile.profile_id}": secret "${ref || "(missing ref)"}" is not stored or names no opencode provider`,
-      );
-    }
-    key = { envVar, value };
+    // INV-135 strict profile routing — the same single owner the doctor
+    // probe consults (opencodeProfileKeyOrRefusal).
+    const gate = opencodeProfileKeyOrRefusal(profile);
+    if ("refusal" in gate) throw new HarnessUnavailableError(gate.refusal);
+    key = gate;
   } else {
     key = providerKey({ ...process.env, ...spec.env });
   }

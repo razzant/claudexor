@@ -4477,6 +4477,13 @@ describe("DaemonControlApiServer", () => {
           });
           expect(response.status).toBe(200);
           expect(readFileSync(join(project, "x"), "utf8")).toBe("new\n");
+          // Round-15 #2 pin: a successful apply durably flips the work
+          // product's apply_state, so retention stops classifying the
+          // delivered patch as actionable (and Revert becomes offerable).
+          const wp = parseYaml(
+            readFileSync(join(record.runDir as string, "final", "work_product.yaml"), "utf8"),
+          ) as { meta?: { apply_state?: string } };
+          expect(wp.meta?.apply_state).toBe("applied");
         },
         undefined,
         inMemoryDeliveryServices(),

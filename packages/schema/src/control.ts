@@ -1045,6 +1045,13 @@ export const ControlThread = z
       .array(z.string())
       .default([])
       .describe("Sticky eligible harness pool; empty = the engine auto-pools."),
+    /** Sticky credential profile (INV-135): clients can SET it via
+     * create/PATCH, so the projection must report it back (round-15 #3). */
+    credentialProfileId: Id.nullable()
+      .default(null)
+      .describe(
+        "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
+      ),
     state: ThreadState.default("active"),
     trashedAt: z.string().nullable().default(null).describe("When the thread entered trash."),
     purgeAfter: z.string().nullable().default(null).describe("When trash retention expires."),
@@ -1078,6 +1085,14 @@ export const ControlSession = z
       .nullable()
       .default(null)
       .describe("Model last observed on the session's stream."),
+    /** Credential profile the vendor session was created under (INV-135):
+     * resume never crosses profiles, so clients must be able to SEE the
+     * binding they are subject to (round-15 #3). */
+    profileId: Id.nullable()
+      .default(null)
+      .describe(
+        "Credential profile the vendor session was created under; resume never crosses profiles (null = engine-default credentials).",
+      ),
     state: z
       .enum(["live", "stale", "rebound"])
       .default("live")

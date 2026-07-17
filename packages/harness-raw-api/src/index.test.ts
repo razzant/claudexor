@@ -7,7 +7,11 @@ import { join } from "node:path";
 // Hermetic: never read this dev machine's stored secrets — the only key that
 // resolves is the env var the test sets (or none). Must be mocked before the
 // adapter module loads.
-vi.mock("@claudexor/secrets", () => ({ resolveSecret: () => null }));
+vi.mock("@claudexor/secrets", async (importOriginal) => ({
+  // The name GRAMMAR stays real (pure, no store); only store reads are stubbed.
+  ...(await importOriginal<typeof import("@claudexor/secrets")>()),
+  resolveSecret: () => null,
+}));
 
 import { HarnessRunSpec } from "@claudexor/schema";
 import { createRawApiAdapter } from "./index.js";
@@ -121,6 +125,45 @@ describe("raw-api models() — enumeration producer", () => {
     );
     const error = events.find((e) => e.type === "error");
     expect(error?.transient?.kind).toBe("service_unavailable");
+  });
+});
+
+// Release wave round-15 #5: the instance secret fence accepts only NAMESPACED
+// refs whose base belongs to the instance — a foreign provider's namespaced
+// slot must refuse typed before any secret read or network call.
+describe("raw-api profile instance fence (INV-135)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  it("refuses a namespaced ref outside the instance fence without touching the network", async () => {
+    process.env.OPENAI_API_KEY = "sk-default";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const events = await collect(
+      createRawApiAdapter().run(
+        HarnessRunSpec.parse({
+          session_id: "s1",
+          intent: "review",
+          prompt: "x",
+          cwd: process.cwd(),
+          access: "readonly",
+          external_context_policy: "auto",
+          tool_permission_policy: { web: "auto", allow: [], deny: [] },
+          credential_profile: {
+            profile_id: "acc2",
+            harness_id: "raw-api",
+            display_name: "Second",
+            credential_kind: "api_key",
+            secret_ref: "openrouter:acc2",
+          },
+        }),
+      ),
+    );
+    expect(events.map((e) => e.type)).toEqual(["error", "completed"]);
+    expect((events[0] as { error?: string }).error).toContain("instance fence");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

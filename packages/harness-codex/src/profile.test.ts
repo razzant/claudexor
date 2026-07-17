@@ -151,6 +151,29 @@ describe("Codex strict profile routing (INV-135)", () => {
     expect((events[0] as { error?: string }).error).toContain("does not support the oauth_token");
   });
 
+  it("a foreign or bare slot is unavailable at PROBE time — never admitted then refused at run (round-15 #4)", async () => {
+    const reads: string[] = [];
+    const adapter = createCodexAdapter({
+      detectVersion: async () => "codex 0.1-test",
+      probeLogin: async () => {
+        throw new Error("no native probe for a key profile");
+      },
+      resolveProfileSecret: (ref) => {
+        reads.push(ref);
+        return "stored-anyway";
+      },
+    });
+    for (const secret_ref of ["anthropic:acc2", "openai"]) {
+      const status = await adapter.probeCredentialProfile!(
+        profile({ credential_kind: "api_key", isolation_locator: null, secret_ref }),
+      );
+      expect(status).toMatchObject({ availability: "unavailable", verification: "failed" });
+      expect(status.detail).toContain("openai slot");
+    }
+    // The mis-bound slots are never even read.
+    expect(reads).toEqual([]);
+  });
+
   it("api_key profile seeds a scoped auth.json from exactly the namespaced secret", async () => {
     let runEnv: Record<string, string | null | undefined> | undefined;
     const reads: string[] = [];

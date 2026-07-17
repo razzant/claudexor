@@ -34,6 +34,7 @@ import { createCursorParser, parseCursorModelList } from "./parse.js";
 export { parseCursorModelList } from "./parse.js";
 import {
   cursorProfileKeyOrRefusal,
+  probeCursorCredentialProfile,
   probeCursorNativeAuth,
   selectCursorAuthRoute,
   shouldDiscloseCursorAutoApiRoute,
@@ -132,6 +133,8 @@ type CursorRuntimeDeps = {
   apiSmokeFailureCacheTtlMs: number;
   nowMs: () => number;
   runCliHarness: typeof runCliHarnessDefault;
+  /** INV-062: profile secrets are resolved transiently, never logged. */
+  resolveProfileSecret: (ref: string) => string | null;
 };
 
 export function cursorApiSmokeFinalText(stdout: string): string | null {
@@ -444,6 +447,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     apiSmokeFailureCacheTtlMs: CURSOR_API_SMOKE_FAILURE_CACHE_TTL_MS,
     nowMs: () => Date.now(),
     runCliHarness: runCliHarnessDefault,
+    resolveProfileSecret: (ref) => resolveSecret(ref),
     ...deps,
   };
   return {
@@ -677,6 +681,13 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
     async models(spec?: DoctorSpec): Promise<HarnessModel[]> {
       return listCursorModelsFromReadyRoute(runtime, spec);
     },
+
+    // INV-135 (release wave round-15 #1): a valid cursor profile must admit
+    // the route even when the default store is logged out — the orchestrator
+    // consults THIS probe to override the default auth verdict.
+    async probeCredentialProfile(profile) {
+      return probeCursorCredentialProfile(profile, runtime.resolveProfileSecret);
+    },
   };
 }
 
@@ -707,7 +718,9 @@ async function* runCursor(
   // a profile is exactly its secret-ref API key (smoked before use like the
   // default key route); other kinds refuse typed.
   const profile = spec.credential_profile;
-  const profileGate = profile ? cursorProfileKeyOrRefusal(profile) : null;
+  const profileGate = profile
+    ? cursorProfileKeyOrRefusal(profile, deps.resolveProfileSecret)
+    : null;
   if (profileGate && "refusal" in profileGate) {
     yield { type: "error", session_id: spec.session_id, ts: nowIso(), error: profileGate.refusal };
     yield { type: "completed", session_id: spec.session_id, ts: nowIso() };

@@ -161,18 +161,28 @@ export async function runRetentionPass(
         const bytes = treeBytes(candidate.root);
         if (!dryRun) {
           rmSync(candidate.root, { recursive: true, force: true });
-          writeText(
-            join(candidate.root, TOMBSTONE),
-            yamlStringify({
-              run_id: candidate.runId,
-              deleted_at: new Date(now()).toISOString(),
-              reason: "retention",
-              policy: {
-                runs_max_age_days: policy.runsMaxAgeDays,
-                keep_last_runs_per_project: policy.keepLastRunsPerProject,
-              },
-            }),
-          );
+          // The deletion is FACT once rmSync returns — a failed tombstone
+          // write must not erase it from the receipt (release wave round-15
+          // NIT); it degrades to an errors[] entry beside the recorded
+          // deletion instead.
+          try {
+            writeText(
+              join(candidate.root, TOMBSTONE),
+              yamlStringify({
+                run_id: candidate.runId,
+                deleted_at: new Date(now()).toISOString(),
+                reason: "retention",
+                policy: {
+                  runs_max_age_days: policy.runsMaxAgeDays,
+                  keep_last_runs_per_project: policy.keepLastRunsPerProject,
+                },
+              }),
+            );
+          } catch (tombstoneError) {
+            errors.push(
+              `runs/${candidate.runId}: tombstone write failed: ${tombstoneError instanceof Error ? tombstoneError.message : String(tombstoneError)}`,
+            );
+          }
         }
         deletedRuns.push({
           run_id: candidate.runId,

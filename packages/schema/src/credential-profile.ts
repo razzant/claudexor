@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { namespacedSecretRefBase } from "@claudexor/util";
 import { Id, IsoTimestamp } from "./primitives.js";
 import { AuthAvailability, AuthVerification } from "./auth.js";
 
@@ -66,6 +67,14 @@ export const CredentialProfile = z
         ctx.addIssue({
           code: "custom",
           message: `${profile.credential_kind} profiles require secret_ref`,
+        });
+      // Release wave round-15 #5: a profile's ref must be NAMESPACED
+      // (`base:profile`). A bare engine-default slot (e.g. "anthropic") would
+      // silently alias the default credential — profiles are ADDITIVE.
+      else if (namespacedSecretRefBase(profile.secret_ref) === null)
+        ctx.addIssue({
+          code: "custom",
+          message: `secret_ref "${profile.secret_ref}" must be a namespaced managed slot (base:profile, e.g. claude_oauth:work); bare engine-default slots would alias the default credential`,
         });
       if (profile.isolation_locator)
         ctx.addIssue({

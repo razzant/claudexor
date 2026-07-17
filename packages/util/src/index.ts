@@ -1,4 +1,5 @@
 export { CLAUDEXOR_VERSION } from "./version.js";
+export * from "./secret-names.js";
 export * from "./sensitive-resource.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";

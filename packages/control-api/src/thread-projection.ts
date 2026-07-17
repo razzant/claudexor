@@ -24,6 +24,7 @@ export function projectThread(raw: unknown, needsHuman: boolean): ControlThread 
     authPreference: t["auth_preference"] ?? "auto",
     primaryHarness: t["primary_harness"] ?? null,
     eligibleHarnesses: t["eligible_harnesses"] ?? [],
+    credentialProfileId: t["credential_profile_id"] ?? null,
     state: t["state"] ?? "active",
     trashedAt: t["trashed_at"] ?? null,
     purgeAfter: t["purge_after"] ?? null,
@@ -43,6 +44,7 @@ export function projectSession(raw: unknown): ControlSession {
     harnessId: s["harness_id"],
     nativeSessionId: s["native_session_id"] ?? null,
     observedModel: s["last_observed_model"] ?? null,
+    profileId: s["profile_id"] ?? null,
     state: s["state"] ?? "live",
   });
 }

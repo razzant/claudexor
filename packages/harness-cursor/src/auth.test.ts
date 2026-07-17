@@ -1148,3 +1148,58 @@ describe("cursor adapter auth route wiring", () => {
     expect(modelEnvs[0]?.["CURSOR_API_KEY"]).toBeNull();
   });
 });
+
+// Release wave round-15 #1/#4: a valid cursor profile must be probe-admissible
+// past a logged-out default store, and a mis-bound ref must be unavailable at
+// PROBE time (never admitted then refused at run). One owner: the probe maps
+// the SAME cursorProfileKeyOrRefusal resolution the run route uses.
+describe("cursor credential-profile doctor probe (INV-135)", () => {
+  const profile = (over: Record<string, unknown> = {}) =>
+    ({
+      profile_id: "acc2",
+      harness_id: "cursor",
+      display_name: "Second",
+      credential_kind: "api_key",
+      isolation_locator: null,
+      secret_ref: "cursor:acc2",
+      enabled: true,
+      created_at: null,
+      ...over,
+    }) as never;
+
+  it("a stored namespaced cursor slot is available (presence, not liveness)", async () => {
+    const adapter = createCursorAdapter({
+      resolveProfileSecret: (ref) => (ref === "cursor:acc2" ? "sk-cursor" : null),
+    });
+    const status = await adapter.probeCredentialProfile!(profile());
+    expect(status).toMatchObject({
+      profile_id: "acc2",
+      harness_id: "cursor",
+      availability: "available",
+      verification: "not_run",
+    });
+  });
+
+  it("a foreign or bare slot is unavailable and never read; a missing secret is unavailable", async () => {
+    const reads: string[] = [];
+    const adapter = createCursorAdapter({
+      resolveProfileSecret: (ref) => {
+        reads.push(ref);
+        return null;
+      },
+    });
+    for (const secret_ref of ["openai:acc2", "cursor"]) {
+      const status = await adapter.probeCredentialProfile!(profile({ secret_ref }));
+      expect(status).toMatchObject({ availability: "unavailable", verification: "failed" });
+      expect(status.detail).toContain("cursor slot");
+    }
+    expect(reads).toEqual([]);
+    const missing = await adapter.probeCredentialProfile!(profile());
+    expect(missing).toMatchObject({ availability: "unavailable", verification: "not_run" });
+    expect(reads).toEqual(["cursor:acc2"]);
+    const unsupported = await adapter.probeCredentialProfile!(
+      profile({ credential_kind: "config_dir_login", secret_ref: null, isolation_locator: "/x" }),
+    );
+    expect(unsupported).toMatchObject({ availability: "unavailable", verification: "failed" });
+  });
+});

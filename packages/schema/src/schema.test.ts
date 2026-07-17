@@ -779,6 +779,43 @@ describe("CredentialProfile validation (INV-135)", () => {
     ).toBe(false);
   });
 
+  it("secret_ref must be NAMESPACED — a bare engine-default slot is refused (round-15 #5)", () => {
+    // A bare managed name (the engine-default slot) would silently alias the
+    // default credential; profiles are ADDITIVE identities.
+    for (const bare of ["anthropic", "claude_oauth", "openai", "cursor"]) {
+      const parsed = CredentialProfile.safeParse({
+        ...base,
+        credential_kind: bare === "claude_oauth" ? "oauth_token" : "api_key",
+        secret_ref: bare,
+      });
+      expect(parsed.success).toBe(false);
+      expect(JSON.stringify(parsed.error?.issues)).toContain("namespaced");
+    }
+    // Unmanaged bases and malformed suffixes are refused by the same grammar.
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "api_key",
+        secret_ref: "bogus:work",
+      }).success,
+    ).toBe(false);
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "api_key",
+        secret_ref: "anthropic:",
+      }).success,
+    ).toBe(false);
+    // The namespaced form stays valid.
+    expect(
+      CredentialProfile.safeParse({
+        ...base,
+        credential_kind: "api_key",
+        secret_ref: "anthropic:acc-2",
+      }).success,
+    ).toBe(true);
+  });
+
   it("the config registry refuses duplicate (harness, profile) ids", () => {
     const entry = {
       ...base,

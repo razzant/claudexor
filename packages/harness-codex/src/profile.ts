@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
-import { isManagedSecretName } from "@claudexor/secrets";
+import { namespacedSecretRefBase } from "@claudexor/secrets";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth } from "./auth.js";
 import { canonicalIsolationLocator } from "@claudexor/core";
@@ -68,16 +68,8 @@ export async function resolveCodexProfileRoute(
     }
   }
   if (profile.credential_kind === "api_key") {
-    const ref = profile.secret_ref ?? "";
-    const base = isManagedSecretName(ref)
-      ? ref.includes(":")
-        ? ref.slice(0, ref.indexOf(":"))
-        : ref
-      : null;
-    if (base !== "openai")
-      return {
-        refusal: `credential profile "${profile.profile_id}": api_key secret_ref must use the openai slot (got "${ref}")`,
-      };
+    const slotRefusal = codexProfileSlotRefusal(profile);
+    if (slotRefusal) return { refusal: slotRefusal };
     const key = profile.secret_ref ? runtime.resolveProfileSecret(profile.secret_ref) : null;
     if (!key)
       return {
@@ -95,6 +87,15 @@ export async function resolveCodexProfileRoute(
   return {
     refusal: `credential profile "${profile.profile_id}": codex does not support the ${profile.credential_kind} transport`,
   };
+}
+
+/** ONE owner of the codex slot binding, shared by the run route and the
+ * doctor probe (INV-135): the ref must be a NAMESPACED openai slot — a
+ * foreign-provider ref would send that key to OpenAI, and a bare "openai"
+ * would alias the engine-default credential. Null = the binding holds. */
+function codexProfileSlotRefusal(profile: CredentialProfile): string | null {
+  if (namespacedSecretRefBase(profile.secret_ref) === "openai") return null;
+  return `credential profile "${profile.profile_id}": api_key secret_ref must use a namespaced openai slot (base:profile, e.g. openai:${profile.profile_id}; got "${profile.secret_ref ?? ""}")`;
 }
 
 /** Doctor projection for one codex profile (INV-135). */
@@ -128,6 +129,17 @@ export async function probeCodexCredentialProfile(
       });
     }
     if (profile.credential_kind === "api_key") {
+      // The probe enforces the SAME slot binding as the run path (release
+      // wave round-15 #4) — a foreign-provider or bare ref is unavailable,
+      // never admitted-then-rejected at execution; the slot is never read.
+      const slotRefusal = codexProfileSlotRefusal(profile);
+      if (slotRefusal)
+        return CredentialProfileStatusSchema.parse({
+          ...base,
+          availability: "unavailable",
+          verification: "failed",
+          detail: slotRefusal,
+        });
       // PRESENCE is the honest doctor fact here; liveness is the
       // capability smoke's job, not a listing probe's.
       const stored = profile.secret_ref

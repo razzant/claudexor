@@ -4,7 +4,7 @@ import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/sche
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { canonicalIsolationLocator } from "@claudexor/core";
-import { isManagedSecretName } from "@claudexor/secrets";
+import { namespacedSecretRefBase } from "@claudexor/secrets";
 import {
   claudeNativeEnv,
   defaultNativeClaudeConfigDir,
@@ -75,11 +75,8 @@ export async function resolveClaudeProfileRoute(
       return { refusal: err instanceof Error ? err.message : String(err) };
     }
   } else if (profile.credential_kind === "oauth_token") {
-    const bind = profileRefBase(profile.secret_ref);
-    if (bind !== "claude_oauth")
-      return {
-        refusal: `credential profile "${profile.profile_id}": oauth_token secret_ref must use the claude_oauth slot (got "${profile.secret_ref ?? ""}")`,
-      };
+    const slotRefusal = claudeProfileSlotRefusal(profile);
+    if (slotRefusal) return { refusal: slotRefusal };
     oauthToken = profile.secret_ref ? runtime.resolveProfileSecret(profile.secret_ref) : null;
     if (oauthToken) subscriptionSource = "oauth_token_env";
     else
@@ -87,11 +84,8 @@ export async function resolveClaudeProfileRoute(
         refusal: `credential profile "${profile.profile_id}": secret "${profile.secret_ref ?? "(missing ref)"}" is not stored`,
       };
   } else {
-    const bind = profileRefBase(profile.secret_ref);
-    if (bind !== "anthropic")
-      return {
-        refusal: `credential profile "${profile.profile_id}": api_key secret_ref must use the anthropic slot (got "${profile.secret_ref ?? ""}")`,
-      };
+    const slotRefusal = claudeProfileSlotRefusal(profile);
+    if (slotRefusal) return { refusal: slotRefusal };
     key = profile.secret_ref ? runtime.resolveProfileSecret(profile.secret_ref) : null;
     if (!key)
       return {
@@ -139,8 +133,20 @@ export async function probeClaudeCredentialProfile(
           "no verified claude.ai login in the profile config dir (run the profile login)",
       });
     }
-    // Secret-ref kinds: PRESENCE is the honest doctor fact here; liveness
-    // is the capability smoke's job, not a listing probe's.
+    // Secret-ref kinds: the probe enforces the SAME slot binding as the run
+    // path (release wave round-15 #4) — a foreign-provider or bare ref is
+    // unavailable, never admitted-then-rejected at execution. The foreign
+    // slot is never even read.
+    const slotRefusal = claudeProfileSlotRefusal(profile);
+    if (slotRefusal)
+      return CredentialProfileStatusSchema.parse({
+        ...base,
+        availability: "unavailable",
+        verification: "failed",
+        detail: slotRefusal,
+      });
+    // PRESENCE is the honest doctor fact here; liveness is the capability
+    // smoke's job, not a listing probe's.
     const stored = profile.secret_ref
       ? runtime.resolveProfileSecret(profile.secret_ref) !== null
       : false;
@@ -162,10 +168,13 @@ export async function probeClaudeCredentialProfile(
   }
 }
 
-/** The managed BASE of a profile secret_ref, or null when malformed (INV-135:
- * a profile's ref must be a managed slot BOUND to its own provider — a claude
- * profile referencing openai:* would transmit that key to Anthropic). */
-function profileRefBase(ref: string | null): string | null {
-  if (!ref || !isManagedSecretName(ref)) return null;
-  return ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : ref;
+/** ONE owner of the claude slot binding, shared by the run route and the
+ * doctor probe (INV-135): a profile's ref must be a NAMESPACED managed slot
+ * bound to its own provider — a claude profile referencing openai:* would
+ * transmit that key to Anthropic, and a bare ref (e.g. "anthropic") would
+ * alias the engine-default credential. Null = the binding holds. */
+function claudeProfileSlotRefusal(profile: CredentialProfile): string | null {
+  const expected = profile.credential_kind === "oauth_token" ? "claude_oauth" : "anthropic";
+  if (namespacedSecretRefBase(profile.secret_ref) === expected) return null;
+  return `credential profile "${profile.profile_id}": ${profile.credential_kind} secret_ref must use a namespaced ${expected} slot (base:profile, e.g. ${expected}:${profile.profile_id}; got "${profile.secret_ref ?? ""}")`;
 }
