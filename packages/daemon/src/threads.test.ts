@@ -296,6 +296,30 @@ describe("ThreadStore", () => {
     });
   });
 
+  it("one cached session PER profile (round-16 #3): A→B→A resumes A's own native conversation", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj" });
+    s.recordSession(t.id, "claude", "native-a", null, "a");
+    // Recording under profile B (or the default) must not overwrite A's row.
+    s.recordSession(t.id, "claude", "native-b", null, "b");
+    s.recordSession(t.id, "claude", "native-default", null, null);
+    expect(s.resumeMap(t.id, "a")).toEqual({
+      claude: { sessionId: "native-a", profileId: "a" },
+    });
+    expect(s.resumeMap(t.id, "b")).toEqual({
+      claude: { sessionId: "native-b", profileId: "b" },
+    });
+    expect(s.resumeMap(t.id)).toEqual({
+      claude: { sessionId: "native-default", profileId: null },
+    });
+    // A re-record under the SAME profile refreshes its own row, not a new one.
+    s.recordSession(t.id, "claude", "native-a2", null, "a");
+    expect(s.resumeMap(t.id, "a")).toEqual({
+      claude: { sessionId: "native-a2", profileId: "a" },
+    });
+    expect(s.sessionsForThread(t.id)).toHaveLength(3);
+  });
+
   it("assertKnownIds fails loudly on bogus, foreign, and thread-less turn ids (socket-caller fence)", () => {
     const { s } = store();
     const a = s.createThread({ repoRoot: "/tmp/a" });

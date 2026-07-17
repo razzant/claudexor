@@ -1311,3 +1311,13 @@ code touching one of these areas must honor it or change it explicitly here.
   logged-out default store; for raw-API, set the instance key (env or its
   managed slot) and use the profile for per-run key selection within the
   instance fence.
+- Structured-output runs (`--output-schema`) route through a non-interactive
+  lane (DT2.1-16): the daemon always arms an interaction channel, and the
+  interactive-capable claude lane's `--json-schema` × stream-json combination
+  is not live-verified — the refusal message names that reality instead of
+  silently dropping the schema.
+- Profile rotation never crosses credential kinds: a subscription→API-key
+  swap mid-attempt would silently change the payment model, and the attempt's
+  first-wins auth-route receipt would misvalue metered usage as subscription
+  entitlement against a finite cash cap. `nextEligibleProfile` skips
+  cross-kind candidates; rotate between accounts of the SAME transport only.

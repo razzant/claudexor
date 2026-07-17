@@ -472,7 +472,11 @@ export class ThreadStore {
     this.commit({ turns: [nextTurn], ...(nextThread ? { threads: [nextThread] } : {}) });
   }
 
-  /** Record/refresh the native CLI session a harness emitted for this thread. */
+  /** Record/refresh the native CLI session a harness emitted for this thread.
+   * Keyed by (thread, harness, PROFILE) — resume eligibility is
+   * profile-specific (release wave round-16 #3), so profile B's session must
+   * never overwrite profile A's row: an A→B→A sequence resumes A's own native
+   * conversation (the null engine default is its own row too). */
   recordSession(
     threadId: string,
     harnessId: string,
@@ -481,7 +485,10 @@ export class ThreadStore {
     profileId: string | null = null,
   ): void {
     const existing = this.state.sessions.find(
-      (s) => s.thread_id === threadId && s.harness_id === harnessId,
+      (s) =>
+        s.thread_id === threadId &&
+        s.harness_id === harnessId &&
+        (s.profile_id ?? null) === (profileId ?? null),
     );
     const now = nowIso();
     const session = SessionSchema.parse({

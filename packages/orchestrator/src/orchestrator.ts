@@ -1285,6 +1285,18 @@ export class Orchestrator {
             : input.authPreference === "subscription"
               ? ("local_session" as const)
               : (metric?.last_auth_mode ?? guessedAuthMode);
+        // The quota subject this candidate would actually run as (release
+        // wave round-16 #2): the resolved profile id, or null for the engine
+        // default — so profile A's cooldown never excludes profile B or the
+        // default. A profile that does not resolve for this harness routes
+        // as unknown (undefined) and stays conservatively any-subject.
+        let credentialSubjectId: string | null | undefined;
+        try {
+          credentialSubjectId =
+            this.resolveCredentialProfile(input, r.adapter.id)?.profile_id ?? null;
+        } catch {
+          credentialSubjectId = undefined;
+        }
         return {
           harnessId: r.adapter.id,
           available: true,
@@ -1301,6 +1313,7 @@ export class Orchestrator {
               : authMode === "local_session"
                 ? "vendor_native"
                 : undefined,
+          credentialSubjectId,
         };
       });
       const ranked = rankHarnesses(remaining, {

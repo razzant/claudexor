@@ -245,6 +245,7 @@ export class BudgetLedger {
   cooldownActive(
     harnessId: string,
     credentialRoute?: CredentialRoute,
+    credentialSubjectId?: string | null,
     now: number = Date.now(),
   ): boolean {
     const liveObservation = this.observationsFor(harnessId).some((observation) => {
@@ -254,7 +255,7 @@ export class BudgetLedger {
     });
     if (liveObservation) return true;
     if (!credentialRoute) return false;
-    return this.snapshotsFor(harnessId, credentialRoute).some((snapshot) =>
+    return this.snapshotsFor(harnessId, credentialRoute, credentialSubjectId).some((snapshot) =>
       snapshot.constraints.some((constraint) => {
         const cooldown = constraint.cooldown_until
           ? Date.parse(constraint.cooldown_until)
@@ -275,6 +276,7 @@ export class BudgetLedger {
   bindingPaceSlack(
     harnessId: string,
     credentialRoute?: CredentialRoute,
+    credentialSubjectId?: string | null,
     now: number = Date.now(),
   ): number | null {
     const latest = new Map<string, BudgetObservation>();
@@ -300,7 +302,7 @@ export class BudgetLedger {
       slacks.push(elapsedFraction - observation.used_ratio);
     }
     if (credentialRoute) {
-      for (const snapshot of this.snapshotsFor(harnessId, credentialRoute)) {
+      for (const snapshot of this.snapshotsFor(harnessId, credentialRoute, credentialSubjectId)) {
         for (const constraint of snapshot.constraints) {
           if (
             typeof constraint.used_ratio !== "number" ||
@@ -321,12 +323,23 @@ export class BudgetLedger {
     return slacks.length > 0 ? Math.min(...slacks) : null;
   }
 
-  private snapshotsFor(harnessId: string, credentialRoute: CredentialRoute): QuotaSnapshot[] {
+  /** Fresh snapshots for a harness+route, optionally pinned to ONE credential
+   * subject (release wave round-16 #2): when the caller knows the effective
+   * subject — a profile id, or null for the engine default — only that
+   * subject's windows apply, so profile A's exhaustion never cools profile B
+   * or the default. `undefined` = subject unknown, conservative any-subject. */
+  private snapshotsFor(
+    harnessId: string,
+    credentialRoute: CredentialRoute,
+    credentialSubjectId?: string | null,
+  ): QuotaSnapshot[] {
     return [...this.quotaSnapshots.values()].filter(
       (snapshot) =>
         snapshot.freshness === "fresh" &&
         snapshot.subject.harness === harnessId &&
-        snapshot.subject.credential_route === credentialRoute,
+        snapshot.subject.credential_route === credentialRoute &&
+        (credentialSubjectId === undefined ||
+          (snapshot.subject.subject_id ?? null) === credentialSubjectId),
     );
   }
 

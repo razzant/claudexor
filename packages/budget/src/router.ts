@@ -17,6 +17,11 @@ export interface RouterCandidate {
   billingKnowledge?: BillingKnowledge;
   incrementalCostUsd?: number | null;
   credentialRoute?: CredentialRoute;
+  /** Effective credential subject for quota filtering (release wave round-16
+   * #2): a profile id, null for the engine default, undefined when unknown
+   * (conservative any-subject matching). Profile A's cooldown must never
+   * exclude profile B or the default on the same harness+route. */
+  credentialSubjectId?: string | null;
 }
 
 export interface RouteContext {
@@ -54,7 +59,11 @@ function eligible(candidates: RouterCandidate[], ctx: RouteContext): RouterCandi
   const ready = candidates.filter(
     (candidate) =>
       candidate.available &&
-      !ctx.ledger.cooldownActive(candidate.harnessId, candidate.credentialRoute),
+      !ctx.ledger.cooldownActive(
+        candidate.harnessId,
+        candidate.credentialRoute,
+        candidate.credentialSubjectId,
+      ),
   );
   const free = ready.filter((candidate) => !isIncrementalPaid(candidate));
   if (ctx.paidFallback === "never") return free;
@@ -83,8 +92,16 @@ export function rankHarnesses(candidates: RouterCandidate[], ctx: RouteContext):
       const bCost = b.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
       return aCost - bCost || aTier - bTier;
     }
-    const aSlack = ctx.ledger.bindingPaceSlack(a.harnessId, a.credentialRoute);
-    const bSlack = ctx.ledger.bindingPaceSlack(b.harnessId, b.credentialRoute);
+    const aSlack = ctx.ledger.bindingPaceSlack(
+      a.harnessId,
+      a.credentialRoute,
+      a.credentialSubjectId,
+    );
+    const bSlack = ctx.ledger.bindingPaceSlack(
+      b.harnessId,
+      b.credentialRoute,
+      b.credentialSubjectId,
+    );
     if (aSlack !== null || bSlack !== null) {
       return (bSlack ?? Number.NEGATIVE_INFINITY) - (aSlack ?? Number.NEGATIVE_INFINITY);
     }

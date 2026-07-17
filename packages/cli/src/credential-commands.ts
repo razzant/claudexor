@@ -146,7 +146,7 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
     if (!isManagedSecretName(name)) {
       return printUsageError(
         json,
-        `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
+        `secret name must be a managed name (${MANAGED_SECRET_NAMES.join(", ")}) or a managed base:profile slot (e.g. claude_oauth:work — profiles REQUIRE the namespaced form)`,
       );
     }
     const envVar = flagStr(args, "from-env");
@@ -182,7 +182,7 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
     if (!isManagedSecretName(name)) {
       return printUsageError(
         json,
-        `secret name must be one of: ${MANAGED_SECRET_NAMES.join(", ")}`,
+        `secret name must be a managed name (${MANAGED_SECRET_NAMES.join(", ")}) or a managed base:profile slot (e.g. claude_oauth:work — profiles REQUIRE the namespaced form)`,
       );
     }
     const { addr } = await ensureDaemon();

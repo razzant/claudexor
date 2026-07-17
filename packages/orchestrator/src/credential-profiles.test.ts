@@ -95,6 +95,26 @@ describe("nextEligibleProfile (W5.4 rotation order)", () => {
     const ordered = { ...policy, rotation_eligible: ["b", "a"] };
     expect(nextEligibleProfile([a, b], "claude", ordered, null, [])?.profile_id).toBe("b");
   });
+
+  it("rotation NEVER crosses credential kinds (round-16 BLOCK): a subscription→API-key swap would misvalue metered usage under the attempt's first-wins route receipt", () => {
+    const keyed = {
+      ...work,
+      profile_id: "k",
+      credential_kind: "api_key" as const,
+      isolation_locator: null,
+      secret_ref: "anthropic:k",
+    };
+    // The only remaining candidate pays with a different transport: no target.
+    expect(nextEligibleProfile([a, keyed], "claude", policy, "a", [])).toBeNull();
+    // A same-kind candidate later in the order wins over an earlier cross-kind one.
+    const ordered = { ...policy, rotation_eligible: ["k", "b"] };
+    expect(nextEligibleProfile([a, keyed, b], "claude", ordered, "a", [])?.profile_id).toBe("b");
+    // Kind symmetry: an api_key profile rotates only to api_key profiles.
+    const keyed2 = { ...keyed, profile_id: "k2", secret_ref: "anthropic:k2" };
+    expect(nextEligibleProfile([keyed, keyed2, b], "claude", policy, "k", [])?.profile_id).toBe(
+      "k2",
+    );
+  });
 });
 
 describe("rotationRetryEligible (sol #30 predicate)", () => {

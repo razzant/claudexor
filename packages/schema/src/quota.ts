@@ -22,10 +22,18 @@ export const QuotaSubject = z
     harness: Id,
     credential_route: z.enum(["vendor_native", "managed_api_key", "local"]),
     plan_label: z.string().nullable().default(null),
+    /** The CREDENTIAL SUBJECT the windows belong to (release wave round-16
+     * #2): a Claudexor credential-profile id, or null for the harness's
+     * engine-default credential. Every producer (oauth-usage refresher,
+     * typed-event registry, adapter quota events) uses exactly this
+     * vocabulary; budget routing filters snapshots by exact subject so one
+     * account's exhaustion never cools another. */
     subject_id: z.string().nullable().default(null),
   })
   .strict()
-  .describe("Quota owner and credential route; subject ids are opaque and optional.");
+  .describe(
+    "Quota owner and credential route; subject_id is the credential-profile id (null = the engine-default credential).",
+  );
 export type QuotaSubject = z.infer<typeof QuotaSubject>;
 
 export const QuotaConstraint = z

@@ -12,10 +12,13 @@ Statuses: `broken` > `dead` (wired to nothing) > `half-baked` > `suspicious` >
 owns the fix (`backlog` = not yet scheduled). Evidence is file:line at the
 time of the audit; lines drift with edits — verify before relying on them.
 
-Rows: **0**
+Rows: **1** (works-with-caveats: 1)
 
-The ledger is EMPTY — no open defect rows. New rows are
-added the moment a non-solid feature ships (see the rule above). Deliberate
-design boundaries that used to live here as "caveats" are documented in the
-"Design constraints" sections of `docs/ARCHITECTURE.md` (engine) and
-`docs/INTEGRATIONS.md` (host/external surfaces).
+| Area | Feature | Status | What is wrong / caveat | Evidence | Planned |
+|---|---|---|---|---|---|
+| engine/profiles | Profile-policy `limit_action: ask` interactive UX (2.1) | works-with-caveats | The engine records the typed `route.profile.headroom_exceeded` breach and PROCEEDS on the selected profile — no surface actually asks the user yet (the router consumer shipped first, sol #28); the macOS app also has no profile picker (thread/turn profile selection is CLI/HTTP-only) | packages/orchestrator/src/credential-profiles.ts preflightCredentialProfile (`ask` falls through to proceed) | backlog |
+
+New rows are added the moment a non-solid feature ships (see the rule above).
+Deliberate design boundaries that used to live here as "caveats" are
+documented in the "Design constraints" sections of `docs/ARCHITECTURE.md`
+(engine) and `docs/INTEGRATIONS.md` (host/external surfaces).

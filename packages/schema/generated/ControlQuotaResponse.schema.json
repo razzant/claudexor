@@ -45,7 +45,7 @@
                   "credential_route"
                 ],
                 "additionalProperties": false,
-                "description": "Quota owner and credential route; subject ids are opaque and optional."
+                "description": "Quota owner and credential route; subject_id is the credential-profile id (null = the engine-default credential)."
               },
               "constraints": {
                 "type": "array",

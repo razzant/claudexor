@@ -419,7 +419,50 @@ describe("router", () => {
     expect(selectHarness([codex, cand("claude")], routeContext(led, "auto"))?.harnessId).toBe(
       "claude",
     );
-    expect(led.cooldownActive("codex", "vendor_native", Date.parse(reset) + 1)).toBe(false);
+    expect(led.cooldownActive("codex", "vendor_native", undefined, Date.parse(reset) + 1)).toBe(
+      false,
+    );
+  });
+
+  it("a cooldown is SUBJECT-scoped (round-16 #2): profile A's exhaustion never excludes profile B or the engine default", () => {
+    const led = new BudgetLedger();
+    const reset = new Date(Date.now() + 60_000).toISOString();
+    led.observeQuotaSnapshot({
+      subject: {
+        harness: "claude",
+        credential_route: "vendor_native",
+        plan_label: "max",
+        subject_id: "a",
+      },
+      constraints: [
+        {
+          id: "five_hour",
+          label: "5 hour",
+          used_ratio: 1,
+          window_seconds: 18_000,
+          resets_at: reset,
+          cooldown_until: null,
+        },
+      ],
+      source: "claude_oauth_usage",
+      observed_at: new Date().toISOString(),
+      freshness: "fresh",
+    });
+    // Exactly profile A cools down; profile B and the null default stay
+    // eligible; an UNKNOWN subject stays conservatively excluded.
+    expect(led.cooldownActive("claude", "vendor_native", "a")).toBe(true);
+    expect(led.cooldownActive("claude", "vendor_native", "b")).toBe(false);
+    expect(led.cooldownActive("claude", "vendor_native", null)).toBe(false);
+    expect(led.cooldownActive("claude", "vendor_native")).toBe(true);
+    // The router carries the subject: the same harness+route is selectable as
+    // profile B while profile A is spent.
+    const asA = cand("claude", { credentialRoute: "vendor_native", credentialSubjectId: "a" });
+    const asB = cand("claude", { credentialRoute: "vendor_native", credentialSubjectId: "b" });
+    expect(selectHarness([asA], routeContext(led, "auto"))).toBeNull();
+    expect(selectHarness([asB], routeContext(led, "auto"))?.harnessId).toBe("claude");
+    // Pace slack is subject-scoped the same way.
+    expect(led.bindingPaceSlack("claude", "vendor_native", "b")).toBeNull();
+    expect(led.bindingPaceSlack("claude", "vendor_native", "a")).not.toBeNull();
   });
 
   it("excludes a rate-limited harness via the typed rate_limit signal", () => {

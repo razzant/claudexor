@@ -549,6 +549,12 @@ Deliberate limits of the external/host surfaces. Each is a designed boundary
 - `plugin uninstall` removes only Claudexor-owned files and config entries;
   now-empty host directories and `.claudexor-backups/` are deliberately left
   behind (Claudexor never deletes directories or backups it does not own).
+- The embedder run-control contract is CLI/HTTP-first (DT2.1-1): per-run
+  knobs added in 2.1 — `--profile`, `--instructions`, `--max-seconds`,
+  `--deny-path`, `--output-schema`, `--max-turns`, thread continuation — are
+  deliberately NOT exposed as MCP/ACP tool arguments yet; every exemption is
+  recorded with its rationale in `scripts/mcp-cli-parity-check.mjs`
+  (CLI_ONLY_EXEMPT), and the parity gate fails on any UNRECORDED divergence.
 
 ## Environment reference
 

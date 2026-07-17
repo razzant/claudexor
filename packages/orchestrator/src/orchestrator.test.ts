@@ -6814,7 +6814,7 @@ describe("durable quota projection routing (QP3)", () => {
             harness: "codex",
             credential_route: "vendor_native" as const,
             plan_label: "Plus",
-            subject_id: "codex-native",
+            subject_id: null,
           },
           constraints: [
             {
@@ -6835,7 +6835,7 @@ describe("durable quota projection routing (QP3)", () => {
             harness: "claude",
             credential_route: "vendor_native" as const,
             plan_label: null,
-            subject_id: "claude-native",
+            subject_id: null,
           },
           constraints: [
             {
@@ -6894,7 +6894,7 @@ describe("durable quota projection routing (QP3)", () => {
                   harness,
                   credential_route: "vendor_native" as const,
                   plan_label: null,
-                  subject_id: `${harness}-native`,
+                  subject_id: null,
                 },
                 constraints: [
                   {

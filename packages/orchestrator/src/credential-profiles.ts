@@ -78,7 +78,11 @@ export function profileHeadroomBreach(
  * order. The current profile and disabled/unknown ids never come back; a
  * profile already over the headroom bound is skipped (rotating INTO a spent
  * subscription is not a failover). Cross-subscription rotation of one vendor
- * is allowed by owner decision.
+ * is allowed by owner decision — but rotation NEVER crosses credential kinds
+ * (release wave round-16 BLOCK): a subscription→API-key swap silently changes
+ * the payment model mid-attempt, and the attempt's first-wins auth-route
+ * receipt (decided once before spawn) would misvalue metered usage as
+ * subscription entitlement, bypassing a finite cash cap.
  */
 export function nextEligibleProfile(
   registry: readonly CredentialProfile[],
@@ -89,6 +93,7 @@ export function nextEligibleProfile(
   excluded: ReadonlySet<string> = new Set(),
 ): CredentialProfile | null {
   const pool = registry.filter((p) => p.harness_id === harnessId && p.enabled);
+  const currentKind = pool.find((p) => p.profile_id === currentProfileId)?.credential_kind ?? null;
   const ordered =
     policy.rotation_eligible.length > 0
       ? policy.rotation_eligible
@@ -98,6 +103,7 @@ export function nextEligibleProfile(
   for (const candidate of ordered) {
     if (candidate.profile_id === currentProfileId) continue;
     if (excluded.has(candidate.profile_id)) continue;
+    if (currentKind !== null && candidate.credential_kind !== currentKind) continue;
     if (
       profileHeadroomBreach(snapshots, harnessId, candidate.profile_id, policy.headroom_threshold)
     )
