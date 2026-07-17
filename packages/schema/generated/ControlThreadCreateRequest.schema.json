@@ -85,16 +85,20 @@
           ],
           "description": "Per-thread auth preference override."
         },
-        "primaryHarness": {
+        "credentialProfileId": {
           "type": "string",
           "minLength": 1,
           "pattern": "\\S",
+          "description": "Sticky credential profile for the thread (INV-135); per-turn selection wins."
+        },
+        "primaryHarness": {
+          "$ref": "#/definitions/ControlThreadCreateRequest/properties/credentialProfileId",
           "description": "Sticky primary harness for the thread."
         },
         "eligibleHarnesses": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlThreadCreateRequest/properties/primaryHarness"
+            "$ref": "#/definitions/ControlThreadCreateRequest/properties/credentialProfileId"
           },
           "description": "Sticky eligible harness pool; turns inherit it when unset."
         }

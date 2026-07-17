@@ -286,6 +286,7 @@ export interface DaemonControlApiOptions {
           title?: string;
           state?: string;
           primaryHarness?: string | null;
+          credentialProfileId?: string | null;
           eligibleHarnesses?: string[];
         },
       ) => Promise<unknown>;
@@ -876,6 +877,7 @@ export class DaemonControlApiServer {
           mode: parsed.mode,
           workspace: parsed.workspace,
           authPreference: parsed.authPreference,
+          credentialProfileId: parsed.credentialProfileId ?? null,
           primaryHarness: parsed.primaryHarness ?? null,
           eligibleHarnesses: parsed.eligibleHarnesses,
           idempotency: {
@@ -959,6 +961,7 @@ export class DaemonControlApiServer {
           title: patch.title,
           state: patch.state,
           primaryHarness: patch.primaryHarness,
+          credentialProfileId: patch.credentialProfileId,
           eligibleHarnesses: patch.eligibleHarnesses,
         });
         return this.json(res, 200, projectThread(thread, false));

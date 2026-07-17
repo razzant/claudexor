@@ -1,5 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolveCredentialProfile } from "./credential-profiles.js";
+import {
+  planReactiveRotation,
+  preflightCredentialProfile,
+  resolveCredentialProfile,
+  type ProfilePolicy,
+} from "./credential-profiles.js";
+import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
 import { join } from "node:path";
 import type {
   AccessProfile,
@@ -47,7 +53,6 @@ import {
   SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
   ReviewFinding as ReviewFindingSchema,
-  RunTelemetry as RunTelemetrySchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
   FrozenTaskContractArtifact as TaskContractSchema,
@@ -55,7 +60,6 @@ import {
   orchestratePlanJsonSchema,
   normalizeUserOutputSchema,
   strictifyOutputSchema,
-  deriveAuthRouteReason,
   estimateEffectiveAuthRoute,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
@@ -117,9 +121,6 @@ import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./di
 import {
   type AttemptTelemetry,
   type ToolErrorRecord,
-  aggregateRunWebEvidence,
-  aggregateRunTokenUsage,
-  attemptTelemetryRecord,
   createAttemptTelemetry,
   observeAttemptTelemetry,
   setAttemptOutcome,
@@ -827,11 +828,8 @@ export class Orchestrator {
   private sessionSpecFields(
     input: RunInput,
     harnessId: string,
-  ): {
-    auth_preference: "subscription" | "api_key" | "auto";
-    resume_session_id: string | null;
-    credential_profile: CredentialProfile | null;
-  } {
+    log?: EventLog,
+  ): Pick<HarnessRunSpec, "auth_preference" | "resume_session_id" | "credential_profile"> {
     const cfg = this.config(input.repoRoot)?.global;
     const explicit = (
       v?: "subscription" | "api_key" | "auto",
@@ -845,7 +843,7 @@ export class Orchestrator {
         explicit(cfg?.routing?.auth_preference) ??
         "auto",
       resume_session_id: input.resumeSessions?.[harnessId] ?? null,
-      credential_profile: this.resolveCredentialProfile(input, harnessId),
+      credential_profile: this.preflightProfile(input, harnessId, log),
     };
   }
 
@@ -853,6 +851,28 @@ export class Orchestrator {
     if (!input.credentialProfileId) return null;
     const registry = this.config(input.repoRoot)?.global.credential_profiles ?? [];
     return resolveCredentialProfile(registry, input.credentialProfileId, harnessId);
+  }
+
+  private profilePolicy(repoRoot: string, harnessId: string): ProfilePolicy {
+    const policy = this.config(repoRoot)?.global.harnesses?.[harnessId]?.profile_policy;
+    return policy ?? { limit_action: "fail", rotation_eligible: [], headroom_threshold: 0.9 };
+  }
+
+  private preflightProfile(
+    input: RunInput,
+    harnessId: string,
+    log?: EventLog,
+  ): CredentialProfile | null {
+    const profile = this.resolveCredentialProfile(input, harnessId);
+    if (!profile) return null;
+    return preflightCredentialProfile({
+      profile,
+      harnessId,
+      policy: this.profilePolicy(input.repoRoot, harnessId),
+      registry: this.config(input.repoRoot)?.global.credential_profiles ?? [],
+      snapshots: this.deps.quotaSnapshots?.() ?? [],
+      emit: (type, payload) => log?.emit(type, payload),
+    });
   }
 
   /** Record a harness-emitted native session id for future thread resume (observer never fails the run). */
@@ -1692,8 +1712,8 @@ export class Orchestrator {
     // so their session ids are never retained after disposal.
     const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
     const rawContextPacket = await rawContextForEnvelope(routed.implementationTransport, envelope);
-    const sessionFields = runInput ? this.sessionSpecFields(runInput, adapter.id) : undefined;
-    const spec = HarnessRunSpec.parse({
+    const sessionFields = runInput ? this.sessionSpecFields(runInput, adapter.id, log) : undefined;
+    let spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
       prompt: promptWithProtectedPathConstraint(
@@ -1745,6 +1765,7 @@ export class Orchestrator {
 
     const attemptStartedMs = Date.now();
     const budgetSignalState = { quotaPressureDisclosed: false };
+    const triedProfiles = new Set<string>(); // W5.4 failover: each profile at most once
     let cost = 0;
     let costEstimated = false;
     let harnessErrored = false;
@@ -1789,6 +1810,7 @@ export class Orchestrator {
           : attemptAbort.signal;
         activeSessionId = runSpec.session_id;
         const transientStart = telemetry.transientFailures.length;
+        const rateLimitStart = telemetry.rateLimits.length;
         let rawPatch: RawGitPatchEnvelope | null = null;
         try {
           const watched = withInactivityWatchdog(adapter.run(runSpec), {
@@ -1902,9 +1924,38 @@ export class Orchestrator {
 
         const transient = telemetry.transientFailures.at(-1) ?? null;
         const sawTransient = telemetry.transientFailures.length > transientStart;
+        const sawTypedLimit = telemetry.rateLimits.length > rateLimitStart;
         const currentDiff = await wsm.diff(envelope);
         const currentAnswer = answer.text();
         const deliverableEmpty = currentDiff.trim().length === 0 && currentAnswer.length === 0;
+        // W5.4 reactive failover (vendor_limit_rejected): a hit rebuilds the
+        // spec on a NEW vendor session under the next profile with provenance.
+        if (harnessErrored && spec.credential_profile && runInput && !signal?.aborted) {
+          const rotation = planReactiveRotation({
+            currentProfile: spec.credential_profile,
+            harnessId: adapter.id,
+            attemptId,
+            policy: this.profilePolicy(contract.repo.root, adapter.id),
+            registry: this.config(contract.repo.root)?.global.credential_profiles ?? [],
+            snapshots: this.deps.quotaSnapshots?.() ?? [],
+            triedProfiles,
+            sawTypedLimit,
+            deliverableEmpty,
+            lastLimit: telemetry.rateLimits.at(-1) ?? null,
+            emit: (type, payload) => log?.emit(type, payload),
+          });
+          if (rotation) {
+            spec = HarnessRunSpec.parse({
+              ...spec,
+              session_id: newId("ses"),
+              credential_profile: rotation,
+              resume_session_id: null,
+            });
+            errors.length = 0;
+            harnessErrored = false;
+            continue;
+          }
+        }
         if (
           !harnessErrored ||
           !sawTransient ||
@@ -3361,69 +3412,18 @@ export class Orchestrator {
     attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[],
     finalAttemptId: string | null,
   ): void {
-    const records = attempts.map((a) =>
-      attemptTelemetryRecord(a.attemptId, a.harnessId, a.telemetry),
-    );
-    const finalRecord = finalAttemptId
-      ? records.find((r) => r.attempt_id === finalAttemptId)
-      : undefined;
-    const runWeb = finalRecord?.web ?? aggregateRunWebEvidence(records, contract);
-    const telemetry = RunTelemetrySchema.parse({
-      schema_version: SCHEMA_VERSION,
-      run_id: runId,
-      task_id: taskId,
+    writeRunTelemetryArtifact({
+      store,
+      finalDir: paths.finalDir,
+      contract,
+      runId,
+      taskId,
       mode,
-      requested_access: contract.access.requested_profile,
-      effective_access: contract.access.effective_profile,
-      external_context_policy: contract.external_context.policy,
-      effective_web_mode:
-        finalRecord?.web.effective_mode ?? contract.external_context.effective_mode,
-      web_required: contract.external_context.web_required,
-      final_attempt_id: finalAttemptId,
-      web: runWeb,
-      attempts: records,
-      request_requirements: records.flatMap((record) => record.request_requirements),
-      tool_warnings_total: records.reduce((sum, r) => sum + r.outcome.tool_warnings_count, 0),
-      usage_totals: aggregateRunTokenUsage(records),
-      auth_route: (() => {
-        // The FINAL attempt's disclosure decides the run's route receipt (it
-        // produced the deliverable); fall back to the first disclosing attempt.
-        const disclosing =
-          (finalRecord?.auth_mode ? finalRecord : undefined) ??
-          records.find((r) => r.auth_mode !== null) ??
-          finalRecord ??
-          records[0];
-        const requestedModel = disclosing?.requested_model ?? null;
-        const observedModel = disclosing?.observed_model ?? null;
-        // The requested route is the RESOLVED per-harness preference of the
-        // disclosing lane (run-level scalar → per-harness config → global),
-        // not the bare run-level scalar — otherwise a configured
-        // harnesses.<id>.auth_preference=api_key reads as requested=auto.
-        const requestedRoute = disclosing?.harness_id
-          ? this.authPreferenceForHarness(
-              contract.repo.root,
-              disclosing.harness_id,
-              contract.auth_preference,
-            )
-          : contract.auth_preference;
-        return {
-          requested: requestedRoute,
-          effective: disclosing?.auth_mode ?? null,
-          source: disclosing?.auth_source ?? null,
-          reason: deriveAuthRouteReason(requestedRoute, disclosing?.auth_mode ?? null),
-          harness_id: disclosing?.harness_id ?? null,
-          attempt_id: disclosing?.attempt_id ?? null,
-          profile_id: contract.credential_profile_id,
-          // Typed mismatch, only when BOTH sides are known and differ.
-          model_mismatch:
-            requestedModel !== null && observedModel !== null && requestedModel !== observedModel
-              ? { requested: requestedModel, observed: observedModel }
-              : null,
-        };
-      })(),
-      generated_at: nowIso(),
+      attempts,
+      finalAttemptId,
+      resolveAuthPreference: (harnessId) =>
+        this.authPreferenceForHarness(contract.repo.root, harnessId, contract.auth_preference),
     });
-    store.writeYaml(join(paths.finalDir, "telemetry.yaml"), telemetry);
   }
 
   /** Review a set of runs and return their evidence (with finalReviewClean + review_verified caveat). */
@@ -4900,7 +4900,7 @@ export class Orchestrator {
           // Planners must SEE any image/file the user attached (e.g. "plan a fix for
           // what's in this screenshot"), not just agent/race runs.
           attachments: input.attachments ?? [],
-          ...this.sessionSpecFields(input, adapter.id),
+          ...this.sessionSpecFields(input, adapter.id, log),
           ...this.harnessSpecKnobs(contract, knobs, "plan"),
           env_inheritance: envInheritance(this.config(input.repoRoot)),
           env: roHome.env,
@@ -5711,7 +5711,7 @@ export class Orchestrator {
         (opts.swarm
           ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
           : prompt) + contextSection;
-      const sessionFields = this.sessionSpecFields(input, adapter.id);
+      const sessionFields = this.sessionSpecFields(input, adapter.id, log);
       const grantResume =
         sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
       if (grantResume) resumeGranted.add(adapter.id);

@@ -1598,6 +1598,367 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("reactively rotates on a TYPED vendor limit — new session, new profile, provenance (W5.4)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-reactive-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: a",
+        "    harness_id: limited",
+        "    display_name: A",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:a'",
+        "  - profile_id: b",
+        "    harness_id: limited",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "harnesses:",
+        "  limited:",
+        "    profile_policy:",
+        "      limit_action: rotate",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const spawns: Array<{ profile: string | null; session: string }> = [];
+      const adapter: HarnessAdapter = {
+        id: "limited",
+        async discover() {
+          return HarnessManifest.parse({
+            id: "limited",
+            display_name: "limited",
+            kind: "local_cli",
+            provider_family: "local",
+            capabilities: { implement: true },
+            access_profiles_supported: ["workspace_write"],
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: "limited",
+            status: "ok",
+            enabled_intents: ["implement"],
+          });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          spawns.push({
+            profile: spec.credential_profile?.profile_id ?? null,
+            session: spec.session_id,
+          });
+          yield { type: "started", session_id: spec.session_id, ts };
+          if (spawns.length === 1) {
+            // The TYPED vendor-limit signal, then a terminating error with an
+            // EMPTY deliverable — exactly the rotation_retry_eligible shape.
+            yield {
+              type: "status",
+              session_id: spec.session_id,
+              ts,
+              text: "api_retry: rate limited",
+              status: { kind: "api_retry", error_category: "rate_limit" },
+              rate_limit: { resets_at: null, retry_delay_ms: 60_000 },
+            };
+            yield {
+              type: "error",
+              session_id: spec.session_id,
+              ts,
+              error: "vendor rate limit exhausted",
+            };
+            yield { type: "completed", session_id: spec.session_id, ts };
+            return;
+          }
+          writeFileSync(join(spec.cwd, "CHANGED.txt"), "made it\n");
+          yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      };
+      const events: string[] = [];
+      const res = await new Orchestrator({
+        registry: new Map([["limited", adapter]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "do it",
+        mode: "agent",
+        harnesses: ["limited"],
+        n: 1,
+        credentialProfileId: "a",
+        onEvent: (event) => events.push(event.type),
+      });
+      expect(res.status).not.toBe("failed");
+      expect(spawns.map((s) => s.profile)).toEqual(["a", "b"]);
+      // Failover is a NEW vendor session under the new credential.
+      expect(new Set(spawns.map((s) => s.session)).size).toBe(2);
+      expect(events).toContain("route.profile.rotated");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("never rotates on a plain transient — typed-limit signals only (W5.4)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-transient-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: a",
+        "    harness_id: limited",
+        "    display_name: A",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:a'",
+        "  - profile_id: b",
+        "    harness_id: limited",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "harnesses:",
+        "  limited:",
+        "    profile_policy:",
+        "      limit_action: rotate",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const profilesSeen: Array<string | null> = [];
+      const adapter: HarnessAdapter = {
+        id: "limited",
+        async discover() {
+          return HarnessManifest.parse({
+            id: "limited",
+            display_name: "limited",
+            kind: "local_cli",
+            provider_family: "local",
+            capabilities: { implement: true },
+            access_profiles_supported: ["workspace_write"],
+          });
+        },
+        async doctor() {
+          return ConformanceReport.parse({
+            harness_id: "limited",
+            status: "ok",
+            enabled_intents: ["implement"],
+          });
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          profilesSeen.push(spec.credential_profile?.profile_id ?? null);
+          yield { type: "started", session_id: spec.session_id, ts };
+          if (profilesSeen.length === 1) {
+            // Ordinary network transient: NO typed rate_limit field.
+            yield {
+              type: "status",
+              session_id: spec.session_id,
+              ts,
+              text: "connection reset",
+              transient: { kind: "network", retry_delay_ms: 100 },
+            };
+            yield { type: "error", session_id: spec.session_id, ts, error: "network flake" };
+            yield { type: "completed", session_id: spec.session_id, ts };
+            return;
+          }
+          writeFileSync(join(spec.cwd, "CHANGED.txt"), "made it\n");
+          yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      };
+      const events: string[] = [];
+      const res = await new Orchestrator({
+        registry: new Map([["limited", adapter]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "do it",
+        mode: "agent",
+        harnesses: ["limited"],
+        n: 1,
+        credentialProfileId: "a",
+        onEvent: (event) => events.push(event.type),
+      });
+      expect(res.status).not.toBe("failed");
+      // The transient retry stays on the SAME profile; rotation never fires.
+      expect(profilesSeen).toEqual(["a", "a"]);
+      expect(events).not.toContain("route.profile.rotated");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("preflight-rotates a spent profile BEFORE spawn and records typed provenance (W5.4)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-rotate-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: a",
+        "    harness_id: asker",
+        "    display_name: A",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:a'",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "harnesses:",
+        "  asker:",
+        "    profile_policy:",
+        "      limit_action: rotate",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const seen: string[] = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const askerRun = asker.run.bind(asker);
+      asker.run = (spec) => {
+        seen.push(spec.credential_profile?.profile_id ?? "(none)");
+        return askerRun(spec);
+      };
+      const events: string[] = [];
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+        quotaSnapshots: () => [
+          {
+            subject: {
+              harness: "asker",
+              credential_route: "managed_api_key",
+              plan_label: null,
+              subject_id: "a",
+            },
+            constraints: [
+              {
+                id: "five_hour",
+                label: "5 hour",
+                used_ratio: 0.97,
+                window_seconds: 18000,
+                resets_at: null,
+                cooldown_until: null,
+              },
+            ],
+            source: "claude_oauth_usage",
+            observed_at: new Date().toISOString(),
+            freshness: "fresh",
+          },
+        ],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "a",
+        onEvent: (event) => events.push(event.type),
+      });
+      expect(res.status).toBe("success");
+      expect(seen).toEqual(["b"]);
+      expect(events).toContain("route.profile.headroom_exceeded");
+      expect(events).toContain("route.profile.rotated");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("limit_action fail keeps the spent profile and only records the typed breach (W5.4)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-nofail-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: a",
+        "    harness_id: asker",
+        "    display_name: A",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:a'",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const seen: string[] = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const askerRun = asker.run.bind(asker);
+      asker.run = (spec) => {
+        seen.push(spec.credential_profile?.profile_id ?? "(none)");
+        return askerRun(spec);
+      };
+      const events: string[] = [];
+      const res = await new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+        quotaSnapshots: () => [
+          {
+            subject: {
+              harness: "asker",
+              credential_route: "managed_api_key",
+              plan_label: null,
+              subject_id: "a",
+            },
+            constraints: [
+              {
+                id: "five_hour",
+                label: "5 hour",
+                used_ratio: 0.97,
+                window_seconds: 18000,
+                resets_at: null,
+                cooldown_until: null,
+              },
+            ],
+            source: "claude_oauth_usage",
+            observed_at: new Date().toISOString(),
+            freshness: "fresh",
+          },
+        ],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "a",
+        onEvent: (event) => events.push(event.type),
+      });
+      expect(res.status).toBe("success");
+      // Default policy = fail: the spent profile still runs (vendor evidence
+      // decides), the typed breach is on the record, rotation never happens.
+      expect(seen).toEqual(["a"]);
+      expect(events).toContain("route.profile.headroom_exceeded");
+      expect(events).not.toContain("route.profile.rotated");
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("an unknown explicit credential profile refuses before any adapter launches (INV-135)", async () => {
     const repo = await initRepo();
     let launches = 0;

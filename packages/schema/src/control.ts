@@ -1173,6 +1173,9 @@ export const ControlThreadCreateRequest = z
       "Workspace mode for the thread (in_place or isolated).",
     ),
     authPreference: AuthPreference.optional().describe("Per-thread auth preference override."),
+    credentialProfileId: NonBlankString.optional().describe(
+      "Sticky credential profile for the thread (INV-135); per-turn selection wins.",
+    ),
     primaryHarness: NonBlankString.optional().describe("Sticky primary harness for the thread."),
     /** Sticky eligible pool for the thread; turns inherit it when unset. */
     eligibleHarnesses: z
@@ -1193,6 +1196,9 @@ export const ControlThreadUpdateRequest = z
     primaryHarness: NonBlankString.nullable()
       .optional()
       .describe("New sticky primary harness; null clears back to engine routing."),
+    credentialProfileId: NonBlankString.nullable()
+      .optional()
+      .describe("New sticky credential profile; null clears back to engine-default credentials."),
     eligibleHarnesses: z
       .array(NonBlankString)
       .optional()

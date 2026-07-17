@@ -407,6 +407,39 @@
                 "default": null,
                 "description": "Default max convergence rounds; null = engine default."
               },
+              "profile_policy": {
+                "type": "object",
+                "properties": {
+                  "limit_action": {
+                    "type": "string",
+                    "enum": [
+                      "fail",
+                      "ask",
+                      "rotate"
+                    ],
+                    "default": "fail",
+                    "description": "On a typed vendor limit: fail the attempt, surface a typed ask, or rotate to the next eligible profile."
+                  },
+                  "rotation_eligible": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": [],
+                    "description": "Priority-ordered profile ids eligible for rotation; empty = every enabled profile of this harness in registry order."
+                  },
+                  "headroom_threshold": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.9,
+                    "description": "Preflight headroom bound: a selected profile whose active window is at/over this ratio triggers the limit action BEFORE spawn."
+                  }
+                },
+                "additionalProperties": false,
+                "default": {},
+                "description": "Typed profile-selection policy for this harness (INV-135)."
+              },
               "tools_allow": {
                 "type": "array",
                 "items": {

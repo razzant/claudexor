@@ -313,6 +313,39 @@ export const GlobalConfig = z
               .nullable()
               .default(null)
               .describe("Default max convergence rounds; null = engine default."),
+            /**
+             * ONE typed profile-selection policy (INV-135, W5.4): what happens
+             * when the selected credential profile hits its vendor limit.
+             * Rotation is OPT-IN and rotates only on typed vendor-limit
+             * signals or proactive headroom breaches — never on ordinary
+             * network errors.
+             */
+            profile_policy: z
+              .object({
+                limit_action: z
+                  .enum(["fail", "ask", "rotate"])
+                  .default("fail")
+                  .describe(
+                    "On a typed vendor limit: fail the attempt, surface a typed ask, or rotate to the next eligible profile.",
+                  ),
+                rotation_eligible: z
+                  .array(z.string())
+                  .default([])
+                  .describe(
+                    "Priority-ordered profile ids eligible for rotation; empty = every enabled profile of this harness in registry order.",
+                  ),
+                headroom_threshold: z
+                  .number()
+                  .min(0)
+                  .max(1)
+                  .default(0.9)
+                  .describe(
+                    "Preflight headroom bound: a selected profile whose active window is at/over this ratio triggers the limit action BEFORE spawn.",
+                  ),
+              })
+              .strict()
+              .default({})
+              .describe("Typed profile-selection policy for this harness (INV-135)."),
             tools_allow: z
               .array(z.string())
               .default([])

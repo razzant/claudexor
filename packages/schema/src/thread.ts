@@ -111,6 +111,13 @@ export const Thread = z
     ),
     /** Per-thread auth preference override (subscription/api_key/auto). */
     auth_preference: AuthPreference.default("auto"),
+    /** Sticky credential profile for the thread (INV-135): turns inherit it
+     * unless they carry an explicit per-turn profile; null = engine default. */
+    credential_profile_id: Id.nullable()
+      .default(null)
+      .describe(
+        "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
+      ),
     /** Sticky orchestrate/primary harness for the thread (re-routable). A bias /
      * ordering hint, NOT a privileged role — orderPool just pins it first. */
     primary_harness: z

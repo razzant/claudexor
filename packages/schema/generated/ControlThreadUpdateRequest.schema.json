@@ -30,6 +30,17 @@
           ],
           "description": "New sticky primary harness; null clears back to engine routing."
         },
+        "credentialProfileId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlThreadUpdateRequest/properties/primaryHarness/anyOf/0"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New sticky credential profile; null clears back to engine-default credentials."
+        },
         "eligibleHarnesses": {
           "type": "array",
           "items": {

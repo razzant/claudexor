@@ -262,6 +262,20 @@ describe("ThreadStore", () => {
     expect(s.resumeMap(t.id)).toEqual({ codex: "vendor-sess-1" });
   });
 
+  it("thread sticky credential profile is durable and clearable (W5.4)", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj", credentialProfileId: "work" });
+    expect(s.getThread(t.id)?.credential_profile_id).toBe("work");
+    s.updateThread(t.id, { credentialProfileId: "personal" });
+    expect(s.getThread(t.id)?.credential_profile_id).toBe("personal");
+    s.updateThread(t.id, { credentialProfileId: null });
+    expect(s.getThread(t.id)?.credential_profile_id).toBeNull();
+    // An unrelated patch must not disturb the sticky profile.
+    s.updateThread(t.id, { credentialProfileId: "work" });
+    s.updateThread(t.id, { title: "renamed" });
+    expect(s.getThread(t.id)?.credential_profile_id).toBe("work");
+  });
+
   it("resume never crosses credential profiles (INV-135)", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

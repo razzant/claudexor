@@ -56,6 +56,8 @@ export const RunEventType = z
     "route.fallback.exhausted",
     "route.transient.detected",
     "route.transient.retry_scheduled",
+    "route.profile.headroom_exceeded",
+    "route.profile.rotated",
     "route.transient.exhausted",
     /** A subscription->API (or harness->harness) auth switch driven by a typed
      * quota/money signal. Distinct from a plain harness rotation; never silent. */

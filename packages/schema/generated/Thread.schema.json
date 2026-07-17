@@ -81,6 +81,20 @@
           "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
           "default": "auto"
         },
+        "credential_profile_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
+          "default": null
+        },
         "primary_harness": {
           "type": [
             "string",
@@ -128,9 +142,7 @@
             "delivered_through_run_id": {
               "anyOf": [
                 {
-                  "type": "string",
-                  "minLength": 1,
-                  "description": "Non-empty identifier string."
+                  "$ref": "#/definitions/Thread/properties/credential_profile_id/anyOf/0"
                 },
                 {
                   "type": "null"
@@ -147,7 +159,7 @@
         "run_ids": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/Thread/properties/workspace/properties/delivered_through_run_id/anyOf/0"
+            "$ref": "#/definitions/Thread/properties/credential_profile_id/anyOf/0"
           },
           "default": [],
           "description": "Ordered run lineage (each run is a turn move)."
@@ -155,7 +167,7 @@
         "head_run_id": {
           "anyOf": [
             {
-              "$ref": "#/definitions/Thread/properties/workspace/properties/delivered_through_run_id/anyOf/0"
+              "$ref": "#/definitions/Thread/properties/credential_profile_id/anyOf/0"
             },
             {
               "type": "null"

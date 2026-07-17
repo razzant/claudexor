@@ -33,6 +33,7 @@ export interface CreateThreadInput {
   /** in_place (default) mutates the live tree; isolated keeps a thread worktree. */
   workspace?: WorkspaceMode;
   authPreference?: Thread["auth_preference"];
+  credentialProfileId?: string | null;
   primaryHarness?: string | null;
   /** Sticky eligible harness pool for the thread (turns inherit when unset). */
   eligibleHarnesses?: string[];
@@ -54,6 +55,8 @@ export interface UpdateThreadInput {
   state?: "active" | "closed";
   /** Switch the sticky primary harness (null => clear back to auto). */
   primaryHarness?: string | null;
+  /** Switch the thread's sticky credential profile (null => engine default). */
+  credentialProfileId?: string | null;
   /** Replace the sticky eligible harness pool. */
   eligibleHarnesses?: string[];
 }
@@ -201,6 +204,7 @@ export class ThreadStore {
         base_sha: null,
       },
       auth_preference: input.authPreference ?? "auto",
+      credential_profile_id: input.credentialProfileId ?? null,
       primary_harness: primary,
       eligible_harnesses: eligible,
     });
@@ -224,6 +228,9 @@ export class ThreadStore {
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.state !== undefined ? { state: patch.state } : {}),
       ...(patch.primaryHarness !== undefined ? { primary_harness: patch.primaryHarness } : {}),
+      ...(patch.credentialProfileId !== undefined
+        ? { credential_profile_id: patch.credentialProfileId }
+        : {}),
       ...(patch.eligibleHarnesses !== undefined
         ? { eligible_harnesses: patch.eligibleHarnesses }
         : {}),

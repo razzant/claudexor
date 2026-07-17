@@ -71,6 +71,9 @@ export interface AttemptTelemetry {
     kind: NonNullable<HarnessEvent["transient"]>["kind"];
     retryDelayMs: number | null;
   }[];
+  /** TYPED vendor rate-limit signals seen during this attempt (W5.4): the
+   * rotation predicate reads these, never prose or plain transients. */
+  rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
   /** Token usage summed across this attempt's usage events (money stays in the
@@ -113,6 +116,7 @@ export function createAttemptTelemetry(
     authSource: null,
     requestedModel,
     transientFailures: [],
+    rateLimits: [],
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
   };
@@ -145,6 +149,12 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
     t.transientFailures.push({
       kind: ev.transient.kind,
       retryDelayMs: ev.transient.retry_delay_ms ?? null,
+    });
+  }
+  if (ev.rate_limit) {
+    t.rateLimits.push({
+      retryDelayMs: ev.rate_limit.retry_delay_ms ?? null,
+      resetsAt: ev.rate_limit.resets_at ?? null,
     });
   }
   // Token usage: SUM across the attempt's usage events (single-event adapters

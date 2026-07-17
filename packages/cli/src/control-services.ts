@@ -217,6 +217,7 @@ export function controlServices(
         title?: string;
         state?: string;
         primaryHarness?: string | null;
+        credentialProfileId?: string | null;
         eligibleHarnesses?: string[];
       },
     ) =>

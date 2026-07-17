@@ -362,6 +362,22 @@ created under; resume never crosses profiles. `claudexor profiles login
 <harness> <id>` runs the same vendor login command the setup jobs use,
 interactively, scoped to the profile dir.
 
+Selection precedence is turn > thread-sticky > engine default: a turn's
+explicit `credentialProfileId` beats the thread's durable
+`credential_profile_id` (PATCH /v2/threads/:id), and null means the default
+credential ladder. Each harness may declare ONE typed `profile_policy`
+(`limit_action: fail|ask|rotate`, priority-ordered `rotation_eligible`,
+`headroom_threshold`). Two separated signals drive it (never prose, never
+plain network errors): `profile_headroom_preflight` — before spawn, the
+selected profile's freshest quota window at/over the threshold emits typed
+`route.profile.headroom_exceeded` evidence, and `rotate` swaps to the next
+eligible profile with `route.profile.rotated` provenance; and
+`vendor_limit_rejected` — a TYPED vendor rate-limit that terminated a
+no-deliverable, no-mutation try (`rotation_retry_eligible`) rotates the next
+try onto a NEW vendor session under the next profile, each profile at most
+once per attempt. Credentials never change inside a running spawn; a
+rotation INTO a spent profile is refused by the same headroom check.
+
 ## 6. Main Execution Paths
 
 Every public CLI mode (`ask`, `plan`, `audit`, `agent`, `orchestrate`) and the

@@ -193,12 +193,16 @@ async function main(): Promise<void> {
               // schema already caps at 7 days for the control-API path).
               Math.min(p.maxSeconds, 604_800)
             : null;
-        // INV-135: the turn's explicit credential profile scopes BOTH the run
-        // spec and the resume-session lookup (resume never crosses profiles).
+        // INV-135 selection precedence: explicit per-turn profile beats the
+        // thread's sticky profile beats the engine default. The winner scopes
+        // BOTH the run spec and the resume-session lookup (resume never
+        // crosses profiles).
         const requestedProfileId =
           typeof p.credentialProfileId === "string" && p.credentialProfileId
             ? p.credentialProfileId
-            : null;
+            : threadId
+              ? (threads.getThread(threadId)?.credential_profile_id ?? null)
+              : null;
         let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
         let runSignal: AbortSignal | undefined = ctx.signal;
         if (maxSeconds !== null) {
