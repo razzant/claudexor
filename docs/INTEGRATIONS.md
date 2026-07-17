@@ -103,12 +103,21 @@ with provenance and freshness; `POST /v2/quota` requests a live refresh and
 fails explicitly when no official refresher is available. Missing usage stays
 unknown and an elapsed reset marks data stale rather than locally setting it to
 zero. The CLI projection is `claudexor quota [--refresh] --json`.
-Codex refreshes through the vendor app-server. Claude subscription windows use
-Claude Code's documented `rate_limits` status-line input: an explicit
-`claudexor plugin install claude` composes the collector with an existing user
-`statusLine` command and restores it on uninstall. The collector persists only
-the two documented windows and provenance in the Claudexor-owned v2 root; it
-does not read Claude credential or session files. See the official
+Codex refreshes through the vendor app-server (including the live-verified
+`rateLimitResetCredits` balance, surfaced only when positive). Claude's
+PRIMARY subscription source is the `api.anthropic.com/api/oauth/usage`
+endpoint, read per credential profile: the profile's own keychain item
+(`Claude Code-credentials-<sha256(configDir)[:8]>`, live-verified formula)
+yields an access token held transiently for exactly one request — never
+persisted, logged, or included in errors — and returns proactive
+five_hour/seven_day/per-model utilization attributed to the profile
+(`subject_id`). An expired idle token fails to unknown (the vendor CLI
+refreshes tokens on real use); endpoint refusal never degrades auth
+readiness. The status-line collector stays as a secondary source: an explicit
+`claudexor plugin install claude` composes it with an existing user
+`statusLine` command and restores it on uninstall; it persists only the two
+documented windows and provenance in the Claudexor-owned v2 root and does not
+read Claude credential or session files. See the official
 [Claude Code status-line contract](https://code.claude.com/docs/en/statusline).
 Native login commands are server allowlisted and use setup jobs with
 typed phase/deadline/outcome,
@@ -473,13 +482,13 @@ Known traps (class → CURRENT rule → pin):
   loses the reason. Rule: `retry_class` asserts the adapter's typed category
   ONLY (`status.error_category`) — never the presence of a `rate_limit`
   field, which `typed_rate_limit` already owns; a class derived from that
-  presence cannot fail independently. CURRENT truth worth knowing:
-  `claudeRetryCategory` expects `api_retry.error` to BE the bare enum label,
-  while the fixture's frame carries prose (`"rate_limit_error: Number of
-  request tokens…"`), so claude's rate-limit retries classify as `unknown`
-  today. Pin: `session-resume-rate-limit.jsonl` declares `retry_class:
-  "unknown"` — teaching the mapper to read the prose must update that
-  declaration deliberately, not silently.
+  presence cannot fail independently. CURRENT truth:
+  `claudeRetryCategory` accepts the bare enum label AND classifies claude
+  2.1.x's prose error line (`"rate_limit_error: Number of request tokens…"`)
+  onto the documented categories by their stable markers; anything
+  unrecognized still collapses to `unknown`, never free-form text. Pin:
+  `session-resume-rate-limit.jsonl` declares `retry_class: "rate_limit"` (the
+  Ф5 deliberate update of the former `"unknown"` declaration).
 - Control-protocol leakage: handshake/permission frames surfacing as
   timeline events. Rule: recognized plumbing (`control_response`,
   `control_cancel_request`) is consumed, producing ZERO events; only the

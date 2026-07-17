@@ -544,7 +544,23 @@ function claudeRetryCategory(
   | undefined {
   if (raw === undefined || raw === null) return undefined;
   const s = String(raw);
-  return CLAUDE_RETRY_CATEGORIES.has(s) ? (s as ReturnType<typeof claudeRetryCategory>) : "unknown";
+  if (CLAUDE_RETRY_CATEGORIES.has(s)) return s as ReturnType<typeof claudeRetryCategory>;
+  // Claude 2.1.x sends the human error LINE here, not the bare label (the Ф3
+  // "Known trap"): classify the documented categories from their stable
+  // markers so bounded-retry policy keeps the reason. Adapter-layer prose
+  // parsing is the one allowed home for this (no-regex governance applies to
+  // consumers, which read only the typed category).
+  if (/rate.?limit|too many requests|(?:^|\D)429(?:\D|$)/i.test(s)) return "rate_limit";
+
+  if (/overloaded|(?:^|\D)529(?:\D|$)/i.test(s)) return "overloaded";
+  if (/authentication|unauthorized|(?:^|\D)401(?:\D|$)/i.test(s)) return "authentication_failed";
+  if (/oauth.*org|org.*not.*allowed/i.test(s)) return "oauth_org_not_allowed";
+  if (/billing|payment|credit balance|(?:^|\D)402(?:\D|$)/i.test(s)) return "billing_error";
+  if (/model.{0,20}not.{0,10}found/i.test(s)) return "model_not_found";
+  if (/max.?output.?tokens/i.test(s)) return "max_output_tokens";
+  if (/invalid.?request|(?:^|\D)400(?:\D|$)/i.test(s)) return "invalid_request";
+  if (/internal server error|server.?error|(?:^|\D)5\d\d(?:\D|$)/i.test(s)) return "server_error";
+  return "unknown";
 }
 
 function sumOrUndef(...values: unknown[]): number | undefined {

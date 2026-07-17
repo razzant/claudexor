@@ -129,6 +129,22 @@ export function parseCodexRateLimitsResponse(value: unknown, observedAt: Date): 
       });
     }
   }
+  // Live-verified shape (codex 0.142.2, 2026-07-17): a TOP-LEVEL
+  // `rateLimitResetCredits: {availableCount, credits[]}` beside the buckets
+  // (PR#28143). Zero credits stay silent; a positive balance is a visible
+  // fact row so the footer never hides granted headroom.
+  const resetCredits = objectOrNull(response["rateLimitResetCredits"]);
+  const availableCredits = resetCredits ? finiteNumber(resetCredits["availableCount"]) : null;
+  if (availableCredits !== null && availableCredits > 0) {
+    constraints.push({
+      id: "reset_credits",
+      label: `${availableCredits} reset credit${availableCredits === 1 ? "" : "s"} available`,
+      used_ratio: null,
+      window_seconds: null,
+      resets_at: null,
+      cooldown_until: null,
+    });
+  }
   if (buckets.length === 0) return [];
   return [
     {

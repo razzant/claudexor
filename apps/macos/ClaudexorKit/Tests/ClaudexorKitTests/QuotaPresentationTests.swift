@@ -13,6 +13,7 @@ import Testing
         observedAt: String = "2026-07-16T11:59:00Z",
         freshness: String = "fresh",
         plan: String? = "Max",
+        subjectId: String? = nil,
         constraints: [[String: Any]]
     ) throws -> QuotaSnapshot {
         let object: [String: Any] = [
@@ -20,7 +21,7 @@ import Testing
                 "harness": harness,
                 "credential_route": route,
                 "plan_label": plan as Any,
-                "subject_id": NSNull(),
+                "subject_id": subjectId as Any? ?? NSNull(),
             ],
             "constraints": constraints,
             "source": source,
@@ -95,6 +96,27 @@ import Testing
         let groups = QuotaPresentation.groups(from: [cooldown], now: now)
         #expect(groups.first?.cooldownUntil == nil)
         #expect(groups.first?.windows.isEmpty == true)
+    }
+
+    @Test func credentialProfilesOfOneRouteStaySeparateGroups() throws {
+        // INV-135: two claude subscriptions (default + profile) must never
+        // merge into one chip — each carries its own windows and signature.
+        let base = try snapshot(
+            source: "claude_oauth_usage",
+            constraints: [window("five_hour", label: "5 hour", used: 0.10)]
+        )
+        let profile = try snapshot(
+            source: "claude_oauth_usage",
+            plan: "max",
+            subjectId: "exp-a",
+            constraints: [window("five_hour", label: "5 hour", used: 0.45)]
+        )
+        let groups = QuotaPresentation.groups(from: [base, profile])
+        #expect(groups.count == 2)
+        let byId = Dictionary(uniqueKeysWithValues: groups.map { ($0.subjectId ?? "default", $0) })
+        #expect(byId["default"]?.windows.first?.usedRatio == 0.10)
+        #expect(byId["exp-a"]?.windows.first?.usedRatio == 0.45)
+        #expect(byId["exp-a"]?.planLabel == "max")
     }
 
     @Test func routesOfOneHarnessStaySeparateGroups() throws {

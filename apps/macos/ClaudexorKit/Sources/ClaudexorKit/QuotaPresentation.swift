@@ -34,11 +34,14 @@ public enum QuotaPresentation {
         public var id: String { "\(source):\(observedAt)" }
     }
 
-    /// All quota truth for one `(harness, credential_route)` subject.
+    /// All quota truth for one `(harness, credential_route, profile)` subject.
     public struct Group: Identifiable, Equatable, Sendable {
         public let harness: String
         /// Raw wire route (`vendor_native` / `managed_api_key` / `local`).
         public let credentialRoute: String
+        /// Credential profile the quota belongs to (INV-135); nil = the
+        /// engine-default identity. Distinct profiles NEVER merge into one chip.
+        public let subjectId: String?
         public let planLabel: String?
         /// Freshness of the newest contributing snapshot (the chip's dot).
         public let freshness: String
@@ -46,7 +49,7 @@ public enum QuotaPresentation {
         /// ACTIVE cooldown end (ISO), nil when none or already expired.
         public let cooldownUntil: String?
         public let sources: [Source]
-        public var id: String { "\(harness):\(credentialRoute)" }
+        public var id: String { "\(harness):\(credentialRoute):\(subjectId ?? "")" }
 
         /// Human label for the credential route ("Subscription" / "API key" /
         /// "Local"); unknown wire values degrade to a cleaned-up raw string
@@ -63,7 +66,9 @@ public enum QuotaPresentation {
     }
 
     public static func groups(from snapshots: [QuotaSnapshot], now: Date = Date()) -> [Group] {
-        let byRoute = Dictionary(grouping: snapshots) { "\($0.subject.harness):\($0.subject.credentialRoute)" }
+        let byRoute = Dictionary(grouping: snapshots) {
+            "\($0.subject.harness):\($0.subject.credentialRoute):\($0.subject.subjectId ?? "")"
+        }
         return byRoute.values.compactMap { group -> Group? in
             guard let subject = group.first?.subject else { return nil }
             // Newest snapshot first: its window copies win the dedupe and its
@@ -98,6 +103,7 @@ public enum QuotaPresentation {
             return Group(
                 harness: subject.harness,
                 credentialRoute: subject.credentialRoute,
+                subjectId: subject.subjectId,
                 planLabel: ordered.compactMap(\.subject.planLabel).first,
                 freshness: ordered.first?.freshness ?? "unknown",
                 windows: windows,
@@ -107,7 +113,9 @@ public enum QuotaPresentation {
                 }
             )
         }
-        .sorted { ($0.harness, $0.credentialRoute) < ($1.harness, $1.credentialRoute) }
+        .sorted {
+            ($0.harness, $0.credentialRoute, $0.subjectId ?? "") < ($1.harness, $1.credentialRoute, $1.subjectId ?? "")
+        }
     }
 
     private static func observedDate(_ snapshot: QuotaSnapshot) -> Date {

@@ -67,3 +67,32 @@ describe("Codex app-server quota source", () => {
     );
   });
 });
+
+describe("codex rateLimitResetCredits (W5.3 mini-gap, live-verified shape)", () => {
+  const base = {
+    rateLimits: {
+      limitId: "codex",
+      primary: { usedPercent: 63, windowDurationMins: 10080, resetsAt: 1784822659 },
+      planType: "pro",
+    },
+  };
+
+  it("surfaces a positive credit balance as a visible fact row", () => {
+    const [snapshot] = parseCodexRateLimitsResponse(
+      { ...base, rateLimitResetCredits: { availableCount: 3, credits: [] } },
+      new Date("2026-07-17T12:00:00Z"),
+    );
+    expect(snapshot?.constraints.some((c) => c.id === "reset_credits")).toBe(true);
+    expect(snapshot?.constraints.find((c) => c.id === "reset_credits")?.label).toBe(
+      "3 reset credits available",
+    );
+  });
+
+  it("stays silent on the live zero-balance shape", () => {
+    const [snapshot] = parseCodexRateLimitsResponse(
+      { ...base, rateLimitResetCredits: { availableCount: 0, credits: [] } },
+      new Date("2026-07-17T12:00:00Z"),
+    );
+    expect(snapshot?.constraints.some((c) => c.id === "reset_credits")).toBe(false);
+  });
+});

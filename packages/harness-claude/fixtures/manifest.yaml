@@ -67,7 +67,7 @@ fixtures:
       # has exceeded..."), not the bare label the mapper expects, so the
       # category collapses to "unknown". Declared as the CURRENT truth: a
       # mapper that learns to read the prose must update this deliberately.
-      retry_class: "unknown"
+      retry_class: "rate_limit"
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: true

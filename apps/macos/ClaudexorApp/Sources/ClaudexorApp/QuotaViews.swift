@@ -72,6 +72,7 @@ struct QuotaFooterView: View {
                     .fill(freshnessColor(group.freshness))
                     .frame(width: 6, height: 6)
                 Text(group.harness).fontWeight(.medium)
+                if let subject = group.subjectId { Text(subject).foregroundStyle(Theme.accent) }
                 Text(group.routeLabel).foregroundStyle(.secondary)
                 Spacer()
                 if let reset = formattedDate(group.nextResetAt) {
@@ -155,6 +156,7 @@ struct QuotaDetailView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             HStack {
                 Text(group.harness).font(.headline)
+                if let subject = group.subjectId { Text(subject).foregroundStyle(Theme.accent) }
                 Text(group.routeLabel).foregroundStyle(.secondary)
                 if let plan = group.planLabel { Text(plan).foregroundStyle(.secondary) }
                 Spacer()
