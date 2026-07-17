@@ -768,7 +768,6 @@ struct HarnessInfo: Identifiable, Hashable {
     /// formats this field; it never re-derives availability from health+intents.
     var routableIntents: [String] = []
     var reasons: [String] = []
-    var checks: [String] = []
     var readiness: [ReadinessCheck] = []
     /// Manifest declares a finite image attachment input (composer gating).
     var acceptsImages: Bool = false

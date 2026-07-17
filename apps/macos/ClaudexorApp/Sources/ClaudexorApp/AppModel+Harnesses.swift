@@ -17,7 +17,6 @@ extension AppModel {
                 let health = HarnessHealth(rawValue: status.status) ?? .unavailable
                 let version = status.manifest?["version"]?.stringValue ?? status.manifest?["adapter_version"]?.stringValue ?? "unknown"
                 let auth = Self.harnessReadinessText(status: status, health: health)
-                let checks = status.checks.map { "\($0.id): \($0.status)" }
                 let acceptsImages = Self.acceptsImages(manifest: status.manifest)
                 let acceptsBrowser = status.manifest?["capabilities"]?["browser_tool"]?.boolValue ?? false
                 let effortLevels: [String] = {
@@ -33,7 +32,7 @@ extension AppModel {
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
                                    authSources: status.authSources,
                                    intents: status.enabledIntents, routableIntents: status.routableIntents,
-                                   reasons: status.reasons ?? [], checks: checks, readiness: status.readiness,
+                                   reasons: status.reasons ?? [], readiness: status.readiness,
                                    acceptsImages: acceptsImages, acceptsBrowser: acceptsBrowser,
                                    effortLevels: effortLevels)
             }
