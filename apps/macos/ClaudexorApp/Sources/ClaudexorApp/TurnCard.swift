@@ -67,31 +67,34 @@ struct TurnCard: View {
     private var assistantSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             if let run {
+                // W4.1 «Messenger»: ONE status line — two anchored clusters
+                // (identity+state left, time+cash right) + the explicit ⧉
+                // inspector affordance. The pill is dissolved (W4.2): quiet
+                // facts are quiet text; attention states raise ONE loud chip.
+                let line = TurnPresentation.statusLine(
+                    status: run.status, harnesses: run.harnesses, n: run.n,
+                    retryLabel: run.status.isActive ? run.retryStatus?.label : nil,
+                    waitingOnUser: run.waitingOnUser)
                 HStack(spacing: Theme.Spacing.sm) {
-                    // Status line: «Codex · Working · 2m». Show the harness
-                    // identity ONLY when it is UNAMBIGUOUS (a single harness) —
-                    // a race's `harnesses.first` may be a losing candidate, not
-                    // the one that answered (sol #19); engine-typed winner
-                    // attribution is the durable fix, tracked in the plan.
-                    if run.harnesses.count == 1, let family = run.harnesses.first {
-                        Label(family.label, systemImage: family.glyph)
+                    if let identity = line.identity {
+                        Label(identity, systemImage: line.family?.glyph ?? "flag.checkered.2.crossed")
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(family.color)
+                            .foregroundStyle(line.family?.color ?? .secondary)
                     }
-                    StatusPill(status: run.status)
-                    elapsedText(run)
-                    // Typed transient status in the status line (W-C2/sol #6):
-                    // «Retrying 2/10 · overloaded · in 2.5s» while it's live —
-                    // never buried as reasoning junk.
-                    if run.status.isActive, let retry = run.retryStatus {
-                        Label(retry.label, systemImage: "arrow.clockwise")
-                            .font(.caption2)
+                    if let word = line.stateWord {
+                        Text(word).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let chip = TurnPresentation.attention(status: run.status,
+                                                             waitingOnUser: run.waitingOnUser) {
+                        Text(chip.text)
+                            .font(.caption.weight(.semibold))
                             .padding(.horizontal, Theme.Spacing.xs)
-                            .background(Theme.status(.blocked).opacity(0.14), in: Capsule())
-                            .foregroundStyle(Theme.status(.blocked))
-                            .help("The harness is retrying an API call (typed api_retry status).")
+                            .padding(.vertical, 1)
+                            .background(chip.tone.color.opacity(0.14), in: Capsule())
+                            .foregroundStyle(chip.tone.color)
                     }
-                    Text(run.mode.label).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    elapsedText(run)
                     // The engine's CASH fact (W4.3): $0.00 while the run stays
                     // on subscription routes, real dollars once a paid API
                     // route settles. No route inference, no valuation essay.
@@ -101,22 +104,21 @@ struct TurnCard: View {
                             .font(.caption).foregroundStyle(.secondary)
                             .help(CashSpend.help)
                     }
-                    Spacer()
-                    Button("Open run") {
+                    Button {
                         model.openRun(run.id)
+                    } label: {
+                        Image(systemName: "arrow.up.forward.square")
                     }
-                    .buttonStyle(.link)
+                    .buttonStyle(.borderless)
                     .help("Open this run in the inspector — diff, timeline, review")
                 }
-                // Live transcript: the harness's reasoning + tool calls as they
-                // happen (folded from SSE), so the chat shows working progress —
-                // not just a status pill and a final answer. Collapsible: expanded
-                // while the run is live, folds away when it finishes (a user toggle
-                // pins it). Read through the live-box overlay: while streaming only
-                // THIS card re-renders per batch, not the whole conversation.
+                // ONE labeled Activity strip (W4.1): «Thinking 40s · 9 tools ·
+                // 3 files». Clicking the CARD toggles it (В16а); expanded while
+                // live by default, a user toggle pins it. Read through the
+                // live-box overlay: while streaming only THIS card re-renders.
                 if let runId = turn.runId {
                     let blocks = model.transcriptBlocks(runId)
-                    if !blocks.isEmpty {
+                    if !blocks.isEmpty, let summary = TurnPresentation.activitySummary(blocks: blocks) {
                         let live = run.status.isActive
                         DisclosureGroup(isExpanded: Binding(
                             get: { transcriptExpanded ?? live },
@@ -126,51 +128,15 @@ struct TurnCard: View {
                                            truncatedChars: model.transcriptTruncatedChars(runId),
                                            fileScopeRoots: [run.repoRoot, run.runDir].compactMap { $0 })
                         } label: {
-                            Label(live ? "Working…" : "Transcript (\(blocks.count))", systemImage: "waveform")
+                            Label(live ? "Working… · \(summary)" : summary, systemImage: "waveform")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-                // Honest outcome (the v0.9 "is the game done?" fix): a plan turn
-                // says "no files changed" and offers to implement it; a patch shows
-                // its diffstat (and whether a race winner was auto-applied).
-                if let result = turn.run?.result {
-                    outcomeRow(result)
-                }
-                // Honest apply-state label: never a green "succeeded" next to
-                // applied-review-blocked. Called even with NO work product — a
-                // result-less failure still owes its W21 line (sol review #5).
-                applyStateRow(turn.run?.result, run: run)
-                // Server-derived: a persisted operator decision (from ANY surface,
-                // surviving reloads) unblocks apply; `riskAccepted` only bridges
-                // the moment between decide() and the refreshed run detail.
-                let unblocked = run.operatorDecisionAction != nil || riskAccepted
-                if (run.status == .blocked || run.status == .needsReview) && !unblocked {
-                    DecisionBar(runId: run.id) {
-                        // Bridge the moment between decide() and refreshed detail.
-                        riskAccepted = true
-                    }
-                }
-                if applied {
-                    Label("Applied to project", systemImage: "checkmark.seal.fill")
-                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
-                } else if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
-                    // Apply PRE-FLIGHT: dry-run the gate when the apply bar appears so
-                    // a refusal reason is shown UP FRONT, not only on press.
-                    if let reason = applyBlockReason {
-                        Label(reason, systemImage: "hand.raised.fill")
-                            .font(.caption).foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                            .help("Apply would be refused for this reason (apply pre-flight).")
-                    }
-                    applyBar(run)
-                        .task(id: run.id) { applyBlockReason = await model.applyCheck(runId: run.id) }
-                }
-                // W22: the FINAL answer renders as markdown (headings / lists /
-                // fences / links — the shared MarkdownOutputView), not flat
-                // 8-line-truncated text. Diffs/patches are NOT markdown — they
-                // live in the run's Diff tab. Long answers start collapsed with
-                // an explicit toggle; the full content is always reachable.
+                // The FINAL answer is the loudest element (W4.1 order: answer
+                // bubble right under the activity strip; quiet outcome rows and
+                // the action footer follow). W22: markdown, long answers start
+                // height-collapsed with an explicit toggle.
                 if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
                     let long = Self.isLongAnswer(answer)
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
@@ -203,9 +169,41 @@ struct TurnCard: View {
                             .padding(.vertical, Theme.Spacing.xs)
                     }
                 }
+                // QUIET outcome rows (W4.1 order: after the answer): what the
+                // turn actually did — plan/diffstat, then the reconciled W21
+                // line. Never a green "succeeded" next to a blocked review.
+                if let result = turn.run?.result {
+                    outcomeRow(result)
+                }
+                applyStateRow(turn.run?.result, run: run)
+                // ACTION FOOTER (fixed position, last): decision, apply
+                // pre-flight, apply. Server-derived: a persisted operator
+                // decision (from ANY surface) unblocks apply; `riskAccepted`
+                // bridges the moment between decide() and the refreshed detail.
+                let unblocked = run.operatorDecisionAction != nil || riskAccepted
+                if (run.status == .blocked || run.status == .needsReview) && !unblocked {
+                    DecisionBar(runId: run.id) {
+                        riskAccepted = true
+                    }
+                }
+                if applied {
+                    Label("Applied to project", systemImage: "checkmark.seal.fill")
+                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
+                } else if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
+                    // Apply PRE-FLIGHT: dry-run the gate when the apply bar appears so
+                    // a refusal reason is shown UP FRONT, not only on press.
+                    if let reason = applyBlockReason {
+                        Label(reason, systemImage: "hand.raised.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                            .textSelection(.enabled)
+                            .help("Apply would be refused for this reason (apply pre-flight).")
+                    }
+                    applyBar(run)
+                        .task(id: run.id) { applyBlockReason = await model.applyCheck(runId: run.id) }
+                }
                 // Inline failure card: a terminal-FAILED turn with nothing to show
                 // (no answer, no transcript, no diff — e.g. an unauthed harness wrote
-                // only failure.yaml) otherwise reads as idle next to a red status pill.
+                // only failure.yaml) otherwise reads as idle-looking.
                 // Make it honest in the chat: surface the reason + an Open-run link.
                 if isSilentFailure(run) { failureCard(run) }
             } else if let refusal = turn.enqueueError {
@@ -224,10 +222,15 @@ struct TurnCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(hover: run != nil)
         .contentShape(Rectangle())
-        // Click the card to open the run inspector (the "Open run" link does the
-        // same). Buttons inside the card take the tap first (SwiftUI priority), so
+        // Clicking the card toggles its Activity strip (В16а) — the inspector
+        // opens ONLY via the explicit ⧉ affordance in the status line. Buttons
+        // inside the card take the tap first (SwiftUI priority), so
         // decide/apply/Implement-plan are unaffected.
-        .onTapGesture { if let run { model.openRun(run.id) } }
+        .onTapGesture {
+            if let run, turn.runId != nil {
+                transcriptExpanded = !(transcriptExpanded ?? run.status.isActive)
+            }
+        }
     }
 
     /// Live elapsed clock while the run works («2 min»); the frozen duration
