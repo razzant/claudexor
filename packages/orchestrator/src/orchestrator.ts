@@ -3,7 +3,6 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   Attachment,
-  ConformanceReport,
   ControlReviewerPanelEntry,
   EffortHint,
   KnownModelEntry,
@@ -56,7 +55,6 @@ import {
   strictifyOutputSchema,
   deriveAuthRouteReason,
   estimateEffectiveAuthRoute,
-  knownModelIdsForRoute,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
 import { specPackToTaskContract } from "@claudexor/interview";
@@ -65,7 +63,6 @@ import {
   AnswerAssembly,
   HarnessUnavailableError,
   summarizeDiffPaths as diffStats,
-  validateModel,
   withInactivityWatchdog,
 } from "@claudexor/core";
 import { assertRouteModelsAllowed } from "./modelGovernance.js";
@@ -101,7 +98,12 @@ import {
   deliveryRefusalFailure,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
-import { resolveExplicitReviewerPanel } from "./reviewerPanel.js";
+import {
+  candidateStatusInRouteContext,
+  resolveReadOnlyRouteContext,
+  type ResolvedRouteContext,
+} from "./routeContext.js";
+import { resolveAutoReviewerPanel, resolveExplicitReviewerPanel } from "./reviewerPanel.js";
 import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
 import { orchestrateFailureFor, readRunStatus } from "./outcomeReducer.js";
 import {
@@ -687,76 +689,18 @@ export class Orchestrator {
     if (this.deps.reviewerPanel && this.deps.reviewerPanel.length > 0) {
       return this.resolveExplicitReviewerPanel(cwd, this.deps.reviewerPanel, runAuthPreference);
     }
-    const specs: ReviewerSpec[] = [];
-    const seen = new Set<string>();
-    const harnessSettings = this.config(cwd)?.global.harnesses ?? {};
-    const reviewHome = new WorkspaceManager(cwd).readOnlyHomeEnv();
-    try {
-      for (const adapter of this.deps.registry.values()) {
-        let m: Awaited<ReturnType<HarnessAdapter["discover"]>> | null = null;
-        try {
-          m = await adapter.discover();
-        } catch {
-          continue;
-        }
-        if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
-        // Per-harness settings gate reviewers before doctor/model probes: a disabled
-        // harness must not spend auth/API-key readiness checks.
-        if (harnessSettings[adapter.id]?.enabled === false) continue;
-        const authPreference = this.authPreferenceForHarness(cwd, adapter.id, runAuthPreference);
-        let report: ConformanceReport | null = null;
-        try {
-          report = await adapter.doctor({ cwd, env: reviewHome.env, authPreference });
-        } catch {
-          continue;
-        }
-        if (report.status !== "ok") continue; // reviewer eligibility needs scoped doctor-OK.
-        if (!report.enabled_intents.includes("review")) continue;
-        if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
-        // Explicit per-family override first, then the user's per-harness
-        // default model: an explicit model request makes the route provable
-        // (accepted_model_arg) on CLIs that never echo their model.
-        const requestedModel =
-          this.deps.reviewerModels?.[m.provider_family] ??
-          harnessSettings[adapter.id]?.default_model ??
-          null;
-        // STRICT: the auto panel applies the SAME model truth gate as the
-        // explicit panel — a doomed reviewer model is refused here, never
-        // forwarded to die as an opaque native error mid-review.
-        if (requestedModel) {
-          const check = validateModel(
-            requestedModel,
-            typeof adapter.models === "function"
-              ? (await adapter.models({ cwd, env: reviewHome.env, authPreference })).map(
-                  (x) => x.id,
-                )
-              : knownModelIdsForRoute(
-                  m.capabilities.known_models,
-                  estimateEffectiveAuthRoute(authPreference, report.auth_sources),
-                ),
-            typeof adapter.models === "function" ? "api" : "manifest",
-          );
-          if (check.status !== "ok") {
-            throw new HarnessUnavailableError(
-              `auto-selected reviewer harness '${adapter.id}' refused model '${requestedModel}': ${check.message}; ` +
-                `fix the reviewer model override or harnesses.${adapter.id}.default_model, or run \`claudexor models --harness ${adapter.id}\``,
-            );
-          }
-        }
-        seen.add(m.provider_family);
-        specs.push({
-          adapter,
-          providerFamily: m.provider_family,
-          requestedModel,
-          requestedEffort: this.deps.reviewerEfforts?.[m.provider_family] ?? null,
-          authPreference,
-        });
-        if (specs.length >= 2) break;
-      }
-    } finally {
-      reviewHome.dispose();
-    }
-    return specs;
+    return resolveAutoReviewerPanel(
+      {
+        cwd,
+        registry: this.deps.registry,
+        harnessSettings: this.config(cwd)?.global.harnesses ?? {},
+        authPreferenceFor: (id) => this.authPreferenceForHarness(cwd, id, runAuthPreference),
+      },
+      {
+        reviewerModels: this.deps.reviewerModels,
+        reviewerEfforts: this.deps.reviewerEfforts,
+      },
+    );
   }
 
   /**
@@ -1010,6 +954,7 @@ export class Orchestrator {
     input: RunInput,
     intent: Intent,
     ledger?: BudgetLedger,
+    routeContext?: ResolvedRouteContext,
   ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
@@ -1069,7 +1014,15 @@ export class Orchestrator {
         dropped.push(why);
         continue;
       }
-      const status = statusById.get(id);
+      // W3.3 (ТЗ-1 §B): a route is admitted on readiness truth from the SAME
+      // resolved env/cwd its run will spawn with (see routeContext.ts).
+      const status = await candidateStatusInRouteContext(
+        this.gateway,
+        routeContext,
+        id,
+        this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
+        statusById,
+      );
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) {
         dropped.push(`${id} (unavailable)`);
@@ -4783,10 +4736,19 @@ export class Orchestrator {
     if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
     const reviewers = reviewersOutcome.reviewers;
 
+    // W3.3: ONE resolved read-only context — the routing point-probe and every
+    // planner spawn consume the SAME scoped env (see routeContext.ts).
+    const roHome = resolveReadOnlyRouteContext(this.execRootOf(input));
     let adapters: RoutedAdapter[];
     try {
-      adapters = await this.resolveCandidateAdapters({ ...input, n: undefined }, "plan", ledger);
+      adapters = await this.resolveCandidateAdapters(
+        { ...input, n: undefined },
+        "plan",
+        ledger,
+        roHome,
+      );
     } catch (err) {
+      roHome.dispose();
       const message = safeErrorMessage(err);
       store.writeText(
         join(paths.contextDir, "context_error.md"),
@@ -4826,6 +4788,7 @@ export class Orchestrator {
     try {
       contextSection = await this.lazyContextSection(input, contract, store, paths, log);
     } catch (err) {
+      roHome.dispose();
       const message = safeErrorMessage(err);
       store.writeText(
         join(paths.contextDir, "context_error.md"),
@@ -4873,11 +4836,6 @@ export class Orchestrator {
       harnessId: string;
       telemetry: AttemptTelemetry;
     }[] = [];
-    // Scope planner scratch HOME/config dirs so non-auth state and injected
-    // routes stay outside the project. Native Codex/Claude auth still uses the
-    // vendor-owned host-user store and is never copied here. Disposed after the
-    // planners finish.
-    const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
     try {
       for (const [idx, routed] of adapters.entries()) {
         if (input.signal?.aborted) break;
@@ -5598,12 +5556,16 @@ export class Orchestrator {
       : externalContextPolicy === "off"
         ? 1
         : Math.min(Math.max(input.n ?? 2, 1), 3);
+    // W3.3: ONE resolved read-only context — the routing point-probe and every
+    // read-only attempt spawn consume the SAME scoped env (see routeContext.ts).
+    const roHome = resolveReadOnlyRouteContext(this.execRootOf(input));
     let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters(
         { ...input, prompt, n: width },
         opts.intent,
         ledger,
+        roHome,
       );
       if (!opts.swarm) {
         const seen = new Set<string>();
@@ -5614,6 +5576,7 @@ export class Orchestrator {
         });
       }
     } catch (err) {
+      roHome.dispose();
       const message = safeErrorMessage(err);
       store.writeText(
         join(paths.contextDir, "context_error.md"),
@@ -5647,11 +5610,6 @@ export class Orchestrator {
         candidates: [],
       };
     }
-    // Read-only routes still write plan files, caches, and session rollouts.
-    // Scope non-native state and injected API routes outside the project;
-    // vendor-owned native Codex/Claude credential stores are referenced in
-    // place and never copied. Disposed at run end.
-    const roHome = new WorkspaceManager(this.execRootOf(input)).readOnlyHomeEnv();
     interface ReadonlyAttempt {
       attemptId: string;
       harnessId: string;

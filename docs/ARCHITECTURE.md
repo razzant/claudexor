@@ -194,6 +194,16 @@ swarm,
 the mode requires it. Surfaces show unavailable/degraded harnesses with reasons,
 but gate them out of launch and routing.
 
+Read-only routing additionally re-derives the env-sensitive readiness
+evidence in the run's own resolved context: a read-only run spawns inside a
+scoped throwaway HOME, so the router resolves that context ONCE (a typed
+`ResolvedRouteContext`), points a source-targeted readiness probe
+(`gateway.routeStatus`) at each surviving candidate with the exact env/cwd
+the run will receive, and the same context object then feeds `spec.env` at
+spawn. Discovery and manifests stay host-level (`statusAll`); readiness
+evidence gathered in an env the run never executes in is not evidence and
+can no longer admit a route whose auth truth dies inside the scoped env.
+
 Harness manifests carry capability booleans the engine consumes (intent
 gating, knob support, the interactive-channel gate) and a small structured
 `capability_profile` limited to what is actually read: auth sources and

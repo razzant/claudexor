@@ -61,6 +61,20 @@ export class HarnessGateway {
   }
 
   /**
+   * Source-targeted readiness point-probe for ROUTE gating (W3.3 / ТЗ-1 §B):
+   * re-derives ONE harness's readiness in the exact resolved env/cwd its run
+   * will spawn with, so routing never admits a route on host-env auth truth
+   * the run's scoped env cannot reproduce. Discovery stays host-level
+   * (statusAll); this never probes unrelated adapters and never resurrects a
+   * harness that host discovery dropped.
+   */
+  async routeStatus(harnessId: string, spec: DoctorSpec): Promise<HarnessStatus | null> {
+    const adapter = this.registry.get(harnessId);
+    if (!adapter) return null;
+    return (await this.statusAllForAdapters([adapter], spec))[0] ?? null;
+  }
+
+  /**
    * Discover + conformance-probe harnesses. When `only` is given, ONLY those
    * adapters are probed (so `doctor --harness X` / `auth status X` pay one
    * harness's discovery cost — incl. any paid smoke — instead of probing every

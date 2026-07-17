@@ -1522,6 +1522,101 @@ describe("Orchestrator", () => {
     expect(observedAttachments).toEqual([attachment]);
   });
 
+  it("readonly routing probes readiness in the SAME scoped env its run spawns with (W3.3)", async () => {
+    const repo = await initRepo();
+    let ranSpecEnv: Record<string, string> | undefined;
+    let probedEnv: Record<string, string | null | undefined> | undefined;
+    const adapter: HarnessAdapter = {
+      id: "asker",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { read_files: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor(spec) {
+        // The route-admitting point-probe carries the run's scoped env; the
+        // host-level statusAll probe carries none.
+        if (spec.env) probedEnv = spec.env;
+        return ConformanceReport.parse({
+          harness_id: "asker",
+          status: "ok",
+          enabled_intents: ["explain"],
+        });
+      },
+      async *run(spec) {
+        ranSpecEnv = spec.env;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "message", session_id: spec.session_id, ts, text: "4" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["asker", adapter]]),
+      reviewers: [],
+    }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+    expect(res.status).toBe("success");
+    // The readiness truth that admitted the route was derived in the exact
+    // env the run then received (ТЗ-1 §B: probe env === run env)…
+    expect(probedEnv).toBeDefined();
+    expect(ranSpecEnv).toEqual(probedEnv);
+    // …and that env is the scoped throwaway HOME, not the operator's host env.
+    expect(ranSpecEnv?.HOME).toBeDefined();
+    expect(ranSpecEnv?.HOME).not.toBe(process.env.HOME);
+  });
+
+  it("readonly routing drops a route whose auth truth dies in the run's scoped env (W3.3)", async () => {
+    const repo = await initRepo();
+    let ran = false;
+    const adapter: HarnessAdapter = {
+      id: "asker",
+      async discover() {
+        return HarnessManifest.parse({
+          id: "asker",
+          display_name: "asker",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { read_files: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor(spec) {
+        // Host env says ok; the run's scoped env cannot see the credentials —
+        // the pre-W3.3 router would admit this route and the run would die.
+        if (spec.env) {
+          return ConformanceReport.parse({
+            harness_id: "asker",
+            status: "unavailable",
+            reasons: ["subscription session is not visible in the scoped run env"],
+          });
+        }
+        return ConformanceReport.parse({
+          harness_id: "asker",
+          status: "ok",
+          enabled_intents: ["explain"],
+        });
+      },
+      async *run(spec) {
+        ran = true;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["asker", adapter]]),
+      reviewers: [],
+    }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+    expect(res.status).toBe("failed");
+    expect(ran).toBe(false);
+    expect(res.summary).toMatch(/scoped run env/);
+  });
+
   it("mandatory attachment gate refuses an incompatible selected lane and filters auto-pools", async () => {
     const repo = await initRepo();
     const image = join(repo, "shot.png");

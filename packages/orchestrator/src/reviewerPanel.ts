@@ -11,8 +11,11 @@
 import type {
   AuthPreference,
   AuthSourceReadiness,
+  ConformanceReport,
   ControlReviewerPanelEntry,
+  EffortHint,
   Intent,
+  ProviderFamily,
 } from "@claudexor/schema";
 import { estimateEffectiveAuthRoute, knownModelIdsForRoute } from "@claudexor/schema";
 import type { HarnessAdapter } from "@claudexor/core";
@@ -188,6 +191,94 @@ export async function resolveExplicitReviewerPanel(
     }
   } finally {
     reviewModelHome.current?.dispose();
+  }
+  return specs;
+}
+
+export interface AutoReviewerPanelOverrides {
+  reviewerModels?: Partial<Record<ProviderFamily, string>>;
+  reviewerEfforts?: Partial<Record<ProviderFamily, EffortHint>>;
+}
+
+/**
+ * Auto reviewer-panel selection (no owner-configured panel): pick up to two
+ * doctor-ok, readonly-review-capable harnesses from DISTINCT provider
+ * families. Eligibility consumes a point-probe in the same scoped read-only
+ * env shape the reviewers later run with, and the STRICT model truth gate
+ * applies to any per-family/default model override — a doomed reviewer model
+ * is refused here, never forwarded to die as an opaque native error
+ * mid-review.
+ */
+export async function resolveAutoReviewerPanel(
+  deps: ReviewerPanelDeps,
+  overrides: AutoReviewerPanelOverrides = {},
+): Promise<ReviewerSpec[]> {
+  const { cwd, registry, harnessSettings } = deps;
+  const specs: ReviewerSpec[] = [];
+  const seen = new Set<string>();
+  const reviewHome = new WorkspaceManager(cwd).readOnlyHomeEnv();
+  try {
+    for (const adapter of registry.values()) {
+      let m: Awaited<ReturnType<HarnessAdapter["discover"]>> | null = null;
+      try {
+        m = await adapter.discover();
+      } catch {
+        continue;
+      }
+      if (!m || m.kind === "fake" || seen.has(m.provider_family)) continue;
+      // Per-harness settings gate reviewers before doctor/model probes: a disabled
+      // harness must not spend auth/API-key readiness checks.
+      if (harnessSettings[adapter.id]?.enabled === false) continue;
+      const authPreference = deps.authPreferenceFor(adapter.id);
+      let report: ConformanceReport | null = null;
+      try {
+        report = await adapter.doctor({ cwd, env: reviewHome.env, authPreference });
+      } catch {
+        continue;
+      }
+      if (report.status !== "ok") continue; // reviewer eligibility needs scoped doctor-OK.
+      if (!report.enabled_intents.includes("review")) continue;
+      if (!m.capabilities.review || !m.access_profiles_supported.includes("readonly")) continue;
+      // Explicit per-family override first, then the user's per-harness
+      // default model: an explicit model request makes the route provable
+      // (accepted_model_arg) on CLIs that never echo their model.
+      const requestedModel =
+        overrides.reviewerModels?.[m.provider_family] ??
+        harnessSettings[adapter.id]?.default_model ??
+        null;
+      // STRICT: the auto panel applies the SAME model truth gate as the
+      // explicit panel — a doomed reviewer model is refused here, never
+      // forwarded to die as an opaque native error mid-review.
+      if (requestedModel) {
+        const check = validateModel(
+          requestedModel,
+          typeof adapter.models === "function"
+            ? (await adapter.models({ cwd, env: reviewHome.env, authPreference })).map((x) => x.id)
+            : knownModelIdsForRoute(
+                m.capabilities.known_models,
+                estimateEffectiveAuthRoute(authPreference, report.auth_sources),
+              ),
+          typeof adapter.models === "function" ? "api" : "manifest",
+        );
+        if (check.status !== "ok") {
+          throw new HarnessUnavailableError(
+            `auto-selected reviewer harness '${adapter.id}' refused model '${requestedModel}': ${check.message}; ` +
+              `fix the reviewer model override or harnesses.${adapter.id}.default_model, or run \`claudexor models --harness ${adapter.id}\``,
+          );
+        }
+      }
+      seen.add(m.provider_family);
+      specs.push({
+        adapter,
+        providerFamily: m.provider_family,
+        requestedModel,
+        requestedEffort: overrides.reviewerEfforts?.[m.provider_family] ?? null,
+        authPreference,
+      });
+      if (specs.length >= 2) break;
+    }
+  } finally {
+    reviewHome.dispose();
   }
   return specs;
 }
