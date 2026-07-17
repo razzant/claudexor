@@ -120,6 +120,8 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/artifact-store`, `packages/event-log`: run artifact tree and
   append-only event log writers.
 - `packages/control-api`: loopback HTTP/SSE facade over daemon and run artifacts.
+- `packages/journal`: the checksummed append-only journal primitive
+  (frame codec, fsync ACK discipline) that the daemon's durable state rides on.
 - `packages/daemon`: durable local Unix-socket queue and journal projections for commands, projects, and threads.
 - `packages/interview`: spec interview engine for Plan/draft flows.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
