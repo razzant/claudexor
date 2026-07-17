@@ -48,7 +48,6 @@ describe("DaemonRuntimeShutdown", () => {
       "setup-stop",
       "journal-close",
     ]);
-    runtime.finalize();
   });
 
   it("keeps the journal open when any writer fails to stop", async () => {
@@ -66,7 +65,6 @@ describe("DaemonRuntimeShutdown", () => {
     await expect(runtime.beginShutdown("test")).rejects.toThrow(/shutdown failed/);
     await expect(runtime.wait()).rejects.toThrow(/shutdown failed/);
     expect(journalClosed).toBe(false);
-    runtime.finalize();
   });
 
   it("every trigger gets the escalation ladder: a HUNG stop is force-exited after the deadline (W3.5/W-C8)", async () => {
@@ -81,7 +79,6 @@ describe("DaemonRuntimeShutdown", () => {
     expect(exits).toEqual([1]);
     expect(log.join("\n")).toContain("shutdown requested (socket-rpc stop)");
     expect(log.join("\n")).toContain("graceful stop exceeded 20ms; forcing exit");
-    runtime.finalize();
   });
 
   it("sweeps a leaked handle after a CLEAN stop with a disclosed drain-grace exit", async () => {
@@ -93,7 +90,6 @@ describe("DaemonRuntimeShutdown", () => {
     // the sweep fires: a real clean daemon exits first and never reaches it.
     expect(exits).toEqual([0]);
     expect(log.join("\n")).toContain("leaked handle");
-    runtime.finalize();
   });
 
   it("the drain sweep reads the exit code at FIRE time, not arm time (sol #17)", async () => {
@@ -112,36 +108,22 @@ describe("DaemonRuntimeShutdown", () => {
       await runtime.beginShutdown("test");
       await new Promise<void>((resolve) => setTimeout(resolve, 90));
       expect(exits).toEqual([1]); // NOT the arm-time 0
-      runtime.finalize();
     } finally {
       process.exitCode = prevExitCode;
     }
   });
 
-  it("the drain sweep SURVIVES finalize() in the production composition order (Ф3 gate)", async () => {
-    // The real tail is: await wait() -> finalize() -> return. Ф2.5's
-    // finalize() also cancelled the drain timer, which silently disabled the
-    // leaked-handle sweep in EVERY production shutdown (the tail always runs
-    // right after the clean-stop continuation). The sweep is unref'd — it
-    // cannot touch a naturally-draining process — so it must outlive
-    // finalize(): here the test runner holds the loop (the "leaked handle"),
-    // and the sweep still fires after the tail finalized.
-    const { runtime, exits, log } = machine({ stopDeadlineMs: 5_000, drainGraceMs: 20 });
-    await runtime.beginShutdown("test");
-    runtime.finalize(); // the composition root's tail, immediately after wait()
-    await new Promise<void>((resolve) => setTimeout(resolve, 60));
-    expect(exits).toEqual([0]);
-    expect(log.join("\n")).toContain("leaked handle");
-  });
-
-  it("finalize() cancels the hung-stop DEADLINE — a clean tail is never force-exited nonzero", async () => {
-    // The deadline (exit 1) is the timer a clean shutdown must escape; the
-    // drain sweep (exit 0, unref'd) is not a hazard to a clean process.
+  it("a CLEAN stop clears the hung-stop deadline — never force-exited nonzero", async () => {
+    // The deadline (exit 1) is the timer a clean shutdown must escape, and
+    // the clean-stop continuation itself owns the clearing — there is no
+    // external finalize() hook anymore (the Ф2.5 one also cancelled the
+    // drain sweep, silently disabling the leaked-handle protection in every
+    // production shutdown; Ф3 final review + its confirmation pass, which
+    // caught the first replacement test for this as vacuous).
     const { runtime, exits, log } = machine({ stopDeadlineMs: 40, drainGraceMs: 5_000 });
     await runtime.beginShutdown("test");
-    runtime.finalize();
     await new Promise<void>((resolve) => setTimeout(resolve, 90));
-    expect(exits).toEqual([]); // no exit-1 escalation after the clean tail
+    expect(exits).toEqual([]); // no exit-1 escalation after the clean stop
     expect(log.join("\n")).not.toContain("forcing exit");
   });
 
@@ -164,7 +146,6 @@ describe("DaemonRuntimeShutdown", () => {
     expect(log.join("\n")).toContain("shutdown FAILED");
     await new Promise<void>((resolve) => setTimeout(resolve, 60));
     expect(exits).toEqual([1]); // the deadline still guarantees termination
-    runtime.finalize();
   });
 
   it("coalesced triggers are disclosed and share one completion", async () => {
@@ -174,6 +155,5 @@ describe("DaemonRuntimeShutdown", () => {
     expect(second).toBe(first);
     await first;
     expect(log.join("\n")).toContain("shutdown already in progress (socket-rpc stop coalesced)");
-    runtime.finalize();
   });
 });

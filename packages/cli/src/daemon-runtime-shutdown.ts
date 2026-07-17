@@ -37,9 +37,12 @@ export interface DaemonRuntimeShutdownOptions {
  * participant or a leaked handle can no longer immortalize the daemon,
  * whichever trigger asked it to die. Every rung is DISCLOSED in the log and
  * every timer is unref'd so the ladder itself never keeps a clean process
- * alive. The deadline handle is retained so a clean shutdown reaching the
- * composition root's tail can cancel it via finalize(); the drain sweep is
- * deliberately uncancellable (see finalize()).
+ * alive. Nothing outside the machine can disarm it: the clean-stop
+ * continuation itself clears the hung-stop deadline (the exit-1 hazard), a
+ * FAILED stop keeps that deadline armed to guarantee termination, and the
+ * drain sweep is deliberately uncancellable — the Ф2.5 finalize() hook let
+ * the composition root cancel the sweep and thereby disabled the
+ * leaked-handle protection in every production shutdown (Ф3 final review).
  */
 export class DaemonRuntimeShutdown {
   private requestedValue = false;
@@ -108,15 +111,16 @@ export class DaemonRuntimeShutdown {
         this.settleFailure(error);
         return;
       }
-      // Clean stop: the hung-stop deadline is no longer needed. The
-      // leaked-handle drain sweep is armed UNCONDITIONALLY and survives
-      // finalize(): its timer is unref'd, so it cannot force-exit a process
-      // whose loop drains naturally — it fires ONLY when something keeps the
-      // loop alive past the grace, which is exactly the leak it exists to
-      // catch. (Cancelling it in main()'s tail — the pre-Ф3-gate behavior —
-      // removed the sweep from every production shutdown: the tail always
-      // runs right after this continuation.) Exit code is read at FIRE time
-      // so a late failure still exits nonzero.
+      // Clean stop: the hung-stop deadline (exit 1) is no longer needed —
+      // this continuation is its one owner. The leaked-handle drain sweep is
+      // then armed UNCONDITIONALLY and nothing can disarm it: unref'd, it
+      // cannot force-exit a process whose loop drains naturally — it fires
+      // ONLY when something keeps the loop alive past the grace, which is
+      // exactly the leak it exists to catch. (The Ф2.5 finalize() hook let
+      // main()'s tail cancel it, which removed the sweep from every
+      // production shutdown — the tail always runs right after this
+      // continuation.) Exit code is read at FIRE time so a late failure
+      // still exits nonzero.
       if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
       this.deadlineTimer = null;
       const drainGraceMs = this.options.drainGraceMs ?? 2_000;
@@ -127,20 +131,6 @@ export class DaemonRuntimeShutdown {
       this.resolveCompletion();
     });
     return this.completion;
-  }
-
-  /**
-   * Cancel the hung-stop DEADLINE only: a clean shutdown reaching the
-   * composition root's tail must not be force-exited nonzero by it. The
-   * drain sweep deliberately SURVIVES finalize() — unref'd, it cannot touch
-   * a naturally-draining process, and it is the only thing standing between
-   * a leaked handle after a clean stop and an immortal daemon (the W-C8
-   * class W3.5 closed). Cancelling it here was the pre-gate behavior that
-   * silently disabled the sweep in every production shutdown.
-   */
-  finalize(): void {
-    if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
-    this.deadlineTimer = null;
   }
 
   wait(): Promise<void> {

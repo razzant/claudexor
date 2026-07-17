@@ -366,7 +366,6 @@ async function main(): Promise<void> {
     }
     await shutdownRuntime.wait();
     lifecycle.finalize();
-    shutdownRuntime.finalize();
     appendFileSync(logPath(), `[${new Date().toISOString()}] claudexord shut down\n`);
   } catch (error) {
     try {
@@ -383,7 +382,6 @@ async function main(): Promise<void> {
       try {
         await shutdownRuntime.beginShutdown("startup failure");
         lifecycle?.finalize();
-        shutdownRuntime.finalize();
       } catch (shutdownError) {
         try {
           appendFileSync(
