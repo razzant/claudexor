@@ -1,8 +1,9 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import { canonicalIsolationLocator } from "@claudexor/core";
 import {
   claudeNativeEnv,
   defaultNativeClaudeConfigDir,
@@ -17,15 +18,7 @@ import {
  * ~/.claude is never a profile target, so profile operations cannot touch it.
  */
 export function canonicalProfileConfigDir(locator: string): string {
-  if (!isAbsolute(locator)) {
-    throw new Error(`credential profile config dir must be absolute: ${locator}`);
-  }
-  let dir = resolve(locator);
-  try {
-    dir = realpathSync(dir);
-  } catch {
-    /* not created yet (login creates it): the resolved absolute path is canonical */
-  }
+  const dir = canonicalIsolationLocator(locator, "credential profile config dir");
   let defaultDir = resolve(defaultNativeClaudeConfigDir());
   try {
     defaultDir = realpathSync(defaultDir);

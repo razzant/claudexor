@@ -332,6 +332,23 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
           return;
         }
+        // The instance secret fence holds for profiles too (release wave
+        // round-11 BLOCK): the default instance may reference raw/openai
+        // slots; a NAMED instance only its own — a profile must never route
+        // one provider's key to another provider's base URL.
+        const ref = profile.secret_ref ?? "";
+        const base = ref.includes(":") ? ref.slice(0, ref.indexOf(":")) : ref;
+        const allowed = id === "raw-api" ? ["raw", "openai"] : [id];
+        if (!allowed.includes(base)) {
+          yield {
+            type: "error",
+            session_id: spec.session_id,
+            ts: nowIso(),
+            error: `credential profile "${profile.profile_id}": secret "${ref || "(missing ref)"}" is outside ${id}'s instance fence (allowed bases: ${allowed.join(", ")})`,
+          };
+          yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
+          return;
+        }
         key = (profile.secret_ref ? resolveSecret(profile.secret_ref) : null) ?? undefined;
         if (!key) {
           yield {

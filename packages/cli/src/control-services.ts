@@ -18,7 +18,7 @@ import {
 import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
-import { SecretStore } from "@claudexor/secrets";
+import { SecretStore, isManagedSecretName } from "@claudexor/secrets";
 import { purgeThreadWorktree } from "@claudexor/workspace";
 import { noProjectRepoRoot, readTextSafe } from "@claudexor/util";
 import {
@@ -408,6 +408,15 @@ export function controlServices(
       const name = typeof p["name"] === "string" ? p["name"] : "";
       const value = typeof p["value"] === "string" ? p["value"] : "";
       if (!name || !value) throw new Error("name and value are required");
+      // ONE grammar for every ingress (release wave round-11): the HTTP path
+      // must bound names exactly like the CLI, or profile secret_refs written
+      // against the namespaced allowlist stop meaning anything.
+      if (!isManagedSecretName(name)) {
+        throw Object.assign(
+          new Error(`secret name must be a managed name or managed:profile slot, got "${name}"`),
+          { status: 400 },
+        );
+      }
       const backend = secretStore.set(name, value);
       invalidateDoctorCache();
       return {

@@ -194,15 +194,18 @@ async function main(): Promise<void> {
               Math.min(p.maxSeconds, 604_800)
             : null;
         // INV-135 selection precedence: explicit per-turn profile beats the
-        // thread's sticky profile beats the engine default. The winner scopes
-        // BOTH the run spec and the resume-session lookup (resume never
-        // crosses profiles).
+        // thread's sticky profile beats the engine default — and an explicit
+        // NULL forces the default ladder past the sticky profile (release
+        // wave round-11). The winner scopes BOTH the run spec and the
+        // resume-session lookup (resume never crosses profiles).
         const requestedProfileId =
-          typeof p.credentialProfileId === "string" && p.credentialProfileId
-            ? p.credentialProfileId
-            : threadId
-              ? (threads.getThread(threadId)?.credential_profile_id ?? null)
-              : null;
+          p.credentialProfileId === null
+            ? null
+            : typeof p.credentialProfileId === "string" && p.credentialProfileId
+              ? p.credentialProfileId
+              : threadId
+                ? (threads.getThread(threadId)?.credential_profile_id ?? null)
+                : null;
         let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
         let runSignal: AbortSignal | undefined = ctx.signal;
         if (maxSeconds !== null) {

@@ -157,10 +157,15 @@ export class QuotaRegistry {
         this.now().getTime() + (typeof delay === "number" ? delay : 5 * 60_000),
       ).toISOString();
     const source = harness === "claude" ? "claude_api_retry" : "codex_rollout";
+    // The event's profile stamp scopes the cooldown to ITS subject (release
+    // wave round-11): a profiled limit must never cool the default subject
+    // down (or vice versa), and two profiles never share one quota key.
+    const profileId = event.credential_profile_id ?? null;
     const existing = [...this.snapshots.values()].find(
       (snapshot) =>
         snapshot.subject.harness === harness &&
         snapshot.subject.credential_route === credentialRoute &&
+        (snapshot.subject.subject_id ?? null) === profileId &&
         snapshot.source === source,
     );
     this.upsert({
@@ -168,7 +173,7 @@ export class QuotaRegistry {
         harness,
         credential_route: credentialRoute,
         plan_label: null,
-        subject_id: null,
+        subject_id: profileId,
       },
       source,
       observed_at: event.ts,

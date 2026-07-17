@@ -21,3 +21,4 @@ export * from "./instructions.js";
 export * from "./browser-mcp.js";
 export * from "./process-identity.js";
 export * from "./process-group.js";
+export * from "./isolation-locator.js";

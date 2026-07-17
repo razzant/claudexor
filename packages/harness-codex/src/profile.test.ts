@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CredentialProfile, HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
@@ -42,23 +42,30 @@ function profile(over: Partial<CredentialProfile> = {}): CredentialProfile {
   } as CredentialProfile;
 }
 
+const ownedTmp = join(homedir(), ".claudexor", "test-tmp");
+mkdirSync(ownedTmp, { recursive: true });
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
 describe("canonicalCodexProfileHome (INV-135)", () => {
-  it("refuses relative paths and the default native home", () => {
+  it("refuses relative paths, out-of-tree paths, and the default native home", () => {
     expect(() => canonicalCodexProfileHome("relative/home")).toThrow(/absolute/);
+    expect(() => canonicalCodexProfileHome("/tmp/anywhere")).toThrow(/must live under/);
+    // Under the vitest temp CLAUDEXOR_CONFIG_DIR the default home sits outside
+    // ~/.claudexor, so the confinement is what refuses it; the must-not-be-
+    // default arm fires when the default lives inside the owned tree.
     expect(() => canonicalCodexProfileHome(defaultNativeCodexHome())).toThrow(
-      /must not be the default/,
+      /must live under|must not be the default/,
     );
   });
 });
 
 describe("Codex strict profile routing (INV-135)", () => {
   it("config_dir_login runs with CODEX_HOME = the profile home and stamps the profile on events", async () => {
-    const home = mkdtempSync(join(tmpdir(), "claudexor-codex-profile-"));
+    const home = mkdtempSync(join(ownedTmp, "claudexor-codex-profile-"));
     dirs.push(home);
     let probedEnv: Record<string, string | null | undefined> | undefined;
     let runEnv: Record<string, string | null | undefined> | undefined;
@@ -96,7 +103,7 @@ describe("Codex strict profile routing (INV-135)", () => {
   });
 
   it("config_dir_login without a ChatGPT login refuses typed — no fallback", async () => {
-    const home = mkdtempSync(join(tmpdir(), "claudexor-codex-profile-"));
+    const home = mkdtempSync(join(ownedTmp, "claudexor-codex-profile-"));
     dirs.push(home);
     let launches = 0;
     const adapter = createCodexAdapter({

@@ -417,7 +417,7 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
   const { addr } = await ensureDaemon();
   const response = await controlApiFetch(addr, "/maintenance/gc", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
     body: JSON.stringify({ dry_run: dryRun }),
   });
   if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);

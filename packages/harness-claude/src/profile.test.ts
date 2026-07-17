@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CredentialProfile, HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
@@ -47,6 +47,11 @@ function profile(over: Partial<CredentialProfile> = {}): CredentialProfile {
   } as CredentialProfile;
 }
 
+// The round-11 confinement requires locators under ~/.claudexor — tests
+// exercise the REAL discipline, not a bypass.
+const ownedTmp = join(homedir(), ".claudexor", "test-tmp");
+mkdirSync(ownedTmp, { recursive: true });
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -57,14 +62,15 @@ describe("canonicalProfileConfigDir (INV-135)", () => {
     expect(() => canonicalProfileConfigDir("relative/dir")).toThrow(/absolute/);
   });
 
-  it("refuses the default native Claude dir — profiles are additive", () => {
-    expect(() => canonicalProfileConfigDir(join(homedir(), ".claude"))).toThrow(
-      /must not be the default/,
-    );
+  it("refuses the default native Claude dir and any dir outside ~/.claudexor", () => {
+    // ~/.claude is outside the Claudexor-owned tree: the confinement fires
+    // first (also covering arbitrary user/repo dirs).
+    expect(() => canonicalProfileConfigDir(join(homedir(), ".claude"))).toThrow(/must live under/);
+    expect(() => canonicalProfileConfigDir("/tmp/anywhere")).toThrow(/must live under/);
   });
 
   it("resolves symlinked existing dirs to one canonical path", () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-profile-"));
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
     dirs.push(dir);
     expect(canonicalProfileConfigDir(`${dir}/`)).toBe(canonicalProfileConfigDir(dir));
   });
@@ -72,7 +78,7 @@ describe("canonicalProfileConfigDir (INV-135)", () => {
 
 describe("Claude strict profile routing (INV-135)", () => {
   it("config_dir_login runs with CLAUDE_CONFIG_DIR = the profile dir and stamps the profile on events", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-profile-"));
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
     dirs.push(dir);
     let probedEnv: Record<string, string | null | undefined> | undefined;
     let runEnv: Record<string, string | null | undefined> | undefined;
@@ -117,7 +123,7 @@ describe("Claude strict profile routing (INV-135)", () => {
   });
 
   it("config_dir_login with no verified login refuses typed — no fallback to the default ladder", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-profile-"));
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
     dirs.push(dir);
     let launches = 0;
     const adapter = createClaudeAdapter({
@@ -224,7 +230,7 @@ describe("Claude strict profile routing (INV-135)", () => {
 
 describe("Claude credential-profile doctor probe (INV-135)", () => {
   it("reports a verified config-dir login as available/passed against the profile env", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-profile-"));
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
     dirs.push(dir);
     let probedEnv: Record<string, string | null | undefined> | undefined;
     const adapter = createClaudeAdapter({

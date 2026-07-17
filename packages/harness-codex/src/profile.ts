@@ -1,10 +1,11 @@
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth } from "./auth.js";
+import { canonicalIsolationLocator } from "@claudexor/core";
 import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
 
 /**
@@ -13,15 +14,7 @@ import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
  * additive identities; the vendor-owned default is never a profile target.
  */
 export function canonicalCodexProfileHome(locator: string): string {
-  if (!isAbsolute(locator)) {
-    throw new Error(`credential profile CODEX_HOME must be absolute: ${locator}`);
-  }
-  let dir = resolve(locator);
-  try {
-    dir = realpathSync(dir);
-  } catch {
-    /* not created yet (login creates it): the resolved absolute path is canonical */
-  }
+  const dir = canonicalIsolationLocator(locator, "credential profile CODEX_HOME");
   let defaultDir = resolve(defaultNativeCodexHome());
   try {
     defaultDir = realpathSync(defaultDir);
