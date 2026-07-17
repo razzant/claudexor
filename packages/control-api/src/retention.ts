@@ -54,7 +54,28 @@ export interface RetentionDeps {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TOMBSTONE = "tombstone.yaml";
 /** Daemon-record states with an operator or scheduler still attached. */
-const LIVE_STATES = new Set(["running", "queued"]);
+/**
+ * Run states whose tree is COMPLETE and may age out — an explicit allowlist,
+ * mirroring ControlRunState's terminal half. A blocklist would fail OPEN: a
+ * state added to the enum later (or an unrecognized string from a
+ * newer/older daemon's records) would default to deletable, which is exactly
+ * the "fail closed on unknown state" contract this service owes. Anything not
+ * named here — live, unknown, or future — keeps its tree.
+ */
+const TERMINAL_STATES = new Set([
+  "succeeded",
+  "no_op",
+  "ungated",
+  "review_not_run",
+  "failed",
+  "cancelled",
+  "interrupted_unknown",
+  "cost_unverifiable",
+  "exhausted_overshoot",
+  "exhausted",
+  "not_converged",
+  "stuck_no_progress",
+]);
 
 export async function runRetentionPass(
   policy: RetentionPolicy,
@@ -94,7 +115,10 @@ export async function runRetentionPass(
       if (existsSync(join(root, TOMBSTONE))) continue; // already reclaimed
       examined += 1;
       const record = recordsById.get(runId);
-      if (record && LIVE_STATES.has(record.state)) {
+      // A record that does not PROVE terminality protects its tree: live
+      // states, and anything this engine does not recognize as finished.
+      // `blocked` is terminal-but-actionable and keeps its own reason below.
+      if (record && record.state !== "blocked" && !TERMINAL_STATES.has(record.state)) {
         kept.active += 1;
         continue;
       }

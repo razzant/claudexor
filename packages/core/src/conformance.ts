@@ -85,19 +85,34 @@ export function validateTypedStream(events: unknown[]): StreamConformanceStats {
  * asserts them through this one owner — finality/dedup/lifecycle regressions
  * (the "fixed it three times" class) change these counts on a deterministic
  * fixture and fail loudly instead of shipping. `final_source` documents the
- * vendor mechanism for humans; the machine truth is the counts.
+ * vendor mechanism for humans; every other field is machine truth.
  */
 export interface FixtureStreamExpectations {
   /** Exact count of `final: true` messages (the typed final answer). */
   final_messages?: number;
   /** Vendor mechanism carrying finality (documentation; e.g. "result"). */
   final_source?: string;
+  /**
+   * Whether the typed final is the LAST message of the stream. Finality comes
+   * from the vendor's TERMINAL event: a parser that marks mid-run narration
+   * final keeps the count right while answering from the wrong event, and only
+   * this catches it.
+   */
+  final_is_last_message?: boolean;
   /** Exact count of thinking events — lifecycle frames must never inflate it. */
   thinking_events?: number;
   /** Exact count of display-stream delta chunks (payload.delta === true). */
   delta_messages?: number;
   /** Whether the stream surfaces a typed rate_limit signal. */
   typed_rate_limit?: boolean;
+  /**
+   * Typed retry classification the stream must carry — the vendor category on
+   * a transient `status` event, or `rate_limit` from the rate-limit signal
+   * (e.g. "rate_limit"). Presence alone is not the contract: the CLASS is what
+   * bounded-retry policy consumes, and a regression that keeps the signal but
+   * loses its category passes a presence check.
+   */
+  retry_class?: string;
 }
 
 /** Violations of the declared expectations over an already-parsed stream. */
@@ -109,12 +124,22 @@ export function streamExpectationViolations(
   let thinking = 0;
   let deltas = 0;
   let rateLimits = 0;
+  let lastMessageWasFinal = false;
+  const retryClasses = new Set<string>();
   for (const raw of events) {
     const ev = HarnessEvent.parse(raw);
-    if (ev.type === "message" && ev.final === true) finals += 1;
+    if (ev.type === "message") {
+      if (ev.final === true) finals += 1;
+      if (ev.payload?.["delta"] === true) deltas += 1;
+      else lastMessageWasFinal = ev.final === true;
+    }
     if (ev.type === "thinking") thinking += 1;
-    if (ev.type === "message" && ev.payload?.["delta"] === true) deltas += 1;
     if (ev.rate_limit !== undefined) rateLimits += 1;
+    // The typed retry CLASS, from either carrier the adapters use: a
+    // transient `status` event's vendor category, or the rate_limit signal.
+    const category = ev.status?.error_category;
+    if (category) retryClasses.add(category);
+    if (ev.rate_limit !== undefined) retryClasses.add("rate_limit");
   }
   const violations: string[] = [];
   const check = (name: string, expected: number | undefined, actual: number): void => {
@@ -125,6 +150,14 @@ export function streamExpectationViolations(
   check("final_messages", expectations.final_messages, finals);
   check("thinking_events", expectations.thinking_events, thinking);
   check("delta_messages", expectations.delta_messages, deltas);
+  if (
+    expectations.final_is_last_message !== undefined &&
+    lastMessageWasFinal !== expectations.final_is_last_message
+  ) {
+    violations.push(
+      `final_is_last_message: expected ${expectations.final_is_last_message}, got ${lastMessageWasFinal}`,
+    );
+  }
   if (expectations.typed_rate_limit !== undefined) {
     const has = rateLimits > 0;
     if (has !== expectations.typed_rate_limit) {
@@ -132,6 +165,11 @@ export function streamExpectationViolations(
         `typed_rate_limit: expected ${expectations.typed_rate_limit}, got ${has} (${rateLimits} events)`,
       );
     }
+  }
+  if (expectations.retry_class !== undefined && !retryClasses.has(expectations.retry_class)) {
+    violations.push(
+      `retry_class: expected ${expectations.retry_class}, got [${[...retryClasses].join(", ") || "none"}]`,
+    );
   }
   return violations;
 }

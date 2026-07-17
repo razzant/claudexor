@@ -33,11 +33,20 @@ export interface DaemonTerminationDeps {
 /**
  * Await the CONFIRMED death of the daemon owning `socketPath`'s writer lease
  * (W3.5): "stop requested" is not "stopped" — a disposer that removes state
- * under a still-live daemon manufactures orphans. Polls the lease owner
- * (released lease or a gone/replaced pid = dead). Past the graceful window a
- * SIGKILL is sent ONLY when the recorded birth identity still matches the
- * live process — a recycled pid is never signalled (sol #5); without a
- * verifiable identity this fails closed to an honest `still_alive`.
+ * under a still-live daemon manufactures orphans.
+ *
+ * The target is PINNED at entry (`terminateAndWait(exactIdentity, deadline)`):
+ * the lease owner is snapshotted once and every later observation is judged
+ * against THAT owner. Re-reading the lease each poll would follow whoever
+ * currently holds it, so a replacement daemon started during the confirmation
+ * window (the app auto-starts one) could be waited on — and SIGKILLed — in
+ * place of the process we were asked to stop.
+ *
+ * Confirmed death = the pinned owner's lease is gone or taken over by a
+ * different token/pid, or its pid is gone/recycled. Past the graceful window a
+ * SIGKILL is sent ONLY when the pinned birth identity still matches the live
+ * process (a recycled pid is never signalled, sol #5); without a verifiable
+ * identity this fails closed to an honest `still_alive`.
  */
 export async function awaitDaemonTermination(
   socketPath: string,
@@ -56,12 +65,25 @@ export async function awaitDaemonTermination(
   const start = now();
   let killed = false;
   let noKillReason: string | null = null;
+  // The ONE owner this call is about. Everything below judges the world
+  // against this snapshot — never against whoever holds the lease later.
+  const owner = daemonLeaseOwner(socketPath);
+  if (!owner) return { outcome: "exited", detail: "no daemon owns the writer lease" };
   for (;;) {
-    const owner = daemonLeaseOwner(socketPath);
-    if (!owner) {
+    const current = daemonLeaseOwner(socketPath);
+    if (!current) {
       return {
         outcome: killed ? "killed" : "exited",
         detail: killed ? "daemon exited after SIGKILL escalation" : "daemon released its lease",
+      };
+    }
+    // A different token/pid holds the lease: the pinned daemon released it and
+    // a REPLACEMENT took over. The one we were asked to stop is gone — confirm
+    // that, and never touch the newcomer.
+    if (current.token !== owner.token || current.pid !== owner.pid) {
+      return {
+        outcome: killed ? "killed" : "exited",
+        detail: `daemon pid ${owner.pid} released its lease (now held by pid ${current.pid})`,
       };
     }
     if (!isAlive(owner.pid)) {

@@ -13,6 +13,7 @@ fixtures:
     expectations:
       final_messages: 1
       final_source: "terminal result (success and not is_error)"
+      final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: false
@@ -21,6 +22,7 @@ fixtures:
     expectations:
       final_messages: 1
       final_source: "terminal result (success and not is_error)"
+      final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: false

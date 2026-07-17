@@ -77,6 +77,45 @@ describe("awaitDaemonTermination", () => {
     expect(result.detail).toContain("recycled");
   });
 
+  it("never waits on — or kills — a REPLACEMENT daemon that took the lease", async () => {
+    // The pinned daemon exits and the app auto-starts a new one, which takes
+    // the lease inside the confirmation window. Re-reading the lease each poll
+    // would follow the newcomer and SIGKILL it at the escalation deadline.
+    const root = mkdtempSync(join(tmpdir(), "claudexor-terminate-"));
+    roots.push(root);
+    const socketPath = join(root, "daemon.sock");
+    const ownerPath = `${socketPath}.writer/owner.json`;
+    mkdirSync(`${socketPath}.writer`);
+    const write = (owner: Record<string, unknown>) =>
+      writeFileSync(ownerPath, `${JSON.stringify(owner)}\n`);
+    write({ pid: 4242, token: "old", identity: IDENTITY });
+
+    const replacement: KnownProcessIdentity = {
+      ...IDENTITY,
+      pid: 5151,
+      startToken: "linux:555555",
+      processGroupId: 5151,
+    };
+    const result = await awaitDaemonTermination(
+      socketPath,
+      { deadlineMs: 2_000, killAfterMs: 500, pollMs: 100 },
+      deps({
+        // Both processes are alive: the old one hands the lease over during
+        // the first poll, and the replacement keeps running.
+        isAlive: () => {
+          write({ pid: 5151, token: "new", identity: replacement });
+          return true;
+        },
+        read: (pid) => (pid === 5151 ? replacement : IDENTITY),
+        kill: (pid) => {
+          throw new Error(`must not signal pid ${pid}`);
+        },
+      }),
+    );
+    expect(result).toMatchObject({ outcome: "exited" });
+    expect(result.detail).toContain("5151"); // discloses who holds it now
+  });
+
   it("escalates an identity-VERIFIED SIGKILL past the graceful window", async () => {
     const socketPath = leaseFor({ pid: 4242, token: "t", identity: IDENTITY });
     const kills: Array<[number, string]> = [];

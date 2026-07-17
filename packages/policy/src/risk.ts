@@ -114,7 +114,7 @@ export function classifyRisk(meta: DiffMeta): RiskAssessment {
     reasons.push(`small change (${fileCount} files, ${churn} lines)`);
     return { level: "low", reasons, matchedPaths: [] };
   }
-  reasons.push(`normal change (${paths.length} files, ${churn} lines)`);
+  reasons.push(`normal change (${fileCount} files, ${churn} lines)`);
   return { level: "medium", reasons, matchedPaths: [] };
 }
 

@@ -152,6 +152,26 @@ describe("runRetentionPass", () => {
     });
   });
 
+  it("fails closed on a record state it does not recognize as terminal", async () => {
+    // The terminal set is an ALLOWLIST: a state added to ControlRunState later
+    // (or a record written by a different engine version) must protect its
+    // tree, never default to deletable.
+    const { project } = sandbox();
+    seedRun(project.runsDir, "run-future-state");
+    const receipt = await runRetentionPass(
+      { ...POLICY, keepLastRunsPerProject: 0 },
+      { dry_run: false },
+      deps(project, {
+        records: () => [
+          { runId: "run-future-state", state: "awaiting_quorum", finishedAt: daysAgo(90) },
+        ],
+      }),
+    );
+    expect(receipt.deleted_runs).toEqual([]);
+    expect(receipt.kept.active).toBe(1);
+    expect(existsSync(join(project.runsDir, "run-future-state", "attempt.log"))).toBe(true);
+  });
+
   it("an APPLIED patch ages out normally (its lifecycle is complete)", async () => {
     const { project } = sandbox();
     seedRun(project.runsDir, "run-applied", {
