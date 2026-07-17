@@ -85,10 +85,10 @@ describe("nextEligibleProfile (W5.4 rotation order)", () => {
   const c = { ...work, profile_id: "c", enabled: false };
 
   it("registry order by default; skips current, disabled, excluded, and spent profiles", () => {
-    expect(nextEligibleProfile([a, b, c], "claude", policy, "a", [])?.profile_id).toBe("b");
-    expect(nextEligibleProfile([a, b], "claude", policy, "a", [], new Set(["b"]))).toBeNull();
-    expect(nextEligibleProfile([a, b], "claude", policy, "a", [snap("b", 0.95)])).toBeNull();
-    expect(nextEligibleProfile([c, a], "claude", policy, "a", [])).toBeNull();
+    expect(nextEligibleProfile([a, b, c], "claude", policy, a, [])?.profile_id).toBe("b");
+    expect(nextEligibleProfile([a, b], "claude", policy, a, [], new Set(["b"]))).toBeNull();
+    expect(nextEligibleProfile([a, b], "claude", policy, a, [snap("b", 0.95)])).toBeNull();
+    expect(nextEligibleProfile([c, a], "claude", policy, a, [])).toBeNull();
   });
 
   it("policy order wins over registry order", () => {
@@ -105,15 +105,29 @@ describe("nextEligibleProfile (W5.4 rotation order)", () => {
       secret_ref: "anthropic:k",
     };
     // The only remaining candidate pays with a different transport: no target.
-    expect(nextEligibleProfile([a, keyed], "claude", policy, "a", [])).toBeNull();
+    expect(nextEligibleProfile([a, keyed], "claude", policy, a, [])).toBeNull();
     // A same-kind candidate later in the order wins over an earlier cross-kind one.
     const ordered = { ...policy, rotation_eligible: ["k", "b"] };
-    expect(nextEligibleProfile([a, keyed, b], "claude", ordered, "a", [])?.profile_id).toBe("b");
+    expect(nextEligibleProfile([a, keyed, b], "claude", ordered, a, [])?.profile_id).toBe("b");
     // Kind symmetry: an api_key profile rotates only to api_key profiles.
     const keyed2 = { ...keyed, profile_id: "k2", secret_ref: "anthropic:k2" };
-    expect(nextEligibleProfile([keyed, keyed2, b], "claude", policy, "k", [])?.profile_id).toBe(
+    expect(nextEligibleProfile([keyed, keyed2, b], "claude", policy, keyed, [])?.profile_id).toBe(
       "k2",
     );
+  });
+
+  it("the kind guard FAILS CLOSED when the current profile vanished from the reloaded pool (round-17 hardening)", () => {
+    const keyed = {
+      ...work,
+      profile_id: "k",
+      credential_kind: "api_key" as const,
+      isolation_locator: null,
+      secret_ref: "anthropic:k",
+    };
+    // The current profile was disabled/removed mid-attempt: it is absent from
+    // the registry, but its TYPED kind still forbids a cross-kind swap.
+    expect(nextEligibleProfile([keyed], "claude", policy, a, [])).toBeNull();
+    expect(nextEligibleProfile([keyed, b], "claude", policy, a, [])?.profile_id).toBe("b");
   });
 });
 

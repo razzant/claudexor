@@ -1259,11 +1259,17 @@ code touching one of these areas must honor it or change it explicitly here.
 - Vendor-owned quota snapshots and typed rate-limit cooldowns persist in the
   checksummed global journal through `QuotaRegistry`; routing reads that
   cross-run authority rather than rediscovering pressure independently in each
-  run. Codex uses its app-server; Claude subscription windows arrive only from
-  the documented user-scoped status-line payload installed explicitly by the
-  Claude host-plugin lifecycle. That collector stores only allowlisted windows
-  in the external v2 root and composes/restores any existing display command.
-  Per-run budget observations remain run evidence, not quota authority.
+  run. Codex uses its app-server. Claude subscription windows arrive from the
+  `oauth/usage` endpoint as the PRIMARY source (since 2.1): the daemon's
+  refresher reads each logged-in config dir's OAuth token transiently — the
+  default native dir (subject null) plus every claude `config_dir_login`
+  profile (subject = its profile id) — and a failing endpoint yields NO
+  snapshot, never degraded auth. The user-scoped status-line payload
+  (installed explicitly by the Claude host-plugin lifecycle) remains a
+  SECONDARY source for the default subject only; its collector stores only
+  allowlisted windows in the external v2 root and composes/restores any
+  existing display command. Per-run budget observations remain run evidence,
+  not quota authority.
 - The `verify` intent is reserved: the shipped FinalVerifier is
   deterministic-only (fresh-tree apply + gates, no model), so no engine path
   requests verify-intent routing; the value stays for a future model-backed

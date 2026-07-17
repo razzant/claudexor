@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CredentialProfile, HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import type { CliRunLoopOptions } from "@claudexor/core";
-import { createClaudeAdapter } from "./index.js";
+import { createClaudeAdapter, probeAuthStatus } from "./index.js";
 import { canonicalProfileConfigDir } from "./profile.js";
 
 const readonlySupported = async () => ({
@@ -258,6 +258,52 @@ describe("Claude strict profile routing (INV-135)", () => {
       events.push(ev);
     expect(events.map((e) => e.type)).toEqual(["error", "completed"]);
     expect((events[0] as { error?: string }).error).toContain('"anthropic:work"');
+  });
+});
+
+describe("the REAL auth probe inspects the profile's own store (round-17 BLOCK)", () => {
+  // Integration through the PRODUCTION probeAuthStatus (runCapture seam):
+  // the probe re-normalizes its env, so only the CHILD env proves which
+  // store was actually inspected — a stubbed probe cannot.
+  const realProbe: typeof probeAuthStatus = (bin, options) =>
+    probeAuthStatus(bin, {
+      ...options,
+      runCapture: async (_cmd, _args, opts) => {
+        childEnvs.push((opts?.env ?? {}) as Record<string, string | null | undefined>);
+        return {
+          code: 0,
+          signal: null,
+          stdout: '{"loggedIn":true,"authMethod":"claude.ai"}',
+          stderr: "",
+        };
+      },
+    });
+  const childEnvs: Array<Record<string, string | null | undefined>> = [];
+
+  it("a config_dir_login profile probe reaches the child with the PROFILE dir, not the default", async () => {
+    const dir = mkdtempSync(join(ownedTmp, "claudexor-profile-"));
+    dirs.push(dir);
+    childEnvs.length = 0;
+    const adapter = createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: realProbe,
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+      resolveProfileSecret: () => null,
+    });
+    const status = await adapter.probeCredentialProfile!(profile({ isolation_locator: dir }));
+    expect(status).toMatchObject({ availability: "available", verification: "passed" });
+    expect(childEnvs).toHaveLength(1);
+    expect(childEnvs[0]?.CLAUDE_CONFIG_DIR).toBe(canonicalProfileConfigDir(dir));
+  });
+
+  it("without an explicit configDir the probe still normalizes to the DEFAULT native dir", async () => {
+    childEnvs.length = 0;
+    await realProbe("claude-test-bin", { env: { SOME_VAR: "x" } });
+    expect(childEnvs).toHaveLength(1);
+    expect(childEnvs[0]?.CLAUDE_CONFIG_DIR).toBeDefined();
+    expect(childEnvs[0]?.CLAUDE_CONFIG_DIR).not.toContain("claudexor-profile-");
   });
 });
 

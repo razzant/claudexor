@@ -121,7 +121,11 @@ export class QuotaRegistry {
           harness: harnessId,
           credential_route: credentialRoute,
           plan_label: quota.plan_label,
-          subject_id: quota.subject_id,
+          // Reconcile the subject with the event's Claudexor profile stamp
+          // (round-17 #2): a profiled run's quota must never register as the
+          // engine-default subject just because the vendor record carries no
+          // subject of its own. The profile stamp is the credential identity.
+          subject_id: event.data.credential_profile_id ?? quota.subject_id ?? null,
         },
         constraints: quota.constraints,
         source: quota.source,

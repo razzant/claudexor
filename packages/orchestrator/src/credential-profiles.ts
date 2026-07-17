@@ -88,12 +88,11 @@ export function nextEligibleProfile(
   registry: readonly CredentialProfile[],
   harnessId: string,
   policy: ProfilePolicy,
-  currentProfileId: string | null,
+  current: Pick<CredentialProfile, "profile_id" | "credential_kind"> | null,
   snapshots: readonly QuotaSnapshot[],
   excluded: ReadonlySet<string> = new Set(),
 ): CredentialProfile | null {
   const pool = registry.filter((p) => p.harness_id === harnessId && p.enabled);
-  const currentKind = pool.find((p) => p.profile_id === currentProfileId)?.credential_kind ?? null;
   const ordered =
     policy.rotation_eligible.length > 0
       ? policy.rotation_eligible
@@ -101,9 +100,13 @@ export function nextEligibleProfile(
           .filter((p): p is CredentialProfile => p !== undefined)
       : pool;
   for (const candidate of ordered) {
-    if (candidate.profile_id === currentProfileId) continue;
+    if (candidate.profile_id === current?.profile_id) continue;
     if (excluded.has(candidate.profile_id)) continue;
-    if (currentKind !== null && candidate.credential_kind !== currentKind) continue;
+    // Fail-CLOSED kind guard (round-17 hardening of the round-16 BLOCK): the
+    // kind comes from the TYPED current profile in hand — never re-found in
+    // a freshly reloaded pool, where a mid-flight disable/remove of the
+    // current profile would have silently dropped the cross-kind prohibition.
+    if (current !== null && candidate.credential_kind !== current.credential_kind) continue;
     if (
       profileHeadroomBreach(snapshots, harnessId, candidate.profile_id, policy.headroom_threshold)
     )
@@ -173,7 +176,7 @@ export function preflightCredentialProfile(args: {
     );
   }
   if (policy.limit_action !== "rotate") return profile;
-  const next = nextEligibleProfile(registry, harnessId, policy, profile.profile_id, snapshots);
+  const next = nextEligibleProfile(registry, harnessId, policy, profile, snapshots);
   if (!next) return profile;
   emit("route.profile.rotated", {
     harness_id: harnessId,
@@ -213,7 +216,7 @@ export function planReactiveRotation(args: {
     args.registry,
     args.harnessId,
     args.policy,
-    args.currentProfile.profile_id,
+    args.currentProfile,
     args.snapshots,
     args.triedProfiles,
   );

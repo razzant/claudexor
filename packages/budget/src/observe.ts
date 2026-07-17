@@ -18,12 +18,21 @@ const DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
  */
 export function observationsFromEvent(harnessId: string, ev: HarnessEvent): BudgetObservation[] {
   const out: BudgetObservation[] = [];
+  // The credential subject rides EVERY observation (round-17 #2): a profiled
+  // run's rate-limit/quota signal belongs to that profile's account, and an
+  // unstamped observation would penalize the whole harness — profile B and
+  // the engine default included.
+  const subject = {
+    ...(ev.credential_route ? { credential_route: ev.credential_route } : {}),
+    subject_id: ev.credential_profile_id ?? null,
+  };
   if (ev.type === "usage" && typeof ev.usage?.cost_usd === "number" && ev.usage.cost_usd > 0) {
     // Token-derived costs (e.g. codex) are honest estimates -> "observed"; only
     // natively-reported costs (e.g. claude) are "exact".
     const quality = ev.usage.estimated ? "observed" : "exact";
     out.push({
       harness_id: harnessId,
+      ...subject,
       ts: nowIso(),
       quality,
       kind: "spend",
@@ -34,6 +43,7 @@ export function observationsFromEvent(harnessId: string, ev: HarnessEvent): Budg
     for (const constraint of ev.quota.constraints) {
       out.push({
         harness_id: harnessId,
+        ...subject,
         ts: nowIso(),
         quality: "native",
         kind: "quota_constraint",
@@ -46,7 +56,7 @@ export function observationsFromEvent(harnessId: string, ev: HarnessEvent): Budg
     }
   }
   const single = singleObservationFromEvent(harnessId, ev);
-  if (single) out.push(single);
+  if (single) out.push({ ...single, ...subject });
   return out;
 }
 

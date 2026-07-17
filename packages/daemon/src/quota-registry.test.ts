@@ -55,6 +55,44 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("a profiled quota event registers under ITS profile subject, never the engine default (round-17 #2)", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-subject-")));
+    const manager = new JournalManager(root);
+    const slot = manager.registerProjection(quotaProjection());
+    manager.start();
+    slot.current().ingest("codex", {
+      type: "usage",
+      session_id: "session-1",
+      ts: new Date().toISOString(),
+      credential_route: "vendor_native",
+      credential_profile_id: "acc2",
+      quota: {
+        source: "codex_rollout",
+        plan_label: null,
+        // The vendor rollout record carries no subject of its own — the
+        // event's Claudexor profile stamp is the credential identity.
+        subject_id: null,
+        constraints: [
+          {
+            id: "primary",
+            label: "5 hour",
+            used_ratio: 0.7,
+            window_seconds: 18000,
+            resets_at: new Date(Date.now() + 3600000).toISOString(),
+            cooldown_until: null,
+          },
+        ],
+      },
+    });
+    expect(slot.current().read().snapshots[0]?.subject).toMatchObject({
+      harness: "codex",
+      credential_route: "vendor_native",
+      subject_id: "acc2",
+    });
+    manager.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("records Claude api_retry cooldowns as retry evidence, never as statusline quota", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-claude-retry-")));
     const manager = new JournalManager(root);

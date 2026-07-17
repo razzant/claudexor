@@ -74,6 +74,11 @@ export interface CodexLoginProbe {
 export interface CodexLoginProbeOptions {
   /** Exact environment the eventual Codex child will use. */
   env?: Record<string, string | null | undefined>;
+  /** Explicit CODEX_HOME for the probe (INV-135, release wave round-17
+   * BLOCK): without it the probe re-normalizes onto the DEFAULT native home —
+   * a credential-profile probe must inspect ITS OWN store, never the
+   * default's. Callers without a profile omit it and keep the default. */
+  codexHome?: string;
   abortSignal?: AbortSignal;
   runCapture?: typeof runCapture;
 }
@@ -91,11 +96,12 @@ export async function probeLogin(
   options: CodexLoginProbeOptions = {},
 ): Promise<CodexLoginProbe> {
   try {
-    ensureDir(defaultNativeCodexHome());
+    const home = options.codexHome ?? defaultNativeCodexHome();
+    ensureDir(home);
     const env: Record<string, string | null | undefined> = {
       ...(options.env ?? {}),
       ...providerScrubEnv(),
-      CODEX_HOME: defaultNativeCodexHome(),
+      CODEX_HOME: home,
     };
     const r = await (options.runCapture ?? runCapture)(
       bin,

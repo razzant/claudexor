@@ -810,6 +810,12 @@ async function* runCodex(
             const rl = codexTranscriptRateLimits(env["CODEX_HOME"], codexThreadId);
             if (rl) ev.quota = rl;
           }
+          if (ev.quota && profile && ev.quota.subject_id == null) {
+            ev.quota = { ...ev.quota, subject_id: profile.profile_id };
+          }
+          // A profiled run's quota windows belong to THE PROFILE's account
+          // (round-17 #2): the rollout record carries no subject, and an
+          // unstamped null would register as the engine-default subject.
         }
         return out;
       },

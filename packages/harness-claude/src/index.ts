@@ -207,6 +207,11 @@ export interface ClaudeAuthStatusProbe {
 
 export interface ClaudeAuthStatusProbeOptions {
   env?: Record<string, string | null | undefined>;
+  /** Explicit CLAUDE_CONFIG_DIR for the probe (INV-135, release wave round-17
+   * BLOCK): without it the probe re-normalizes onto the DEFAULT native dir —
+   * a credential-profile probe must inspect ITS OWN store, never the
+   * default's. Callers without a profile omit it and keep the default. */
+  configDir?: string;
   abortSignal?: AbortSignal;
   runCapture?: typeof runCapture;
 }
@@ -227,7 +232,7 @@ export async function probeAuthStatus(
   options: ClaudeAuthStatusProbeOptions = {},
 ): Promise<ClaudeAuthStatusProbe> {
   try {
-    const env = claudeNativeEnv(options.env);
+    const env = claudeNativeEnv(options.env, options.configDir);
     const r = await (options.runCapture ?? runCapture)(bin, ["auth", "status"], {
       env,
       timeoutMs: 10_000,

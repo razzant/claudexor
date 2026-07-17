@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,7 +6,7 @@ import type { CredentialProfile, HarnessEvent, HarnessRunSpec } from "@claudexor
 import type { CliRunLoopOptions } from "@claudexor/core";
 import { createCodexAdapter } from "./index.js";
 import { canonicalCodexProfileHome } from "./profile.js";
-import { defaultNativeCodexHome } from "./auth.js";
+import { defaultNativeCodexHome, probeLogin } from "./auth.js";
 
 function spec(over: Partial<HarnessRunSpec> = {}): HarnessRunSpec {
   return {
@@ -63,6 +63,43 @@ describe("canonicalCodexProfileHome (INV-135)", () => {
   });
 });
 
+describe("the REAL login probe inspects the profile's own store (round-17 BLOCK)", () => {
+  // Integration through the PRODUCTION probeLogin (runCapture seam): the
+  // probe re-normalizes its env, so only the CHILD env proves which CODEX_HOME
+  // was actually inspected — a stubbed probe cannot.
+  const childEnvs: Array<Record<string, string | null | undefined>> = [];
+  const realProbe: typeof probeLogin = (bin, options) =>
+    probeLogin(bin, {
+      ...options,
+      runCapture: async (_cmd, _args, opts) => {
+        childEnvs.push((opts?.env ?? {}) as Record<string, string | null | undefined>);
+        return { code: 0, signal: null, stdout: "Logged in using ChatGPT\n", stderr: "" };
+      },
+    });
+
+  it("a config_dir_login profile probe reaches the child with the PROFILE home, not the default", async () => {
+    const home = mkdtempSync(join(ownedTmp, "claudexor-codex-profile-"));
+    dirs.push(home);
+    childEnvs.length = 0;
+    const adapter = createCodexAdapter({
+      detectVersion: async () => "codex 0.1-test",
+      probeLogin: realProbe,
+      resolveProfileSecret: () => null,
+    });
+    const status = await adapter.probeCredentialProfile!(profile({ isolation_locator: home }));
+    expect(status).toMatchObject({ availability: "available", verification: "passed" });
+    expect(childEnvs).toHaveLength(1);
+    expect(childEnvs[0]?.CODEX_HOME).toBe(canonicalCodexProfileHome(home));
+  });
+
+  it("without an explicit codexHome the probe still normalizes to the DEFAULT native home", async () => {
+    childEnvs.length = 0;
+    await realProbe("codex-test-bin", { env: { SOME_VAR: "x" } });
+    expect(childEnvs).toHaveLength(1);
+    expect(childEnvs[0]?.CODEX_HOME).toBe(defaultNativeCodexHome());
+  });
+});
+
 describe("Codex strict profile routing (INV-135)", () => {
   it("config_dir_login runs with CODEX_HOME = the profile home and stamps the profile on events", async () => {
     const home = mkdtempSync(join(ownedTmp, "claudexor-codex-profile-"));
@@ -100,6 +137,52 @@ describe("Codex strict profile routing (INV-135)", () => {
     expect(runEnv?.CODEX_HOME).toBe(canonicalCodexProfileHome(home));
     expect(stamped?.credential_profile_id).toBe("acc2");
     expect(stamped?.credential_route).toBe("vendor_native");
+  });
+
+  it("a profiled run's quota windows are stamped with THE PROFILE subject (round-17 #2)", async () => {
+    const home = mkdtempSync(join(ownedTmp, "claudexor-codex-profile-"));
+    dirs.push(home);
+    // Rollout fixture in the PROFILE home: the vendor record carries no
+    // subject of its own, so an unstamped attach would register the windows
+    // under the engine-default subject.
+    const threadId = "0199aaaa-bbbb-cccc-dddd-eeeeffff0001";
+    const day = join(home, "sessions", "2026", "07", "17");
+    mkdirSync(day, { recursive: true });
+    writeFileSync(
+      join(day, `rollout-2026-07-17T00-00-00-${threadId}.jsonl`),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          rate_limits: {
+            limit_id: "codex",
+            primary: { used_percent: 55, window_minutes: 300, resets_at: 1782368577 },
+          },
+        },
+      }) + "\n",
+    );
+    const adapter = createCodexAdapter({
+      detectVersion: async () => "codex 0.1-test",
+      probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
+      resolveProfileSecret: () => null,
+      runCliHarness: async function* (options: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
+        for (const raw of [
+          { type: "thread.started", thread_id: threadId },
+          { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+        ]) {
+          for (const ev of options.parseEvent?.(raw, "s1") ?? []) yield ev;
+        }
+        yield { type: "completed", session_id: "s1", ts: new Date().toISOString() };
+      },
+    });
+    const events: HarnessEvent[] = [];
+    for await (const ev of adapter.run(
+      spec({ credential_profile: profile({ isolation_locator: home }) }),
+    ))
+      events.push(ev);
+    const usage = events.find((e) => e.type === "usage");
+    expect(usage?.quota?.source).toBe("codex_rollout");
+    expect(usage?.quota?.subject_id).toBe("acc2");
   });
 
   it("config_dir_login without a ChatGPT login refuses typed — no fallback", async () => {

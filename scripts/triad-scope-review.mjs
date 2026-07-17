@@ -243,7 +243,14 @@ const JSON_CONTRACT = `Return ONLY a JSON array. Each element:
   "verdict": "PASS" | "FAIL",
   "severity": "critical" | "advisory",
   "reason": "<for FAIL: file, line/symbol, what is wrong, how to fix>"
-}`;
+}
+
+One row per DISTINCT problem: repeat the same "item" id for each additional
+finding on that item — multiple rows per item are expected on a deep review,
+and one PASS row suffices for an item with no findings.
+The array must parse with JSON.parse: use only standard JSON string escapes
+inside "reason" (a backslash before a backtick is NOT valid JSON — write the
+backtick bare), no trailing commas, no comments, no text outside the array.`;
 
 const ANTI_PATTERN_LOCK = `If your first reading surfaces **exactly one FAIL** across all checklist
 items, do a deliberate SECOND pass focused on a DIFFERENT concern class
@@ -305,8 +312,10 @@ ${JSON_CONTRACT}
 
 The three checklist item identifiers you MUST cover are exactly:
 ${TRIAD_ITEMS.map((item, index) => `    ${index + 1}. ${item}`).join("\n")}
-Return at least one row for every identifier. An empty array, an unknown
-identifier, or a missing identifier makes your reviewer slot unusable.
+Return at least one row for every identifier, and repeat an identifier once
+per distinct finding — do NOT merge distinct problems into one row. An empty
+array, an unknown identifier, or a missing identifier makes your reviewer
+slot unusable.
 
 ## Anti pattern-lock guard
 

@@ -423,6 +423,13 @@ export function parseChecklistJson(raw) {
 /**
  * Validate one reviewer's complete checklist response. Invalid rows are never
  * discarded: one malformed/unknown row makes the entire slot unusable.
+ *
+ * MULTIPLE rows per checklist item are the contract (release wave round-16
+ * protocol root-cause): the prompt instructs "report every distinct problem
+ * as a separate entry", so a deep review legitimately repeats an item id once
+ * per finding. The old one-row-per-item cap disqualified exactly the most
+ * thorough reviewers — the deeper the review, the likelier the slot died.
+ * Only a runaway row count (beyond any plausible finding list) is refused.
  */
 export function validateChecklistResponse(items, model, requiredItems) {
   if (!Array.isArray(items)) {
@@ -441,12 +448,12 @@ export function validateChecklistResponse(items, model, requiredItems) {
       error: "reviewer returned an empty checklist",
     };
   }
-  if (items.length > requiredItems.length) {
-    return invalidRow(requiredItems.length, requiredItems, "checklist has extra rows");
+  const maxRows = requiredItems.length * 16;
+  if (items.length > maxRows) {
+    return invalidRow(maxRows, requiredItems, `checklist has a runaway row count (> ${maxRows})`);
   }
 
   const findings = [];
-  const seenItems = new Set();
   for (const [index, entry] of items.entries()) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return invalidRow(index, requiredItems, "row is not an object");
@@ -466,10 +473,6 @@ export function validateChecklistResponse(items, model, requiredItems) {
     if (!requiredItems.includes(item)) {
       return invalidRow(index, requiredItems, `unknown checklist item '${item}'`);
     }
-    if (seenItems.has(item)) {
-      return invalidRow(index, requiredItems, `duplicate checklist item '${item}'`);
-    }
-    seenItems.add(item);
     if (verdict !== "PASS" && verdict !== "FAIL") {
       return invalidRow(index, requiredItems, `invalid verdict '${verdict}'`);
     }

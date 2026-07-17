@@ -248,7 +248,15 @@ export class BudgetLedger {
     credentialSubjectId?: string | null,
     now: number = Date.now(),
   ): boolean {
+    // Live observations are subject-scoped like snapshots (round-17 #2): a
+    // profiled run's rate-limit must never cool the whole harness for other
+    // subjects. `undefined` caller subject = conservative any-subject.
     const liveObservation = this.observationsFor(harnessId).some((observation) => {
+      if (
+        credentialSubjectId !== undefined &&
+        (observation.subject_id ?? null) !== credentialSubjectId
+      )
+        return false;
       if (!observation.cooldown_until) return false;
       const time = Date.parse(observation.cooldown_until);
       return Number.isFinite(time) && time > now;
@@ -282,6 +290,12 @@ export class BudgetLedger {
     const latest = new Map<string, BudgetObservation>();
     for (const observation of this.observationsFor(harnessId)) {
       if (observation.kind !== "quota_constraint" || !observation.constraint_id) continue;
+      // Subject-scoped like cooldowns (round-17 #2).
+      if (
+        credentialSubjectId !== undefined &&
+        (observation.subject_id ?? null) !== credentialSubjectId
+      )
+        continue;
       latest.set(observation.constraint_id, observation);
     }
     const slacks: number[] = [];

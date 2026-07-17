@@ -9,6 +9,22 @@
           "minLength": 1,
           "description": "Harness the observation is about."
         },
+        "credential_route": {
+          "type": "string",
+          "enum": [
+            "vendor_native",
+            "managed_api_key",
+            "local"
+          ],
+          "description": "Credential route the signal was observed on, when known."
+        },
+        "subject_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Credential-profile subject of the signal; null = engine default."
+        },
         "ts": {
           "type": "string",
           "description": "When the signal was observed."

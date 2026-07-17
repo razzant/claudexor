@@ -63,7 +63,10 @@ export async function resolveClaudeProfileRoute(
     try {
       const configDir = canonicalProfileConfigDir(profile.isolation_locator ?? "");
       nativeEnv = claudeNativeEnv(specEnv, configDir);
-      const probe = await runtime.probeAuthStatus(BIN, { env: nativeEnv, abortSignal });
+      // configDir rides EXPLICITLY (round-17 BLOCK): the production probe
+      // re-normalizes its env, and without the explicit dir it would inspect
+      // the DEFAULT store while claiming to verify the profile.
+      const probe = await runtime.probeAuthStatus(BIN, { env: nativeEnv, configDir, abortSignal });
       if (probe.authed) subscriptionSource = "native_session";
       else
         return {
@@ -114,6 +117,7 @@ export async function probeClaudeCredentialProfile(
       const dir = canonicalProfileConfigDir(profile.isolation_locator ?? "");
       const probe = await runtime.probeAuthStatus(BIN, {
         env: claudeNativeEnv(undefined, dir),
+        configDir: dir,
         abortSignal,
       });
       if (probe.authed)

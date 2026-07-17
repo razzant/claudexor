@@ -434,21 +434,24 @@ describe("signed release review attestation sealer", () => {
     });
   });
 
-  it("refuses duplicate, extra, and unknown-field triad checklist rows", () => {
-    const mutations = [
-      (rows: Array<Record<string, unknown>>) => [...rows.slice(0, -1), rows[0]!],
+  it("seals multi-row checklists (one row per finding) but refuses unknown-field rows", () => {
+    // Round-16 protocol root-cause: repeated items are the CONTRACT (one row
+    // per distinct finding), so the sealer must accept what the wave's own
+    // validator accepts — while a malformed row still fails the seal.
+    const accepted = [
+      (rows: Array<Record<string, unknown>>) => [...rows, rows[0]!],
       (rows: Array<Record<string, unknown>>) => [...rows, { ...rows[0]!, reason: "extra row" }],
-      (rows: Array<Record<string, unknown>>) => [
-        { ...rows[0]!, unexpected: true },
-        ...rows.slice(1),
-      ],
     ];
-    for (const mutate of mutations) {
+    for (const mutate of accepted) {
       const fixture = makeFixture();
       const rows = JSON.parse(readFileSync(fixture.triadParsed, "utf8"));
       rewriteFirstTriadChecklist(fixture, mutate(rows));
-      expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/checklist incomplete/);
+      expect(() => sealReleaseReviewAttestation(fixture.input)).not.toThrow();
     }
+    const fixture = makeFixture();
+    const rows = JSON.parse(readFileSync(fixture.triadParsed, "utf8"));
+    rewriteFirstTriadChecklist(fixture, [{ ...rows[0]!, unexpected: true }, ...rows.slice(1)]);
+    expect(() => sealReleaseReviewAttestation(fixture.input)).toThrow(/checklist incomplete/);
   });
 
   it("refuses to seal an incomplete reviewer artifact set", () => {

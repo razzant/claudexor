@@ -366,14 +366,57 @@ describe("release review fail-closed contract", () => {
   });
 
   it.each([
-    ["a duplicate row", [...cleanRows().slice(0, -1), cleanRows()[0]]],
-    ["an extra row", [...cleanRows(), { ...cleanRows()[0], reason: "extra row" }]],
     [
       "an unknown row field",
       cleanRows().map((row, index) => (index === 0 ? { ...row, unexpected: true } : row)),
     ],
   ])("makes a checklist with %s quorum-unusable", (_name, value) => {
     expect(validateChecklistResponse(value, "model", TRIAD_ITEMS).status).toBe("parse_failure");
+  });
+
+  it("accepts MULTIPLE rows per item — one row per distinct finding (round-16 protocol root-cause)", () => {
+    // The prompt instructs "report every distinct problem as a separate
+    // entry"; the validator must accept exactly that instead of
+    // disqualifying the most thorough reviewers.
+    const rows = [
+      ...cleanRows(),
+      {
+        item: TRIAD_ITEMS[0],
+        verdict: "FAIL",
+        severity: "advisory",
+        reason: "second distinct finding on the same item",
+      },
+      {
+        item: TRIAD_ITEMS[0],
+        verdict: "FAIL",
+        severity: "critical",
+        reason: "third distinct finding on the same item",
+      },
+    ];
+    const result = validateChecklistResponse(rows, "model", TRIAD_ITEMS);
+    expect(result.status).toBe("responded");
+    expect(result.findings).toHaveLength(rows.length);
+    // Every per-finding row survives into the decision input: the critical
+    // FAIL among the repeats still blocks.
+    expect(
+      releaseReviewDecision({
+        triadActors: [
+          { status: "responded", findings: result.findings },
+          { status: "responded", findings: result.findings },
+        ],
+        scope: { status: "responded", findings: [] },
+      }).passed,
+    ).toBe(false);
+  });
+
+  it("refuses only a RUNAWAY row count, not a deep review", () => {
+    const runaway = Array.from({ length: TRIAD_ITEMS.length * 16 + 1 }, () => ({
+      item: TRIAD_ITEMS[0],
+      verdict: "FAIL",
+      severity: "advisory",
+      reason: "spam",
+    }));
+    expect(validateChecklistResponse(runaway, "model", TRIAD_ITEMS).status).toBe("parse_failure");
   });
 
   it("makes a missing checklist item partial rather than silently clean", () => {

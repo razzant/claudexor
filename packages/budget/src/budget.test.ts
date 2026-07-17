@@ -483,6 +483,44 @@ describe("router", () => {
     expect(selectHarness([cand("codex")], routeContext(led, "auto"))).toBeNull();
   });
 
+  it("LIVE observations are subject-scoped too (round-17 #2): profile A's rate limit never cools profile B or the default", () => {
+    const led = new BudgetLedger();
+    const [obs] = observationsFromEvent("claude", {
+      type: "error",
+      session_id: "s",
+      ts: new Date().toISOString(),
+      error: "rate limited",
+      credential_route: "vendor_native",
+      credential_profile_id: "a",
+      rate_limit: {
+        resets_at: new Date(Date.now() + 3_600_000).toISOString(),
+        retry_delay_ms: null,
+      },
+    });
+    // The observation carries the event's route + subject stamps.
+    expect(obs).toMatchObject({ credential_route: "vendor_native", subject_id: "a" });
+    led.observe(obs as NonNullable<typeof obs>);
+    expect(led.cooldownActive("claude", undefined, "a")).toBe(true);
+    expect(led.cooldownActive("claude", undefined, "b")).toBe(false);
+    expect(led.cooldownActive("claude", undefined, null)).toBe(false);
+    // Unknown caller subject stays conservatively any-subject.
+    expect(led.cooldownActive("claude")).toBe(true);
+    // An unstamped (default-subject) observation cools exactly the default.
+    const [defaultObs] = observationsFromEvent("claude", {
+      type: "error",
+      session_id: "s2",
+      ts: new Date().toISOString(),
+      error: "rate limited",
+      rate_limit: {
+        resets_at: new Date(Date.now() + 3_600_000).toISOString(),
+        retry_delay_ms: null,
+      },
+    });
+    led.observe(defaultObs as NonNullable<typeof defaultObs>);
+    expect(led.cooldownActive("claude", undefined, null)).toBe(true);
+    expect(led.cooldownActive("claude", undefined, "b")).toBe(false);
+  });
+
   it("only the typed rate_limit field trips a cooldown (no regex governance over prose)", () => {
     const ts = new Date().toISOString();
     // Error PROSE alone never trips a cooldown here — detection is the adapter's

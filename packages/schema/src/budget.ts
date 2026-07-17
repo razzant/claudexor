@@ -97,6 +97,21 @@ export type BudgetLease = z.infer<typeof BudgetLease>;
 export const BudgetObservation = z
   .object({
     harness_id: Id.describe("Harness the observation is about."),
+    /** Credential route the signal was observed on (round-17 #2); absent on
+     * legacy/synthetic observations. */
+    credential_route: z
+      .enum(["vendor_native", "managed_api_key", "local"])
+      .optional()
+      .describe("Credential route the signal was observed on, when known."),
+    /** The credential subject the signal belongs to (round-17 #2): a
+     * credential-profile id, null for the engine default. Cooldown/pace
+     * queries filter by exact subject so profile A's limit never penalizes
+     * profile B or the default. */
+    subject_id: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Credential-profile subject of the signal; null = engine default."),
     ts: z.string().describe("When the signal was observed."),
     quality: SignalQuality,
     kind: z

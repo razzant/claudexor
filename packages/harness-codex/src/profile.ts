@@ -55,7 +55,10 @@ export async function resolveCodexProfileRoute(
     try {
       const home = canonicalCodexProfileHome(profile.isolation_locator ?? "");
       nativeEnv = codexNativeEnv(specEnv, home);
-      const login = await runtime.probeLogin(BIN, { env: nativeEnv, abortSignal });
+      // codexHome rides EXPLICITLY (round-17 BLOCK): the production probe
+      // re-normalizes its env, and without the explicit home it would inspect
+      // the DEFAULT store while claiming to verify the profile.
+      const login = await runtime.probeLogin(BIN, { env: nativeEnv, codexHome: home, abortSignal });
       if (login.method === "chatgpt" && login.probeError === null)
         return { route: "subscription", nativeEnv, tempCodexHome: null, key: null, refusal: null };
       return {
@@ -110,6 +113,7 @@ export async function probeCodexCredentialProfile(
       const home = canonicalCodexProfileHome(profile.isolation_locator ?? "");
       const login = await runtime.probeLogin(BIN, {
         env: codexNativeEnv(undefined, home),
+        codexHome: home,
         abortSignal,
       });
       if (login.method === "chatgpt" && login.probeError === null)
