@@ -1,0 +1,11 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-5","tools":["Bash","Edit"],"session_id":"ses-native-1"}
+{"type":"stream_event","event":{"type":"message_start"}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Working"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" on it."}}}
+{"type":"stream_event","parent_tool_use_id":"tu_sub1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"subagent text never surfaces"}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Working on it."},{"type":"tool_use","id":"tu_bash1","name":"Bash","input":{"command":"pnpm test"}},{"type":"tool_use","id":"tu_edit1","name":"Edit","input":{"file_path":"src/a.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_bash1","content":"ok"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu_edit1","is_error":true,"content":"file not found"}]}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Done."}}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Done."}]}}
+{"type":"result","subtype":"success","result":"Done.","total_cost_usd":0.01,"usage":{"input_tokens":100,"output_tokens":20}}

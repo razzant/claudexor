@@ -2,9 +2,25 @@
 # real cursor-agent stream exists yet (the CLI is doctor-unavailable on the
 # recording machine); record one when a live route is available and stamp its
 # version here. The freshness gate discloses this gap on every run.
+#
+# `expectations` (W3.8) are the STREAM SEMANTICS the conformance test asserts
+# through core streamExpectationViolations. Cursor has no typed rate-limit
+# path — transient conditions surface only as generic errors.
 cli: cursor
 fixtures:
   basic-run.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "terminal result (success and not is_error)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   session-resume.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "terminal result (success and not is_error)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false

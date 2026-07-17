@@ -6,21 +6,70 @@
 # and the recording machine's environment fingerprint (installed skills /
 # slash commands / memory paths) are replaced with neutral placeholders;
 # frame shapes and event ordering are untouched.
+#
+# `expectations` (W3.8) are the STREAM SEMANTICS the conformance test asserts
+# through core streamExpectationViolations — exact counts on a deterministic
+# fixture pin the finality/dedup/delta/lifecycle regression classes.
+# `final_source` documents the vendor finality mechanism for humans.
 cli: claude
 fixtures:
   basic-run.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "terminal result (subtype success)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   plan-progress-task-tools.jsonl:
     source: synthetic
+    expectations:
+      # The result frame carries usage but NO result text — an absent final
+      # is the honest outcome, never invented from narration.
+      final_messages: 0
+      final_source: "terminal result (absent here: no result text)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
+  stream-deltas.jsonl:
+    source: synthetic
+    expectations:
+      # 3 main-conversation text deltas surface flagged; the subagent delta
+      # (parent_tool_use_id) and message_start plumbing never surface.
+      final_messages: 1
+      final_source: "terminal result (subtype success)"
+      thinking_events: 0
+      delta_messages: 3
+      typed_rate_limit: false
   recorded-real-cli.jsonl:
     source: recorded
     cli_version: "2.1.165"
     recorded_at: "2026-06-10"
     sanitized: "ids, signatures, environment fingerprint"
+    expectations:
+      final_messages: 1
+      final_source: "terminal result (subtype success)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   session-resume-rate-limit.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "terminal result (subtype success)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: true
   protocol/control-handshake.jsonl:
     source: recorded
     cli_version: "2.1.165"
     recorded_at: "2026-06-10"
     sanitized: "ids, signatures, environment fingerprint"
+    expectations:
+      # Control-protocol plumbing is recognized and consumed — it must never
+      # leak a single timeline event.
+      final_messages: 0
+      final_source: "n/a (control-protocol plumbing)"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false

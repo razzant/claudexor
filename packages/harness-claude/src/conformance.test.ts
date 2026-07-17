@@ -2,10 +2,20 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { validateTypedStream } from "@claudexor/core";
+import {
+  streamExpectationViolations,
+  validateTypedStream,
+  type FixtureStreamExpectations,
+} from "@claudexor/core";
 import { createClaudeParser } from "./parse.js";
+import { parse as parseYaml } from "yaml";
 
 const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
+/** W3.8: per-fixture STREAM SEMANTICS expectations, declared next to the
+ * fixture's provenance and asserted through the one core owner. */
+const manifest = parseYaml(readFileSync(join(FIXTURES, "manifest.yaml"), "utf8")) as {
+  fixtures: Record<string, { expectations?: FixtureStreamExpectations }>;
+};
 
 /**
  * Adapter conformance parity (one test per harness, shared core validator):
@@ -31,6 +41,11 @@ describe("claude adapter conformance fixtures", () => {
         events.push(...(parse(obj, "ses-fixture") ?? []));
       }
       const stats = validateTypedStream(events);
+      // Stream SEMANTICS, not just shape (W3.8): finality/delta/lifecycle/
+      // rate-limit counts pinned by the manifest expectations.
+      const expectations = manifest.fixtures[name]?.expectations;
+      expect(expectations, `manifest expectations missing for ${name}`).toBeTruthy();
+      expect(streamExpectationViolations(events, expectations!)).toEqual([]);
       expect(invalidLines).toBeLessThanOrEqual(2);
       expect(stats.started).toBeGreaterThan(0);
       expect(stats.toolCalls).toBeGreaterThan(0);

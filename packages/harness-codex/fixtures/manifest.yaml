@@ -2,15 +2,44 @@
 # source; recorded fixtures carry the vendor CLI version they were captured
 # from so scripts/fixture-freshness-check.mjs can warn when the installed CLI
 # has moved on (stale recordings are a freshness smell, not a build breaker).
+#
+# `expectations` (W3.8) are the STREAM SEMANTICS the conformance test asserts
+# through core streamExpectationViolations. Codex has NO typed final marker on
+# the wire: the adapter finalizes the turn's last agent_message on
+# turn.completed (requires the CodexParseState the run loop passes).
 cli: codex
 fixtures:
   basic-run.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "last agent_message finalized on turn.completed"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   plan-progress-todo-list.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "last agent_message finalized on turn.completed"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   recorded-real-cli.jsonl:
     source: recorded
     cli_version: "0.144.1"
     recorded_at: "2026-07-13"
+    expectations:
+      final_messages: 1
+      final_source: "last agent_message finalized on turn.completed"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   session-resume-rate-limit.jsonl:
     source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "last agent_message finalized on turn.completed"
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: true

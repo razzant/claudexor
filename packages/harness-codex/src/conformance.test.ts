@@ -2,10 +2,20 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { validateTypedStream } from "@claudexor/core";
-import { parseCodexEvent } from "./parse.js";
+import {
+  streamExpectationViolations,
+  validateTypedStream,
+  type FixtureStreamExpectations,
+} from "@claudexor/core";
+import { parseCodexEvent, type CodexParseState } from "./parse.js";
+import { parse as parseYaml } from "yaml";
 
 const FIXTURES = fileURLToPath(new URL("../fixtures", import.meta.url));
+/** W3.8: per-fixture STREAM SEMANTICS expectations, declared next to the
+ * fixture's provenance and asserted through the one core owner. */
+const manifest = parseYaml(readFileSync(join(FIXTURES, "manifest.yaml"), "utf8")) as {
+  fixtures: Record<string, { expectations?: FixtureStreamExpectations }>;
+};
 
 /**
  * Real codex stdout can TEAR lines under concurrent writes (observed live on
@@ -21,6 +31,10 @@ function parseLines(raw: string): {
   let invalidLines = 0;
   let recognizedLines = 0;
   const events: unknown[] = [];
+  // The run loop threads per-run finality state; the parity test must too —
+  // without it codex's typed final (stamped on turn.completed) never exists
+  // and the test could only check SHAPE, not finality semantics (W3.8).
+  const state: CodexParseState = {};
   for (const line of raw.split("\n").filter(Boolean)) {
     let obj: unknown;
     try {
@@ -29,7 +43,7 @@ function parseLines(raw: string): {
       invalidLines += 1;
       continue;
     }
-    const parsed = parseCodexEvent(obj, "ses-fixture");
+    const parsed = parseCodexEvent(obj, "ses-fixture", state);
     if (parsed === null) continue; // unrecognized type: counted by the run loop
     recognizedLines += 1;
     events.push(...parsed);
@@ -44,6 +58,11 @@ describe("codex adapter conformance fixtures", () => {
         readFileSync(join(FIXTURES, name), "utf8"),
       );
       const stats = validateTypedStream(events);
+      // Stream SEMANTICS, not just shape (W3.8): finality/delta/lifecycle/
+      // rate-limit counts pinned by the manifest expectations.
+      const expectations = manifest.fixtures[name]?.expectations;
+      expect(expectations, `manifest expectations missing for ${name}`).toBeTruthy();
+      expect(streamExpectationViolations(events, expectations!)).toEqual([]);
       expect(recognizedLines).toBeGreaterThan(3);
       expect(invalidLines).toBeLessThanOrEqual(2); // torn-line tolerance, never silence
       expect(stats.started).toBeGreaterThan(0);

@@ -298,6 +298,10 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+    devDependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
 
   packages/harness-codex:
     dependencies:
@@ -313,6 +317,10 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+    devDependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
 
   packages/harness-cursor:
     dependencies:
@@ -328,6 +336,10 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+    devDependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
 
   packages/harness-fake:
     dependencies:
@@ -355,6 +367,10 @@ importers:
       '@claudexor/util':
         specifier: workspace:*
         version: link:../util
+    devDependencies:
+      yaml:
+        specifier: ^2.6.1
+        version: 2.9.0
 
   packages/harness-raw-api:
     dependencies:

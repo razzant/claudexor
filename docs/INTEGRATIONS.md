@@ -375,6 +375,100 @@ search as `cached`, `live`, or `disabled`, with live search controlled by
 maps its typed policy onto those native surfaces and records observed tool
 evidence rather than relying on final-answer claims.
 
+### Harness Stream Reference
+
+The per-harness wire truth every parser change must be checked against. Each
+claim here is pinned by a fixture + conformance expectation
+(`packages/harness-<x>/fixtures/manifest.yaml` declares per-fixture stream
+SEMANTICS — final-message count, thinking/delta counts, typed rate-limit —
+asserted by the adapter's conformance test through
+`streamExpectationViolations` in `@claudexor/core`). When a vendor CLI moves,
+re-record the `recorded-*` fixture and re-verify the expectations; the
+fixture-freshness gate discloses drift.
+
+**Claude Code** — wire: `claude -p … --output-format stream-json --verbose`
+(one-shot prompt as argv; interactive runs add `--input-format stream-json`
+and deliver the prompt plus an `initialize` control handshake on stdin).
+Events: `system/init` → `started` (carries `native_session_id` for
+`--resume`); `system/api_retry` → typed `status` (kind `api_retry`, typed
+`rate_limit`/`transient` enrichment); `assistant` content blocks → `message` /
+`thinking` / `tool_call` (Edit/Write family also → `file_change`; TodoWrite
+and Task tools also carry plan progress); `user` tool_result blocks →
+`tool_result`; terminal `result` → `usage` + the FINAL `message`;
+`stream_event` text deltas → `payload.delta === true` messages. Finality: the
+terminal `result` is the typed final answer — `final: true` is stamped ONLY on
+a success result (`structured_output` verbatim when present, else the result
+text); error subtypes never claim finality, and `error_max_turns` /
+structured-output-retries-exhausted are benign turn-control outcomes, not run
+failures. Deltas: only MAIN-conversation `content_block_delta`/`text_delta`
+frames surface (flagged `delta`); subagent frames (`parent_tool_use_id`) and
+block/lifecycle frames never do — the complete message always follows.
+Plumbing: other `system` subtypes and `control_response`/`control_cancel`
+frames are recognized and consumed, never timeline events.
+
+**Codex** — wire: `codex exec --json … [-i <img>… --] "<prompt>"` (resume:
+`codex exec resume <id> --json`; sandbox rides `-c sandbox_mode` on resume).
+Events: `thread.started` → `started` (thread id = `native_session_id`);
+`turn.started` → `started` (a lifecycle boundary — deliberately NOT
+`thinking`: mapping it there once planted junk blocks at the top of every
+transcript); `item.*` for `reasoning` → `thinking`, `command_execution`/
+`mcp_tool_call`/`web_search` → `tool_call`+`tool_result` (exit-code aware),
+`file_change` → `file_change`, `agent_message` → `message`, `todo_list` →
+plan progress; `turn.completed` → `usage` + the FINAL `message`. Finality:
+codex has NO typed final marker on the wire — the adapter tracks the turn's
+last `agent_message` and finalizes it (`final: true`,
+`payload.final_source: "last_agent_message"`) on `turn.completed`; a failed
+turn never finalizes its partial message and a new turn clears stale state.
+Consumers MUST thread `CodexParseState` through the parser or finality never
+exists. Deltas: none (no partial-output flag is wired). Rate limits surface
+as `error`/`turn.failed` with typed `rate_limit` (`resets_at`) and
+`transient` enrichment — there is no separate status event.
+
+**Cursor** — wire: `cursor-agent -p --output-format stream-json <sandbox
+args> [--stream-partial-output] "<prompt>"` (no native system-prompt flag —
+instructions ride a delimited prompt prefix; full access is refused
+pre-spawn). Events: `system/init` → `started` (session id under
+`chatId`/`chat_id`/`session_id`, version-tolerant); `assistant` →
+`message` — with `--stream-partial-output`, a frame with `timestamp_ms` and
+no `model_call_id` is a NEW-TEXT delta (flagged), `timestamp_ms` +
+`model_call_id` is a buffered duplicate (dropped), and the flag-less frame is
+the complete flush; `thinking`/`reasoning` → `thinking`; variant-keyed
+`tool_call` objects (`shellToolCall`, `writeToolCall`, …) → `tool_call` on
+`started`, `tool_result` (+ `file_change`) on `completed`/`failed`, nothing
+on `updated`; terminal `result` → `usage` + the FINAL `message` (success and
+not `is_error` only). No typed rate-limit path exists: transient conditions
+surface as generic `error` events — honest degradation, never invented
+status.
+
+**OpenCode** — markerless: no typed final message; the engine's
+AnswerAssembly falls back to joining narration (the documented degradation
+for adapters without a finality marker).
+
+Known traps (class → CURRENT rule → pin):
+
+- Double-final / narration+final concatenation: a harness narrates the answer
+  mid-run and repeats it as the typed final. Rule: consumers take the
+  `final: true` message VERBATIM (AnswerAssembly; narration join is only the
+  markerless fallback), and adjacent repeats dedup. Pins: manifest
+  `final_messages` expectations on every fixture; `answer-assembly.test.ts`;
+  the auth capability smoke consumes typed finality
+  (`auth-capability-verifier.test.ts`).
+- Lifecycle frame → thinking junk: turn/system lifecycle boundaries rendered
+  as reasoning noise. Rule: lifecycle frames map to `started`/nothing, never
+  `thinking`. Pin: manifest `thinking_events` exact counts.
+- Delta chunks joined into the answer: display-stream chunks concatenated as
+  if they were messages. Rule: delta messages carry `payload.delta === true`
+  and the complete message always follows; assemblers skip flagged deltas.
+  Pins: `stream-deltas.jsonl` + `delta_messages` expectations.
+- Rate limit read from prose: retry/limit conditions scraped from message
+  text. Rule: adapters attach the typed `rate_limit`/`transient` fields (or a
+  typed `status` event for claude's `api_retry`); consumers never regex
+  prose. Pin: `session-resume-rate-limit.jsonl` + `typed_rate_limit`
+  expectations.
+- Control-protocol leakage: handshake/permission frames surfacing as
+  timeline events. Rule: recognized plumbing is consumed, producing ZERO
+  events. Pin: `protocol/control-handshake.jsonl` all-zero expectations.
+
 ## Storage
 
 Project runs write under the external per-project namespace
