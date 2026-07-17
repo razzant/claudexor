@@ -60,7 +60,7 @@ struct ThreadsScreen: View {
     /// Project-aware intents need a project scope. A selected thread uses its own
     /// repo; in the DRAFT state (no thread selected yet) the first turn will be
     /// created on the Current Project, so the project intents are available too.
-    private var threadHasProject: Bool {
+    var threadHasProject: Bool {
         if let id = model.selectedThreadId, let t = model.threads.first(where: { $0.id == id }) {
             return t.repoRoot?.isEmpty == false
         }
@@ -422,82 +422,89 @@ struct ThreadsScreen: View {
     /// (no glass-on-glass): a controls row (intent + primary + "⋯"), a Messages-style
     /// field on a solid inset, a prominent Send, and an inline advanced panel that
     /// morphs in via the GlassEffectContainer. Chat is the NORMAL loop.
+    // The composer's controls row (mode/project/harness/access chips + ⋯),
+    // extracted so the composer VStack stays type-checkable (round-19).
+    @ViewBuilder private var composerControlsRow: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            IntentMenu(selection: $composerMode, projectScoped: threadHasProject)
+            ProjectChip(name: projectChipName,
+                        bound: model.selectedThreadId != nil,
+                        hasProject: threadHasProject,
+                        recent: model.recentProjects,
+                        onPick: { model.pickProject($0) },
+                        onBrowse: { model.browseProject() })
+            if threadHasProject {
+                PrimaryHarnessChip(current: primaryFamily, pool: resolvedPoolFamilies) { picked in
+                    Task { await model.setPrimaryHarness(picked?.rawValue) }
+                }
+                // W19: the per-turn write scope is a first-class chip
+                // (moved out of "⋯"); " · Browser" appends while armed.
+                AccessChip(access: $access, browserArmed: browser,
+                           writeDisabled: composerMode.isReadOnly && composerMode != .spec)
+            }
+            // The "⋯" options button is ALWAYS available — a no-project Ask is
+            // still entitled to a per-turn model / web / budget. `composerOptions`
+            // itself hides the project-only controls (Context, Workspace, repair).
+            Button {
+                showOptions.toggle()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    // Subtle active tint only while the panel is open, so the
+                    // options control reads as a PEER of the other composer-row
+                    // controls — not the one prominent filled button (it
+                    // looked like the only clickable thing). No glass fill.
+                    .foregroundStyle(showOptions ? Theme.accent : .secondary)
+                    .padding(.horizontal, Theme.Spacing.xs)
+                    .padding(.vertical, Theme.Controls.chipVPadding)
+                    .background(showOptions ? Theme.accent.opacity(0.14) : .clear, in: Capsule())
+            }
+            .buttonStyle(.borderless)
+            .help("More options: harness pool, model, budget, access, web, repair strategies")
+            // Native dismissible popover — no inline glass-on-glass panel.
+            .popover(isPresented: $showOptions, arrowEdge: .bottom) {
+                composerOptions
+                    .task { await model.refreshCredentialProfiles() }
+            }
+            .sheet(isPresented: $showProfilesSheet) { ProfilesSheet() }
+            Spacer(minLength: Theme.Spacing.sm)
+            composerHint
+        }
+        .onAppear { if !threadHasProject { composerMode = .ask } }
+        .onChange(of: model.selectedThreadId) {
+            if !threadHasProject { composerMode = .ask }
+            // Per-turn knobs are not sticky — don't carry one thread's budget
+            // cap / access / web / repair flags / model into the next thread.
+            capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
+            untilClean = false; maxAttempts = 3; showOptions = false; browser = false
+            reviewerPanelText = ""; protectedApprovalsText = ""
+            composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)
+        }
+        // The no-project gate also fires when the project changes under a draft
+        // (clearing it from Settings, etc.) — fall back to read-only Ask.
+        .onChange(of: threadHasProject) { _, has in
+            if !has { composerMode = .ask; showOptions = false }
+        }
+        // An armed Browser cannot ride a read-only intent (Spec keeps it
+        // for its Implement turn): the toggle hides in ⋯ for read-only
+        // modes, so disarm here — never send browser:true on an Ask.
+        .onChange(of: composerMode) { _, mode in
+            if mode.isReadOnly && mode != .spec { browser = false }
+        }
+        // Models are harness-scoped now: a primary switch keeps each
+        // harness's own selection valid. Only prune entries for harnesses
+        // that LEFT the pool, so a dropped chip can't smuggle a model in.
+        .onChange(of: resolvedPoolFamilies) { _, families in
+            let ids = Set(families.map(\.rawValue))
+            composerModels = composerModels.filter { ids.contains($0.key) }
+        }
+    }
+
     private var composer: some View {
         GlassEffectContainer(spacing: Theme.Spacing.sm) {
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                HStack(spacing: Theme.Spacing.sm) {
-                    IntentMenu(selection: $composerMode, projectScoped: threadHasProject)
-                    ProjectChip(name: projectChipName,
-                                bound: model.selectedThreadId != nil,
-                                hasProject: threadHasProject,
-                                recent: model.recentProjects,
-                                onPick: { model.pickProject($0) },
-                                onBrowse: { model.browseProject() })
-                    if threadHasProject {
-                        PrimaryHarnessChip(current: primaryFamily, pool: resolvedPoolFamilies) { picked in
-                            Task { await model.setPrimaryHarness(picked?.rawValue) }
-                        }
-                        // W19: the per-turn write scope is a first-class chip
-                        // (moved out of "⋯"); " · Browser" appends while armed.
-                        AccessChip(access: $access, browserArmed: browser,
-                                   writeDisabled: composerMode.isReadOnly && composerMode != .spec, modeLabel: composerMode.label)
-                    }
-                    // The "⋯" options button is ALWAYS available — a no-project Ask is
-                    // still entitled to a per-turn model / web / budget. `composerOptions`
-                    // itself hides the project-only controls (Context, Workspace, repair).
-                    Button {
-                        showOptions.toggle()
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            // Subtle active tint only while the panel is open, so the
-                            // options control reads as a PEER of the other composer-row
-                            // controls — not the one prominent filled button (it
-                            // looked like the only clickable thing). No glass fill.
-                            .foregroundStyle(showOptions ? Theme.accent : .secondary)
-                            .padding(.horizontal, Theme.Spacing.xs)
-                            .padding(.vertical, Theme.Controls.chipVPadding)
-                            .background(showOptions ? Theme.accent.opacity(0.14) : .clear, in: Capsule())
-                    }
-                    .buttonStyle(.borderless)
-                    .help("More options: harness pool, model, budget, access, web, repair strategies")
-                    // Native dismissible popover — no inline glass-on-glass panel.
-                    .popover(isPresented: $showOptions, arrowEdge: .bottom) {
-                        composerOptions
-                            .task { await model.refreshCredentialProfiles() }
-                    }
-                    .sheet(isPresented: $showProfilesSheet) { ProfilesSheet() }
-                    Spacer(minLength: Theme.Spacing.sm)
-                    composerHint
-                }
-                .onAppear { if !threadHasProject { composerMode = .ask } }
-                .onChange(of: model.selectedThreadId) {
-                    if !threadHasProject { composerMode = .ask }
-                    // Per-turn knobs are not sticky — don't carry one thread's budget
-                    // cap / access / web / repair flags / model into the next thread.
-                    capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
-                    untilClean = false; maxAttempts = 3; showOptions = false; browser = false
-                    reviewerPanelText = ""; protectedApprovalsText = ""
-                    composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)
-                }
-                // The no-project gate also fires when the project changes under a draft
-                // (clearing it from Settings, etc.) — fall back to read-only Ask.
-                .onChange(of: threadHasProject) { _, has in
-                    if !has { composerMode = .ask; showOptions = false }
-                }
-                // An armed Browser cannot ride a read-only intent (Spec keeps it
-                // for its Implement turn): the toggle hides in ⋯ for read-only
-                // modes, so disarm here — never send browser:true on an Ask.
-                .onChange(of: composerMode) { _, mode in
-                    if mode.isReadOnly && mode != .spec { browser = false }
-                }
-                // Models are harness-scoped now: a primary switch keeps each
-                // harness's own selection valid. Only prune entries for harnesses
-                // that LEFT the pool, so a dropped chip can't smuggle a model in.
-                .onChange(of: resolvedPoolFamilies) { _, families in
-                    let ids = Set(families.map(\.rawValue))
-                    composerModels = composerModels.filter { ids.contains($0.key) }
-                }
+                composerControlsRow
 
+                composerAccessHint
                 composerGrantCTA
                 if !composerAttachments.isEmpty { attachmentChips }
                 HStack(alignment: .center, spacing: Theme.Spacing.sm) {

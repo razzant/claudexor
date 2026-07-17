@@ -41,14 +41,14 @@ export function normalizeThroughExistingAncestor(path: string): string {
 export function canonicalIsolationLocator(locator: string, label: string): string {
   if (!isAbsolute(locator)) throw new Error(`${label} must be absolute: ${locator}`);
   const dir = normalizeThroughExistingAncestor(locator);
-  let owned = process.env.CLAUDEXOR_CONFIG_DIR?.trim()
-    ? userConfigDir()
-    : join(homedir(), ".claudexor");
-  try {
-    owned = realpathSync(owned);
-  } catch {
-    /* first run: the un-resolved path is still the confinement root */
-  }
+  // Normalize the confinement root the SAME way as the locator (round-19,
+  // fable checkpoint): a not-yet-created CLAUDEXOR_CONFIG_DIR under a
+  // symlinked parent (/var → /private/var on macOS) would otherwise compare
+  // unequal to a locator that was resolved through that symlink, and
+  // false-reject a valid in-root profile.
+  const owned = normalizeThroughExistingAncestor(
+    process.env.CLAUDEXOR_CONFIG_DIR?.trim() ? userConfigDir() : join(homedir(), ".claudexor"),
+  );
   if (dir !== owned && !dir.startsWith(owned + sep)) {
     throw new Error(`${label} must live under ${owned} (got ${dir})`);
   }

@@ -57,26 +57,17 @@ struct AccessChip: View {
     @Binding var access: AccessProfile
     let browserArmed: Bool
     /// Read-only intents never write (Spec keeps the control for its
-    /// eventual Implement turn) — the chip disables with an honest reason.
+    /// eventual Implement turn) — the chip disables, and the visible reason
+    /// rides composerAccessHint below the row (not a hover-only tooltip).
     let writeDisabled: Bool
-    /// The current intent's label for the visible disable reason (dogfood:
-    /// «не кликабельный стал» — a hover-only tooltip is not disclosure).
-    var modeLabel: String = ""
 
     private var tint: Color { access == .full ? .orange : Theme.accent }
 
-    var body: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            chipMenu
-            if writeDisabled {
-                Text("\(modeLabel.isEmpty ? "This intent" : modeLabel) never writes — switch to Agent to change access")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            } else if browserArmed {
-                Text("Browser armed → Full (disarm in ⋯)")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            }
-        }
-    }
+    // The chip is JUST the menu — its disable/armed reason rides a separate
+    // full-width caption line below the controls row (composerAccessHint), so
+    // a narrow window can never crush the reason into a one-character-per-line
+    // column inside the fixed-size chips row (owner QA, 2.1.0).
+    var body: some View { chipMenu }
 
     private var chipMenu: some View {
         Menu {
@@ -119,6 +110,24 @@ extension ThreadsScreen {
     var composerRepoRoot: String? {
         if let id = model.selectedThreadId { return model.threadRepoRoot(id) }
         return model.normalizedProjectRoot.isEmpty ? nil : model.normalizedProjectRoot
+    }
+
+    /// The Access chip's disable/armed reason on its OWN full-width line under
+    /// the controls row (never inline in the fixed-size chips HStack, where a
+    /// narrow window crushed it to a vertical one-char-per-line column). Only
+    /// shown for project threads (the chip itself only appears there).
+    @ViewBuilder var composerAccessHint: some View {
+        if threadHasProject {
+            if composerMode.isReadOnly && composerMode != .spec {
+                Text("\(composerMode.label) never writes — switch to Agent to change access")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if browser {
+                Text("Browser armed → Full (disarm in ⋯)")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     /// Inline one-time-grant disclosure (W19/Квиз-14): choosing Full access

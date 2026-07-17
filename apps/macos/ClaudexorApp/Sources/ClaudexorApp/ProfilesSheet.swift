@@ -81,7 +81,7 @@ struct ProfilesSheet: View {
     private var addSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             Text("Add a subscription").font(.headline)
-            Text("Two steps in Terminal — the vendor's own login opens your browser; the default login stays untouched.")
+            Text("Two commands in Terminal — the vendor's own login opens your browser; the default login stays untouched.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: Theme.Spacing.sm) {
                 Picker("Harness", selection: $addHarness) {
@@ -94,8 +94,12 @@ struct ProfilesSheet: View {
                     .frame(width: 180)
                     .font(.system(.caption, design: .monospaced))
             }
-            stepRow(1, "Register the account (appends to ~/.claudexor/v2/config.yaml):",
-                    registerCommand)
+            // Both steps go through the CLI's OWN commands — `profiles add` is
+            // the locked, schema-validated registry writer (never a raw
+            // config append, which could duplicate the top-level key and
+            // brick the config), and `profiles login` runs the vendor login.
+            stepRow(1, "Register the account:",
+                    "claudexor profiles add \(addHarness) \(sanitizedId)")
             stepRow(2, "Log the account in (interactive vendor login):",
                     "claudexor profiles login \(addHarness) \(sanitizedId)")
             Text("Then press Refresh above — the account appears with a green dot once its login verifies, and shows up in the composer's Account picker.")
@@ -129,20 +133,6 @@ struct ProfilesSheet: View {
     private var sanitizedId: String {
         let trimmed = addId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return trimmed.isEmpty ? "work" : trimmed
-    }
-
-    private var registerCommand: String {
-        let home = "$HOME/.claudexor/profiles/\(addHarness)-\(sanitizedId)"
-        return """
-        mkdir -p \(home) && cat >> ~/.claudexor/v2/config.yaml <<'EOF'
-        credential_profiles:
-          - profile_id: \(sanitizedId)
-            harness_id: \(addHarness)
-            display_name: \(sanitizedId)
-            credential_kind: config_dir_login
-            isolation_locator: \(home)
-        EOF
-        """
     }
 
     private func humanKind(_ kind: String) -> String {
