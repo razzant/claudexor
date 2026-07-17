@@ -27,12 +27,7 @@ export type PluginHost = "cursor" | "claude" | "codex" | "opencode";
 export type PluginTarget = PluginHost | "all";
 export type PluginVerb = "install" | "status" | "doctor" | "repair" | "uninstall";
 export type PluginInstallState =
-  | "missing"
-  | "installed"
-  | "registered"
-  | "drifted"
-  | "partial"
-  | "blocked";
+  "missing" | "installed" | "registered" | "drifted" | "partial" | "blocked";
 
 export const PLUGIN_HOSTS: PluginHost[] = ["cursor", "claude", "codex", "opencode"];
 export const PLUGIN_TARGETS: PluginTarget[] = [...PLUGIN_HOSTS, "all"];

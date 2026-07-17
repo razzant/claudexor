@@ -46,14 +46,12 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
         s.id,
         NO_PROJECT_ROOT,
         false,
-      ).catch(
-        (): ControlHarnessModelsResponse => ({
-          harnessId: s.id,
-          models: [],
-          source: "none",
-          verifiedAgainst: null,
-        }),
-      );
+      ).catch((): ControlHarnessModelsResponse => ({
+        harnessId: s.id,
+        models: [],
+        source: "none",
+        verifiedAgainst: null,
+      }));
       const configured = cfg.global.harnesses[s.id]?.default_model ?? null;
       const check = configured
         ? validateModel(

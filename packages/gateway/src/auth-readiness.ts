@@ -9,9 +9,7 @@ import {
 import type { HarnessGateway } from "./gateway.js";
 
 export type AuthReadinessServiceErrorCode =
-  | "unknown_harness"
-  | "auth_source_evidence_missing"
-  | "auth_readiness_probe_failed";
+  "unknown_harness" | "auth_source_evidence_missing" | "auth_readiness_probe_failed";
 
 /**
  * Typed service failure designed to project directly to the control plane's

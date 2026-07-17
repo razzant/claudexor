@@ -42,8 +42,7 @@ describe("claude adapter conformance fixtures", () => {
         // v0.9 contract: native session id surfaced for thread resume, and the
         // api_retry rate limit becomes the TYPED rate_limit signal.
         const started = events.find((e) => (e as { type?: string }).type === "started") as
-          | { payload?: Record<string, unknown> }
-          | undefined;
+          { payload?: Record<string, unknown> } | undefined;
         expect(started?.payload?.["native_session_id"]).toBeTruthy();
         const limited = events.find(
           (e) => (e as { rate_limit?: unknown }).rate_limit !== undefined,
