@@ -233,9 +233,23 @@ private struct ArtifactCard: View {
             ? await model.producedBytes(runId: runId, path: art.path)
             : await model.artifactBytes(runId: runId, path: art.path)
         guard let data else { return }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        // Release wave sol #4: the artifact NAME is agent-controlled and the
+        // shared temp dir is predictable — a precreated symlink at that path
+        // would turn "open preview" into an arbitrary user-file overwrite.
+        // Fresh unpredictable 0700 dir + basename-only name closes both legs
+        // of the primitive; .atomic replaces (never follows) a destination.
+        let base = (fileName as NSString).lastPathComponent
+        let safeName = base.isEmpty || base == "." || base == ".." ? "artifact" : base
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claudexor-open-\(UUID().uuidString)", isDirectory: true)
         do {
-            try data.write(to: url)
+            try FileManager.default.createDirectory(
+                at: dir,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700],
+            )
+            let url = dir.appendingPathComponent(safeName)
+            try data.write(to: url, options: [.atomic])
             NSWorkspace.shared.open(url)
         } catch { /* opening a preview is best-effort */ }
     }

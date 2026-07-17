@@ -259,7 +259,7 @@ describe("ThreadStore", () => {
     const sess = s.sessionsForThread(t.id);
     expect(sess[0]?.native_session_id).toBe("vendor-sess-1");
     expect(sess[0]?.last_observed_model).toBe("gpt-5.5");
-    expect(s.resumeMap(t.id)).toEqual({ codex: "vendor-sess-1" });
+    expect(s.resumeMap(t.id)).toEqual({ codex: { sessionId: "vendor-sess-1", profileId: null } });
   });
 
   it("thread sticky credential profile is durable and clearable (W5.4)", () => {
@@ -284,12 +284,16 @@ describe("ThreadStore", () => {
     // default (null) and to any other profile — exact match only.
     expect(s.resumeMap(t.id)).toEqual({});
     expect(s.resumeMap(t.id, "personal")).toEqual({});
-    expect(s.resumeMap(t.id, "work")).toEqual({ claude: "sess-under-work" });
+    expect(s.resumeMap(t.id, "work")).toEqual({
+      claude: { sessionId: "sess-under-work", profileId: "work" },
+    });
     expect(s.sessionsForThread(t.id)[0]?.profile_id).toBe("work");
     // A default-ladder session stays default-only.
     s.recordSession(t.id, "codex", "sess-default");
-    expect(s.resumeMap(t.id)).toEqual({ codex: "sess-default" });
-    expect(s.resumeMap(t.id, "work")).toEqual({ claude: "sess-under-work" });
+    expect(s.resumeMap(t.id)).toEqual({ codex: { sessionId: "sess-default", profileId: null } });
+    expect(s.resumeMap(t.id, "work")).toEqual({
+      claude: { sessionId: "sess-under-work", profileId: "work" },
+    });
   });
 
   it("assertKnownIds fails loudly on bogus, foreign, and thread-less turn ids (socket-caller fence)", () => {

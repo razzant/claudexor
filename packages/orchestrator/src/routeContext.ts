@@ -53,7 +53,10 @@ export async function candidateStatusInRouteContext(
     authPreference,
     fresh: true,
   });
-  if (!scoped) return host;
+  // Fail CLOSED (release wave sol #1): a null scoped probe is ABSENT evidence
+  // for the env this route would actually run in — host readiness must not
+  // stand in for it (the W3.3 same-context guarantee).
+  if (!scoped) return undefined;
   statusById.set(harnessId, scoped);
   return scoped;
 }

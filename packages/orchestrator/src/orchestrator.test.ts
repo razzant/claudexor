@@ -1713,6 +1713,79 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("resume never crosses profiles at the ENGINE boundary — A→B, A→default, default→A (INV-135)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-resume-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: b",
+        "    harness_id: asker",
+        "    display_name: B",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:b'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const resumes: Array<string | null> = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const askerRun = asker.run.bind(asker);
+      asker.run = (spec) => {
+        resumes.push(spec.resume_session_id);
+        return askerRun(spec);
+      };
+      const orch = () => new Orchestrator({ registry: new Map([["asker", asker]]), reviewers: [] });
+      // A→B: session cached under profile "a", turn runs as profile "b" → fresh.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q1",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "b",
+        resumeSessions: { asker: { sessionId: "sess-a", profileId: "a" } },
+      });
+      // A→default: cached under "a", turn runs as engine default → fresh.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q2",
+        mode: "ask",
+        harnesses: ["asker"],
+        resumeSessions: { asker: { sessionId: "sess-a", profileId: "a" } },
+      });
+      // default→A(b): cached under default, turn runs as "b" → fresh.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q3",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "b",
+        resumeSessions: { asker: { sessionId: "sess-default", profileId: null } },
+      });
+      // Exact match (b→b) resumes.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q4",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "b",
+        resumeSessions: { asker: { sessionId: "sess-b", profileId: "b" } },
+      });
+      expect(resumes).toEqual([null, null, null, "sess-b"]);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("never rotates on a plain transient — typed-limit signals only (W5.4)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-transient-config-"));
@@ -3919,7 +3992,7 @@ describe("Orchestrator", () => {
       n: 1,
       inPlace: true,
       threadId: "th-1",
-      resumeSessions: { impl: "vendor-sess-prev" },
+      resumeSessions: { impl: { sessionId: "vendor-sess-prev", profileId: null } },
       onSessionObserved: (h, nid) => {
         observed[h] = nid;
       },

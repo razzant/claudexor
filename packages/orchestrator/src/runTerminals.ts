@@ -99,17 +99,24 @@ export function cancelledResult(
   // Materialize the diagnostic summary BEFORE announcing it — output.ready must
   // point at a file that exists (partial-output honesty), and it must precede
   // the terminal in every mode (INV-116).
+  let summaryWritten = false;
   if (store) {
     try {
       store.writeText(
         join(runDir, "final", "summary.md"),
         `# Run ${runId} (${mode})\n\n- Status: cancelled\n${cancelReason ? `- Reason: ${cancelReason}\n` : ""}\n${summaryText}\n`,
       );
+      summaryWritten = true;
     } catch {
       /* best-effort: a write failure must not mask the cancel terminal */
     }
   }
-  log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+  // output.ready is EVIDENCE (release wave sol #3): announce the summary only
+  // when the file actually materialized — a failed write still gets its
+  // terminal below, just without a pointer to a nonexistent artifact.
+  if (summaryWritten) {
+    log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+  }
   log.emit("run.failed", {
     status: "cancelled",
     ...(cancelReason ? { reason: cancelReason } : {}),

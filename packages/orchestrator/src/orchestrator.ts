@@ -309,7 +309,7 @@ export interface RunInput {
    * session cache). A routed harness with an entry continues its own native
    * conversation (`codex exec resume` / `claude --resume`) instead of starting fresh.
    */
-  resumeSessions?: Record<string, string>;
+  resumeSessions?: Record<string, { sessionId: string; profileId: string | null }>;
   /** Called when a harness emits its native session id (recorded for future resume). */
   onSessionObserved?: (
     harnessId: string,
@@ -831,6 +831,7 @@ export class Orchestrator {
     log?: EventLog,
   ): Pick<HarnessRunSpec, "auth_preference" | "resume_session_id" | "credential_profile"> {
     const cfg = this.config(input.repoRoot)?.global;
+    const profile = this.preflightProfile(input, harnessId, log);
     const explicit = (
       v?: "subscription" | "api_key" | "auto",
     ): "subscription" | "api_key" | undefined => (v && v !== "auto" ? v : undefined);
@@ -842,8 +843,18 @@ export class Orchestrator {
         explicit(cfg?.harnesses?.[harnessId]?.auth_preference) ??
         explicit(cfg?.routing?.auth_preference) ??
         "auto",
-      resume_session_id: input.resumeSessions?.[harnessId] ?? null,
-      credential_profile: this.preflightProfile(input, harnessId, log),
+      // INV-135 at the ENGINE boundary (release wave sol #2): a cached vendor
+      // session resumes ONLY under exactly the profile it was recorded with —
+      // including null-default equality — regardless of what the caller's map
+      // claims. Preflight rotation changing the profile therefore starts fresh.
+      resume_session_id: (() => {
+        const cached = input.resumeSessions?.[harnessId];
+        if (!cached) return null;
+        return (cached.profileId ?? null) === (profile?.profile_id ?? null)
+          ? cached.sessionId
+          : null;
+      })(),
+      credential_profile: profile,
     };
   }
 

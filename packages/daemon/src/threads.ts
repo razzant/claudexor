@@ -348,14 +348,19 @@ export class ThreadStore {
   }
 
   /** Native resume map for a thread: harnessId -> native session id (live sessions only). */
-  resumeMap(threadId: string, profileId: string | null = null): Record<string, string> {
-    const map: Record<string, string> = {};
+  resumeMap(
+    threadId: string,
+    profileId: string | null = null,
+  ): Record<string, { sessionId: string; profileId: string | null }> {
+    const map: Record<string, { sessionId: string; profileId: string | null }> = {};
     for (const s of this.sessionsForThread(threadId)) {
       // INV-135: resume never crosses credential profiles — a session recorded
       // under one profile (or the null engine default) is eligible ONLY for a
-      // turn running as exactly that profile.
+      // turn running as exactly that profile. The entry CARRIES its profile so
+      // the engine boundary re-verifies against the RESOLVED profile (which
+      // preflight rotation may have changed after this map was built).
       if (s.state === "live" && s.native_session_id && (s.profile_id ?? null) === profileId)
-        map[s.harness_id] = s.native_session_id;
+        map[s.harness_id] = { sessionId: s.native_session_id, profileId: s.profile_id ?? null };
     }
     return map;
   }

@@ -270,7 +270,10 @@ export class ProjectPartitions implements CommandAuthority {
     this.requireTurnStore(id).setTurnEnqueueError(id, message, code, retryable);
   }
 
-  resumeMap(id: string, profileId: string | null = null): Record<string, string> {
+  resumeMap(
+    id: string,
+    profileId: string | null = null,
+  ): Record<string, { sessionId: string; profileId: string | null }> {
     return this.requireThreadStore(id).resumeMap(id, profileId);
   }
 
