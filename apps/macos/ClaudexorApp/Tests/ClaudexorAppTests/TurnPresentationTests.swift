@@ -84,3 +84,48 @@ import ClaudexorKit
         #expect(TurnPresentation.activitySummary(blocks: [.message(id: "m", text: "hi")]) == "Activity")
     }
 }
+
+/// W4.4 (В9а): the flat transcript fold — grouped runs, failures stand
+/// alone, thinking is a timer row, poor streams degrade honestly.
+@Suite struct TranscriptFoldTests {
+    private func ok(_ id: String, _ name: String, kind: String = "file") -> TranscriptBlock {
+        .tool(id: id, ToolBlock(name: name, kind: kind, status: .ok))
+    }
+
+    @Test func runsOfMoreThanThreeSameNameOkToolsCollapse() {
+        let rows = TranscriptPresentation.rows([
+            ok("1", "Read"), ok("2", "Read"), ok("3", "Read"), ok("4", "Read"),
+            ok("5", "Bash", kind: "command"),
+        ])
+        #expect(rows == [
+            .toolGroup(id: "1", name: "Read", kind: "file", count: 4),
+            .tool(id: "5", ToolBlock(name: "Bash", kind: "command", status: .ok)),
+        ])
+        // Exactly three stays ungrouped (the threshold is >3).
+        let three = TranscriptPresentation.rows([ok("1", "Read"), ok("2", "Read"), ok("3", "Read")])
+        #expect(three.count == 3)
+    }
+
+    @Test func failuresAndRunningToolsNeverGroupAndBreakRuns() {
+        let failed = TranscriptBlock.tool(
+            id: "f", ToolBlock(name: "Read", kind: "file", status: .error, detail: "boom", exitCode: 1))
+        let rows = TranscriptPresentation.rows([
+            ok("1", "Read"), ok("2", "Read"), failed, ok("3", "Read"), ok("4", "Read"),
+        ])
+        // The failure splits the run: 2 + 2 stay under the threshold, and the
+        // failed row stands alone with its status intact.
+        #expect(rows.count == 5)
+        if case .tool(_, let tool) = rows[2] { #expect(tool.status == .error) }
+        else { Issue.record("failed tool must stand alone") }
+    }
+
+    @Test func poorStreamsDegradeHonestly() {
+        // codex/cursor: no thinking events -> no thinking rows, nothing invented.
+        let toolsOnly = TranscriptPresentation.rows([ok("1", "Bash", kind: "command")])
+        #expect(toolsOnly == [.tool(id: "1", ToolBlock(name: "Bash", kind: "command", status: .ok))])
+        #expect(TranscriptPresentation.rows([]).isEmpty)
+        // Thinking is a single timer row — never an expandable body in chat.
+        let thinking = TranscriptPresentation.rows([.thinking(id: "t", text: "reasoning…", seconds: 12)])
+        #expect(thinking == [.thinking(id: "t", seconds: 12)])
+    }
+}

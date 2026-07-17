@@ -17,26 +17,33 @@ struct TranscriptView: View {
     var fileScopeRoots: [String] = []
 
     var body: some View {
+        // W4.4 (В9а): a FLAT log — one line per tool, grouped runs, a single
+        // timer line for thinking. Zero inline chevrons; the raw reasoning
+        // text and full tool output live in the run inspector only.
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             if trimmedOlder > 0 || truncatedChars > 0 {
                 Text(truncationNote)
                     .font(.caption2).foregroundStyle(.tertiary)
             }
-            ForEach(blocks) { block in
-                switch block {
-                case .thinking(_, let text, let seconds):
-                    DisclosureGroup {
-                        Text(text)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } label: {
-                        Label(Self.thinkingLabel(seconds: seconds), systemImage: "brain")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+            ForEach(TranscriptPresentation.rows(blocks)) { row in
+                switch row {
+                case .thinking(_, let seconds):
+                    Label(Self.thinkingLabel(seconds: seconds), systemImage: "circle.lefthalf.filled")
+                        .font(.caption).foregroundStyle(.secondary)
                 case .tool(_, let tool):
                     ToolRow(tool: tool)
+                case .toolGroup(_, let name, let kind, let count):
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(Theme.status(.succeeded))
+                            .font(.caption2)
+                        Image(systemName: ToolRow.kindGlyph(kind))
+                            .foregroundStyle(.secondary)
+                            .font(.caption2)
+                        Text("\(name) · \(count) calls")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 case .message(_, let text):
                     // Mid-run NARRATION (a typed final never reaches the
                     // transcript): markdown, but dimmed — the finish must not
@@ -68,29 +75,35 @@ struct TranscriptView: View {
     }
 }
 
-/// One tool call/result row (W-C6): a kind icon + short humane title lead;
-/// the raw target and result detail expand on demand (selectable, never
-/// truncated away silently). `bash -lc "…"` stops shouting across the chat.
+/// One tool call/result row (W-C6/W4.4): a kind icon + short humane title
+/// lead — ONE line, no chevron; the full output lives in the run inspector.
+/// A FAILED tool carries its error summary as a second dimmed line (its
+/// status is the information); everything else stays a single quiet row.
 struct ToolRow: View {
     let tool: ToolBlock
-    @State private var expanded = false
 
     var body: some View {
-        let raw = rawDetail
-        if raw.isEmpty {
-            header
-        } else {
-            DisclosureGroup(isExpanded: $expanded) {
-                Text(raw)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, Theme.Spacing.sm)
-            } label: {
+        if tool.status == .error, let error = errorLine {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 header
+                Text(error)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Theme.status(.failed).opacity(0.85))
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                    .padding(.leading, Theme.Spacing.lg)
             }
+        } else {
+            header
         }
+    }
+
+    /// The failed tool's honest reason (bounded by the reducer upstream).
+    private var errorLine: String? {
+        let detail = (tool.detail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !detail.isEmpty { return detail }
+        if let code = tool.exitCode, code != 0 { return "exit \(code)" }
+        return nil
     }
 
     private var header: some View {
@@ -150,12 +163,6 @@ struct ToolRow: View {
         case "search": return "magnifyingglass"
         default: return "wrench.and.screwdriver"
         }
-    }
-
-    /// Expanded raw material: the untruncated-in-UI detail (result summary /
-    /// error), selectable. Empty = the row has nothing beyond its header.
-    private var rawDetail: String {
-        [tool.detail].compactMap { $0 }.joined(separator: "\n")
     }
 
     private var statusGlyph: String {
