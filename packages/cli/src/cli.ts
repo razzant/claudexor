@@ -393,6 +393,7 @@ async function orchestrate(
       "claudexor: --portfolio was removed in v2; use --routing-goal auto|quality|economy",
     );
   }
+  const credentialProfileId = flagStr(args, "profile");
   const routingGoalRaw = flagStr(args, "routing-goal");
   const routingGoal = routingGoalRaw !== undefined ? RoutingGoal.safeParse(routingGoalRaw) : null;
   if (routingGoalRaw !== undefined && !routingGoal?.success) {
@@ -521,6 +522,7 @@ async function orchestrate(
     tests,
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
+    credentialProfileId,
     maxToolCalls,
     reviewerPanel: resolvedReviewerPanel,
     reviewerModels: resolvedReviewerModels,
@@ -555,6 +557,7 @@ interface DaemonRunParams {
   tests: TestCommandInvocation[] | undefined;
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
+  credentialProfileId: string | undefined;
   maxToolCalls?: number;
   reviewerPanel: ControlReviewerPanelEntry[] | undefined;
   reviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
@@ -672,6 +675,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.resolvedHarnesses ? { harnesses: p.resolvedHarnesses } : {}),
     ...(p.resolvedPrimaryHarness ? { primaryHarness: p.resolvedPrimaryHarness } : {}),
     ...(p.routingGoal ? { routingGoal: p.routingGoal } : {}),
+    ...(p.credentialProfileId ? { credentialProfileId: p.credentialProfileId } : {}),
     ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
     ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),
     ...(flagBool(args, "until-clean") ? { untilClean: true } : {}),

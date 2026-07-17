@@ -130,6 +130,8 @@ const CLI_ONLY_EXEMPT = {
     "models-subcommand credential-route filter (read-only listing), not a run-control knob; MCP has no models tool today",
   "max-turns":
     "per-run turn cap; embedder contract is CLI/HTTP-first, MCP exposure deferred (DT2.1-1)",
+  profile:
+    "per-run credential profile (INV-135); embedder contract is CLI/HTTP-first, MCP exposure deferred with the other run knobs (DT2.1-1)",
   "prompt-file":
     "terminal input plumbing (file/stdin prompt sources); MCP callers pass the prompt inline",
   thread:

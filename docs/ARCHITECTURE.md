@@ -365,7 +365,7 @@ created under; resume never crosses profiles. `claudexor profiles login
 interactively, scoped to the profile dir.
 
 Selection precedence is turn > thread-sticky > engine default: a turn's
-explicit `credentialProfileId` beats the thread's durable
+explicit `credentialProfileId` (CLI `--profile`) beats the thread's durable
 `credential_profile_id` (PATCH /v2/threads/:id), and null means the default
 credential ladder. Each harness may declare ONE typed `profile_policy`
 (`limit_action: fail|ask|rotate`, priority-ordered `rotation_eligible`,

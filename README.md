@@ -178,6 +178,7 @@ dir or the secret store.
 claudexor profiles                         # registry + per-profile doctor readiness
 claudexor profiles login claude work       # the vendor's own login, scoped to the profile dir
 claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
+claudexor agent "fix the parser" --profile work   # explicit per-run selection
 ```
 
 Selection is turn > thread-sticky > engine default, and an explicit profile is

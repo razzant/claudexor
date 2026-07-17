@@ -42,6 +42,7 @@ export const RUN_FLAGS: readonly string[] = [
   "effort",
   "portfolio",
   "routing-goal",
+  "profile",
   "in-place",
   "spec",
   "instructions",
@@ -158,6 +159,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("primary-harness", "<id>", "Bias single-route modes and first candidate choice"),
   valueFlag("portfolio", "<id>", "Removed in v2; always errors (use --routing-goal)"),
   valueFlag("routing-goal", "<goal>", "Routing goal: auto|quality|economy"),
+  valueFlag(
+    "profile",
+    "<profile-id>",
+    "Credential profile for this run (INV-135); unknown/disabled ids refuse, never default",
+  ),
   booleanFlag("refresh", "Refresh vendor-owned quota sources before reading"),
   booleanFlag(
     "in-place",
