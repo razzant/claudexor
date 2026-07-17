@@ -405,9 +405,9 @@ struct AppModelRefreshTests {
 
     @MainActor
     @Test func authModeLabelSpeaksSubscriptionApiKeyAndDegradesHonestly() {
-        #expect(TaskDetailView.authModeLabel("local_session") == "Subscription")
-        #expect(TaskDetailView.authModeLabel("api_key") == "API key")
-        #expect(TaskDetailView.authModeLabel("future_mode") == "Future Mode")
+        #expect(RunFacts.authModeLabel("local_session") == "Subscription")
+        #expect(RunFacts.authModeLabel("api_key") == "API key")
+        #expect(RunFacts.authModeLabel("future_mode") == "Future Mode")
     }
 
     @Test func quotaDatesParseFractionalIsoBeforePlainIso() {

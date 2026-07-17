@@ -53,19 +53,12 @@ enum OutcomePresentation {
             facts.append((status.label, .neutral))
         }
 
-        switch result?.applyState {
-        case "applied":
-            facts.append((result?.adopted == true ? "Winner applied" : "Applied", .success))
-        case "applied_review_blocked":
-            // BOTH facts, always — never one victorious "Applied".
-            facts.append(("Applied", .success))
-            facts.append(("review blocked", .warning))
-        case "reverted":
-            facts.append(("Reverted", .neutral))
-        default:
-            if result?.kind == "patch", result?.adopted == true {
-                facts.append(("Winner adopted", .success))
-            }
+        // The ONE apply-state mapper (RunFacts, W4.5) — the detail header and
+        // this line can no longer drift vocabularies.
+        if let apply = RunFacts.applyFact(state: result?.applyState, adopted: result?.adopted == true) {
+            facts.append((apply.text, apply.tone))
+        } else if result?.kind == "patch", result?.adopted == true {
+            facts.append(("Winner adopted", .success))
         }
 
         // Review gate — only when the apply state has not already voiced it.

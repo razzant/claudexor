@@ -16,6 +16,7 @@ struct TaskDetailView: View {
     @State private var tab: Tab = .answer
     @State private var verbosity: Verbosity = .normal
     @State private var userSelectedTab = false
+    @State private var detailsExpanded = false
     /// True while a Revert request is in flight; the server owns the outcome.
     @State private var reverting = false
     /// Honest revert refusal (e.g. the tree diverged since the turn). nil => none.
@@ -128,70 +129,17 @@ struct TaskDetailView: View {
                              if task.isFinalizing { FinalizingPill() } else { StatusPill(status: task.status) }
                          }))
 
-            FlowLayout(spacing: Theme.Spacing.md) {
+            // W4.5: a PRIMARY row of 3-4 facts (route / apply / attention +
+            // budget), composed from the one facts owner. Everything else
+            // lives behind Details — the header no longer retells the card.
+            HStack(spacing: Theme.Spacing.md) {
                 ProvenanceTag(isLive: task.isLive)
-                Label(task.mode.label, systemImage: task.mode.glyph).font(.caption).foregroundStyle(.secondary)
-                if let spec = task.specTitle {
-                    Label(spec, systemImage: "doc.text.fill").font(.caption).foregroundStyle(Theme.accent)
-                }
                 RouteProofBadge(proof: task.routeProof)
                     .help(task.observedModel.map { "Observed model: \($0)" } ?? "No model identity was disclosed by the harness stream.")
-                // W18: the auth route ACTUALLY taken (route receipt, INV-061
-                // disclosure) next to the proof badge; the tooltip carries the
-                // requested preference, source, and the typed reason.
-                if let route = task.authRoute, let effective = route.effective, effective != "unknown" {
-                    Label(Self.authModeLabel(effective), systemImage: "person.badge.key")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help("Auth route taken: \(Self.authModeLabel(effective)). Requested: \(route.requested)\(route.source.map { " · source: \($0)" } ?? "") · reason: \(route.reason).")
+                ForEach(RunFacts.headerPrimary(task)) { fact in
+                    factLabel(fact)
                 }
-                // W20: the typed requested-vs-observed model mismatch from the
-                // route receipt (a vendor downgrade must be visible, never quiet).
-                if let mismatch = task.authRoute?.modelMismatch {
-                    Label("\(mismatch.observed) ≠ \(mismatch.requested)", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.orange)
-                        .help("The vendor served \(mismatch.observed) instead of the requested \(mismatch.requested) on the deciding attempt.")
-                }
-                if task.waitingOnUser {
-                    Label("Needs your answer", systemImage: "questionmark.bubble.fill")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(Theme.status(.needsReview))
-                        .help("The harness asked a question; the run is waiting for you (it declines benignly on timeout).")
-                }
-                if let access = task.accessLabel {
-                    Label(access, systemImage: "lock.shield")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .help("Access profile the engine enforced (requested vs effective).")
-                }
-                // Honest apply-state: applied / applied · review blocked / reverted.
-                // Never a green "Succeeded" next to a review-blocked apply.
-                if let (text, glyph, tint) = Self.applyStateBadge(task.applyState) {
-                    Label(text, systemImage: glyph)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(tint)
-                        .help("Honest application state of this turn's in-place change.")
-                }
-                if let outputReady = task.outputReadyState, outputReady != "ready" {
-                    // Honest output state; the "ready" case is the norm and stays quiet.
-                    Label(Self.outputReadyLabel(outputReady), systemImage: outputReady == "diagnostic" ? "exclamationmark.triangle" : "clock")
-                        .font(.caption)
-                        .foregroundStyle(outputReady == "diagnostic" ? Theme.status(.failed) : .secondary)
-                        .help("Output ready state from Control API.")
-                }
-                if let web = task.webEvidenceStatus, web != "none" {
-                    Label(Self.webEvidenceLabel(web), systemImage: Self.webEvidenceGlyph(web))
-                        .font(.caption)
-                        .foregroundStyle(Self.webEvidenceColor(web))
-                        .help(task.webEvidenceDetail ?? "Web evidence status.")
-                }
-                if let browser = task.browserRequirementDetail {
-                    Label(browser, systemImage: "globe")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .help(browser)
-                }
-                ForEach(task.harnesses) { HarnessChip(family: $0) }
+                Spacer(minLength: Theme.Spacing.md)
                 // Live-first spend: the streaming box while the run is live
                 // (per-run invalidation), the task snapshot once terminal.
                 let spend = model.spendDisplay(task)
@@ -204,11 +152,29 @@ struct TaskDetailView: View {
                     .help("Request cancel for the active harness process.")
                 }
             }
-
+            DisclosureGroup(isExpanded: $detailsExpanded) {
+                FlowLayout(spacing: Theme.Spacing.md) {
+                    ForEach(RunFacts.headerDetails(task)) { fact in
+                        factLabel(fact)
+                    }
+                    ForEach(task.harnesses) { HarnessChip(family: $0) }
+                }
+                .padding(.top, Theme.Spacing.sm)
+            } label: {
+                Text("Details").font(.caption).foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, Theme.Spacing.xxl)
         .padding(.top, Theme.Spacing.xl)
         .padding(.bottom, Theme.Spacing.md)
+    }
+
+    /// ONE renderer for a RunFacts fact (icon+text+tone+help) — layout-free.
+    private func factLabel(_ fact: RunFacts.Fact) -> some View {
+        Label(fact.text, systemImage: fact.glyph ?? "circle")
+            .font(fact.tone == .neutral ? .caption : .caption.weight(.medium))
+            .foregroundStyle(fact.tone == .neutral ? AnyShapeStyle(.secondary) : AnyShapeStyle(fact.tone.color))
+            .help(fact.help ?? fact.text)
     }
 
     // MARK: Tab bar (solid segmented; horizontally scrollable so it never forces a min)

@@ -290,7 +290,7 @@ struct TurnCard: View {
                             .foregroundStyle(Theme.status(.failed))
                     }
                     if let route = run.authRoute, let effective = route.effective, effective != "unknown" {
-                        Text("route: \(TaskDetailView.authModeLabel(effective))")
+                        Text("route: \(RunFacts.authModeLabel(effective))")
                             .font(.caption2).foregroundStyle(.secondary)
                             .help("Auth route this turn ran under — requested: \(route.requested), reason: \(route.reason).")
                     }

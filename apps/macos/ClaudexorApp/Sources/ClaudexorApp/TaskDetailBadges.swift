@@ -9,65 +9,6 @@ import ClaudexorKit
 // because their user now lives in another file.
 
 extension TaskDetailView {
-    static func outputReadyLabel(_ state: String) -> String {
-        switch state {
-        case "pending": return "Output pending"
-        case "finalizing": return "Output finalizing"
-        case "diagnostic": return "Diagnostic output"
-        case "ready": return "Output ready"
-        default: return state
-        }
-    }
-
-    /// Honest apply-state badge mapping (shared shape across detail + chat surfaces).
-    /// nil => not_applied/unknown: render nothing (envelope-only, plan/answer, no change).
-    static func applyStateBadge(_ state: String) -> (String, String, Color)? {
-        switch state {
-        case "applied": return ("Applied", "checkmark.seal.fill", Theme.status(.succeeded))
-        case "applied_review_blocked": return ("Applied · review blocked", "exclamationmark.triangle.fill", Theme.status(.blocked))
-        case "reverted": return ("Reverted", "arrow.uturn.backward.circle", .secondary)
-        default: return nil
-        }
-    }
-
-    static func webEvidenceLabel(_ status: String) -> String {
-        switch status {
-        case "satisfied": return "Web verified"
-        case "failed": return "Web failed"
-        case "attempted": return "Web attempted"
-        case "unverified": return "Web unverified"
-        default: return status
-        }
-    }
-
-    static func webEvidenceGlyph(_ status: String) -> String {
-        switch status {
-        case "satisfied": return "network"
-        case "failed": return "exclamationmark.icloud"
-        case "unverified": return "questionmark.diamond" // a policy gap, not a benign attempt
-        default: return "icloud"
-        }
-    }
-
-    /// Wire `AuthMode` (the route a run actually executed under) -> label.
-    /// Distinct vocabulary from `credential_route` (see humanizeCredentialRoute).
-    static func authModeLabel(_ mode: String) -> String {
-        switch mode {
-        case "local_session": return "Subscription"
-        case "api_key": return "API key"
-        default: return mode.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-
-    static func webEvidenceColor(_ status: String) -> Color {
-        switch status {
-        case "satisfied": return Theme.status(.succeeded)
-        case "failed": return Theme.status(.failed)
-        case "unverified": return Theme.status(.blocked)
-        default: return .secondary
-        }
-    }
-
     func reviewVerdictText(_ verdict: ReviewVerdict) -> String {
         switch verdict {
         case .clean: return "Verified final review clean."

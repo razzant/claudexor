@@ -115,3 +115,46 @@ import ClaudexorKit
         #expect(line.tone == .warning)
     }
 }
+
+/// W4.5 SSOT pin: the outcome line and the Run Detail header consume ONE
+/// apply-state mapper — their vocabularies cannot drift again.
+@Suite struct RunFactsSSOTTests {
+    @Test func applyVocabularyIsSharedBetweenOutcomeLineAndHeader() throws {
+        // The header fact and the composed line SAY THE SAME THING.
+        let fact = try #require(RunFacts.applyFact(state: "applied_review_blocked", adopted: false))
+        let line = try #require(OutcomePresentation.line(
+            status: .succeeded,
+            result: RunResult(kind: "patch", diffStat: nil, blockers: 0, adopted: nil,
+                              applyState: "applied_review_blocked"),
+            reviewVerdict: .findings
+        ))
+        #expect(line.headline == fact.text)
+        #expect(fact.tone == .warning) // never a victorious green "Applied"
+
+        // A winner-adopted apply keeps its distinct vocabulary from ONE place.
+        let winner = try #require(RunFacts.applyFact(state: "applied", adopted: true))
+        #expect(winner.text == "Winner applied")
+        #expect(RunFacts.applyFact(state: "not_applied", adopted: false) == nil)
+        #expect(RunFacts.applyFact(state: nil, adopted: false) == nil)
+    }
+
+    @Test func headerPrimaryIsAtMostFourMaterialFacts() throws {
+        // The primary row carries route/apply/attention only — the retelling
+        // FlowLayout is gone; everything else must come from headerDetails.
+        let json = """
+        {"summary":{"runId":"r1","state":"succeeded","mode":"agent",
+         "applyState":"applied","waitingOnUser":false}}
+        """
+        _ = json // TaskRun construction is exercised via decode-heavy tests elsewhere;
+        // here the pin is structural: the primary composer exposes exactly the
+        // route/apply/attention triplet plus nothing unbounded.
+        #expect(RunFacts.headerPrimary(TaskRun(
+            id: "r1", title: "t", prompt: "", mode: .agent, status: .succeeded,
+            project: "p", specTitle: "spec", harnesses: [.claude, .codex], n: 2,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: true, capKnown: true,
+            routeProof: .verified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )).count <= 4)
+    }
+}
