@@ -64,9 +64,10 @@ fixtures:
       final_source: "result"
       final_is_last_message: true
       # The vendor sends PROSE ("rate_limit_error: Number of request tokens
-      # has exceeded..."), not the bare label the mapper expects, so the
-      # category collapses to "unknown". Declared as the CURRENT truth: a
-      # mapper that learns to read the prose must update this deliberately.
+      # has exceeded..."). Since Ф5 the mapper classifies that prose onto the
+      # documented categories (bare labels still accepted; unrecognized still
+      # collapses to "unknown") — this declaration moved "unknown" →
+      # "rate_limit" deliberately with that change.
       retry_class: "rate_limit"
       thinking_events: 0
       delta_messages: 0

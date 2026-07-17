@@ -96,23 +96,29 @@ describe("awaitDaemonTermination", () => {
       startToken: "linux:555555",
       processGroupId: 5151,
     };
+    // Release-wave hardening: a takeover proves OWNERSHIP moved, not that the
+    // old daemon died. The loop keeps escalating against the OLD pid only —
+    // never the replacement — and reports exit only once the old pid is gone.
+    const kills: Array<[number, string]> = [];
+    let oldAlive = true;
     const result = await awaitDaemonTermination(
       socketPath,
       { deadlineMs: 2_000, killAfterMs: 500, pollMs: 100 },
       deps({
-        // Both processes are alive: the old one hands the lease over during
-        // the first poll, and the replacement keeps running.
-        isAlive: () => {
+        isAlive: (pid) => {
           write({ pid: 5151, token: "new", identity: replacement });
-          return true;
+          return pid === 4242 ? oldAlive : true;
         },
         read: (pid) => (pid === 5151 ? replacement : IDENTITY),
-        kill: (pid) => {
-          throw new Error(`must not signal pid ${pid}`);
+        kill: (pid, signal) => {
+          if (pid === 5151) throw new Error("must not signal the replacement");
+          kills.push([pid, signal]);
+          if (signal === "SIGKILL") oldAlive = false;
         },
       }),
     );
-    expect(result).toMatchObject({ outcome: "exited" });
+    expect(kills.every(([pid]) => pid === 4242)).toBe(true);
+    expect(result).toMatchObject({ outcome: "killed" });
     expect(result.detail).toContain("5151"); // discloses who holds it now
   });
 

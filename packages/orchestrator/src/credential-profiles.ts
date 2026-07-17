@@ -47,6 +47,9 @@ export function profileHeadroomBreach(
   threshold: number,
 ): HeadroomBreach | null {
   for (const snapshot of snapshots) {
+    // FRESH evidence only (release wave tier1 #3): a stale or unknown reading
+    // must never breach headroom, rotate a profile away, or fail selection.
+    if (snapshot.freshness !== "fresh") continue;
     if (snapshot.subject.harness !== harnessId) continue;
     if ((snapshot.subject.subject_id ?? null) !== profileId) continue;
     for (const constraint of snapshot.constraints) {
@@ -147,6 +150,16 @@ export function preflightCredentialProfile(args: {
     threshold: breach.threshold,
     resets_at: breach.resets_at,
   });
+  if (policy.limit_action === "fail") {
+    // The documented FAIL action fails (release wave tier1 #4): a FRESH breach
+    // under fail refuses before spawn with the evidence, instead of silently
+    // proceeding into a vendor rejection.
+    throw new Error(
+      `credential profile "${profile.profile_id}" (${harnessId}) is over its headroom threshold ` +
+        `(${breach.constraint_id} at ${Math.round(breach.used_ratio * 100)}% >= ${Math.round(breach.threshold * 100)}%; ` +
+        `limit_action=fail${breach.resets_at ? `; resets ${breach.resets_at}` : ""})`,
+    );
+  }
   if (policy.limit_action !== "rotate") return profile;
   const next = nextEligibleProfile(registry, harnessId, policy, profile.profile_id, snapshots);
   if (!next) return profile;

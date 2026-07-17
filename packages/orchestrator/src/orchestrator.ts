@@ -316,6 +316,9 @@ export interface RunInput {
     harnessId: string,
     nativeSessionId: string,
     observedModel?: string | null,
+    /** The EFFECTIVE profile the session was created under (adapter-stamped;
+     * rotation makes it differ from the requested id) — INV-135 cache truth. */
+    profileId?: string | null,
   ) => void;
   /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
   onEvent?: (event: RunEvent) => void;
@@ -883,7 +886,12 @@ export class Orchestrator {
     const nid = ev.payload?.["native_session_id"];
     if (typeof nid === "string" && nid.length > 0) {
       try {
-        input.onSessionObserved(harnessId, nid, ev.observed_model ?? null);
+        input.onSessionObserved(
+          harnessId,
+          nid,
+          ev.observed_model ?? null,
+          ev.credential_profile_id ?? null,
+        );
       } catch {
         /* observer errors must never fail the run */
       }

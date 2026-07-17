@@ -232,13 +232,17 @@ async function main(): Promise<void> {
             executionRoot,
             resumeSessions: threadId ? threads.resumeMap(threadId, requestedProfileId) : undefined,
             onSessionObserved: threadId
-              ? (harnessId, nativeSessionId, observedModel) =>
+              ? (harnessId, nativeSessionId, observedModel, profileId) =>
+                  // The EVENT's profile is the cache truth (INV-135): rotation
+                  // makes the effective profile differ from the requested one,
+                  // and a mislabeled session would resume under the wrong
+                  // account on the next turn.
                   threads.recordSession(
                     threadId,
                     harnessId,
                     nativeSessionId,
                     observedModel,
-                    requestedProfileId,
+                    profileId ?? null,
                   )
               : undefined,
             authPreference: p.authPreference,

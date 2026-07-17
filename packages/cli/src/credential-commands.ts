@@ -64,6 +64,16 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
         `profile "${profileId}" is ${profile.credential_kind}; only config_dir_login profiles have a login flow (store its secret instead)`,
       );
     }
+    // Only harnesses with a RELOCATABLE config-dir login may profile-login
+    // (release wave tier1 #1): cursor's native login is a singleton keychain
+    // store — running it here would mutate the operator's real credentials
+    // while claiming profile isolation.
+    if (harness !== "claude" && harness !== "codex") {
+      return printUsageError(
+        json,
+        `harness "${harness}" has no isolated config-dir login; only claude and codex profiles can log in here`,
+      );
+    }
     const spec = nativeLoginSpec(harness);
     if (!spec) {
       return printUsageError(json, `no native login command for harness "${harness}"`);

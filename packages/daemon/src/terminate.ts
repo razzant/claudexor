@@ -81,12 +81,17 @@ export async function awaitDaemonTermination(
     // a REPLACEMENT took over. The one we were asked to stop is gone — confirm
     // that, and never touch the newcomer.
     if (current.token !== owner.token || current.pid !== owner.pid) {
-      return {
-        outcome: killed ? "killed" : "exited",
-        detail: `daemon pid ${owner.pid} released its lease (now held by pid ${current.pid})`,
-      };
-    }
-    if (!isAlive(owner.pid)) {
+      // Takeover proves OWNERSHIP changed, not that the old daemon died
+      // (release wave tier1 #2): confirm the pinned pid is actually gone
+      // before reporting exit; a still-alive old process keeps this loop
+      // (and its escalation) on the case.
+      if (!isAlive(owner.pid)) {
+        return {
+          outcome: killed ? "killed" : "exited",
+          detail: `daemon pid ${owner.pid} released its lease (now held by pid ${current.pid})`,
+        };
+      }
+    } else if (!isAlive(owner.pid)) {
       return {
         outcome: killed ? "killed" : "exited",
         detail: `daemon pid ${owner.pid} is gone (stale lease left behind)`,

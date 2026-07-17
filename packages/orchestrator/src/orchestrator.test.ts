@@ -1656,6 +1656,7 @@ describe("Orchestrator", () => {
             session_id: spec.session_id,
             ts,
             credential_profile_id: spec.credential_profile?.profile_id,
+            payload: { native_session_id: `native-${spawns.length}` },
           };
           if (spawns.length === 1) {
             // The TYPED vendor-limit signal, then a terminating error with an
@@ -1962,7 +1963,7 @@ describe("Orchestrator", () => {
     }
   });
 
-  it("limit_action fail keeps the spent profile and only records the typed breach (W5.4)", async () => {
+  it("limit_action fail REFUSES a fresh headroom breach before spawn (W5.4 + release wave)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-nofail-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
@@ -2032,10 +2033,10 @@ describe("Orchestrator", () => {
         credentialProfileId: "a",
         onEvent: (event) => events.push(event.type),
       });
-      expect(res.status).toBe("success");
-      // Default policy = fail: the spent profile still runs (vendor evidence
-      // decides), the typed breach is on the record, rotation never happens.
-      expect(seen).toEqual(["a"]);
+      // Default policy = fail FAILS (release wave tier1 #4): a FRESH breach
+      // refuses before spawn with typed evidence; no adapter ever launches.
+      expect(res.status).toBe("failed");
+      expect(seen).toEqual([]);
       expect(events).toContain("route.profile.headroom_exceeded");
       expect(events).not.toContain("route.profile.rotated");
     } finally {

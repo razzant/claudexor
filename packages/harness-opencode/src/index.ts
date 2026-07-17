@@ -336,6 +336,19 @@ async function* runOpenCode(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
     env,
     label: "opencode",
     redact: redactSecrets,
-    parseEvent: parseOpenCodeEvent,
+    parseEvent: (obj, sessionId) => {
+      const out = parseOpenCodeEvent(obj, sessionId);
+      if (out) {
+        // Route evidence (release wave tier1 #5): opencode always runs the
+        // managed key route; profiled runs additionally stamp their profile
+        // so the attempt's auth receipt stays attributable.
+        for (const ev of out) {
+          ev.credential_route = "managed_api_key";
+          ev.credential_source = "api_key_env";
+          if (profile) ev.credential_profile_id = profile.profile_id;
+        }
+      }
+      return out;
+    },
   });
 }

@@ -273,6 +273,14 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     stability: "stable",
   },
   {
+    id: "profiles",
+    usageArgs: "[list | login <harness> <profile-id>]",
+    summary: "Credential profiles: registry + doctor readiness, and per-profile vendor login",
+    flags: ["json"],
+    mutability: "ops",
+    stability: "stable",
+  },
+  {
     id: "mcp",
     usageArgs: "serve",
     summary: "Expose Claudexor as an MCP server (stdio)",

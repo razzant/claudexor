@@ -1,6 +1,6 @@
 # claudexor-benchmark-runner
 
-## 2.0.3
+## 2.1.0
 
 ### Patch Changes
 
