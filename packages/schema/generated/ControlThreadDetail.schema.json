@@ -435,7 +435,7 @@
                           "number",
                           "null"
                         ],
-                        "description": "Settled spend in USD; null when unknown."
+                        "description": "Settled cash in USD; null when unknown."
                       },
                       "outputReadyState": {
                         "type": "string",

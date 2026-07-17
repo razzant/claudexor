@@ -2190,7 +2190,7 @@ export class Orchestrator {
 
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
-    const ledger = this.rootLedger(input, contract);
+    const ledger = this.rootLedger(input, contract, log);
     announce?.({
       log,
       store,
@@ -3835,7 +3835,7 @@ export class Orchestrator {
     const execRoot = this.execRootOf(input);
     const wsm = new WorkspaceManager(execRoot);
     const readiness = new ReadinessLedger();
-    const ledger = this.rootLedger(input, contract);
+    const ledger = this.rootLedger(input, contract, log);
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode, prompt: redactSecrets(input.prompt) });
@@ -4713,7 +4713,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: "plan", prompt: redactSecrets(input.prompt) });
-    const ledger = this.rootLedger(input, contract);
+    const ledger = this.rootLedger(input, contract, log);
     announce?.({
       log,
       store,
@@ -5388,8 +5388,22 @@ export class Orchestrator {
     return inputBudget ?? this.deps.paidBudget ?? cfg.global.budget.paid_budget_per_run;
   }
 
-  private rootLedger(input: RunInput, contract: TaskContract): BudgetLedger {
-    const ledger = input.budgetLedger ?? new BudgetLedger(contract.budget.paid_budget);
+  private rootLedger(input: RunInput, contract: TaskContract, log: EventLog): BudgetLedger {
+    // A passed-in ledger (orchestrate sub-runs) keeps its OWNER's cash
+    // disclosure — the parent run owns the budget, so its event log gets the
+    // budget.cash events. A fresh root ledger discloses into THIS run's log:
+    // the ledger is the one owner of the cash fact (subscription-entitled
+    // work settles to 0 there), and the UI renders `budget.cash` verbatim —
+    // never inferring money from route labels (W4.3 sol #15).
+    const ledger =
+      input.budgetLedger ??
+      new BudgetLedger(contract.budget.paid_budget, undefined, {
+        onCashSettled: (cashSpendUsd, valuationUsd) =>
+          log.emit("budget.cash", {
+            cash_spend_usd: cashSpendUsd,
+            valuation_usd: valuationUsd,
+          }),
+      });
     for (const snapshot of this.deps.quotaSnapshots?.() ?? []) {
       ledger.observeQuotaSnapshot(snapshot);
     }
@@ -5488,7 +5502,7 @@ export class Orchestrator {
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
     safeInvoke(input.onRunStart, { runId, taskId, runDir: paths.root });
     log.emit("run.created", { mode: opts.mode, prompt: redactSecrets(prompt) });
-    const ledger = this.rootLedger(input, contract);
+    const ledger = this.rootLedger(input, contract, log);
     announce?.({
       log,
       store,

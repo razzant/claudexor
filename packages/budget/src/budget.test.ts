@@ -102,6 +102,48 @@ describe("BudgetLedger", () => {
     expect(zero.valuation()).toBe(3);
   });
 
+  it("discloses CUMULATIVE cash after every settle — subscription work discloses 0 (W4.3)", () => {
+    // The ledger is the one owner of the cash fact: consumers (run events →
+    // UI) render what it discloses and never infer money from route labels.
+    const disclosed: Array<{ cash: number; valuation: number }> = [];
+    const led = new BudgetLedger({ kind: "unlimited" }, undefined, {
+      onCashSettled: (cash, valuation) => disclosed.push({ cash, valuation }),
+    });
+    const entitled = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "subscription",
+      cost: routeCostEvidence({
+        billing: "subscription_entitlement",
+        knowledge: "estimated",
+        source: "entitlement-receipt",
+        provenance: ["receipt:subscription"],
+        estimatedUsd: 3,
+      }),
+    });
+    led.settle(entitled.lease!.lease_id, {
+      knowledge: "estimated",
+      source: "token-valuation",
+      provenance: ["usage:tokens"],
+      cashUsd: 3,
+    });
+    // Vendor priced the subscription work at $3 — the CASH fact is still $0.
+    expect(disclosed).toEqual([{ cash: 0, valuation: 3 }]);
+
+    const paid = led.reserve({
+      taskId: "t",
+      intent: "implement",
+      harnessId: "paid",
+      cost: metered(0.5),
+    });
+    led.settle(paid.lease!.lease_id, exactSettlement(0.4));
+    // Cumulative, not per-settle: the second disclosure carries the total.
+    expect(disclosed).toEqual([
+      { cash: 0, valuation: 3 },
+      { cash: 0.4, valuation: 3 },
+    ]);
+  });
+
   it("settles native token estimates as valuation while API-key estimates remain cash", async () => {
     const { attemptUsageCostSettlement } = await import("./ledger.js");
     const native = new BudgetLedger({ kind: "finite", maxUsd: 1 });

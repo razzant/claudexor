@@ -40,12 +40,13 @@ extension AppModel {
                 guard let self, let client = self.client else { break }
                 let resumeFrom = self.lastEventIds[runId]
                 if resumeFrom == nil {
-                    // Full replay rebuilds spend from budget.observation
-                    // increments: seed from replay OR summary, never
-                    // both — a mid-run first attach used to double the money.
+                    // Cash-so-far is a KNOWN engine fact from the first
+                    // moment: $0.00 until a settle discloses otherwise
+                    // (budget.cash carries the CUMULATIVE ledger truth, so
+                    // replay/reattach cannot double the money — last wins).
                     let box = self.ensureLiveBox(runId)
                     box.spendUsd = 0
-                    box.spendKnown = false
+                    box.spendKnown = true
                 }
                 do {
                     for try await env in client.events(runId: runId, lastEventId: resumeFrom) {
@@ -436,15 +437,15 @@ extension AppModel {
             box.appendActivity(ActivityEvent(.system, Self.pretty(type), at: .now))
             shouldLoadDetail = true
         } else if type.hasPrefix("budget.") {
-            if type == "budget.observation", let usd = payload["usd"]?.doubleValue {
-                // Observations are per-event INCREMENTS (live spend ticks up mid-run).
-                box.spendUsd += usd
+            if type == "budget.cash", let cash = payload["cash_spend_usd"]?.doubleValue {
+                // THE cash fact (W4.3): the budget ledger discloses cumulative
+                // real-money spend at every settle — subscription work settles
+                // to 0 there. Vendor cost ticks (budget.observation) are
+                // VALUATION and never move this number; the app renders the
+                // engine's cash truth verbatim, without route inference.
+                box.spendUsd = cash
                 box.spendKnown = true
-                if payload["estimated"]?.boolValue == true { box.spendEstimated = true }
-            } else if let spend = payload["spend_usd"]?.doubleValue ?? payload["cost_usd"]?.doubleValue {
-                box.spendUsd = spend
-                box.spendKnown = true
-                box.spendEstimated = payload["estimated"]?.boolValue ?? box.spendEstimated
+                box.spendEstimated = false
             }
             if let cap = payload["max_usd"]?.doubleValue, cap >= 0, cap != t.capUsd || !t.capKnown {
                 t.capUsd = cap

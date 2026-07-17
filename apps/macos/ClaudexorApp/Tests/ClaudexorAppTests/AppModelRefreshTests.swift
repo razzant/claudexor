@@ -338,14 +338,15 @@ struct AppModelRefreshTests {
         #expect(!model.fullAccessGranted(repoRoot: "/tmp/other"))
     }
 
-    /// Plain dollars are the metered api_key claim ONLY: an unknown or
-    /// not-yet-landed route must stay an estimate (sol review #4).
+    /// W4.3: the cash fact renders through ONE formatter — plain dollars,
+    /// $0.00 on subscription, sub-cent cash never reads as zero. The old
+    /// route-based "≈$" inference is gone (the ledger owns billing truth).
     @MainActor
-    @Test func spendPrefixReservesPlainDollarsForTheConfirmedKeyRoute() {
-        #expect(TurnCard.spendPrefix(route: "api_key") == "$")
-        #expect(TurnCard.spendPrefix(route: "local_session") == "≈$")
-        #expect(TurnCard.spendPrefix(route: nil) == "≈$")
-        #expect(TurnCard.spendPrefix(route: "future_route") == "≈$")
+    @Test func cashSpendFormatsThroughTheOneOwner() {
+        #expect(CashSpend.label(0) == "$0.00")
+        #expect(CashSpend.label(1.234) == "$1.23")
+        #expect(CashSpend.label(0.0043) == "$0.0043")
+        #expect(CashSpend.label(0.01) == "$0.01")
     }
 
     /// Per-turn auth route honesty (sol review #1): "Thread default" (empty)
@@ -703,18 +704,57 @@ struct AppModelRefreshTests {
 
         let load = Task { await model.loadRunDetail("run-delayed") }
         try await Task.sleep(for: .milliseconds(20))
+        // The CASH disclosure (W4.3): cumulative, last-wins — the replayed
+        // event is newer than the snapshot's spendUsd:1 and must overwrite it.
         model.ingestStreamEnvelope(BusEnvelope(
             seq: 11, kind: "budget",
             event: .object([
-                "type": .string("budget.observation"),
-                "payload": .object(["usd": .number(2)])
+                "type": .string("budget.cash"),
+                "payload": .object(["cash_spend_usd": .number(2)])
             ])
         ), to: "run-delayed")
         try await Task.sleep(for: .milliseconds(100))
         await load.value
 
-        #expect(model.liveBoxes["run-delayed"]?.spendUsd == 3)
+        #expect(model.liveBoxes["run-delayed"]?.spendUsd == 2)
         #expect(model.liveBoxes["run-delayed"]?.spendKnown == true)
+    }
+
+    /// W4.3: vendor cost ticks are VALUATION — they must never move the cash
+    /// display. Only the ledger's budget.cash disclosure does.
+    @MainActor
+    @Test func valuationObservationsNeverMoveTheCashFact() async throws {
+        let model = AppModel(
+            client: GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test"),
+            requestNotificationAuthorization: false)
+        model.liveTasks = [TaskRun(
+            id: "run-cash", title: "Run", prompt: "", mode: .agent, status: .running,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+        model.ingestStreamEnvelope(BusEnvelope(
+            seq: 1, kind: "budget",
+            event: .object([
+                "type": .string("budget.observation"),
+                "payload": .object(["usd": .number(2), "kind": .string("spend")])
+            ])
+        ), to: "run-cash")
+        try await Task.sleep(for: .milliseconds(150)) // past the coalesced flush
+        // A subscription run's vendor valuation ticked $2 — cash stays put.
+        #expect((model.liveBoxes["run-cash"]?.spendUsd ?? 0) == 0)
+        model.ingestStreamEnvelope(BusEnvelope(
+            seq: 2, kind: "budget",
+            event: .object([
+                "type": .string("budget.cash"),
+                "payload": .object(["cash_spend_usd": .number(0.4), "valuation_usd": .number(2)])
+            ])
+        ), to: "run-cash")
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(model.liveBoxes["run-cash"]?.spendUsd == 0.4)
+        #expect(model.liveBoxes["run-cash"]?.spendKnown == true)
     }
 
     @Test func winnerEvidenceSeparatesSelectionFromFinalReviewTruth() throws {

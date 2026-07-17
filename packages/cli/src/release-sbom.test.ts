@@ -7,6 +7,11 @@ import { describe, expect, it } from "vitest";
 
 const generator = resolve("scripts/generate-release-sbom.mjs");
 const nodeVersion = readFileSync(resolve(".node-version"), "utf8").trim();
+// The product version comes from the root SSOT — asserting a literal here
+// broke on every release bump without guarding anything.
+const rootVersion = (
+  JSON.parse(readFileSync(resolve("package.json"), "utf8")) as { version: string }
+).version;
 const browserVersion = "0.0.78";
 const licenses = {
   "Apache-2.0": [{ name: "@playwright/mcp", versions: [browserVersion], license: "Apache-2.0" }],
@@ -19,7 +24,7 @@ describe("release SPDX SBOM", () => {
     try {
       const document = generate(fixture.app);
       const product = document.packages.find((pkg: any) => pkg.name === "Claudexor");
-      expect(product).toMatchObject({ versionInfo: "2.0.0", licenseDeclared: "MIT" });
+      expect(product).toMatchObject({ versionInfo: rootVersion, licenseDeclared: "MIT" });
       expect(
         document.relationships.filter(
           (relationship: any) => relationship.relationshipType === "DESCRIBES",

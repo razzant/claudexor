@@ -204,7 +204,7 @@ struct BudgetMini: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 3) {
             HStack(spacing: 3) {
-                Text(spendKnown ? "\(spendEstimated ? "~" : "")\(String(format: "$%.4f", spend))" : "Unknown").font(.system(.caption, design: .monospaced))
+                Text(spendKnown ? "\(spendEstimated ? "~" : "")\(CashSpend.label(spend))" : "Unknown").font(.system(.caption, design: .monospaced))
                 Text("/").foregroundStyle(.tertiary)
                 Text(capUnlimited ? "Unlimited" : capKnown ? String(format: "$%.2f", cap) : "Unknown").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
             }
@@ -214,7 +214,7 @@ struct BudgetMini: View {
     }
 
     private var helpText: String {
-        let spendText = spendKnown ? "\(spendEstimated ? "Estimated " : "")spend \(String(format: "$%.4f", spend))" : "Spend is not verified yet"
+        let spendText = spendKnown ? "\(spendEstimated ? "Estimated " : "")spend \(CashSpend.label(spend))" : "Spend is not verified yet"
         let capText = capUnlimited ? "paid budget is unlimited" : capKnown ? "cap \(String(format: "$%.2f", cap))" : "cap is unknown"
         return "\(spendText); \(capText). Native provider quota is shown only when verified."
     }

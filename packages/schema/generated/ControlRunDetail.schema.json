@@ -354,7 +354,7 @@
                 "number",
                 "null"
               ],
-              "description": "Settled spend in USD; null when unknown."
+              "description": "Settled cash in USD; null when unknown."
             },
             "spendEstimated": {
               "type": "boolean",
@@ -1158,7 +1158,7 @@
                 "null"
               ],
               "default": null,
-              "description": "Spend so far in USD; null when unknown."
+              "description": "CASH spend so far in USD; null when unknown."
             },
             "remainingUsd": {
               "type": [

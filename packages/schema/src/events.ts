@@ -46,6 +46,7 @@ export const RunEventType = z
     "project.git.initialized",
     "budget.lease.created",
     "budget.observation",
+    "budget.cash",
     "policy.web.upgraded",
     "harness.started",
     "harness.event",

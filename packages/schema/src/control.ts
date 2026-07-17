@@ -593,7 +593,7 @@ export const ControlRunSummary = z
       .describe("Per-run protected-path approvals supplied."),
     n: z.number().int().optional().describe("Race width, when the run was a race."),
     paidBudget: PaidBudget.optional().describe("Explicit incremental-cash budget for the run."),
-    spendUsd: z.number().nullable().optional().describe("Settled spend in USD; null when unknown."),
+    spendUsd: z.number().nullable().optional().describe("Settled cash in USD; null when unknown."),
     spendEstimated: z
       .boolean()
       .optional()
@@ -765,7 +765,7 @@ export const ControlBudgetSnapshot = z
       .number()
       .nullable()
       .default(null)
-      .describe("Spend so far in USD; null when unknown."),
+      .describe("CASH spend so far in USD; null when unknown."),
     remainingUsd: z
       .number()
       .nullable()
@@ -1096,7 +1096,7 @@ export const ControlTurnRunCard = z
       .describe("Engine strategy flag on the mode, when any."),
     n: z.number().int().optional().describe("Race width, when the run was a race."),
     result: ControlRunResult.default({}),
-    spendUsd: z.number().nullable().optional().describe("Settled spend in USD; null when unknown."),
+    spendUsd: z.number().nullable().optional().describe("Settled cash in USD; null when unknown."),
     outputReadyState: OutputReadyState.default("pending"),
     waitingOnUser: z
       .boolean()

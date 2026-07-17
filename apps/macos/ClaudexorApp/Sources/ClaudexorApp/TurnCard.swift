@@ -92,20 +92,14 @@ struct TurnCard: View {
                             .help("The harness is retrying an API call (typed api_retry status).")
                     }
                     Text(run.mode.label).font(.caption).foregroundStyle(.secondary)
-                    // Live-first spend (the run's streaming box while live).
-                    // Subscription-routed compute is a VALUATION, not billed
-                    // cash (owner doctrine) — "≈" + hover help say so; only a
-                    // metered API route reads as plain dollars.
+                    // The engine's CASH fact (W4.3): $0.00 while the run stays
+                    // on subscription routes, real dollars once a paid API
+                    // route settles. No route inference, no valuation essay.
                     let spend = model.spendDisplay(run)
                     if spend.known {
-                        let route = run.authRoute?.effective
-                        Text(Self.spendPrefix(route: route) + String(format: "%.2f", spend.usd))
+                        Text(CashSpend.label(spend.usd))
                             .font(.caption).foregroundStyle(.secondary)
-                            .help(route == "local_session"
-                                  ? "Estimated compute valuation on the subscription route — nothing is billed to an API key."
-                                  : route == "api_key"
-                                      ? "Metered API spend on the key route."
-                                      : "Live spend estimate; the finished run's route badge shows how it was actually billed.")
+                            .help(CashSpend.help)
                     }
                     Spacer()
                     Button("Open run") {
@@ -425,12 +419,6 @@ struct TurnCard: View {
     /// A final answer long enough to start collapsed (chat stays scannable).
     static func isLongAnswer(_ answer: String) -> Bool {
         answer.count > 1200 || answer.filter { $0 == "\n" }.count > 14
-    }
-
-    /// Plain dollars = the METERED claim, reserved for a confirmed api_key
-    /// route; everything else is an estimate and carries "≈" (sol review #4).
-    static func spendPrefix(route: String?) -> String {
-        route == "api_key" ? "$" : "≈$"
     }
 
     private func applyBar(_ run: TaskRun) -> some View {

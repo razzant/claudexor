@@ -79,6 +79,16 @@ export class BudgetLedger {
   constructor(
     private readonly budget: PaidBudget = { kind: "unlimited" },
     private readonly thresholds: CircuitThresholds = { soft: 0.75, downgrade: 0.9, hard: 1 },
+    private readonly deps: {
+      /**
+       * Fires after every settle with the CUMULATIVE ledger truth. The ledger
+       * is the one owner of "how much real money this run has spent" —
+       * subscription-entitled work settles to cash 0 here (W4.3 sol #15), so
+       * consumers (run events → UI) render cash without inferring from route
+       * labels. Valuation rides along for telemetry, never for the cash fact.
+       */
+      onCashSettled?: (cashSpendUsd: number, valuationUsd: number) => void;
+    } = {},
   ) {}
 
   private outstandingHolds(): number {
@@ -188,6 +198,7 @@ export class BudgetLedger {
       if (!zeroCash && settlement.knowledge === "unknown") this.unverifiable = true;
       if (this.spendUsd > this.budget.maxUsd) this.overshot = true;
     }
+    this.deps.onCashSettled?.(this.spendUsd, this.valuationUsd);
   }
 
   cancel(leaseId: string): void {
