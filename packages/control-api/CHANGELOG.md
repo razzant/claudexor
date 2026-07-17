@@ -1,5 +1,38 @@
 # @claudexor/control-api
 
+## 2.1.0
+
+### Minor Changes
+
+- Claudexor 2.1.0: credential profiles (INV-135). Multiple subscriptions per
+  harness with isolated vendor config dirs and namespaced secret slots; strict
+  per-turn / thread-sticky selection with profile-isolated native-session
+  resume; per-profile doctor probes and proactive per-profile subscription
+  quota from the vendor oauth/usage endpoint; one typed profile policy per
+  harness with provenance-recorded rotation on typed vendor-limit evidence
+  only. Includes the unpublished 2.0.1 honest-engine and 2.0.2 simple-UI
+  passes.
+
+### Patch Changes
+
+- 0fc050b: Credential profiles (INV-135): durable non-secret `credential_profiles`
+  registry in the global config; the orchestrator resolves an explicit per-run
+  profile id ONCE and stamps the typed profile on every HarnessRunSpec; adapters
+  consume exactly the profile's transport (claude config-dir login / non-bare
+  token / key; codex scoped CODEX_HOME / scoped auth.json; cursor, opencode,
+  raw-api secret-ref keys) or refuse typed — never a fallback to default
+  credentials. Namespaced secret slots (`claude_oauth:<profile>`), per-profile
+  doctor probes (`GET /credential-profiles`, `claudexor profiles`), interactive
+  `claudexor profiles login`, profile-stamped route evidence, and
+  profile-isolated native-session resume.
+- Updated dependencies
+- Updated dependencies [0fc050b]
+  - @claudexor/schema@2.1.0
+  - @claudexor/secrets@2.1.0
+  - @claudexor/delivery@2.1.0
+  - @claudexor/event-log@2.1.0
+  - @claudexor/util@2.1.0
+
 ## 2.0.2
 
 ### Patch Changes

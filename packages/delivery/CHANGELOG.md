@@ -1,5 +1,18 @@
 # @claudexor/delivery
 
+## 2.1.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [0fc050b]
+  - @claudexor/schema@2.1.0
+  - @claudexor/core@2.1.0
+  - @claudexor/policy@2.1.0
+  - @claudexor/review@2.1.0
+  - @claudexor/workspace@2.1.0
+  - @claudexor/util@2.1.0
+
 ## 2.0.2
 
 ### Patch Changes

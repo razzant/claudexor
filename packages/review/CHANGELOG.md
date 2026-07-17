@@ -1,5 +1,17 @@
 # @claudexor/review
 
+## 2.1.0
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies [0fc050b]
+  - @claudexor/schema@2.1.0
+  - @claudexor/core@2.1.0
+  - @claudexor/config@2.1.0
+  - @claudexor/context@2.1.0
+  - @claudexor/util@2.1.0
+
 ## 2.0.2
 
 ### Patch Changes
