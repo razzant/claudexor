@@ -210,8 +210,11 @@ export async function refreshClaudeOauthUsageQuota(
       /* endpoint refusal = no snapshot; NEVER an auth-readiness signal */
     }
   }
-  if (snapshots.length === 0) {
-    throw new Error("Claude oauth/usage quota is not available (no logged-in subject responded)");
-  }
+  // Empty = this source simply has nothing (no logged-in claude subject, or a
+  // non-macOS host with no `security` keychain tool) — return [] like the
+  // sibling refreshers (codex/statusline) instead of throwing. The registry's
+  // refresh loop already reports "no source produced" when EVERY source is
+  // empty; a per-source throw here only added a noisy failure line and made
+  // this source the odd one out (round-21 #4).
   return snapshots;
 }

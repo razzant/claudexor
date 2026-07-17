@@ -73,10 +73,20 @@ export async function resolveCodexProfileRoute(
       return {
         refusal: `credential profile "${profile.profile_id}": secret "${profile.secret_ref ?? "(missing ref)"}" is not stored`,
       };
-    const tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
-    ensureCodexApiAuth({ CODEX_HOME: tempCodexHome }, true, key);
-    if (codexAuthModeAt(tempCodexHome) === "api_key")
-      return { route: "api_key", nativeEnv, tempCodexHome, key, refusal: null };
+    // The prefix rides the daemon's orphan-temp sweep allowlist
+    // (claudexor-ro-*), and any pre-flight THROW cleans the temp home before
+    // propagating — otherwise a failing ensureCodexApiAuth/codexAuthModeAt
+    // leaks the dir (round-21 #3). The success path hands tempCodexHome to
+    // the caller, which deletes it on run exit.
+    const tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-ro-codex-auth-"));
+    try {
+      ensureCodexApiAuth({ CODEX_HOME: tempCodexHome }, true, key);
+      if (codexAuthModeAt(tempCodexHome) === "api_key")
+        return { route: "api_key", nativeEnv, tempCodexHome, key, refusal: null };
+    } catch (err) {
+      rmSync(tempCodexHome, { recursive: true, force: true });
+      throw err;
+    }
     rmSync(tempCodexHome, { recursive: true, force: true });
     return {
       refusal: `credential profile "${profile.profile_id}": scoped auth.json could not be established`,

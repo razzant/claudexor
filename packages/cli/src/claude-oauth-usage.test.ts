@@ -3,6 +3,7 @@ import {
   claudeOauthKeychainItem,
   parseClaudeOauthCredential,
   parseClaudeOauthUsage,
+  refreshClaudeOauthUsageQuota,
 } from "./claude-oauth-usage.js";
 
 /** The EXACT response shape of the 2026-07-17 live experiment (max plan). */
@@ -72,5 +73,20 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     ).toEqual({ accessToken: "tok2", subscriptionType: "pro" });
     expect(parseClaudeOauthCredential("not json")).toBeNull();
     expect(parseClaudeOauthCredential(JSON.stringify({ refreshToken: "only" }))).toBeNull();
+  });
+
+  it("returns [] (never throws) when no subject responds — a source, not a gate (round-21 #4)", async () => {
+    // Default user / non-macOS: no credential is readable, so the refresher
+    // has nothing. It must return [] like its sibling sources, never throw
+    // (a throw only polluted the registry's aggregate failure line).
+    await expect(
+      refreshClaudeOauthUsageQuota({
+        readCredential: async () => null,
+        fetchUsage: async () => {
+          throw new Error("should not be called");
+        },
+        now: () => new Date("2026-07-18T00:00:00Z"),
+      }),
+    ).resolves.toEqual([]);
   });
 });

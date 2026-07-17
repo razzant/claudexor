@@ -295,6 +295,10 @@ describe("Codex strict profile routing (INV-135)", () => {
     expect(typeof home).toBe("string");
     if (typeof home === "string") {
       expect(home).not.toBe(defaultNativeCodexHome());
+      // The scoped auth home rides the daemon's orphan-temp sweep allowlist
+      // (claudexor-ro-*), so a leak on crash is eventually reclaimed
+      // (round-21 #3).
+      expect(home).toContain("claudexor-ro-codex-auth-");
       dirs.push(home);
     }
   });
