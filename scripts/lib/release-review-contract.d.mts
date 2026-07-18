@@ -12,6 +12,11 @@ export const TRIAD_ITEMS: readonly string[];
 export const SCOPE_ITEMS: readonly string[];
 export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION: 2;
 export const RELEASE_REVIEW_ATTESTATION_ALGORITHM: "Ed25519";
+export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION: 3;
+export const OWNER_REVIEW_PROTOCOL: "owner-fable-subagents-v1";
+export const OWNER_REVIEW_MIN_REVIEWS: 2;
+export const OWNER_REVIEW_MAX_ROUNDS: 3;
+export const OWNER_REVIEW_VERDICTS: readonly string[];
 
 export interface ChecklistFinding {
   item: string;
@@ -56,6 +61,15 @@ export function releaseReviewConcurrencyDigest(concurrency: any): string;
 export function verifyReleaseAttestationSignature(
   attestation: any,
   authority: any,
+  expectedSchemaVersion?: number,
+): { ok: boolean; reasons: string[] };
+export function validateFullGateEvidence(
+  gate: any,
+  expected: { candidateSha: string; candidateTree: string },
+): string[];
+export function validateOwnerReviewAttestationPayload(
+  payload: any,
+  expected: { candidateSha: string; candidateTree: string },
 ): { ok: boolean; reasons: string[] };
 export function validateReleaseAttestationPayload(
   payload: any,

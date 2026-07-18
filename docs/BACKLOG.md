@@ -6,6 +6,18 @@ Silent drops are the failure mode this file exists to prevent — the 2.1.0
 audit found ten Ф2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
+## Release machinery retirement (owner decision, 2.1.0 release)
+
+- Delete the retired six-slot release-review machinery after v2.1.0 ships:
+  `scripts/seal-release-review-attestation.mjs`,
+  `scripts/lib/release-review-attestation.mjs` (+ `.d.mts`),
+  `scripts/triad-scope-review.mjs` / `scripts/lib/openrouter-panel.mjs`,
+  the v2 branch of `validateReleaseAttestation`
+  (schemaVersion-2 payload/panel-lock/slot validators in
+  `scripts/lib/release-review-contract.mjs`), and their fixtures/tests.
+  Blocked until: v2.1.0 published with the schemaVersion-3 owner-review
+  attestation (see CHECKLISTS "Owner-review release protocol").
+
 ## Deferred from the v3 plan itself (sol triage #13/#34)
 
 - HarnessLogo overlay everywhere (old W27) — cosmetics, after 2.1.0.

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  OWNER_REVIEW_PROTOCOL,
   REQUIRED_SCOPE_MODEL,
   REQUIRED_RELEASE_REVIEW_SLOTS,
   REQUIRED_TRIAD_MODELS,
@@ -508,5 +509,150 @@ describe("release review fail-closed contract", () => {
     });
     expect(decision.passed).toBe(false);
     expect(decision.reasons).toContain("scope reviewer is missing");
+  });
+});
+
+describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
+  const ownerAttestation = () => {
+    const candidateSha = "a".repeat(40);
+    const candidateTree = "b".repeat(40);
+    const digest = "d".repeat(64);
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const authority = {
+      keyId: "fixture-key",
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    };
+    const payload: any = {
+      contract: "owner-review-v3",
+      reviewProtocol: OWNER_REVIEW_PROTOCOL,
+      candidateSha,
+      candidateTree,
+      rounds: 2,
+      fullGate: {
+        receiptSha256: digest,
+        program: "pnpm",
+        argv: ["pnpm", "release:verify"],
+        exitCode: 0,
+        candidateUnchanged: true,
+        beforeSha: candidateSha,
+        beforeTree: candidateTree,
+        afterSha: candidateSha,
+        afterTree: candidateTree,
+        stdoutSha256: digest,
+        stderrSha256: digest,
+      },
+      reviews: [
+        { reviewer: "fable-reviewer-1", reportSha256: digest, verdict: "pass" },
+        { reviewer: "fable-reviewer-2", reportSha256: digest, verdict: "warn" },
+      ],
+      sealedAt: "2026-07-18T00:00:00.000Z",
+    };
+    const attestation = {
+      schemaVersion: 3,
+      keyId: authority.keyId,
+      algorithm: "Ed25519",
+      payload,
+      signature: "",
+    };
+    attestation.signature = sign(
+      null,
+      releaseAttestationSigningBytes(attestation),
+      privateKey,
+    ).toString("base64");
+    const resign = (next: typeof attestation) => ({
+      ...next,
+      signature: sign(null, releaseAttestationSigningBytes(next), privateKey).toString("base64"),
+    });
+    const expected = { candidateSha, candidateTree };
+    return { attestation, authority, resign, expected };
+  };
+
+  it("accepts a signed two-reviewer non-blocking attestation on the exact candidate", () => {
+    const { attestation, authority, expected } = ownerAttestation();
+    expect(validateReleaseAttestation(attestation, authority, expected)).toEqual({
+      ok: true,
+      reasons: [],
+    });
+  });
+
+  it("rejects tampering after signing — the signature covers the payload bytes", () => {
+    const { attestation, authority, expected } = ownerAttestation();
+    const tampered = {
+      ...attestation,
+      payload: { ...attestation.payload, rounds: 1 },
+    };
+    expect(validateReleaseAttestation(tampered, authority, expected).ok).toBe(false);
+  });
+
+  it("rejects a v2 attestation replayed under schemaVersion 3 without resigning", () => {
+    const { attestation, authority, expected } = ownerAttestation();
+    expect(
+      validateReleaseAttestation({ ...attestation, schemaVersion: 2 }, authority, expected).ok,
+    ).toBe(false);
+  });
+
+  it("a blocking verdict can never be sealed shippable (pass/warn only)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const blocked = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          attestation.payload.reviews[0],
+          { reviewer: "fable-reviewer-2", reportSha256: "d".repeat(64), verdict: "block" },
+        ],
+      },
+    });
+    const result = validateReleaseAttestation(blocked, authority, expected);
+    expect(result.ok).toBe(false);
+    expect(result.reasons.join(" ")).toMatch(/verdict/);
+  });
+
+  it("requires two UNIQUE reviewers and at most three rounds", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const single = resign({
+      ...attestation,
+      payload: { ...attestation.payload, reviews: [attestation.payload.reviews[0]] },
+    });
+    expect(validateReleaseAttestation(single, authority, expected).ok).toBe(false);
+    const duplicated = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [attestation.payload.reviews[0], attestation.payload.reviews[0]],
+      },
+    });
+    expect(validateReleaseAttestation(duplicated, authority, expected).ok).toBe(false);
+    const overRounds = resign({
+      ...attestation,
+      payload: { ...attestation.payload, rounds: 4 },
+    });
+    expect(validateReleaseAttestation(overRounds, authority, expected).ok).toBe(false);
+  });
+
+  it("binds to the exact candidate SHA/tree and a passing unchanged full gate", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    expect(
+      validateReleaseAttestation(attestation, authority, {
+        ...expected,
+        candidateSha: "f".repeat(40),
+      }).ok,
+    ).toBe(false);
+    const dirtyGate = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        fullGate: { ...attestation.payload.fullGate, candidateUnchanged: false },
+      },
+    });
+    expect(validateReleaseAttestation(dirtyGate, authority, expected).ok).toBe(false);
+    const failedGate = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        fullGate: { ...attestation.payload.fullGate, exitCode: 1 },
+      },
+    });
+    expect(validateReleaseAttestation(failedGate, authority, expected).ok).toBe(false);
   });
 });

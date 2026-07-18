@@ -118,6 +118,21 @@ const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION = 2;
 export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
 
+// Owner-review attestation (schemaVersion 3, owner-directed): the six-slot
+// OpenRouter panel is RETIRED for this and future releases. The publishing
+// proof is now the owner's own signed statement that (a) the full
+// deterministic gate passed unchanged on the exact candidate and (b) at
+// least two independent fable reviewer subagents reviewed the release
+// against the checklists and returned no blocking verdict (ship rule:
+// pass/warn only), within at most three convergence rounds. The same
+// offline Ed25519 authority signs both schema versions; the v2 path stays
+// valid for already-sealed attestations until its machinery is deleted.
+export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION = 3;
+export const OWNER_REVIEW_PROTOCOL = "owner-fable-subagents-v1";
+export const OWNER_REVIEW_MIN_REVIEWS = 2;
+export const OWNER_REVIEW_MAX_ROUNDS = 3;
+export const OWNER_REVIEW_VERDICTS = Object.freeze(["pass", "warn"]);
+
 /** Validate the only two release workflow entry modes before any ref is fetched. */
 export function validateReleaseInput(mode, ref) {
   const reasons = [];
@@ -159,15 +174,17 @@ export function releaseReviewConcurrencyDigest(concurrency) {
 }
 
 /** Verify authority before trusting any caller-supplied review semantics. */
-export function verifyReleaseAttestationSignature(attestation, authority) {
+export function verifyReleaseAttestationSignature(
+  attestation,
+  authority,
+  expectedSchemaVersion = RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION,
+) {
   const reasons = [];
   if (!attestation || typeof attestation !== "object" || Array.isArray(attestation)) {
     return { ok: false, reasons: ["review attestation is not an object"] };
   }
-  if (attestation.schemaVersion !== RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION) {
-    reasons.push(
-      `review attestation schemaVersion must be ${RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION}`,
-    );
+  if (attestation.schemaVersion !== expectedSchemaVersion) {
+    reasons.push(`review attestation schemaVersion must be ${expectedSchemaVersion}`);
   }
   if (!authority || typeof authority !== "object") {
     reasons.push("review attestation authority is missing");
@@ -202,6 +219,86 @@ export function verifyReleaseAttestationSignature(attestation, authority) {
   return { ok: true, reasons: [] };
 }
 
+/** ONE owner for the signed full-deterministic-gate evidence shape, shared by
+ * the v2 panel attestation and the v3 owner-review attestation. */
+export function validateFullGateEvidence(gate, expected) {
+  if (
+    !gate ||
+    !SHA256.test(gate.receiptSha256 ?? "") ||
+    gate.program !== "pnpm" ||
+    canonicalJson(gate.argv) !== canonicalJson(["pnpm", "release:verify"]) ||
+    gate.exitCode !== 0 ||
+    gate.candidateUnchanged !== true ||
+    gate.beforeSha !== expected.candidateSha ||
+    gate.afterSha !== expected.candidateSha ||
+    gate.beforeTree !== expected.candidateTree ||
+    gate.afterTree !== expected.candidateTree ||
+    !SHA256.test(gate.stdoutSha256 ?? "") ||
+    !SHA256.test(gate.stderrSha256 ?? "")
+  ) {
+    return ["review attestation full deterministic gate is invalid"];
+  }
+  return [];
+}
+
+/**
+ * Owner-review payload semantics (schemaVersion 3): exact candidate binding,
+ * the shared full-gate evidence, and >=2 uniquely-named reviewer reports each
+ * digest-bound and carrying a non-blocking verdict. A "block" verdict can
+ * never be signed into a shippable attestation — sealing one is the ship
+ * decision itself (owner protocol, <=3 convergence rounds).
+ */
+export function validateOwnerReviewAttestationPayload(payload, expected) {
+  const reasons = [];
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ok: false, reasons: ["review attestation payload is not an object"] };
+  }
+  if (payload.reviewProtocol !== OWNER_REVIEW_PROTOCOL) {
+    reasons.push(`owner review attestation protocol must be ${OWNER_REVIEW_PROTOCOL}`);
+  }
+  if (payload.candidateSha !== expected.candidateSha || !SHA1.test(payload.candidateSha ?? "")) {
+    reasons.push("review attestation candidate SHA mismatch");
+  }
+  if (payload.candidateTree !== expected.candidateTree || !SHA1.test(payload.candidateTree ?? "")) {
+    reasons.push("review attestation candidate tree mismatch");
+  }
+  if (
+    !Number.isInteger(payload.rounds) ||
+    payload.rounds < 1 ||
+    payload.rounds > OWNER_REVIEW_MAX_ROUNDS
+  ) {
+    reasons.push(`owner review rounds must be an integer in 1..${OWNER_REVIEW_MAX_ROUNDS}`);
+  }
+  reasons.push(...validateFullGateEvidence(payload.fullGate, expected));
+  const reviews = Array.isArray(payload.reviews) ? payload.reviews : [];
+  if (reviews.length < OWNER_REVIEW_MIN_REVIEWS) {
+    reasons.push(
+      `owner review attestation requires at least ${OWNER_REVIEW_MIN_REVIEWS} reviewer reports`,
+    );
+  }
+  for (const review of reviews) {
+    if (
+      !review ||
+      typeof review.reviewer !== "string" ||
+      review.reviewer.length === 0 ||
+      !SHA256.test(review.reportSha256 ?? "")
+    ) {
+      reasons.push("owner review entry is missing a reviewer name or report digest");
+      continue;
+    }
+    if (!OWNER_REVIEW_VERDICTS.includes(review.verdict)) {
+      reasons.push(
+        `owner review verdict for ${review.reviewer} must be one of: ${OWNER_REVIEW_VERDICTS.join(", ")}`,
+      );
+    }
+  }
+  const names = new Set(reviews.map((review) => review?.reviewer));
+  if (names.size !== reviews.length) {
+    reasons.push("owner review attestation contains duplicate reviewer names");
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
 /**
  * Semantic validation runs only after signature verification. Publication
  * accepts the exact reviewed SHA/tree, sealed evidence, full gate, and panel.
@@ -226,23 +323,7 @@ export function validateReleaseAttestationPayload(payload, expected) {
   ) {
     reasons.push("review attestation evidence manifest digest mismatch");
   }
-  const gate = payload.fullGate;
-  if (
-    !gate ||
-    !SHA256.test(gate.receiptSha256 ?? "") ||
-    gate.program !== "pnpm" ||
-    canonicalJson(gate.argv) !== canonicalJson(["pnpm", "release:verify"]) ||
-    gate.exitCode !== 0 ||
-    gate.candidateUnchanged !== true ||
-    gate.beforeSha !== expected.candidateSha ||
-    gate.afterSha !== expected.candidateSha ||
-    gate.beforeTree !== expected.candidateTree ||
-    gate.afterTree !== expected.candidateTree ||
-    !SHA256.test(gate.stdoutSha256 ?? "") ||
-    !SHA256.test(gate.stderrSha256 ?? "")
-  ) {
-    reasons.push("review attestation full deterministic gate is invalid");
-  }
+  reasons.push(...validateFullGateEvidence(payload.fullGate, expected));
   const lock = validatePanelLock(payload.panelLock ?? null, {
     candidateSha: expected.candidateSha,
     candidateTree: expected.candidateTree,
@@ -357,6 +438,18 @@ export function validateReleaseAttestationPayload(payload, expected) {
 }
 
 export function validateReleaseAttestation(attestation, authority, expected) {
+  // schemaVersion selects the contract BEFORE signature verification pins it:
+  // the signature covers schemaVersion itself, so a v2 payload can never be
+  // replayed as v3 (or vice versa) without breaking the Ed25519 check.
+  if (attestation?.schemaVersion === OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION) {
+    const signature = verifyReleaseAttestationSignature(
+      attestation,
+      authority,
+      OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
+    );
+    if (!signature.ok) return signature;
+    return validateOwnerReviewAttestationPayload(attestation.payload, expected);
+  }
   const signature = verifyReleaseAttestationSignature(attestation, authority);
   if (!signature.ok) return signature;
   return validateReleaseAttestationPayload(attestation.payload, expected);

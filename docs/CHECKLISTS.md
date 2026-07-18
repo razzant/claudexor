@@ -335,3 +335,24 @@ the loop; they are process law, not advisory:
   A quorum failure is a diagnosis task — read the parse errors and raw
   outputs before any retry; two identical failures from different models
   mean the PROTOCOL is wrong, not the models.
+
+### Owner-review release protocol (v2.1.0+, owner-directed)
+
+The six-slot OpenRouter panel (tier-1 pair + triad + scope) is RETIRED for
+new releases; its sealer machinery stays in-tree only until the deletion
+backlog entry ships. The publishing gate is now:
+
+- **Two fable reviewer subagents**, each reviewing the release diff and tree
+  against this file and the docs (Bible/ARCHITECTURE/DEVELOPMENT), run
+  directly by the release operator — no OpenRouter or local-subscription
+  routes. At most **three** rounds (the wave budget above applies verbatim).
+- **Ship rule unchanged:** every open finding at WARN-or-below with its
+  FEATURES/backlog row. A blocking verdict cannot be sealed.
+- **Attestation:** `scripts/run-full-gate-receipt.mjs` runs
+  `pnpm release:verify` and seals the hash-bound gate receipt;
+  `scripts/seal-owner-review-attestation.mjs` signs a schemaVersion-3
+  attestation (exact candidate SHA/tree, gate receipt digest, both reviewer
+  report digests + verdicts, round count) with the same offline Ed25519
+  authority. `verify-release-input.mjs` accepts either schema; the signature
+  covers the schemaVersion so the two contracts cannot be replayed into
+  each other.
