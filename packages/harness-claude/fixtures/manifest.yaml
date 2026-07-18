@@ -64,7 +64,7 @@ fixtures:
       final_source: "result"
       final_is_last_message: true
       # The vendor sends PROSE ("rate_limit_error: Number of request tokens
-      # has exceeded..."). Since Ф5 the mapper classifies that prose onto the
+      # has exceeded..."). Since F5 the mapper classifies that prose onto the
       # documented categories (bare labels still accepted; unrecognized still
       # collapses to "unknown") — this declaration moved "unknown" →
       # "rate_limit" deliberately with that change.
