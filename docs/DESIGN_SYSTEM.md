@@ -343,7 +343,9 @@ frequency and volume are. The contracts:
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
     accounts") + worst quota % + chevron — that opens a popover to manage
-    accounts in-app (never a terminal). Each popover row is one account (a
+    accounts in-app — no commands to copy; the native login itself still runs
+    the official vendor CLI in an auto-opened Terminal window (the setup-job
+    handoff below). Each popover row is one account (a
     default vendor login labeled with the harness name, or a registered
     credential profile): a readiness dot, its name, ONE compact quota line
     (worst window % + reset), and a "Log in" button until it verifies. The

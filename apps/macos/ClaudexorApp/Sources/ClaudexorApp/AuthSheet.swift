@@ -34,6 +34,18 @@ struct AuthSheet: View {
         model.authSource(for: family, source: .nativeSession)
     }
     private var nativeReady: Bool { nativeSource?.isVerifiedNativeSession == true }
+    /// The PROFILE's own doctor projection (INV-135) — the verification truth
+    /// for a profile-targeted sheet; the default store's readiness is not it.
+    private var profileStatus: CredentialProfileEntry.Status? {
+        guard let profileId else { return nil }
+        return model.credentialProfiles.first {
+            $0.profile.harnessId == family.setupHarnessId && $0.profile.profileId == profileId
+        }?.status
+    }
+    /// What "logged in" means for THIS sheet's target store.
+    private var targetVerified: Bool {
+        profileId == nil ? nativeReady : profileStatus?.availability == "available"
+    }
     private var nativeHarness: SetupHarness? { SetupHarness(rawValue: family.setupHarnessId) }
     private var job: SetupJob? { lifecycle.job }
     private var hasActiveJob: Bool { job?.isActive == true }
@@ -173,14 +185,36 @@ struct AuthSheet: View {
         }
     }
 
-    /// W4.7-UI: the shared readiness card (typed rows + "copy raw").
+    /// W4.7-UI: the shared readiness card (typed rows + "copy raw") for the
+    /// DEFAULT store; a profile target shows ITS doctor projection instead —
+    /// the default card would misattribute readiness to the wrong store.
     private var readinessPanel: some View {
         Panel {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                SectionLabel("Readiness", systemImage: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle")
-                HarnessReadinessCard(
-                    presentation: .from(family: family, info: currentInfo)
-                ) { EmptyView() }
+                if let profileId {
+                    SectionLabel("Account readiness",
+                                 systemImage: targetVerified ? "checkmark.seal.fill" : "exclamationmark.triangle")
+                    HStack(spacing: Theme.Spacing.sm) {
+                        Circle()
+                            .fill(targetVerified ? Theme.status(.succeeded)
+                                : profileStatus?.availability == "unknown" ? Theme.status(.blocked)
+                                : Theme.status(.failed))
+                            .frame(width: 8, height: 8)
+                        Text(profileStatus.map {
+                            "\($0.availability) · verification \($0.verification)"
+                        } ?? "No doctor probe yet for \(profileId)")
+                            .font(.caption)
+                        Spacer()
+                    }
+                    if let detail = profileStatus?.detail {
+                        Text(detail).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                } else {
+                    SectionLabel("Readiness", systemImage: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle")
+                    HarnessReadinessCard(
+                        presentation: .from(family: family, info: currentInfo)
+                    ) { EmptyView() }
+                }
             }
         }
     }
@@ -191,11 +225,11 @@ struct AuthSheet: View {
                 SectionLabel("Native setup", systemImage: "terminal")
                 HStack(spacing: Theme.Spacing.sm) {
                     Button { Task { await runLogin() } } label: {
-                        Label(nativeReady ? "Manage Login" : "Login", systemImage: "person.crop.circle.badge.checkmark")
+                        Label(targetVerified ? "Manage Login" : "Login", systemImage: "person.crop.circle.badge.checkmark")
                     }
                     .buttonStyle(.bordered)
                     .disabled(newSetupDisabled)
-                    .help(nativeReady ? "Open the native \(family.label) login flow to manage the verified session." : "Start the native \(family.label) login flow.")
+                    .help(targetVerified ? "Open the native \(family.label) login flow to manage the verified session." : "Start the native \(family.label) login flow.")
 
                     Button { Task { await recheck() } } label: {
                         Label("Recheck", systemImage: "arrow.clockwise")
@@ -205,7 +239,9 @@ struct AuthSheet: View {
                     .disabled(actionInFlight)
                     .help("Run a fresh, non-cached Harness Doctor probe for installed/authenticated/routable status.")
                 }
-                Text("Native login is daemon-owned. Completing its Terminal command is not readiness: only the exact native probe and same-harness smoke mark the session ready.")
+                Text(profileId == nil
+                    ? "Native login is daemon-owned. Completing its Terminal command is not readiness: only the exact native probe and same-harness smoke mark the session ready."
+                    : "Native login is daemon-owned and scoped to this account's own store. Its doctor probe is the verification truth; the default-route capability smoke does not apply.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -361,7 +397,7 @@ struct AuthSheet: View {
         AuthSheetPresentation.primaryCTA(
             healthOk: isReady,
             nativeSupported: nativeHarness != nil,
-            nativeReady: nativeReady,
+            nativeReady: targetVerified,
             keyStored: secretName.map { name in model.storedSecrets.contains { $0.name == name } } ?? false,
             streamLost: lifecycle.connection == .streamLost,
             jobActive: hasActiveJob,
@@ -410,6 +446,9 @@ struct AuthSheet: View {
                     for: family,
                     job: job
                 )
+                // A profile job's verification truth is the profile projection,
+                // not the default store — refresh it too (INV-135).
+                if profileId != nil { await model.refreshCredentialProfiles() }
                 if !refreshed {
                     status = "Setup finished, but the exact auth-readiness refresh failed. Use Recheck before trusting readiness."
                 }

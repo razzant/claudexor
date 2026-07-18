@@ -6,6 +6,22 @@ Silent drops are the failure mode this file exists to prevent — the 2.1.0
 audit found ten Ф2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
+## Owner-review wave 1 leftovers (2.1.0 accounts scope; NITs recorded per ship rule)
+
+- E3: a preflight-rotated default-subject profile is invisible to router
+  cooldown/metric subjects (`profileAuthRoute`/`credentialSubjectId` key on the
+  pinned id only). Opt-in path; no billing misvaluation possible.
+- E4: `registerConfigDirProfile` creates the login dir before the locked config
+  write (orphan dir on duplicate refusal) and maps 409 via message matching.
+- E5: an idempotent setup-job create replay re-validates the profile, so a
+  since-deleted profile 400s instead of returning the prior job (fail-closed).
+- E6: the profile verification probe does not re-check `enabled` mid-job; run
+  routing still refuses disabled profiles.
+- N1: 4xx problem bodies from thrown service errors carry `code:
+  "internal_error"` (message/status correct) — pre-existing serializer pattern.
+- N4: no recorded macOS Visual QA evidence pass for the accounts popover yet;
+  owner is dogfooding the surface live.
+
 ## Release machinery retirement (owner decision, 2.1.0 release)
 
 - Delete the retired six-slot release-review machinery after v2.1.0 ships:

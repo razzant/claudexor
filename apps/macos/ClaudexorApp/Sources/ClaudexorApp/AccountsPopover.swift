@@ -6,7 +6,8 @@ import ClaudexorKit
 // Replaces the always-expanded sidebar quota footer with ONE Claude-Code-style
 // control: a compact trigger row (worst readiness dot + account name/count +
 // worst quota % + chevron) that expands into a popover to add + log in accounts
-// in-app (NO terminal), read compact per-account quotas, and toggle
+// in-app (no commands to copy; the native login still auto-opens the official
+// vendor CLI in Terminal), read compact per-account quotas, and toggle
 // auto-balance. Registered profiles come from GET /v2/credential-profiles;
 // default logins from the same doctor/quota models the old footer used.
 
@@ -17,7 +18,7 @@ enum AccountReadiness: Int, Comparable {
     var color: Color {
         switch self {
         case .ready: return Theme.status(.succeeded)
-        case .unknown: return .orange
+        case .unknown: return Theme.status(.blocked)
         case .unavailable: return Theme.status(.failed)
         }
     }
@@ -92,7 +93,9 @@ enum AccountsPresentation {
                 verified: availability == "available",
                 profileId: entry.profile.profileId,
                 detail: entry.status.detail,
-                quotaGroups: groups.filter { $0.subjectId == entry.profile.profileId }
+                quotaGroups: groups.filter {
+                    $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
+                }
             ))
         }
         return rows
@@ -167,7 +170,7 @@ struct AccountsTriggerRow: View {
             if let pct = AccountsPresentation.worstPercent(rows) {
                 Text("\(pct)%")
                     .font(.caption2).monospacedDigit()
-                    .foregroundStyle(pct >= 90 ? .orange : .secondary)
+                    .foregroundStyle(pct >= 90 ? Theme.status(.blocked) : .secondary)
             }
             Image(systemName: "chevron.up.chevron.down")
                 .font(.caption2).foregroundStyle(.secondary)
@@ -290,7 +293,7 @@ struct AccountsPopover: View {
                 .font(.caption)
             addValidationText
             HStack {
-                Text("A second Claude/Codex subscription — logs in in-app, no terminal.")
+                Text("A second Claude/Codex subscription — one click opens the official CLI login.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button(adding ? "Adding…" : "Add & log in") { Task { await addAccount() } }
@@ -309,7 +312,7 @@ struct AccountsPopover: View {
             Text(err).font(.caption2).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
         } else if !trimmedAddId.isEmpty && !AccountsPresentation.isValidSlug(trimmedAddId) {
             Text("Use lowercase letters, digits, - or _ (must start with a letter or digit; max 64).")
-                .font(.caption2).foregroundStyle(.orange)
+                .font(.caption2).foregroundStyle(Theme.status(.blocked))
         }
     }
 
@@ -374,7 +377,7 @@ private struct AccountRowView: View {
                 Button("Log in", action: login)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .help("Start the native login for this account (in-app, no terminal)")
+                    .help("Start the official CLI login for this account — a Terminal window opens automatically")
             }
         }
         .padding(.vertical, Theme.Spacing.xxs)
@@ -386,7 +389,7 @@ private struct AccountRowView: View {
             HStack(spacing: Theme.Spacing.xs) {
                 Text("\(pct)% used")
                     .font(.caption2).monospacedDigit()
-                    .foregroundStyle(pct >= 90 ? .orange : .secondary)
+                    .foregroundStyle(pct >= 90 ? Theme.status(.blocked) : .secondary)
                 if let reset = formattedDate(window.resetsAt) {
                     Text("· resets \(reset)").font(.caption2).foregroundStyle(.secondary)
                 }

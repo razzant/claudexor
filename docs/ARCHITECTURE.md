@@ -848,16 +848,25 @@ never receives or persists a vendor token or credential file. Vendor output is
 not copied into durable logs, and Terminal stays open on the result until the
 operator presses Return. The daemon fsyncs an immutable executable/argv
 authorization and one-use permit before the detached runner may spawn. The
-runner's hash-bound result is journaled before verification. Exit zero enters a
-fresh, source-targeted native probe followed by an isolated same-harness
-capability smoke over the normal adapter stream; only the exact
-`vendor_native` / `native_session` route may pass. Another provider, an API key,
-tool use, external context, or workspace mutation invalidates the receipt. No
-plan-tier, entitlement, quota, or zero-cost inference is part of this proof.
+runner's hash-bound result is journaled before verification. For a
+DEFAULT-store login, exit zero enters a fresh, source-targeted native probe
+followed by an isolated same-harness capability smoke over the normal adapter
+stream; only the exact `vendor_native` / `native_session` route may pass.
+Another provider, an API key, tool use, external context, or workspace mutation
+invalidates the receipt. No plan-tier, entitlement, quota, or zero-cost
+inference is part of this proof. A PROFILE-targeted login (INV-135:
+`profileId` on the create request; the sealed manifest carries the profile's
+canonical scoped config dir, and the runner exports it as
+`CLAUDE_CONFIG_DIR`/`CODEX_HOME`) verifies against the PROFILE's own doctor
+probe instead — the same truth `claudexor profiles login` uses — and honestly
+skips the capability smoke, which attests only the default route; the job
+schema's success invariant is scoped accordingly.
 
 Login launch has a 10-second watchdog and a 15-minute deadline. Extend adds 15
-minutes without a cumulative limit. Duplicate create returns the same active
-action instead of launching a second Terminal; a conflicting active mutating
+minutes without a cumulative limit. Duplicate create for the SAME target store
+(default, or one profile) returns the same active action instead of launching
+a second Terminal; a create naming a DIFFERENT target while a login is active
+refuses with a typed 409, and a conflicting active mutating
 action is refused. Cancel is asynchronous. Cancel/timeout sends TERM and, after
 five seconds, KILL only when PID + kernel-start identity still matches; an
 unproven identity is never signalled or called cancelled. Restart consumes an

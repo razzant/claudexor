@@ -196,23 +196,22 @@ pnpm test
   recovery, and duplicate-create suppression without logout or credential reads.
 - Packaged app/ZIP/DMG and the npm CLI package contain the setup-login runner;
   the bundle boot smoke starts both the daemon and helper with bundled Node.
-- Triad + scope review gate: before a release tag, run
-  `scripts/triad-scope-review.mjs` on the cumulative release diff, verify each
-  finding against the code, and record the decision table. Unresolved accepted
-  findings block the release.
-- If the cumulative diff is too large for a remote reviewer, lower only
-  `TRIAD_MAX_PACK_BYTES` to shrink supplemental file-pack context; do not
-  downgrade or substitute the pinned review panel.
+- Review gate: the Owner-review release protocol (see the Review Protocol
+  section below) — two fable reviewer subagents against this file and the
+  docs, at most three rounds, findings triaged under the convergence rules.
+  The six-slot triad/scope panel is RETIRED for new releases (its machinery
+  remains only until the BACKLOG deletion entry ships).
 - Local unsigned app packages are smoke artifacts only. Final DMG/ZIP assets
   come from GitHub Actions `candidate` then `publish` mode; missing signing or
   notarization credentials block publication.
 - The publish input is an annotated stable tag on exact `origin/main` plus a
-  sealer-generated signed schema-v2 attestation bound to candidate SHA, tree,
-  sealed packet and full-gate receipt digests, per-slot terminal artifact
-  digests, exact Tier 1 critics, exact triad, exact scope reviewer, quorum, and
-  zero blockers. Verify the Ed25519 signature against the tracked pinned public
-  key before semantic validation; reject schema 1, unsigned, unknown-key, and
-  tampered inputs.
+  signed attestation: for new releases the schema-v3 owner-review attestation
+  (candidate SHA/tree, full-gate receipt digest, two reviewer report digests
+  with non-blocking verdicts, round count — see the Owner-review release
+  protocol); already-sealed schema-v2 panel attestations stay verifiable.
+  Verify the Ed25519 signature against the tracked pinned public key before
+  semantic validation; reject schema 1, unsigned, unknown-key, and tampered
+  inputs.
 - Verify app, ZIP-contained app, and DMG signatures, notarization tickets,
   staples, checksums, SBOM, and GitHub provenance. Do not upload stale local
   `apps/macos/dist` artifacts.

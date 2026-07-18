@@ -1143,6 +1143,34 @@ import Testing
         #expect(try JSONDecoder().decode(SetupJob.self, from: JSONEncoder().encode(decoded)).profileId == "work")
     }
 
+    @Test func succeededProfileJobDecodesWithoutCapabilityReceipt() throws {
+        // PROFILE jobs (INV-135) succeed on the profile's doctor probe with the
+        // capability smoke honestly skipped: authCapability stays "disclosed"
+        // and there is NO receipt. The success invariant is scoped to DEFAULT
+        // jobs (mirrors the engine schema) — a succeeded profile job must
+        // decode, or the app renders a successful login as streamLost.
+        let succeeded = makeSetupJob(id: "p-ok", state: "succeeded", phase: .completed)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(succeeded)) as? [String: Any])
+        let disclosed = makeSetupJob(id: "d", state: "running", phase: .verifying)
+        let disclosedCapability = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(disclosed)) as? [String: Any]
+        )["authCapability"]
+        object["authCapability"] = disclosedCapability
+        object["profileId"] = "work"
+        let decoded = try JSONDecoder().decode(
+            SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.state == .succeeded)
+        #expect(decoded.profileId == "work")
+        #expect(decoded.authCapability?.receipt == nil)
+        // The DEFAULT store keeps the strict contract: succeeded without a
+        // passed receipt is still an invalid job.
+        object["profileId"] = NSNull()
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+    }
+
     @Test func harnessSettingsDecodeAndPatchProfileLimitAction() throws {
         let json = """
         {"enabled":true,"defaultModel":null,"effort":null,"maxTurns":null,"maxRounds":null,

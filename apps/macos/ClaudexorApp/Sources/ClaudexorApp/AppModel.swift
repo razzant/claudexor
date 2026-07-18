@@ -1010,10 +1010,16 @@ final class AppModel {
     /// Flip auto-balance for BOTH profile-capable harnesses at once (on = rotate,
     /// off = fail), so a mixed state resolves to a single consistent choice.
     func setAutoBalance(_ on: Bool) async {
-        let action = on ? "rotate" : "fail"
-        let patch = Dictionary(uniqueKeysWithValues: Self.autoBalanceHarnessIds.map {
-            ($0, HarnessSettingsPatch(profileLimitAction: action))
+        // ON sets rotate on both families. OFF only downgrades harnesses that
+        // are currently "rotate" — a hand-configured "ask" is not auto-switch,
+        // so the toggle must not erase it.
+        let patch = Dictionary(uniqueKeysWithValues: Self.autoBalanceHarnessIds.compactMap {
+            id -> (String, HarnessSettingsPatch)? in
+            let current = settingsSnapshot?.harnesses?[id]?.profileLimitAction ?? "fail"
+            if on { return current == "rotate" ? nil : (id, HarnessSettingsPatch(profileLimitAction: "rotate")) }
+            return current == "rotate" ? (id, HarnessSettingsPatch(profileLimitAction: "fail")) : nil
         })
+        guard !patch.isEmpty else { return }
         _ = await saveSettings(SettingsUpdateRequest(harnesses: patch))
     }
 
