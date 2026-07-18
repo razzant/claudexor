@@ -335,6 +335,8 @@ describe("DaemonControlApiServer", () => {
         "cost_usd: 0.1",
         "cost_estimated: true",
         "errored: true",
+        "errors:",
+        "  - spawn E2BIG",
         "gates:",
         "  - id: g1",
         "    status: failed",
@@ -344,6 +346,7 @@ describe("DaemonControlApiServer", () => {
     writeFileSync(
       join(runDir, "reviews", "a01.yaml"),
       [
+        "review_verified: true",
         "findings:",
         "  - id: f-test",
         "    severity: WARN",
@@ -5078,6 +5081,7 @@ describe("DaemonControlApiServer", () => {
           costUsd: number;
           costEstimated: boolean;
           errored: boolean;
+          errorReason: string | null;
           gatesPassed: number;
           gatesTotal: number;
           blockers: number;
@@ -5103,6 +5107,7 @@ describe("DaemonControlApiServer", () => {
       expect(b).toMatchObject({
         harnessId: "codex",
         errored: true,
+        errorReason: "spawn E2BIG",
         costEstimated: true,
         gatesPassed: 0,
         gatesTotal: 1,
@@ -5110,6 +5115,24 @@ describe("DaemonControlApiServer", () => {
         blockers: 1, // the accepted BLOCK finding counts via the schema's isBlocking
         finalReviewClean: false,
       });
+    });
+  });
+
+  it("bounds primary output inline text while preserving full artifact bytes", async () => {
+    const { daemon, record } = fakeDaemon();
+    const full = "x".repeat(300 * 1024);
+    writeFileSync(join(record.runDir!, "final", "answer.md"), full);
+    await withDaemonServer(daemon, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        primaryOutput: { text: string; bytes: number; truncated: boolean };
+      };
+      expect(body.primaryOutput.truncated).toBe(true);
+      expect(body.primaryOutput.bytes).toBe(Buffer.byteLength(full));
+      expect(Buffer.byteLength(body.primaryOutput.text)).toBeLessThanOrEqual(256 * 1024);
     });
   });
 

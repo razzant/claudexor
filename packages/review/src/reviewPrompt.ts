@@ -13,6 +13,7 @@ export function buildReviewPrompt(
   evidenceDir: string,
   patch: DiffEvidence,
   sealed = false,
+  subject: "code" | "plan" = "code",
 ): string {
   const responseContract = sealed
     ? [
@@ -25,12 +26,16 @@ export function buildReviewPrompt(
       ]
     : ["Output ONLY a JSON array of findings."];
   return [
-    "You are an adversarial code reviewer.",
+    subject === "plan"
+      ? "You are an adversarial implementation-plan reviewer. The reviewed deliverable is a READ-ONLY PLAN: implementation, file changes, tests, and requested screenshots belong to the future executor and their absence is NOT a finding. Review feasibility, scope, sequencing, risks, acceptance coverage, and unresolved product decisions."
+      : "You are an adversarial code reviewer.",
     `Candidate root: ${candidateRoot}.`,
     sealed
       ? `First verify MANIFEST.sha256 and read every file it seals in ${evidenceDir}, including FREEZE.json and DECIDED_TRADEOFFS.md. If the manifest or a sealed file is missing, return INSUFFICIENT_EVIDENCE.`
       : `First read the evidence packet in ${evidenceDir} (USER_INTENT.md, FORBIDDEN_FINDINGS.md, PLAN_ACCEPTED.md, DECIDED_TRADEOFFS.md, TESTS.txt, DIFF.patch, DIFF_SUMMARY.md). If a mandatory file is missing, return INSUFFICIENT_EVIDENCE.`,
-    `Review ${label}'s change from the file-backed patch artifact, not from this prompt. Full patch: ${patch.diffPath}. Summary: ${patch.summaryPath}. Patch digest: ${patch.diffSha256}.`,
+    subject === "plan"
+      ? `Review ${label}'s plan from PLAN_ACCEPTED.md and the evidence packet. The placeholder patch only records that this is plan review; do not demand a code diff.`
+      : `Review ${label}'s change from the file-backed patch artifact, not from this prompt. Full patch: ${patch.diffPath}. Summary: ${patch.summaryPath}. Patch digest: ${patch.diffSha256}.`,
     "All code/file evidence must come from Candidate root or the evidence packet. Do not inspect or cite sibling/base repository paths outside Candidate root; if required evidence is unavailable there, return INSUFFICIENT_EVIDENCE.",
     "Treat TESTS.txt as the gate evidence. Do not rerun full build/test gates from the review; run only small targeted commands when needed to verify a concrete finding.",
     "In finding evidence, cite candidate files with paths relative to Candidate root. Cite evidence packet files by their evidence filename (for example DIFF.patch or TESTS.txt). Do not cite absolute Candidate root, reviewer workspace, or evidenceDir paths; those are disposable transport paths and will be rejected as evidence.",

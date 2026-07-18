@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/schema",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "license": "MIT",
   "description": "Single source of truth for all Claudexor data shapes (Zod + generated JSON Schema).",
   "type": "module",

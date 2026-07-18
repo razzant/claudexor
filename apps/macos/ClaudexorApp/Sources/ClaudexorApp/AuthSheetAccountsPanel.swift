@@ -27,9 +27,7 @@ struct AuthSheetAccountsPanel: View {
                     family: family,
                     includeDefaults: true,
                     login: login,
-                    loginDisabled: { row in
-                        row.profileId == nil && defaultLoginDisabled
-                    }
+                    loginDisabled: { _ in defaultLoginDisabled }
                 )
             }
         }

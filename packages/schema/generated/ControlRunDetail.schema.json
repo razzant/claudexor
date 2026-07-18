@@ -1032,6 +1032,11 @@
                   "type": "integer",
                   "minimum": 0,
                   "description": "Size of the output in bytes."
+                },
+                "truncated": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True when text is a bounded inline preview of the full artifact."
                 }
               },
               "required": [
@@ -2111,6 +2116,14 @@
                 "type": "boolean",
                 "default": false,
                 "description": "True when the candidate's attempt errored."
+              },
+              "errorReason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "First redacted attempt error; null when the candidate did not error."
               },
               "gatesPassed": {
                 "type": "integer",

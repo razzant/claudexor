@@ -145,7 +145,10 @@ describe("BudgetLedger", () => {
   });
 
   it("settles all native token costs as valuation while API-key costs remain cash", async () => {
-    const { attemptUsageCostSettlement } = await import("./ledger.js");
+    const { attemptUsageCostSettlement, isSubscriptionValuation } = await import("./ledger.js");
+    expect(isSubscriptionValuation("local_session")).toBe(true);
+    expect(isSubscriptionValuation("api_key")).toBe(false);
+    expect(isSubscriptionValuation(null)).toBe(false);
     const native = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     const nativeLease = native.reserve({
       taskId: "native-task",
@@ -196,6 +199,23 @@ describe("BudgetLedger", () => {
     expect(api.spend()).toBe(0.25);
     expect(api.valuation()).toBe(0);
     expect(api.terminal()).toBeNull();
+  });
+
+  it("settles mixed reviewer routes as separated cash and valuation", async () => {
+    const { reviewUsageCostSettlement } = await import("./ledger.js");
+    const ledger = new BudgetLedger({ kind: "unlimited" });
+    const lease = ledger.reserve({
+      taskId: "review-task",
+      attemptId: "review-panel",
+      intent: "review",
+      harnessId: "review-panel",
+    });
+    ledger.settle(
+      lease.lease!.lease_id,
+      reviewUsageCostSettlement(0.25, 0.75, true, ["review:panel"]),
+    );
+    expect(ledger.spend()).toBe(0.25);
+    expect(ledger.valuation()).toBe(0.75);
   });
 
   it("counts in-flight holds against the cap (mid-flight enforcement, #9)", () => {

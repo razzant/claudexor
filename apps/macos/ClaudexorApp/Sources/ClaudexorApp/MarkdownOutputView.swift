@@ -12,6 +12,9 @@ struct MarkdownOutputView: View {
     /// whose file links may open (F2.5 W-C7). Empty = no local-file access:
     /// an image degrades to its visible markdown text, honestly.
     var fileScopeRoots: [String] = []
+    /// Conversation answers use body-sized prose; dense secondary surfaces
+    /// retain the compact callout default.
+    var bodyFont: Font = .callout
     /// A visible, dismissible refusal for a blocked file-link click (sol #14):
     /// out-of-scope or unsafe-type targets never fail silently.
     @State private var linkRefusal: String?
@@ -30,15 +33,15 @@ struct MarkdownOutputView: View {
                 case .heading(let level):
                     inline(block.text, font: level == 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
                 case .paragraph:
-                    inline(block.text, font: .callout)
+                    inline(block.text, font: bodyFont)
                 case .image(let alt, let target):
                     ScopedInlineImage(target: target, alt: alt, roots: fileScopeRoots)
                 case .list:
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                         ForEach(Array(block.text.components(separatedBy: "\n").enumerated()), id: \.offset) { _, item in
                             HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.sm) {
-                                Text("•").font(.callout).foregroundStyle(.secondary)
-                                inline(String(item.dropFirst(2)), font: .callout)
+                                Text("•").font(bodyFont).foregroundStyle(.secondary)
+                                inline(String(item.dropFirst(2)), font: bodyFont)
                             }
                         }
                     }

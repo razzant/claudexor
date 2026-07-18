@@ -70,6 +70,11 @@ function resultSummary(result: Json): string {
 
 export type CursorEventParser = (obj: Json, sessionId: string) => HarnessEvent[] | null;
 
+interface CursorParserState {
+  pending: Map<string, ToolRef>;
+  lastCompleteAssistant: string | null;
+}
+
 /**
  * Create a stateful per-run parser for Cursor `--output-format stream-json`.
  *
@@ -83,20 +88,23 @@ export function createCursorParser(
   credentialRoute?: CredentialRoute,
   credentialSource?: AuthSourceKind,
 ): CursorEventParser {
-  const pending = new Map<string, ToolRef>();
+  const state: CursorParserState = { pending: new Map(), lastCompleteAssistant: null };
   return (obj: Json, sessionId: string): HarnessEvent[] | null =>
-    parseCursorEventStateful(obj, sessionId, pending, credentialRoute, credentialSource);
+    parseCursorEventStateful(obj, sessionId, state, credentialRoute, credentialSource);
 }
 
 /** Stateless convenience used by tests; resolves results within one call only. */
 export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] | null {
-  return parseCursorEventStateful(obj, sessionId, new Map());
+  return parseCursorEventStateful(obj, sessionId, {
+    pending: new Map(),
+    lastCompleteAssistant: null,
+  });
 }
 
 function parseCursorEventStateful(
   obj: Json,
   sessionId: string,
-  pending: Map<string, ToolRef>,
+  state: CursorParserState,
   credentialRoute?: CredentialRoute,
   credentialSource?: AuthSourceKind,
 ): HarnessEvent[] | null {
@@ -138,8 +146,10 @@ function parseCursorEventStateful(
     const isDelta = hasTimestamp && !hasModelCall;
     const content: Json[] = obj.message?.content ?? [];
     const out: HarnessEvent[] = [];
+    const completeText: string[] = [];
     for (const block of content) {
       if (typeof block?.text === "string" && block.text) {
+        if (!isDelta) completeText.push(block.text);
         out.push({
           type: "message",
           session_id: sessionId,
@@ -149,6 +159,7 @@ function parseCursorEventStateful(
         });
       }
     }
+    if (!isDelta && completeText.length > 0) state.lastCompleteAssistant = completeText.join("");
     return out;
   }
 
@@ -180,19 +191,27 @@ function parseCursorEventStateful(
         use_id: callId,
         target: argsTarget(args),
       };
-      if (callId) pending.set(callId, tool);
+      if (callId) state.pending.set(callId, tool);
       return [{ type: "tool_call", session_id: sessionId, ts, text: variant, tool }];
     }
 
     // completed / failed
-    const origin = callId ? pending.get(callId) : undefined;
-    if (callId) pending.delete(callId);
+    const origin = callId ? state.pending.get(callId) : undefined;
+    if (callId) state.pending.delete(callId);
     const result = inner?.result ?? obj.result;
     const rejected = Boolean(
       result && typeof result === "object" && "rejected" in result && result.rejected,
     );
+    const nativeFailure =
+      result &&
+      typeof result === "object" &&
+      "failure" in result &&
+      result.failure &&
+      typeof result.failure === "object" &&
+      ("exitCode" in result.failure || "error" in result.failure);
     const failed =
       subtype === "failed" ||
+      nativeFailure ||
       (result && typeof result === "object" && "error" in result && result.error);
     const detail = resultSummary(result);
     const status: ToolRef["status"] = rejected ? "denied" : failed ? "error" : "ok";
@@ -241,15 +260,26 @@ function parseCursorEventStateful(
     // Finality only for a SUCCESS result (review sol #1): an is_error / non-
     // success result is aborted/partial text, never the authoritative answer.
     const successResult = obj.is_error !== true && (!obj.subtype || obj.subtype === "success");
-    if (typeof obj.result === "string" && obj.result.trim()) {
-      // The terminal `result` IS cursor's typed final answer (the docs define
-      // `result` as the full assistant text of the turn).
+    const finalText =
+      successResult && state.lastCompleteAssistant?.trim()
+        ? state.lastCompleteAssistant
+        : typeof obj.result === "string"
+          ? obj.result
+          : null;
+    if (finalText?.trim()) {
       out.push({
         type: "message",
         session_id: sessionId,
         ts,
-        text: obj.result,
-        ...(successResult ? { final: true, payload: { final_source: "result" } } : {}),
+        text: finalText,
+        ...(successResult
+          ? {
+              final: true,
+              payload: {
+                final_source: state.lastCompleteAssistant ? "assistant_message" : "result",
+              },
+            }
+          : {}),
       });
     }
     if (obj.subtype && obj.subtype !== "success") {

@@ -51,6 +51,23 @@ import ClaudexorKit
         #expect(TranscriptView.thinkingLabel(seconds: 125) == "Thinking · 2m 05s")
     }
 
+    @Test func chatRowsKeepOnlyTheNewestBoundedWindow() {
+        let blocks = (0..<100).map { TranscriptBlock.message(id: "m\($0)", text: "line \($0)") }
+        let chat = TranscriptPresentation.chatRows(blocks)
+        #expect(chat.rows.count == TranscriptPresentation.chatRowLimit)
+        #expect(chat.omitted == 20)
+        #expect(chat.rows.first?.id == "m20")
+        #expect(chat.rows.last?.id == "m99")
+    }
+
+    @Test func overlongChatNarrationIsPreviewedWithoutLosingRawArtifactTruth() {
+        let source = String(repeating: "x", count: 5_000)
+        let preview = TranscriptPresentation.chatMessage(source)
+        #expect(preview.omittedCharacters == 1_000)
+        #expect(preview.text.hasPrefix(String(repeating: "x", count: 4_000)))
+        #expect(preview.text.contains("events.jsonl"))
+    }
+
     /// W-C5 status line: the terminal turn's frozen duration label.
     @Test func turnDurationLabelFormatsSecondsAndMinutes() {
         #expect(TurnCard.durationLabel(seconds: 41) == "41s")

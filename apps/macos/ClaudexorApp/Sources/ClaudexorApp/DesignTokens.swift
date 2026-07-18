@@ -118,16 +118,8 @@ enum Theme {
     enum Radius {
         static let control: CGFloat = 8     // chips, segmented selection, small code wells
         static let card: CGFloat = 12       // content cards (softened per owner visual QA, 2.1.0)
-        static let bubble: CGFloat = 16     // chat bubbles (user message / final answer)
         static let hero: CGFloat = 22       // floating composer / hero glass
     }
-
-    /// Chat user-bubble finish (owner visual QA, 2.1.2): the user's message is
-    /// the ACCENT side of the conversation — a clearly tinted bubble that can
-    /// never be mistaken for the assistant's neutral card. Fill+stroke are
-    /// calibrated per theme so body text stays WCAG-legible on both.
-    static let userBubbleFill = Color(dark: (0.30, 0.40, 0.62), light: (0.83, 0.88, 0.97))
-    static let userBubbleStroke = accent.opacity(0.38)
 
     // MARK: Layout metrics derived from icon/avatar columns (not magic numbers).
 

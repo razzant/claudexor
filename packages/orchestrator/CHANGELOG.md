@@ -1,5 +1,26 @@
 # @claudexor/orchestrator
 
+## 2.1.3
+
+### Patch Changes
+
+- @claudexor/arbitration@2.1.3
+- @claudexor/artifact-store@2.1.3
+- @claudexor/budget@2.1.3
+- @claudexor/config@2.1.3
+- @claudexor/context@2.1.3
+- @claudexor/core@2.1.3
+- @claudexor/delivery@2.1.3
+- @claudexor/event-log@2.1.3
+- @claudexor/gateway@2.1.3
+- @claudexor/interview@2.1.3
+- @claudexor/policy@2.1.3
+- @claudexor/review@2.1.3
+- @claudexor/schema@2.1.3
+- @claudexor/synthesis@2.1.3
+- @claudexor/util@2.1.3
+- @claudexor/workspace@2.1.3
+
 ## 2.1.2
 
 ### Patch Changes

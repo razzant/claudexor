@@ -84,6 +84,7 @@ export class SpecSessionStore {
     const createdAt = nowIso();
     const record: SpecSessionRecord = {
       sessionId: newId("spec-session"),
+      threadId: request.threadId ?? null,
       prompt: request.prompt,
       scope: request.scope,
       state: "grounding",

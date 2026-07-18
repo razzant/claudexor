@@ -17,15 +17,16 @@ struct TranscriptView: View {
     var fileScopeRoots: [String] = []
 
     var body: some View {
+        let chat = TranscriptPresentation.chatRows(blocks)
         // W4.4 (V9a): a FLAT log — one line per tool, grouped runs, a single
         // timer line for thinking. Zero inline chevrons; the raw reasoning
         // text and full tool output live in the run inspector only.
-        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-            if trimmedOlder > 0 || truncatedChars > 0 {
-                Text(truncationNote)
+        LazyVStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            if trimmedOlder > 0 || truncatedChars > 0 || chat.omitted > 0 {
+                Text(truncationNote(chatOmitted: chat.omitted))
                     .font(.caption2).foregroundStyle(.tertiary)
             }
-            ForEach(TranscriptPresentation.rows(blocks)) { row in
+            ForEach(chat.rows) { row in
                 switch row {
                 case .thinking(_, let seconds):
                     Label(Self.thinkingLabel(seconds: seconds), systemImage: "circle.lefthalf.filled")
@@ -48,7 +49,9 @@ struct TranscriptView: View {
                     // Mid-run NARRATION (a typed final never reaches the
                     // transcript): markdown, but dimmed — the finish must not
                     // compete with its own progress notes.
-                    MarkdownOutputView(markdown: text, fileScopeRoots: fileScopeRoots)
+                    MarkdownOutputView(
+                        markdown: TranscriptPresentation.chatMessage(text).text,
+                        fileScopeRoots: fileScopeRoots)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .opacity(0.7)
                 }
@@ -67,10 +70,11 @@ struct TranscriptView: View {
             : "Thinking · \(s / 60)m \(String(format: "%02d", s % 60))s"
     }
 
-    private var truncationNote: String {
+    private func truncationNote(chatOmitted: Int) -> String {
         var parts: [String] = []
         if trimmedOlder > 0 { parts.append("\(trimmedOlder) earlier transcript blocks collapsed") }
         if truncatedChars > 0 { parts.append("\(truncatedChars) characters of overlong blocks bounded") }
+        if chatOmitted > 0 { parts.append("\(chatOmitted) earlier chat rows hidden") }
         return parts.joined(separator: " · ") + " — the full stream lives in the run's events.jsonl artifact."
     }
 }

@@ -119,7 +119,7 @@ final class AppModel {
     /// OWNING thread (never stranding that thread's card at `.grounding`/`.freezing`),
     /// and a concurrent spec on another thread is never clobbered. `specFlow` reads
     /// only the selected thread's entry, so a switch hides a non-current card.
-    private var specFlowByThread: [String: SpecFlowState] = [:]
+    var specFlowByThread: [String: SpecFlowState] = [:]
     /// Per-thread SPEC-FLOW generation. Spec grounding/freeze are NOT thread turns,
     /// so `selectedThreadBusy` can't block a second Spec on the same thread — two
     /// in-flight spec create (or a cancel mid-grounding) would otherwise race
@@ -136,7 +136,7 @@ final class AppModel {
     private var specPendingOptions: [String: TurnOptions] = [:]
     /// Accumulated decisions across interview tiers (per thread) — each "Ask deeper"
     /// round carries them so the server surfaces the NEXT layer instead of re-asking.
-    private var specPrior: [String: [SpecPriorDecision]] = [:]
+    var specPrior: [String: [SpecPriorDecision]] = [:]
     /// The active SPEC-FLOW state — scoped to the selected thread (nil otherwise).
     var specFlow: SpecFlowState? {
         guard let tid = selectedThreadId else { return nil }
@@ -148,6 +148,9 @@ final class AppModel {
     /// the global default from Settings.
     var draftPrimaryHarness: String?
     var draftEligiblePool: [String] = []
+    /// Sticky credential profile selected from the ONE AccountsSurface before
+    /// a draft materializes; real threads persist the same field server-side.
+    var draftCredentialProfileId: String?
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// bottom-left accounts popover (list + guided add + per-account login).
     var credentialProfiles: [CredentialProfileEntry] = []
@@ -201,13 +204,12 @@ final class AppModel {
     var streamTasks: [String: Task<Void, Never>] = [:]
     var globalStreamTask: Task<Void, Never>?
     var globalEventCursor: String?
-    /// Last SSE sequence seen per run so reconnects resume instead of replaying everything.
     var lastEventIds: [String: Int] = [:]
-    /// Highest sequence reflected by in-flight detail snapshots — separate
-    /// from `lastEventIds`: the cursor may pass a still-loading snapshot.
+    /// Highest sequence reflected by snapshots (distinct from the stream cursor).
     private var snapshotReplayFences: [String: Int] = [:]
-    /// Reentrancy depth of in-flight detail loads per run (see loadRunDetail).
     var snapshotLoadDepth: [String: Int] = [:]
+    @ObservationIgnored private var runDetailLoads: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var runDetailTrailing: Set<String> = []
     /// Stream envelopes deferred while a snapshot load is in flight. Hard-capped
     /// (W23): runs whose buffer overflowed are flagged here and get a FRESH
     /// snapshot instead of a replay — dropped envelopes are never reconstructed.
@@ -416,7 +418,6 @@ final class AppModel {
             for task in liveTasks where task.isLive && task.status.isActive {
                 stream(runId: task.id)
             }
-            await hydrateReviewFindings()
         } catch {
             // keep last-known live tasks; connection badge reflects reality elsewhere
         }
@@ -1060,7 +1061,7 @@ final class AppModel {
                 eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool,
                 // Per-thread account pinning UI was removed (INV-135): runs use the
                 // default account unless engine auto-balance rotates at a quota limit.
-                credentialProfileId: nil
+                credentialProfileId: draftCredentialProfileId
             ))
             threads.insert(thread, at: 0)
             await openThread(thread.id)
@@ -1230,7 +1231,7 @@ final class AppModel {
     /// thread switch hides a non-current card and a late await records on its own
     /// thread). Writing is unconditional on the current selection: the getter
     /// already gates visibility by `selectedThreadId`.
-    private func setSpecFlow(_ state: SpecFlowState?, for threadId: String) {
+    func setSpecFlow(_ state: SpecFlowState?, for threadId: String) {
         specFlowByThread[threadId] = state
     }
 
@@ -1306,7 +1307,7 @@ final class AppModel {
         let pool = effectiveEligiblePool
         do {
             let res = try await client.specQuestions(
-                SpecQuestionsRequest(prompt: trimmed, scope: .project(root: repoRoot),
+                SpecQuestionsRequest(prompt: trimmed, threadId: tid, scope: .project(root: repoRoot),
                                      harnesses: pool.isEmpty ? nil : pool)
             )
             // State is keyed by `tid`, so record the result on its OWNING thread even
@@ -1378,7 +1379,7 @@ final class AppModel {
         let pool = threadEligiblePool(tid)
         do {
             let res = try await client.specQuestions(
-                SpecQuestionsRequest(prompt: prompt, scope: .project(root: repoRoot),
+                SpecQuestionsRequest(prompt: prompt, threadId: tid, scope: .project(root: repoRoot),
                                      harnesses: pool.isEmpty ? nil : pool, priorDecisions: specPrior[tid])
             )
             guard isCurrentSpecGen(tid, gen) else { return }
@@ -1590,6 +1591,24 @@ final class AppModel {
     }
 
     func loadRunDetail(_ id: String) async {
+        if let inFlight = runDetailLoads[id] {
+            runDetailTrailing.insert(id)
+            await inFlight.value
+            return
+        }
+        let load = Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                self.runDetailTrailing.remove(id)
+                await self.performRunDetailLoad(id)
+            } while self.runDetailTrailing.remove(id) != nil
+            self.runDetailLoads[id] = nil
+        }
+        runDetailLoads[id] = load
+        await load.value
+    }
+
+    private func performRunDetailLoad(_ id: String) async {
         guard let client, liveTasks.contains(where: { $0.id == id }) else { return }
         // Snapshot fence, write side: stream events arriving DURING this load
         // are deferred and re-applied after the snapshot lands. Without this,
@@ -1701,26 +1720,24 @@ final class AppModel {
                 task.activity.append(ActivityEvent(.message, "Final summary", detail: final))
             }
             if let primary = detail.primaryOutput, let text = primary.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let displayedText = primary.truncated == true
+                    ? text + "\n\n_Inline preview bounded; open \(primary.path) for the full output._"
+                    : text
                 if primary.kind == "diagnostic" {
-                    task.diagnosticText = text
+                    task.diagnosticText = displayedText
                     task.answerText = nil
                 } else if primary.kind == "patch" {
                     // A raw diff is NEVER markdown-rendered as the Outcome; it
                     // belongs to the Diff tab (parsed below).
                     task.answerText = nil
                 } else {
-                    task.answerText = text
+                    task.answerText = displayedText
                 }
             } else {
                 task.answerText = await firstArtifactText(client: client, runId: id, paths: ["final/answer.md", "final/explore.md", "final/report.md", "final/plan.md", "final/summary.md"])
             }
-            // Diff tab truth: load and parse the final patch artifact when present.
-            if task.diff.isEmpty, detail.artifacts.contains(where: { $0.path == "final/patch.diff" }) {
-                if let patchText = try? await client.artifactText(runId: id, path: "final/patch.diff"),
-                   !patchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    task.diff = Self.parseUnifiedDiff(patchText)
-                }
-            }
+            // Diff bytes are TAB-DEMAND payload (INV-136): hydration records
+            // artifact existence; TaskDetail loads/parses only when Diff opens.
             if !detail.timeline.isEmpty {
                 task.activity = detail.timeline.map(Self.activityEvent(from:))
                 // A STREAMING run's feed lives in its box (views read the box
@@ -1734,7 +1751,8 @@ final class AppModel {
                     box.activityDropped = 0
                 }
             }
-            task.diagnosticText = await diagnosticText(client: client, runId: id, detail: detail, error: task.engineError)
+            task.diagnosticText = RunDiagnosticsPresentation.summary(
+                detail: detail, error: task.engineError)
             let persistedFindings = detail.reviewFindings.compactMap { Self.finding(from: $0, taskTitle: task.title) }
             if !persistedFindings.isEmpty {
                 task.findings = persistedFindings
@@ -1809,74 +1827,6 @@ final class AppModel {
             code: event.rawRef,
             at: parseEventDate(event.ts) ?? .now
         )
-    }
-
-    private func hydrateReviewFindings() async {
-        guard let client else { return }
-        let ids = liveTasks.map(\.id)
-        for id in ids {
-            guard let idx = liveTasks.firstIndex(where: { $0.id == id }) else { continue }
-            if !liveTasks[idx].findings.isEmpty { continue }
-            guard let detail = try? await client.runDetail(runId: id) else { continue }
-            let title = liveTasks[idx].title
-            let findings = detail.reviewFindings.compactMap { Self.finding(from: $0, taskTitle: title) }
-            if !findings.isEmpty {
-                liveTasks[idx].findings = findings
-            }
-        }
-    }
-
-    private func diagnosticText(client: GatewayClient, runId: String, detail: RunDetail, error: String?) async -> String {
-        var sections: [String] = []
-        let failure = detail.failure ?? detail.summary.failure
-        if let failure {
-            var failureLines = [
-                "phase: \(failure.phase)",
-                "category: \(failure.category)",
-                "message: \(failure.safeMessage)"
-            ]
-            if let harness = failure.harnessId { failureLines.append("harness: \(harness)") }
-            if let attempt = failure.attemptId { failureLines.append("attempt: \(attempt)") }
-            if let ref = failure.rawDetailRef { failureLines.append("detail: \(ref)") }
-            if !failure.eventRefs.isEmpty { failureLines.append("events:\n" + failure.eventRefs.map { "- \($0)" }.joined(separator: "\n")) }
-            if !failure.logRefs.isEmpty { failureLines.append("logs:\n" + failure.logRefs.map { "- \($0)" }.joined(separator: "\n")) }
-            if let runDir = failure.runDir { failureLines.append("runDir: \(runDir)") }
-            if !failure.nextActions.isEmpty { failureLines.append("next actions:\n" + failure.nextActions.map { "- \($0)" }.joined(separator: "\n")) }
-            sections.append("# Failure\n\n" + failureLines.joined(separator: "\n"))
-        }
-        if let error, !error.isEmpty { sections.append("# Engine Error\n\n\(error)") }
-        if let web = detail.summary.webEvidence, web.attempted || web.required {
-            var lines = [
-                "status: \(web.status)",
-                "mode: \(web.mode)",
-                "required: \(web.required)",
-                "attempted: \(web.attempted)",
-                "satisfied: \(web.satisfied)"
-            ]
-            if let tool = web.tool { lines.append("tool: \(tool)") }
-            if let target = web.target { lines.append("target: \(target)") }
-            if let error = web.errorSummary { lines.append("error: \(error)") }
-            if let ref = web.rawDetailRef { lines.append("detail: \(ref)") }
-            sections.append("# Web Evidence\n\n" + lines.joined(separator: "\n"))
-        }
-        var diagnosticPaths: [String] = ["final/failure.yaml", "context/context_error.md"]
-        if let failure {
-            if let ref = failure.rawDetailRef { diagnosticPaths.append(ref) }
-            diagnosticPaths.append(contentsOf: failure.eventRefs)
-            diagnosticPaths.append(contentsOf: failure.logRefs)
-        }
-        diagnosticPaths.append(contentsOf: ["attempts/a01/events.jsonl", "events.jsonl", "arbitration/decision.yaml", "final/work_product.yaml"])
-        var seen = Set<String>()
-        for path in diagnosticPaths where seen.insert(path).inserted {
-            if let text = try? await client.artifactText(runId: runId, path: path), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                sections.append("## \(path)\n\n\(text)")
-            }
-        }
-        if sections.isEmpty {
-            let paths = detail.artifacts.map(\.path).joined(separator: "\n")
-            sections.append(paths.isEmpty ? "No diagnostics artifacts are available yet." : "Artifacts:\n\(paths)")
-        }
-        return sections.joined(separator: "\n\n")
     }
 
 }

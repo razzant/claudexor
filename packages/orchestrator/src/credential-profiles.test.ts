@@ -177,6 +177,30 @@ describe("default-subject auto-balance (INV-135 owner scope)", () => {
     expect(events[1]?.[1]).toMatchObject({ from_profile_id: null, to_profile_id: "a" });
   });
 
+  it("emits typed rotation_exhausted evidence when every profile is also spent", () => {
+    const events: Array<[string, Record<string, unknown>]> = [];
+    const next = preflightDefaultSubject({
+      harnessId: "claude",
+      policy,
+      registry: [a, b],
+      snapshots: [snap(null, 0.97), snap("a", 0.97), snap("b", 1)],
+      emit: (type, payload) => events.push([type, payload]),
+    });
+    expect(next).toBeNull();
+    expect(events.map(([type]) => type)).toEqual([
+      "route.profile.headroom_exceeded",
+      "route.profile.rotation_exhausted",
+    ]);
+    expect(events[1]?.[1]).toMatchObject({
+      from_profile_id: null,
+      reason: "profile_headroom_preflight",
+      candidates: [
+        { profile_id: "a", rejected: "headroom_exceeded" },
+        { profile_id: "b", rejected: "headroom_exceeded" },
+      ],
+    });
+  });
+
   it("preflightDefaultSubject is strictly opt-in: fail/ask keep the default user untouched (no events, no selection)", () => {
     for (const limit_action of ["fail", "ask"] as const) {
       const events: string[] = [];

@@ -9,6 +9,12 @@
           "minLength": 1,
           "description": "The user's request the interview is clarifying."
         },
+        "threadId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Owning chat thread, when created from the app."
+        },
         "scope": {
           "type": "object",
           "properties": {
@@ -39,10 +45,7 @@
         "harnesses": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S",
-            "description": "User-supplied string that must contain visible content, not just whitespace."
+            "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/threadId"
           },
           "description": "Harnesses eligible to generate the questions."
         },
@@ -110,7 +113,7 @@
         "reviewerModels": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/harnesses/items"
+            "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/threadId"
           },
           "propertyNames": {
             "enum": [
@@ -155,7 +158,7 @@
                 "description": "Explicit reviewer harness id; repeated harness ids are allowed so one provider can review through multiple requested models."
               },
               "model": {
-                "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/harnesses/items",
+                "$ref": "#/definitions/ControlSpecQuestionsRequest/properties/threadId",
                 "description": "Per-reviewer model hint, passed to that harness only."
               },
               "effort": {

@@ -8,11 +8,28 @@ import {
   ControlArtifactInfo,
   ControlBudgetSnapshot,
   ControlPendingInteraction,
-  ControlPrimaryOutput,
   ControlRunSummary,
   ControlTimelineEvent,
   RunFailure,
 } from "./control.js";
+
+export const ControlPrimaryOutput = z
+  .object({
+    kind: z
+      .enum(["answer", "report", "plan", "summary", "patch", "diagnostic", "structured_output"])
+      .describe(
+        "What kind of output this is: answer, report, plan, summary, patch, diagnostic, or structured_output (schema-conformant final/output.json).",
+      ),
+    path: z.string().describe("Artifact path of the output."),
+    text: z.string().nullable().default(null).describe("Inline text content, when loaded."),
+    bytes: z.number().int().nonnegative().optional().describe("Size of the output in bytes."),
+    truncated: z
+      .boolean()
+      .default(false)
+      .describe("True when text is a bounded inline preview of the full artifact."),
+  })
+  .describe("The run's primary user-facing output artifact.");
+export type ControlPrimaryOutput = z.infer<typeof ControlPrimaryOutput>;
 
 /** Per-candidate evidence card for a race run (projected from
  * attempts/<id>/attempt.yaml + reviews/<id>.yaml + the decision winner).
@@ -33,6 +50,11 @@ export const ControlCandidate = z
       .default(false)
       .describe("True when the cost is token-derived rather than natively reported."),
     errored: z.boolean().default(false).describe("True when the candidate's attempt errored."),
+    errorReason: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("First redacted attempt error; null when the candidate did not error."),
     gatesPassed: z
       .number()
       .int()

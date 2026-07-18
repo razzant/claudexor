@@ -487,6 +487,12 @@ extension AppModel {
         } else if type == "route.profile.headroom_exceeded" {
             let harness = payload["harness_id"]?.stringValue ?? ""
             box.appendActivity(ActivityEvent(.system, "Account quota headroom exceeded\(harness.isEmpty ? "" : " (\(harness))")", at: .now))
+        } else if type == "route.profile.rotation_exhausted" {
+            let harness = payload["harness_id"]?.stringValue ?? ""
+            let note = "No eligible account has quota headroom\(harness.isEmpty ? "" : " (\(harness))")"
+            t.attentionNote = note
+            taskChanged = true
+            box.appendActivity(ActivityEvent(.system, note, at: .now))
         } else {
             box.appendActivity(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }

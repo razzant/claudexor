@@ -8,6 +8,30 @@ import ClaudexorKit
 // (per-harness profile_policy.limit_action via the settings wire).
 
 extension AppModel {
+    /// Persist the thread's manual account choice (INV-135). nil restores the
+    /// engine-default ladder; a draft carries the choice into thread creation.
+    func setThreadCredentialProfile(_ profileId: String?, harnessId: String? = nil) async {
+        guard let id = selectedThreadId else {
+            draftCredentialProfileId = profileId
+            if let harnessId { draftPrimaryHarness = harnessId }
+            return
+        }
+        guard let client else {
+            threadStatus = "Engine offline — reconnect to change the account."
+            return
+        }
+        do {
+            let updated = try await client.updateThread(
+                id: id,
+                body: UpdateThreadRequest(
+                    primaryHarness: harnessId.map { .some($0) },
+                    credentialProfileId: .some(profileId)))
+            applyThreadUpdate(updated)
+        } catch {
+            threadStatus = userMessage(for: error)
+        }
+    }
+
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// accounts popover; a failing fetch leaves the last snapshot in place.
     func refreshCredentialProfiles() async {

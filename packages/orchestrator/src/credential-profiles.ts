@@ -133,9 +133,65 @@ export function rotationRetryEligible(input: {
 }
 
 type EmitFn = (
-  type: "route.profile.headroom_exceeded" | "route.profile.rotated",
+  type:
+    | "route.profile.headroom_exceeded"
+    | "route.profile.rotated"
+    | "route.profile.rotation_exhausted",
   payload: Record<string, unknown>,
 ) => void;
+
+function emitRotationExhausted(args: {
+  current: Pick<CredentialProfile, "profile_id" | "credential_kind"> | null;
+  harnessId: string;
+  policy: ProfilePolicy;
+  registry: readonly CredentialProfile[];
+  snapshots: readonly QuotaSnapshot[];
+  excluded?: ReadonlySet<string>;
+  attemptId?: string;
+  reason: "profile_headroom_preflight" | "vendor_limit_rejected";
+  emit: EmitFn;
+}): void {
+  const excluded = args.excluded ?? new Set<string>();
+  const candidates = args.registry
+    .filter((profile) => profile.harness_id === args.harnessId && profile.enabled)
+    .map((profile) => {
+      const breach = profileHeadroomBreach(
+        args.snapshots,
+        args.harnessId,
+        profile.profile_id,
+        args.policy.headroom_threshold,
+      );
+      const rejected =
+        profile.profile_id === args.current?.profile_id
+          ? "current"
+          : args.policy.rotation_eligible.length > 0 &&
+              !args.policy.rotation_eligible.includes(profile.profile_id)
+            ? "not_in_rotation_policy"
+            : excluded.has(profile.profile_id)
+              ? "already_tried"
+              : args.current && profile.credential_kind !== args.current.credential_kind
+                ? "credential_kind_mismatch"
+                : args.current === null && profile.credential_kind === "api_key"
+                  ? "credential_kind_mismatch"
+                  : breach
+                    ? "headroom_exceeded"
+                    : "not_selected";
+      return {
+        profile_id: profile.profile_id,
+        credential_kind: profile.credential_kind,
+        rejected,
+        headroom: breach,
+      };
+    });
+  args.emit("route.profile.rotation_exhausted", {
+    harness_id: args.harnessId,
+    attempt_id: args.attemptId,
+    from_profile_id: args.current?.profile_id ?? null,
+    reason: args.reason,
+    threshold: args.policy.headroom_threshold,
+    candidates,
+  });
+}
 
 /**
  * `profile_headroom_preflight` (W5.4): BEFORE spawn, the selected profile's
@@ -181,7 +237,18 @@ export function preflightCredentialProfile(args: {
   }
   if (policy.limit_action !== "rotate") return profile;
   const next = nextEligibleProfile(registry, harnessId, policy, profile, snapshots);
-  if (!next) return profile;
+  if (!next) {
+    emitRotationExhausted({
+      current: profile,
+      harnessId,
+      policy,
+      registry,
+      snapshots,
+      reason: "profile_headroom_preflight",
+      emit,
+    });
+    return profile;
+  }
   emit("route.profile.rotated", {
     harness_id: harnessId,
     from_profile_id: profile.profile_id,
@@ -225,7 +292,18 @@ export function preflightDefaultSubject(args: {
     resets_at: breach.resets_at,
   });
   const next = nextEligibleProfile(registry, harnessId, policy, null, snapshots);
-  if (!next) return null;
+  if (!next) {
+    emitRotationExhausted({
+      current: null,
+      harnessId,
+      policy,
+      registry,
+      snapshots,
+      reason: "profile_headroom_preflight",
+      emit,
+    });
+    return null;
+  }
   emit("route.profile.rotated", {
     harness_id: harnessId,
     from_profile_id: null,
@@ -273,7 +351,20 @@ export function planReactiveRotation(args: {
     args.snapshots,
     args.triedProfiles,
   );
-  if (!next) return null;
+  if (!next) {
+    emitRotationExhausted({
+      current: args.currentProfile,
+      harnessId: args.harnessId,
+      policy: args.policy,
+      registry: args.registry,
+      snapshots: args.snapshots,
+      excluded: args.triedProfiles,
+      attemptId: args.attemptId,
+      reason: "vendor_limit_rejected",
+      emit: args.emit,
+    });
+    return null;
+  }
   args.emit("route.profile.rotated", {
     harness_id: args.harnessId,
     attempt_id: args.attemptId,

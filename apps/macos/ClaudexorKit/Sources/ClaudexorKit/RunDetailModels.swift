@@ -4,6 +4,14 @@ import Foundation
 // satellites (candidates, live plan checklist). Split from Models.swift —
 // one coherent owner for the /runs/:id projection shapes.
 
+public struct PrimaryOutput: Codable, Sendable, Equatable {
+    public let kind: String
+    public let path: String
+    public let text: String?
+    public let bytes: Int?
+    public let truncated: Bool?
+}
+
 /// Auth ROUTE RECEIPT (INV-061 disclosure, W10/W11): the requested auth
 /// preference, the effective route/source the deciding attempt disclosed, a
 /// deterministic typed reason, and the requested-vs-observed model mismatch
@@ -43,6 +51,7 @@ public struct CandidateInfo: Codable, Sendable, Identifiable, Equatable {
     public let costUsd: Double
     public let costEstimated: Bool
     public let errored: Bool
+    public let errorReason: String?
     public let gatesPassed: Int
     public let gatesTotal: Int
     public let blockers: Int
@@ -60,6 +69,7 @@ public struct CandidateInfo: Codable, Sendable, Identifiable, Equatable {
         costUsd = try c.decodeIfPresent(Double.self, forKey: .costUsd) ?? 0
         costEstimated = try c.decodeIfPresent(Bool.self, forKey: .costEstimated) ?? false
         errored = try c.decodeIfPresent(Bool.self, forKey: .errored) ?? false
+        errorReason = try c.decodeIfPresent(String.self, forKey: .errorReason)
         gatesPassed = try c.decodeIfPresent(Int.self, forKey: .gatesPassed) ?? 0
         gatesTotal = try c.decodeIfPresent(Int.self, forKey: .gatesTotal) ?? 0
         blockers = try c.decodeIfPresent(Int.self, forKey: .blockers) ?? 0

@@ -1,5 +1,14 @@
 # claudexor
 
+## 2.1.3
+
+### Patch Changes
+
+- Unify multi-account management, add safe profile deletion, harden native auth,
+  bound high-volume macOS run rendering, preserve produced screenshots, and fix
+  multi-harness cost, synthesis, review, and candidate evidence semantics.
+  - @claudexor/cli@2.1.3
+
 ## 2.1.2
 
 ### Patch Changes

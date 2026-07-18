@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/delivery",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "license": "MIT",
   "description": "Apply a WorkProduct patch: dry-run / apply / branch / commit / pr.",
   "type": "module",

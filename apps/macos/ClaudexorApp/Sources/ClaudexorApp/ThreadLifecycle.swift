@@ -15,6 +15,8 @@ extension AppModel {
             let detail = try await client.threadDetail(id: id)
             guard selectedThreadId == id, threadLoadGeneration == generation else { return }
             selectedThreadDetail = detail
+            await recoverSpecFlow(threadId: id, repoRoot: detail.thread.repoRoot)
+            guard selectedThreadId == id, threadLoadGeneration == generation else { return }
             evictBackgroundRunData()
             for turn in detail.turns.suffix(5) {
                 guard selectedThreadId == id, threadLoadGeneration == generation else { return }
@@ -36,6 +38,7 @@ extension AppModel {
         if case .task = route { route = .threads }
         draftPrimaryHarness = nil
         draftEligiblePool = []
+        draftCredentialProfileId = nil
         draftIsolatedWorkspace = false
     }
 

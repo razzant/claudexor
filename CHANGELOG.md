@@ -3,6 +3,18 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v2.1.3** (2026-07-18) — account and large-run reliability finish.
+  Accounts now have one shared Manage surface with Back/Done navigation,
+  manual thread pinning, auto-balance, and safe deletion. Claude native
+  subscription auth works in scoped runs without mutating `~/.claude`.
+  Large run details are single-flight and progressive: bounded primary output,
+  metadata-only diagnostics, tab-demand diffs, bounded transcripts, and
+  restart-safe Spec interviews. Best-of-N now uses file-backed synthesis,
+  preserves winner screenshots, reports honest candidate/tool failures, and
+  separates native subscription valuation from API-key cash (including mixed
+  reviewer panels). Plan review is typed as plan review; exhausted account
+  rotation, zero configured gates, and candidate errors are explicit evidence.
+
 - **v2.1.2** (2026-07-18) — the credential-profiles release, published as
   2.1.2 after two npm-infrastructure burns: the v2.1.0 flight died on npm's
   post-publish indexing lag (the publisher's exposure window was too small),

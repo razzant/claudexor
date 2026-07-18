@@ -560,3 +560,15 @@ process below. Never paper over the conflict.
   profiles. verify: schema credential-profile.ts; orchestrator
   credential-profiles.ts; adapter profile tests; threads resume-isolation
   test.
+- **INV-136** High-volume UI evidence is PROGRESSIVE, BOUNDED, and honest:
+  per-run milestone bursts are single-flight with at most one trailing refresh;
+  thread/run hydration loads typed summaries + artifact metadata, never raw
+  event/rollout/log bodies or tab-only patch bytes; chat renders a disclosed
+  bounded tail rather than every retained transcript row/character; long
+  interviews use a lazy bounded scroller with fixed actions. Complete
+  untruncated evidence remains reachable in the run artifact plane, and every
+  omitted count/path is disclosed. No monospaced multi-megabyte `Text`, eager
+  raw-artifact fetch, N+1 detail hydration, or unbounded card may enter a
+  release. verify: DESIGN_SYSTEM §3.2; detail single-flight + diagnostics/
+  patch no-fetch tests; transcript row/text-bound tests; Spec interview visual
+  QA.

@@ -60,6 +60,12 @@ describe("arbitrate", () => {
     expect(res2.decision.final_checks.some((x) => x.includes("tie:"))).toBe(false);
   });
 
+  it("labels zero configured required gates as n/a, never passed", () => {
+    const result = arbitrate([candidate("A", { gates: [] })]);
+    expect(result.decision.final_checks).toContain("required gates n/a (none configured)");
+    expect(result.decision.final_checks).not.toContain("required gates passed");
+  });
+
   it("prefers higher acceptance coverage", () => {
     const a = candidate("A", { acceptanceCovered: ["AC-1", "AC-2"], acceptanceTotal: 2 });
     const b = candidate("B", { acceptanceCovered: ["AC-1"], acceptanceTotal: 2 });

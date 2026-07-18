@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/control-api",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "license": "MIT",
   "description": "Loopback HTTP+SSE control surface for GUI/service clients: token-auth, Host/Origin guard, live run event stream with Last-Event-ID replay. Runner injected (no second scheduler).",
   "type": "module",

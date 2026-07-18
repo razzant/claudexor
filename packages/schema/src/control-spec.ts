@@ -16,6 +16,7 @@ export const ControlSpecPriorDecision = z
 export const ControlSpecQuestionsRequest = z
   .object({
     prompt: z.string().min(1).describe("The user's request the interview is clarifying."),
+    threadId: NonBlankString.optional().describe("Owning chat thread, when created from the app."),
     scope: z
       .object({
         kind: z.literal("project"),
@@ -68,6 +69,7 @@ export type ControlSpecSessionState = z.infer<typeof ControlSpecSessionState>;
 export const ControlSpecSession = z
   .object({
     sessionId: NonBlankString,
+    threadId: NonBlankString.nullable().default(null),
     prompt: z.string(),
     scope: z
       .object({ kind: z.literal("project"), root: z.string(), context: RunScopeContext })

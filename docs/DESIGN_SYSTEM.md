@@ -309,11 +309,30 @@ frequency and volume are. The contracts:
 - **Adaptive coalescing.** SSE events flush in batches: a 64 ms window when
   calm, stretching to ~250 ms under sustained bursts (racing multi-harness
   runs) — four honest repaints per second, not fifteen.
+- **Per-run detail single-flight.** Gate/reviewer/finding/output/terminal event
+  bursts share one in-flight detail GET and request at most one trailing
+  refresh. Run-list refresh never N+1-fetches details merely because a row has
+  zero findings; selected thread/inspector hydration owns detail loading.
 - **Bounded feeds with honest truncation.** The live activity feed is a ring
   of the newest 1000 events with a visible "N older events collapsed" note
   (mirroring the server's capped timeline); transcripts cap at 200 blocks with
   the same disclosure. Full logs stay in `events.jsonl` — the UI never
   pretends the capped view is complete.
+- **Bounded chat presentation.** The chat card is a progress SUMMARY: it lazily
+  renders only the newest 80 folded rows and at most 4,000 characters from one
+  narration block, with an honest omitted count/link to raw evidence. The
+  reducer's larger 200-block / text budgets protect evidence retention; they
+  are not permission to lay all retained text out on the main thread.
+- **Diagnostics are metadata-first.** Thread/run hydration never fetches raw
+  `events.jsonl`, rollout, or log bodies. Diagnostics renders typed failure/web
+  facts, a bounded primary diagnostic preview, and path+byte metadata; complete
+  evidence opens from the run folder on demand. A multi-megabyte monospaced
+  `Text` is forbidden.
+- **Tab-demand payloads.** Multi-megabyte `final/patch.diff` is fetched and
+  parsed only when Diff opens, with an explicit loading state — never during
+  generic thread/run hydration. Control API primary-output text is a bounded
+  256 KiB inline preview with `truncated=true` + full artifact path/byte size;
+  complete output opens on demand.
 - **Lazy timelines.** The Timeline tab renders newest-first through a lazy
   reversed collection inside `LazyVStack` — no materialized reversed copies,
   no eagerly-built thousand-row stacks.
@@ -348,7 +367,8 @@ frequency and volume are. The contracts:
     handoff below). Each popover row is one account (a
     default vendor login labeled with the harness name, or a registered
     credential profile): a readiness dot, its name, ONE compact quota line
-    (worst window % + reset), one "Log in" / "Manage" action, and — on
+    (worst window % + reset), one "Log in" / "Manage" action, a **Use/Using**
+    thread-pin action for ready named profiles, and — on
     registered profiles only — a confirmed Remove (trash) that deletes the
     registration plus the account's own login/key
     (`DELETE /v2/credential-profiles/:harness/:id`; the default vendor login
@@ -364,15 +384,19 @@ frequency and volume are. The contracts:
     family — account control is never forked per surface. In that sheet the
     implicit default login is simply the first account row; named profiles
     follow, and "Add another account" is the only add flow. There is no
-    parallel "Native setup" card competing with "Additional accounts".
+    parallel "Native setup" card competing with "Additional accounts". "Use
+    automatic account routing" clears a manual pin; selection persists through
+    the thread DTO, never local-only UI state.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5). The
-    user bubble is the ACCENT side of the conversation: a solid
-    accent-calibrated fill (`Theme.userBubbleFill`, per-theme WCAG-legible)
-    with a hairline accent stroke and the continuous `Radius.bubble` corner —
-    it must never read as the same gray as the assistant card. The final
-    answer rhymes with it (same radius family, accent-edged leading bar).
-    The assistant card stays the neutral frosted `cardSurface`. Then: a
+    user bubble is the QUIET ACCENT side of the conversation: the proven
+    `accent.opacity(0.14)` fill and compact `Radius.control` corner — never a
+    saturated block. The assistant stays a neutral frosted `cardSurface` but
+    carries one subtle accent hairline (`accent.opacity(0.22)`) so it belongs
+    to the same family without merging the two speakers. The final answer is
+  the loudest assistant element: solid `surfaceRaisedHi` dense-content inset,
+  `Radius.control`, body-sized prose, and a restrained 2 pt accent leading
+  edge. Then: a
     status line (harness identity + honest status pill + live elapsed clock),
     the live transcript disclosure (reasoning segments with duration timers,
     DIMMED mid-run narration, humane tool rows), the reconciled outcome line,
@@ -684,7 +708,12 @@ views in the shared design-system files; screens compose them.
   server-owned spec flow, not a wire run mode; the grounding plan uses the
   composer's eligible pool with each harness's default model, while the
   per-turn model/budget/access/web/repair options are captured and applied to
-  the write Implement turn.
+  the write Implement turn. Header and action footer remain fixed; the
+  potentially long question/options middle is a max-height `ScrollView` with a
+  `LazyVStack`, so an interview never grows beyond the window or forces the
+  entire card to re-layout on every chip selection. The durable server session
+  carries its owning `threadId`; reopening that thread after app restart
+  restores the interview and prior answers instead of showing a blank chat.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the run inspector.
@@ -707,7 +736,14 @@ views in the shared design-system files; screens compose them.
   A setup job speaks with ONE merged status line (state+phase+outcome —
   "Waiting for you to finish the login", "Login verified", "Failed (exit
   1)", "Process termination is unconfirmed"); "Extend login wait (15 min)"
-  is offered only for a live login. Owner mapper: `AuthSheetPresentation`.
+  is offered only for a live login. For account-capable harnesses, the ONE
+  `AccountsSurface` owns each row's Log in/Manage action — no duplicate login
+  CTA. A healthy sheet closes with the always-visible header Done; the footer
+  appears only for a live status or a real primary action. Profile drill-in uses an explicit
+  leading **Accounts** back button; every sheet has a labeled trailing
+  **Done** button (not an unlabeled x). Back is disabled while an active login
+  requires keep-running/cancel confirmation. Owner mapper:
+  `AuthSheetPresentation`.
 - **Workbench: Run Detail | Canvas.** The trailing region is a Workbench with the
   two labeled planes from §4.
   - **Run Detail** — every run's detail has explicit `Outcome`, `Timeline`,
@@ -722,10 +758,11 @@ views in the shared design-system files; screens compose them.
     runs on `Timeline`, and failures without output on `Diagnostics` (a blocked
     run with findings opens on `Review` — its deliverable IS the findings that
     need a human). `Artifacts` lists the run's internal orchestration tree
-    (`/runs/:id/artifacts`). `Diagnostics` reads engine error,
-    `context/context_error.md`, `events.jsonl`, `arbitration/decision.yaml`,
-    `final/work_product.yaml`, and artifact paths. A failed run must never leave
-    the user hunting for invisible logs.
+    (`/runs/:id/artifacts`). `Diagnostics` renders bounded typed error/context
+    summaries plus raw-evidence paths and byte sizes; full `events.jsonl`,
+    rollouts and logs remain one click away in the run folder and are never
+    eagerly laid out inline. A failed run must never leave the user hunting for
+    invisible logs or freeze the UI by loading them.
   - **Canvas** — the project's PRODUCED outputs, distinct from Run Detail's
     run-internal tree and labeled as such. Two panes: the **artifacts gallery**
     renders the repo `artifacts/` dir via `GET /runs/:id/produced` (images

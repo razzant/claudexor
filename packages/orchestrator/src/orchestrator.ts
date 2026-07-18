@@ -9,6 +9,14 @@ import {
   type ProfilePolicy,
 } from "./credential-profiles.js";
 import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
+import {
+  buildFileBackedSynthesisInput,
+  materializeWinnerOutputs,
+  stageFileBackedContext,
+  writeCandidateAttemptArtifacts,
+} from "./candidateOutputs.js";
+import { processAttemptUsage } from "./attemptUsage.js";
+import { type CandidateRun, toCandidateEvidence } from "./candidateEvidence.js";
 import { capabilityIntents } from "@claudexor/gateway";
 import { policyFindings } from "./policyFindings.js";
 
@@ -20,7 +28,6 @@ import type {
   EffortHint,
   KnownModelEntry,
   ExternalContextPolicy,
-  GateResult,
   HarnessEvent,
   Intent,
   InteractionAnswerSet,
@@ -187,8 +194,8 @@ import {
   loadHarnessMetrics,
   promptFingerprint,
   unknownCostSettlement,
-  usageCostSettlement,
   rankHarnesses,
+  reviewUsageCostSettlement,
 } from "@claudexor/budget";
 import {
   appendLine,
@@ -424,35 +431,6 @@ export interface OrchestratorResult {
    * today only `wall_clock_exceeded` (the maxSeconds deadline). Absent for a
    * user-initiated cancel. */
   cancelReason?: string;
-}
-
-interface CandidateRun {
-  attemptId: string;
-  harnessId: string;
-  label: string;
-  diff: string;
-  /** Concatenated assistant message text — the answer when the turn changed no
-   * files (a pure question-answer move on an agent thread). */
-  answerText?: string;
-  /** Filesystem tree reviewers must inspect for this candidate. */
-  reviewCwd?: string;
-  /** The envelope's base sha — the FinalVerifier's verify-tree anchor. */
-  baseSha?: string;
-  gates: GateResult[];
-  cost: number;
-  errored: boolean;
-  /** True when any of `cost` is token-estimated (not natively reported). */
-  costEstimated: boolean;
-  /** Redacted runtime error summaries (harness stream errors + unsatisfied web
-   * evidence). Non-web tool errors flow through `toolWarnings`, not here. */
-  errors: string[];
-  telemetry: AttemptTelemetry;
-  /**
-   * Set when the attempt died BEFORE the harness stream produced any work
-   * (e.g. workspace envelope creation failed). Such corpses carry no
-   * reviewable evidence and must never reach review/synthesis/arbitration.
-   */
-  infraPhase?: "workspace" | "harness";
 }
 
 /** User-level per-harness defaults (from the global config) applied at route time. */
@@ -1785,7 +1763,6 @@ export class Orchestrator {
     };
   }
 
-  /** Run one candidate inside an already-created envelope. Never creates/disposes the envelope. */
   private async runCandidateInEnvelope(
     routed: RoutedAdapter,
     envelope: WorkspaceEnvelope,
@@ -1809,11 +1786,11 @@ export class Orchestrator {
     budgetGuard?: (streamedUsd: number) => boolean,
     runInput?: RunInput,
     streamDeltas = false,
+    fileBackedContext?: string,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(routed, contract, modelHint, effortHint);
-    // In-place envelopes can resume native sessions; isolated scoped homes cannot,
-    // so their session ids are never retained after disposal.
+    // Isolated scoped-home sessions are never retained after disposal.
     const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
     const rawContextPacket = await rawContextForEnvelope(routed.implementationTransport, envelope);
     const sessionFields = runInput ? this.sessionSpecFields(runInput, adapter.id, log) : undefined;
@@ -1898,6 +1875,10 @@ export class Orchestrator {
     }
     try {
       for (let nativeTry = 0; !signal?.aborted; nativeTry += 1) {
+        const clearFileBackedContext = stageFileBackedContext(
+          envelope.worktree_path,
+          fileBackedContext,
+        );
         const runSpec =
           nativeTry === 0
             ? spec
@@ -1971,31 +1952,23 @@ export class Orchestrator {
                 items: safeEv.plan_progress.items,
               });
             }
-            if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-              cost += safeEv.usage.cost_usd;
-              if (safeEv.usage.estimated) costEstimated = true;
-              log?.emit("budget.observation", {
-                harness_id: adapter.id,
-                attempt_id: attemptId,
-                kind: "spend",
-                usd: safeEv.usage.cost_usd,
-                estimated: safeEv.usage.estimated === true,
+            if (safeEv.type === "usage") {
+              const usage = processAttemptUsage({
+                event: safeEv,
+                authMode: telemetry.authMode,
+                harnessId: adapter.id,
+                attemptId,
+                cost,
+                costEstimated,
+                emit: (type, payload) => log?.emit(type, payload),
+                budgetGuard,
+                cancel: () => void adapter.cancel?.(runSpec.session_id)?.catch(() => {}),
               });
-              // Mid-flight cap enforcement: the guard raises this attempt's hold
-              // to the streamed cost; a hard tier aborts NOW instead of letting a
-              // streaming candidate overshoot the paid budget until settlement.
-              const valuationOnly =
-                safeEv.usage.estimated === true && telemetry.authMode === "local_session";
-              if (!valuationOnly && budgetGuard?.(cost)) {
+              cost = usage.cost;
+              costEstimated = usage.costEstimated;
+              if (usage.hardCapReached) {
                 harnessErrored = true;
                 errors.push("budget hard cap reached mid-attempt; stream aborted");
-                log?.emit("budget.observation", {
-                  harness_id: adapter.id,
-                  attempt_id: attemptId,
-                  kind: "cooldown",
-                  detail: "hard cap mid-flight abort",
-                });
-                void adapter.cancel?.(runSpec.session_id)?.catch(() => {});
                 break;
               }
             }
@@ -2024,6 +1997,8 @@ export class Orchestrator {
           // error here and let the caller settle the REAL accumulated spend.
           harnessErrored = true;
           errors.push(safeErrorMessage(err));
+        } finally {
+          clearFileBackedContext();
         }
 
         const transient = telemetry.transientFailures.at(-1) ?? null;
@@ -2158,9 +2133,6 @@ export class Orchestrator {
       // must carry it so the slot catch settles the TRUE cost, not 0.
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), { costUsd: cost });
     }
-    store.writeText(join(attemptDir, "patch.diff"), diff);
-    // Routing metrics (one owner in runSupport; clean attempts only —
-    // auth-route evidence recorded regardless).
     recordCleanAttemptMetrics(globalConfigDir(), adapter.id, {
       costUsd: cost,
       streamMs: attemptStreamEndedMs - attemptStartedMs,
@@ -2168,26 +2140,24 @@ export class Orchestrator {
       aborted: signal?.aborted === true,
       authMode: telemetry.authMode,
     });
-    const attemptDiffstat = diffStats(diff);
-    store.writeYaml(join(attemptDir, "attempt.yaml"), {
-      attempt_id: attemptId,
-      harness_id: adapter.id,
-      label,
-      cost_usd: cost,
-      cost_estimated: costEstimated,
-      errored,
-      errors: errors.slice(0, 5),
-      ...telemetrySummary(telemetry),
-      outcome: telemetry.outcome,
-      gates: gates.map((g) => ({ id: g.id, status: g.status })),
-      // Candidate-card evidence: the Candidates tab renders per-attempt
-      // diffstat without re-parsing patch bytes client-side.
-      diffstat: {
-        files: attemptDiffstat.paths.length,
-        additions: attemptDiffstat.additions,
-        deletions: attemptDiffstat.deletions,
+    const producedFiles = writeCandidateAttemptArtifacts({
+      store,
+      attemptDir,
+      worktreePath: envelope.worktree_path,
+      diff,
+      record: {
+        attempt_id: attemptId,
+        harness_id: adapter.id,
+        label,
+        cost_usd: cost,
+        cost_estimated: costEstimated,
+        errored,
+        errors: errors.slice(0, 5),
+        ...telemetrySummary(telemetry),
+        outcome: telemetry.outcome,
+        gates: gates.map((g) => ({ id: g.id, status: g.status })),
+        branch: envelope.branch_name,
       },
-      branch: envelope.branch_name,
     });
     return {
       attemptId,
@@ -2197,66 +2167,13 @@ export class Orchestrator {
       answerText,
       reviewCwd: envelope.worktree_path,
       baseSha: envelope.base_sha ?? undefined,
+      producedFiles,
       gates,
       cost,
       errored,
       costEstimated,
       errors: errors.slice(0, 8),
       telemetry,
-    };
-  }
-
-  private toEvidence(
-    run: CandidateRun,
-    contract: TaskContract,
-    findings: ReviewFinding[],
-    finalReviewClean: boolean,
-    reviewVerified = false,
-  ): CandidateEvidence {
-    const passed = gatesPassed(run.gates) && !run.errored;
-    // Honest acceptance evidence: 0/0 when the contract has no success criteria
-    // (no spec). The old code fabricated a 1/1 ("AC-implicit") cover, which made
-    // arbitration report a vacuous "acceptance=100%" that just restated gates.
-    const acTotal = contract.success_criteria.length;
-    const acCovered =
-      passed && contract.success_criteria.length > 0
-        ? contract.success_criteria.map((c) => c.id)
-        : [];
-    // Treat a harness error as a failed required gate so it cannot win arbitration.
-    const gates = run.errored
-      ? [
-          ...run.gates,
-          {
-            id: "harness",
-            command: "harness",
-            exit_code: 1,
-            status: "failed" as const,
-            duration_ms: 0,
-            required: true,
-            stdout_tail: null,
-            stderr_tail: null,
-            output_truncated: false,
-          },
-        ]
-      : run.gates;
-    return {
-      attemptId: run.attemptId,
-      label: run.label,
-      gates,
-      acceptanceCovered: acCovered,
-      acceptanceTotal: acTotal,
-      findings,
-      // Counted from the EVIDENCE gates (including the injected harness-failure
-      // gate), so an errored candidate scores 0/1 — never a vacuous 0/0.
-      testsPassed: gates.filter((g) => g.status === "passed").length,
-      testsTotal: gates.length,
-      finalReviewClean,
-      reviewVerified,
-      toolWarningsCount:
-        run.telemetry.outcome?.toolWarningsCount ?? toolWarnings(run.telemetry).length,
-      diffSize: run.diff.split("\n").length,
-      diffBytes: Buffer.byteLength(run.diff, "utf8"),
-      costUsd: run.cost,
     };
   }
 
@@ -2987,9 +2904,11 @@ export class Orchestrator {
         let envelope: WorkspaceEnvelope | undefined;
         try {
           const plan = buildSynthesisPlan(evidences);
-          const sourceDiffs = workingRuns
-            .map((r) => `### ${r.label} (${r.attemptId})\n${r.diff}`)
-            .join("\n\n");
+          const synthesisInput = buildFileBackedSynthesisInput({
+            instructions: plan.instructions,
+            findings: plan.fixFindings,
+            candidates: workingRuns,
+          });
           const synthAdapter = synthRouted.adapter;
           // Disclose against the PER-ROUTE policy (per-harness web defaults
           // included), exactly like the candidate slots do.
@@ -3007,14 +2926,13 @@ export class Orchestrator {
             dirtyPolicy: "snapshot",
             accessProfile: candidateAccess,
           });
-          const synthPrompt = `${plan.instructions}\n\nFindings to fix:\n${plan.fixFindings.map((f) => `- ${f}`).join("\n") || "(none)"}\n\nCandidate diffs:\n${sourceDiffs}`;
           const run = await this.runCandidateInEnvelope(
             synthRouted,
             envelope,
             "synth",
             "Synthesis",
             contract,
-            synthPrompt,
+            synthesisInput.prompt,
             store,
             paths,
             wsm,
@@ -3042,6 +2960,8 @@ export class Orchestrator {
             ),
             undefined,
             input,
+            false,
+            synthesisInput.content,
           );
           ledger.settle(
             lease.lease?.lease_id ?? "",
@@ -3226,6 +3146,13 @@ export class Orchestrator {
     store.writeYaml(join(paths.arbitrationDir, "pairwise.yaml"), result.pairwise);
     const decisionPath = join(paths.arbitrationDir, "decision.yaml");
     if (winnerRun) {
+      for (const path of materializeWinnerOutputs({
+        attemptDir: join(paths.attemptsDir, winnerRun.attemptId),
+        runRoot: paths.root,
+        paths: winnerRun.producedFiles ?? [],
+      })) {
+        log.emit("output.ready", { kind: "artifact", path });
+      }
       assertNoSecretLikeTokens("final patch diff", winnerRun.diff);
       const patchSha256 = sha256(winnerRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), winnerRun.diff);
@@ -3376,7 +3303,7 @@ export class Orchestrator {
       log.emit("output.ready", {
         kind: "summary",
         path: "final/summary.md",
-        ...(status === "success" ? {} : { state: "diagnostic" }),
+        state: status === "success" || winnerAnswer.length > 0 ? "ready" : "diagnostic",
       });
     }
 
@@ -3613,14 +3540,16 @@ export class Orchestrator {
                 distinctProviders: [],
                 reviewSpendUsd: 0,
                 reviewSpendEstimated: false,
+                reviewCashUsd: 0,
+                reviewValuationUsd: 0,
               };
         if (reviewLease?.granted) {
           ledger?.settle(
             reviewLease.lease?.lease_id ?? "",
-            usageCostSettlement(
-              result.reviewSpendUsd,
+            reviewUsageCostSettlement(
+              result.reviewCashUsd,
+              result.reviewValuationUsd,
               result.reviewSpendEstimated,
-              "review-usage",
               [`attempt:${run.attemptId}`, "review:panel"],
             ),
           );
@@ -3630,6 +3559,8 @@ export class Orchestrator {
               attempt_id: run.attemptId,
               kind: "spend",
               usd: result.reviewSpendUsd,
+              cash_usd: result.reviewCashUsd,
+              valuation_usd: result.reviewValuationUsd,
               estimated: result.reviewSpendEstimated === true,
             });
           }
@@ -3687,7 +3618,7 @@ export class Orchestrator {
             status: f.status,
           });
         evidences.push(
-          this.toEvidence(run, contract, allFindings, reviewClean, candidateReviewVerified),
+          toCandidateEvidence(run, contract, allFindings, reviewClean, candidateReviewVerified),
         );
       } finally {
         this.recordReviewEvidenceCleanup(
@@ -4185,14 +4116,16 @@ export class Orchestrator {
                       distinctProviders: [],
                       reviewSpendUsd: 0,
                       reviewSpendEstimated: false,
+                      reviewCashUsd: 0,
+                      reviewValuationUsd: 0,
                     };
               if (reviewLease?.granted) {
                 ledger.settle(
                   reviewLease.lease?.lease_id ?? "",
-                  usageCostSettlement(
-                    reviewResult.reviewSpendUsd,
+                  reviewUsageCostSettlement(
+                    reviewResult.reviewCashUsd,
+                    reviewResult.reviewValuationUsd,
                     reviewResult.reviewSpendEstimated,
-                    "review-usage",
                     [`attempt:${attemptId}`, "review:panel"],
                   ),
                 );
@@ -4202,6 +4135,8 @@ export class Orchestrator {
                     attempt_id: attemptId,
                     kind: "spend",
                     usd: reviewResult.reviewSpendUsd,
+                    cash_usd: reviewResult.reviewCashUsd,
+                    valuation_usd: reviewResult.reviewValuationUsd,
                     estimated: reviewResult.reviewSpendEstimated === true,
                   });
                   if (reviewResult.reviewSpendEstimated === true) reviewSpendEstimated = true;
@@ -4400,7 +4335,7 @@ export class Orchestrator {
     if (lastRun) {
       const arb = arbitrate(
         [
-          this.toEvidence(
+          toCandidateEvidence(
             lastRun,
             contract,
             lastFindings,
@@ -5093,6 +5028,7 @@ export class Orchestrator {
       if (lease.granted) {
         const res = await this.reviewScoped({
           candidateLabel: "Plan",
+          reviewSubject: "plan",
           diff: planReviewDiff,
           evidenceDir: reviewDir,
           artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
@@ -5116,16 +5052,20 @@ export class Orchestrator {
         });
         ledger.settle(
           lease.lease?.lease_id ?? "",
-          usageCostSettlement(res.reviewSpendUsd, res.reviewSpendEstimated, "review-usage", [
-            "attempt:plan-review",
-            "review:panel",
-          ]),
+          reviewUsageCostSettlement(
+            res.reviewCashUsd,
+            res.reviewValuationUsd,
+            res.reviewSpendEstimated,
+            ["attempt:plan-review", "review:panel"],
+          ),
         );
         if ((res.reviewSpendUsd ?? 0) > 0) {
           log.emit("budget.observation", {
             harness_id: "review-panel",
             kind: "spend",
             usd: res.reviewSpendUsd,
+            cash_usd: res.reviewCashUsd,
+            valuation_usd: res.reviewValuationUsd,
             estimated: res.reviewSpendEstimated,
           });
         }
@@ -6536,9 +6476,12 @@ export class Orchestrator {
         });
         ledger.settle(
           reviewLease.lease?.lease_id ?? "",
-          usageCostSettlement(result.reviewSpendUsd, result.reviewSpendEstimated, "review-usage", [
-            `orchestrate:review:${call.run_id}`,
-          ]),
+          reviewUsageCostSettlement(
+            result.reviewCashUsd,
+            result.reviewValuationUsd,
+            result.reviewSpendEstimated,
+            [`orchestrate:review:${call.run_id}`],
+          ),
         );
         const revalidated = await revalidateFindings(result.findings, {
           candidateRoot: input.repoRoot,
@@ -6561,7 +6504,7 @@ export class Orchestrator {
           detail: `reviewed ${call.run_id}: ${result.distinctProviders.length} family(ies), ${revalidated.length} finding(s), ${blockers} blocker(s)`,
           // Reviewer panels can spend real money on API-keyed routes; the
           // aggregate cap must charge it like any other step.
-          spendUsd: result.reviewSpendUsd ?? null,
+          spendUsd: result.reviewCashUsd,
         };
       }
       case "answer_question": {

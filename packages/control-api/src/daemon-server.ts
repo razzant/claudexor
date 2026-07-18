@@ -22,6 +22,7 @@ import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
+import { outputReadyState, primaryOutput } from "./primary-output.js";
 import {
   controlWebEvidence,
   eventPayload,
@@ -92,7 +93,6 @@ import {
   ControlRunListResponse,
   ControlRunSummary,
   ControlRunResult,
-  ControlPrimaryOutput,
   ControlBudgetSnapshot,
   PaidBudget,
   ControlSettingsSnapshot,
@@ -2304,7 +2304,11 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     webEvidence,
     requestRequirements: telemetry?.request_requirements ?? [],
     toolPermissionPolicy: task?.tool_permission_policy,
-    outputReadyState: outputReadyState(rec),
+    outputReadyState: outputReadyState(
+      rec,
+      parsedMode.success ? parsedMode.data : null,
+      readFailure(rec),
+    ),
     toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
     result: controlRunResult(rec),
     route: controlRoute(telemetry, p),
@@ -2372,7 +2376,7 @@ function detailFor(
     summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
     lastSeq,
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
-    primaryOutput: primaryOutput(rec),
+    primaryOutput: primaryOutput(rec, summary.mode, failure),
     timeline: timelineEvents(rec),
     budget: budgetSnapshot(rec, decision),
     finalSummary: readTextArtifact(rec, "final/summary.md"),
@@ -2412,66 +2416,6 @@ function readRawTextArtifact(rec: DaemonRunRecord, relPath: string): string | nu
   const st = lstatSync(path);
   if (st.isSymbolicLink() || st.isDirectory()) return null;
   return readFileSync(path, "utf8");
-}
-
-function primaryOutput(rec: DaemonRunRecord): ControlPrimaryOutput | null {
-  const p = paramsRecord(rec);
-  const mode = typeof p["mode"] === "string" ? p["mode"] : "";
-  const candidates =
-    mode === "ask"
-      ? [
-          // A structured-output run's deliverable is the schema-conformant
-          // JSON; it exists only when the run carried an outputSchema.
-          { kind: "structured_output" as const, path: "final/output.json" },
-          { kind: "answer" as const, path: "final/answer.md" },
-        ]
-      : mode === "plan"
-        ? [{ kind: "plan" as const, path: "final/plan.md" }]
-        : mode === "audit"
-          ? [
-              { kind: "report" as const, path: "final/report.md" },
-              { kind: "report" as const, path: "final/explore.md" },
-              { kind: "summary" as const, path: "final/summary.md" },
-            ]
-          : mode === "orchestrate"
-            ? [
-                { kind: "report" as const, path: "final/orchestration.md" },
-                { kind: "summary" as const, path: "final/summary.md" },
-              ]
-            : [
-                { kind: "structured_output" as const, path: "final/output.json" },
-                // An agent answer-only turn (empty diff + prose) writes final/answer.md;
-                // it must win over the arbitration summary so the chat shows the answer,
-                // not "# Run … no_op … Candidates …" (review #1).
-                { kind: "answer" as const, path: "final/answer.md" },
-                { kind: "summary" as const, path: "final/summary.md" },
-                { kind: "patch" as const, path: "final/patch.diff" },
-              ];
-  for (const candidate of candidates) {
-    const text = readTextArtifact(rec, candidate.path);
-    if (text && text.trim()) {
-      const bytes = Buffer.byteLength(text, "utf8");
-      return ControlPrimaryOutput.parse({ ...candidate, text, bytes });
-    }
-  }
-  const failure = readFailure(rec);
-  if (failure) {
-    return ControlPrimaryOutput.parse({
-      kind: "diagnostic",
-      path: failure.rawDetailRef ?? "final/failure.yaml",
-      text: failure.safeMessage,
-      bytes: Buffer.byteLength(failure.safeMessage, "utf8"),
-    });
-  }
-  return null;
-}
-
-function outputReadyState(rec: DaemonRunRecord): "pending" | "finalizing" | "ready" | "diagnostic" {
-  const primary = primaryOutput(rec);
-  if (primary?.kind === "diagnostic") return "diagnostic";
-  if (primary?.text && primary.text.trim()) return "ready";
-  if (TERMINAL_STATES.has(rec.state)) return readFailure(rec) ? "diagnostic" : "finalizing";
-  return "pending";
 }
 
 function parseAccessMaybe(value: unknown): AccessProfile | undefined {

@@ -51,20 +51,16 @@ struct TurnCard: View {
                 Spacer(minLength: 48)
                 // Bounded before layout (sol #16): a pasted megabyte prompt
                 // must not lay out unbounded on the main thread.
-                // The ACCENT side of the conversation (owner visual QA 2.1.2):
-                // a clearly tinted bubble with a hairline accent stroke, so
-                // user and assistant sides never read as the same gray.
                 Text(turn.prompt.count > 8_000 ? String(turn.prompt.prefix(8_000)) + "…" : turn.prompt)
                     .font(.body)
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.sm + 2)
+                    .padding(.vertical, Theme.Spacing.sm)
+                    // Quiet, elegant user identity (owner visual QA): enough
+                    // accent to distinguish the side, never a saturated block.
                     .background(
-                        Theme.userBubbleFill,
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous)
-                            .stroke(Theme.userBubbleStroke, lineWidth: 1))
+                        Theme.accent.opacity(0.14),
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             }
             assistantSection
         }
@@ -177,7 +173,8 @@ struct TurnCard: View {
                         // lays out the full text on the main thread (the W23
                         // hang class); the whole answer renders on Show more.
                         MarkdownOutputView(markdown: long && !answerExpanded ? String(answer.prefix(4_000)) : answer,
-                                           fileScopeRoots: [run.repoRoot, run.runDir].compactMap { $0 })
+                                           fileScopeRoots: [run.repoRoot, run.runDir].compactMap { $0 },
+                                           bodyFont: .body)
                             .frame(maxHeight: long && !answerExpanded ? 260 : nil, alignment: .top)
                             .clipped()
                         if long {
@@ -191,18 +188,17 @@ struct TurnCard: View {
                     }
                     // W-C5: the FINAL answer is the loudest element of the turn
                     // — its own accent-edged bubble, visually distinct from the
-                    // dimmed narration above and rhyming with the user bubble
-                    // (same continuous radius family; owner visual QA 2.1.2).
+                    // dimmed narration above.
                     .padding(Theme.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
-                        Theme.accent.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
+                        Theme.surfaceRaisedHi,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
                     .overlay(alignment: .leading) {
                         UnevenRoundedRectangle(
-                            cornerRadii: .init(topLeading: Theme.Radius.bubble, bottomLeading: Theme.Radius.bubble))
-                            .fill(Theme.accent.opacity(0.55))
-                            .frame(width: 3)
+                            cornerRadii: .init(topLeading: Theme.Radius.control, bottomLeading: Theme.Radius.control))
+                            .fill(Theme.accent.opacity(0.45))
+                            .frame(width: 2)
                     }
                 }
                 // QUIET outcome rows (W4.1 order: after the answer): what the
@@ -256,7 +252,10 @@ struct TurnCard: View {
         }
         .padding(Theme.Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface(hover: run != nil)
+        // The assistant remains a neutral content card, improved with one
+        // quiet accent hairline — same design family as the user bubble, but a
+        // distinct side and hierarchy.
+        .cardSurface(strokeColor: Theme.accent.opacity(0.22), hover: run != nil)
         .contentShape(Rectangle())
         // Clicking the card toggles its Activity strip (V16a) — the inspector
         // opens ONLY via the explicit ⧉ affordance in the status line. Buttons

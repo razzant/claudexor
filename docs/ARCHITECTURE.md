@@ -293,6 +293,19 @@ gate/test path portion of that policy. Frozen SpecPacks and repo config cannot
 carry approvals; they may declare protected paths, but operator approval is
 always supplied on the current run.
 
+Large synthesis inputs are file-backed: findings + full candidate diffs land
+temporarily as `.claudexor-synthesis-input.md` inside the synthesis envelope,
+the argv prompt only instructs the harness to read it, and the file is removed
+before every diff/gate/review (including native retries). This prevents
+`spawn E2BIG` without truncating evidence or polluting the candidate patch.
+
+Disposable candidate envelopes also preserve bounded raster outputs before
+cleanup (PNG/JPEG/WebP/GIF, 16 MiB each / 32 MiB total) under the attempt's
+run-artifact tree. The winner's copies materialize at the run root so relative
+markdown screenshot links remain inspectable after the worktree is disposed;
+they remain INTERNAL run evidence until the patch is applied to the project,
+preserving INV-051's two artifact planes.
+
 `auto` is evidence-driven: it permits web tools where the harness supports them
 and records whether the harness actually attempted web. If a web tool is
 attempted and its `tool_result` errors, the attempt is `web-unsatisfied` until a
@@ -407,7 +420,10 @@ eligible profile with `route.profile.rotated` provenance; and
 no-deliverable, no-mutation try (`rotation_retry_eligible`) rotates the next
 try onto a NEW vendor session under the next profile, each profile at most
 once per attempt. Credentials never change inside a running spawn; a
-rotation INTO a spent profile is refused by the same headroom check.
+rotation INTO a spent profile is refused by the same headroom check. When no
+target survives (all spent/excluded/wrong-kind), the engine emits typed
+`route.profile.rotation_exhausted` with each rejected profile's reason and
+headroom evidence; the UI surfaces the exhaustion instead of implying a switch.
 
 The DEFAULT subject participates under the same opt-in policy (auto-balance):
 with no pinned profile and `limit_action: rotate`, a fresh default-store
@@ -727,7 +743,11 @@ choices and records answers through `POST /v2/spec/sessions/:id/answers`, then
 `POST /v2/spec/sessions/:id/freeze` freezes the SpecPack under the daemon-owned
 external data root. The returned session carries `specId`, `specDir`, `specPath`
 and `specHash`. List/get/cancel/resume use the same durable session authority;
-an in-flight operation becomes `interrupted_unknown` after restart. An Implement run is then a normal
+app-created sessions also persist their owning `threadId`, so opening that
+thread after restart restores questions/answers/frozen state. Legacy unbound
+sessions are recovered only when exactly one active session matches the
+project — never guessed. An in-flight operation becomes `interrupted_unknown`
+after restart. An Implement run is then a normal
 agent thread turn: `POST /v2/threads/:id/turns` carrying that `specPath`, so the
 agent runs against the frozen SpecPack contract rather than a bare prompt. The
 interview is multi-tier (`priorDecisions` carries earlier answers into the next
@@ -1056,6 +1076,11 @@ requires at least two distinct observed provider families. CLI
 send the same DTO but must not invent reviewer readiness outside doctor/status
 and declared intent.
 
+Reviewer prompts carry a typed subject. A Plan reviewer evaluates the read-only
+plan's feasibility/scope/risks/questions and is explicitly forbidden from
+reporting absent implementation, tests, or screenshots as defects. Code review
+retains the normal patch contract.
+
 Paid budgets use an explicit tagged contract: `{kind: unlimited}` or
 `{kind: finite, maxUsd >= 0}`. CLI `--max-usd N` is syntax sugar for the finite
 form, including `--max-usd 0`; zero and null never mean unlimited. The default
@@ -1063,7 +1088,10 @@ comes from `budget.paid_budget_per_run`. A single root ledger grants leases to
 planner, candidates, synthesis, nested orchestrate runs, and review, and settles
 observed spend even when work errors. Every route carries cost knowledge
 (`exact | estimated | unknown`), billing knowledge, source, and provenance.
-Subscription token valuation is telemetry, not a cash debit. `finite(0)` admits
+Subscription token valuation is telemetry, not a cash debit — estimated OR
+exact, for candidates and each reviewer route. Mixed review panels settle
+native reviewers to valuation and API-key reviewers to cash independently;
+their aggregate is never blindly charged as cash. `finite(0)` admits
 only proven-zero or subscription-entitlement work; a positive finite cap permits
 at most one unknown-cost paid unit in flight. A later exact charge above the cap
 is retained and ends `exhausted_overshoot`; permanently unknown cost ends

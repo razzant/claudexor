@@ -180,8 +180,10 @@ claudexor orchestrate "ship the v2 parser refactor across this repo"
 
 A credential profile is an ADDITIVE identity for one harness beyond its
 default login: register several Claude or Codex subscriptions side by side,
-each in its own isolated vendor config dir (the default `~/.claude` / native
-codex home is never touched), or as namespaced secret-store keys
+each in its own isolated vendor config dir. Claudexor's default Claude and
+Codex logins are also Claudexor-owned (`~/.claudexor/v2/native/...`);
+ordinary `~/.claude` / `~/.codex` stores are never used or mutated. Profiles
+may alternatively use namespaced secret-store keys
 (`anthropic:work`, `openai:acc2`). Profiles are durable non-secret entries in
 the global config's `credential_profiles`; secret material stays in the vendor
 dir or the secret store.
@@ -194,13 +196,13 @@ claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
 claudexor agent "fix the parser" --profile work   # explicit per-run selection
 ```
 
-In the macOS app the composer's "⋯" options panel has an **Account** picker
-(the sticky per-thread profile) and a **Manage accounts…** sheet that lists
-every registered account with its readiness and walks you through adding a new
-subscription (register, then the interactive vendor login in Terminal — vendor
-OAuth needs your own browser). Selection is turn > thread-sticky > engine
-default, and an explicit profile is STRICT — exactly its transport or a typed
-refusal, never a silent fallback.
+In the macOS app, the bottom-left accounts control and Settings → Harnesses →
+Manage share ONE account surface: default + named accounts, readiness/quota,
+Log in/Manage, Remove, and Add another account. **Use** pins a named account to
+the current thread (or draft); **Use automatic account routing** clears it.
+Vendor OAuth still runs through the official CLI/browser setup job. Selection
+is turn > thread-sticky > engine default, and an explicit profile is STRICT —
+exactly its transport or a typed refusal, never a silent fallback.
 Vendor-session resume never crosses profiles. Subscription quota is tracked
 per profile from the vendor's own `oauth/usage` endpoint (proactive
 five-hour/seven-day/per-model percentages in the app's quota footer, one chip

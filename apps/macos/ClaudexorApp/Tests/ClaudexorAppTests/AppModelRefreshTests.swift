@@ -89,6 +89,62 @@ struct AppModelRefreshTests {
     }
 
     @MainActor
+    @Test func durableSpecSessionRestoresItsOwningThreadAfterRestart() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/spec/sessions" else {
+                throw AppRefreshTestError.badRequest
+            }
+            let json = #"{"sessions":[{"sessionId":"spec-1","threadId":"th-1","prompt":"improve it","scope":{"kind":"project","root":"/tmp/project","context":"auto"},"state":"questions","planRunId":"plan-1","questions":[{"id":"q1","tier":0,"prompt":"Style?","kind":"single","options":[{"id":"o1","label":"Neon"}],"allow_text":false,"rationale":null}],"answers":[],"priorDecisions":[],"specId":null,"specPath":null,"specHash":null,"error":null,"updatedAt":"2026-07-18T00:00:00Z"}]}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+
+        await model.recoverSpecFlow(threadId: "th-1", repoRoot: "/tmp/project")
+
+        guard case .askingQuestions(let prompt, let questions, let planDir, _, _, _)
+            = model.specFlowByThread["th-1"] else {
+            Issue.record("expected restored askingQuestions state")
+            return
+        }
+        #expect(prompt == "improve it")
+        #expect(questions.map(\.id) == ["q1"])
+        #expect(planDir == "spec-1")
+    }
+
+    @MainActor
+    @Test func runListRefreshDoesNotNPlusOneHydrateEmptyReviewFindings() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        let detailCalls = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            if request.url?.path == "/v2/runs" {
+                let json = #"{"runs":[{"runId":"r1","state":"succeeded"},{"runId":"r2","state":"failed"},{"runId":"r3","state":"blocked"}]}"#
+                return (appResponse(for: request), Data(json.utf8))
+            }
+            if request.url?.path.hasPrefix("/v2/runs/") == true {
+                detailCalls.increment()
+            }
+            throw AppRefreshTestError.badRequest
+        }
+
+        await model.refreshRuns()
+
+        #expect(model.liveTasks.count == 3)
+        #expect(detailCalls.count == 0)
+    }
+
+    @MainActor
     @Test func threadHeadPingRefetchesThreadListOnceAndDropsStaleRevisions() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
@@ -720,6 +776,110 @@ struct AppModelRefreshTests {
 
         #expect(model.liveBoxes["run-delayed"]?.spendUsd == 2)
         #expect(model.liveBoxes["run-delayed"]?.spendKnown == true)
+    }
+
+    @MainActor
+    @Test func runHydrationDoesNotFetchOrRenderRawDiagnosticsArtifacts() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.liveTasks = [TaskRun(
+            id: "run-diag", title: "Run", prompt: "", mode: .agent, status: .failed,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+        let artifactFetches = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            if request.url?.path == "/v2/runs/run-diag" {
+                let json = #"{"summary":{"runId":"run-diag","state":"failed","mode":"agent"},"lastSeq":10,"artifacts":[{"path":"events.jsonl","kind":"file","bytes":3000000},{"path":"attempts/a01/rollout.jsonl","kind":"file","bytes":5000000},{"path":"final/patch.diff","kind":"file","bytes":2461063}]}"#
+                return (appResponse(for: request), Data(json.utf8))
+            }
+            if request.url?.path.contains("/artifacts/") == true {
+                if request.url?.path.contains("events.jsonl") == true
+                    || request.url?.path.contains("rollout.jsonl") == true
+                    || request.url?.path.contains("patch.diff") == true {
+                    artifactFetches.increment()
+                }
+                if request.url?.path.contains("patch.diff") == true {
+                    let patch = """
+                    diff --git a/a.txt b/a.txt
+                    --- a/a.txt
+                    +++ b/a.txt
+                    @@ -1 +1 @@
+                    -old
+                    +new
+
+                    """
+                    return (appResponse(for: request), Data(patch.utf8))
+                }
+                return (
+                    HTTPURLResponse(
+                        url: request.url!, statusCode: 404,
+                        httpVersion: "HTTP/1.1", headerFields: nil)!,
+                    Data()
+                )
+            }
+            throw AppRefreshTestError.badRequest
+        }
+
+        await model.loadRunDetail("run-diag")
+
+        #expect(artifactFetches.count == 0)
+        let summary = model.liveTasks.first?.diagnosticText ?? ""
+        #expect(summary.contains("events.jsonl · 3000000 bytes"))
+        #expect(summary.contains("not loaded into the UI"))
+        #expect(summary.count < 2_000)
+
+        await model.loadRunDiff("run-diag")
+        #expect(artifactFetches.count == 1)
+        #expect(model.liveTasks.first?.diff.count == 1)
+    }
+
+    @MainActor
+    @Test func milestoneBurstSharesOneDetailLoadAndAtMostOneTrailingRefresh() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.liveTasks = [TaskRun(
+            id: "run-burst", title: "Run", prompt: "", mode: .agent, status: .running,
+            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )]
+        let calls = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs/run-burst" else {
+                throw AppRefreshTestError.badRequest
+            }
+            calls.increment()
+            Thread.sleep(forTimeInterval: 0.08)
+            let json = #"{"summary":{"runId":"run-burst","state":"running","mode":"agent"},"lastSeq":10}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+
+        let first = Task { await model.loadRunDetail("run-burst") }
+        try? await Task.sleep(for: .milliseconds(20))
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<5 {
+                group.addTask { await model.loadRunDetail("run-burst") }
+            }
+        }
+        await first.value
+
+        #expect(calls.count == 2)
     }
 
     /// W4.3: vendor cost ticks are VALUATION — they must never move the cash

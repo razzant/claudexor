@@ -1,5 +1,16 @@
 # @claudexor/delivery
 
+## 2.1.3
+
+### Patch Changes
+
+- @claudexor/core@2.1.3
+- @claudexor/policy@2.1.3
+- @claudexor/review@2.1.3
+- @claudexor/schema@2.1.3
+- @claudexor/util@2.1.3
+- @claudexor/workspace@2.1.3
+
 ## 2.1.2
 
 ### Patch Changes

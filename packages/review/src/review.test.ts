@@ -815,6 +815,63 @@ describe("reviewEngine", () => {
     expect(res.routeProofs.every((p) => p.status === "verified")).toBe(true);
   });
 
+  it("separates native reviewer valuation from API-key cash", async () => {
+    const costReviewer = (
+      id: string,
+      family: ProviderFamily,
+      route: "vendor_native" | "managed_api_key",
+      cost: number,
+    ): ReviewerSpec => ({
+      providerFamily: family,
+      adapter: {
+        id,
+        async discover() {
+          throw new Error("not used");
+        },
+        async doctor() {
+          throw new Error("not used");
+        },
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield {
+            type: "started" as const,
+            session_id: spec.session_id,
+            ts,
+            observed_model: `${id}-model`,
+            credential_route: route,
+          };
+          yield {
+            type: "usage" as const,
+            session_id: spec.session_id,
+            ts,
+            credential_route: route,
+            usage: { cost_usd: cost, estimated: false },
+          };
+          yield {
+            type: "message" as const,
+            session_id: spec.session_id,
+            ts,
+            credential_route: route,
+            text: "```json\n[]\n```",
+          };
+          yield { type: "completed" as const, session_id: spec.session_id, ts };
+        },
+      },
+    });
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate",
+      diff: "diff --git a/a b/a\n",
+      ...makeReviewWorkspace(),
+      reviewers: [
+        costReviewer("native", "anthropic", "vendor_native", 0.75),
+        costReviewer("api", "openai", "managed_api_key", 0.25),
+      ],
+    });
+    expect(result.reviewSpendUsd).toBe(1);
+    expect(result.reviewCashUsd).toBe(0.25);
+    expect(result.reviewValuationUsd).toBe(0.75);
+  });
+
   it("runs reviewers concurrently while preserving input-ordered results and telemetry", async () => {
     let active = 0;
     let maxActive = 0;

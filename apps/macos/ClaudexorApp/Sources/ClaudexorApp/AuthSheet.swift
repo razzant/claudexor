@@ -50,6 +50,7 @@ struct AuthSheet: View {
     }
     private var nativeHarness: SetupHarness? { SetupHarness(rawValue: family.setupHarnessId) }
     private var job: SetupJob? { lifecycle.job }
+    private var activeJobMatchesTarget: Bool { job.map { $0.profileId == profileId } ?? true }
     private var hasActiveJob: Bool { job?.isActive == true }
     private var activeStateUnknown: Bool {
         lifecycle.connection == .recovering || lifecycle.connection == .streamLost
@@ -91,7 +92,14 @@ struct AuthSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
-                    header
+                    AuthSheetHeader(
+                        family: family,
+                        profileDisplayName: profileDisplayName,
+                        backDisabled: closeRequiresConfirmation && activeJobMatchesTarget,
+                        back: {
+                            model.authSheetTarget = AuthSheetTarget(family: family)
+                        },
+                        done: requestClose)
                     readinessPanel
                     if nativeHarness != nil, !supportsAccountsPanel { nativeSetupPanel }
                     if supportsAccountsPanel {
@@ -125,39 +133,35 @@ struct AuthSheet: View {
                 .padding(Theme.Spacing.xl)
             }
 
-            Divider().overlay(Theme.separator)
-            // W4.8: ONE prominent CTA by cause; Done is primary only when
-            // there is nothing to fix (healthy) or we're observing a job.
-            HStack {
-                if let job, job.isActive {
-                    Label(AuthSheetPresentation.jobStatusLine(
-                        state: job.state, phase: job.phase,
-                        outcomeReason: job.outcome?.reason.rawValue,
-                        exitCode: job.outcome?.exitCode
-                    ), systemImage: "circle.dotted")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            if showsActionFooter {
+                Divider().overlay(Theme.separator)
+                // ONE prominent CTA by cause; a quiet/healthy sheet closes
+                // through the always-visible header Done instead of duplicating
+                // Done at both edges.
+                HStack {
+                    if let job, job.isActive {
+                        Label(AuthSheetPresentation.jobStatusLine(
+                            state: job.state, phase: job.phase,
+                            outcomeReason: job.outcome?.reason.rawValue,
+                            exitCode: job.outcome?.exitCode
+                        ), systemImage: "circle.dotted")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    let cta = primaryCTA
+                    if cta != .done {
+                        Button(cta.label) { Task { await performPrimary(cta) } }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Theme.accentSolid)
+                            .disabled(actionInFlight || (cta == .login && newSetupDisabled))
+                            .help(cta.help(family: family.label, busy: actionInFlight,
+                                           loginBlocked: cta == .login && newSetupDisabled))
+                        Button("Done") { requestClose() }.buttonStyle(.bordered)
+                    }
                 }
-                Spacer()
-                let cta = primaryCTA
-                if cta == .done {
-                    Button("Done") { requestClose() }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accentSolid)
-                        .help("Close this auth sheet. An active setup job asks whether to keep running or cancel.")
-                } else {
-                    Button(cta.label) { Task { await performPrimary(cta) } }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accentSolid)
-                        .disabled(actionInFlight || (cta == .login && newSetupDisabled))
-                        .help(cta.help(family: family.label, busy: actionInFlight,
-                                       loginBlocked: cta == .login && newSetupDisabled))
-                    Button("Done") { requestClose() }
-                        .buttonStyle(.bordered)
-                        .help("Close this auth sheet. An active setup job asks whether to keep running or cancel.")
-                }
+                .padding(Theme.Spacing.lg)
             }
-            .padding(Theme.Spacing.lg)
         }
         .frame(width: 600, height: 720)
         .interactiveDismissDisabled(closeRequiresConfirmation)
@@ -182,25 +186,6 @@ struct AuthSheet: View {
             $0.profile.profileId == profileId && $0.profile.harnessId == family.setupHarnessId
         }
         return entry?.profile.displayName ?? profileId
-    }
-
-    private var header: some View {
-        HStack(spacing: Theme.Spacing.md) {
-            HarnessLogo(family: family, size: 26)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(profileDisplayName.map { "\(family.label) · \($0)" } ?? "\(family.label) Auth")
-                    .font(.title3.weight(.semibold))
-                Text(profileDisplayName == nil
-                    ? "Native session first; API-key fallback only through the local secret store."
-                    : "Native login for this account. The default login stays untouched.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button { requestClose() } label: { Image(systemName: "xmark") }
-                .buttonStyle(.borderless)
-                .help("Close \(family.label) Auth. An active setup job asks whether to keep running or cancel.")
-        }
     }
 
     /// W4.7-UI: the shared readiness card (typed rows + "copy raw") for the
@@ -324,6 +309,8 @@ struct AuthSheet: View {
             blocksReplacement: job?.blocksReplacement == true
         )
     }
+
+    private var showsActionFooter: Bool { primaryCTA != .done || hasActiveJob || actionInFlight || activeStateUnknown }
 
     private func performPrimary(_ cta: AuthSheetPresentation.PrimaryCTA) async {
         switch cta {

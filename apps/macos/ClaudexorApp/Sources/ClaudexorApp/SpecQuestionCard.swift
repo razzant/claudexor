@@ -83,39 +83,47 @@ struct SpecQuestionCard: View {
                     .foregroundStyle(.secondary)
             }
 
-            ForEach(questions) { question in
-                VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                    Text(question.prompt).font(.callout.weight(.medium))
-                    if let rationale = question.rationale, !rationale.isEmpty {
-                        Text(rationale)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !question.options.isEmpty {
-                        FlowLayout(spacing: Theme.Spacing.sm) {
-                            ForEach(question.options, id: \.id) { option in
-                                Button {
-                                    toggle(question: question, optionId: option.id)
-                                } label: {
-                                    Text(option.label)
-                                        .font(.caption.weight(.medium))
-                                        .padding(.horizontal, Theme.Spacing.md)
-                                        .padding(.vertical, Theme.Spacing.xs)
+            // Interviews can contain many long questions/options. Keep the
+            // header/actions stable and virtualize a bounded scrolling middle
+            // instead of forcing the whole window to lay out one giant card.
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    ForEach(questions) { question in
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            Text(question.prompt).font(.callout.weight(.medium))
+                            if let rationale = question.rationale, !rationale.isEmpty {
+                                Text(rationale)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if !question.options.isEmpty {
+                                FlowLayout(spacing: Theme.Spacing.sm) {
+                                    ForEach(question.options, id: \.id) { option in
+                                        Button {
+                                            toggle(question: question, optionId: option.id)
+                                        } label: {
+                                            Text(option.label)
+                                                .font(.caption.weight(.medium))
+                                                .padding(.horizontal, Theme.Spacing.md)
+                                                .padding(.vertical, Theme.Spacing.xs)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .selectedChip(active: selections[question.id, default: []].contains(option.id))
+                                    }
                                 }
-                                .buttonStyle(.plain)
-                                .selectedChip(active: selections[question.id, default: []].contains(option.id))
+                            }
+                            // Free text only when the server allows it, or for
+                            // a pure-text question.
+                            if question.allowText || question.options.isEmpty {
+                                TextField("Answer in your own words…", text: binding(for: question.id))
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.callout)
                             }
                         }
                     }
-                    // Free text only when the server allows it (allow_text), or when
-                    // the question has no options to pick from (a pure text card).
-                    if question.allowText || question.options.isEmpty {
-                        TextField("Answer in your own words…", text: binding(for: question.id))
-                            .textFieldStyle(.roundedBorder)
-                            .font(.callout)
-                    }
                 }
             }
+            .frame(height: min(320, max(160, CGFloat(questions.count) * 64)))
 
             HStack(spacing: Theme.Spacing.md) {
                 Button { askDeeper() } label: {

@@ -131,6 +131,15 @@ pnpm test
   unreadable glass behind dense content, and hover help gaps.
 - Check every sheet or blocking subflow has a visible close/Done or Back/Continue
   path.
+- INV-136 stress story: open a multi-harness run with large rollouts/events,
+  switch threads and enter Diagnostics. Assert hydration fetches no raw
+  event/rollout/log bodies, chat discloses its bounded tail, Diagnostics stays
+  metadata-first, and the app remains responsive. Full evidence must still
+  open from the run folder.
+- Exercise a long Spec interview at compact height: questions/options scroll
+  lazily inside a bounded middle while header and Ask deeper/Freeze/Cancel stay
+  visible and clickable. Restart the app, reopen the owning thread, and verify
+  its durable session/questions/prior answers restore (never a blank chat).
 - Check the inline per-turn review/diff surfaces and other dense content (in the
   run inspector and on turn cards) do not force the whole app window to a wide
   fixed minimum.
@@ -292,6 +301,13 @@ pnpm test
 - When the required review gate names exact reviewers or repeated models from
   the same harness, use the explicit `reviewerPanel` / `--reviewer-panel` path
   and verify the per-reviewer telemetry records every requested entry separately.
+- Plan-review prompts must declare `reviewSubject=plan`: verify reviewers do
+  not block on implementation/tests/screenshots that belong to the future
+  executor; only feasibility, scope, sequencing, risks, acceptance coverage,
+  and unresolved decisions are reviewable.
+- Review-panel spend is route-scoped: native subscription reviewers settle to
+  valuation, API-key reviewers to cash. Verify mixed panels preserve both
+  totals and never debit the aggregate as cash.
 - Reviewers must read file-backed evidence (`DIFF.patch`, `DIFF_SUMMARY.md`,
   user intent, decided tradeoffs, tests) from the candidate tree. Do not pass the
   full diff through the process argv or a giant prompt as the normal review path.
@@ -299,6 +315,21 @@ pnpm test
   remote OpenRouter chat models that cannot read local files, so its prompt IS
   the evidence transport. Its prompts and raw outputs are persisted
   untruncated per round.)
+- Synthesis follows the same argv-size law: candidate diffs/findings are a
+  temporary file inside the synthesis envelope, never concatenated into the
+  process prompt. Verify the file is recreated on retry and removed before
+  diff/gate/review; a race with large/binary diffs must not fail `spawn E2BIG`.
+- When a candidate answer links generated screenshots, verify bounded raster
+  copies survive envelope disposal in the run-artifact plane and the winner's
+  relative markdown links resolve; do not claim dead worktree paths.
+- Cursor parser fixtures must cover `{failure:{exitCode}}` tool results as
+  errors and use the last complete assistant message as typed final (not the
+  concatenated terminal `result`).
+- Candidate cards: errored/unverified attempts can never project
+  `finalReviewClean=true`; expose the first redacted error reason. Zero
+  configured gates render `n/a`, not “passed”.
+- Auto-rotation with no surviving profile emits
+  `route.profile.rotation_exhausted` with per-profile rejection/headroom facts.
 - Persist local/redacted per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse

@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-opencode",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "license": "MIT",
   "description": "OpenCode adapter (opencode run --format json).",
   "type": "module",

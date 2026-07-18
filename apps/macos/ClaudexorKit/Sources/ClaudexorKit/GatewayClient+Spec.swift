@@ -20,6 +20,18 @@ private struct SpecSessionWire: Decodable {
 }
 
 extension GatewayClient {
+    public func specSessions() async throws -> [SpecSessionSnapshot] {
+        let req = request("spec/sessions", method: "GET")
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GatewayError.http(
+                status: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                body: String(decoding: data, as: UTF8.self))
+        }
+        struct Response: Decodable { let sessions: [SpecSessionSnapshot] }
+        return try Self.decoder.decode(Response.self, from: data).sessions
+    }
+
     public func specQuestions(_ body: SpecQuestionsRequest) async throws -> SpecQuestionsResponse {
         var req = request("spec/sessions", method: "POST", timeout: 1_200)
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

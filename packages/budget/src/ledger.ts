@@ -430,6 +430,22 @@ export function usageCostSettlement(
     : { knowledge: "unknown", source: `${source}-missing`, provenance };
 }
 
+export function reviewUsageCostSettlement(
+  cashUsd: number,
+  valuationUsd: number,
+  estimated: boolean,
+  provenance: string[],
+): BudgetSettlement {
+  const observed = cashUsd > 0 || valuationUsd > 0;
+  return {
+    knowledge: observed ? (estimated ? "estimated" : "exact") : "unknown",
+    source: observed ? "review-usage" : "review-usage-missing",
+    provenance,
+    cashUsd: Math.max(0, cashUsd),
+    valuationUsd: Math.max(0, valuationUsd),
+  };
+}
+
 export function attemptUsageCostSettlement(
   cashUsd: number,
   estimated: boolean,
@@ -437,11 +453,7 @@ export function attemptUsageCostSettlement(
   harnessId: string,
   authMode?: "local_session" | "api_key" | null,
 ): BudgetSettlement {
-  // Vendor-reported cost on a native subscription route is VALUATION,
-  // regardless of whether the vendor labels it estimated or exact. It never
-  // becomes incremental cash (live-found: Claude reported estimated=false
-  // and the UI incorrectly showed ~$0.37 cash for subscription work).
-  if (authMode === "local_session") {
+  if (isSubscriptionValuation(authMode)) {
     return {
       knowledge: "unknown",
       source: "harness-token-valuation",
@@ -454,6 +466,15 @@ export function attemptUsageCostSettlement(
     `harness:${harnessId}`,
     ...(authMode ? [`route:${authMode}`] : []),
   ]);
+}
+
+/** One owner for the W4.3 fact used at settlement AND mid-flight cap checks. */
+export function isSubscriptionValuation(authMode?: "local_session" | "api_key" | null): boolean {
+  // Vendor-reported cost on a native subscription route is VALUATION,
+  // regardless of whether the vendor labels it estimated or exact. It never
+  // becomes incremental cash (live-found: Claude reported estimated=false
+  // and the UI incorrectly showed ~$0.37 cash for subscription work).
+  return authMode === "local_session";
 }
 
 export function unknownCostSettlement(source: string, cashUsd?: number): BudgetSettlement {

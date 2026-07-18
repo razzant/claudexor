@@ -126,13 +126,16 @@ public struct SpecPriorDecision: Codable, Sendable, Equatable {
 
 public struct SpecQuestionsRequest: Codable, Sendable {
     public var prompt: String
+    public var threadId: String?
     public var scope: RunScope
     public var harnesses: [String]?
     /// Accumulated prior-tier decisions → the interview goes deeper each round.
     public var priorDecisions: [SpecPriorDecision]?
 
-    public init(prompt: String, scope: RunScope, harnesses: [String]? = nil, priorDecisions: [SpecPriorDecision]? = nil) {
+    public init(prompt: String, threadId: String? = nil, scope: RunScope,
+                harnesses: [String]? = nil, priorDecisions: [SpecPriorDecision]? = nil) {
         self.prompt = prompt
+        self.threadId = threadId
         self.scope = scope
         self.harnesses = harnesses
         self.priorDecisions = priorDecisions
@@ -470,13 +473,6 @@ public struct ArtifactInfo: Codable, Sendable, Identifiable, Equatable {
     /// server; lets a gallery render text vs image vs pdf. Absent for directories.
     public let mime: String?
     public var id: String { path }
-}
-
-public struct PrimaryOutput: Codable, Sendable, Equatable {
-    public let kind: String
-    public let path: String
-    public let text: String?
-    public let bytes: Int?
 }
 
 public struct WebEvidence: Codable, Sendable, Equatable {

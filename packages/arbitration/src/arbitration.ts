@@ -171,7 +171,7 @@ const CRITERIA: {
 function criterionValue(key: string, c: CandidateEvidence): string {
   switch (key) {
     case "gates":
-      return requiredGatesPassed(c) ? "required gates passed" : "required gates FAILED";
+      return requiredGateLabel(c);
     case "gates_coverage":
       return `acceptance ${(acceptanceFraction(c) * 100).toFixed(0)}%`;
     case "blockers":
@@ -181,6 +181,11 @@ function criterionValue(key: string, c: CandidateEvidence): string {
     default:
       return key;
   }
+}
+
+function requiredGateLabel(candidate: CandidateEvidence): string {
+  if (!candidate.gates.some((gate) => gate.required)) return "required gates n/a (none configured)";
+  return requiredGatesPassed(candidate) ? "required gates passed" : "required gates FAILED";
 }
 
 function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseComparison {
@@ -302,11 +307,11 @@ export function arbitrate(
     winner: winner.attemptId,
     status,
     outcome,
-    why_winner: `${winner.label}: gates=${requiredGatesPassed(winner)}, gates_coverage=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
+    why_winner: `${winner.label}: gates=${requiredGateLabel(winner)}, gates_coverage=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
     why_not_others: whyNot,
     accepted_risks: acceptedRisks,
     final_checks: [
-      `required gates ${requiredGatesPassed(winner) ? "passed" : "FAILED"}`,
+      requiredGateLabel(winner),
       `final cross-family review ${winner.finalReviewClean ? "clean" : "not clean"}`,
       ...(tiedWithRunnerUp
         ? [

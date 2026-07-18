@@ -319,8 +319,30 @@ struct AccountsSurface: View {
         }
     }
 
+    private var selectedProfileId: String? {
+        model.selectedThreadId == nil
+            ? model.draftCredentialProfileId
+            : model.currentThread?.credentialProfileId
+    }
+
+    private var selectedHarnessId: String? {
+        model.selectedThreadId == nil
+            ? model.draftPrimaryHarness
+            : model.currentThread?.primaryHarness
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            if selectedProfileId != nil {
+                Button {
+                    Task { await model.setThreadCredentialProfile(nil) }
+                } label: {
+                    Label("Use automatic account routing", systemImage: "arrow.triangle.branch")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Clear the thread's manual account choice and return to the engine-default ladder")
+            }
             accountsList
             if let notice = deleteNotice {
                 Text(notice).font(.caption2).foregroundStyle(Theme.status(.failed))
@@ -361,6 +383,17 @@ struct AccountsSurface: View {
                         row: row,
                         login: { login(row) },
                         loginDisabled: loginDisabled(row),
+                        selected: row.isProfile
+                            && row.profileId == selectedProfileId
+                            && (selectedHarnessId == nil || selectedHarnessId == row.harnessId),
+                        use: row.isProfile && row.verified
+                            ? {
+                                Task {
+                                    await model.setThreadCredentialProfile(
+                                        row.profileId, harnessId: row.harnessId)
+                                }
+                            }
+                            : nil,
                         delete: row.isProfile && !deleting ? { pendingDelete = row } : nil
                     )
                 }
@@ -453,6 +486,8 @@ private struct AccountRowView: View {
     let row: AccountRowModel
     let login: () -> Void
     var loginDisabled = false
+    var selected = false
+    var use: (() -> Void)? = nil
     /// Present when the account can be removed (registered profiles only —
     /// default vendor logins are not Claudexor's to delete).
     var delete: (() -> Void)? = nil
@@ -484,6 +519,18 @@ private struct AccountRowView: View {
                 .help(row.verified
                     ? "Manage this account's native login"
                     : "Start the official CLI login for this account — a Terminal window opens automatically")
+            if selected {
+                Label("Using", systemImage: "checkmark")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.accent)
+                    .help("This thread is pinned to this account")
+            } else if let use {
+                Button("Use", action: use)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(Theme.accentSolid)
+                    .help("Pin this account to the current thread (or the new draft thread)")
+            }
             if let delete {
                 Button(role: .destructive, action: delete) {
                     Image(systemName: "trash")

@@ -5,6 +5,16 @@ import Testing
 /// Owner dogfood: the internal profile id is DERIVED, never typed. The
 /// generator must always emit a server-valid slug, unique per harness.
 @Suite struct AccountsPresentationTests {
+    @MainActor
+    @Test func draftAccountSelectionPersistsAndClearsInTheOneAccountsSurface() async {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        await model.setThreadCredentialProfile("work", harnessId: "claude")
+        #expect(model.draftCredentialProfileId == "work")
+        #expect(model.draftPrimaryHarness == "claude")
+        await model.setThreadCredentialProfile(nil)
+        #expect(model.draftCredentialProfileId == nil)
+    }
+
     @Test func generatedIdSlugifiesTheDisplayName() {
         #expect(AccountsPresentation.generatedProfileId(displayName: "Work", existing: []) == "work")
         #expect(AccountsPresentation.generatedProfileId(displayName: "Experiment A (max)", existing: [])

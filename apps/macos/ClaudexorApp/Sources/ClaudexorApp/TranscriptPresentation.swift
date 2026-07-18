@@ -26,6 +26,11 @@ enum TranscriptPresentation {
 
     /// Consecutive OK tools with one name collapse once the run exceeds this.
     private static let groupThreshold = 3
+    /// Chat is a progress summary, not the raw event artifact. Bound rendered
+    /// rows and per-message text so a verbose multi-harness run cannot make
+    /// SwiftUI lay out hundreds of rows / hundreds of thousands of characters.
+    static let chatRowLimit = 80
+    static let chatMessageCharLimit = 4_000
 
     static func rows(_ blocks: [TranscriptBlock]) -> [Row] {
         var rows: [Row] = []
@@ -72,5 +77,21 @@ enum TranscriptPresentation {
         }
         flushTools()
         return rows
+    }
+
+    static func chatRows(_ blocks: [TranscriptBlock]) -> (rows: [Row], omitted: Int) {
+        let all = rows(blocks)
+        let omitted = max(0, all.count - chatRowLimit)
+        return (Array(all.suffix(chatRowLimit)), omitted)
+    }
+
+    static func chatMessage(_ text: String) -> (text: String, omittedCharacters: Int) {
+        guard text.count > chatMessageCharLimit else { return (text, 0) }
+        let omitted = text.count - chatMessageCharLimit
+        return (
+            String(text.prefix(chatMessageCharLimit))
+                + "\n\n_\(omitted) more characters are available in Diagnostics / events.jsonl._",
+            omitted
+        )
     }
 }

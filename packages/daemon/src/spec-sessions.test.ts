@@ -20,6 +20,7 @@ function fixture(root?: string) {
 
 const request = {
   prompt: "Implement durable specs",
+  threadId: "th-test",
   scope: { kind: "project" as const, root: "/tmp/project", context: "auto" as const },
 };
 
@@ -30,6 +31,7 @@ describe("SpecSessionStore", () => {
     const repeated = f.store.create({ request, idempotencyKey: "create-1", clientId: "test" });
     expect(repeated.reused).toBe(true);
     expect(repeated.session.sessionId).toBe(created.session.sessionId);
+    expect(created.session.threadId).toBe("th-test");
 
     const id = created.session.sessionId;
     f.store.completeGrounding(id, {
@@ -62,7 +64,11 @@ describe("SpecSessionStore", () => {
     f.journal.close();
 
     const restarted = fixture(f.dir);
-    expect(restarted.store.get(id)).toMatchObject({ state: "frozen", specId: "spec-1" });
+    expect(restarted.store.get(id)).toMatchObject({
+      state: "frozen",
+      specId: "spec-1",
+      threadId: "th-test",
+    });
     restarted.journal.close();
   });
 

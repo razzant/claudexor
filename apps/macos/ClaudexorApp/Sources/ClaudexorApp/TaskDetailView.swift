@@ -110,6 +110,9 @@ struct TaskDetailView: View {
             // P3 eviction drops off-screen terminal feeds, and this is the
             // reload that restores them from the server timeline.
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
+            .task(id: "\(task.id):\(tab.rawValue)") {
+                if tab == .diff { await model.loadRunDiff(task.id) }
+            }
             .sheet(isPresented: $showRunAgain) { runAgainSheet }
         } else {
             EmptyStateView(title: "Run not found", message: "This run is no longer available.", systemImage: "questionmark.folder")
@@ -271,7 +274,13 @@ struct TaskDetailView: View {
                         }
                     }
                 }
-                DiffView(files: task.diff)
+                if task.diff.isEmpty,
+                   task.artifactPaths.contains("final/patch.diff") {
+                    ProgressView("Loading diff…")
+                        .controlSize(.small)
+                } else {
+                    DiffView(files: task.diff)
+                }
             }
         case .review:
             reviewContent(task)
@@ -288,7 +297,8 @@ struct TaskDetailView: View {
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     MarkdownOutputView(markdown: answer,
-                                       fileScopeRoots: [task.repoRoot, task.runDir].compactMap { $0 })
+                                       fileScopeRoots: [task.repoRoot, task.runDir].compactMap { $0 },
+                                       bodyFont: .body)
                 } else {
                     Text(task.outputReadyState == "finalizing" ? "Run is terminal; output is still finalizing. Open Diagnostics for events and artifact paths." : "No answer artifact yet. Open Diagnostics for engine state, events, and artifact paths.")
                         .font(.callout).foregroundStyle(.secondary)
@@ -392,15 +402,15 @@ struct TaskDetailView: View {
 
     private func diagnosticsContent(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            SectionLabel("Diagnostics", systemImage: "stethoscope")
+            SectionLabel("Diagnostics summary", systemImage: "stethoscope")
             HStack(spacing: Theme.Spacing.sm) {
                 Button {
                     copyDiagnostics(task)
                 } label: {
-                    Label("Copy Diagnostics", systemImage: "doc.on.doc")
+                    Label("Copy Summary", systemImage: "doc.on.doc")
                 }
                 .buttonStyle(.bordered)
-                .help("Copy the visible diagnostics text and run metadata.")
+                .help("Copy the bounded diagnostics summary and run metadata.")
                 Button {
                     if let runDir = task.runDir { NSWorkspace.shared.open(URL(fileURLWithPath: runDir)) }
                 } label: {

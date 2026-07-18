@@ -721,20 +721,6 @@ export const ControlRunSummary = z
   );
 export type ControlRunSummary = z.infer<typeof ControlRunSummary>;
 
-export const ControlPrimaryOutput = z
-  .object({
-    kind: z
-      .enum(["answer", "report", "plan", "summary", "patch", "diagnostic", "structured_output"])
-      .describe(
-        "What kind of output this is: answer, report, plan, summary, patch, diagnostic, or structured_output (schema-conformant final/output.json).",
-      ),
-    path: z.string().describe("Artifact path of the output."),
-    text: z.string().nullable().default(null).describe("Inline text content, when loaded."),
-    bytes: z.number().int().nonnegative().optional().describe("Size of the output in bytes."),
-  })
-  .describe("The run's primary user-facing output artifact.");
-export type ControlPrimaryOutput = z.infer<typeof ControlPrimaryOutput>;
-
 export const ControlTimelineEvent = z
   .object({
     type: z.string().describe("Run event type."),

@@ -15,6 +15,18 @@
                 "pattern": "\\S",
                 "description": "User-supplied string that must contain visible content, not just whitespace."
               },
+              "threadId": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlSpecSessionListResponse/properties/sessions/items/properties/sessionId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "User-supplied string that must contain visible content, not just whitespace.",
+                "default": null
+              },
               "prompt": {
                 "type": "string"
               },

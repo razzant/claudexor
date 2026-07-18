@@ -38,6 +38,15 @@ import {
 } from "./findings.js";
 import { buildReviewPrompt } from "./reviewPrompt.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
+import type {
+  ReviewerArtifactContext,
+  ReviewerAuthMode,
+  ReviewCandidateResult,
+  ReviewerOutput,
+  ReviewerWorkspace,
+} from "./reviewRuntimeTypes.js";
+export type { ReviewCandidateResult } from "./reviewRuntimeTypes.js";
+import { reviewerAuthMode, summarizeReviewerSpend } from "./reviewRuntimeTypes.js";
 
 export interface ReviewerSpec {
   adapter: HarnessAdapter;
@@ -49,6 +58,8 @@ export interface ReviewerSpec {
 
 export interface ReviewCandidateInput {
   candidateLabel: string;
+  /** Typed deliverable under review: plans are not implementation patches. */
+  reviewSubject?: "code" | "plan";
   diff: string;
   evidenceDir: string;
   artifactsDir?: string;
@@ -66,23 +77,6 @@ export interface ReviewCandidateInput {
   env?: Record<string, string>;
   signal?: AbortSignal;
   onReviewerEvent?: (event: ReviewerProgressEvent) => void;
-}
-
-export interface ReviewCandidateResult {
-  findings: ReviewFinding[];
-  routeProofs: RouteProof[];
-  reviewerRequests: {
-    harness_id: string;
-    provider_family: ProviderFamily;
-    requested_model: string | null;
-    requested_effort: string | null;
-  }[];
-  crossFamilyHealthy: boolean;
-  healthyProviders: ProviderFamily[];
-  crossFamilyVerified: boolean;
-  distinctProviders: ProviderFamily[];
-  reviewSpendUsd: number;
-  reviewSpendEstimated: boolean;
 }
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60_000;
@@ -125,31 +119,6 @@ export interface ReviewerProgressEvent {
   duration_ms?: number;
   message?: string;
   review_wave_id?: string;
-}
-
-interface ReviewerOutput {
-  text: string;
-  observedModel?: string;
-  observedSource: RouteProof["observed"]["evidence_source"];
-  costUsd: number;
-  costEstimated: boolean;
-}
-
-interface ReviewerArtifactContext {
-  dir: string;
-  progressPath: string;
-  metadataPath: string;
-  eventsPath: string;
-  transcriptPath: string;
-  promptPath: string;
-  parsedPath: string;
-  parseErrorPath: string;
-  metadata: Record<string, unknown>;
-}
-
-interface ReviewerWorkspace {
-  root: string;
-  evidenceDir: string;
 }
 
 function readExistingDiffEvidence(dir: string, diff: string): DiffEvidence {
@@ -222,6 +191,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const healthyReviewerIndexes = new Set<number>();
   const reviewSpendByReviewer = input.reviewers.map(() => 0);
   const reviewSpendEstimatedByReviewer = input.reviewers.map(() => false);
+  const reviewAuthModeByReviewer: ReviewerAuthMode[] = input.reviewers.map(() => null);
   const reviewerTimeoutMs = input.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
   const reviewWaveId =
     input.env?.["CLAUDEXOR_REVIEW_WAVE_ID"] ?? process.env["CLAUDEXOR_REVIEW_WAVE_ID"] ?? null;
@@ -328,6 +298,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         reviewerWorkspace.evidenceDir,
         reviewerPatch,
         input.evidenceReadOnly === true,
+        input.reviewSubject ?? "code",
       );
       spec = HarnessRunSpec.parse({
         session_id: newId("rev"),
@@ -405,6 +376,7 @@ ${runtimePrompt}
       routeSource = out.observedSource;
       reviewSpendByReviewer[index] = out.costUsd;
       reviewSpendEstimatedByReviewer[index] = out.costEstimated;
+      reviewAuthModeByReviewer[index] = out.authMode;
       if (!routeModel && reviewer.requestedModel) {
         routeModel = reviewer.requestedModel;
         routeSource = "metadata";
@@ -416,6 +388,7 @@ ${runtimePrompt}
         partialCostEstimated?: boolean;
         partialObservedModel?: string;
         partialObservedSource?: RouteProof["observed"]["evidence_source"];
+        partialAuthMode?: "local_session" | "api_key" | null;
         partialText?: string;
       };
       if (typeof partial?.partialText === "string" && partial.partialText.trim() !== "") {
@@ -424,6 +397,7 @@ ${runtimePrompt}
       if (partial && typeof partial.partialCostUsd === "number" && partial.partialCostUsd > 0) {
         reviewSpendByReviewer[index] = partial.partialCostUsd;
         reviewSpendEstimatedByReviewer[index] = partial.partialCostEstimated === true;
+        reviewAuthModeByReviewer[index] = partial.partialAuthMode ?? null;
       }
       if (partial?.partialObservedModel) {
         streamObservedModel = partial.partialObservedModel;
@@ -557,8 +531,11 @@ ${runtimePrompt}
       healthyProviders,
       crossFamilyVerified: observedFamilies.length >= 2,
       distinctProviders: observedFamilies,
-      reviewSpendUsd: reviewSpendByReviewer.reduce((sum, spend) => sum + spend, 0),
-      reviewSpendEstimated: reviewSpendEstimatedByReviewer.some(Boolean),
+      ...summarizeReviewerSpend(
+        reviewSpendByReviewer,
+        reviewAuthModeByReviewer,
+        reviewSpendEstimatedByReviewer,
+      ),
     };
   } finally {
     await cleanupTemporaryReviewerWorkspaceBaseDir(reviewerWorkspaceBaseDir, artifactsBaseDir);
@@ -600,6 +577,7 @@ async function collectReviewerOutput(
   let firstEventTime: string | null = null;
   let observedModel: string | undefined;
   let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
+  let observedAuthMode: "local_session" | "api_key" | null = null;
   let costUsd = 0;
   let costEstimated = false;
   let partialText = "";
@@ -631,6 +609,10 @@ async function collectReviewerOutput(
           at: eventTime,
           ...authSwitch,
         });
+      }
+      if (!observedAuthMode) {
+        observedAuthMode = reviewerAuthMode(ev.credential_route);
+        if (observedAuthMode) updateReviewerMetadata(artifact, { auth_mode: observedAuthMode });
       }
       if (!firstEventTime) {
         firstEventTime = eventTime;
@@ -731,6 +713,7 @@ async function collectReviewerOutput(
       observedSource: attemptObservedSource,
       costUsd,
       costEstimated,
+      authMode: observedAuthMode,
     };
   };
   const consume = consumeOnce(0);
@@ -747,6 +730,7 @@ async function collectReviewerOutput(
         Object.assign(new Error("Reviewer cancelled"), {
           partialCostUsd: costUsd,
           partialCostEstimated: costEstimated,
+          partialAuthMode: observedAuthMode,
           partialObservedModel: observedModel,
           partialObservedSource: observedSource,
           partialText,
@@ -788,6 +772,7 @@ async function collectReviewerOutput(
           Object.assign(new Error(`Reviewer timed out after ${timeoutMs}ms`), {
             partialCostUsd: costUsd,
             partialCostEstimated: costEstimated,
+            partialAuthMode: observedAuthMode,
             partialObservedModel: observedModel,
             partialObservedSource: observedSource,
             partialText,
@@ -825,6 +810,7 @@ async function collectReviewerOutput(
       Object.assign(err as Record<string, unknown>, {
         partialCostUsd: costUsd,
         partialCostEstimated: costEstimated,
+        partialAuthMode: observedAuthMode,
         partialObservedModel: observedModel,
         partialObservedSource: observedSource,
         partialText,

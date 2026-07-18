@@ -77,7 +77,11 @@ enum RunDetailMapping {
                 finalReviewClean: c.finalReviewClean,
                 // The verified chip: cross-family route-proof status is
                 // evidence the operator should SEE, not a hidden field.
-                summary: c.reviewVerified ? "\(c.harnessId) · \(c.attemptId) · verified" : "\(c.harnessId) · \(c.attemptId)",
+                summary: [
+                    "\(c.harnessId) · \(c.attemptId)",
+                    c.reviewVerified ? "verified" : nil,
+                    c.errored ? (c.errorReason ?? "attempt errored") : nil,
+                ].compactMap { $0 }.joined(separator: " · "),
                 filesChanged: c.diffstat?.files ?? 0,
                 added: c.diffstat?.additions ?? 0,
                 removed: c.diffstat?.deletions ?? 0

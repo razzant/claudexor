@@ -447,8 +447,12 @@ no `model_call_id` is a NEW-TEXT delta (flagged), `timestamp_ms` +
 the complete flush; `thinking`/`reasoning` → `thinking`; variant-keyed
 `tool_call` objects (`shellToolCall`, `writeToolCall`, …) → `tool_call` on
 `started`, `tool_result` (+ `file_change`) on `completed`/`failed`, nothing
-on `updated`; terminal `result` → `usage` + the FINAL `message` (success and
-not `is_error` only). No typed rate-limit path exists: transient conditions
+on `updated`; a native `{failure:{exitCode|error}}` result is an ERROR even
+when the outer subtype says completed. On successful terminal `result`, the
+adapter finalizes the LAST complete assistant flush
+(`final_source: assistant_message`) rather than Cursor's concatenated `result`
+string; it falls back to `result` only when no complete assistant frame exists.
+No typed rate-limit path exists: transient conditions
 surface as generic `error` events — honest degradation, never invented
 status.
 

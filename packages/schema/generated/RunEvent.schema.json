@@ -49,6 +49,7 @@
             "route.transient.retry_scheduled",
             "route.profile.headroom_exceeded",
             "route.profile.rotated",
+            "route.profile.rotation_exhausted",
             "route.transient.exhausted",
             "route.fallback.auth_switched",
             "session.rebound",

@@ -20,6 +20,7 @@ interface RawAttempt {
   cost_usd?: unknown;
   cost_estimated?: unknown;
   errored?: unknown;
+  errors?: unknown;
   gates?: unknown;
   diffstat?: { files?: unknown; additions?: unknown; deletions?: unknown };
 }
@@ -53,11 +54,14 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
       costUsd: typeof raw.cost_usd === "number" ? raw.cost_usd : 0,
       costEstimated: raw.cost_estimated === true,
       errored: raw.errored === true,
+      errorReason:
+        Array.isArray(raw.errors) && typeof raw.errors[0] === "string" ? raw.errors[0] : null,
       gatesPassed: gates.filter((g) => g.status === "passed").length,
       gatesTotal: gates.length,
       blockers,
       reviewVerified: review?.review_verified === true,
-      finalReviewClean: review ? blockers === 0 : null,
+      finalReviewClean:
+        raw.errored === true ? false : review?.review_verified === true ? blockers === 0 : null,
       winner: decision?.winner === raw.attempt_id,
       diffstat:
         raw.diffstat && typeof raw.diffstat === "object"

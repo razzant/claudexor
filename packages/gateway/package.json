@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/gateway",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "license": "MIT",
   "description": "HarnessGateway: discovery, conformance intent-gating, and harness selection.",
   "type": "module",

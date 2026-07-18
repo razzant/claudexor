@@ -7,7 +7,7 @@ describe("parseCursorEvent", () => {
     const parse = createCursorParser();
     const events = [
       parse({ type: "system", subtype: "init", model: "gpt-5" }, "s1"),
-      parse({ type: "assistant", message: { content: [{ text: "hello" }] } }, "s1"),
+      parse({ type: "assistant", message: { content: [{ text: "All done" }] } }, "s1"),
       // Documented headless shape: tool_call.writeToolCall.args.path + subtype lifecycle.
       parse(
         {
@@ -105,6 +105,35 @@ describe("parseCursorEvent", () => {
     expect(out[0]?.tool?.error_summary).toContain("exit 1");
   });
 
+  it("maps native completed-tool failure payloads to error, never ok", () => {
+    const parse = createCursorParser();
+    parse(
+      {
+        type: "tool_call",
+        subtype: "started",
+        call_id: "native-failure",
+        tool_call: { editToolCall: { args: { path: "game.js" } } },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "tool_call",
+        subtype: "completed",
+        call_id: "native-failure",
+        tool_call: {
+          editToolCall: {
+            args: { path: "game.js" },
+            result: { failure: { exitCode: 1, error: "Invalid arguments: path required" } },
+          },
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.tool?.status).toBe("error");
+    expect(out[0]?.tool?.error_summary).toContain("failure");
+  });
+
   it("maps rejected tool calls to denied diagnostics, not ok", () => {
     const parse = createCursorParser();
     parse(
@@ -152,5 +181,23 @@ describe("parseCursorEvent", () => {
     expect(msg?.final).toBeUndefined();
     expect(failed.some((e) => e.type === "error")).toBe(true);
     expect(parseCursorEvent({ type: "brand_new_event" }, "s1")).toBeNull();
+  });
+
+  it("uses the last complete assistant message as final, not Cursor's concatenated result", () => {
+    const parse = createCursorParser();
+    parse({ type: "assistant", message: { content: [{ text: "progress" }] } }, "s1");
+    parse({ type: "assistant", message: { content: [{ text: "Final answer only" }] } }, "s1");
+    const result = parse(
+      {
+        type: "result",
+        subtype: "success",
+        result: "progressFinal answer only",
+      },
+      "s1",
+    ) as HarnessEvent[];
+    const final = result.find((event) => event.type === "message");
+    expect(final?.text).toBe("Final answer only");
+    expect(final?.final).toBe(true);
+    expect(final?.payload?.["final_source"]).toBe("assistant_message");
   });
 });
