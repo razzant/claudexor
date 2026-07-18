@@ -117,7 +117,9 @@ export async function runSetupLoginWorker(
   try {
     const spawnOptions: SpawnOptions = {
       cwd: manifest.cwd,
-      env: nativeLoginEnv(manifest.harness),
+      // A sealed profileConfigDir (INV-135) scopes the vendor login to the
+      // profile's own store; absent = the default vendor store as before.
+      env: nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
       detached: false,
       stdio: "inherit",
     };

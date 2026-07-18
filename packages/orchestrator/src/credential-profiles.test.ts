@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { CredentialProfile } from "@claudexor/schema";
 import {
   nextEligibleProfile,
+  planReactiveRotation,
+  preflightDefaultSubject,
   profileHeadroomBreach,
   resolveCredentialProfile,
+  rotateSpecOnTypedLimit,
   rotationRetryEligible,
 } from "./credential-profiles.js";
+import { HarnessRunSpec as HarnessRunSpecSchema } from "@claudexor/schema";
 import type { QuotaSnapshot } from "@claudexor/schema";
 
 const work: CredentialProfile = {
@@ -136,5 +140,138 @@ describe("rotationRetryEligible (sol #30 predicate)", () => {
     expect(rotationRetryEligible({ sawTypedLimit: true, deliverableEmpty: true })).toBe(true);
     expect(rotationRetryEligible({ sawTypedLimit: false, deliverableEmpty: true })).toBe(false);
     expect(rotationRetryEligible({ sawTypedLimit: true, deliverableEmpty: false })).toBe(false);
+  });
+});
+
+describe("default-subject auto-balance (INV-135 owner scope)", () => {
+  const a = { ...work, profile_id: "a" };
+  const b = { ...work, profile_id: "b" };
+  const keyed = {
+    ...work,
+    profile_id: "k",
+    credential_kind: "api_key" as const,
+    isolation_locator: null,
+    secret_ref: "anthropic:k",
+  };
+
+  it("null current (default subject) never rotates INTO an api_key profile — the round-16 BLOCK generalized", () => {
+    expect(nextEligibleProfile([keyed], "claude", policy, null, [])).toBeNull();
+    expect(nextEligibleProfile([keyed, a], "claude", policy, null, [])?.profile_id).toBe("a");
+  });
+
+  it("preflightDefaultSubject: rotate + fresh default breach starts on the next subscription profile with full provenance", () => {
+    const events: Array<[string, Record<string, unknown>]> = [];
+    const next = preflightDefaultSubject({
+      harnessId: "claude",
+      policy,
+      registry: [a, b],
+      snapshots: [snap(null, 0.95)],
+      emit: (type, payload) => events.push([type, payload]),
+    });
+    expect(next?.profile_id).toBe("a");
+    expect(events.map(([t]) => t)).toEqual([
+      "route.profile.headroom_exceeded",
+      "route.profile.rotated",
+    ]);
+    expect(events[0]?.[1]).toMatchObject({ profile_id: null, used_ratio: 0.95 });
+    expect(events[1]?.[1]).toMatchObject({ from_profile_id: null, to_profile_id: "a" });
+  });
+
+  it("preflightDefaultSubject is strictly opt-in: fail/ask keep the default user untouched (no events, no selection)", () => {
+    for (const limit_action of ["fail", "ask"] as const) {
+      const events: string[] = [];
+      const next = preflightDefaultSubject({
+        harnessId: "claude",
+        policy: { ...policy, limit_action },
+        registry: [a],
+        snapshots: [snap(null, 0.99)],
+        emit: (type) => events.push(type),
+      });
+      expect(next).toBeNull();
+      expect(events).toEqual([]);
+    }
+  });
+
+  it("preflightDefaultSubject never rotates on missing, healthy, or profile-scoped usage", () => {
+    const emit = () => {
+      throw new Error("no event expected");
+    };
+    const base = { harnessId: "claude", policy, registry: [a], emit };
+    expect(preflightDefaultSubject({ ...base, snapshots: [] })).toBeNull();
+    expect(preflightDefaultSubject({ ...base, snapshots: [snap(null, 0.5)] })).toBeNull();
+    // Profile "a" being spent says nothing about the DEFAULT subject.
+    expect(preflightDefaultSubject({ ...base, snapshots: [snap("a", 0.99)] })).toBeNull();
+  });
+
+  it("planReactiveRotation from the default subject REQUIRES the vendor_native route proof", () => {
+    const args = {
+      currentProfile: null,
+      harnessId: "claude",
+      attemptId: "a01",
+      policy,
+      registry: [a],
+      snapshots: [],
+      triedProfiles: new Set<string>(),
+      sawTypedLimit: true,
+      deliverableEmpty: true,
+      lastLimit: null,
+      emit: () => {},
+    };
+    expect(planReactiveRotation(args)).toBeNull();
+    expect(planReactiveRotation({ ...args, defaultRouteWasVendorNative: false })).toBeNull();
+    const events: Array<[string, Record<string, unknown>]> = [];
+    const next = planReactiveRotation({
+      ...args,
+      defaultRouteWasVendorNative: true,
+      emit: (type, payload) => events.push([type, payload]),
+    });
+    expect(next?.profile_id).toBe("a");
+    expect(events[0]?.[0]).toBe("route.profile.rotated");
+    expect(events[0]?.[1]).toMatchObject({ from_profile_id: null, to_profile_id: "a" });
+  });
+
+  it("rotateSpecOnTypedLimit rebuilds a profile-less spec onto the rotation target with a fresh session", () => {
+    const spec = HarnessRunSpecSchema.parse({
+      session_id: "se-1",
+      intent: "implement",
+      prompt: "go",
+      cwd: "/repo",
+      resume_session_id: "native-123",
+    });
+    const rotated = rotateSpecOnTypedLimit({
+      spec,
+      harnessId: "claude",
+      attemptId: "a01",
+      policy,
+      registry: [a],
+      snapshots: [],
+      triedProfiles: new Set<string>(),
+      sawTypedLimit: true,
+      deliverableEmpty: true,
+      lastLimit: null,
+      emit: () => {},
+      newSessionId: () => "se-2",
+      defaultRouteWasVendorNative: true,
+    });
+    expect(rotated?.credential_profile?.profile_id).toBe("a");
+    expect(rotated?.session_id).toBe("se-2");
+    expect(rotated?.resume_session_id).toBeNull();
+    // Without the route proof the profile-less spec must fail as-is.
+    expect(
+      rotateSpecOnTypedLimit({
+        spec,
+        harnessId: "claude",
+        attemptId: "a01",
+        policy,
+        registry: [a],
+        snapshots: [],
+        triedProfiles: new Set<string>(),
+        sawTypedLimit: true,
+        deliverableEmpty: true,
+        lastLimit: null,
+        emit: () => {},
+        newSessionId: () => "se-2",
+      }),
+    ).toBeNull();
   });
 });

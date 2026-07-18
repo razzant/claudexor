@@ -232,6 +232,15 @@ export const ControlSetupJobCreateRequest = z
     harness: ControlHarnessSetupHarness,
     action: ControlSetupJobAction,
     authRequest: z.literal("subscription"),
+    /** Target a REGISTERED config-dir credential profile (INV-135): the
+     * vendor login runs scoped to the profile's own dir and verification
+     * probes THE PROFILE — the default native store is never touched.
+     * Absent = the harness's default session (unchanged behavior). */
+    profileId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Registered config_dir_login profile to log in; absent = the default session."),
   })
   .strict()
   .describe("Request body to create an exact-subscription native-login job.");
@@ -242,6 +251,12 @@ export const ControlSetupJob = z
     jobId: Id.describe("Setup job id."),
     harness: ControlHarnessSetupHarness,
     action: ControlSetupJobAction,
+    /** Credential profile this login job targets; null = the default session. */
+    profileId: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Registered profile this login targets; null = the default session."),
     state: ControlSetupJobState,
     phase: ControlSetupJobPhase,
     deadlineAt: SetupTimestamp.optional().describe(
@@ -332,8 +347,14 @@ export const ControlSetupJob = z
     }
     const receipt =
       value.authCapability?.state === "completed" ? value.authCapability.receipt : undefined;
+    // DEFAULT-store logins prove success with the exact-route capability
+    // receipt. PROFILE jobs (INV-135) succeed on the profile's own doctor
+    // probe — the smoke attests the DEFAULT route only, so requiring it here
+    // would either spend quota on the wrong store's proof or forbid honest
+    // profile success (same contract as `claudexor profiles login`).
     if (
       value.state === "succeeded" &&
+      value.profileId === null &&
       (receipt?.verification !== "passed" ||
         receipt.effective !== "vendor_native" ||
         receipt.effectiveSource !== "native_session")
@@ -475,6 +496,10 @@ export const SetupLoginManifest = z
     binary: AbsolutePath,
     args: z.array(z.string()),
     cwd: AbsolutePath,
+    /** Scoped config dir for an INV-135 profile login (claude CLAUDE_CONFIG_DIR /
+     * codex CODEX_HOME). OPTIONAL, not defaulted: absent on default-store jobs so
+     * pre-existing manifests keep their sealed digest across a daemon upgrade. */
+    profileConfigDir: AbsolutePath.optional(),
     statePath: AbsolutePath,
     resultPath: AbsolutePath,
     permitPath: AbsolutePath,

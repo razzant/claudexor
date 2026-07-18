@@ -176,6 +176,7 @@ describe("DaemonControlApiServer", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       startedAt: "2026-01-01T00:00:01.000Z",
       finishedAt: null,
+      profileId: null,
       authCapability:
         state === "interrupted_unknown"
           ? {

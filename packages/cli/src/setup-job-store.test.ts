@@ -31,6 +31,7 @@ const job = (jobId: string, phase: ControlSetupJob["phase"] = "preparing"): Cont
   createdAt: "2026-01-01T00:00:00.000Z",
   startedAt: null,
   finishedAt: null,
+  profileId: null,
   authCapability: {
     attemptId: `attempt-${jobId}`,
     challengeDigest: "a".repeat(64),

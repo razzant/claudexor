@@ -117,3 +117,29 @@ export const ControlCredentialProfilesResponse = z
   .strict()
   .describe("Credential-profile registry listing with per-profile doctor readiness.");
 export type ControlCredentialProfilesResponse = z.infer<typeof ControlCredentialProfilesResponse>;
+
+/** Register a config-dir login profile (claude/codex) from a UI surface —
+ * the same ONE locked registration owner `claudexor profiles add` uses. */
+export const ControlCredentialProfileCreateRequest = z
+  .object({
+    harnessId: Id.describe("Harness family (claude | codex) for the config-dir login profile."),
+    profileId: Id.describe("New profile id (bounded slug, unique per harness)."),
+    displayName: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Human label shown wherever the account appears; defaults to the id."),
+  })
+  .strict()
+  .describe("Request body for POST /credential-profiles.");
+export type ControlCredentialProfileCreateRequest = z.infer<
+  typeof ControlCredentialProfileCreateRequest
+>;
+
+export const ControlCredentialProfileCreateResponse = z
+  .object({ profile: CredentialProfile, status: CredentialProfileStatus })
+  .strict()
+  .describe("The registered profile with its initial doctor readiness projection.");
+export type ControlCredentialProfileCreateResponse = z.infer<
+  typeof ControlCredentialProfileCreateResponse
+>;

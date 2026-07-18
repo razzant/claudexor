@@ -338,6 +338,16 @@
                 "$ref": "#/definitions/ControlSettingsSnapshot/properties/routing/properties/authPreference",
                 "default": "auto",
                 "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret."
+              },
+              "profileLimitAction": {
+                "type": "string",
+                "enum": [
+                  "fail",
+                  "ask",
+                  "rotate"
+                ],
+                "default": "fail",
+                "description": "Profile-selection limit action: fail (stop), ask (record), rotate (auto-switch to the next eligible account)."
               }
             },
             "additionalProperties": false,

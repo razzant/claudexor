@@ -532,6 +532,7 @@ files.
 - `GET /healthz`
 - `GET /v2/agent-capabilities`
 - `GET /v2/credential-profiles`
+- `POST /v2/credential-profiles`
 - `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`

@@ -220,6 +220,19 @@ export function userConfigDir(): string {
 }
 
 /**
+ * The ONE Claudexor-owned confinement root (round-22 DRY): under an explicit
+ * CLAUDEXOR_CONFIG_DIR override, that override IS the complete relocatable
+ * root; without it the owned tree is ~/.claudexor. Credential-profile
+ * locators and the isolation-locator confinement both derive from here —
+ * never re-derive this ternary inline.
+ */
+export function claudexorOwnedRoot(): string {
+  return process.env.CLAUDEXOR_CONFIG_DIR?.trim()
+    ? userConfigDir()
+    : join(userHomeDir(), ".claudexor");
+}
+
+/**
  * Stable external runtime namespace for a project.
  *
  * A repository's `.claudexor/` directory is user-owned, versionable project

@@ -99,6 +99,8 @@ import {
   ControlSettingsUpdateRequest,
   ControlQuotaResponse,
   ControlCredentialProfilesResponse,
+  ControlCredentialProfileCreateRequest,
+  ControlCredentialProfileCreateResponse,
   ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
@@ -241,6 +243,7 @@ export interface DaemonControlApiOptions {
       quota?: () => Promise<unknown>;
       refreshQuota?: () => Promise<unknown>;
       credentialProfiles?: () => Promise<unknown>;
+      createCredentialProfile?: (input: unknown) => Promise<unknown>;
       listSecrets?: () => Promise<unknown>;
       setSecret?: (input: unknown) => Promise<unknown>;
       deleteSecret?: (name: string) => Promise<unknown>;
@@ -1455,6 +1458,22 @@ export class DaemonControlApiServer {
       return this.service(res, "refreshQuota", undefined, ControlQuotaResponse);
     if (method === "GET" && path === "/credential-profiles")
       return this.service(res, "credentialProfiles", undefined, ControlCredentialProfilesResponse);
+    if (method === "POST" && path === "/credential-profiles") {
+      let body: ControlCredentialProfileCreateRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlCredentialProfileCreateRequest.parse(raw);
+      } catch (err) {
+        return this.requestError(res, err);
+      }
+      return this.service(
+        res,
+        "createCredentialProfile",
+        body,
+        ControlCredentialProfileCreateResponse,
+      );
+    }
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)
     const controlMatch = /^\/runs\/([^/]+)\/control$/.exec(path);
     if (method === "POST" && controlMatch) {

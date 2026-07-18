@@ -28,6 +28,14 @@
                 "const": "login",
                 "description": "The daemon-managed native-login action."
               },
+              "profileId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "Registered profile this login targets; null = the default session."
+              },
               "state": {
                 "type": "string",
                 "enum": [

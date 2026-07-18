@@ -56,6 +56,7 @@ export function settingsSnapshot(repoRoot: string) {
           fallbackModel: h.fallback_model,
           web: h.web,
           authPreference: h.auth_preference,
+          profileLimitAction: h.profile_policy.limit_action,
         },
       ]),
     ),
@@ -189,6 +190,13 @@ export function applyHarnessSettingsPatches(
       fallback_model: patch.fallbackModel === undefined ? base.fallback_model : patch.fallbackModel,
       web: patch.web ?? base.web,
       auth_preference: patch.authPreference ?? base.auth_preference,
+      // The app's auto-switch toggle (INV-135): only limit_action is
+      // patchable over the wire; rotation order and headroom keep their
+      // stored values.
+      profile_policy:
+        patch.profileLimitAction === undefined
+          ? base.profile_policy
+          : { ...base.profile_policy, limit_action: patch.profileLimitAction },
     };
   }
   return next;

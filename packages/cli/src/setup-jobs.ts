@@ -9,13 +9,17 @@ import {
   parseProcessGroupHandle,
   type ProcessGroupHandle,
 } from "@claudexor/core";
+import { loadConfig } from "@claudexor/config";
 import { daemonDir } from "@claudexor/daemon";
+import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
+import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import {
   type AuthSourceReadiness,
   type AuthCapabilityBinding,
   type AuthCapabilityReceipt,
   type ControlHarnessSetupHarness,
   ControlSetupJobCreateRequest,
+  type CredentialProfileStatus,
   SetupNativeCommandReceipt,
   type ControlSetupJob,
   type ControlSetupJobListFilter,
@@ -72,6 +76,14 @@ export interface SetupJobManagerOptions {
     source: "native_session",
     opts: { fresh: true; authPreference: "subscription"; abortSignal: AbortSignal },
   ) => Promise<AuthSourceReadiness | null>;
+  /** INV-135 profile jobs verify the PROFILE's scoped store, never the default
+   * native session; the doctor probe is the verification truth (same contract
+   * as `claudexor profiles login`). */
+  probeCredentialProfile?: (
+    harness: string,
+    profileId: string,
+    abortSignal: AbortSignal,
+  ) => Promise<CredentialProfileStatus | null>;
   authCapabilityVerifier?: {
     prepare(input: {
       attemptId: string;
@@ -104,6 +116,55 @@ export interface SetupJobManagerOptions {
   runnerPath?: string;
   nodePath?: string;
 }
+/**
+ * Resolve an INV-135 profile-targeted login request to its canonical scoped
+ * config dir. Typed 400s: an unknown/disabled/secret-ref profile must refuse
+ * at create time, never open a Terminal login into the wrong store.
+ */
+function resolveProfileBinding(
+  harness: ControlHarnessSetupHarness,
+  profileId: string | undefined,
+): { profileId: string; configDir: string } | null {
+  if (!profileId) return null;
+  if (harness !== "claude" && harness !== "codex") {
+    throw Object.assign(
+      new Error(
+        `harness "${harness}" has no isolated config-dir login; only claude and codex support profile logins`,
+      ),
+      { status: 400 },
+    );
+  }
+  const profile = loadConfig(NO_PROJECT_ROOT).global.credential_profiles.find(
+    (entry) => entry.harness_id === harness && entry.profile_id === profileId,
+  );
+  if (!profile) {
+    throw Object.assign(
+      new Error(
+        `no credential profile "${profileId}" for harness "${harness}" — register it first (POST /v2/credential-profiles or \`claudexor profiles add\`)`,
+      ),
+      { status: 400 },
+    );
+  }
+  if (!profile.enabled) {
+    throw Object.assign(new Error(`credential profile "${profileId}" is disabled`), {
+      status: 400,
+    });
+  }
+  if (profile.credential_kind !== "config_dir_login") {
+    throw Object.assign(
+      new Error(
+        `credential profile "${profileId}" is ${profile.credential_kind}; only config_dir_login profiles use the native login flow (store its secret instead)`,
+      ),
+      { status: 400 },
+    );
+  }
+  const configDir =
+    harness === "claude"
+      ? canonicalProfileConfigDir(profile.isolation_locator ?? "")
+      : canonicalCodexProfileHome(profile.isolation_locator ?? "");
+  return { profileId, configDir };
+}
+
 export function resolveSetupLoginRunnerPath(
   moduleUrl: string = import.meta.url,
   pathExists: (path: string) => boolean = existsSync,
@@ -131,6 +192,26 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     opts.probeAuthSource ??
     ((harness, source, probe) =>
       gateway!.probeAuthSource(harness, source, { cwd: NO_PROJECT_ROOT, ...probe }));
+  const probeCredentialProfile =
+    opts.probeCredentialProfile ??
+    (async (
+      harness: string,
+      profileId: string,
+      abortSignal: AbortSignal,
+    ): Promise<CredentialProfileStatus | null> => {
+      if (!gateway) {
+        // Injected auth probes without an injected profile probe would silently
+        // verify the WRONG store — refuse loudly instead.
+        throw new Error("probeCredentialProfile hook is required when probeAuthSource is injected");
+      }
+      const profile = loadConfig(NO_PROJECT_ROOT).global.credential_profiles.find(
+        (entry) => entry.harness_id === harness && entry.profile_id === profileId,
+      );
+      if (!profile) return null;
+      const adapter = gateway.get(harness);
+      if (!adapter?.probeCredentialProfile) return null;
+      return adapter.probeCredentialProfile(profile, abortSignal);
+    });
   const authCapabilityVerifier =
     opts.authCapabilityVerifier ??
     new AuthCapabilityVerifier((harness) => gateway!.get(harness), {
@@ -312,6 +393,20 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     );
   }
 
+  function probeProfileStatus(
+    harness: string,
+    profileId: string,
+    controller: AbortController,
+    timeoutMs: number,
+  ): Promise<CredentialProfileStatus | null> {
+    return withAbortAndTimeout(
+      () => probeCredentialProfile(harness, profileId, controller.signal),
+      controller,
+      timeoutMs,
+      "profile auth verification",
+    );
+  }
+
   function finishCapabilityReceipt(
     jobId: string,
     receipt: AuthCapabilityReceipt,
@@ -457,7 +552,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     update(jobId, {
       state: "running",
       phase: "verifying",
-      message: `Verifying the exact ${job.harness} native subscription source.`,
+      message: job.profileId
+        ? `Verifying the scoped ${job.harness} profile "${job.profileId}" via its doctor probe.`
+        : `Verifying the exact ${job.harness} native subscription source.`,
     });
     const deadline = now().getTime() + verifyTimeoutMs;
     let lastDetail: string | undefined;
@@ -471,9 +568,21 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         return;
       const remaining = deadline - now().getTime();
       if (remaining <= 0) break;
-      let readiness: AuthSourceReadiness | null;
+      // INV-135 profile jobs verify the PROFILE's scoped store via the doctor
+      // probe — the default native_session probe would attest the WRONG store.
+      let readiness: AuthSourceReadiness | null = null;
+      let profileStatus: CredentialProfileStatus | null = null;
       try {
-        readiness = await probeNativeSession(job.harness, verificationController, remaining);
+        if (job.profileId) {
+          profileStatus = await probeProfileStatus(
+            job.harness,
+            job.profileId,
+            verificationController,
+            remaining,
+          );
+        } else {
+          readiness = await probeNativeSession(job.harness, verificationController, remaining);
+        }
       } catch (err) {
         const latest = store.status(jobId);
         if (!ACTIVE_SETUP_STATES.has(latest.state) || latest.phase === "cancelling") return;
@@ -491,18 +600,41 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       }
       const latest = store.status(jobId);
       if (!ACTIVE_SETUP_STATES.has(latest.state) || latest.phase === "cancelling") return;
-      const verified =
-        readiness?.source === "native_session" &&
-        readiness.availability === "available" &&
-        readiness.verification === "passed";
-      lastDetail = readiness?.detail;
-      log(
-        jobId,
-        `native_session ${latest.harness}: ${readiness?.availability ?? "unknown"}; verification ${readiness?.verification ?? "not_run"}`,
-      );
-      if (verified && now().getTime() <= deadline) {
-        await runCapabilitySmoke(jobId, verificationController, loginEvidence);
-        return;
+      if (job.profileId) {
+        const verified =
+          profileStatus?.availability === "available" && profileStatus.verification === "passed";
+        lastDetail = profileStatus?.detail;
+        log(
+          jobId,
+          `profile ${latest.harness}/${job.profileId}: ${profileStatus?.availability ?? "unknown"}; verification ${profileStatus?.verification ?? "not_run"}`,
+        );
+        if (verified && now().getTime() <= deadline) {
+          // Same contract as `claudexor profiles login`: the doctor probe IS
+          // the verification truth for a scoped profile. The capability smoke
+          // attests the DEFAULT route only, so it is honestly skipped here.
+          finish(
+            jobId,
+            "succeeded",
+            "completed",
+            `${latest.harness} profile "${job.profileId}" login verified by its doctor probe. The default-route capability smoke does not apply to scoped profiles and was skipped.`,
+            loginEvidence,
+          );
+          return;
+        }
+      } else {
+        const verified =
+          readiness?.source === "native_session" &&
+          readiness.availability === "available" &&
+          readiness.verification === "passed";
+        lastDetail = readiness?.detail;
+        log(
+          jobId,
+          `native_session ${latest.harness}: ${readiness?.availability ?? "unknown"}; verification ${readiness?.verification ?? "not_run"}`,
+        );
+        if (verified && now().getTime() <= deadline) {
+          await runCapabilitySmoke(jobId, verificationController, loginEvidence);
+          return;
+        }
       }
       await waitWithAbort(
         Math.min(verifyPollMs, Math.max(0, deadline - now().getTime())),
@@ -515,7 +647,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       jobId,
       "failed",
       "auth_not_ready",
-      `${latest.harness} native session was not ready before the verification deadline${lastDetail ? `: ${lastDetail}` : "."}`,
+      `${latest.harness} ${
+        job.profileId ? `profile "${job.profileId}"` : "native session"
+      } was not ready before the verification deadline${lastDetail ? `: ${lastDetail}` : "."}`,
       loginEvidence,
     );
   }
@@ -940,7 +1074,11 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     }
   }
 
-  function startObservableLogin(job: ControlSetupJob, spec: NativeLoginSpec): ControlSetupJob {
+  function startObservableLogin(
+    job: ControlSetupJob,
+    spec: NativeLoginSpec,
+    profileConfigDir?: string,
+  ): ControlSetupJob {
     if (platform !== "darwin") {
       return finish(
         job.jobId,
@@ -965,6 +1103,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         binary: executable.realpath,
         args: [...spec.args],
         cwd: paths.dir,
+        // Present ONLY on profile jobs: absent keeps pre-upgrade manifests'
+        // sealed digests valid (the field is optional, never defaulted).
+        ...(profileConfigDir ? { profileConfigDir } : {}),
         statePath: paths.runnerState,
         resultPath: paths.runnerResult,
         permitPath: paths.runnerPermit,
@@ -1093,13 +1234,31 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     create(input: unknown, idempotency?: { key: string; client: string }): ControlSetupJob {
       const request = ControlSetupJobCreateRequest.parse(input);
       const { harness, action } = request;
+      const profileBinding = resolveProfileBinding(harness, request.profileId);
       const binding = idempotency ? { ...idempotency, request } : undefined;
       const prior = binding ? store.resolveCreate(binding) : null;
       if (prior) return prior;
       supervisor.assertCreateAllowed();
       const jobs = store.list({ harness });
-      const existing = jobs.findLast((job) => ACTIVE_SETUP_STATES.has(job.state));
-      if (existing) return binding ? store.bindCreate(existing.jobId, binding) : existing;
+      const active = jobs.findLast((job) => ACTIVE_SETUP_STATES.has(job.state));
+      if (active) {
+        // Same target store → idempotent reuse. A DIFFERENT target (default vs
+        // profile, or two profiles) must refuse loudly: returning the other job
+        // would hand the caller a login into the wrong store.
+        if ((active.profileId ?? null) === (profileBinding?.profileId ?? null)) {
+          return binding ? store.bindCreate(active.jobId, binding) : active;
+        }
+        throw Object.assign(
+          new Error(
+            `another ${harness} login job is active (${active.jobId}, ${
+              active.profileId ? `profile "${active.profileId}"` : "default store"
+            }); finish or cancel it before starting a ${
+              profileBinding ? `profile "${profileBinding.profileId}"` : "default-store"
+            } login`,
+          ),
+          { status: 409 },
+        );
+      }
       const replacementFence = jobs.findLast(
         (job) =>
           job.outcome?.reason === "termination_unconfirmed" && !job.terminationReconciliation,
@@ -1128,15 +1287,21 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
           phase: "preparing",
           command: null,
           guideUrl: profile.guideUrl,
-          message: `${profile.note} The required same-harness smoke may consume quota; incremental billing is unknown.`,
+          message: profileBinding
+            ? `${profile.note} This login targets the scoped Claudexor profile "${profileBinding.profileId}" (INV-135); the default vendor store is never touched.`
+            : `${profile.note} The required same-harness smoke may consume quota; incremental billing is unknown.`,
           createdAt: iso(),
           startedAt: null,
           finishedAt: null,
           authCapability,
+          profileId: profileBinding?.profileId ?? null,
         },
         binding,
       );
-      log(jobId, `created ${harness} ${action}`);
+      log(
+        jobId,
+        `created ${harness} ${action}${profileBinding ? ` for profile "${profileBinding.profileId}"` : ""}`,
+      );
       const spec = NativeLogin.nativeLoginSpec(harness);
       if (!spec)
         return finish(
@@ -1145,7 +1310,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
           "not_supported",
           `${harness} native login is unavailable; install the vendor CLI first.`,
         );
-      return startObservableLogin(base, spec);
+      return startObservableLogin(base, spec, profileBinding?.configDir);
     },
     list(filter?: ControlSetupJobListFilter): ControlSetupJob[] {
       return store.list(filter);

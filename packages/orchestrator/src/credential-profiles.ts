@@ -107,6 +107,10 @@ export function nextEligibleProfile(
     // a freshly reloaded pool, where a mid-flight disable/remove of the
     // current profile would have silently dropped the cross-kind prohibition.
     if (current !== null && candidate.credential_kind !== current.credential_kind) continue;
+    // `current === null` is the DEFAULT subject (the vendor-native store): the
+    // same round-16 BLOCK applies — rotating the subscription default INTO an
+    // api_key profile would silently change the payment model mid-attempt.
+    if (current === null && candidate.credential_kind === "api_key") continue;
     if (
       profileHeadroomBreach(snapshots, harnessId, candidate.profile_id, policy.headroom_threshold)
     )
@@ -191,13 +195,61 @@ export function preflightCredentialProfile(args: {
 }
 
 /**
+ * Default-subject start selection (INV-135, owner scope "auto-balance"): when
+ * NO profile is pinned, the policy is `rotate`, and the DEFAULT store's own
+ * fresh quota window is at/over the headroom bound, pick the first eligible
+ * SUBSCRIPTION profile instead of spawning into a near-certain vendor limit.
+ * Strictly opt-in: `fail`/`ask` keep today's default-user behavior untouched
+ * (the profile engine's fail action governs PINNED profiles only — throwing
+ * here would brick every default user at 90% quota). Unknown or stale usage
+ * never rotates.
+ */
+export function preflightDefaultSubject(args: {
+  harnessId: string;
+  policy: ProfilePolicy;
+  registry: readonly CredentialProfile[];
+  snapshots: readonly QuotaSnapshot[];
+  emit: EmitFn;
+}): CredentialProfile | null {
+  const { harnessId, policy, registry, snapshots, emit } = args;
+  if (policy.limit_action !== "rotate") return null;
+  const breach = profileHeadroomBreach(snapshots, harnessId, null, policy.headroom_threshold);
+  if (!breach) return null;
+  emit("route.profile.headroom_exceeded", {
+    harness_id: harnessId,
+    profile_id: null,
+    action: policy.limit_action,
+    constraint_id: breach.constraint_id,
+    used_ratio: breach.used_ratio,
+    threshold: breach.threshold,
+    resets_at: breach.resets_at,
+  });
+  const next = nextEligibleProfile(registry, harnessId, policy, null, snapshots);
+  if (!next) return null;
+  emit("route.profile.rotated", {
+    harness_id: harnessId,
+    from_profile_id: null,
+    to_profile_id: next.profile_id,
+    reason: "profile_headroom_preflight",
+    constraint_id: breach.constraint_id,
+    used_ratio: breach.used_ratio,
+    resets_at: breach.resets_at,
+  });
+  return next;
+}
+
+/**
  * Reactive failover plan (`vendor_limit_rejected`, W5.4): rotation fires ONLY
  * on the typed predicate under a `rotate` policy, marks the current profile
  * tried (at most once per attempt each), and returns the next target with
  * provenance already emitted — or null when the attempt must fail as-is.
+ * `currentProfile: null` is the DEFAULT subject: allowed ONLY when the caller
+ * proves the attempt's pre-spawn route was vendor_native (a metered default
+ * hitting a limit is a budget fact, not a subscription to fail over from).
  */
 export function planReactiveRotation(args: {
-  currentProfile: CredentialProfile;
+  currentProfile: CredentialProfile | null;
+  defaultRouteWasVendorNative?: boolean;
   harnessId: string;
   attemptId: string;
   policy: ProfilePolicy;
@@ -211,7 +263,8 @@ export function planReactiveRotation(args: {
 }): CredentialProfile | null {
   if (!rotationRetryEligible(args)) return null;
   if (args.policy.limit_action !== "rotate") return null;
-  args.triedProfiles.add(args.currentProfile.profile_id);
+  if (args.currentProfile === null && args.defaultRouteWasVendorNative !== true) return null;
+  if (args.currentProfile) args.triedProfiles.add(args.currentProfile.profile_id);
   const next = nextEligibleProfile(
     args.registry,
     args.harnessId,
@@ -224,7 +277,7 @@ export function planReactiveRotation(args: {
   args.emit("route.profile.rotated", {
     harness_id: args.harnessId,
     attempt_id: args.attemptId,
-    from_profile_id: args.currentProfile.profile_id,
+    from_profile_id: args.currentProfile?.profile_id ?? null,
     to_profile_id: next.profile_id,
     reason: "vendor_limit_rejected",
     retry_delay_ms: args.lastLimit?.retryDelayMs ?? null,
@@ -300,10 +353,13 @@ export function rotateSpecOnTypedLimit(args: {
   lastLimit: { retryDelayMs: number | null; resetsAt: string | null } | null;
   emit: EmitFn;
   newSessionId: () => string;
+  /** Pre-spawn route estimate for a profile-less spec: default-subject
+   * rotation is allowed ONLY off a vendor_native attempt. */
+  defaultRouteWasVendorNative?: boolean;
 }): HarnessRunSpec | null {
-  if (!args.spec.credential_profile) return null;
   const rotation = planReactiveRotation({
-    currentProfile: args.spec.credential_profile,
+    currentProfile: args.spec.credential_profile ?? null,
+    defaultRouteWasVendorNative: args.defaultRouteWasVendorNative,
     harnessId: args.harnessId,
     attemptId: args.attemptId,
     policy: args.policy,

@@ -1,7 +1,6 @@
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { userConfigDir } from "@claudexor/util";
+import { claudexorOwnedRoot } from "@claudexor/util";
 
 /**
  * Shared locator discipline (release wave round-11): absolute, canonicalized
@@ -46,9 +45,7 @@ export function canonicalIsolationLocator(locator: string, label: string): strin
   // symlinked parent (/var → /private/var on macOS) would otherwise compare
   // unequal to a locator that was resolved through that symlink, and
   // false-reject a valid in-root profile.
-  const owned = normalizeThroughExistingAncestor(
-    process.env.CLAUDEXOR_CONFIG_DIR?.trim() ? userConfigDir() : join(homedir(), ".claudexor"),
-  );
+  const owned = normalizeThroughExistingAncestor(claudexorOwnedRoot());
   if (dir !== owned && !dir.startsWith(owned + sep)) {
     throw new Error(`${label} must live under ${owned} (got ${dir})`);
   }

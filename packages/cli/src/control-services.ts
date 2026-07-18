@@ -25,8 +25,12 @@ import {
   type ResourceAttachmentRef,
   type ControlSpecAnswersRequest,
   type ControlSpecQuestionsRequest,
+  ControlCredentialProfileCreateRequest,
+  type CredentialProfile,
+  type CredentialProfileStatus,
   ControlSettingsUpdateRequest,
 } from "@claudexor/schema";
+import { registerConfigDirProfile } from "./profile-registration.js";
 import { createRetentionRunner } from "./retention-service.js";
 import { invalidateDoctorCache, validateModel } from "@claudexor/core";
 import { AuthReadinessService, normalizeReadiness } from "@claudexor/gateway";
@@ -50,6 +54,22 @@ import {
 } from "./spec.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
+
+/** ONE doctor projection for a profile (INV-135), shared by the GET listing
+ * and the POST registration response; no-probe adapters report honest unknown. */
+async function profileDoctorStatus(profile: CredentialProfile): Promise<CredentialProfileStatus> {
+  const adapter = buildRegistry().get(profile.harness_id);
+  return adapter?.probeCredentialProfile
+    ? adapter.probeCredentialProfile(profile)
+    : {
+        profile_id: profile.profile_id,
+        harness_id: profile.harness_id,
+        availability: "unknown" as const,
+        verification: "not_run" as const,
+        detail: `harness "${profile.harness_id}" has no profile probe`,
+        last_verified_at: null,
+      };
+}
 
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
@@ -346,24 +366,26 @@ export function controlServices(
     // INV-135: durable registry + live doctor projection, one probe per
     // profile; adapters without profile support report honest unknown.
     credentialProfiles: async () => {
-      const registry = buildRegistry();
       const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
       const out = [];
       for (const profile of profiles) {
-        const adapter = registry.get(profile.harness_id);
-        const status = adapter?.probeCredentialProfile
-          ? await adapter.probeCredentialProfile(profile)
-          : {
-              profile_id: profile.profile_id,
-              harness_id: profile.harness_id,
-              availability: "unknown" as const,
-              verification: "not_run" as const,
-              detail: `harness "${profile.harness_id}" has no profile probe`,
-              last_verified_at: null,
-            };
-        out.push({ profile, status });
+        out.push({ profile, status: await profileDoctorStatus(profile) });
       }
       return { profiles: out };
+    },
+    // POST /credential-profiles: the SAME ONE registration owner the CLI's
+    // `profiles add` uses (profile-registration.ts) — never a second write
+    // path. Returns the initial doctor projection so the UI can immediately
+    // offer the login step for the still-logged-out profile.
+    createCredentialProfile: async (input: unknown) => {
+      const request = ControlCredentialProfileCreateRequest.parse(input ?? {});
+      const { profile } = registerConfigDirProfile({
+        harnessId: request.harnessId,
+        profileId: request.profileId,
+        displayName: request.displayName,
+      });
+      invalidateDoctorCache();
+      return { profile, status: await profileDoctorStatus(profile) };
     },
     updateSettings: async (patch: unknown) => {
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});

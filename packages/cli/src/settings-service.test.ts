@@ -94,3 +94,35 @@ describe("applyHarnessSettingsPatches", () => {
     );
   });
 });
+
+describe("profileLimitAction (INV-135 auto-switch toggle)", () => {
+  it("patches only profile_policy.limit_action and preserves rotation order + headroom", () => {
+    const current = {
+      codex: {
+        ...applyHarnessSettingsPatches({}, { codex: { enabled: true } })["codex"]!,
+        profile_policy: {
+          limit_action: "fail" as const,
+          rotation_eligible: ["work", "personal"],
+          headroom_threshold: 0.8,
+        },
+      },
+    };
+    const merged = applyHarnessSettingsPatches(current, {
+      codex: ControlSettingsUpdateRequest.parse({
+        harnesses: { codex: { profileLimitAction: "rotate" } },
+      }).harnesses!["codex"]!,
+    });
+    expect(merged["codex"]?.profile_policy).toEqual({
+      limit_action: "rotate",
+      rotation_eligible: ["work", "personal"],
+      headroom_threshold: 0.8,
+    });
+    // Absent field keeps the stored action untouched.
+    const untouched = applyHarnessSettingsPatches(merged, {
+      codex: ControlSettingsUpdateRequest.parse({
+        harnesses: { codex: { enabled: false } },
+      }).harnesses!["codex"]!,
+    });
+    expect(untouched["codex"]?.profile_policy.limit_action).toBe("rotate");
+  });
+});

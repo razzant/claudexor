@@ -33,6 +33,7 @@ import {
   readRunnerResult,
   SETUP_LOGIN_PROTOCOL_VERSION,
 } from "./setup-login-protocol.js";
+import { registerConfigDirProfile } from "./profile-registration.js";
 import { createSetupJobManager, resolveSetupLoginRunnerPath } from "./setup-jobs.js";
 
 let root: string;
@@ -1541,5 +1542,154 @@ describe("setup jobs", () => {
     const second = manager.extend({ jobId: job.jobId });
     expect(Date.parse(first.deadlineAt!) - Date.parse(job.deadlineAt!)).toBe(15 * 60_000);
     expect(Date.parse(second.deadlineAt!) - Date.parse(job.deadlineAt!)).toBe(30 * 60_000);
+  });
+});
+
+describe("setup jobs for credential profiles (INV-135)", () => {
+  it("refuses unknown profiles at create and seals the scoped home into the manifest; dedupe is per-target", () => {
+    process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg");
+    const { profile } = registerConfigDirProfile({ harnessId: "codex", profileId: "work" });
+    const manager = createSetupJobManager({
+      rootDir: join(root, "store"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+    });
+    // Typed 400s BEFORE any Terminal opens: never a login into the wrong store.
+    expect(() => manager.create({ ...LOGIN_REQUEST, profileId: "ghost" })).toThrow(
+      /no credential profile "ghost"/,
+    );
+    const job = manager.create({ ...LOGIN_REQUEST, profileId: "work" });
+    expect(job.profileId).toBe("work");
+    const manifest = readLoginManifest(manager._store.paths(job.jobId).manifest);
+    expect(manifest.profileConfigDir).toBe(realpathSync(profile.isolation_locator!));
+    // Same target → idempotent reuse; a DIFFERENT target refuses loudly
+    // instead of returning a job that logs into another store.
+    expect(manager.create({ ...LOGIN_REQUEST, profileId: "work" }).jobId).toBe(job.jobId);
+    expect(() => manager.create(LOGIN_REQUEST)).toThrow(/another codex login job is active/);
+  });
+
+  it("default-store jobs seal NO profileConfigDir (pre-upgrade digest compatibility)", () => {
+    const manager = createSetupJobManager({
+      rootDir: join(root, "store"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+    });
+    const job = manager.create(LOGIN_REQUEST);
+    expect(job.profileId).toBeNull();
+    const manifest = readLoginManifest(manager._store.paths(job.jobId).manifest);
+    expect(manifest.profileConfigDir).toBeUndefined();
+  });
+
+  it("verifies a profile job via ITS doctor probe and honestly skips the default-route capability smoke", async () => {
+    process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg");
+    registerConfigDirProfile({ harnessId: "codex", profileId: "work" });
+    let ms = Date.now();
+    const profileProbes: Array<[string, string]> = [];
+    const invalidatedHarnesses: string[] = [];
+    const group = processGroupFixture();
+    const capability = capabilityVerifier(() => new Date(ms));
+    const manager = createSetupJobManager({
+      rootDir: join(root, "store"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      now: () => new Date(ms),
+      verifyTimeoutMs: 5,
+      verifyPollMs: 2,
+      monitorPollMs: 1,
+      processGroups: group.service,
+      authCapabilityVerifier: capability.verifier,
+      onCredentialStateMayHaveChanged: (harness) => invalidatedHarnesses.push(harness),
+      sleep: async (delay) => {
+        ms += delay;
+      },
+      probeAuthSource: async () => {
+        throw new Error("a profile job must NEVER probe the default native session");
+      },
+      probeCredentialProfile: async (harness, profileId) => {
+        profileProbes.push([harness, profileId]);
+        return {
+          profile_id: profileId,
+          harness_id: harness,
+          availability: "available",
+          verification: "passed",
+          detail: "chatgpt login in scoped home",
+          last_verified_at: new Date(ms).toISOString(),
+        };
+      },
+    });
+    await manager.start();
+    const job = manager.create({ ...LOGIN_REQUEST, profileId: "work" });
+    await permitAndFinishNativeCommand(
+      manager,
+      job.jobId,
+      group.leader,
+      new Date(ms).toISOString(),
+    );
+    expect(await waitForTerminal(manager, job.jobId)).toBe("succeeded");
+    expect(profileProbes).toEqual([["codex", "work"]]);
+    expect(invalidatedHarnesses).toEqual(["codex"]);
+    // The smoke attests the DEFAULT route only — a scoped profile job must
+    // not spend quota on it, and the lifecycle honestly stays disclosed.
+    expect(capability.runs).toHaveLength(0);
+    const done = manager.status({ jobId: job.jobId });
+    expect(done).toMatchObject({
+      profileId: "work",
+      outcome: { reason: "completed", exitCode: 0, signal: null },
+      authCapability: { state: "disclosed" },
+    });
+    expect(done.message).toContain('profile "work"');
+    expect(done.message).toContain("smoke");
+    await manager.shutdown();
+  });
+
+  it("fails honestly when the profile probe never verifies", async () => {
+    process.env.CLAUDEXOR_CONFIG_DIR = join(root, "cfg");
+    registerConfigDirProfile({ harnessId: "codex", profileId: "work" });
+    let ms = Date.now();
+    const group = processGroupFixture();
+    const capability = capabilityVerifier(() => new Date(ms));
+    const manager = createSetupJobManager({
+      rootDir: join(root, "store"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      now: () => new Date(ms),
+      verifyTimeoutMs: 5,
+      verifyPollMs: 2,
+      monitorPollMs: 1,
+      processGroups: group.service,
+      authCapabilityVerifier: capability.verifier,
+      sleep: async (delay) => {
+        ms += delay;
+      },
+      probeAuthSource: async () => {
+        throw new Error("a profile job must NEVER probe the default native session");
+      },
+      probeCredentialProfile: async (harness, profileId) => ({
+        profile_id: profileId,
+        harness_id: harness,
+        availability: "unavailable",
+        verification: "not_run",
+        detail: "logged out",
+        last_verified_at: null,
+      }),
+    });
+    await manager.start();
+    const job = manager.create({ ...LOGIN_REQUEST, profileId: "work" });
+    await permitAndFinishNativeCommand(
+      manager,
+      job.jobId,
+      group.leader,
+      new Date(ms).toISOString(),
+    );
+    expect(await waitForTerminal(manager, job.jobId)).toBe("failed");
+    const done = manager.status({ jobId: job.jobId });
+    expect(done.outcome?.reason).toBe("auth_not_ready");
+    expect(done.message).toContain('profile "work"');
+    expect(capability.runs).toHaveLength(0);
+    await manager.shutdown();
   });
 });

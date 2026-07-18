@@ -108,6 +108,15 @@
             "auto"
           ],
           "description": "New auth route preference."
+        },
+        "profileLimitAction": {
+          "type": "string",
+          "enum": [
+            "fail",
+            "ask",
+            "rotate"
+          ],
+          "description": "New profile-selection limit action (fail | ask | rotate)."
         }
       },
       "additionalProperties": false,

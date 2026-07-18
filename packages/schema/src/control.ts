@@ -1422,6 +1422,15 @@ export const ControlSettingsSnapshot = z
               "Default web policy for this harness.",
             ),
             authPreference: AuthPreference.default("auto"),
+            /** Profile-selection policy (INV-135): what happens when the
+             * selected account hits its quota. Drives the app's auto-switch
+             * toggle read-back. */
+            profileLimitAction: z
+              .enum(["fail", "ask", "rotate"])
+              .default("fail")
+              .describe(
+                "Profile-selection limit action: fail (stop), ask (record), rotate (auto-switch to the next eligible account).",
+              ),
           })
           .describe("Per-harness settings."),
       )
@@ -1465,6 +1474,12 @@ export const ControlHarnessSettingsPatch = z
       .describe("New fallback model; null clears it."),
     web: ExternalContextPolicy.optional().describe("New default web policy."),
     authPreference: AuthPreference.optional().describe("New auth route preference."),
+    /** Auto-switch accounts on quota limits (INV-135): rotate enables the
+     * profile-rotation engine for this harness; fail restores the default. */
+    profileLimitAction: z
+      .enum(["fail", "ask", "rotate"])
+      .optional()
+      .describe("New profile-selection limit action (fail | ask | rotate)."),
   })
   .strict()
   .describe(

@@ -21,6 +21,11 @@
         "authRequest": {
           "type": "string",
           "const": "subscription"
+        },
+        "profileId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registered config_dir_login profile to log in; absent = the default session."
         }
       },
       "required": [

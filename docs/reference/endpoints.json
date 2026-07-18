@@ -26,6 +26,14 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "POST",
+      "path": "/v2/credential-profiles",
+      "mutating": true,
+      "request_schema": "ControlCredentialProfileCreateRequest",
+      "response_schema": "ControlCredentialProfileCreateResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "GET",
       "path": "/v2/global/events",
       "mutating": false,

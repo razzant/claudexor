@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   observeNativeSessionEvent,
   preflightCredentialProfile,
+  preflightDefaultSubject,
   resolveCredentialProfile,
   resumeSessionForProfile,
   rotateSpecOnTypedLimit,
@@ -899,15 +900,18 @@ export class Orchestrator {
 
   private preflightProfile(input: RunInput, harnessId: string, log?: EventLog) {
     const profile = this.resolveCredentialProfile(input, harnessId);
-    if (!profile) return null;
-    return preflightCredentialProfile({
-      profile,
-      harnessId,
-      policy: this.profilePolicy(input.repoRoot, harnessId),
-      registry: this.config(input.repoRoot)?.global.credential_profiles ?? [],
-      snapshots: this.deps.quotaSnapshots?.() ?? [],
-      emit: (type, payload) => log?.emit(type, payload),
-    });
+    const policy = this.profilePolicy(input.repoRoot, harnessId);
+    const registry = this.config(input.repoRoot)?.global.credential_profiles ?? [];
+    const snapshots = this.deps.quotaSnapshots?.() ?? [];
+    const emit: Parameters<typeof preflightCredentialProfile>[0]["emit"] = (type, payload) =>
+      log?.emit(type, payload);
+    if (!profile) {
+      // Unpinned runs (INV-135 auto-balance): under `rotate`, a fresh
+      // default-subject headroom breach starts on the next eligible
+      // subscription profile instead; `fail`/`ask` change nothing.
+      return preflightDefaultSubject({ harnessId, policy, registry, snapshots, emit });
+    }
+    return preflightCredentialProfile({ profile, harnessId, policy, registry, snapshots, emit });
   }
 
   /**
@@ -2029,6 +2033,7 @@ export class Orchestrator {
             lastLimit: telemetry.rateLimits.at(-1) ?? null,
             emit: (type, payload) => log?.emit(type, payload),
             newSessionId: () => newId("ses"),
+            defaultRouteWasVendorNative: routed.authRouteEstimate === "local_session",
           });
           if (rotated) {
             spec = rotated;
@@ -5778,6 +5783,7 @@ export class Orchestrator {
               lastLimit: telemetry.rateLimits.at(-1) ?? null,
               emit: (type, payload) => log.emit(type, payload),
               newSessionId: () => newId("ses"),
+              defaultRouteWasVendorNative: routed.authRouteEstimate === "local_session",
             });
             if (rotated) {
               spec = rotated;
