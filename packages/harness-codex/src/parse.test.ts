@@ -51,7 +51,7 @@ describe("parseCodexEvent", () => {
 
     // codex has NO native final marker: the adapter finalizes the turn's
     // LAST agent message as a typed `final` message on turn.completed
-    // (vendor semantics — --output-last-message / task_complete). Ф2.5 W-C1.
+    // (vendor semantics — --output-last-message / task_complete). F2.5 W-C1.
     const finals = events.filter((e) => e.type === "message" && e.final === true);
     expect(finals).toHaveLength(1);
     expect(finals[0]?.text).toBe("Done.");

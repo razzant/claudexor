@@ -254,7 +254,7 @@ import Testing
         #expect(status.id == "codex")
         #expect(status.enabledIntents == ["implement"])
         // Enabled but NOT routable: the server's doctor-gated verdict decodes
-        // as-is — the degraded harness honestly routes nothing (Р8/W14).
+        // as-is — the degraded harness honestly routes nothing (R8/W14).
         #expect(status.routableIntents.isEmpty)
         #expect(status.disabledIntents == ["review"])
         #expect(status.checks == [HarnessCheck(id: "isolated_api_smoke", status: "fail", detail: "401")])

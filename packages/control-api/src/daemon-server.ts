@@ -2503,7 +2503,7 @@ function budgetSnapshot(
     // cumulative, last-wins, subscription work settles to 0 there (W4.3).
     // budget.observation ticks are vendor VALUATION — for a subscription run
     // they are NON-ZERO while the cash truth is $0.00, so summing them as
-    // spend showed valuation under a "real money" label (Ф4 review lane 1).
+    // spend showed valuation under a "real money" label (F4 review lane 1).
     // They remain only as the LEGACY fallback for runs predating budget.cash
     // (every new run settles at least once), disclosed as estimated.
     let lastCash: number | null = null;

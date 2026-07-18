@@ -10,7 +10,7 @@ import Testing
         #expect(AccountsPresentation.generatedProfileId(displayName: "Experiment A (max)", existing: [])
             == "experiment-a-max")
         // Non-latin names fall back to the auto id instead of an invalid slug.
-        #expect(AccountsPresentation.generatedProfileId(displayName: "Личный", existing: []) == "acct")
+        #expect(AccountsPresentation.generatedProfileId(displayName: "個人アカウント", existing: []) == "acct")
         #expect(AccountsPresentation.generatedProfileId(displayName: "", existing: []) == "acct")
     }
 
@@ -18,7 +18,7 @@ import Testing
         #expect(AccountsPresentation.generatedProfileId(displayName: "Work", existing: ["work"]) == "work-2")
         #expect(AccountsPresentation.generatedProfileId(displayName: "", existing: ["acct", "acct-2"]) == "acct-3")
         // Every derivation the UI can produce passes the server's slug rule.
-        for name in ["Work", "  ", "--weird__", "ОЧЕНЬ русское имя", String(repeating: "x", count: 200)] {
+        for name in ["Work", "  ", "--weird__", "Ελληνικό όνομα", String(repeating: "x", count: 200)] {
             let id = AccountsPresentation.generatedProfileId(displayName: name, existing: ["acct"])
             #expect(AccountsPresentation.isValidSlug(id), "invalid slug for \(name): \(id)")
         }

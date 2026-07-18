@@ -5212,7 +5212,7 @@ describe("DaemonControlApiServer", () => {
   it("budget snapshot prefers the ledger's CASH disclosure over valuation observations (W4.3)", async () => {
     // A decision-less subscription run (plan/ask): valuation ticks are
     // NON-ZERO while the cash truth is $0. Summing them as spend showed
-    // valuation under a "real money" label (Ф4 review); budget.cash — the
+    // valuation under a "real money" label (F4 review); budget.cash — the
     // ledger's cumulative disclosure — wins, last-write.
     const { daemon, record } = fakeDaemon();
     rmSync(join(record.runDir as string, "arbitration", "decision.yaml"), { force: true });

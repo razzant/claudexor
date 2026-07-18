@@ -31,7 +31,7 @@ struct ArtifactGalleryView: View {
     }
 
     /// Images the run CHANGED anywhere in the project tree (typed diff
-    /// evidence — Ф2.5 W-C7 part 3): agents drop screenshots wherever the
+    /// evidence — F2.5 W-C7 part 3): agents drop screenshots wherever the
     /// task says, not just artifacts/, so the canvas surfaces every image the
     /// diff touched — same canonical scope gate as inline chat previews.
     private var runChangedImages: [String] {

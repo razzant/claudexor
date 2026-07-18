@@ -6,7 +6,7 @@ import { WorkspaceManager } from "@claudexor/workspace";
 /**
  * The effective execution context a routed run will actually spawn in,
  * resolved ONCE per run and consumed by BOTH the routing readiness
- * point-probe and the spawned spec (W3.3 / ТЗ-1 §B). Readiness evidence
+ * point-probe and the spawned spec (W3.3 / TZ-1 §B). Readiness evidence
  * gathered in one env while the run executes in another is not evidence:
  * the route-admitting probe and the run must share this exact context.
  */

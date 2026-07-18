@@ -11,7 +11,7 @@ import ClaudexorKit
 /// caller slot — three workflows never centralize into one conditional.
 struct HarnessReadinessPresentation: Equatable {
     var family: HarnessFamily
-    /// Server routability truth (Р8): routes at least one intent right now.
+    /// Server routability truth (R8): routes at least one intent right now.
     var available: Bool
     var health: HarnessHealth
     var summary: String

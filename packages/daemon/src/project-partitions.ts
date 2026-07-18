@@ -195,7 +195,7 @@ export class ProjectPartitions implements CommandAuthority {
   listThreads(): Thread[] {
     // Each store sorts ITS threads by recency, but the stores concatenate —
     // without a merge-sort a fresh project thread lands below every global
-    // one (dogfood: "свежий тред внизу"). One global recency order.
+    // one (dogfood: the fresh thread sank to the bottom). One global recency order.
     return this.threadStores()
       .flatMap((store) => store.listThreads())
       .sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));

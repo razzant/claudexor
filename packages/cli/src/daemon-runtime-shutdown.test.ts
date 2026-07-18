@@ -116,9 +116,9 @@ describe("DaemonRuntimeShutdown", () => {
   it("a CLEAN stop clears the hung-stop deadline — never force-exited nonzero", async () => {
     // The deadline (exit 1) is the timer a clean shutdown must escape, and
     // the clean-stop continuation itself owns the clearing — there is no
-    // external finalize() hook anymore (the Ф2.5 one also cancelled the
+    // external finalize() hook anymore (the F2.5 one also cancelled the
     // drain sweep, silently disabling the leaked-handle protection in every
-    // production shutdown; Ф3 final review + its confirmation pass, which
+    // production shutdown; F3 final review + its confirmation pass, which
     // caught the first replacement test for this as vacuous).
     const { runtime, exits, log } = machine({ stopDeadlineMs: 40, drainGraceMs: 5_000 });
     await runtime.beginShutdown("test");

@@ -128,7 +128,7 @@ function parseCursorEventStateful(
   }
 
   if (type === "assistant") {
-    // --stream-partial-output taxonomy (official docs, Ф2.5 W-C4): a new-text
+    // --stream-partial-output taxonomy (official docs, F2.5 W-C4): a new-text
     // DELTA has timestamp_ms and no model_call_id; a buffered duplicate has
     // BOTH (skip — its text already streamed); the final flush has NEITHER
     // (the complete message — the plain no-flag shape).

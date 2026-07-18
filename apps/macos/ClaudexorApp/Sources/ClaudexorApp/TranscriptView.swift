@@ -3,7 +3,7 @@ import ClaudexorKit
 
 /// The live working-progress feed of a turn (reasoning + narration + tools),
 /// extracted from `TurnCard` so the transcript rendering has one owner
-/// (INV-124). Ф2.5 W-C3/W-C6: reasoning segments disclose their observed
+/// (INV-124). F2.5 W-C3/W-C6: reasoning segments disclose their observed
 /// duration, mid-run narration reads DIMMED (the final answer is the W22
 /// bubble — it never appears here), and tool rows lead with a humane short
 /// title; the raw command/target stays one disclosure away, never lost.
@@ -17,7 +17,7 @@ struct TranscriptView: View {
     var fileScopeRoots: [String] = []
 
     var body: some View {
-        // W4.4 (В9а): a FLAT log — one line per tool, grouped runs, a single
+        // W4.4 (V9a): a FLAT log — one line per tool, grouped runs, a single
         // timer line for thinking. Zero inline chevrons; the raw reasoning
         // text and full tool output live in the run inspector only.
         VStack(alignment: .leading, spacing: Theme.Spacing.xs) {

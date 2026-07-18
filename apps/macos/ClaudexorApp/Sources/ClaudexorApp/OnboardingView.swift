@@ -2,7 +2,7 @@ import SwiftUI
 
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
-    /// The user's explicit dismissal bit (W15/Р18): setting it is the ONLY
+    /// The user's explicit dismissal bit (W15/R18): setting it is the ONLY
     /// way this sheet closes — whether onboarding is NEEDED stays derived
     /// from the server routability projection in RootView.
     @Binding var dismissed: Bool

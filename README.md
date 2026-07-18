@@ -22,6 +22,14 @@ Current status: **v2.1**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 
+![The bottom-left accounts control: per-account readiness and quota, in-app
+add/login/remove, the auto-switch toggle, and the full per-window quota
+detail](docs/assets/app-main-window.png)
+
+![An agent turn in the chat: the harness answers with a real WebGL screenshot
+rendered inline, an honest apply/review outcome line, and live per-account
+subscription quota in the sidebar](docs/assets/app-agent-run.jpg)
+
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Quickstart](#quickstart)

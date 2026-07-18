@@ -299,7 +299,7 @@ struct AppModelRefreshTests {
         #expect(!model.needsOnboarding(userDismissed: false))
 
         // Rows loaded, none routable, a STALE SECRET present: onboarding is
-        // needed — a stored key is not readiness (Р18).
+        // needed — a stored key is not readiness (R18).
         model.liveHarnesses = [HarnessInfo(
             family: .claude, health: .degraded, version: "1", auth: "session expired",
             intents: ["implement"], routableIntents: []

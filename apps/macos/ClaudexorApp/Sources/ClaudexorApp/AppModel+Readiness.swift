@@ -10,13 +10,13 @@ import ClaudexorKit
 
 extension AppModel {
     /// True when at least one REAL harness is currently routable per the
-    /// SERVER projection (W15/Р18). Secrets are deliberately not consulted:
+    /// SERVER projection (W15/R18). Secrets are deliberately not consulted:
     /// a stored key is not readiness.
     var hasRoutableHarness: Bool {
         liveHarnesses.contains { $0.family != .fake && $0.family != .raw && !$0.routableIntents.isEmpty }
     }
 
-    /// Onboarding is DERIVED, never a sticky completion flag (W15/Р18):
+    /// Onboarding is DERIVED, never a sticky completion flag (W15/R18):
     /// needed exactly while the connected engine reports harness rows and
     /// NONE of them is routable — unless the user explicitly dismissed the
     /// wizard (their choice persists; the Doctor is the way back in).
@@ -45,7 +45,7 @@ extension AppModel {
                                        reason: "\(family.label) is disabled in Settings (Per-Harness Defaults).",
                                        intent: intent, info: info)
         }
-        // Server-side routability truth (Р8/W14): the doctor gates
+        // Server-side routability truth (R8/W14): the doctor gates
         // routableIntents on the engine, so a degraded/unauth'd harness ships
         // an EMPTY list. The app formats that verdict — it no longer
         // re-derives availability from health + enabled intents.

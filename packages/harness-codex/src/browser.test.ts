@@ -108,7 +108,7 @@ describe("codexExecArgs image attachments", () => {
     model_hint: null,
     effort_hint: null,
     external_context_policy: "auto" as const,
-    prompt: "что видишь на картинке?",
+    prompt: "what do you see in the picture?",
     attachments: [
       {
         resource_id: "res-a1",
@@ -137,7 +137,7 @@ describe("codexExecArgs image attachments", () => {
       expect(args[iIdx + 1]).toBe(imagePath); // path follows -i
       expect(args[iIdx + 2]).toBe("--"); // `--` IMMEDIATELY after the path: no `-c` config wedged between -i and -- (would be eaten by variadic -i)
       expect(dashIdx).toBeGreaterThan(iIdx); // -- comes AFTER -i
-      expect(args[args.length - 1]).toBe("что видишь на картинке?"); // prompt is the final positional, not eaten
+      expect(args[args.length - 1]).toBe("what do you see in the picture?"); // prompt is the final positional, not eaten
     });
   }
 

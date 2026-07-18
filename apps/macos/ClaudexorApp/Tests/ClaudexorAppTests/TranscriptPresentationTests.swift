@@ -4,7 +4,7 @@ import AppKit
 import ClaudexorKit
 @testable import ClaudexorApp
 
-/// Ф2.5 W-C3/W-C6: transcript presentation helpers — humane tool titles from
+/// F2.5 W-C3/W-C6: transcript presentation helpers — humane tool titles from
 /// TYPED fields, per-kind glyphs that actually exist, and the reasoning
 /// segment timer label.
 @MainActor
@@ -35,7 +35,7 @@ import ClaudexorKit
     }
 
     /// Every kind glyph must be a REAL SF Symbol — a bad name renders as an
-    /// invisible blank (the Ф2 "<glyph>.slash" lesson).
+    /// invisible blank (the F2 "<glyph>.slash" lesson).
     @Test func everyKindGlyphExistsAsAnSFSymbol() {
         for kind in ["command", "web", "file", "mcp", "search", "other", nil] {
             let glyph = ToolRow.kindGlyph(kind)

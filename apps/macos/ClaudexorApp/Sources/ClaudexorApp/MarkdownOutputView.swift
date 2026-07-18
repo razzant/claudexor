@@ -9,7 +9,7 @@ import SwiftUI
 struct MarkdownOutputView: View {
     let markdown: String
     /// Roots (thread repoRoot / run dir) whose images may render INLINE and
-    /// whose file links may open (Ф2.5 W-C7). Empty = no local-file access:
+    /// whose file links may open (F2.5 W-C7). Empty = no local-file access:
     /// an image degrades to its visible markdown text, honestly.
     var fileScopeRoots: [String] = []
     /// A visible, dismissible refusal for a blocked file-link click (sol #14):

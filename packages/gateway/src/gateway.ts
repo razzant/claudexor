@@ -18,7 +18,7 @@ export interface HarnessStatus {
   /** Intents this harness is ACTUALLY routable for right now: enabledIntents
    * gated by doctor readiness (BIBLE §2 — doctor decides; a degraded or
    * unauth'd harness routes NOTHING). The server-side availability truth: UI
-   * surfaces read this field instead of re-deriving business logic (Р8). */
+   * surfaces read this field instead of re-deriving business logic (R8). */
   routableIntents: Intent[];
   disabledIntents: Intent[];
   checks: ConformanceCheck[];
@@ -61,7 +61,7 @@ export class HarnessGateway {
   }
 
   /**
-   * Source-targeted readiness point-probe for ROUTE gating (W3.3 / ТЗ-1 §B):
+   * Source-targeted readiness point-probe for ROUTE gating (W3.3 / TZ-1 §B):
    * re-derives ONE harness's readiness in the exact resolved env/cwd its run
    * will spawn with, so routing never admits a route on host-env auth truth
    * the run's scoped env cannot reproduce. Discovery stays host-level

@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import ClaudexorApp
 
-/// Ф2.5 W-C7: agent images render inline ONLY inside the thread's scope
+/// F2.5 W-C7: agent images render inline ONLY inside the thread's scope
 /// (repoRoot / run dir) — canonical paths, symlink-escape and traversal
 /// rejected, image extensions only; everything else is a disclosed refusal.
 @MainActor
@@ -111,12 +111,12 @@ import Testing
     }
 
     @Test func markdownImageLinesBecomeImageBlocks() {
-        let md = "Итог гонки:\n\n![Гонка NEON//RUN](/Users/anton/racing6/racing-action.png)\n\nВсё работает."
+        let md = "Race summary:\n\n![NEON//RUN race — naïve café](/Users/anton/racing6/racing-action.png)\n\nEverything works."
         let blocks = MarkdownOutputView.parse(md)
         let image = blocks.first { if case .image = $0.kind { return true }; return false }
         #expect(image != nil)
         if case .image(let alt, let target) = image!.kind {
-            #expect(alt == "Гонка NEON//RUN")
+            #expect(alt == "NEON//RUN race — naïve café")
             #expect(target == "/Users/anton/racing6/racing-action.png")
         }
         // A title after the path is stripped from the target.

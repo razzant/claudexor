@@ -2426,7 +2426,7 @@ describe("Orchestrator", () => {
     }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
     expect(res.status).toBe("success");
     // The readiness truth that admitted the route was derived in the exact
-    // env the run then received (ТЗ-1 §B: probe env === run env)…
+    // env the run then received (TZ-1 §B: probe env === run env)…
     expect(probedEnv).toBeDefined();
     expect(ranSpecEnv).toEqual(probedEnv);
     // …and that env is the scoped throwaway HOME, not the operator's host env.

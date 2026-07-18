@@ -43,7 +43,7 @@ export const HarnessStatusDto = z
     /** Intents this harness is ACTUALLY routable for right now: enabledIntents
      * gated by doctor readiness (a degraded/unauth'd harness routes nothing).
      * The SERVER-side availability truth — surfaces read this field and never
-     * re-derive availability from status+intents business logic (Р8). */
+     * re-derive availability from status+intents business logic (R8). */
     routableIntents: z
       .array(z.string())
       .default([])

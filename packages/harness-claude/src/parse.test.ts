@@ -34,7 +34,7 @@ describe("parseClaudeEvent", () => {
     )?.[0];
     // A native retry is transient STATUS for the activity feed — mapping it
     // to `thinking` used to plant "api_retry: 529…" junk in the chat's
-    // reasoning disclosure (Ф2.5 W-C2).
+    // reasoning disclosure (F2.5 W-C2).
     expect(out?.type).toBe("status");
     expect(out?.status?.kind).toBe("api_retry");
     expect(out?.status?.attempt).toBe(2);
@@ -172,7 +172,7 @@ describe("parseClaudeEvent", () => {
     expect(ok[0]?.usage?.cost_usd).toBe(0.25);
     expect(ok[0]?.usage?.cached_input_tokens).toBe(100);
     expect(ok[1]?.text).toBe("[]");
-    // The terminal result is claude's TYPED final answer (Ф2.5 W-C1).
+    // The terminal result is claude's TYPED final answer (F2.5 W-C1).
     expect(ok[1]?.final).toBe(true);
 
     // error_max_turns is a BENIGN turn-control outcome (the run hit --max-turns

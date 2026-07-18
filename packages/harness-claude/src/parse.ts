@@ -432,7 +432,7 @@ function parseClaudeEventStateful(
   }
 
   if (type === "stream_event") {
-    // --include-partial-messages (Ф2.5 W-C4): raw API stream frames. Only
+    // --include-partial-messages (F2.5 W-C4): raw API stream frames. Only
     // MAIN-conversation text deltas become delta messages (subagent frames
     // carry parent_tool_use_id); every other frame (message_start, thinking
     // deltas, block boundaries) is recognized plumbing — the complete
@@ -545,7 +545,7 @@ function claudeRetryCategory(
   if (raw === undefined || raw === null) return undefined;
   const s = String(raw);
   if (CLAUDE_RETRY_CATEGORIES.has(s)) return s as ReturnType<typeof claudeRetryCategory>;
-  // Claude 2.1.x sends the human error LINE here, not the bare label (the Ф3
+  // Claude 2.1.x sends the human error LINE here, not the bare label (the F3
   // "Known trap"): classify the documented categories from their stable
   // markers so bounded-retry policy keeps the reason. Adapter-layer prose
   // parsing is the one allowed home for this (no-regex governance applies to

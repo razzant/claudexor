@@ -110,7 +110,7 @@ import Testing
     }
 
     /// A TYPED final message is the answer bubble's content — repeating it in
-    /// the live transcript would double the text the user just read (Ф2.5).
+    /// the live transcript would double the text the user just read (F2.5).
     @Test func typedFinalMessageNeverEntersTheTranscript() {
         var r = TranscriptReducer()
         r.apply(message(1, "narration"))
@@ -137,7 +137,7 @@ import Testing
         ]))
     }
 
-    /// Ф2.5 W-C3: a merged reasoning SEGMENT discloses its observed span from
+    /// F2.5 W-C3: a merged reasoning SEGMENT discloses its observed span from
     /// the events' own timestamps; a tool call closes the segment, and the
     /// next thinking starts a fresh timer.
     @Test func thinkingSegmentsDiscloseTheirObservedDurationPerSegment() {
@@ -177,7 +177,7 @@ import Testing
         ]))
     }
 
-    /// Ф2.5 W-C4: deltas grow ONE streaming block; the complete message then
+    /// F2.5 W-C4: deltas grow ONE streaming block; the complete message then
     /// REPLACES it — never a duplicated paragraph; a tool block closes it.
     @Test func deltasGrowOneStreamingBlockAndTheFullMessageReplacesIt() {
         var r = TranscriptReducer()
@@ -217,7 +217,7 @@ import Testing
         ]))
     }
 
-    /// Ф2.5 sol #9: after a TYPED final the delta stream is sealed — a late
+    /// F2.5 sol #9: after a TYPED final the delta stream is sealed — a late
     /// stray delta must not append to a stale block or reopen a stream.
     @Test func aLateDeltaAfterTheFinalIsDropped() {
         var r = TranscriptReducer()

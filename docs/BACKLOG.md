@@ -3,7 +3,7 @@
 Explicitly deferred work with a recorded owner decision. Rule: an item leaves
 this file only by shipping or by an owner decision recorded in its row.
 Silent drops are the failure mode this file exists to prevent — the 2.1.0
-audit found ten Ф2.5 leftovers that were neither shipped nor consciously
+audit found ten F2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
 ## Owner-review wave 1 leftovers (2.1.0 accounts scope; NITs recorded per ship rule)
@@ -58,7 +58,7 @@ deferred; they are recorded here now.
   host/percent-encoding); E11 usage snapshot-vs-delta discriminator.
 - Codex proto-mode for smooth deltas; codex `rateLimitResetCredits` mini-gap.
 
-## Ф2.5 leftovers surfaced by the 2.1.0 audit (previously untriaged)
+## F2.5 leftovers surfaced by the 2.1.0 audit (previously untriaged)
 
 - C1: CLI live-printer double-prints codex narration+final (dedup fix exists
   on an unmerged branch).

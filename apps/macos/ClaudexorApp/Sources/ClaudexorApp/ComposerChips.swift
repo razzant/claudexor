@@ -47,7 +47,7 @@ struct PrimaryHarnessChip: View {
     }
 }
 
-/// Composite Access chip (W19/Р14): the per-turn write scope lives in the
+/// Composite Access chip (W19/R14): the per-turn write scope lives in the
 /// composer's MAIN controls row — no longer buried in the "⋯" popover — and
 /// appends " · Browser" while the agent browser is armed. Arming Browser
 /// derives Full access (codex's sandbox cancels navigation otherwise), so an
@@ -130,7 +130,7 @@ extension ThreadsScreen {
         }
     }
 
-    /// Inline one-time-grant disclosure (W19/Квиз-14): choosing Full access
+    /// Inline one-time-grant disclosure (W19/Quiz-14): choosing Full access
     /// without a persistent grant surfaces the requirement UP FRONT with the
     /// grant action right here — not only as a post-send refusal card. The
     /// security boundary is unchanged: choosing Full is a REQUEST; the grant

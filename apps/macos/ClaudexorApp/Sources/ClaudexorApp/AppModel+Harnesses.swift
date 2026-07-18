@@ -28,7 +28,7 @@ extension AppModel {
                 }()
                 // The configured-model verdict is a typed `configured_model`
                 // readiness row (daemon-normalized) — the ONE owner; no
-                // separate string projection here (Ф4 review lane 2 #2).
+                // separate string projection here (F4 review lane 2 #2).
                 return HarnessInfo(family: family, health: health, version: version, auth: auth,
                                    authSources: status.authSources,
                                    intents: status.enabledIntents, routableIntents: status.routableIntents,
@@ -84,7 +84,7 @@ extension AppModel {
     }
 
     /// One overall sentence — the ROWS own every smoke/source/model detail
-    /// (one presentational owner per fact, INV-134; Ф4 final review #3).
+    /// (one presentational owner per fact, INV-134; F4 final review #3).
     private static func harnessReadinessText(status: HarnessStatus, health: HarnessHealth) -> String {
         switch health {
         case .ok: return "Ready by doctor."

@@ -670,7 +670,7 @@ describe("revert with quoted/special filenames", () => {
     });
     const pre = await snapshotTree(repo);
     // The turn adds a file whose name git quotes under core.quotePath=true.
-    const special = "файл с пробелом.txt";
+    const special = "naïve file with space.txt";
     writeFileSync(join(repo, special), "added by turn\n");
     const post = await snapshotTree(repo);
     const res = await revertWorkingTreeTo(repo, pre, post);

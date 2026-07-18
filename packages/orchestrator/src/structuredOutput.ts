@@ -31,7 +31,7 @@ export function assertOutputSchemaCompiles(schema: Record<string, unknown>): voi
 }
 
 /**
- * The ONE engine validator for a run's structured-output contract (Квиз-6a).
+ * The ONE engine validator for a run's structured-output contract (Quiz-6a).
  * The `schema` here is the CALLER's ORIGINAL contract (the conformance
  * authority) — NEVER the vendor-strictified transport form, which would falsely
  * pass e.g. `{"field":null}` for an optional string. Every capable lane was

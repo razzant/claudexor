@@ -562,7 +562,7 @@ export const HarnessRunSpec = z
         "Whether route evidence may read vendor session artifacts; auth capability smokes require stream_only.",
       ),
     /**
-     * Opt-in live text deltas (Ф2.5 W-C4): adapters that support partial
+     * Opt-in live text deltas (F2.5 W-C4): adapters that support partial
      * output add their native flag (claude --include-partial-messages,
      * cursor --stream-partial-output; codex exec has no deltas). Set ONLY on
      * single-candidate chat lanes — racing lanes stay delta-free (noise × N).

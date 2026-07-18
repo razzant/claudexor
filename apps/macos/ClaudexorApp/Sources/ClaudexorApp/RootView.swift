@@ -7,7 +7,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var model
     @State private var workbenchMode: WorkbenchMode = .runDetail
-    /// The user's EXPLICIT wizard dismissal (W15/Р18) — the only sticky bit.
+    /// The user's EXPLICIT wizard dismissal (W15/R18) — the only sticky bit.
     /// Whether onboarding is NEEDED is derived from the server's routability
     /// projection each launch (the old `onboardingComplete` flag hid the
     /// wizard forever even when a fresh v2 runtime had no routable harness).

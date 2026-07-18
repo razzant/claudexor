@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pure projection of raw `QuotaSnapshot`s into what the sidebar footer and
-/// the quota detail actually render (W17, Р15/Квиз-6a):
+/// the quota detail actually render (W17, R15/Quiz-6a):
 ///
 /// - ONE group per `(harness, credential_route)` — the server keeps cooldown
 ///   snapshots as a SEPARATE source for the same subject, which naively renders

@@ -138,7 +138,7 @@ struct TurnCard: View {
                         .textSelection(.enabled)
                 }
                 // ONE labeled Activity strip (W4.1): «Thinking 40s · 9 tools ·
-                // 3 files». Clicking the CARD toggles it (В16а); expanded while
+                // 3 files». Clicking the CARD toggles it (V16a); expanded while
                 // live by default, a user toggle pins it. Read through the
                 // live-box overlay: while streaming only THIS card re-renders.
                 if let runId = turn.runId {
@@ -247,7 +247,7 @@ struct TurnCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(hover: run != nil)
         .contentShape(Rectangle())
-        // Clicking the card toggles its Activity strip (В16а) — the inspector
+        // Clicking the card toggles its Activity strip (V16a) — the inspector
         // opens ONLY via the explicit ⧉ affordance in the status line. Buttons
         // inside the card take the tap first (SwiftUI priority), so
         // decide/apply/Implement-plan are unaffected. When the run streamed NO
@@ -390,7 +390,7 @@ struct TurnCard: View {
         }
     }
 
-    /// Honest RECONCILED outcome of the turn (W21, Квиз-7a): one composed line
+    /// Honest RECONCILED outcome of the turn (W21, Quiz-7a): one composed line
     /// from the three orthogonal axes (execution terminal / delivery-apply /
     /// review gate) — at most two facts in the headline, the rest as chips.
     /// "Applied · review blocked" is an honest amber composition, NEVER a green

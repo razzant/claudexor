@@ -1,6 +1,6 @@
 import Foundation
 
-/// A typed transient status from the harness (Ф2.5 W-C2): today only claude's
+/// A typed transient status from the harness (F2.5 W-C2): today only claude's
 /// api_retry. Projected from `HarnessEvent.status`; the UI renders «Retrying
 /// 2/10 · overloaded · in 2.5s» instead of dropping it into reasoning junk.
 struct RetryStatusNote: Hashable {

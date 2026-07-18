@@ -11,7 +11,7 @@ public struct HarnessStatus: Codable, Sendable, Identifiable, Equatable {
     public let manifest: JSONValue?
     public let enabledIntents: [String]
     /// Intents this harness is ACTUALLY routable for right now — the SERVER's
-    /// doctor-gated availability truth (Р8/W14). Surfaces read this field and
+    /// doctor-gated availability truth (R8/W14). Surfaces read this field and
     /// never re-derive availability from status+intents. An empty array means
     /// "routes nothing" (degraded/unauth'd harness, or a legacy daemon that
     /// predates the field) — fail-closed, never "ready".

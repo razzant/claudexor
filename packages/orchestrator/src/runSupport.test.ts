@@ -3,8 +3,8 @@ import type { HarnessEvent } from "@claudexor/schema";
 import { harnessEventPayload } from "./runSupport.js";
 
 describe("harnessEventPayload (run-event projection)", () => {
-  it("carries typed finality and status through to the live stream (Ф2.5 E2E gap)", () => {
-    // The Ф2.5 live smoke caught this: the projection dropped `final`, so the
+  it("carries typed finality and status through to the live stream (F2.5 E2E gap)", () => {
+    // The F2.5 live smoke caught this: the projection dropped `final`, so the
     // app never saw the typed answer marker on the live path (attempt-level
     // events had it; the run-level stream did not).
     const finalEvent: HarnessEvent = {

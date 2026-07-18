@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AnswerAssembly } from "./answer-assembly.js";
 
-describe("AnswerAssembly (Ф2.5 W-C1 typed finality)", () => {
+describe("AnswerAssembly (F2.5 W-C1 typed finality)", () => {
   it("prefers the typed final message verbatim over joined narration", () => {
     const a = new AnswerAssembly();
     a.observe({ type: "message", text: "Working on it…" });

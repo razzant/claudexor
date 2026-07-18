@@ -1107,7 +1107,7 @@ export class Orchestrator {
         dropped.push(why);
         continue;
       }
-      // W3.3 (ТЗ-1 §B): a route is admitted on readiness truth from the SAME
+      // W3.3 (TZ-1 §B): a route is admitted on readiness truth from the SAME
       // resolved env/cwd its run will spawn with (see routeContext.ts).
       let status = await candidateStatusInRouteContext(
         this.gateway,
@@ -1280,7 +1280,7 @@ export class Orchestrator {
       input.browser === true,
       out.map((lane) => lane.browserRequirement),
     );
-    // outputSchema is MANDATORY (Квиз-6a): a selected lane that cannot
+    // outputSchema is MANDATORY (Quiz-6a): a selected lane that cannot
     // natively constrain its final message would deliver best-effort text —
     // that is a typed preflight refusal, never silent degradation. The
     // interactive stream-json transport x --json-schema is an unverified
@@ -1671,7 +1671,7 @@ export class Orchestrator {
    * never forgotten in one of the HarnessRunSpec.parse sites (the multi-path
    * trap). Per-run `instructions` ride every task-producing lane but are withheld
    * from `synthesize` (a merge of existing candidates, not a fresh task
-   * execution — owner Квиз-5a); reviewers and the auth smoke build their own
+   * execution — owner Quiz-5a); reviewers and the auth smoke build their own
    * specs and never call this.
    */
   private harnessSpecKnobs(

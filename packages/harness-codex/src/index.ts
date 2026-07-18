@@ -713,7 +713,7 @@ async function* runCodex(
       outputSchemaPath = join(dir, `claudexor-output-schema-${spec.session_id}.json`);
       writeFileSync(outputSchemaPath, JSON.stringify(spec.output_schema));
     } catch (err) {
-      // FAIL-CLOSED (Квиз-6a): output_schema is a contract — running the
+      // FAIL-CLOSED (Quiz-6a): output_schema is a contract — running the
       // child UNCONSTRAINED because a local schema file failed to write would
       // silently drop it. Fail loudly; the caller retries or reroutes.
       throw new Error(

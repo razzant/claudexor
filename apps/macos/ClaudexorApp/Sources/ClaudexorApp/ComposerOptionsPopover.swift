@@ -108,7 +108,7 @@ extension ThreadsScreen {
                     .help("Requested reasoning effort for THIS turn. Each harness clamps it onto its own declared ladder (e.g. codex xhigh, claude max).")
                 }
             }
-            // Per-turn auth route REQUEST (W18/Р20) over the thread preference.
+            // Per-turn auth route REQUEST (W18/R20) over the thread preference.
             // Honest language: this is what we ASK for — auto may switch routes
             // (typed fallback), and the run badge discloses the effective route.
             // "Thread default" (empty) sends NO override; every other choice —

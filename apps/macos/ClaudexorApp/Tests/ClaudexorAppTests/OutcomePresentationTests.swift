@@ -17,7 +17,7 @@ import ClaudexorKit
             status: .blocked, result: patch(applyState: "applied_review_blocked"),
             reviewVerdict: .findings
         ))
-        // BOTH facts in the headline — the acceptance case of Квиз-7a.
+        // BOTH facts in the headline — the acceptance case of Quiz-7a.
         #expect(line.headline == "Applied · review blocked")
         #expect(line.tone == .warning)
         #expect(line.chips.isEmpty)
@@ -141,7 +141,7 @@ import ClaudexorKit
     @Test func headerPrimaryCarriesExactlyTheMaterialFacts() throws {
         // A populated run: route + adopted apply + a pending question. The
         // pin asserts the EXACT fact set — an empty array can never pass
-        // (the old count<=4 check was vacuous, Ф4 final review #7).
+        // (the old count<=4 check was vacuous, F4 final review #7).
         var task = TaskRun(
             id: "r1", title: "t", prompt: "", mode: .agent, status: .succeeded,
             project: "p", specTitle: "spec", harnesses: [.claude, .codex], n: 2,

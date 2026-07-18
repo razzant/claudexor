@@ -31,7 +31,7 @@ export interface DaemonRuntimeShutdownOptions {
 /**
  * THE daemon shutdown state machine (W3.5): every trigger — OS signal,
  * socket-RPC stop, startup failure, test dispose — enters through
- * beginShutdown(reason) and gets the SAME escalation ladder (Ф2.5 W-C8:
+ * beginShutdown(reason) and gets the SAME escalation ladder (F2.5 W-C8:
  * hung-stop deadline, then post-stop leaked-handle sweep). It stops ingress
  * and setup work before closing the journal they write to; a hung
  * participant or a leaked handle can no longer immortalize the daemon,
@@ -40,9 +40,9 @@ export interface DaemonRuntimeShutdownOptions {
  * alive. Nothing outside the machine can disarm it: the clean-stop
  * continuation itself clears the hung-stop deadline (the exit-1 hazard), a
  * FAILED stop keeps that deadline armed to guarantee termination, and the
- * drain sweep is deliberately uncancellable — the Ф2.5 finalize() hook let
+ * drain sweep is deliberately uncancellable — the F2.5 finalize() hook let
  * the composition root cancel the sweep and thereby disabled the
- * leaked-handle protection in every production shutdown (Ф3 final review).
+ * leaked-handle protection in every production shutdown (F3 final review).
  */
 export class DaemonRuntimeShutdown {
   private requestedValue = false;
@@ -116,7 +116,7 @@ export class DaemonRuntimeShutdown {
       // then armed UNCONDITIONALLY and nothing can disarm it: unref'd, it
       // cannot force-exit a process whose loop drains naturally — it fires
       // ONLY when something keeps the loop alive past the grace, which is
-      // exactly the leak it exists to catch. (The Ф2.5 finalize() hook let
+      // exactly the leak it exists to catch. (The F2.5 finalize() hook let
       // main()'s tail cancel it, which removed the sweep from every
       // production shutdown — the tail always runs right after this
       // continuation.) Exit code is read at FIRE time so a late failure

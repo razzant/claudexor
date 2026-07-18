@@ -1,7 +1,7 @@
 import Foundation
 import ClaudexorKit
 
-/// PURE state mapping for the AuthSheet (W4.8 В21а): ONE primary CTA derived
+/// PURE state mapping for the AuthSheet (W4.8 V21a): ONE primary CTA derived
 /// from the cause, and ONE merged human status line per setup job — never
 /// contradictory combos like "Failed + Completed + exit 0". Unit-tested.
 enum AuthSheetPresentation {
@@ -47,7 +47,7 @@ enum AuthSheetPresentation {
         // Native path: the cause is the session — log in, or re-probe a
         // verified-but-degraded one. Storing a key belongs to the NON-native
         // path only: a missing fallback key is normalized as `skip`, never
-        // evidence that the key caused the degraded state (Ф4 triad sol #1).
+        // evidence that the key caused the degraded state (F4 triad sol #1).
         if nativeSupported { return nativeReady ? .retryProbe : .login }
         return keyStored ? .retryProbe : .storeKey
     }

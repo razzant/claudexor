@@ -49,7 +49,7 @@
 
 ### Patch Changes
 
-- 5f2dddf: Ф4 "Simple UI": the chat card, transcript, inspector, and Doctor stop being
+- 5f2dddf: F4 "Simple UI": the chat card, transcript, inspector, and Doctor stop being
   clever and start being simple, self-explanatory, and honest.
 
   - The turn card is a messenger: user bubble, ONE status line (identity +
@@ -87,7 +87,7 @@
 
 ### Patch Changes
 
-- cbf0540: CLI live printer: the codex answer prints once, not twice (Ф2.5 sol #4
+- cbf0540: CLI live printer: the codex answer prints once, not twice (F2.5 sol #4
   follow-up).
 
   Codex narrates its answer mid-run and then repeats the same text as its
@@ -172,7 +172,7 @@
     finalize) so a hung or leaked-handle shutdown can no longer leave immortal
     claudexords behind. DESIGN_SYSTEM §5 rewritten to the Chat-V2 vocabulary.
 
-- f8eec3e: Ф3 "Honest engine": the engine stops lying about readiness, stops leaving
+- f8eec3e: F3 "Honest engine": the engine stops lying about readiness, stops leaving
   daemons and disk behind, and pins the stream semantics it kept re-breaking.
 
   - Auth capability smoke: the verifier consumed EVERY message event and

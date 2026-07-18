@@ -85,7 +85,7 @@ import ClaudexorKit
     }
 }
 
-/// W4.4 (В9а): the flat transcript fold — grouped runs, failures stand
+/// W4.4 (V9a): the flat transcript fold — grouped runs, failures stand
 /// alone, thinking is a timer row, poor streams degrade honestly.
 @Suite struct TranscriptFoldTests {
     private func ok(_ id: String, _ name: String, kind: String = "file") -> TranscriptBlock {
@@ -160,7 +160,7 @@ import ClaudexorKit
     }
 }
 
-/// W4.8 (В21а): one primary CTA by cause; one merged job status — never
+/// W4.8 (V21a): one primary CTA by cause; one merged job status — never
 /// contradictory combos.
 @Suite struct AuthSheetPresentationTests {
     private func cta(

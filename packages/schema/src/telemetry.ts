@@ -363,7 +363,7 @@ export const RunTelemetry = z
           .describe(
             "Credential profile the deciding attempt ran under; null = engine-default credentials.",
           ),
-        /** Typed model mismatch on the deciding attempt (Квиз-2a): the engine
+        /** Typed model mismatch on the deciding attempt (Quiz-2a): the engine
          * SENT requested but the stream DISCLOSED observed. Null when they
          * match or either side is unknown — never inferred. Distinct from the
          * reviewer-panel same_model_fallback route proof. */

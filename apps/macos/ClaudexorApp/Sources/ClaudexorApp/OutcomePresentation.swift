@@ -1,7 +1,7 @@
 import SwiftUI
 import ClaudexorKit
 
-/// W21 (Квиз-7a): ONE owner reconciles a turn's terminal presentation from
+/// W21 (Quiz-7a): ONE owner reconciles a turn's terminal presentation from
 /// three ORTHOGONAL axes — the execution terminal (`RunStatus`), the
 /// delivery/apply state (`RunResult.applyState`), and the review gate — into a
 /// headline that names at most TWO material facts ("Applied · review blocked"),

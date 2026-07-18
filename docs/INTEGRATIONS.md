@@ -488,7 +488,7 @@ Known traps (class → CURRENT rule → pin):
   onto the documented categories by their stable markers; anything
   unrecognized still collapses to `unknown`, never free-form text. Pin:
   `session-resume-rate-limit.jsonl` declares `retry_class: "rate_limit"` (the
-  Ф5 deliberate update of the former `"unknown"` declaration).
+  F5 deliberate update of the former `"unknown"` declaration).
 - Control-protocol leakage: handshake/permission frames surfacing as
   timeline events. Rule: recognized plumbing (`control_response`,
   `control_cancel_request`) is consumed, producing ZERO events; only the

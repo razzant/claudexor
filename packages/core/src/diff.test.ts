@@ -3,9 +3,9 @@ import { cUnquoteGitPath, parseUnifiedDiff, summarizeDiffPaths } from "./diff.js
 
 describe("cUnquoteGitPath", () => {
   it("decodes octal escapes to utf8 and standard escapes", () => {
-    // git quotes "файл.txt" as octal utf8 bytes under core.quotePath=true.
-    expect(cUnquoteGitPath('"\\321\\204\\320\\260\\320\\271\\320\\273.txt"')).toBe("файл.txt");
-    expect(cUnquoteGitPath('"with\\tтab\\"quote\\\\slash"')).toBe('with\tтab"quote\\slash');
+    // git quotes "café.txt" as octal utf8 bytes under core.quotePath=true.
+    expect(cUnquoteGitPath('"caf\\303\\251.txt"')).toBe("café.txt");
+    expect(cUnquoteGitPath('"with\\tt\\303\\244b\\"quote\\\\slash"')).toBe('with\ttäb"quote\\slash');
     expect(cUnquoteGitPath("plain/path.txt")).toBe("plain/path.txt");
   });
 });
@@ -13,10 +13,10 @@ describe("cUnquoteGitPath", () => {
 describe("parseUnifiedDiff", () => {
   it("parses quoted non-ASCII headers (the gate-bypass class)", () => {
     const diff = [
-      'diff --git "a/\\321\\204.txt" "b/\\321\\204.txt"',
+      'diff --git "a/\\303\\251.txt" "b/\\303\\251.txt"',
       "index 000..111 100644",
-      '--- "a/\\321\\204.txt"',
-      '+++ "b/\\321\\204.txt"',
+      '--- "a/\\303\\251.txt"',
+      '+++ "b/\\303\\251.txt"',
       "@@ -1 +1 @@",
       "-old",
       "+new",
@@ -24,8 +24,8 @@ describe("parseUnifiedDiff", () => {
     ].join("\n");
     const res = parseUnifiedDiff(diff);
     expect(res.files).toHaveLength(1);
-    expect(res.files[0]?.newPath).toBe("ф.txt");
-    expect(res.files[0]?.oldPath).toBe("ф.txt");
+    expect(res.files[0]?.newPath).toBe("é.txt");
+    expect(res.files[0]?.oldPath).toBe("é.txt");
     expect(res.additions).toBe(1);
     expect(res.deletions).toBe(1);
   });
@@ -63,10 +63,10 @@ describe("parseUnifiedDiff", () => {
       "+++ /dev/null",
       "@@ -1 +0,0 @@",
       "-bye",
-      'diff --git "a/old \\321\\204.txt" "b/new \\321\\204.txt"',
+      'diff --git "a/old \\303\\251.txt" "b/new \\303\\251.txt"',
       "similarity index 90%",
-      'rename from "old \\321\\204.txt"',
-      'rename to "new \\321\\204.txt"',
+      'rename from "old \\303\\251.txt"',
+      'rename to "new \\303\\251.txt"',
       "",
     ].join("\n");
     const res = parseUnifiedDiff(diff);
@@ -77,8 +77,8 @@ describe("parseUnifiedDiff", () => {
     ]);
     expect(res.files[0]?.oldPath).toBeNull();
     expect(res.files[1]?.newPath).toBeNull();
-    expect(res.files[2]?.oldPath).toBe("old ф.txt");
-    expect(res.files[2]?.newPath).toBe("new ф.txt");
+    expect(res.files[2]?.oldPath).toBe("old é.txt");
+    expect(res.files[2]?.newPath).toBe("new é.txt");
   });
 
   it("classifies binary payloads vs undeliverable stubs", () => {

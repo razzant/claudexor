@@ -363,7 +363,7 @@ frequency and volume are. The contracts:
     Harness Doctor's "Manage" sheet hosts the same surface scoped to its
     family — account control is never forked per surface.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
-    accent USER BUBBLE over the assistant's frosted card (Чат-V2, Ф2.5): a
+    accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5): a
     status line (harness identity + honest status pill + live elapsed clock),
     the live transcript disclosure (reasoning segments with duration timers,
     DIMMED mid-run narration, humane tool rows), the reconciled outcome line,
@@ -387,14 +387,14 @@ frequency and volume are. The contracts:
 Each component lists purpose + key tokens. Components are reusable SwiftUI
 views in the shared design-system files; screens compose them.
 
-- **Turn card — the messenger layout (Ф4 В1а).** The card reads top-down as a
+- **Turn card — the messenger layout (F4 V1a).** The card reads top-down as a
   conversation and grows strictly downward; live and terminal are ONE shape:
   1. the user's right-aligned bubble;
   2. ONE status line — two anchored clusters: identity + quiet state word on
      the left ("Codex · Working…", retry folds into the word: "Retrying
      2/10"; a race says "Best-of N" — a losing candidate's name is never
      guessed), time + cash-$ on the right, the explicit ⧉ inspector
-     affordance trailing. No permanent status pill (Ф4 В2а): attention
+     affordance trailing. No permanent status pill (F4 V2a): attention
      states raise ONE loud chip only when they exist ("Needs your answer" >
      "Needs you" > the red terminal label), and the quiet state word goes
      silent when the chip voices it. Success carries no chip — the outcome
@@ -410,13 +410,13 @@ views in the shared design-system files; screens compose them.
      apply/revert), then the silent-failure card when honest.
   The inspector opens ONLY via the explicit ⧉ (or the toolbar toggle) —
   never by clicking the card, never automatically on navigation; a manual
-  close stays closed (Ф4 В17а, one `inspectorPresented` binding).
+  close stays closed (F4 V17a, one `inspectorPresented` binding).
 - **Run inspector (Run Detail).** A long run at a glance — the opened turn's
   detail in the trailing Workbench. Its header is a PRIMARY row of at most
   the material facts (route, apply, needs-answer + BudgetMini and Cancel);
   provenance and the route-proof badge are EVIDENCE and live behind the
   Details disclosure with everything else, composed from
-  `RunFacts.headerDetails` — the header never retells the card (Ф4 В19а):
+  `RunFacts.headerDetails` — the header never retells the card (F4 V19a):
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
     node animates (calm). It rides the active turn's transcript and the inspector's
@@ -434,7 +434,7 @@ views in the shared design-system files; screens compose them.
     The live meter rides the run inspector; the editable budget cockpit is a Settings tab.
   - **Timeline feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
     Summary in the inspector's Timeline tab; code/log text sits on `surface/code`.
-    The CHAT transcript (the card's Activity strip) is a FLAT log (Ф4 В9а,
+    The CHAT transcript (the card's Activity strip) is a FLAT log (F4 V9a,
     `TranscriptPresentation`): one line per tool (status glyph + typed-kind
     icon + humane title — a command shows its binary's basename, the full
     command line is the subtitle); a FAILED tool stands alone and carries its
@@ -679,7 +679,7 @@ views in the shared design-system files; screens compose them.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the run inspector.
-- **Harness Doctor — ONE readiness card, three surfaces (Ф4 В20а/В22а).**
+- **Harness Doctor — ONE readiness card, three surfaces (F4 V20a/V22a).**
   Settings, Onboarding step 0, and the AuthSheet all render the same
   `HarnessReadinessCard` from one `HarnessReadinessPresentation`: identity
   chip, the SERVER routability truth, a fixed-width health capsule, the
@@ -691,7 +691,7 @@ views in the shared design-system files; screens compose them.
   Manifest auth modes are source availability only; nothing renders as ready
   unless doctor/smoke checks pass. Swift renders the typed rows verbatim and
   never parses id substrings or joined prose.
-- **AuthSheet (state-driven, Ф4 В21а).** ONE primary CTA derived from the
+- **AuthSheet (state-driven, F4 V21a).** ONE primary CTA derived from the
   cause in a severity ladder (Reconnect > observe-the-active-job/Done >
   Log in > Store key > Retry check), rendered prominent in the footer with
   Done demoted beside it; secondary actions stay bordered in their panels.

@@ -6,7 +6,7 @@ import ClaudexorKit
 /// state, output, web evidence, or budget is produced here exactly once.
 /// Surfaces (TurnCard, Run Detail header) COMPOSE their own layouts from
 /// these facts — layout stays per-surface, the facts never fork. The terminal
-/// outcome LINE stays composed by `OutcomePresentation` (Ф2 W21), which
+/// outcome LINE stays composed by `OutcomePresentation` (F2 W21), which
 /// consumes the same single apply-state mapper below.
 enum RunFacts {
     struct Fact: Identifiable, Equatable {

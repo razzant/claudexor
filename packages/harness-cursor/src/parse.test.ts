@@ -38,7 +38,7 @@ describe("parseCursorEvent", () => {
     expect(types).toContain("tool_result");
     expect(types).toContain("file_change");
     expect(types).toContain("usage");
-    // The terminal result is cursor's TYPED final answer (Ф2.5 W-C1).
+    // The terminal result is cursor's TYPED final answer (F2.5 W-C1).
     const finalMsg = events.find((e) => e.type === "message" && e.final === true);
     expect(finalMsg?.text).toBe("All done");
 
