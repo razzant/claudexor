@@ -198,4 +198,57 @@ describe("npm release provenance", () => {
     mutate(input);
     expect(validatePublishedProvenance(input).ok).toBe(false);
   });
+
+  // v2.1.1 postmortem: builds are not byte-reproducible across CI runs, so
+  // the already-published SKIP path anchors on npm's provenance instead of
+  // local byte-identity — the SLSA subject must match the PUBLISHED tarball
+  // digest and the workflow/tag/commit identity stays fully enforced.
+  describe("allowSameSourceRebuild (retry skip path)", () => {
+    function rebuildFixture() {
+      const input = fixture();
+      // A published tarball whose bytes differ from the local re-pack: the
+      // registry integrity and the SLSA subject agree with EACH OTHER but
+      // not with the local integrity/sha512Hex.
+      const publishedSha512Hex = "e".repeat(128);
+      input.metadata.dist.integrity = `sha512-${Buffer.from(publishedSha512Hex, "hex").toString("base64")}`;
+      const next = statement(input);
+      next.subject[0].digest.sha512 = publishedSha512Hex;
+      replaceStatement(input, next);
+      return { ...input, allowSameSourceRebuild: true };
+    }
+
+    it("accepts a same-source rebuild whose provenance matches the published bytes", () => {
+      expect(validatePublishedProvenance(rebuildFixture())).toEqual({ ok: true, reasons: [] });
+    });
+
+    it("still rejects the same rebuild under the strict fresh-publish contract", () => {
+      expect(
+        validatePublishedProvenance({ ...rebuildFixture(), allowSameSourceRebuild: false }).ok,
+      ).toBe(false);
+    });
+
+    it("rejects a published subject that does not match the published tarball", () => {
+      const input = rebuildFixture();
+      const next = statement(input);
+      next.subject[0].digest.sha512 = "f".repeat(128);
+      replaceStatement(input, next);
+      expect(validatePublishedProvenance(input).ok).toBe(false);
+    });
+
+    it("rejects a rebuild from a different candidate commit", () => {
+      const input = rebuildFixture();
+      const next = statement(input);
+      next.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit = "d".repeat(40);
+      replaceStatement(input, next);
+      expect(validatePublishedProvenance(input).ok).toBe(false);
+    });
+
+    it("rejects a rebuild published by a different workflow ref", () => {
+      const input = rebuildFixture();
+      const next = statement(input);
+      next.predicate.buildDefinition.externalParameters.workflow.ref = "refs/heads/main";
+      replaceStatement(input, next);
+      expect(validatePublishedProvenance(input).ok).toBe(false);
+    });
+  });
 });

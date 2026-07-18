@@ -9,6 +9,9 @@ export interface PublishedProvenanceInput {
   repository: string;
   workflowPath: string;
   ref: string;
+  /** Already-published skip path: anchor on npm's signed provenance instead
+   * of local byte-identity (builds are not byte-reproducible across runs). */
+  allowSameSourceRebuild?: boolean;
 }
 
 export function validatePublishedProvenance(input: PublishedProvenanceInput): {

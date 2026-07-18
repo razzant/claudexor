@@ -120,9 +120,14 @@ verifiable for already-sealed evidence) additionally validates the sealed
 packet, artifact digests, exact six reviewer slots, quorum, and pass result.
 Missing signing/notary/npm credentials fail; there is no unsigned or
 GitHub-only release fallback. npm
-packages publish in dependency order with `--provenance`; a retry skips only an
-already-published byte-identical package carrying provenance, while any version
-collision fails. The GitHub Release is a draft until macOS and npm complete,
+packages publish in dependency order with `--provenance`; a retry skips an
+already-published package only when npm's signed SLSA provenance proves it was
+built by this repository's release workflow on this exact tag and candidate
+commit and its subject digest matches the published bytes (builds are not
+byte-reproducible across CI runs, so local re-pack identity is required only
+for fresh publishes); anything else is a version collision and fails. npm's
+post-publish version and attestation endpoints are eventually consistent, so
+both are polled with a bounded 10-minute window before failing loudly. The GitHub Release is a draft until macOS and npm complete,
 uploads only absent assets, rejects differing same-name bytes, and becomes
 public as the final mutation. The workflow never edits a published release and
 does not claim platform-enforced immutability. Version bumps still go through

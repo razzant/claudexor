@@ -56,8 +56,8 @@ async function main() {
     };
     const existing = view(spec);
     if (existing) {
-      await verifyPublished(existing, expected, spec);
-      console.log(`npm already published with identical provenance: ${spec}`);
+      await verifyPublished(existing, expected, spec, { allowSameSourceRebuild: true });
+      console.log(`npm already published with verified provenance: ${spec}`);
       continue;
     }
     run("npm", ["publish", tarball, "--access", "public", "--provenance"], root);
@@ -128,7 +128,7 @@ function view(spec) {
   fail(`npm view failed for ${spec}: ${lastLine(result.stderr)}`);
 }
 
-async function verifyPublished(metadata, expected, spec) {
+async function verifyPublished(metadata, expected, spec, { allowSameSourceRebuild = false } = {}) {
   const url = metadata?.dist?.attestations?.url;
   if (typeof url !== "string") fail(`npm provenance is missing for ${spec}`);
   let parsedUrl;
@@ -140,17 +140,43 @@ async function verifyPublished(metadata, expected, spec) {
   if (parsedUrl.protocol !== "https:" || parsedUrl.hostname !== "registry.npmjs.org") {
     fail(`npm provenance URL is untrusted for ${spec}`);
   }
-  const response = await fetch(parsedUrl, { headers: { accept: "application/json" } });
-  if (!response.ok) fail(`npm provenance fetch failed for ${spec}: HTTP ${response.status}`);
+  // npm's attestation endpoint is eventually consistent like the version
+  // listing (v2.1.1 postmortem: fresh publishes 404 here for minutes while
+  // the tarball itself is already served). Poll 404s with the same bounded
+  // 10-minute window; any other failure — and a still-missing attestation
+  // after the deadline — stays a loud hard failure.
+  let response = null;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    response = await fetch(parsedUrl, { headers: { accept: "application/json" } });
+    if (response.status !== 404) break;
+    if (attempt % 6 === 5) console.log(`waiting for npm attestations for ${spec}…`);
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10_000));
+  }
+  if (!response?.ok) fail(`npm provenance fetch failed for ${spec}: HTTP ${response?.status}`);
   const attestationDocument = await response.json();
-  const validation = validatePublishedProvenance({ metadata, attestationDocument, ...expected });
+  const validation = validatePublishedProvenance({
+    metadata,
+    attestationDocument,
+    allowSameSourceRebuild,
+    ...expected,
+  });
   if (!validation.ok)
     fail(`npm publication mismatch for ${spec}: ${validation.reasons.join("; ")}`);
 }
 
 export function validatePublishedProvenance(input) {
   const reasons = [];
-  if (input.metadata?.dist?.integrity !== input.integrity)
+  // v2.1.1 postmortem: package builds are NOT byte-reproducible across CI
+  // runs, so a retry can never re-pack the byte-identical tarball an earlier
+  // run published — demanding local byte-identity made every retry a lottery
+  // and burned the version. For the already-published skip path the
+  // security-meaningful anchor is the PROVENANCE: npm's attestation must
+  // prove the published bytes were built by THIS repository's release
+  // workflow on THIS tag from THIS exact candidate commit, and the SLSA
+  // subject must match the PUBLISHED tarball digest. Fresh publishes keep
+  // strict local byte-identity.
+  const rebuild = input.allowSameSourceRebuild === true;
+  if (!rebuild && input.metadata?.dist?.integrity !== input.integrity)
     reasons.push("tarball integrity mismatch");
   if (input.metadata?.["dist-tags"]?.latest !== input.version) {
     reasons.push("latest dist-tag mismatch");
@@ -180,12 +206,22 @@ export function validatePublishedProvenance(input) {
     : input.packageName;
   const expectedSubject = `pkg:npm/${purlName}@${input.version}`;
   const subjects = Array.isArray(statement?.subject) ? statement.subject : [];
+  const distIntegrity = input.metadata?.dist?.integrity ?? "";
+  const publishedSha512Hex = distIntegrity.startsWith("sha512-")
+    ? Buffer.from(distIntegrity.slice("sha512-".length), "base64").toString("hex")
+    : null;
+  const requiredSha512 = rebuild ? publishedSha512Hex : input.sha512Hex;
   if (
     subjects.length !== 1 ||
     subjects[0]?.name !== expectedSubject ||
-    subjects[0]?.digest?.sha512 !== input.sha512Hex
+    !requiredSha512 ||
+    subjects[0]?.digest?.sha512 !== requiredSha512
   ) {
-    reasons.push("SLSA subject does not match the packed tarball");
+    reasons.push(
+      rebuild
+        ? "SLSA subject does not match the published tarball"
+        : "SLSA subject does not match the packed tarball",
+    );
   }
   const workflow = statement?.predicate?.buildDefinition?.externalParameters?.workflow;
   const repositoryUrl = `https://github.com/${input.repository}`;
