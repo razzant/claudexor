@@ -1,5 +1,19 @@
 # claudexor
 
+## 2.1.2
+
+### Patch Changes
+
+- Release-infra: publish retries survive non-reproducible builds and npm's
+  attestation-endpoint lag. The already-published skip path now anchors on
+  npm's signed SLSA provenance (same repo/workflow/tag/candidate commit,
+  subject digest of the published bytes) instead of impossible local
+  byte-identity; the provenance fetch polls 404s within the same bounded
+  10-minute window as the version listing. The partially-published 2.1.1
+  set is orphaned the same way 2.1.0 was; nothing user-visible shipped as
+  either.
+  - @claudexor/cli@2.1.2
+
 ## 2.1.1
 
 ### Patch Changes

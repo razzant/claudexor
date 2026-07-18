@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-cursor",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "license": "MIT",
   "description": "Cursor CLI adapter (cursor-agent -p --output-format stream-json).",
   "type": "module",

@@ -1,5 +1,11 @@
 # @claudexor/schema
 
+## 2.1.2
+
+### Patch Changes
+
+- @claudexor/util@2.1.2
+
 ## 2.1.1
 
 ### Patch Changes

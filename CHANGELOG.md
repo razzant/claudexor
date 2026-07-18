@@ -3,12 +3,19 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v2.1.1** (2026-07-18) — the credential-profiles release, republished as
-  2.1.1: the first v2.1.0 publish was burned mid-flight by npm's post-publish
-  indexing lag (three internal packages reached the registry at 2.1.0 from a
-  since-retracted tag; npm forbids re-publishing a version, so nothing
-  user-visible ever shipped as 2.1.0 — the publisher now waits out npm
-  indexing). On top of the 2.1.0 scope below, 2.1.1 adds account deletion
+- **v2.1.2** (2026-07-18) — the credential-profiles release, published as
+  2.1.2 after two npm-infrastructure burns: the v2.1.0 flight died on npm's
+  post-publish indexing lag (the publisher's exposure window was too small),
+  and the v2.1.1 flight on two more npm realities — the attestation endpoint
+  lags like the version listing, and package builds are not byte-reproducible
+  across CI runs, so retries demanding local byte-identity could never pass.
+  Both partial version sets are orphaned on the registry (npm forbids
+  re-publishing a version); nothing user-visible shipped as 2.1.0 or 2.1.1.
+  The publisher now waits out both npm endpoints (bounded 10-minute polls)
+  and anchors retry skips on npm's signed SLSA provenance (same repo/
+  workflow/tag/candidate commit + published-bytes digest) instead of
+  impossible byte-identity. On top of the 2.1.0 scope below, this release
+  adds account deletion
   end-to-end (`DELETE /v2/credential-profiles/:harness/:id` with a
   delete-grade confinement fence and disclosed cleanup, `claudexor profiles
   remove`, delete on account rows) and ONE shared accounts surface
