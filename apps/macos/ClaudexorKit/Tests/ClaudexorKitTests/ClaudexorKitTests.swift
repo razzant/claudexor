@@ -1115,6 +1115,62 @@ import Testing
         #expect(status.authSources.first?.isVerifiedNativeSession == true)
     }
 
+    @Test func setupJobCreateEncodesProfileIdOnlyWhenPresent() throws {
+        // A default-store login keeps the EXACT legacy body — no profileId key.
+        let dflt = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            SetupJobCreateRequest(harness: .codex, action: .login)
+        )) as? [String: String])
+        #expect(dflt == ["harness": "codex", "action": "login", "authRequest": "subscription"])
+        // A profile login emits the profileId (INV-135).
+        let profile = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            SetupJobCreateRequest(harness: .claude, action: .login, profileId: "work")
+        )) as? [String: String])
+        #expect(profile == ["harness": "claude", "action": "login", "authRequest": "subscription", "profileId": "work"])
+    }
+
+    @Test func setupJobDecodesNullableProfileId() throws {
+        // The server always reports profileId — a value for a profile job…
+        let value = makeSetupJob(id: "p", state: "running", phase: .verifying)
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any])
+        object["profileId"] = "work"
+        let decoded = try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.profileId == "work")
+        // …and explicit null for the default store.
+        object["profileId"] = NSNull()
+        let defaulted = try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(defaulted.profileId == nil)
+        // A profile job round-trips through encode without tripping strict decode.
+        #expect(try JSONDecoder().decode(SetupJob.self, from: JSONEncoder().encode(decoded)).profileId == "work")
+    }
+
+    @Test func harnessSettingsDecodeAndPatchProfileLimitAction() throws {
+        let json = """
+        {"enabled":true,"defaultModel":null,"effort":null,"maxTurns":null,"maxRounds":null,
+         "maxUsd":null,"toolsAllow":[],"toolsDeny":[],"fallbackModel":null,"web":"auto",
+         "authPreference":null,"profileLimitAction":"rotate"}
+        """
+        #expect(try JSONDecoder().decode(HarnessSettings.self, from: Data(json.utf8)).profileLimitAction == "rotate")
+        // Absent field tolerated (pre-INV-135 daemon).
+        let legacy = """
+        {"enabled":true,"defaultModel":null,"effort":null,"maxTurns":null,"maxRounds":null,
+         "maxUsd":null,"toolsAllow":[],"toolsDeny":[],"fallbackModel":null,"web":"auto","authPreference":null}
+        """
+        #expect(try JSONDecoder().decode(HarnessSettings.self, from: Data(legacy.utf8)).profileLimitAction == nil)
+        // The patch emits the key ONLY when set (absent fields keep their stored value).
+        let patch = SettingsUpdateRequest(harnesses: ["claude": HarnessSettingsPatch(profileLimitAction: "rotate")])
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any])
+        let harnesses = try #require(object["harnesses"] as? [String: Any])
+        let claude = try #require(harnesses["claude"] as? [String: Any])
+        #expect(claude["profileLimitAction"] as? String == "rotate")
+        #expect(claude.keys.contains("enabled") == false)
+    }
+
+    @Test func setupConflictMessageExtractsDaemonReason() {
+        #expect(SetupLifecycleController.conflictMessage(#"{"detail":"another login is active"}"#) == "another login is active")
+        #expect(SetupLifecycleController.conflictMessage(#"{"error":"legacy shape"}"#) == "legacy shape")
+        #expect(SetupLifecycleController.conflictMessage("") == "Another login for this harness is already active for a different account.")
+    }
+
     @Test func setupHarnessRejectsNonNativeLoginHarnesses() throws {
         #expect(try JSONDecoder().decode(SetupHarness.self, from: Data(#""claude""#.utf8)) == .claude)
         for raw in ["raw-api", "raw", "opencode"] {

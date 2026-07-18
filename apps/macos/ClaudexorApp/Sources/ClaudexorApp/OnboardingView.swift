@@ -85,7 +85,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 FlowLayout(spacing: Theme.Spacing.sm) {
                     ForEach(model.selectableHarnesses) { family in
-                        Button { model.authSheetHarness = family } label: {
+                        Button { model.authSheetTarget = AuthSheetTarget(family: family) } label: {
                             Label(family.label, systemImage: family.glyph)
                         }
                         .buttonStyle(.bordered)
@@ -175,7 +175,7 @@ struct OnboardingView: View {
         let presentation = HarnessReadinessPresentation.from(
             family: family, info: model.harnessInfo(for: family))
         return HarnessReadinessCard(presentation: presentation) {
-            Button { model.authSheetHarness = family } label: {
+            Button { model.authSheetTarget = AuthSheetTarget(family: family) } label: {
                 Label(presentation.available ? "Manage" : "Setup",
                       systemImage: presentation.available ? "slider.horizontal.3" : "person.crop.circle.badge.checkmark")
             }

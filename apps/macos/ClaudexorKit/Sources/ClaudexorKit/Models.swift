@@ -670,6 +670,10 @@ public struct HarnessSettings: Codable, Sendable, Equatable {
     public let fallbackModel: String?
     public let web: String
     public let authPreference: String?
+    /// Behaviour when this harness hits a credential-profile quota limit
+    /// (INV-135 auto-balance): "fail" | "ask" | "rotate". Optional — pre-INV-135
+    /// daemons omit it.
+    public let profileLimitAction: String?
 }
 
 /// Partial per-harness settings patch; absent fields keep their stored value.
@@ -685,11 +689,13 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     public var maxTurns: Int??
     public var maxRounds: Int??
     public var authPreference: String?
+    /// Auto-balance action at a profile quota limit: "fail" | "ask" | "rotate".
+    public var profileLimitAction: String?
 
     public init(enabled: Bool? = nil, defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil,
                 maxUsd: Double?? = nil, toolsAllow: [String]? = nil, toolsDeny: [String]? = nil,
                 fallbackModel: String?? = nil, maxTurns: Int?? = nil, maxRounds: Int?? = nil,
-                authPreference: String? = nil) {
+                authPreference: String? = nil, profileLimitAction: String? = nil) {
         self.enabled = enabled
         self.defaultModel = defaultModel
         self.effort = effort
@@ -701,10 +707,11 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         self.maxTurns = maxTurns
         self.maxRounds = maxRounds
         self.authPreference = authPreference
+        self.profileLimitAction = profileLimitAction
     }
 
     enum CodingKeys: String, CodingKey {
-        case enabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference
+        case enabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference, profileLimitAction
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -721,6 +728,7 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         if let maxTurns { try c.encode(maxTurns, forKey: .maxTurns) }
         if let maxRounds { try c.encode(maxRounds, forKey: .maxRounds) }
         try c.encodeIfPresent(authPreference, forKey: .authPreference)
+        try c.encodeIfPresent(profileLimitAction, forKey: .profileLimitAction)
     }
 }
 

@@ -52,8 +52,8 @@ struct RootView: View {
         // desktop beneath it) shows through — the missing piece that made the window
         // read as a solid gray panel. Window opacity is set in AppDelegate.
         .containerBackground(.clear, for: .window)
-        .sheet(item: $model.authSheetHarness) { family in
-            AuthSheet(family: family).environment(model)
+        .sheet(item: $model.authSheetTarget) { target in
+            AuthSheet(family: target.family, profileId: target.profileId).environment(model)
         }
         .sheet(isPresented: Binding(
             get: { model.needsOnboarding(userDismissed: onboardingDismissed) },

@@ -26,6 +26,17 @@ enum Health: Equatable {
     }
 }
 
+// MARK: - Auth sheet target
+
+/// What the shared `AuthSheet` is opened for: a harness's default login, or a
+/// specific credential profile's login (INV-135). Presented model-level (via
+/// `AppModel.authSheetTarget`) so it survives the accounts popover dismissing.
+struct AuthSheetTarget: Identifiable, Hashable {
+    let family: HarnessFamily
+    var profileId: String? = nil
+    var id: String { profileId.map { "\(family.rawValue)#\($0)" } ?? family.rawValue }
+}
+
 // MARK: - Harness families
 
 struct HarnessFamily: RawRepresentable, Identifiable, Hashable {

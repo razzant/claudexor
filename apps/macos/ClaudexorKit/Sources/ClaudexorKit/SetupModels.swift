@@ -19,11 +19,25 @@ public struct SetupJobCreateRequest: Codable, Sendable, Equatable {
     public let harness: SetupHarness
     public let action: SetupJobAction
     public let authRequest: AuthRequest
+    /// Target credential profile (INV-135). nil = the engine-default store; the
+    /// key is emitted ONLY when set so a default login keeps the exact legacy body.
+    public let profileId: String?
 
-    public init(harness: SetupHarness, action: SetupJobAction) {
+    public init(harness: SetupHarness, action: SetupJobAction, profileId: String? = nil) {
         self.harness = harness
         self.action = action
         self.authRequest = .subscription
+        self.profileId = profileId
+    }
+
+    enum CodingKeys: String, CodingKey { case harness, action, authRequest, profileId }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(harness, forKey: .harness)
+        try container.encode(action, forKey: .action)
+        try container.encode(authRequest, forKey: .authRequest)
+        try container.encodeIfPresent(profileId, forKey: .profileId)
     }
 }
 
@@ -92,6 +106,9 @@ public struct SetupJob: Codable, Sendable, Equatable {
     public let jobId: String
     public let harness: SetupHarness
     public let action: SetupJobAction
+    /// Target credential profile (INV-135). The server always reports it — null
+    /// for a default-store login, the profile id for a profile login.
+    public let profileId: String?
     public let state: SetupJobState
     public let phase: SetupJobPhase
     public let deadlineAt: String?
@@ -109,7 +126,7 @@ public struct SetupJob: Codable, Sendable, Equatable {
     public let terminationReconciliation: SetupTerminationReconciliation?
 
     enum CodingKeys: String, CodingKey, CaseIterable, StrictCodingKey {
-        case jobId, harness, action, state, phase, deadlineAt, outcome, command, guideUrl
+        case jobId, harness, action, profileId, state, phase, deadlineAt, outcome, command, guideUrl
         case message, createdAt, startedAt, finishedAt, authCapability, execution, authorization, nativeCommand
         case terminationReconciliation
     }
@@ -122,10 +139,12 @@ public struct SetupJob: Codable, Sendable, Equatable {
                 execution: SetupExecutionEvidence? = nil,
                 authorization: SetupCommandAuthorization? = nil,
                 nativeCommand: SetupNativeCommandReceipt? = nil,
-                terminationReconciliation: SetupTerminationReconciliation? = nil) {
+                terminationReconciliation: SetupTerminationReconciliation? = nil,
+                profileId: String? = nil) {
         self.jobId = jobId
         self.harness = harness
         self.action = action
+        self.profileId = profileId
         self.state = state
         self.phase = phase
         self.deadlineAt = deadlineAt
@@ -149,6 +168,11 @@ public struct SetupJob: Codable, Sendable, Equatable {
         jobId = try container.decode(String.self, forKey: .jobId)
         harness = try container.decode(SetupHarness.self, forKey: .harness)
         action = try container.decode(SetupJobAction.self, forKey: .action)
+        // Present + nullable on the wire (null = default store); tolerate its
+        // absence so an older daemon's job still decodes as the default account.
+        profileId = container.contains(.profileId)
+            ? try container.decodeIfPresent(String.self, forKey: .profileId)
+            : nil
         state = try container.decode(SetupJobState.self, forKey: .state)
         phase = try container.decode(SetupJobPhase.self, forKey: .phase)
         deadlineAt = try container.decodeIfPresent(String.self, forKey: .deadlineAt)
@@ -172,6 +196,7 @@ public struct SetupJob: Codable, Sendable, Equatable {
         try container.encode(jobId, forKey: .jobId)
         try container.encode(harness, forKey: .harness)
         try container.encode(action, forKey: .action)
+        try container.encodeIfPresent(profileId, forKey: .profileId)
         try container.encode(state, forKey: .state)
         try container.encode(phase, forKey: .phase)
         try container.encodeIfPresent(deadlineAt, forKey: .deadlineAt)

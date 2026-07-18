@@ -86,7 +86,8 @@ final class AppModel {
     var appearance: AppearanceMode = .dark {
         didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "claudexor.appearance") }
     }
-    var authSheetHarness: HarnessFamily?
+    /// The shared AuthSheet's target (harness default login, or a profile login).
+    var authSheetTarget: AuthSheetTarget?
     var projectRoot: String = "" {
         didSet { UserDefaults.standard.set(projectRoot, forKey: "claudexor.projectRoot") }
     }
@@ -147,9 +148,8 @@ final class AppModel {
     /// the global default from Settings.
     var draftPrimaryHarness: String?
     var draftEligiblePool: [String] = []
-    /// Draft sticky credential profile for a not-yet-created thread (INV-135).
-    var draftCredentialProfileId: String?
-    /// Registered credential profiles + doctor readiness (INV-135 picker/sheet).
+    /// Registered credential profiles + doctor readiness (INV-135). Drives the
+    /// bottom-left accounts popover (list + guided add + per-account login).
     var credentialProfiles: [CredentialProfileEntry] = []
     /// DRAFT-thread workspace mode: false => in_place (default; turns mutate the live
     /// tree), true => isolated (turns accumulate in a thread worktree, applied later via
@@ -302,7 +302,7 @@ final class AppModel {
         health = .offline
         endpoint = ""
         client = nil
-        authSheetHarness = nil
+        authSheetTarget = nil
         cancelAllStreams()
 
         route = .threads
@@ -963,27 +963,58 @@ final class AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
-    /// Switch the thread's sticky credential profile (INV-135): PATCH persists
-    /// it; nil clears back to engine-default credentials. Per-turn selection
-    /// (CLI --profile) still wins over the sticky value at run time.
-    func setThreadCredentialProfile(_ profileId: String?) async {
-        guard let id = selectedThreadId else { draftCredentialProfileId = profileId; return }
-        guard let client else { threadStatus = "Engine offline — reconnect to change the account."; return }
-        do {
-            let updated = try await client.updateThread(
-                id: id, body: UpdateThreadRequest(credentialProfileId: .some(profileId)))
-            applyThreadUpdate(updated)
-        } catch { threadStatus = userMessage(for: error) }
-    }
-
-    /// Registered credential profiles + doctor readiness (INV-135). Loaded
-    /// lazily for the composer picker and the profiles sheet; a failing fetch
-    /// leaves the last snapshot (the picker degrades to "Default account").
+    /// Registered credential profiles + doctor readiness (INV-135). Drives the
+    /// accounts popover; a failing fetch leaves the last snapshot in place.
     func refreshCredentialProfiles() async {
         guard let client else { return }
         do { credentialProfiles = try await client.credentialProfiles().profiles } catch {
             /* endpoint absent (older daemon) or offline — keep last snapshot */
         }
+    }
+
+    /// Register a new credential profile (INV-135). On success the registry is
+    /// refreshed and the new entry returned so the accounts popover can offer its
+    /// login immediately. On failure the daemon's reason (409 duplicate id / 400
+    /// invalid slug or harness) is returned verbatim for inline display.
+    func createCredentialProfile(harnessId: String, profileId: String, displayName: String?) async
+        -> (entry: CredentialProfileEntry?, error: String?) {
+        guard let client else { return (nil, "Engine offline — reconnect to add an account.") }
+        do {
+            let entry = try await client.createCredentialProfile(
+                CreateCredentialProfileRequest(harnessId: harnessId, profileId: profileId, displayName: displayName))
+            await refreshCredentialProfiles()
+            return (entry, nil)
+        } catch {
+            return (nil, userMessage(for: error))
+        }
+    }
+
+    // MARK: Auto-balance (INV-135)
+
+    /// Harnesses that participate in credential-profile auto-balance — the
+    /// config_dir_login families the registry covers.
+    static let autoBalanceHarnessIds = ["claude", "codex"]
+
+    /// Aggregated auto-balance state across the profile-capable harnesses:
+    /// on = every harness rotates, off = none rotate, mixed = they disagree.
+    enum AutoBalanceState { case on, off, mixed }
+    var autoBalanceState: AutoBalanceState {
+        let actions = Self.autoBalanceHarnessIds.map {
+            settingsSnapshot?.harnesses?[$0]?.profileLimitAction ?? "fail"
+        }
+        if actions.allSatisfy({ $0 == "rotate" }) { return .on }
+        if actions.allSatisfy({ $0 != "rotate" }) { return .off }
+        return .mixed
+    }
+
+    /// Flip auto-balance for BOTH profile-capable harnesses at once (on = rotate,
+    /// off = fail), so a mixed state resolves to a single consistent choice.
+    func setAutoBalance(_ on: Bool) async {
+        let action = on ? "rotate" : "fail"
+        let patch = Dictionary(uniqueKeysWithValues: Self.autoBalanceHarnessIds.map {
+            ($0, HarnessSettingsPatch(profileLimitAction: action))
+        })
+        _ = await saveSettings(SettingsUpdateRequest(harnesses: patch))
     }
 
     /// Replace the sticky eligible pool (PATCH on a real thread; draft otherwise).
@@ -1073,7 +1104,9 @@ final class AppModel {
                 workspace: draftIsolatedWorkspace ? "isolated" : nil,
                 primaryHarness: effectivePrimaryHarness,
                 eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool,
-                credentialProfileId: draftCredentialProfileId
+                // Per-thread account pinning UI was removed (INV-135): runs use the
+                // default account unless engine auto-balance rotates at a quota limit.
+                credentialProfileId: nil
             ))
             threads.insert(thread, at: 0)
             await openThread(thread.id)
@@ -1550,25 +1583,35 @@ final class AppModel {
         }
     }
 
-    /// Revert this turn's in-place mutation through the server-owned restore. Returns
-    /// nil on success, else the server's honest refusal (it refuses if the tree
-    /// diverged from the recorded post-turn state). Refreshes the run/thread on success.
-    func revertRun(runId: String) async -> String? {
-        guard let client else { return "Engine offline." }
+    /// Outcome of a revert attempt. `.diverged` is the PERMANENT refusal (the
+    /// working tree changed since the turn) the server signals with HTTP 409 —
+    /// the caller retires the Revert affordance. `.error` is any other failure
+    /// (offline / transport / a non-accepted decision) where the button stays.
+    enum RevertOutcome: Equatable {
+        case reverted
+        case diverged(String)
+        case error(String)
+    }
+
+    func revertRun(runId: String) async -> RevertOutcome {
+        guard let client else { return .error("Engine offline.") }
         do {
             let res = try await client.revertRun(runId: runId)
             guard res.accepted else {
-                return Self.humanRevertRefusal(res.message) ?? res.message
-                    ?? "Revert was refused (\(res.status))."
+                return .error(res.message ?? "Revert was refused (\(res.status)).")
             }
             await refreshRuns()
             await loadRunDetail(runId)
             if let tid = selectedThreadId { await openThread(tid) }
-            return nil
+            return .reverted
+        } catch GatewayError.http(let status, let body) where status == 409 {
+            // 409 == the divergence guard refused (postimage no longer matches):
+            // a structural, permanent signal — retrying would 409 forever.
+            return .diverged(Self.humanRevertRefusal(body)
+                ?? serverErrorMessage(from: body)
+                ?? "Revert is no longer available — the files changed after this turn.")
         } catch {
-            if case GatewayError.http(_, let body) = error,
-               let human = Self.humanRevertRefusal(body) { return human }
-            return userMessage(for: error)
+            return .error(userMessage(for: error))
         }
     }
 

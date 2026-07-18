@@ -6,6 +6,9 @@ struct AuthSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let family: HarnessFamily
+    /// Target credential profile (INV-135). nil = the engine-default login; a
+    /// profile id routes the native login setup job at that profile's store.
+    var profileId: String? = nil
 
     @State private var secretValue = ""
     @State private var status = ""
@@ -142,13 +145,24 @@ struct AuthSheet: View {
         .task { await observeLifecycle() }
     }
 
+    /// Display name of the target profile (INV-135), or nil for the default login.
+    private var profileDisplayName: String? {
+        guard let profileId else { return nil }
+        let entry = model.credentialProfiles.first {
+            $0.profile.profileId == profileId && $0.profile.harnessId == family.setupHarnessId
+        }
+        return entry?.profile.displayName ?? profileId
+    }
+
     private var header: some View {
         HStack(spacing: Theme.Spacing.md) {
             HarnessLogo(family: family, size: 26)
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(family.label) Auth")
+                Text(profileDisplayName.map { "\(family.label) · \($0)" } ?? "\(family.label) Auth")
                     .font(.title3.weight(.semibold))
-                Text("Native session first; API-key fallback only through the local secret store.")
+                Text(profileDisplayName == nil
+                    ? "Native session first; API-key fallback only through the local secret store."
+                    : "Native login for this account. The default login stays untouched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -386,6 +400,10 @@ struct AuthSheet: View {
             if Task.isCancelled { break }
             lifecycle = next
             if let job = next.job { status = job.message }
+            // No job but a lastError means a DEFINITIVE rejection (e.g. the 409
+            // login-conflict) — surface the daemon's reason in the always-visible
+            // footer status instead of swallowing it.
+            else if let err = next.lastError, !err.isEmpty { status = err }
             if let job = next.job, job.isTerminal, lastRefreshedTerminalJobId != job.jobId {
                 lastRefreshedTerminalJobId = job.jobId
                 let refreshed = await model.refreshAuthReadinessAfterSetupLifecycle(
@@ -417,7 +435,7 @@ struct AuthSheet: View {
         guard let controller else { return }
         actionInFlight = true
         defer { actionInFlight = false }
-        await controller.start(harness: family.setupHarnessId, action: "login")
+        await controller.start(harness: family.setupHarnessId, action: "login", profileId: profileId)
     }
 
     private func extendDeadline() async {

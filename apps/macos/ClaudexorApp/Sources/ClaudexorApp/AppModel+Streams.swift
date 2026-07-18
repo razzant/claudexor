@@ -473,6 +473,20 @@ extension AppModel {
             t.waitingOnUser = !t.pendingInteractions.isEmpty
             taskChanged = true
             box.appendActivity(ActivityEvent(.system, type == "interaction.answered" ? "Answer delivered" : "Question timed out — continuing with assumptions", at: .now))
+        } else if type == "route.profile.rotated" {
+            // Auto-balance (INV-135): the engine hit a quota limit and switched
+            // this run to another account. Surface it as a visible, non-blocking
+            // note on the turn (attentionNote) plus an activity line — never a
+            // modal, no new persistent state.
+            let harness = payload["harness_id"]?.stringValue ?? ""
+            let to = payload["to_profile_id"]?.stringValue ?? "default account"
+            let note = "Switched to account \(to)\(harness.isEmpty ? "" : " (\(harness))") — quota limit"
+            t.attentionNote = note
+            taskChanged = true
+            box.appendActivity(ActivityEvent(.system, note, at: .now))
+        } else if type == "route.profile.headroom_exceeded" {
+            let harness = payload["harness_id"]?.stringValue ?? ""
+            box.appendActivity(ActivityEvent(.system, "Account quota headroom exceeded\(harness.isEmpty ? "" : " (\(harness))")", at: .now))
         } else {
             box.appendActivity(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }

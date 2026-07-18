@@ -22,7 +22,6 @@ struct ThreadsScreen: View {
     @State var webPolicy = "auto"
     /// Per-turn auth route REQUEST (W18): auto | subscription | api_key. Not sticky.
     @State var authRoutePreference = ""  // "" = Thread default; see authRouteRequest (sol #1)
-    @State var showProfilesSheet = false  // INV-135 accounts sheet (list + guided add)
     /// Per-turn reasoning effort ("" = harness default). Not sticky.
     @State var effortPreference = ""
     @State var untilClean = false
@@ -252,7 +251,7 @@ struct ThreadsScreen: View {
                 .scrollContentBackground(.hidden)   // let the Liquid Glass panel show through
             }
 
-            QuotaFooterView()
+            AccountsTriggerRow()
         }
         .padding(.top, Theme.Spacing.xs)
         .sheet(isPresented: Binding(
@@ -463,9 +462,7 @@ struct ThreadsScreen: View {
             // Native dismissible popover — no inline glass-on-glass panel.
             .popover(isPresented: $showOptions, arrowEdge: .bottom) {
                 composerOptions
-                    .task { await model.refreshCredentialProfiles() }
             }
-            .sheet(isPresented: $showProfilesSheet) { ProfilesSheet() }
             Spacer(minLength: Theme.Spacing.sm)
             composerHint
         }

@@ -125,6 +125,18 @@ struct TurnCard: View {
                     .buttonStyle(.borderless)
                     .help("Open this run in the inspector — diff, timeline, review")
                 }
+                // Non-blocking account-rotation note (INV-135): the engine
+                // switched this run to another account at a quota limit. Surfaced
+                // inline, never a modal; transient (cleared on the next snapshot).
+                if let note = run.attentionNote {
+                    Label(note, systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(Theme.status(.blocked))
+                        .padding(.horizontal, Theme.Spacing.sm)
+                        .padding(.vertical, Theme.Spacing.xxs)
+                        .background(Theme.status(.blocked).opacity(0.12), in: Capsule())
+                        .textSelection(.enabled)
+                }
                 // ONE labeled Activity strip (W4.1): «Thinking 40s · 9 tools ·
                 // 3 files». Clicking the CARD toggles it (В16а); expanded while
                 // live by default, a user toggle pins it. Read through the
@@ -427,12 +439,17 @@ struct TurnCard: View {
                         guard let runId = turn.runId else { return }
                         reverting = true
                         Task {
-                            let err = await model.revertRun(runId: runId)
+                            let outcome = await model.revertRun(runId: runId)
                             reverting = false
-                            if err == nil { reverted = true; actionError = nil }
-                            else {
-                                actionError = err
-                                if err?.contains("no longer available") == true { revertRefused = true }
+                            switch outcome {
+                            case .reverted:
+                                reverted = true; actionError = nil
+                            case .diverged(let message):
+                                // Structural 409 refusal (tree diverged): retire the
+                                // affordance; the reason stays as the action error.
+                                actionError = message; revertRefused = true
+                            case .error(let message):
+                                actionError = message
                             }
                         }
                     }

@@ -256,9 +256,12 @@ struct TaskDetailView: View {
                             Button(reverting ? "Reverting…" : "Revert") {
                                 reverting = true
                                 Task {
-                                    let err = await model.revertRun(runId: task.id)
+                                    let outcome = await model.revertRun(runId: task.id)
                                     reverting = false
-                                    revertError = err
+                                    switch outcome {
+                                    case .reverted: revertError = nil
+                                    case .diverged(let message), .error(let message): revertError = message
+                                    }
                                 }
                             }
                             .buttonStyle(.bordered)

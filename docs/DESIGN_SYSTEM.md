@@ -339,15 +339,20 @@ frequency and volume are. The contracts:
     "New" enters the draft state (the first message materializes the thread).
     Each row carries a context menu — Rename… (title sheet) and
     Archive/Reopen — riding the server-owned `PATCH /threads/:id`
-    (`title`/`state`); no local-only thread state. The sidebar footer stacks
-    quota VERTICALLY, one chip per `(harness, credential route, profile)`
-    group: every vendor window keeps its own row, the chip header carries the
-    humanized route + freshness dot + nearest reset — and, for a credential
-    profile (INV-135), the profile id as an accent-tinted signature between
-    the harness name and the route, so two subscriptions of one vendor NEVER
-    merge into one chip. An active cooldown is an overlay badge on the chip
-    (never a standalone card), and only superseded window copies / expired
-    cooldowns are hidden — a window is never quietly dropped.
+    (`title`/`state`); no local-only thread state. The sidebar's BOTTOM-LEFT
+    carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
+    single-line trigger — worst-readiness dot + the account name (or "N
+    accounts") + worst quota % + chevron — that opens a popover to manage
+    accounts in-app (never a terminal). Each popover row is one account (a
+    default vendor login labeled with the harness name, or a registered
+    credential profile): a readiness dot, its name, ONE compact quota line
+    (worst window % + reset), and a "Log in" button until it verifies. The
+    popover adds accounts inline (harness + slug id + optional name →
+    `POST /v2/credential-profiles`, then that account's native login) and
+    toggles "Auto-switch accounts at quota limit" (the per-harness
+    `profileLimitAction` rotate/fail); a quota refresh and the full per-window
+    quota detail stay one click away. Two subscriptions of one vendor NEVER
+    merge — quota keys on `(harness, credential route, profile)`.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Чат-V2, Ф2.5): a
     status line (harness identity + honest status pill + live elapsed clock),

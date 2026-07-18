@@ -118,16 +118,52 @@ public actor SetupLifecycleController {
         }
     }
 
-    public func start(harness: String, action: String) async {
+    public func start(harness: String, action: String, profileId: String? = nil) async {
         guard let typedHarness = SetupHarness(rawValue: harness),
               let typedAction = SetupJobAction(rawValue: action) else {
             publish(job: current.job, connection: .streamLost, reconnectAttempt: 0,
                     error: "Unsupported setup harness/action contract: \(harness)/\(action)")
             return
         }
-        await performAction {
-            try await gateway.createSetupJob(SetupJobCreateRequest(harness: typedHarness, action: typedAction))
+        let previous = current
+        stopObservation(markDetached: false)
+        let requestGeneration = generation
+        publish(job: previous.job, connection: .recovering, reconnectAttempt: 0, error: nil)
+        do {
+            let job = try await gateway.createSetupJob(
+                SetupJobCreateRequest(harness: typedHarness, action: typedAction, profileId: profileId))
+            guard generation == requestGeneration, !Task.isCancelled else { return }
+            adoptAndObserve(job)
+        } catch let GatewayError.http(status, body) where status == 409 {
+            guard generation == requestGeneration, !Task.isCancelled else { return }
+            // A DEFINITIVE conflict (not a transport-unknown): another login for
+            // this harness already targets a different store. Server state is
+            // KNOWN — no job was created — so surface the daemon's reason without
+            // the reconcile-unknown flow that `.streamLost` would trigger.
+            publish(job: previous.job, connection: .idle, reconnectAttempt: 0,
+                    error: Self.conflictMessage(body))
+        } catch {
+            guard generation == requestGeneration, !Task.isCancelled else { return }
+            // A transport error cannot prove whether the create reached the daemon.
+            // Mark server state unknown and require reconciliation instead of
+            // enabling a duplicate create.
+            publish(job: previous.job, connection: .streamLost, reconnectAttempt: 0,
+                    error: String(describing: error))
         }
+    }
+
+    /// Pull the daemon's human reason out of a 409 body (RFC-9457 `detail`, or
+    /// the legacy `error`/`message` shapes) so a login conflict is never swallowed.
+    static func conflictMessage(_ body: String) -> String {
+        if let data = body.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["detail", "error", "message"] {
+                if let value = obj[key] as? String, !value.isEmpty { return value }
+            }
+        }
+        return body.isEmpty
+            ? "Another login for this harness is already active for a different account."
+            : body
     }
 
     public func extendDeadline() async {
@@ -147,7 +183,7 @@ public actor SetupLifecycleController {
     /// be replaced; history remains immutable.
     public func retry() async {
         guard let job = current.job, job.canRetry else { return }
-        await start(harness: job.harness.rawValue, action: job.action.rawValue)
+        await start(harness: job.harness.rawValue, action: job.action.rawValue, profileId: job.profileId)
     }
 
     /// User-requested reconnect starts a fresh bounded observation for a known
