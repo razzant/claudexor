@@ -1048,6 +1048,21 @@ export class Orchestrator {
         : [];
       if (profilePool.length > 0) {
         ids = profilePool;
+      } else if (input.credentialProfileId) {
+        // Fable-checkpoint NIT: an unknown/disabled profile id must refuse
+        // HERE, not fall through to the default auto-pool — that would run on
+        // the DEFAULT credentials while the caller explicitly named an
+        // account, surfacing later as a per-harness "not registered" error.
+        const registered = (this.config(input.repoRoot)?.global.credential_profiles ?? []).filter(
+          (p) => p.profile_id === input.credentialProfileId,
+        );
+        throw new HarnessUnavailableError(
+          registered.length === 0
+            ? `credential profile "${input.credentialProfileId}" is not registered (see \`claudexor profiles list\`)`
+            : registered.every((p) => !p.enabled)
+              ? `credential profile "${input.credentialProfileId}" is disabled`
+              : `credential profile "${input.credentialProfileId}" belongs to unavailable harness(es): ${registered.map((p) => p.harness_id).join(", ")}`,
+        );
       } else {
         // Auto-pools take only doctor-OK harnesses (BIBLE §2: doctor decides
         // readiness; a key string or degraded route is visible but not routable).

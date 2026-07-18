@@ -1522,6 +1522,57 @@ describe("Orchestrator", () => {
     expect(observedAttachments).toEqual([attachment]);
   });
 
+  it("refuses an unknown or disabled --profile LOUDLY instead of falling into the default auto-pool", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: off",
+        "    harness_id: asker",
+        "    display_name: Off",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:off'",
+        "    enabled: false",
+        "",
+      ].join("\n"),
+    );
+    try {
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const orchestrator = new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      });
+      const ghost = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        credentialProfileId: "ghost",
+      });
+      expect(ghost.status).toBe("failed");
+      expect(ghost.summary).toMatch(/credential profile "ghost" is not registered/);
+      const off = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        credentialProfileId: "off",
+      });
+      expect(off.status).toBe("failed");
+      expect(off.summary).toMatch(/credential profile "off" is disabled/);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("stamps the resolved credential profile on BOTH the read-only and candidate lane specs (INV-135)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-config-"));
