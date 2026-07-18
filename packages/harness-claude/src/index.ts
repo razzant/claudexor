@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type {
   AccessProfile,
   AuthSourceReadiness,
@@ -7,14 +5,12 @@ import type {
   CredentialProfile,
   CredentialProfileStatus,
   EffortHint,
-  HarnessCapabilityProfile,
   HarnessEvent,
   HarnessManifest,
   HarnessRunSpec,
 } from "@claudexor/schema";
 import {
   ConformanceReport as ConformanceReportSchema,
-  HarnessCapabilityProfile as HarnessCapabilityProfileSchema,
   HarnessManifest as HarnessManifestSchema,
 } from "@claudexor/schema";
 import type { DoctorSpec, HarnessAdapter, InteractionChannel } from "@claudexor/core";
@@ -24,6 +20,7 @@ import {
   HarnessUnavailableError,
   interactionChannelFromSpec,
   labelStreams,
+  needsScopedHomeKeychainBridge,
   normalizeEffort,
   providerScrubEnv,
   resolveHarnessBinary,
@@ -37,6 +34,10 @@ import {
 } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
+import { CLAUDE_CAPABILITY_PROFILE } from "./capability-profile.js";
+import { claudeNativeLoginRemedy } from "./doctor-remedy.js";
+import { claudeNativeHomeEnv, defaultNativeClaudeConfigDir } from "./native-home.js";
+export { defaultNativeClaudeConfigDir } from "./native-home.js";
 import { createClaudeParser } from "./parse.js";
 import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profile.js";
 export { canonicalProfileConfigDir } from "./profile.js";
@@ -53,37 +54,6 @@ export const BIN = process.env.CLAUDEXOR_CLAUDE_BIN || "claude";
 export const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter(
   (k) => k !== "ANTHROPIC_API_KEY",
 );
-
-const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile = HarnessCapabilityProfileSchema.parse({
-  auth: {
-    supported_sources: ["native_session", "oauth_token_env", "api_key_env"],
-    preferred_source: null,
-    credential_transports: [
-      { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
-      { source: "native_session", kind: "os_keychain", relocatable_by: [] },
-      { source: "oauth_token_env", kind: "oauth_token_env", relocatable_by: ["ENV"] },
-      { source: "api_key_env", kind: "env_var", relocatable_by: ["ENV"] },
-    ],
-  },
-  access_control: { readonly_mechanism: "tool_allowlist" },
-  isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
-  attachment_inputs: [
-    {
-      kind: "image",
-      mime_types: ["image/png", "image/jpeg", "image/gif", "image/webp"],
-      max_bytes: 5 * 1024 * 1024,
-      max_count: 20,
-      transport: "base64_stream",
-    },
-    {
-      kind: "file",
-      mime_types: ["text/plain", "text/markdown", "application/json"],
-      max_bytes: 1024 * 1024,
-      max_count: 10,
-      transport: "text_inline",
-    },
-  ],
-});
 
 /**
  * Ordered (weakest→strongest) reasoning-effort levels `claude --effort` accepts.
@@ -220,9 +190,15 @@ export function claudeNativeEnv(
   base?: Record<string, string | null | undefined>,
   configDir?: string,
 ): Record<string, string | null | undefined> {
-  return {
+  const raw = {
     ...(base ?? {}),
     ...providerScrubEnv(),
+  };
+  const native = needsScopedHomeKeychainBridge(CLAUDE_CAPABILITY_PROFILE)
+    ? claudeNativeHomeEnv(raw)
+    : raw;
+  return {
+    ...native,
     CLAUDE_CONFIG_DIR: configDir ?? defaultNativeClaudeConfigDir(),
   };
 }
@@ -283,13 +259,6 @@ export function anthropicApiKey(): string | null {
  * (single owner), so this reads env-only under CLAUDEXOR_DISABLE_STORED_SECRETS. */
 function claudeOAuthToken(): string | null {
   return resolveSecret("claude_oauth") || process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
-}
-
-/** The user's real Claude config dir (native subscription session lives here). */
-export function defaultNativeClaudeConfigDir(): string {
-  const override = process.env.CLAUDEXOR_CLAUDE_NATIVE_DIR;
-  if (override && override.trim()) return override;
-  return join(homedir(), ".claude");
 }
 
 export function claudeAuthSourceReadiness(input: {
@@ -485,15 +454,15 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       const probeNative = requestedSource === undefined || requestedSource === "native_session";
       const probeOAuth = requestedSource === undefined || requestedSource === "oauth_token_env";
       const probeApi = requestedSource === undefined || requestedSource === "api_key_env";
+      const nativeEnv = probeNative ? claudeNativeEnv(_spec.env) : _spec.env;
       const login: ClaudeAuthStatusProbe = probeNative
         ? await runtime.probeAuthStatus(BIN, {
-            env: claudeNativeEnv(_spec.env),
+            env: nativeEnv,
             abortSignal: _spec.abortSignal,
           })
         : { loggedIn: false, authed: false, authMethod: null, probeError: null };
       const nativeCliReady = login.authed;
-      // Official native-session proof and stored setup-token proof are separate
-      // sources. A targeted native probe resolves neither stored source.
+      // Native-session and stored setup-token proofs are separate sources.
       const oauthToken = probeOAuth ? runtime.claudeOAuthToken() : null;
       const oauthTokenAvailable = oauthToken !== null;
       const apiKey = probeApi && runtime.anthropicApiKey() !== null;
@@ -539,6 +508,8 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
       });
       const probeUnknown =
         preference !== "api_key" && login.probeError !== null && !oauthTokenAvailable;
+      // INV-067: name the real cause + designed remedy (see doctor-remedy.ts).
+      const nativeLoginRemedy = claudeNativeLoginRemedy(nativeEnv);
       const allIntents = [
         "plan",
         "spec",
@@ -582,7 +553,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
                 ? `Claude native-session probe failed: ${redactClaudeDoctorDetail(login.probeError)}`
                 : oauthTokenAvailable
                   ? `Claude setup-token verification failed: ${oauthSmoke.detail}`
-                  : "Claude subscription route is not ready (run `claude auth login --claudeai`)",
+                  : `Claude subscription route is not ready: ${nativeLoginRemedy}`,
             ]
           : preference === "api_key"
             ? [
@@ -592,9 +563,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
               ]
             : apiKey
               ? [`isolated Claude API-key smoke failed: ${apiSmoke.detail}`]
-              : [
-                  "not authenticated (run `claude auth login --claudeai` for native/subscription use, or store an anthropic API key fallback)",
-                ];
+              : [`not authenticated: ${nativeLoginRemedy}`];
       return ConformanceReportSchema.parse({
         harness_id: "claude",
         status: ok

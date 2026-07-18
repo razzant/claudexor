@@ -169,6 +169,18 @@ pnpm test
   native route requires host-user or OS-keychain access, verify only the
   declared bridge/context is exposed and temporary harness state cannot leak
   into the real home.
+- Env-portability sweep (INV-067): any auth/readiness/routing change is
+  verified against EVERY lane class — read-only scoped-HOME, isolated
+  envelope, and in-place — never just the host env. A route whose primary
+  credential store is outside a generic scoped HOME must use only its declared
+  MINIMAL vendor-specific bridge (Claude: disposable Claude-only child HOME
+  with only `Library/Keychains` bridged; exact `CLAUDE_CONFIG_DIR` selects the
+  account and is Claudexor-owned — ordinary `~/.claude` stays untouched) or
+  its designed portable transport (Codex file-only seed). Prove
+  generic scoped homes and other harnesses do NOT receive the bridge, writable
+  vendor state remains scoped, default and profile logins both work, and a
+  missing bridge refuses with the real cause + Native setup remedy. A green
+  host doctor with a red scoped-env probe is a finding, not a flake.
 - Versioned repo config must never self-grant sensitive powers.
 - Run a targeted search for token-like values when touching auth, secrets,
   artifact writing, or logging.

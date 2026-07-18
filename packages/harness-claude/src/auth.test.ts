@@ -116,6 +116,22 @@ describe("claudeArgsForSpec --bare guard", () => {
   });
 });
 
+describe("Claudexor-owned default Claude store (INV-067)", () => {
+  it("relocates with CLAUDEXOR_CONFIG_DIR and never aliases ordinary ~/.claude", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-default-claude-"));
+    const previous = process.env.CLAUDEXOR_CONFIG_DIR;
+    try {
+      process.env.CLAUDEXOR_CONFIG_DIR = root;
+      expect(defaultNativeClaudeConfigDir()).toBe(join(root, "native", "claude", "default"));
+      expect(defaultNativeClaudeConfigDir()).not.toContain("/.claude");
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previous;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("probeAuthStatus (JSON verdict beats exit code; probe failures are distinct)", () => {
   function fakeClaudeBin(dir: string, script: string): string {
     const bin = join(dir, "claude-fake");
@@ -300,6 +316,57 @@ describe("Claude readonly enforcement capability", () => {
   });
 });
 
+describe("Claude scoped-HOME doctor honesty (INV-067)", () => {
+  const loggedOutProbe = {
+    loggedIn: false,
+    authed: false,
+    authMethod: "none",
+    probeError: null,
+  } as const;
+
+  function adapterWithoutFallbacks() {
+    return createClaudeAdapter({
+      detectVersion: async () => "2.1.165",
+      probeReadonlyProfile: readonlySupported,
+      probeAuthStatus: async () => loggedOutProbe,
+      anthropicApiKey: () => null,
+      claudeOAuthToken: () => null,
+    });
+  }
+
+  it("names an unavailable Keychain bridge and the Native setup remedy", async () => {
+    const report = await adapterWithoutFallbacks().doctor({
+      cwd: "/repo",
+      env: {
+        HOME: "/tmp/claudexor-ro-xyz/home",
+        CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE: "unavailable",
+      },
+      authPreference: "auto",
+      fresh: true,
+    });
+    expect(report.status).toBe("unavailable");
+    const reason = report.reasons.join(" ");
+    expect(reason).toContain("could not bridge");
+    expect(reason).toContain("Keychain");
+    expect(reason).toContain("Native setup");
+    expect(reason).not.toContain("setup-token");
+    expect(reason).not.toMatch(/^not authenticated \(run/);
+  });
+
+  it("keeps Native setup as the only product remedy for host-env probes", async () => {
+    const report = await adapterWithoutFallbacks().doctor({
+      cwd: "/repo",
+      authPreference: "auto",
+      fresh: true,
+    });
+    expect(report.status).toBe("unavailable");
+    const reason = report.reasons.join(" ");
+    expect(reason).toContain("Native setup");
+    expect(reason).toContain("claude auth login --claudeai");
+    expect(reason).not.toContain("setup-token");
+  });
+});
+
 describe("Claude transport-aware source selection", () => {
   const nativeProbe = {
     loggedIn: true,
@@ -374,10 +441,12 @@ describe("Claude transport-aware source selection", () => {
           preferred_source: "native_session",
           credential_transports: expect.arrayContaining([
             { source: "native_session", kind: "config_file", relocatable_by: ["CONFIG_DIR"] },
-            { source: "native_session", kind: "os_keychain", relocatable_by: [] },
+            { source: "native_session", kind: "os_keychain", relocatable_by: ["HOME"] },
           ]),
         },
-        isolation: { supported_containment: expect.arrayContaining(["host_user_context"]) },
+        isolation: {
+          supported_containment: expect.arrayContaining(["scoped_home_keychain_bridge"]),
+        },
       },
     });
   });

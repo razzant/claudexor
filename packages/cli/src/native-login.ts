@@ -123,9 +123,9 @@ export function nativeLoginEnv(
     ensureDir(env.CODEX_HOME);
   } else if (harness === "claude") {
     env.CLAUDE_CONFIG_DIR = configDirOverride ?? defaultNativeClaudeConfigDir();
-    // A profile login (INV-135) creates its scoped dir on demand; the DEFAULT
-    // dir is vendor-owned and is never created or mutated here.
-    if (configDirOverride) ensureDir(configDirOverride);
+    // Default and profile Claude stores are both Claudexor-owned (INV-067 /
+    // INV-135); ordinary ~/.claude is never created, read, or mutated here.
+    ensureDir(env.CLAUDE_CONFIG_DIR);
   }
   return env;
 }

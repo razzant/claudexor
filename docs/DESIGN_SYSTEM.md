@@ -348,7 +348,7 @@ frequency and volume are. The contracts:
     handoff below). Each popover row is one account (a
     default vendor login labeled with the harness name, or a registered
     credential profile): a readiness dot, its name, ONE compact quota line
-    (worst window % + reset), a "Log in" button until it verifies, and — on
+    (worst window % + reset), one "Log in" / "Manage" action, and — on
     registered profiles only — a confirmed Remove (trash) that deletes the
     registration plus the account's own login/key
     (`DELETE /v2/credential-profiles/:harness/:id`; the default vendor login
@@ -361,9 +361,18 @@ frequency and volume are. The contracts:
     `(harness, credential route, profile)`. The account list + add + remove
     block is ONE shared component (`AccountsSurface`, SSOT): the Settings
     Harness Doctor's "Manage" sheet hosts the same surface scoped to its
-    family — account control is never forked per surface.
+    family — account control is never forked per surface. In that sheet the
+    implicit default login is simply the first account row; named profiles
+    follow, and "Add another account" is the only add flow. There is no
+    parallel "Native setup" card competing with "Additional accounts".
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
-    accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5): a
+    accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5). The
+    user bubble is the ACCENT side of the conversation: a solid
+    accent-calibrated fill (`Theme.userBubbleFill`, per-theme WCAG-legible)
+    with a hairline accent stroke and the continuous `Radius.bubble` corner —
+    it must never read as the same gray as the assistant card. The final
+    answer rhymes with it (same radius family, accent-edged leading bar).
+    The assistant card stays the neutral frosted `cardSurface`. Then: a
     status line (harness identity + honest status pill + live elapsed clock),
     the live transcript disclosure (reasoning segments with duration timers,
     DIMMED mid-run narration, humane tool rows), the reconciled outcome line,

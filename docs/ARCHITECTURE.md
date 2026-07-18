@@ -205,6 +205,21 @@ the run will receive, and the same context object then feeds `spec.env` at
 spawn. Discovery and manifests stay host-level (`statusAll`); readiness
 evidence gathered in an env the run never executes in is not evidence and
 can no longer admit a route whose auth truth dies inside the scoped env.
+Credential transports must be env-portable or honestly refused (INV-067):
+claude.ai credentials live in the macOS login Keychain, which a scoped HOME
+hides. Only the Claude child receives a disposable nested HOME with one
+declared host bridge: `Library/Keychains` points at the user's login Keychain;
+`CLAUDE_CONFIG_DIR` remains the exact Claudexor-owned default/profile config
+dir, so Claude itself selects the correct independently-keyed credential item;
+ordinary `~/.claude` is never used. The generic
+envelope HOME (and every other harness) remains unbridged, all writable Claude
+state stays in the disposable child HOME/config dir, and disposal removes the
+bridge. No credential is read, copied, exported, or persisted by Claudexor.
+The shared AccountsSurface's per-row `Log in` / `Manage` action is the sole
+product UX and rides the daemon-owned Native setup job; the pre-existing
+setup-token route is an advanced CI transport, not a separate account/setup
+surface. Codex is
+portable by construction (file-only `CODEX_HOME` seed, INV-061).
 
 Harness manifests carry capability booleans the engine consumes (intent
 gating, knob support, the interactive-channel gate) and a small structured

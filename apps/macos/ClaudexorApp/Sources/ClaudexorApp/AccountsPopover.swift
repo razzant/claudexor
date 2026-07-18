@@ -292,6 +292,9 @@ struct AccountsSurface: View {
     var includeDefaults = true
     /// Present the login UI for a row's account; the host owns presentation.
     let login: (AccountRowModel) -> Void
+    /// Host-owned lifecycle gate (the AuthSheet disables its current target
+    /// while setup recovery/action state is unresolved).
+    var loginDisabled: (AccountRowModel) -> Bool = { _ in false }
 
     @State private var addDisplayName = ""
     @State private var addHarnessChoice = "claude"
@@ -357,6 +360,7 @@ struct AccountsSurface: View {
                     AccountRowView(
                         row: row,
                         login: { login(row) },
+                        loginDisabled: loginDisabled(row),
                         delete: row.isProfile && !deleting ? { pendingDelete = row } : nil
                     )
                 }
@@ -369,7 +373,7 @@ struct AccountsSurface: View {
     /// internal profile id is derived from the name and never asked for.
     private var addSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text("Add account").font(.subheadline.weight(.semibold))
+            Text("Add another account").font(.subheadline.weight(.semibold))
             HStack(spacing: Theme.Spacing.sm) {
                 if family == nil {
                     Picker("", selection: $addHarnessChoice) {
@@ -448,6 +452,7 @@ struct AccountsSurface: View {
 private struct AccountRowView: View {
     let row: AccountRowModel
     let login: () -> Void
+    var loginDisabled = false
     /// Present when the account can be removed (registered profiles only —
     /// default vendor logins are not Claudexor's to delete).
     var delete: (() -> Void)? = nil
@@ -472,12 +477,13 @@ private struct AccountRowView: View {
                 }
             }
             Spacer()
-            if !row.verified {
-                Button("Log in", action: login)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Start the official CLI login for this account — a Terminal window opens automatically")
-            }
+            Button(row.verified ? "Manage" : "Log in", action: login)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(loginDisabled)
+                .help(row.verified
+                    ? "Manage this account's native login"
+                    : "Start the official CLI login for this account — a Terminal window opens automatically")
             if let delete {
                 Button(role: .destructive, action: delete) {
                     Image(systemName: "trash")

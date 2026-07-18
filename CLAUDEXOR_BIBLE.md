@@ -260,6 +260,27 @@ process below. Never paper over the conflict.
   declare `browser_tool: false`. verify: browser-gate adapter tests; packaged
   offline help smoke; mixed/zero-capable preflight tests; adapter manifest review.
 
+- **INV-067** Credential transports are ENV-PORTABLE or honestly refused:
+  every claimed auth route must actually authenticate in the exact scoped
+  environment (cwd + env, including a scoped/throwaway HOME) its run will
+  spawn with — host-environment readiness never stands in for it. Where a
+  vendor's primary credential store is outside a generic scoped HOME, the
+  adapter may expose only a declared MINIMAL vendor-specific bridge (Claude
+  on macOS: a disposable Claude-only child HOME whose sole host bridge is
+  `Library/Keychains`; a Claudexor-owned `CLAUDE_CONFIG_DIR` selects the exact
+  default or profile-specific Keychain item). Ordinary `~/.claude` is never
+  read, written, or used for Claudexor native setup/runs. Other harnesses never
+  receive that bridge, and all writable vendor state stays scoped. Codex remains portable through
+  its file-only `CODEX_HOME` seed. The doctor names the real cause and Native
+  setup remedy (never a bare "not authenticated"), and reviews of auth/
+  readiness changes check every lane class — read-only scoped HOME, isolated
+  envelopes, in-place — not just the host env. Reading, copying, exporting,
+  snapshot-swapping, or persisting vendor credentials ("keychain surgery")
+  stays forbidden; a filesystem bridge lets the vendor access its own
+  OS-protected item, never Claudexor. verify: routeContext same-env probe
+  tests; Claude-only native-home bridge tests + generic-home no-bridge test;
+  W3.3 route-admission tests; CHECKLISTS review row.
+
 ## 7. Project Context Is Explicit
 
 - **INV-070** Claudexor distinguishes the Claudexor product repo, the

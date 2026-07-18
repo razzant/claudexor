@@ -20,12 +20,10 @@ struct AuthSheet: View {
     @State private var lastRefreshedTerminalJobId: String?
 
     private var secretName: String? {
-        if family == .codex { return "openai" }
-        if family == .claude { return "anthropic" }
-        if family == .cursor { return "cursor" }
-        if family == .opencode { return "opencode" }
-        if family == .raw { return "raw" }
-        return nil
+        switch family {
+        case .codex: "openai"; case .claude: "anthropic"; case .cursor: "cursor"
+        case .opencode: "opencode"; case .raw: "raw"; default: nil
+        }
     }
 
     private var currentInfo: HarnessInfo? { model.harnessInfo(for: family) }
@@ -95,8 +93,23 @@ struct AuthSheet: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                     header
                     readinessPanel
-                    if nativeHarness != nil { nativeSetupPanel }
-                    if supportsAccountsPanel { accountsPanel }
+                    if nativeHarness != nil, !supportsAccountsPanel { nativeSetupPanel }
+                    if supportsAccountsPanel {
+                        AuthSheetAccountsPanel(
+                            family: family,
+                            actionInFlight: actionInFlight,
+                            defaultLoginDisabled: newSetupDisabled,
+                            login: { row in
+                                if row.profileId == nil {
+                                    Task { await runLogin() }
+                                } else {
+                                    model.authSheetTarget = AuthSheetTarget(
+                                        family: row.family, profileId: row.profileId)
+                                }
+                            },
+                            recheck: { Task { await recheck() } }
+                        )
+                    }
                     if let job { setupJobPanel(job) }
                     if job == nil, lifecycle.connection == .recovering || lifecycle.connection == .streamLost {
                         setupConnectionPanel
@@ -224,27 +237,12 @@ struct AuthSheet: View {
         }
     }
 
-    /// The family supports registered second accounts and this sheet is the
-    /// DEFAULT-login surface (a profile-targeted sheet manages one account).
+    /// Account-capable default surface: the implicit default login and every
+    /// named profile are rendered by ONE AccountsSurface (no parallel Native
+    /// setup vs Additional accounts UI).
     private var supportsAccountsPanel: Bool {
         profileId == nil
             && (family.setupHarnessId == "claude" || family.setupHarnessId == "codex")
-    }
-
-    /// SSOT (owner directive): the Settings doctor's "Manage" exposes the SAME
-    /// account controls as the bottom-left popover — the one shared
-    /// `AccountsSurface`, scoped to this family, never a fork.
-    private var accountsPanel: some View {
-        Panel {
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                SectionLabel("Additional accounts", systemImage: "person.2")
-                AccountsSurface(family: family, includeDefaults: false) { row in
-                    // Retarget this sheet at the account's own login (same
-                    // .sheet(item:) presentation, new target).
-                    model.authSheetTarget = AuthSheetTarget(family: row.family, profileId: row.profileId)
-                }
-            }
-        }
     }
 
     private var nativeSetupPanel: some View {
@@ -315,7 +313,8 @@ struct AuthSheet: View {
 
     /// W4.8: the one state-derived primary action for the footer.
     private var primaryCTA: AuthSheetPresentation.PrimaryCTA {
-        AuthSheetPresentation.primaryCTA(
+        if supportsAccountsPanel { return .done } // account rows own login/manage
+        return AuthSheetPresentation.primaryCTA(
             healthOk: isReady,
             nativeSupported: nativeHarness != nil,
             nativeReady: targetVerified,

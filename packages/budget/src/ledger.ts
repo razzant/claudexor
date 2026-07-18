@@ -437,7 +437,11 @@ export function attemptUsageCostSettlement(
   harnessId: string,
   authMode?: "local_session" | "api_key" | null,
 ): BudgetSettlement {
-  if (authMode === "local_session" && estimated) {
+  // Vendor-reported cost on a native subscription route is VALUATION,
+  // regardless of whether the vendor labels it estimated or exact. It never
+  // becomes incremental cash (live-found: Claude reported estimated=false
+  // and the UI incorrectly showed ~$0.37 cash for subscription work).
+  if (authMode === "local_session") {
     return {
       knowledge: "unknown",
       source: "harness-token-valuation",

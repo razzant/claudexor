@@ -96,8 +96,9 @@ export class WorkspaceManager {
     // Envelope base holds scoped dirs (HOME + per-harness config) and, for git
     // mode, the worktree as a subdir — so harness-written caches, plugins,
     // transcripts, and route-scoped API auth state live outside the work tree
-    // and never land in a diff. Native Codex/Claude credentials remain in their
-    // vendor-owned host-user stores and are never copied into this envelope.
+    // and never land in a diff. Credentials are never copied into this
+    // envelope; adapters may add only capability-declared, vendor-specific
+    // child context (Claude/Cursor macOS Keychain bridge, INV-067).
     const base = this.envelopeBase(opts.taskId, opts.attemptId);
     ensureDir(base);
     const homeDir = join(base, "home");
@@ -241,10 +242,11 @@ export class WorkspaceManager {
    * session rollouts, transcripts — into `$HOME/.claude`, `$CODEX_HOME`, etc.
    * Without this, those land in the operator's REAL home (a live-caught leak: a
    * read-only `plan` wrote into `~/.claude/plans`). Same env shape as `envFor`:
-   * non-native state and injected API-key routes stay scoped, while native
-   * Codex/Claude auth keeps using its vendor-owned host-user store and Cursor
-   * may bridge the OS keychain without copying credentials. Caller disposes
-   * the scoped state when the run ends.
+   * non-native state and injected API-key routes stay scoped. This GENERIC
+   * home never bridges the OS Keychain; an adapter that declares
+   * `scoped_home_keychain_bridge` may create a vendor-only disposable child
+   * HOME without copying credentials (INV-067). Caller disposes all scoped
+   * state when the run ends.
    */
   readOnlyHomeEnv(): { env: Record<string, string>; dispose: () => void } {
     // A throwaway temp base — never under the project / synthetic repo root, so a

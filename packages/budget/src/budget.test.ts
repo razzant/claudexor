@@ -144,7 +144,7 @@ describe("BudgetLedger", () => {
     ]);
   });
 
-  it("settles native token estimates as valuation while API-key estimates remain cash", async () => {
+  it("settles all native token costs as valuation while API-key costs remain cash", async () => {
     const { attemptUsageCostSettlement } = await import("./ledger.js");
     const native = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     const nativeLease = native.reserve({
@@ -160,6 +160,20 @@ describe("BudgetLedger", () => {
     expect(native.spend()).toBe(0);
     expect(native.valuation()).toBe(0.25);
     expect(native.terminal()).toBe("cost_unverifiable");
+
+    const nativeExact = new BudgetLedger({ kind: "unlimited" });
+    const nativeExactLease = nativeExact.reserve({
+      taskId: "native-exact-task",
+      attemptId: "native-exact-attempt",
+      intent: "implement",
+      harnessId: "claude",
+    });
+    nativeExact.settle(
+      nativeExactLease.lease!.lease_id,
+      attemptUsageCostSettlement(0.37, false, "native-exact-attempt", "claude", "local_session"),
+    );
+    expect(nativeExact.spend()).toBe(0);
+    expect(nativeExact.valuation()).toBe(0.37);
 
     const api = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     const apiLease = api.reserve({

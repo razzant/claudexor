@@ -3,18 +3,14 @@ import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claud
 import { nowIso, redactSecrets } from "@claudexor/util";
 import { canonicalIsolationLocator, normalizeThroughExistingAncestor } from "@claudexor/core";
 import { namespacedSecretRefBase } from "@claudexor/secrets";
-import {
-  claudeNativeEnv,
-  defaultNativeClaudeConfigDir,
-  BIN,
-  type ClaudeProfileRuntimeDeps,
-} from "./index.js";
+import { claudeNativeEnv, BIN, type ClaudeProfileRuntimeDeps } from "./index.js";
+import { defaultNativeClaudeConfigDir } from "./native-home.js";
 
 /**
  * Canonicalize a profile's isolation locator (INV-135): absolute, trailing
  * separators stripped, symlinks resolved when the dir exists. Refuses the
- * default native dir — profiles are ADDITIVE identities; the user's real
- * ~/.claude is never a profile target, so profile operations cannot touch it.
+ * Claudexor-owned default native dir — profiles are ADDITIVE identities;
+ * ordinary ~/.claude is never a target, so profile operations cannot touch it.
  */
 export function canonicalProfileConfigDir(locator: string): string {
   const dir = canonicalIsolationLocator(locator, "credential profile config dir");

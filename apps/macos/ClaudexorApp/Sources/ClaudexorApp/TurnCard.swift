@@ -51,12 +51,20 @@ struct TurnCard: View {
                 Spacer(minLength: 48)
                 // Bounded before layout (sol #16): a pasted megabyte prompt
                 // must not lay out unbounded on the main thread.
+                // The ACCENT side of the conversation (owner visual QA 2.1.2):
+                // a clearly tinted bubble with a hairline accent stroke, so
+                // user and assistant sides never read as the same gray.
                 Text(turn.prompt.count > 8_000 ? String(turn.prompt.prefix(8_000)) + "…" : turn.prompt)
                     .font(.body)
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
-                    .padding(.vertical, Theme.Spacing.sm)
-                    .background(Theme.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+                    .padding(.vertical, Theme.Spacing.sm + 2)
+                    .background(
+                        Theme.userBubbleFill,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous)
+                            .stroke(Theme.userBubbleStroke, lineWidth: 1))
             }
             assistantSection
         }
@@ -182,16 +190,19 @@ struct TurnCard: View {
                         }
                     }
                     // W-C5: the FINAL answer is the loudest element of the turn
-                    // — its own leading bubble, visually distinct from the
-                    // dimmed narration in the transcript disclosure above.
+                    // — its own accent-edged bubble, visually distinct from the
+                    // dimmed narration above and rhyming with the user bubble
+                    // (same continuous radius family; owner visual QA 2.1.2).
                     .padding(Theme.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.accent.opacity(0.05), in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+                    .background(
+                        Theme.accent.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
                     .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(Theme.accent.opacity(0.5))
-                            .frame(width: 2)
-                            .padding(.vertical, Theme.Spacing.xs)
+                        UnevenRoundedRectangle(
+                            cornerRadii: .init(topLeading: Theme.Radius.bubble, bottomLeading: Theme.Radius.bubble))
+                            .fill(Theme.accent.opacity(0.55))
+                            .frame(width: 3)
                     }
                 }
                 // QUIET outcome rows (W4.1 order: after the answer): what the
