@@ -42,9 +42,13 @@ struct AuthSheet: View {
             $0.profile.harnessId == family.setupHarnessId && $0.profile.profileId == profileId
         }?.status
     }
-    /// What "logged in" means for THIS sheet's target store.
+    /// What "logged in" means for THIS sheet's target store. Mirrors the
+    /// engine's verification predicate: available AND a PASSED probe — a
+    /// present-but-wrong login (available + failed) is not "verified".
     private var targetVerified: Bool {
-        profileId == nil ? nativeReady : profileStatus?.availability == "available"
+        guard let profileId else { return nativeReady }
+        _ = profileId
+        return profileStatus?.availability == "available" && profileStatus?.verification == "passed"
     }
     private var nativeHarness: SetupHarness? { SetupHarness(rawValue: family.setupHarnessId) }
     private var job: SetupJob? { lifecycle.job }
@@ -498,8 +502,13 @@ struct AuthSheet: View {
     private func recheck() async {
         actionInFlight = true
         defer { actionInFlight = false }
+        // A profile target's verification truth is ITS doctor projection —
+        // refresh it alongside the default-store probe (round-2 R2-1).
+        if profileId != nil { await model.refreshCredentialProfiles() }
         if await model.refreshAuthReadinessAfterSetupLifecycle(for: family, job: job) {
-            status = "Exact auth-readiness check completed for \(family.label)."
+            status = profileId == nil
+                ? "Exact auth-readiness check completed for \(family.label)."
+                : "Account readiness refreshed for this \(family.label) profile."
         } else {
             status = "Exact auth-readiness check failed for \(family.label). Reconnect the engine and try again."
         }

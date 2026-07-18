@@ -386,6 +386,19 @@ try onto a NEW vendor session under the next profile, each profile at most
 once per attempt. Credentials never change inside a running spawn; a
 rotation INTO a spent profile is refused by the same headroom check.
 
+The DEFAULT subject participates under the same opt-in policy (auto-balance):
+with no pinned profile and `limit_action: rotate`, a fresh default-store
+headroom breach starts the run on the next eligible SUBSCRIPTION profile
+(`route.profile.rotated` with `from_profile_id: null`), and a typed vendor
+limit on a profile-less attempt rotates only when the attempt's pre-spawn
+route estimate was `vendor_native` — a metered default hitting a limit is a
+budget fact, not a subscription to fail over from. The default subject never
+rotates into an `api_key` profile (the cross-kind BLOCK generalized).
+`fail`/`ask` leave default-user behavior untouched. The per-harness
+`limit_action` is wire-patchable as `profileLimitAction` on
+`GET/POST /v2/settings` (the app's auto-switch toggle); rotation order and
+headroom keep their stored values.
+
 ## 6. Main Execution Paths
 
 Every public CLI mode (`ask`, `plan`, `audit`, `agent`, `orchestrate`) and the

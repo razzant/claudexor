@@ -90,7 +90,7 @@ enum AccountsPresentation {
                 harnessId: entry.profile.harnessId,
                 family: HarnessFamily(rawValue: entry.profile.harnessId),
                 readiness: readiness,
-                verified: availability == "available",
+                verified: availability == "available" && entry.status.verification == "passed",
                 profileId: entry.profile.profileId,
                 detail: entry.status.detail,
                 quotaGroups: groups.filter {
@@ -120,6 +120,28 @@ enum AccountsPresentation {
         }
     }
 
+    /// Derive the internal profile id the user never types (owner dogfood):
+    /// slugified display name when it survives the slug rules, else "acct";
+    /// numeric suffixes guarantee uniqueness against the harness's registry.
+    static func generatedProfileId(displayName: String, existing: Set<String>) -> String {
+        var slug = ""
+        for ch in displayName.lowercased() {
+            if ch == " " || ch == "." { slug.append("-") }
+            else if ch.isASCII && (ch.isLowercase || ch.isNumber || ch == "-" || ch == "_") {
+                slug.append(ch)
+            }
+        }
+        while let first = slug.first, first == "-" || first == "_" { slug.removeFirst() }
+        slug = String(slug.prefix(60))
+        let base = isValidSlug(slug) ? slug : "acct"
+        if !existing.contains(base), isValidSlug(base) { return base }
+        for n in 2...999 {
+            let candidate = "\(base)-\(n)"
+            if !existing.contains(candidate) { return candidate }
+        }
+        return "\(base)-\(existing.count + 1)"
+    }
+
     /// Client-side credential-profile slug check — `^[a-z0-9][a-z0-9_-]{0,63}$`
     /// validated WITHOUT a regex (house no-regex rule). The server re-validates.
     static func isValidSlug(_ s: String) -> Bool {
@@ -145,7 +167,7 @@ struct AccountsTriggerRow: View {
                 .buttonStyle(.plain)
                 .help("Manage accounts — add, log in, view quota, auto-switch")
                 .padding(.horizontal, Theme.Spacing.md)
-                .padding(.vertical, Theme.Spacing.xs)
+                .padding(.vertical, Theme.Spacing.sm)
         }
         .task { await model.refreshCredentialProfiles() }
         .popover(isPresented: $showPopover, arrowEdge: .trailing) {
@@ -153,27 +175,28 @@ struct AccountsTriggerRow: View {
         }
     }
 
-    /// Deliberately QUIET (one small line): a dot, the account name/count, the
-    /// worst quota %, and a chevron — it must not compete with the thread list.
+    /// One READABLE line (owner dogfood: the first cut was too small): a dot,
+    /// the account name/count, the worst quota %, and a chevron. Still a single
+    /// quiet row — it must not compete with the thread list.
     private var trigger: some View {
-        HStack(spacing: Theme.Spacing.xs) {
+        HStack(spacing: Theme.Spacing.sm) {
             if model.health != .connected {
-                Image(systemName: "wifi.slash").font(.caption2).foregroundStyle(.secondary)
+                Image(systemName: "wifi.slash").font(.callout).foregroundStyle(.secondary)
             } else {
                 Circle()
                     .fill((AccountsPresentation.worstReadiness(rows) ?? .unknown).color)
-                    .frame(width: 8, height: 8)
+                    .frame(width: 9, height: 9)
             }
             Text(AccountsPresentation.triggerTitle(rows))
-                .font(.caption).foregroundStyle(.primary).lineLimit(1)
+                .font(.callout.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
             Spacer(minLength: Theme.Spacing.xs)
             if let pct = AccountsPresentation.worstPercent(rows) {
                 Text("\(pct)%")
-                    .font(.caption2).monospacedDigit()
+                    .font(.callout).monospacedDigit()
                     .foregroundStyle(pct >= 90 ? Theme.status(.blocked) : .secondary)
             }
             Image(systemName: "chevron.up.chevron.down")
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
     }
@@ -186,7 +209,6 @@ struct AccountsPopover: View {
     @Binding var isPresented: Bool
 
     @State private var addHarness = "claude"
-    @State private var addId = ""
     @State private var addDisplayName = ""
     @State private var addError: String?
     @State private var adding = false
@@ -194,7 +216,6 @@ struct AccountsPopover: View {
     @State private var showQuotaDetail = false
 
     private var rows: [AccountRowModel] { AccountsPresentation.rows(model: model) }
-    private var trimmedAddId: String { addId.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -274,6 +295,9 @@ struct AccountsPopover: View {
         }
     }
 
+    /// Owner dogfood: no ids to invent — pick the vendor, optionally name it,
+    /// press one button. The internal profile id is derived from the name (or
+    /// auto-numbered) and never asked for.
     private var addSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             Text("Add account").font(.subheadline.weight(.semibold))
@@ -284,14 +308,14 @@ struct AccountsPopover: View {
                 }
                 .labelsHidden()
                 .fixedSize()
-                TextField("account id (e.g. work)", text: $addId)
+                TextField("name (optional, e.g. Work)", text: $addDisplayName)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.callout)
+                    .onSubmit { Task { await addAccount() } }
             }
-            TextField("display name (optional)", text: $addDisplayName)
-                .textFieldStyle(.roundedBorder)
-                .font(.caption)
-            addValidationText
+            if let err = addError {
+                Text(err).font(.caption2).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
+            }
             HStack {
                 Text("A second Claude/Codex subscription — one click opens the official CLI login.")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -300,19 +324,8 @@ struct AccountsPopover: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accentSolid)
                     .controlSize(.small)
-                    .disabled(adding || !AccountsPresentation.isValidSlug(trimmedAddId))
+                    .disabled(adding)
             }
-        }
-    }
-
-    /// Inline slug/server error line — server error wins; otherwise a live
-    /// client-side hint while the typed id is not yet a valid slug.
-    @ViewBuilder private var addValidationText: some View {
-        if let err = addError {
-            Text(err).font(.caption2).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
-        } else if !trimmedAddId.isEmpty && !AccountsPresentation.isValidSlug(trimmedAddId) {
-            Text("Use lowercase letters, digits, - or _ (must start with a letter or digit; max 64).")
-                .font(.caption2).foregroundStyle(Theme.status(.blocked))
         }
     }
 
@@ -324,15 +337,15 @@ struct AccountsPopover: View {
     }
 
     private func addAccount() async {
-        let id = trimmedAddId
-        guard AccountsPresentation.isValidSlug(id) else {
-            addError = "Use lowercase letters, digits, - or _ (must start with a letter or digit; max 64)."
-            return
-        }
+        guard !adding else { return }
         adding = true
         addError = nil
         defer { adding = false }
         let display = addDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let existing = Set(model.credentialProfiles
+            .filter { $0.profile.harnessId == addHarness }
+            .map(\.profile.profileId))
+        let id = AccountsPresentation.generatedProfileId(displayName: display, existing: existing)
         let result = await model.createCredentialProfile(
             harnessId: addHarness, profileId: id, displayName: display.isEmpty ? nil : display)
         if let error = result.error {
@@ -340,7 +353,6 @@ struct AccountsPopover: View {
             return
         }
         // Success: clear the form and immediately offer the new account's login.
-        addId = ""
         addDisplayName = ""
         model.authSheetTarget = AuthSheetTarget(family: HarnessFamily(rawValue: addHarness), profileId: id)
         isPresented = false

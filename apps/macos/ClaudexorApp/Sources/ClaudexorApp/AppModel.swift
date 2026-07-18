@@ -998,7 +998,12 @@ final class AppModel {
     /// Aggregated auto-balance state across the profile-capable harnesses:
     /// on = every harness rotates, off = none rotate, mixed = they disagree.
     enum AutoBalanceState { case on, off, mixed }
+    /// Optimistic toggle value while the settings save round-trips (owner
+    /// dogfood: the switch must flip INSTANTLY, not after the daemon replies).
+    /// Cleared when the save settles; a failed save snaps the switch back.
+    var autoBalanceOverride: Bool?
     var autoBalanceState: AutoBalanceState {
+        if let pending = autoBalanceOverride { return pending ? .on : .off }
         let actions = Self.autoBalanceHarnessIds.map {
             settingsSnapshot?.harnesses?[$0]?.profileLimitAction ?? "fail"
         }
@@ -1020,6 +1025,8 @@ final class AppModel {
             return current == "rotate" ? (id, HarnessSettingsPatch(profileLimitAction: "fail")) : nil
         })
         guard !patch.isEmpty else { return }
+        autoBalanceOverride = on
+        defer { autoBalanceOverride = nil }
         _ = await saveSettings(SettingsUpdateRequest(harnesses: patch))
     }
 

@@ -83,10 +83,13 @@ pnpm test
 - Cancel/timeout/restart must stop only an identity-proven process group (TERM,
   bounded KILL fallback) and reach terminal state only after death proof. Test
   PID reuse, missing/corrupt sidecars, and `termination_unconfirmed`.
-- Native-login success requires a journaled runner receipt plus a fresh exact-
-  route same-harness capability smoke. Prove wrong route/source/challenge,
-  tools, external context, mutation, timeout, crash, and restart all fail closed;
-  an in-flight smoke after restart is `interrupted_unknown` and is not replayed.
+- DEFAULT-store native-login success requires a journaled runner receipt plus a
+  fresh exact-route same-harness capability smoke. Prove wrong
+  route/source/challenge, tools, external context, mutation, timeout, crash,
+  and restart all fail closed; an in-flight smoke after restart is
+  `interrupted_unknown` and is not replayed. A PROFILE login (INV-135)
+  verifies on the profile's own doctor probe and skips the smoke — prove an
+  unverified probe fails closed and the default store stays untouched.
 - Setup lifecycle authority is the checksummed global journal. Prove v1 bytes
   remain byte/mode-identical, per-job lifecycle snapshots are absent, corrupt
   state blocks mutation, and operational sidecars cannot override the journal.
