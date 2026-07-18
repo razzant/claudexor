@@ -22,6 +22,23 @@ deferred; they are recorded here now.
 - N4: no recorded macOS Visual QA evidence pass for the accounts popover yet;
   owner is dogfooding the surface live.
 
+## Delete-accounts wave leftovers (5ad0f1e7 review; NITs/WARNs per ship rule)
+
+- W3: `deleteCredentialProfile`'s 409 login guard is check-then-act (a login
+  job created between guard and removal loses its dir mid-login), and an
+  actively RUNNING run pinned to the profile is not guarded. Both residues
+  fail loudly downstream (probe/vendor process errors); no silent corruption.
+- N2: CLI `profiles remove|login` funnel server refusals through
+  `printUsageError` (exit 2), conflating usage errors with daemon refusals;
+  body text is preserved verbatim. Mixed precedent with `secrets delete`.
+- R4-5: the app's delete notice renders a disclosed `cleanupWarning`
+  (row removed, orphan dir) in the same failure-red style as a 409 refusal
+  (row stays); server text carries the truth verbatim. UX polish.
+- R4-6: retargeting the open AuthSheet at a profile bypasses the
+  close-confirmation dialog for an ACTIVE default login job; the replacement
+  sheet immediately re-attaches to the same job (harness-scoped recovery) and
+  a second login stays blocked — nothing is lost or unobserved.
+
 ## Release machinery retirement (owner decision, 2.1.0 release)
 
 - Delete the retired six-slot release-review machinery after v2.1.0 ships:

@@ -2143,6 +2143,36 @@ private final class RequestStubURLProtocol: URLProtocol {
 }
 
 extension ClaudexorKitTests {
+    /// DELETE /v2/credential-profiles receipt: camelCase fields decode, the
+    /// snake_case `profile` object is deliberately skipped (plain JSONDecoder
+    /// ignores unknown keys), and `cleanupWarning` is absent-or-present —
+    /// exactly the engine's ControlCredentialProfileDeleteResponse shape.
+    @Test func deleteCredentialProfileReceiptDecodes() throws {
+        let clean = """
+        {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+         "credential_kind":"config_dir_login","isolation_locator":"/tmp/x","secret_ref":null,
+         "enabled":true,"created_at":"2026-07-18T00:00:00Z"},
+         "removed":true,"credentialCleanup":"config_dir_removed"}
+        """
+        let receipt = try JSONDecoder().decode(
+            DeleteCredentialProfileReceipt.self, from: Data(clean.utf8))
+        #expect(receipt.removed == true)
+        #expect(receipt.credentialCleanup == "config_dir_removed")
+        #expect(receipt.cleanupWarning == nil)
+
+        let warned = """
+        {"profile":{"profile_id":"w","harness_id":"codex","display_name":"w",
+         "credential_kind":"config_dir_login","isolation_locator":"/tmp/y","secret_ref":null,
+         "enabled":true,"created_at":"2026-07-18T00:00:00Z"},
+         "removed":true,"credentialCleanup":"none",
+         "cleanupWarning":"registry entry removed, but credential cleanup failed: refused"}
+        """
+        let disclosed = try JSONDecoder().decode(
+            DeleteCredentialProfileReceipt.self, from: Data(warned.utf8))
+        #expect(disclosed.credentialCleanup == "none")
+        #expect(disclosed.cleanupWarning?.contains("cleanup failed") == true)
+    }
+
     /// W4.7: the daemon-normalized readiness list decodes typed — and a
     /// legacy daemon without the field fails CLOSED to an empty list.
     @Test func harnessStatusDecodesNormalizedReadiness() throws {

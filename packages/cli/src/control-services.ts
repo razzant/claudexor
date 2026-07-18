@@ -3,8 +3,8 @@
  * claudexord composition root, which stays thin). Each closure binds one
  * typed control operation to the daemon's stores and engine entrypoints.
  */
-import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { join, sep } from "node:path";
 import {
   type OperatorDecisionRecord,
   JournalManager,
@@ -20,7 +20,7 @@ import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
 import { SecretStore, isManagedSecretName } from "@claudexor/secrets";
 import { purgeThreadWorktree } from "@claudexor/workspace";
-import { noProjectRepoRoot, readTextSafe } from "@claudexor/util";
+import { claudexorOwnedRoot, noProjectRepoRoot, readTextSafe } from "@claudexor/util";
 import {
   type ResourceAttachmentRef,
   type ControlSpecAnswersRequest,
@@ -32,7 +32,12 @@ import {
 } from "@claudexor/schema";
 import { registerConfigDirProfile, removeProfileFromRegistry } from "./profile-registration.js";
 import { createRetentionRunner } from "./retention-service.js";
-import { canonicalIsolationLocator, invalidateDoctorCache, validateModel } from "@claudexor/core";
+import {
+  canonicalIsolationLocator,
+  invalidateDoctorCache,
+  normalizeThroughExistingAncestor,
+  validateModel,
+} from "@claudexor/core";
 import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
 import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import { AuthReadinessService, normalizeReadiness } from "@claudexor/gateway";
@@ -409,8 +414,24 @@ export function controlServices(
               : harnessId === "codex"
                 ? canonicalCodexProfileHome(entry.isolation_locator)
                 : canonicalIsolationLocator(entry.isolation_locator, "credential profile dir");
-          rmSync(dir, { recursive: true, force: true });
-          credentialCleanup = "config_dir_removed";
+          // DELETE-grade fence (stricter than the creation-grade confinement,
+          // which accepts the owned root itself): a recursive delete may only
+          // target a STRICT descendant of the registry's own profiles tree —
+          // never the owned root, the v2 config/secret store, or any sibling
+          // engine state. A hand-edited locator outside it fails here and is
+          // disclosed as a cleanup warning; the registry entry is still gone.
+          const profilesRoot = normalizeThroughExistingAncestor(
+            join(claudexorOwnedRoot(), "profiles"),
+          );
+          if (!dir.startsWith(profilesRoot + sep)) {
+            throw new Error(
+              `refusing to delete "${dir}": not inside the profiles tree ${profilesRoot}`,
+            );
+          }
+          if (existsSync(dir)) {
+            rmSync(dir, { recursive: true, force: true });
+            credentialCleanup = "config_dir_removed";
+          }
         } else if (entry.secret_ref) {
           secretStore.delete(entry.secret_ref);
           credentialCleanup = "secret_deleted";
