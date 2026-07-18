@@ -48,7 +48,7 @@ deferred; they are recorded here now.
   the v2 branch of `validateReleaseAttestation`
   (schemaVersion-2 payload/panel-lock/slot validators in
   `scripts/lib/release-review-contract.mjs`), and their fixtures/tests.
-  Blocked until: v2.1.0 published with the schemaVersion-3 owner-review
+  Blocked until: v2.1.1 published with the schemaVersion-3 owner-review
   attestation (see CHECKLISTS "Owner-review release protocol").
 
 ## Deferred from the v3 plan itself (sol triage #13/#34)
