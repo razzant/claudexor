@@ -5,7 +5,9 @@ describe("cUnquoteGitPath", () => {
   it("decodes octal escapes to utf8 and standard escapes", () => {
     // git quotes "café.txt" as octal utf8 bytes under core.quotePath=true.
     expect(cUnquoteGitPath('"caf\\303\\251.txt"')).toBe("café.txt");
-    expect(cUnquoteGitPath('"with\\tt\\303\\244b\\"quote\\\\slash"')).toBe('with\ttäb"quote\\slash');
+    expect(cUnquoteGitPath('"with\\tt\\303\\244b\\"quote\\\\slash"')).toBe(
+      'with\ttäb"quote\\slash',
+    );
     expect(cUnquoteGitPath("plain/path.txt")).toBe("plain/path.txt");
   });
 });
