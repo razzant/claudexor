@@ -34,7 +34,8 @@ import {
   SETUP_LOGIN_PROTOCOL_VERSION,
 } from "./setup-login-protocol.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
-import { createSetupJobManager, resolveSetupLoginRunnerPath } from "./setup-jobs.js";
+import { resolveSetupLoginRunnerPath } from "./setup-job-support.js";
+import { createSetupJobManager } from "./setup-jobs.js";
 
 let root: string;
 let codexBinary: string;

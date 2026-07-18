@@ -1,18 +1,14 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { chmodSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import {
   AuthCapabilityVerifier,
   ProcessGroupService,
   parseProcessGroupHandle,
   type ProcessGroupHandle,
 } from "@claudexor/core";
-import { loadConfig } from "@claudexor/config";
 import { daemonDir } from "@claudexor/daemon";
-import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
-import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import {
   type AuthSourceReadiness,
   type AuthCapabilityBinding,
@@ -26,6 +22,17 @@ import {
 } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import * as NativeLogin from "./native-login.js";
+import {
+  SETUP_PROFILES,
+  processGroupFromJob,
+  profileDoctorProbe,
+  resolveProfileBinding,
+  resolveSetupLoginRunnerPath,
+  shellQuote,
+  stateMatchesDurableExecution,
+  waitWithAbort,
+  withAbortAndTimeout,
+} from "./setup-job-support.js";
 import { buildGateway } from "./registry.js";
 import { ACTIVE_SETUP_STATES, SetupJobStore, TERMINAL_SETUP_STATES } from "./setup-job-store.js";
 import {
@@ -48,26 +55,6 @@ import { SetupSupervisor } from "./setup-supervisor.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 const LOGIN_EXTENSION_MS = 15 * 60_000;
 type NativeLoginSpec = NativeLogin.NativeLoginSpec;
-type SetupProfile = {
-  guideUrl: string;
-  note: string;
-};
-
-const SETUP_PROFILES: Record<ControlHarnessSetupHarness, SetupProfile> = {
-  codex: {
-    guideUrl: "https://developers.openai.com/codex/auth/",
-    note: "Codex native login updates the official vendor-owned CLI session. Exact subscription setup never falls back to a managed API key.",
-  },
-  claude: {
-    guideUrl: "https://code.claude.com/docs/en/authentication",
-    note: "Claude Code native login updates the official vendor-owned CLI session. Exact subscription setup never falls back to a managed API key.",
-  },
-  cursor: {
-    guideUrl: "https://docs.cursor.com/en/cli/reference/authentication",
-    note: "Cursor native CLI login is reused when available.",
-  },
-};
-
 export interface SetupJobManagerOptions {
   rootDir?: string;
   store?: SetupJobStore;
@@ -116,63 +103,6 @@ export interface SetupJobManagerOptions {
   runnerPath?: string;
   nodePath?: string;
 }
-/**
- * Resolve an INV-135 profile-targeted login request to its canonical scoped
- * config dir. Typed 400s: an unknown/disabled/secret-ref profile must refuse
- * at create time, never open a Terminal login into the wrong store.
- */
-function resolveProfileBinding(
-  harness: ControlHarnessSetupHarness,
-  profileId: string | undefined,
-): { profileId: string; configDir: string } | null {
-  if (!profileId) return null;
-  if (harness !== "claude" && harness !== "codex") {
-    throw Object.assign(
-      new Error(
-        `harness "${harness}" has no isolated config-dir login; only claude and codex support profile logins`,
-      ),
-      { status: 400 },
-    );
-  }
-  const profile = loadConfig(NO_PROJECT_ROOT).global.credential_profiles.find(
-    (entry) => entry.harness_id === harness && entry.profile_id === profileId,
-  );
-  if (!profile) {
-    throw Object.assign(
-      new Error(
-        `no credential profile "${profileId}" for harness "${harness}" — register it first (POST /v2/credential-profiles or \`claudexor profiles add\`)`,
-      ),
-      { status: 400 },
-    );
-  }
-  if (!profile.enabled) {
-    throw Object.assign(new Error(`credential profile "${profileId}" is disabled`), {
-      status: 400,
-    });
-  }
-  if (profile.credential_kind !== "config_dir_login") {
-    throw Object.assign(
-      new Error(
-        `credential profile "${profileId}" is ${profile.credential_kind}; only config_dir_login profiles use the native login flow (store its secret instead)`,
-      ),
-      { status: 400 },
-    );
-  }
-  const configDir =
-    harness === "claude"
-      ? canonicalProfileConfigDir(profile.isolation_locator ?? "")
-      : canonicalCodexProfileHome(profile.isolation_locator ?? "");
-  return { profileId, configDir };
-}
-
-export function resolveSetupLoginRunnerPath(
-  moduleUrl: string = import.meta.url,
-  pathExists: (path: string) => boolean = existsSync,
-): string {
-  const directory = dirname(fileURLToPath(moduleUrl));
-  const bundled = resolve(directory, "setup-login-runner.cjs");
-  return pathExists(bundled) ? bundled : resolve(directory, "setup-login-runner.js");
-}
 export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   const now = opts.now ?? (() => new Date());
   const sleep = opts.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms)));
@@ -194,24 +124,15 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       gateway!.probeAuthSource(harness, source, { cwd: NO_PROJECT_ROOT, ...probe }));
   const probeCredentialProfile =
     opts.probeCredentialProfile ??
-    (async (
-      harness: string,
-      profileId: string,
-      abortSignal: AbortSignal,
-    ): Promise<CredentialProfileStatus | null> => {
-      if (!gateway) {
-        // Injected auth probes without an injected profile probe would silently
-        // verify the WRONG store — refuse loudly instead.
-        throw new Error("probeCredentialProfile hook is required when probeAuthSource is injected");
-      }
-      const profile = loadConfig(NO_PROJECT_ROOT).global.credential_profiles.find(
-        (entry) => entry.harness_id === harness && entry.profile_id === profileId,
-      );
-      if (!profile) return null;
-      const adapter = gateway.get(harness);
-      if (!adapter?.probeCredentialProfile) return null;
-      return adapter.probeCredentialProfile(profile, abortSignal);
-    });
+    (gateway
+      ? profileDoctorProbe((harness) => gateway.get(harness))
+      : () => {
+          // Injected auth probes without an injected profile probe would
+          // silently verify the WRONG store — refuse loudly instead.
+          throw new Error(
+            "probeCredentialProfile hook is required when probeAuthSource is injected",
+          );
+        });
   const authCapabilityVerifier =
     opts.authCapabilityVerifier ??
     new AuthCapabilityVerifier((harness) => gateway!.get(harness), {
@@ -308,71 +229,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     });
     if (receipt.commandStarted) opts.onCredentialStateMayHaveChanged?.(job.harness);
     return job;
-  }
-
-  function waitWithAbort(ms: number, controller: AbortController): Promise<void> {
-    if (controller.signal.aborted) return Promise.reject(controller.signal.reason);
-    return new Promise((resolveWait, rejectWait) => {
-      let settled = false;
-      const settle = (task: () => void) => {
-        if (settled) return;
-        settled = true;
-        controller.signal.removeEventListener("abort", onAbort);
-        task();
-      };
-      const onAbort = () =>
-        settle(() =>
-          rejectWait(
-            controller.signal.reason instanceof Error
-              ? controller.signal.reason
-              : new Error("setup operation aborted"),
-          ),
-        );
-      controller.signal.addEventListener("abort", onAbort, { once: true });
-      sleep(ms).then(
-        () => settle(resolveWait),
-        (error) => settle(() => rejectWait(error)),
-      );
-    });
-  }
-
-  function withAbortAndTimeout<T>(
-    operation: () => Promise<T>,
-    controller: AbortController,
-    timeoutMs: number,
-    label: string,
-  ): Promise<T> {
-    if (controller.signal.aborted) return Promise.reject(controller.signal.reason);
-    return new Promise((resolveOperation, rejectOperation) => {
-      let settled = false;
-      const settle = (task: () => void) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        controller.signal.removeEventListener("abort", onAbort);
-        task();
-      };
-      const onAbort = () =>
-        settle(() =>
-          rejectOperation(
-            controller.signal.reason instanceof Error
-              ? controller.signal.reason
-              : new Error(`${label} aborted`),
-          ),
-        );
-      const timer = setTimeout(() => {
-        const error = Object.assign(new Error(`${label} timed out after ${timeoutMs / 1000}s`), {
-          code: "setup_timeout",
-        });
-        controller.abort(error);
-      }, timeoutMs);
-      timer.unref();
-      controller.signal.addEventListener("abort", onAbort, { once: true });
-      operation().then(
-        (value) => settle(() => resolveOperation(value)),
-        (error) => settle(() => rejectOperation(error)),
-      );
-    });
   }
 
   function probeNativeSession(
@@ -595,6 +451,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         await waitWithAbort(
           Math.min(verifyPollMs, Math.max(0, deadline - now().getTime())),
           verificationController,
+          sleep,
         );
         continue;
       }
@@ -639,6 +496,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       await waitWithAbort(
         Math.min(verifyPollMs, Math.max(0, deadline - now().getTime())),
         verificationController,
+        sleep,
       );
     }
     const latest = store.status(jobId);
@@ -681,28 +539,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       result.manifestDigest === manifest.manifestDigest
       ? result
       : null;
-  }
-
-  function processGroupFromJob(job: ControlSetupJob): ProcessGroupHandle | null {
-    if (!job.execution) return null;
-    try {
-      return parseProcessGroupHandle(job.execution.processGroup);
-    } catch {
-      return null;
-    }
-  }
-
-  function stateMatchesDurableExecution(
-    job: ControlSetupJob,
-    state: SetupLoginRunnerState,
-  ): boolean {
-    return (
-      job.execution?.executionId === state.executionId &&
-      job.execution.commandDigest === state.commandDigest &&
-      job.execution.manifestDigest === state.manifestDigest &&
-      job.execution.observedAt === state.observedAt &&
-      JSON.stringify(job.execution.processGroup) === JSON.stringify(state.processGroup)
-    );
   }
 
   function persistPermit(job: ControlSetupJob, manifest: SetupLoginManifest): void {
@@ -1381,7 +1217,4 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     _store: store,
     _supervisorHealth: () => supervisor.health(),
   };
-}
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
