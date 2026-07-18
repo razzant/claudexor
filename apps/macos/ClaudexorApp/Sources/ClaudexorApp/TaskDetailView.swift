@@ -27,6 +27,8 @@ struct TaskDetailView: View {
     @State private var runAgainPrompt = ""
     @State private var showRunAgain = false
     @State private var runningAgain = false
+    @State private var diffLoading = false
+    @State private var diffLoadError: String?
 
     enum Tab: String, CaseIterable, Identifiable {
         case answer, plan, activity, candidates, diff, review, artifacts, diagnostics
@@ -110,8 +112,8 @@ struct TaskDetailView: View {
             // P3 eviction drops off-screen terminal feeds, and this is the
             // reload that restores them from the server timeline.
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
-            .task(id: "\(task.id):\(tab.rawValue)") {
-                if tab == .diff { await model.loadRunDiff(task.id) }
+            .task(id: "\(task.id):\(tab.rawValue):\(task.hasPatchArtifact)") {
+                if tab == .diff && task.hasPatchArtifact { await loadDiff(task.id) }
             }
             .sheet(isPresented: $showRunAgain) { runAgainSheet }
         } else {
@@ -274,12 +276,29 @@ struct TaskDetailView: View {
                         }
                     }
                 }
-                if task.diff.isEmpty,
-                   task.artifactPaths.contains("final/patch.diff") {
-                    ProgressView("Loading diff…")
-                        .controlSize(.small)
-                } else {
+                if task.diff.isEmpty, task.hasPatchArtifact {
+                    if let diffLoadError {
+                        Panel {
+                            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                                Label(diffLoadError, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(Theme.status(.blocked))
+                                    .textSelection(.enabled)
+                                Text("Full patch: final/patch.diff")
+                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
+                                Button("Retry") { Task { await loadDiff(task.id) } }
+                                    .buttonStyle(.bordered).controlSize(.small)
+                            }
+                        }
+                    } else if diffLoading {
+                        ProgressView("Loading diff…").controlSize(.small)
+                    }
+                } else if task.hasPatchArtifact {
                     DiffView(files: task.diff)
+                } else {
+                    EmptyStateView(
+                        title: "No diff",
+                        message: "This run did not produce a patch.",
+                        systemImage: "plusminus.circle")
                 }
             }
         case .review:
@@ -289,6 +308,18 @@ struct TaskDetailView: View {
         case .diagnostics:
             diagnosticsContent(task)
         }
+    }
+
+    private func loadDiff(_ runId: String) async {
+        diffLoading = true
+        diffLoadError = nil
+        switch await model.loadRunDiff(runId) {
+        case .loaded, .unavailable:
+            break
+        case .failed(let message):
+            diffLoadError = message
+        }
+        diffLoading = false
     }
 
     private func answerContent(_ task: TaskRun) -> some View {
@@ -320,7 +351,7 @@ struct TaskDetailView: View {
                             Label("Open Diff", systemImage: "plusminus.circle")
                         }
                         .buttonStyle(.bordered)
-                        .disabled(task.diff.isEmpty)
+                        .disabled(!task.hasPatchArtifact)
                     }
                 }
             }

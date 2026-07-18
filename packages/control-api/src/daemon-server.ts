@@ -22,7 +22,7 @@ import { appendRunEvent, lastSeqInFile } from "@claudexor/event-log";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
-import { outputReadyState, primaryOutput } from "./primary-output.js";
+import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 import {
   controlWebEvidence,
   eventPayload,
@@ -2379,7 +2379,7 @@ function detailFor(
     primaryOutput: primaryOutput(rec, summary.mode, failure),
     timeline: timelineEvents(rec),
     budget: budgetSnapshot(rec, decision),
-    finalSummary: readTextArtifact(rec, "final/summary.md"),
+    finalSummary: boundedArtifactText(rec, "final/summary.md"),
     decision,
     operatorDecision: operatorDecisionRaw,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),

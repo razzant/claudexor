@@ -1,4 +1,13 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import { summarizeDiffPaths } from "@claudexor/core";
@@ -12,8 +21,23 @@ const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 export function stageFileBackedContext(worktreePath: string, content?: string): () => void {
   if (content === undefined) return () => {};
   const path = join(worktreePath, ".claudexor-synthesis-input.md");
+  const existed = existsSync(path);
+  let original: { bytes: Buffer; mode: number } | null = null;
+  if (existed) {
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error("synthesis input path already exists and is not a regular file");
+    }
+    original = { bytes: readFileSync(path), mode: stat.mode & 0o777 };
+  }
   writeFileSync(path, content, { mode: 0o600 });
-  return () => rmSync(path, { force: true });
+  return () => {
+    rmSync(path, { recursive: true, force: true });
+    if (original) {
+      writeFileSync(path, original.bytes, { mode: original.mode });
+      chmodSync(path, original.mode);
+    }
+  };
 }
 
 export function buildFileBackedSynthesisInput(input: {

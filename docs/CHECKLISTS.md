@@ -140,6 +140,11 @@ pnpm test
   lazily inside a bounded middle while header and Ask deeper/Freeze/Cancel stay
   visible and clickable. Restart the app, reopen the owning thread, and verify
   its durable session/questions/prior answers restore (never a blank chat).
+- Spec lifecycle: Cancel/Dismiss and successful Implement must persist a
+  terminal server disposition (including frozen sessions); restart during
+  grounding/freezing shows live follow or explicit Resume/Dismiss, never a
+  resurrected or blank card. Recovered frozen work must disclose/reconfirm
+  lost unsent run options.
 - Check the inline per-turn review/diff surfaces and other dense content (in the
   run inspector and on turn cards) do not force the whole app window to a wide
   fixed minimum.
@@ -330,6 +335,18 @@ pnpm test
   configured gates render `n/a`, not “passed”.
 - Auto-rotation with no surviving profile emits
   `route.profile.rotation_exhausted` with per-profile rejection/headroom facts.
+- Account/profile coherence: ready is exact-source `available + passed`; Use
+  atomically selects the profile harness/pool; incompatible explicit pools
+  start zero adapters; delete clears all thread pins, matching native-session
+  caches, draft selection, and quota snapshots.
+- Retry accounting: fixtures must switch native→API-key within one candidate
+  and one reviewer; each usage event settles by its own/current typed route,
+  never the attempt's first route.
+- Synthesis staging must restore a pre-existing sentinel byte/mode-identically
+  and refuse symlinks; success/retry/failure must leave no staging diff.
+- Diff demand loading: controls derive patch availability from metadata, a tab
+  opened before metadata retriggers, and 413/network/non-text failures show
+  reason + path + Retry rather than spinning forever.
 - Persist local/redacted per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse

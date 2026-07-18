@@ -8,11 +8,7 @@ import type {
   ReviewFinding,
   RouteProof,
 } from "@claudexor/schema";
-import {
-  FallbackReason,
-  HarnessRunSpec,
-  ReviewFinding as ReviewFindingSchema,
-} from "@claudexor/schema";
+import { HarnessRunSpec, ReviewFinding as ReviewFindingSchema } from "@claudexor/schema";
 import { existsSync, lstatSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,13 +36,17 @@ import { buildReviewPrompt } from "./reviewPrompt.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
 import type {
   ReviewerArtifactContext,
-  ReviewerAuthMode,
   ReviewCandidateResult,
   ReviewerOutput,
+  ReviewerProgressEvent,
   ReviewerWorkspace,
 } from "./reviewRuntimeTypes.js";
-export type { ReviewCandidateResult } from "./reviewRuntimeTypes.js";
-import { reviewerAuthMode, summarizeReviewerSpend } from "./reviewRuntimeTypes.js";
+export type { ReviewCandidateResult, ReviewerProgressEvent } from "./reviewRuntimeTypes.js";
+import {
+  reviewerAuthMode,
+  reviewerAuthSwitchFromEvent,
+  summarizeReviewerSpend,
+} from "./reviewRuntimeTypes.js";
 
 export interface ReviewerSpec {
   adapter: HarnessAdapter;
@@ -95,31 +95,6 @@ const BLOCKED_REVIEWER_RUNTIME_ROOTS = new Set(
 );
 const TEXT_EVIDENCE_SUFFIXES = [".md", ".txt", ".json", ".yaml", ".yml", ".patch"];
 const REVIEW_WAVE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-export interface ReviewerProgressEvent {
-  type:
-    | "reviewer.started"
-    | "reviewer.first_event"
-    | "reviewer.auth_switched"
-    | "reviewer.completed"
-    | "reviewer.timed_out"
-    | "reviewer.failed";
-  harness_id: string;
-  provider_family: ProviderFamily;
-  requested_model: string | null;
-  requested_effort: EffortHint | null;
-  observed_model?: string | null;
-  observed_source?: RouteProof["observed"]["evidence_source"];
-  route_proof_status?: RouteProof["status"];
-  from_auth_mode?: string;
-  to_auth_mode?: string;
-  reason?: FallbackReason;
-  artifact_dir: string;
-  at: string;
-  duration_ms?: number;
-  message?: string;
-  review_wave_id?: string;
-}
 
 function readExistingDiffEvidence(dir: string, diff: string): DiffEvidence {
   const diffText = diff.endsWith("\n") ? diff : `${diff}\n`;
@@ -191,7 +166,9 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
   const healthyReviewerIndexes = new Set<number>();
   const reviewSpendByReviewer = input.reviewers.map(() => 0);
   const reviewSpendEstimatedByReviewer = input.reviewers.map(() => false);
-  const reviewAuthModeByReviewer: ReviewerAuthMode[] = input.reviewers.map(() => null);
+  const reviewCashByReviewer = input.reviewers.map(() => 0);
+  const reviewValuationByReviewer = input.reviewers.map(() => 0);
+  const reviewUnknownByReviewer = input.reviewers.map(() => 0);
   const reviewerTimeoutMs = input.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
   const reviewWaveId =
     input.env?.["CLAUDEXOR_REVIEW_WAVE_ID"] ?? process.env["CLAUDEXOR_REVIEW_WAVE_ID"] ?? null;
@@ -250,6 +227,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
       diff_path: persistentPatch.diffPath,
       summary_path: persistentPatch.summaryPath,
       diff_sha256: persistentPatch.diffSha256,
+      review_subject: input.reviewSubject ?? "code",
       ...frozenMetadata,
     },
   );
@@ -290,6 +268,7 @@ export async function reviewCandidate(input: ReviewCandidateInput): Promise<Revi
         persistent_diff_path: persistentPatch.diffPath,
         persistent_summary_path: persistentPatch.summaryPath,
         diff_sha256: persistentPatch.diffSha256,
+        review_subject: input.reviewSubject ?? "code",
         ...frozenMetadata,
       });
       const runtimePrompt = buildReviewPrompt(
@@ -376,7 +355,9 @@ ${runtimePrompt}
       routeSource = out.observedSource;
       reviewSpendByReviewer[index] = out.costUsd;
       reviewSpendEstimatedByReviewer[index] = out.costEstimated;
-      reviewAuthModeByReviewer[index] = out.authMode;
+      reviewCashByReviewer[index] = out.cashUsd;
+      reviewValuationByReviewer[index] = out.valuationUsd;
+      reviewUnknownByReviewer[index] = out.unknownUsd;
       if (!routeModel && reviewer.requestedModel) {
         routeModel = reviewer.requestedModel;
         routeSource = "metadata";
@@ -388,7 +369,9 @@ ${runtimePrompt}
         partialCostEstimated?: boolean;
         partialObservedModel?: string;
         partialObservedSource?: RouteProof["observed"]["evidence_source"];
-        partialAuthMode?: "local_session" | "api_key" | null;
+        partialCashUsd?: number;
+        partialValuationUsd?: number;
+        partialUnknownUsd?: number;
         partialText?: string;
       };
       if (typeof partial?.partialText === "string" && partial.partialText.trim() !== "") {
@@ -397,7 +380,9 @@ ${runtimePrompt}
       if (partial && typeof partial.partialCostUsd === "number" && partial.partialCostUsd > 0) {
         reviewSpendByReviewer[index] = partial.partialCostUsd;
         reviewSpendEstimatedByReviewer[index] = partial.partialCostEstimated === true;
-        reviewAuthModeByReviewer[index] = partial.partialAuthMode ?? null;
+        reviewCashByReviewer[index] = partial.partialCashUsd ?? 0;
+        reviewValuationByReviewer[index] = partial.partialValuationUsd ?? 0;
+        reviewUnknownByReviewer[index] = partial.partialUnknownUsd ?? 0;
       }
       if (partial?.partialObservedModel) {
         streamObservedModel = partial.partialObservedModel;
@@ -533,7 +518,9 @@ ${runtimePrompt}
       distinctProviders: observedFamilies,
       ...summarizeReviewerSpend(
         reviewSpendByReviewer,
-        reviewAuthModeByReviewer,
+        reviewCashByReviewer,
+        reviewValuationByReviewer,
+        reviewUnknownByReviewer,
         reviewSpendEstimatedByReviewer,
       ),
     };
@@ -578,8 +565,12 @@ async function collectReviewerOutput(
   let observedModel: string | undefined;
   let observedSource: RouteProof["observed"]["evidence_source"] = "unavailable";
   let observedAuthMode: "local_session" | "api_key" | null = null;
+  let currentAuthMode: "local_session" | "api_key" | null = null;
   let costUsd = 0;
   let costEstimated = false;
+  let cashUsd = 0;
+  let valuationUsd = 0;
+  let unknownUsd = 0;
   let partialText = "";
   const isCancelled = () =>
     cancelledBySignal || signal?.aborted === true || controller.signal.aborted;
@@ -603,6 +594,8 @@ async function collectReviewerOutput(
       }
       if (ev.type === "message" && ev.payload?.["auth_switched"] === true) {
         const authSwitch = reviewerAuthSwitchFromEvent(ev);
+        if (authSwitch.to_auth_mode === "subscription") currentAuthMode = "local_session";
+        if (authSwitch.to_auth_mode === "api_key") currentAuthMode = "api_key";
         updateReviewerMetadata(artifact, { auth_switch: authSwitch });
         emitReviewerProgress(artifact, reviewer, onReviewerEvent, {
           type: "reviewer.auth_switched",
@@ -610,8 +603,10 @@ async function collectReviewerOutput(
           ...authSwitch,
         });
       }
+      const disclosedAuthMode = reviewerAuthMode(ev.credential_route);
+      if (disclosedAuthMode) currentAuthMode = disclosedAuthMode;
       if (!observedAuthMode) {
-        observedAuthMode = reviewerAuthMode(ev.credential_route);
+        observedAuthMode = disclosedAuthMode;
         if (observedAuthMode) updateReviewerMetadata(artifact, { auth_mode: observedAuthMode });
       }
       if (!firstEventTime) {
@@ -625,7 +620,16 @@ async function collectReviewerOutput(
       if (ev.type === "usage" && ev.usage?.cost_usd) {
         costUsd += ev.usage.cost_usd;
         if (ev.usage.estimated) costEstimated = true;
-        updateReviewerMetadata(artifact, { cost_usd: costUsd, cost_estimated: costEstimated });
+        if (currentAuthMode === "local_session") valuationUsd += ev.usage.cost_usd;
+        else if (currentAuthMode === "api_key") cashUsd += ev.usage.cost_usd;
+        else unknownUsd += ev.usage.cost_usd;
+        updateReviewerMetadata(artifact, {
+          cost_usd: costUsd,
+          cost_estimated: costEstimated,
+          cash_usd: cashUsd,
+          valuation_usd: valuationUsd,
+          unknown_usd: unknownUsd,
+        });
       }
       if (ev.type === "message" && ev.text && ev.payload?.["auth_switched"] !== true) {
         const safeText = redactSecrets(ev.text);
@@ -713,7 +717,9 @@ async function collectReviewerOutput(
       observedSource: attemptObservedSource,
       costUsd,
       costEstimated,
-      authMode: observedAuthMode,
+      cashUsd,
+      valuationUsd,
+      unknownUsd,
     };
   };
   const consume = consumeOnce(0);
@@ -730,7 +736,9 @@ async function collectReviewerOutput(
         Object.assign(new Error("Reviewer cancelled"), {
           partialCostUsd: costUsd,
           partialCostEstimated: costEstimated,
-          partialAuthMode: observedAuthMode,
+          partialCashUsd: cashUsd,
+          partialValuationUsd: valuationUsd,
+          partialUnknownUsd: unknownUsd,
           partialObservedModel: observedModel,
           partialObservedSource: observedSource,
           partialText,
@@ -772,7 +780,9 @@ async function collectReviewerOutput(
           Object.assign(new Error(`Reviewer timed out after ${timeoutMs}ms`), {
             partialCostUsd: costUsd,
             partialCostEstimated: costEstimated,
-            partialAuthMode: observedAuthMode,
+            partialCashUsd: cashUsd,
+            partialValuationUsd: valuationUsd,
+            partialUnknownUsd: unknownUsd,
             partialObservedModel: observedModel,
             partialObservedSource: observedSource,
             partialText,
@@ -810,7 +820,9 @@ async function collectReviewerOutput(
       Object.assign(err as Record<string, unknown>, {
         partialCostUsd: costUsd,
         partialCostEstimated: costEstimated,
-        partialAuthMode: observedAuthMode,
+        partialCashUsd: cashUsd,
+        partialValuationUsd: valuationUsd,
+        partialUnknownUsd: unknownUsd,
         partialObservedModel: observedModel,
         partialObservedSource: observedSource,
         partialText,
@@ -825,21 +837,6 @@ async function collectReviewerOutput(
       /* timeout path: consume may reject after the race already returned */
     });
   }
-}
-
-function reviewerAuthSwitchFromEvent(ev: HarnessEvent): {
-  from_auth_mode: string;
-  to_auth_mode: string;
-  reason: FallbackReason;
-} {
-  const reason = FallbackReason.safeParse(ev.payload?.["reason"]);
-  return {
-    from_auth_mode:
-      typeof ev.payload?.["from_auth_mode"] === "string" ? ev.payload["from_auth_mode"] : "unknown",
-    to_auth_mode:
-      typeof ev.payload?.["to_auth_mode"] === "string" ? ev.payload["to_auth_mode"] : "unknown",
-    reason: reason.success ? reason.data : "auth_unavailable",
-  };
 }
 
 function selectReviewerWorkspaceBaseDir(

@@ -271,8 +271,9 @@ process below. Never paper over the conflict.
   default or profile-specific Keychain item). Ordinary `~/.claude` is never
   read, written, or used for Claudexor native setup/runs. Other harnesses never
   receive that bridge, and all writable vendor state stays scoped. Codex remains portable through
-  its file-only `CODEX_HOME` seed. The doctor names the real cause and Native
-  setup remedy (never a bare "not authenticated"), and reviews of auth/
+  its file-only `CODEX_HOME` seed. The doctor names the real cause and the
+  Claudexor-owned in-app Native setup remedy (never a bare vendor login command
+  that targets the ordinary store, never a bare "not authenticated"), and reviews of auth/
   readiness changes check every lane class — read-only scoped HOME, isolated
   envelopes, in-place — not just the host env. Reading, copying, exporting,
   snapshot-swapping, or persisting vendor credentials ("keychain surgery")
@@ -557,11 +558,15 @@ process below. Never paper over the conflict.
   disabled, or harness-mismatched ids refuse — an explicit profile never
   silently becomes the default credential ladder, and an adapter given an
   unsupported transport refuses typed. Native-session resume never crosses
-  profiles. verify: schema credential-profile.ts; orchestrator
+  profiles. Selecting a named profile makes its harness/pool coherent and every
+  selected lane probes the profile before spawn; deletion clears durable pins,
+  matching native-session caches, and quota subjects so an id cannot dangle or
+  resurrect stale auth. verify: schema credential-profile.ts; orchestrator
   credential-profiles.ts; adapter profile tests; threads resume-isolation
   test.
 - **INV-136** High-volume UI evidence is PROGRESSIVE, BOUNDED, and honest:
-  per-run milestone bursts are single-flight with at most one trailing refresh;
+  per-run milestone bursts are exactly one in-flight request plus at most one
+  trailing refresh (events during the trailing load cannot chain more GETs);
   thread/run hydration loads typed summaries + artifact metadata, never raw
   event/rollout/log bodies or tab-only patch bytes; chat renders a disclosed
   bounded tail rather than every retained transcript row/character; long
@@ -570,5 +575,5 @@ process below. Never paper over the conflict.
   omitted count/path is disclosed. No monospaced multi-megabyte `Text`, eager
   raw-artifact fetch, N+1 detail hydration, or unbounded card may enter a
   release. verify: DESIGN_SYSTEM §3.2; detail single-flight + diagnostics/
-  patch no-fetch tests; transcript row/text-bound tests; Spec interview visual
-  QA.
+  patch no-fetch tests; >4 MiB/transient Diff failures disclose path + Retry
+  rather than spin; transcript row/text-bound tests; Spec interview visual QA.

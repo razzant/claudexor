@@ -522,6 +522,38 @@ export class ThreadStore {
       );
     if (threads.length > 0) this.commit({ threads });
   }
+
+  invalidateCredentialProfile(
+    harnessId: string,
+    profileId: string,
+  ): { clearedThreads: number; invalidatedSessions: number } {
+    const now = nowIso();
+    // Thread pins predate a harness discriminator. Clear every matching scalar
+    // id rather than leave an unrunnable route after one harness profile dies.
+    const threads = this.state.threads
+      .filter((thread) => thread.credential_profile_id === profileId)
+      .map((thread) =>
+        ThreadSchema.parse({ ...thread, credential_profile_id: null, updated_at: now }),
+      );
+    const sessions = this.state.sessions
+      .filter(
+        (session) =>
+          session.harness_id === harnessId &&
+          session.profile_id === profileId &&
+          session.state === "live",
+      )
+      .map((session) =>
+        SessionSchema.parse({
+          ...session,
+          native_session_id: null,
+          resume_kind: "none",
+          state: "stale",
+          updated_at: now,
+        }),
+      );
+    if (threads.length > 0 || sessions.length > 0) this.commit({ threads, sessions });
+    return { clearedThreads: threads.length, invalidatedSessions: sessions.length };
+  }
 }
 
 export function threadProjection(headPing?: ThreadHeadPingSink) {

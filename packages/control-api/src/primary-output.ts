@@ -6,6 +6,25 @@ import type { DaemonRunRecord } from "./daemon-server.js";
 import { TERMINAL_STATES } from "./sse-shared.js";
 
 const PRIMARY_OUTPUT_PREVIEW_BYTES = 256 * 1024;
+const REDACTION_OVERLAP_BYTES = 1024;
+
+function decodeValidUtf8(data: Buffer): string {
+  for (let trim = 0; trim <= 3 && trim <= data.length; trim += 1) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(
+        trim === 0 ? data : data.subarray(0, data.length - trim),
+      );
+    } catch {
+      // A bounded prefix may end inside one multi-byte scalar; back off.
+    }
+  }
+  return data.toString("utf8");
+}
+
+function truncateUtf8(text: string, maxBytes: number): string {
+  const encoded = Buffer.from(text, "utf8");
+  return encoded.length <= maxBytes ? text : decodeValidUtf8(encoded.subarray(0, maxBytes));
+}
 
 function preview(
   rec: DaemonRunRecord,
@@ -16,7 +35,7 @@ function preview(
   if (!path) return null;
   const st = lstatSync(path);
   if (st.isSymbolicLink() || st.isDirectory()) return null;
-  const length = Math.min(st.size, PRIMARY_OUTPUT_PREVIEW_BYTES);
+  const length = Math.min(st.size, PRIMARY_OUTPUT_PREVIEW_BYTES + REDACTION_OVERLAP_BYTES);
   const data = Buffer.alloc(length);
   const fd = openSync(path, "r");
   try {
@@ -25,10 +44,18 @@ function preview(
     closeSync(fd);
   }
   return {
-    text: redactSecrets(data.toString("utf8")),
+    text: truncateUtf8(redactSecrets(decodeValidUtf8(data)), PRIMARY_OUTPUT_PREVIEW_BYTES),
     bytes: st.size,
     truncated: st.size > length,
   };
+}
+
+export function boundedArtifactText(rec: DaemonRunRecord, relPath: string): string | null {
+  const output = preview(rec, relPath);
+  if (!output?.text.trim()) return null;
+  return output.truncated
+    ? `${output.text}\n\n[Inline preview bounded; open ${relPath} for the full artifact.]`
+    : output.text;
 }
 
 export function primaryOutput(

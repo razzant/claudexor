@@ -40,6 +40,9 @@ export interface DiffReviewResult {
   distinctProviders: ProviderFamily[];
   routeProofs: unknown[];
   reviewSpendUsd: number;
+  reviewCashUsd: number;
+  reviewValuationUsd: number;
+  reviewUnknownUsd: number;
   artifactsDir: string;
 }
 
@@ -141,6 +144,9 @@ export async function runDiffReview(
     distinctProviders: result.distinctProviders,
     routeProofs: result.routeProofs,
     reviewSpendUsd: result.reviewSpendUsd,
+    reviewCashUsd: result.reviewCashUsd,
+    reviewValuationUsd: result.reviewValuationUsd,
+    reviewUnknownUsd: result.reviewUnknownUsd,
     artifactsDir,
   };
 }

@@ -1,10 +1,12 @@
 import {
   existsSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,6 +52,28 @@ describe("candidate produced-output persistence", () => {
     cleanup();
     cleanup();
     expect(existsSync(path)).toBe(false);
+  });
+
+  it("restores a pre-existing synthesis sentinel byte- and mode-identically", () => {
+    const worktree = root("claudexor-synthesis-sentinel-");
+    const path = join(worktree, ".claudexor-synthesis-input.md");
+    const sentinel = Buffer.from([0, 1, 2, 0xfe, 0xff]);
+    writeFileSync(path, sentinel);
+    chmodSync(path, 0o640);
+    const cleanup = stageFileBackedContext(worktree, "temporary evidence");
+    expect(readFileSync(path, "utf8")).toBe("temporary evidence");
+    cleanup();
+    expect(readFileSync(path)).toEqual(sentinel);
+    expect(statSync(path).mode & 0o777).toBe(0o640);
+  });
+
+  it("refuses a pre-existing synthesis symlink instead of writing through it", () => {
+    const worktree = root("claudexor-synthesis-symlink-");
+    const outside = join(root("claudexor-synthesis-host-"), "host.md");
+    writeFileSync(outside, "host sentinel");
+    symlinkSync(outside, join(worktree, ".claudexor-synthesis-input.md"));
+    expect(() => stageFileBackedContext(worktree, "must not escape")).toThrow(/not a regular file/);
+    expect(readFileSync(outside, "utf8")).toBe("host sentinel");
   });
 
   it("preserves raster outputs only and materializes winner-relative links", () => {

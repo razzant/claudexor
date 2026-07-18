@@ -27,6 +27,7 @@ interface RawAttempt {
 
 interface RawReview {
   review_verified?: unknown;
+  final_review_clean?: unknown;
   findings?: unknown[];
 }
 
@@ -61,7 +62,11 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
       blockers,
       reviewVerified: review?.review_verified === true,
       finalReviewClean:
-        raw.errored === true ? false : review?.review_verified === true ? blockers === 0 : null,
+        raw.errored === true
+          ? false
+          : typeof review?.final_review_clean === "boolean"
+            ? review.final_review_clean
+            : null,
       winner: decision?.winner === raw.attempt_id,
       diffstat:
         raw.diffstat && typeof raw.diffstat === "object"

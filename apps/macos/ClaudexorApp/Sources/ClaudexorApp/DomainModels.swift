@@ -725,7 +725,7 @@ struct TaskRun: Identifiable, Hashable {
         let diagnosticIsContent = status != .succeeded || outputReadyState == "diagnostic"
         let hasContent =
             !(answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !diff.isEmpty
+            || hasPatchArtifact
             || (diagnosticIsContent && !(diagnosticText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             || engineError != nil
         return !hasContent

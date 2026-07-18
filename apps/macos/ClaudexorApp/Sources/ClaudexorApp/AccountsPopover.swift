@@ -61,20 +61,17 @@ enum AccountsPresentation {
         for info in model.liveHarnesses
         where info.family.defaultAuthReadinessRequest?.source == .nativeSession {
             let family = info.family
-            let readiness: AccountReadiness = switch info.health {
-            case .ok: .ready
-            case .degraded: .unknown
-            case .unavailable: .unavailable
-            }
+            let source = model.authSource(for: family, source: .nativeSession)
             rows.append(AccountRowModel(
                 id: "default/\(family.rawValue)",
                 displayName: family.label,
                 harnessId: family.rawValue,
                 family: family,
-                readiness: readiness,
-                verified: info.nativeSessionReady,
+                readiness: readiness(
+                    availability: source?.availability, verification: source?.verification),
+                verified: source?.isVerifiedNativeSession == true,
                 profileId: nil,
-                detail: nil,
+                detail: source?.detail,
                 quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue }
             ))
         }
@@ -82,15 +79,14 @@ enum AccountsPresentation {
         // Registered profiles (additive; the default login is never touched).
         for entry in model.credentialProfiles {
             let availability = entry.status.availability
-            let readiness: AccountReadiness = availability == "available" ? .ready
-                : availability == "unknown" ? .unknown : .unavailable
+            let verification = entry.status.verification
             rows.append(AccountRowModel(
                 id: "profile/\(entry.profile.harnessId)/\(entry.profile.profileId)",
                 displayName: entry.profile.displayName,
                 harnessId: entry.profile.harnessId,
                 family: HarnessFamily(rawValue: entry.profile.harnessId),
-                readiness: readiness,
-                verified: availability == "available" && entry.status.verification == "passed",
+                readiness: readiness(availability: availability, verification: verification),
+                verified: availability == "available" && verification == "passed",
                 profileId: entry.profile.profileId,
                 detail: entry.status.detail,
                 quotaGroups: groups.filter {
@@ -99,6 +95,17 @@ enum AccountsPresentation {
             ))
         }
         return rows
+    }
+
+    private static func readiness(
+        availability: String?, verification: String?
+    ) -> AccountReadiness {
+        if availability == "available" && verification == "passed" { return .ready }
+        if availability == nil || availability == "unknown"
+            || verification == nil || verification == "not_run" || verification == "unknown" {
+            return .unknown
+        }
+        return .unavailable
     }
 
     /// Worst readiness across every account — the trigger dot.
@@ -529,7 +536,7 @@ private struct AccountRowView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(Theme.accentSolid)
-                    .help("Pin this account to the current thread (or the new draft thread)")
+                    .help("Pin this account and its harness as the thread's eligible pool")
             }
             if let delete {
                 Button(role: .destructive, action: delete) {

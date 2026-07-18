@@ -1,4 +1,5 @@
 import Foundation
+import ClaudexorKit
 import Testing
 @testable import ClaudexorApp
 
@@ -6,13 +7,64 @@ import Testing
 /// generator must always emit a server-valid slug, unique per harness.
 @Suite struct AccountsPresentationTests {
     @MainActor
+    @Test func accountReadinessRequiresExactPassedSourceVerification() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "api key ready",
+            intents: ["implement"])]
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available",
+                verification: "failed", detail: "session expired"),
+        ]
+        var row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.readiness == .unavailable)
+        #expect(!row.verified)
+
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available",
+                verification: "not_run"),
+        ]
+        row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.readiness == .unknown)
+
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available",
+                verification: "passed"),
+        ]
+        row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.readiness == .ready)
+        #expect(row.verified)
+    }
+
+    @MainActor
     @Test func draftAccountSelectionPersistsAndClearsInTheOneAccountsSurface() async {
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         await model.setThreadCredentialProfile("work", harnessId: "claude")
         #expect(model.draftCredentialProfileId == "work")
         #expect(model.draftPrimaryHarness == "claude")
+        #expect(model.draftEligiblePool == ["claude"])
         await model.setThreadCredentialProfile(nil)
         #expect(model.draftCredentialProfileId == nil)
+    }
+
+    @MainActor
+    @Test func profileAvailabilityWithoutPassedVerificationIsNotGreen() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        let json = """
+        {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+        "credential_kind":"config_dir_login","enabled":true},
+        "status":{"availability":"available","verification":"failed","detail":"probe failed",
+        "last_verified_at":null}}
+        """
+        model.credentialProfiles = [
+            try JSONDecoder().decode(CredentialProfileEntry.self, from: Data(json.utf8)),
+        ]
+        let row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.readiness == .unavailable)
+        #expect(!row.verified)
     }
 
     @Test func generatedIdSlugifiesTheDisplayName() {
@@ -22,6 +74,11 @@ import Testing
         // Non-latin names fall back to the auto id instead of an invalid slug.
         #expect(AccountsPresentation.generatedProfileId(displayName: "個人アカウント", existing: []) == "acct")
         #expect(AccountsPresentation.generatedProfileId(displayName: "", existing: []) == "acct")
+    }
+
+    @Test func quotaDatesAreAlwaysPresentedInEnglish() {
+        let value = formattedDate("2026-07-18T12:30:00.000Z")
+        #expect(value?.contains("Jul") == true)
     }
 
     @Test func generatedIdIsUniqueAndAlwaysValid() {

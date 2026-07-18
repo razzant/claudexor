@@ -1,4 +1,12 @@
-import type { CredentialRoute, ProviderFamily, ReviewFinding, RouteProof } from "@claudexor/schema";
+import {
+  FallbackReason,
+  type CredentialRoute,
+  type EffortHint,
+  type HarnessEvent,
+  type ProviderFamily,
+  type ReviewFinding,
+  type RouteProof,
+} from "@claudexor/schema";
 
 export type ReviewerAuthMode = "local_session" | "api_key" | null;
 
@@ -10,13 +18,30 @@ export function reviewerAuthMode(route?: CredentialRoute): ReviewerAuthMode {
       : null;
 }
 
+export function reviewerAuthSwitchFromEvent(ev: HarnessEvent): {
+  from_auth_mode: string;
+  to_auth_mode: string;
+  reason: ReturnType<typeof FallbackReason.parse>;
+} {
+  const reason = FallbackReason.safeParse(ev.payload?.["reason"]);
+  return {
+    from_auth_mode:
+      typeof ev.payload?.["from_auth_mode"] === "string" ? ev.payload["from_auth_mode"] : "unknown",
+    to_auth_mode:
+      typeof ev.payload?.["to_auth_mode"] === "string" ? ev.payload["to_auth_mode"] : "unknown",
+    reason: reason.success ? reason.data : "auth_unavailable",
+  };
+}
+
 export interface ReviewerOutput {
   text: string;
   observedModel?: string;
   observedSource: RouteProof["observed"]["evidence_source"];
   costUsd: number;
   costEstimated: boolean;
-  authMode: ReviewerAuthMode;
+  cashUsd: number;
+  valuationUsd: number;
+  unknownUsd: number;
 }
 
 export interface ReviewerArtifactContext {
@@ -36,6 +61,31 @@ export interface ReviewerWorkspace {
   evidenceDir: string;
 }
 
+export interface ReviewerProgressEvent {
+  type:
+    | "reviewer.started"
+    | "reviewer.first_event"
+    | "reviewer.auth_switched"
+    | "reviewer.completed"
+    | "reviewer.timed_out"
+    | "reviewer.failed";
+  harness_id: string;
+  provider_family: ProviderFamily;
+  requested_model: string | null;
+  requested_effort: EffortHint | null;
+  observed_model?: string | null;
+  observed_source?: RouteProof["observed"]["evidence_source"];
+  route_proof_status?: RouteProof["status"];
+  from_auth_mode?: string;
+  to_auth_mode?: string;
+  reason?: ReturnType<typeof FallbackReason.parse>;
+  artifact_dir: string;
+  at: string;
+  duration_ms?: number;
+  message?: string;
+  review_wave_id?: string;
+}
+
 export interface ReviewCandidateResult {
   findings: ReviewFinding[];
   routeProofs: RouteProof[];
@@ -53,28 +103,27 @@ export interface ReviewCandidateResult {
   reviewSpendEstimated: boolean;
   reviewCashUsd: number;
   reviewValuationUsd: number;
+  reviewUnknownUsd: number;
 }
 
 export function summarizeReviewerSpend(
   spend: readonly number[],
-  modes: readonly ReviewerAuthMode[],
+  cash: readonly number[],
+  valuation: readonly number[],
+  unknown: readonly number[],
   estimated: readonly boolean[],
 ): {
   reviewSpendUsd: number;
   reviewSpendEstimated: boolean;
   reviewCashUsd: number;
   reviewValuationUsd: number;
+  reviewUnknownUsd: number;
 } {
   return {
     reviewSpendUsd: spend.reduce((sum, value) => sum + value, 0),
     reviewSpendEstimated: estimated.some(Boolean),
-    reviewCashUsd: spend.reduce(
-      (sum, value, index) => sum + (modes[index] === "local_session" ? 0 : value),
-      0,
-    ),
-    reviewValuationUsd: spend.reduce(
-      (sum, value, index) => sum + (modes[index] === "local_session" ? value : 0),
-      0,
-    ),
+    reviewCashUsd: cash.reduce((sum, value) => sum + value, 0),
+    reviewValuationUsd: valuation.reduce((sum, value) => sum + value, 0),
+    reviewUnknownUsd: unknown.reduce((sum, value) => sum + value, 0),
   };
 }

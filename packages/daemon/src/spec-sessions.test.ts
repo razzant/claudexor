@@ -61,11 +61,12 @@ describe("SpecSessionStore", () => {
       changes: [],
     });
     expect(f.store.frozenResult(id)).toMatchObject({ sessionId: id, state: "frozen" });
+    expect(f.store.cancel(id)).toMatchObject({ sessionId: id, state: "cancelled" });
     f.journal.close();
 
     const restarted = fixture(f.dir);
     expect(restarted.store.get(id)).toMatchObject({
-      state: "frozen",
+      state: "cancelled",
       specId: "spec-1",
       threadId: "th-test",
     });

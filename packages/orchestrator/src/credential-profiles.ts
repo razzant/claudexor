@@ -27,6 +27,30 @@ export function resolveCredentialProfile(
   return match;
 }
 
+export async function selectedProfileAvailability(input: {
+  registry: readonly CredentialProfile[];
+  profileId?: string | null;
+  harnessId: string;
+  probe?: (profile: CredentialProfile) => Promise<{
+    availability: string;
+    verification: string;
+    detail?: string | null;
+  }>;
+}): Promise<string | null> {
+  if (!input.profileId) return null;
+  let profile: CredentialProfile;
+  try {
+    profile = resolveCredentialProfile(input.registry, input.profileId, input.harnessId);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  if (!input.probe) return `harness "${input.harnessId}" has no profile probe`;
+  const result = await input.probe(profile);
+  return result.availability === "available"
+    ? "available"
+    : (result.detail ?? `${result.availability}/${result.verification}`);
+}
+
 export interface ProfilePolicy {
   limit_action: "fail" | "ask" | "rotate";
   rotation_eligible: string[];

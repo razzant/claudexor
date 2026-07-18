@@ -92,10 +92,12 @@ struct SpecFrozenCard: View {
     @Environment(AppModel.self) private var model
     /// The OWNING thread (captured at render) so Implement targets it, not selection.
     let threadId: String
+    let sessionId: String
     let specId: String
     let specPath: String
     let specHash: String
     let changes: Int
+    let recovered: Bool
     @State private var implementing = false
 
     var body: some View {
@@ -110,10 +112,11 @@ struct SpecFrozenCard: View {
                     .buttonStyle(.bordered).controlSize(.small)
                     .disabled(implementing)
                     .help("Clear this frozen spec without implementing it")
-                Button(implementing ? "Implementing…" : "Implement") {
+                Button(implementing ? "Implementing…" : recovered ? "Implement with defaults" : "Implement") {
                     implementing = true
                     Task {
-                        await model.implementSpec(threadId: threadId, specPath: specPath)
+                        await model.implementSpec(
+                            threadId: threadId, sessionId: sessionId, specPath: specPath)
                         implementing = false
                     }
                 }
@@ -130,6 +133,10 @@ struct SpecFrozenCard: View {
                     .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                     .help("Spec hash \(specHash)")
                 Label("\(changes) change\(changes == 1 ? "" : "s")", systemImage: "plusminus")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if recovered {
+                Text("Run options from before restart are unavailable. Implement uses the thread's current defaults.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

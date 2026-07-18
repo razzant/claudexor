@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, realpathSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { ensureDir, userConfigDir, userHomeDir } from "@claudexor/util";
 
 export const CLAUDE_KEYCHAIN_BRIDGE_ENV = "CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE";
@@ -12,7 +12,15 @@ export interface ClaudeNativeHomeOptions {
 /** Claudexor-owned default store; ordinary ~/.claude is never used. */
 export function defaultNativeClaudeConfigDir(): string {
   const override = process.env.CLAUDEXOR_CLAUDE_NATIVE_DIR;
-  return override?.trim() || join(userConfigDir(), "native", "claude", "default");
+  if (!override?.trim()) return join(userConfigDir(), "native", "claude", "default");
+  const ownedRoot = resolve(userConfigDir());
+  const target = resolve(override.trim());
+  if (target !== ownedRoot && !target.startsWith(ownedRoot + sep)) {
+    throw new Error(
+      `CLAUDEXOR_CLAUDE_NATIVE_DIR must stay inside the Claudexor config root ${ownedRoot}`,
+    );
+  }
+  return target;
 }
 
 /**

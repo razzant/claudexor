@@ -404,12 +404,21 @@ the registry entry out through the same locked global-config owner, then
 deletes the profile's OWN credential material — its confinement-checked scoped
 login dir or its namespaced secret, NEVER the default vendor store. A failed
 cleanup is disclosed on the receipt (`cleanupWarning`), never silent; removal
-refuses with a typed 409 while a login job for that account is active.
+refuses with a typed 409 while a login job for that account is active. The same
+daemon mutation clears every legacy scalar thread pin carrying that profile
+id, marks matching harness/profile native-session caches stale, and removes
+profile quota snapshots, so deletion cannot leave a route that fails on the
+next turn or resurrect a session if the id is recreated.
 
 Selection precedence is turn > thread-sticky > engine default: a turn's
 explicit `credentialProfileId` (CLI `--profile`) beats the thread's durable
 `credential_profile_id` (PATCH /v2/threads/:id), and null means the default
-credential ladder. Each harness may declare ONE typed `profile_policy`
+credential ladder. The app's Use action atomically makes the profile's harness
+the primary and sole eligible pool member; external thread create/PATCH calls
+with an explicit pool are rejected unless the profile id exists for every pool
+lane. Run preflight probes the selected profile for every lane even when the
+default harness doctor is already OK, before any adapter starts. Each harness
+may declare ONE typed `profile_policy`
 (`limit_action: fail|ask|rotate`, priority-ordered `rotation_eligible`,
 `headroom_threshold`). Two separated signals drive it (never prose, never
 plain network errors): `profile_headroom_preflight` — before spawn, the
@@ -744,7 +753,13 @@ choices and records answers through `POST /v2/spec/sessions/:id/answers`, then
 external data root. The returned session carries `specId`, `specDir`, `specPath`
 and `specHash`. List/get/cancel/resume use the same durable session authority;
 app-created sessions also persist their owning `threadId`, so opening that
-thread after restart restores questions/answers/frozen state. Legacy unbound
+thread after restart restores questions/answers/frozen state. Recovered
+grounding/freezing sessions are polled from the durable authority; failed or
+`interrupted_unknown` sessions present explicit Resume/Dismiss actions.
+Cancel, Dismiss, and a successfully-started Implement all persist `cancelled`
+on the server (including a frozen session), so resolved work never resurrects.
+Recovered frozen sessions disclose that unsent per-turn model/options were
+lost and require the explicit “Implement with defaults” action. Legacy unbound
 sessions are recovered only when exactly one active session matches the
 project — never guessed. An in-flight operation becomes `interrupted_unknown`
 after restart. An Implement run is then a normal
@@ -1091,7 +1106,10 @@ observed spend even when work errors. Every route carries cost knowledge
 Subscription token valuation is telemetry, not a cash debit — estimated OR
 exact, for candidates and each reviewer route. Mixed review panels settle
 native reviewers to valuation and API-key reviewers to cash independently;
-their aggregate is never blindly charged as cash. `finite(0)` admits
+their aggregate is never blindly charged as cash. Candidate and reviewer
+retries classify EACH usage event by that event/current typed credential
+route; a native→API-key retry cannot hide later metered spend under the first
+native route, and an undisclosed route remains cost-unverifiable. `finite(0)` admits
 only proven-zero or subscription-entitlement work; a positive finite cap permits
 at most one unknown-cost paid unit in flight. A later exact charge above the cap
 is retained and ends `exhausted_overshoot`; permanently unknown cost ends

@@ -95,6 +95,8 @@ const WARNING_EVENT_TYPES = new Set([
   "route.fallback.started",
   "route.fallback.auth_switched",
   "route.fallback.exhausted",
+  "route.profile.headroom_exceeded",
+  "route.profile.rotation_exhausted",
   "policy.web.upgraded",
   "run.blocked",
 ]);

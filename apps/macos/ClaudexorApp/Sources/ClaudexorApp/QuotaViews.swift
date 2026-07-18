@@ -112,5 +112,7 @@ func formattedDate(_ value: String?) -> String? {
     fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     let plain = ISO8601DateFormatter()
     guard let date = fractional.date(from: value) ?? plain.date(from: value) else { return value }
-    return date.formatted(date: .abbreviated, time: .shortened)
+    return date.formatted(
+        Date.FormatStyle(date: .abbreviated, time: .shortened)
+            .locale(Locale(identifier: "en_US_POSIX")))
 }

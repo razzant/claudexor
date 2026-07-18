@@ -178,7 +178,7 @@ export class SpecSessionStore {
 
   cancel(id: string): ControlSpecSession {
     const current = this.requireRecord(id);
-    if (["frozen", "cancelled", "failed"].includes(current.state)) return publicSession(current);
+    if (current.state === "cancelled") return publicSession(current);
     return this.update({ ...current, state: "cancelled", error: null, interruptedFrom: null });
   }
 

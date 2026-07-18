@@ -391,7 +391,7 @@ claim here is pinned by a fixture + conformance expectation
 (`packages/harness-<x>/fixtures/manifest.yaml` declares per-fixture stream
 SEMANTICS — final-message count, the typed `final_source` stamp the adapter
 puts on final messages ("result" / "structured_output" /
-"last_agent_message"), whether the final is the stream's last message,
+"last_agent_message" / "assistant_message"), whether the final is the stream's last message,
 thinking/delta counts, typed rate-limit, and the typed retry class — all
 asserted by the adapter's conformance test through
 `streamExpectationViolations` in `@claudexor/core`). When a vendor CLI moves,

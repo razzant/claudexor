@@ -221,7 +221,7 @@ struct TurnCard: View {
                 if applied {
                     Label("Applied to project", systemImage: "checkmark.seal.fill")
                         .font(.caption).foregroundStyle(Theme.status(.succeeded))
-                } else if (run.status == .succeeded && !run.diff.isEmpty) || unblocked {
+                } else if (run.status == .succeeded && run.hasPatchArtifact) || unblocked {
                     // Apply PRE-FLIGHT: dry-run the gate when the apply bar appears so
                     // a refusal reason is shown UP FRONT, not only on press.
                     if let reason = applyBlockReason {
@@ -312,7 +312,7 @@ struct TurnCard: View {
         guard failureShaped.contains(run.status) else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty
-        return !hasAnswer && !hasTranscript && run.diff.isEmpty
+        return !hasAnswer && !hasTranscript && !run.hasPatchArtifact
     }
 
     /// Inline error card for a silent terminal failure (item 5): the engine's honest

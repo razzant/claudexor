@@ -118,6 +118,31 @@ struct AppModelRefreshTests {
     }
 
     @MainActor
+    @Test func interruptedSpecRestoresWithExplicitResumeInsteadOfBlankChat() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            let json = #"{"sessions":[{"sessionId":"spec-interrupted","threadId":"th-1","prompt":"improve it","scope":{"kind":"project","root":"/tmp/project","context":"auto"},"state":"interrupted_unknown","planRunId":null,"questions":[],"answers":[],"priorDecisions":[],"specId":null,"specPath":null,"specHash":null,"error":"daemon restarted","updatedAt":"2026-07-18T00:00:00Z"}]}"#
+            return (appResponse(for: request), Data(json.utf8))
+        }
+
+        await model.recoverSpecFlow(threadId: "th-1", repoRoot: "/tmp/project")
+
+        guard case .interrupted(let sessionId, let message)
+            = model.specFlowByThread["th-1"] else {
+            Issue.record("expected an explicit interrupted state")
+            return
+        }
+        #expect(sessionId == "spec-interrupted")
+        #expect(message == "daemon restarted")
+    }
+
+    @MainActor
     @Test func runListRefreshDoesNotNPlusOneHydrateEmptyReviewFindings() async {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
@@ -871,6 +896,10 @@ struct AppModelRefreshTests {
         }
 
         let first = Task { await model.loadRunDetail("run-burst") }
+        let duringTrailing = Task {
+            try? await Task.sleep(for: .milliseconds(110))
+            await model.loadRunDetail("run-burst")
+        }
         try? await Task.sleep(for: .milliseconds(20))
         await withTaskGroup(of: Void.self) { group in
             for _ in 0..<5 {
@@ -878,8 +907,45 @@ struct AppModelRefreshTests {
             }
         }
         await first.value
+        await duringTrailing.value
 
         #expect(calls.count == 2)
+    }
+
+    @MainActor
+    @Test func oversizedDiffReturnsVisibleFailureInsteadOfPerpetualLoading() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        var task = TaskRun(
+            id: "run-large-diff", title: "Run", prompt: "", mode: .agent,
+            status: .succeeded, project: "Project", specTitle: nil,
+            harnesses: [], n: 1, createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )
+        task.artifactPaths = ["final/patch.diff"]
+        model.liveTasks = [task]
+        AppRequestStubURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!, statusCode: 413, httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type":"application/json"])!
+            return (response, Data(#"{"error":"artifact exceeds 4 MiB text limit"}"#.utf8))
+        }
+
+        let outcome = await model.loadRunDiff("run-large-diff")
+
+        guard case .failed(let message) = outcome else {
+            Issue.record("expected a visible diff load failure")
+            return
+        }
+        #expect(message.contains("413"))
+        #expect(model.liveTasks[0].hasPatchArtifact)
     }
 
     /// W4.3: vendor cost ticks are VALUATION — they must never move the cash

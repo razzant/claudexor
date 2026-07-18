@@ -13,7 +13,10 @@ extension AppModel {
     func setThreadCredentialProfile(_ profileId: String?, harnessId: String? = nil) async {
         guard let id = selectedThreadId else {
             draftCredentialProfileId = profileId
-            if let harnessId { draftPrimaryHarness = harnessId }
+            if let harnessId {
+                draftPrimaryHarness = harnessId
+                if profileId != nil { draftEligiblePool = [harnessId] }
+            }
             return
         }
         guard let client else {
@@ -25,6 +28,7 @@ extension AppModel {
                 id: id,
                 body: UpdateThreadRequest(
                     primaryHarness: harnessId.map { .some($0) },
+                    eligibleHarnesses: profileId == nil ? nil : harnessId.map { [$0] },
                     credentialProfileId: .some(profileId)))
             applyThreadUpdate(updated)
         } catch {
@@ -68,8 +72,14 @@ extension AppModel {
         do {
             let receipt = try await client.deleteCredentialProfile(
                 harnessId: harnessId, profileId: profileId)
+            if draftCredentialProfileId == profileId {
+                draftCredentialProfileId = nil
+                if draftPrimaryHarness == harnessId { draftPrimaryHarness = nil }
+            }
             await refreshCredentialProfiles()
             await refreshQuota(force: true)
+            await refreshThreads()
+            if let selectedThreadId { await openThread(selectedThreadId) }
             return receipt.cleanupWarning
         } catch {
             return userMessage(for: error)

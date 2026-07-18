@@ -332,7 +332,10 @@ frequency and volume are. The contracts:
   parsed only when Diff opens, with an explicit loading state — never during
   generic thread/run hydration. Control API primary-output text is a bounded
   256 KiB inline preview with `truncated=true` + full artifact path/byte size;
-  complete output opens on demand.
+  complete output opens on demand. Patch availability comes from result/artifact
+  metadata, not the loaded `[DiffFile]`; a pre-metadata tab open retriggers when
+  metadata lands, while 413/network/non-text failures show the reason, artifact
+  path, and Retry instead of a perpetual spinner.
 - **Lazy timelines.** The Timeline tab renders newest-first through a lazy
   reversed collection inside `LazyVStack` — no materialized reversed copies,
   no eagerly-built thousand-row stacks.
@@ -368,11 +371,14 @@ frequency and volume are. The contracts:
     default vendor login labeled with the harness name, or a registered
     credential profile): a readiness dot, its name, ONE compact quota line
     (worst window % + reset), one "Log in" / "Manage" action, a **Use/Using**
-    thread-pin action for ready named profiles, and — on
+    thread-pin action for ready named profiles (ready means that exact source is
+    `available + passed`, never aggregate harness health). Use atomically makes
+    that harness primary and the sole eligible pool member, and — on
     registered profiles only — a confirmed Remove (trash) that deletes the
     registration plus the account's own login/key
     (`DELETE /v2/credential-profiles/:harness/:id`; the default vendor login
-    is never Claudexor's to delete). The popover adds accounts inline
+    is never Claudexor's to delete); delete also clears matching thread pins,
+    native-session caches, and quota rows. The popover adds accounts inline
     (harness + optional name → `POST /v2/credential-profiles`, then that
     account's native login) and toggles "Auto-switch accounts at quota limit"
     (the per-harness `profileLimitAction` rotate/fail); a quota refresh and

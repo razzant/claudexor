@@ -1,8 +1,12 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { CLAUDE_KEYCHAIN_BRIDGE_ENV, claudeNativeHomeEnv } from "./native-home.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  CLAUDE_KEYCHAIN_BRIDGE_ENV,
+  claudeNativeHomeEnv,
+  defaultNativeClaudeConfigDir,
+} from "./native-home.js";
 
 const roots: string[] = [];
 
@@ -13,10 +17,19 @@ function root(prefix: string): string {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true });
 });
 
 describe("Claude-only macOS Keychain bridge (INV-067)", () => {
+  it("refuses a native-dir override outside the Claudexor-owned config root", () => {
+    const config = root("claudexor-owned-config-");
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", config);
+    vi.stubEnv("CLAUDEXOR_CLAUDE_NATIVE_DIR", join(config, "native", "claude", "work"));
+    expect(defaultNativeClaudeConfigDir()).toBe(join(config, "native", "claude", "work"));
+    vi.stubEnv("CLAUDEXOR_CLAUDE_NATIVE_DIR", join(config, "..", ".claude"));
+    expect(() => defaultNativeClaudeConfigDir()).toThrow(/must stay inside/);
+  });
   it("bridges only a disposable Claude child HOME and is idempotent", () => {
     const real = root("claudexor-real-home-");
     const scoped = root("claudexor-scoped-home-");

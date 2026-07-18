@@ -8,6 +8,7 @@ import {
 } from "@claudexor/schema";
 
 const UPSERTED = "quota.snapshot.upserted";
+const REMOVED = "quota.subject.removed";
 const POLL_BACKOFF_MS = 60_000;
 const MAX_POLL_BACKOFF_MS = 15 * 60_000;
 /** Snapshots older than this are pruned from every projection read (W17):
@@ -30,6 +31,12 @@ export class QuotaRegistry {
   ) {
     for (const record of journal.records()) {
       if (record.type === UPSERTED) this.apply(QuotaSnapshotSchema.parse(record.payload));
+      if (record.type === REMOVED) {
+        const payload = record.payload as { harness?: unknown; subject_id?: unknown };
+        if (typeof payload.harness === "string" && typeof payload.subject_id === "string") {
+          this.remove(payload.harness, payload.subject_id);
+        }
+      }
     }
     this.validateProjection();
   }
@@ -144,6 +151,16 @@ export class QuotaRegistry {
     this.apply(snapshot);
   }
 
+  removeSubject(harness: string, subjectId: string): number {
+    const removed = [...this.snapshots.values()].filter(
+      (snapshot) =>
+        snapshot.subject.harness === harness && snapshot.subject.subject_id === subjectId,
+    ).length;
+    this.journal.append(REMOVED, { harness, subject_id: subjectId });
+    this.remove(harness, subjectId);
+    return removed;
+  }
+
   validateProjection(): void {
     for (const snapshot of this.snapshots.values()) QuotaSnapshotSchema.parse(snapshot);
   }
@@ -198,6 +215,17 @@ export class QuotaRegistry {
 
   private apply(snapshot: QuotaSnapshot): void {
     this.snapshots.set(snapshotKey(snapshot), snapshot);
+  }
+
+  private remove(harness: string, subjectId: string): number {
+    let removed = 0;
+    for (const [key, snapshot] of this.snapshots) {
+      if (snapshot.subject.harness === harness && snapshot.subject.subject_id === subjectId) {
+        this.snapshots.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 }
 

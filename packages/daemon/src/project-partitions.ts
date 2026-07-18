@@ -221,6 +221,19 @@ export class ProjectPartitions implements CommandAuthority {
     return this.requireThreadStore(id).updateThread(id, patch);
   }
 
+  invalidateCredentialProfile(harnessId: string, profileId: string) {
+    return this.threadStores().reduce(
+      (total, store) => {
+        const result = store.invalidateCredentialProfile(harnessId, profileId);
+        return {
+          clearedThreads: total.clearedThreads + result.clearedThreads,
+          invalidatedSessions: total.invalidatedSessions + result.invalidatedSessions,
+        };
+      },
+      { clearedThreads: 0, invalidatedSessions: 0 },
+    );
+  }
+
   trashThread(id: string): Thread {
     return this.requireThreadStore(id).trashThread(id);
   }

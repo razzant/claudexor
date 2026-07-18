@@ -870,6 +870,70 @@ describe("reviewEngine", () => {
     expect(result.reviewSpendUsd).toBe(1);
     expect(result.reviewCashUsd).toBe(0.25);
     expect(result.reviewValuationUsd).toBe(0.75);
+    expect(result.reviewUnknownUsd).toBe(0);
+  });
+
+  it("classifies each reviewer retry usage by that try's credential route", async () => {
+    let invocation = 0;
+    const reviewer: ReviewerSpec = {
+      providerFamily: "anthropic",
+      adapter: {
+        id: "route-switch",
+        async discover() {
+          throw new Error("not used");
+        },
+        async doctor() {
+          throw new Error("not used");
+        },
+        async *run(spec) {
+          invocation += 1;
+          const ts = new Date().toISOString();
+          const route = invocation === 1 ? "vendor_native" : "managed_api_key";
+          yield {
+            type: "started" as const,
+            session_id: spec.session_id,
+            ts,
+            observed_model: "review-model",
+            credential_route: route,
+          };
+          yield {
+            type: "usage" as const,
+            session_id: spec.session_id,
+            ts,
+            credential_route: route,
+            usage: { cost_usd: invocation === 1 ? 0.75 : 0.25 },
+          };
+          if (invocation === 1) {
+            yield {
+              type: "status" as const,
+              session_id: spec.session_id,
+              ts,
+              transient: { kind: "network", retry_delay_ms: 0 },
+            };
+            return;
+          }
+          yield {
+            type: "message" as const,
+            session_id: spec.session_id,
+            ts,
+            text: "```json\n[]\n```",
+          };
+          yield { type: "completed" as const, session_id: spec.session_id, ts };
+        },
+      },
+    };
+    const result = await reviewCandidate({
+      candidateLabel: "Candidate",
+      diff: "diff --git a/a b/a\n",
+      ...makeReviewWorkspace(),
+      reviewers: [reviewer],
+      transientRetryPolicy: { maxRetries: 1, initialDelayMs: 1, maxDelayMs: 1 },
+    });
+    expect(invocation).toBe(2);
+    expect(result.reviewSpendUsd).toBe(1);
+    expect(result.reviewCashUsd).toBe(0.25);
+    expect(result.reviewValuationUsd).toBe(0.75);
+    expect(result.reviewUnknownUsd).toBe(0);
   });
 
   it("runs reviewers concurrently while preserving input-ordered results and telemetry", async () => {

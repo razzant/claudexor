@@ -311,6 +311,7 @@ describe("DaemonControlApiServer", () => {
       join(runDir, "reviews", "a02.yaml"),
       [
         "review_verified: false",
+        "final_review_clean: false",
         "findings:",
         "  - id: f-block",
         "    severity: BLOCK",
@@ -347,6 +348,7 @@ describe("DaemonControlApiServer", () => {
       join(runDir, "reviews", "a01.yaml"),
       [
         "review_verified: true",
+        "final_review_clean: true",
         "findings:",
         "  - id: f-test",
         "    severity: WARN",

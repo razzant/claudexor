@@ -14,6 +14,10 @@ Release history for Claudexor. The current version is declared in the root
   separates native subscription valuation from API-key cash (including mixed
   reviewer panels). Plan review is typed as plan review; exhausted account
   rotation, zero configured gates, and candidate errors are explicit evidence.
+  Upgrade note: Claude's default native store moved from ordinary `~/.claude`
+  to Claudexor-owned state, so existing users complete Login once in Accounts
+  (or Settings → Harnesses → Claude → Manage); ordinary Claude Code remains
+  untouched.
 
 - **v2.1.2** (2026-07-18) — the credential-profiles release, published as
   2.1.2 after two npm-infrastructure burns: the v2.1.0 flight died on npm's

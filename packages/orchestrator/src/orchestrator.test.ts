@@ -73,9 +73,21 @@ function cleanReviewer(id: string, family: ProviderFamily): ReviewerSpec {
     },
     async *run(spec) {
       const ts = new Date().toISOString();
-      yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts,
+        observed_model: `${id}-model`,
+        credential_route: "managed_api_key",
+      };
       yield { type: "message", session_id: spec.session_id, ts, text: "```json\n[]\n```" };
-      yield { type: "usage", session_id: spec.session_id, ts, usage: { cost_usd: 0.001 } };
+      yield {
+        type: "usage",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "managed_api_key",
+        usage: { cost_usd: 0.001 },
+      };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
@@ -141,6 +153,16 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
         access_profiles_supported: ["readonly", "workspace_write"],
       });
     },
+    async probeCredentialProfile(profile) {
+      return {
+        profile_id: profile.profile_id,
+        harness_id: id,
+        availability: "available",
+        verification: "passed",
+        detail: "fixture profile verified",
+        last_verified_at: new Date().toISOString(),
+      };
+    },
     async doctor() {
       return ConformanceReport.parse({
         harness_id: id,
@@ -150,8 +172,19 @@ function realLikeAdapter(id: string, family: ProviderFamily = "openai"): Harness
     },
     async *run(spec) {
       const ts = new Date().toISOString();
-      yield { type: "started", session_id: spec.session_id, ts };
-      yield { type: "usage", session_id: spec.session_id, ts, usage: { cost_usd: 0.01 } };
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "managed_api_key",
+      };
+      yield {
+        type: "usage",
+        session_id: spec.session_id,
+        ts,
+        credential_route: "managed_api_key",
+        usage: { cost_usd: 0.01 },
+      };
       yield { type: "completed", session_id: spec.session_id, ts };
     },
   };
@@ -185,15 +218,32 @@ function diffImplementer(
         enabled_intents: ["implement"],
       });
     },
+    async probeCredentialProfile(profile) {
+      return {
+        profile_id: profile.profile_id,
+        harness_id: id,
+        availability: "available",
+        verification: "passed",
+        detail: "fixture profile verified",
+        last_verified_at: new Date().toISOString(),
+      };
+    },
     async *run(spec) {
       const ts = new Date().toISOString();
-      yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts,
+        observed_model: `${id}-model`,
+        credential_route: "managed_api_key",
+      };
       writeFileSync(join(spec.cwd, "CHANGED.txt"), "real change\n");
       yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
       yield {
         type: "usage",
         session_id: spec.session_id,
         ts,
+        credential_route: "managed_api_key",
         usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 },
       };
       yield { type: "completed", session_id: spec.session_id, ts };
@@ -369,9 +419,19 @@ function askAdapter(
         enabled_intents: ["explain", "audit", "plan", "review"],
       });
     },
+    async probeCredentialProfile(profile) {
+      return {
+        profile_id: profile.profile_id,
+        harness_id: id,
+        availability: "available",
+        verification: "passed",
+        detail: "fixture profile verified",
+        last_verified_at: new Date().toISOString(),
+      };
+    },
     async *run(spec) {
       for await (const event of events(spec.session_id) as AsyncIterable<Record<string, unknown>>) {
-        yield event as never;
+        yield { credential_route: "managed_api_key", ...event } as never;
       }
     },
   };
@@ -1696,6 +1756,16 @@ describe("Orchestrator", () => {
             enabled_intents: ["implement"],
           });
         },
+        async probeCredentialProfile(profile) {
+          return {
+            profile_id: profile.profile_id,
+            harness_id: "limited",
+            availability: "available",
+            verification: "passed",
+            detail: "fixture profile verified",
+            last_verified_at: new Date().toISOString(),
+          };
+        },
         async *run(spec) {
           const ts = new Date().toISOString();
           spawns.push({
@@ -2032,6 +2102,57 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("a doctor-OK harness still refuses an unready selected profile before spawn", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-preflight-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: work",
+        "    harness_id: asker",
+        "    display_name: Work",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:work'",
+        "",
+      ].join("\n"),
+    );
+    try {
+      let starts = 0;
+      const asker = askAdapter("asker", function* (sessionId) {
+        starts += 1;
+        yield { type: "started", session_id: sessionId, ts: new Date().toISOString() };
+      });
+      asker.probeCredentialProfile = async (profile) => ({
+        profile_id: profile.profile_id,
+        harness_id: "asker",
+        availability: "unavailable",
+        verification: "failed",
+        detail: "profile login expired",
+        last_verified_at: null,
+      });
+      const orchestrator = new Orchestrator({
+        registry: new Map([["asker", asker]]),
+        reviewers: [],
+      });
+      const result = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "work",
+      });
+      expect(result.status).toBe("failed");
+      expect(result.summary).toContain("profile login expired");
+      expect(starts).toBe(0);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("reactively rotates in the READ-ONLY lane too (release wave round-13)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-ro-rotate-config-"));
@@ -2151,6 +2272,16 @@ describe("Orchestrator", () => {
             status: "ok",
             enabled_intents: ["implement"],
           });
+        },
+        async probeCredentialProfile(profile) {
+          return {
+            profile_id: profile.profile_id,
+            harness_id: "limited",
+            availability: "available",
+            verification: "passed",
+            detail: "fixture profile verified",
+            last_verified_at: new Date().toISOString(),
+          };
         },
         async *run(spec) {
           const ts = new Date().toISOString();
@@ -6064,7 +6195,13 @@ function plannerAdapter(
     },
     async *run(spec) {
       const ts = new Date().toISOString();
-      yield { type: "started", session_id: spec.session_id, ts, observed_model: `${id}-model` };
+      yield {
+        type: "started",
+        session_id: spec.session_id,
+        ts,
+        observed_model: `${id}-model`,
+        credential_route: "managed_api_key",
+      };
       yield {
         type: "message",
         session_id: spec.session_id,
@@ -6076,6 +6213,7 @@ function plannerAdapter(
           type: "usage",
           session_id: spec.session_id,
           ts,
+          credential_route: "managed_api_key",
           usage: { cost_usd: usageCostUsd },
         };
       }

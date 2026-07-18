@@ -15,15 +15,19 @@ import { registerConfigDirProfile } from "./profile-registration.js";
 
 function servicesWithJobs(jobs: Array<Record<string, unknown>>) {
   const setupBinding = { current: () => ({ list: () => jobs }) };
+  const threads = {
+    invalidateCredentialProfile: () => ({ clearedThreads: 0, invalidatedSessions: 0 }),
+  };
+  const quota = { removeSubject: () => 0 };
   return controlServices(
     undefined as never,
     undefined as never,
-    undefined as never,
+    threads as never,
     setupBinding as never,
     undefined as never,
     undefined as never,
     undefined as never,
-    undefined as never,
+    (() => quota) as never,
     async () => [],
   );
 }

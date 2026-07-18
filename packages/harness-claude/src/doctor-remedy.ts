@@ -13,5 +13,5 @@ export function claudeNativeLoginRemedy(
   if (env?.[CLAUDE_KEYCHAIN_BRIDGE_ENV] === "unavailable") {
     return "the scoped Claude process could not bridge the macOS login Keychain — reopen Claudexor and retry Native setup, or configure an API key fallback";
   }
-  return "open Settings → Harnesses → Claude → Manage and run Native setup (or run `claude auth login --claudeai`), or configure an API key fallback";
+  return "open Accounts → Claude → Login (or Settings → Harnesses → Claude → Manage), then complete Native setup; alternatively configure an API key fallback";
 }

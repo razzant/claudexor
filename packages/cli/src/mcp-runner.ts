@@ -198,11 +198,15 @@ async function recoveryQuery(
           : null;
       const primaryText =
         typeof primaryOutput?.["text"] === "string" ? primaryOutput["text"].trim() : "";
+      const presentedPrimaryText =
+        primaryText && primaryOutput?.["truncated"] === true
+          ? `${primaryText}\n\n[Inline preview bounded; full artifact: ${String(primaryOutput["path"] ?? "unknown")}]`
+          : primaryText;
       const primaryKind =
         typeof primaryOutput?.["kind"] === "string" ? primaryOutput["kind"] : null;
       const terminalSummary =
-        primaryText && primaryKind !== "patch"
-          ? primaryText
+        presentedPrimaryText && primaryKind !== "patch"
+          ? presentedPrimaryText
           : typeof detail["finalSummary"] === "string" && detail["finalSummary"]
             ? detail["finalSummary"]
             : primaryKind === "patch"

@@ -6,6 +6,7 @@ import {
   resolveCredentialProfile,
   resumeSessionForProfile,
   rotateSpecOnTypedLimit,
+  selectedProfileAvailability,
   type ProfilePolicy,
 } from "./credential-profiles.js";
 import { writeRunTelemetryArtifact } from "./runTelemetryWriter.js";
@@ -853,29 +854,6 @@ export class Orchestrator {
     return policy ?? { limit_action: "fail", rotation_eligible: [], headroom_threshold: 0.9 };
   }
 
-  /** null = no profile selected (default verdict stands); "available" = the
-   * profile's own probe admits the route; any other string = typed refusal. */
-  private async profileAvailabilityOverride(
-    input: RunInput,
-    harnessId: string,
-  ): Promise<string | null> {
-    if (!input.credentialProfileId) return null;
-    let profile: CredentialProfile | null;
-    try {
-      profile = this.resolveCredentialProfile(input, harnessId);
-    } catch (err) {
-      return err instanceof Error ? err.message : String(err);
-    }
-    if (!profile) return null;
-    const adapter = this.deps.registry.get(harnessId);
-    if (!adapter?.probeCredentialProfile) {
-      return `harness "${harnessId}" has no profile probe`;
-    }
-    const probe = await adapter.probeCredentialProfile(profile);
-    if (probe.availability === "available") return "available";
-    return probe.detail ?? `${probe.availability}/${probe.verification}`;
-  }
-
   private preflightProfile(input: RunInput, harnessId: string, log?: EventLog) {
     const profile = this.resolveCredentialProfile(input, harnessId);
     const policy = this.profilePolicy(input.repoRoot, harnessId);
@@ -1099,9 +1077,7 @@ export class Orchestrator {
         dropped.push(`${id} (unavailable)`);
         continue;
       }
-      // Doctor status is the readiness truth: auto-pools take only doctor-OK
-      // routes, and explicitly selecting an UNAVAILABLE harness fails loudly
-      // with the doctor's reasons. A DEGRADED harness (e.g. key present but
+      // Doctor status is the readiness truth. A DEGRADED harness (e.g. key present but
       // unproven by isolated smoke) is admitted only by explicit user
       // selection — degraded means usable-with-caveats, and the caveats are
       // visible in doctor output and run events.
@@ -1112,30 +1088,37 @@ export class Orchestrator {
       // the profile's transport, so the default store's state is not the
       // routing truth). Capability/manifest gating above still applies.
       let profileAdmitted = false;
-      if (status.status !== "ok") {
-        const profileVerdict = await this.profileAvailabilityOverride(input, id);
+      const profileAdapter = this.deps.registry.get(id);
+      const profileVerdict = await selectedProfileAvailability({
+        registry: this.config(input.repoRoot)?.global.credential_profiles ?? [],
+        profileId: input.credentialProfileId,
+        harnessId: id,
+        probe: profileAdapter?.probeCredentialProfile?.bind(profileAdapter),
+      });
+      if (profileVerdict !== null) {
         if (profileVerdict === "available") {
-          // The default-store failure may have zeroed enabled_intents; with
-          // the profile probe as the auth verdict, MANIFEST capabilities are
-          // the honest intent truth (degraded = usable-with-caveats).
-          status = {
-            ...status,
-            status: "degraded",
-            enabledIntents: capabilityIntents(manifest.capabilities),
-          };
-          statusById.set(id, status);
           profileAdmitted = true;
-        } else if (profileVerdict !== null) {
+          // A valid profile restores manifest intent truth when the default store failed.
+          if (status.status !== "ok") {
+            status = {
+              ...status,
+              status: "degraded",
+              enabledIntents: capabilityIntents(manifest.capabilities),
+            };
+            statusById.set(id, status);
+          }
+        } else {
           const why = `${id} credential profile is not ready: ${profileVerdict}`;
           if (explicitPool) throw new HarnessUnavailableError(why);
           dropped.push(why);
           continue;
-        } else if (status.status === "unavailable") {
-          const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
-          if (explicitPool) throw new HarnessUnavailableError(why);
-          dropped.push(why);
-          continue;
         }
+      }
+      if (status.status === "unavailable" && !profileAdmitted) {
+        const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
       }
       if (status.status !== "ok" && !explicitPool && !profileAdmitted) {
         dropped.push(
@@ -1955,7 +1938,7 @@ export class Orchestrator {
             if (safeEv.type === "usage") {
               const usage = processAttemptUsage({
                 event: safeEv,
-                authMode: telemetry.authMode,
+                telemetry,
                 harnessId: adapter.id,
                 attemptId,
                 cost,
@@ -2573,6 +2556,7 @@ export class Orchestrator {
             run.attemptId,
             run.harnessId,
             run.telemetry.authMode,
+            run.telemetry.usageCost,
           ),
         );
         log.emit("harness.completed", {
@@ -2971,6 +2955,7 @@ export class Orchestrator {
               run.attemptId,
               run.harnessId,
               run.telemetry.authMode,
+              run.telemetry.usageCost,
             ),
           );
           reviewEnvelopes.push(envelope);
@@ -3542,6 +3527,7 @@ export class Orchestrator {
                 reviewSpendEstimated: false,
                 reviewCashUsd: 0,
                 reviewValuationUsd: 0,
+                reviewUnknownUsd: 0,
               };
         if (reviewLease?.granted) {
           ledger?.settle(
@@ -3551,6 +3537,7 @@ export class Orchestrator {
               result.reviewValuationUsd,
               result.reviewSpendEstimated,
               [`attempt:${run.attemptId}`, "review:panel"],
+              result.reviewUnknownUsd,
             ),
           );
           if ((result.reviewSpendUsd ?? 0) > 0) {
@@ -3561,6 +3548,7 @@ export class Orchestrator {
               usd: result.reviewSpendUsd,
               cash_usd: result.reviewCashUsd,
               valuation_usd: result.reviewValuationUsd,
+              unknown_usd: result.reviewUnknownUsd,
               estimated: result.reviewSpendEstimated === true,
             });
           }
@@ -3602,6 +3590,7 @@ export class Orchestrator {
         store.writeYaml(join(paths.reviewsDir, `${run.attemptId}.yaml`), {
           attempt_id: run.attemptId,
           review_verified: candidateReviewVerified,
+          final_review_clean: reviewClean,
           cross_family_healthy: result.crossFamilyHealthy,
           cross_family_verified: result.crossFamilyVerified,
           healthy_providers: result.healthyProviders,
@@ -4014,6 +4003,7 @@ export class Orchestrator {
               run.attemptId,
               run.harnessId,
               run.telemetry.authMode,
+              run.telemetry.usageCost,
             ),
           );
           log.emit("harness.completed", {
@@ -4118,6 +4108,7 @@ export class Orchestrator {
                       reviewSpendEstimated: false,
                       reviewCashUsd: 0,
                       reviewValuationUsd: 0,
+                      reviewUnknownUsd: 0,
                     };
               if (reviewLease?.granted) {
                 ledger.settle(
@@ -4127,6 +4118,7 @@ export class Orchestrator {
                     reviewResult.reviewValuationUsd,
                     reviewResult.reviewSpendEstimated,
                     [`attempt:${attemptId}`, "review:panel"],
+                    reviewResult.reviewUnknownUsd,
                   ),
                 );
                 if ((reviewResult.reviewSpendUsd ?? 0) > 0) {
@@ -4137,6 +4129,7 @@ export class Orchestrator {
                     usd: reviewResult.reviewSpendUsd,
                     cash_usd: reviewResult.reviewCashUsd,
                     valuation_usd: reviewResult.reviewValuationUsd,
+                    unknown_usd: reviewResult.reviewUnknownUsd,
                     estimated: reviewResult.reviewSpendEstimated === true,
                   });
                   if (reviewResult.reviewSpendEstimated === true) reviewSpendEstimated = true;
@@ -4168,18 +4161,6 @@ export class Orchestrator {
               );
               const allFindings = [...policy.findings, ...revalidated];
               lastFindings = allFindings;
-              store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
-                attempt_id: attemptId,
-                review_verified: actualReviewVerified,
-                cross_family_healthy: reviewResult.crossFamilyHealthy,
-                cross_family_verified: reviewResult.crossFamilyVerified,
-                healthy_providers: reviewResult.healthyProviders,
-                verified_providers: reviewResult.distinctProviders,
-                reviewer_requests: reviewResult.reviewerRequests,
-                risk: policy.risk,
-                findings: allFindings,
-                route_proofs: reviewResult.routeProofs,
-              });
               const inconclusive = allFindings.some(
                 (f) =>
                   f.severity === "INSUFFICIENT_EVIDENCE" || f.status === "insufficient_evidence",
@@ -4189,6 +4170,19 @@ export class Orchestrator {
                 reviewResult.crossFamilyVerified &&
                 !inconclusive &&
                 !allFindings.some((f) => isBlocking(f));
+              store.writeYaml(join(paths.reviewsDir, `${attemptId}.yaml`), {
+                attempt_id: attemptId,
+                review_verified: actualReviewVerified,
+                final_review_clean: finalReviewClean,
+                cross_family_healthy: reviewResult.crossFamilyHealthy,
+                cross_family_verified: reviewResult.crossFamilyVerified,
+                healthy_providers: reviewResult.healthyProviders,
+                verified_providers: reviewResult.distinctProviders,
+                reviewer_requests: reviewResult.reviewerRequests,
+                risk: policy.risk,
+                findings: allFindings,
+                route_proofs: reviewResult.routeProofs,
+              });
               lastFinalReviewClean = finalReviewClean;
 
               // Measure diff stability instead of asserting it: the tree must not have
@@ -4864,6 +4858,7 @@ export class Orchestrator {
               attemptId,
               adapter.id,
               telemetry.authMode,
+              telemetry.usageCost,
             ),
           );
         }
@@ -5057,6 +5052,7 @@ export class Orchestrator {
             res.reviewValuationUsd,
             res.reviewSpendEstimated,
             ["attempt:plan-review", "review:panel"],
+            res.reviewUnknownUsd,
           ),
         );
         if ((res.reviewSpendUsd ?? 0) > 0) {
@@ -5066,6 +5062,7 @@ export class Orchestrator {
             usd: res.reviewSpendUsd,
             cash_usd: res.reviewCashUsd,
             valuation_usd: res.reviewValuationUsd,
+            unknown_usd: res.reviewUnknownUsd,
             estimated: res.reviewSpendEstimated,
           });
         }
@@ -5786,6 +5783,7 @@ export class Orchestrator {
             attemptId,
             adapter.id,
             telemetry.authMode,
+            telemetry.usageCost,
           ),
         );
       }
@@ -6481,6 +6479,7 @@ export class Orchestrator {
             result.reviewValuationUsd,
             result.reviewSpendEstimated,
             [`orchestrate:review:${call.run_id}`],
+            result.reviewUnknownUsd,
           ),
         );
         const revalidated = await revalidateFindings(result.findings, {

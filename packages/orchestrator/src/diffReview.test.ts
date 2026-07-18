@@ -197,6 +197,7 @@ describe("frozen diff review", () => {
         reviewSpendEstimated: false,
         reviewCashUsd: 0,
         reviewValuationUsd: 0,
+        reviewUnknownUsd: 0,
       };
     };
     await expect(

@@ -435,10 +435,11 @@ export function reviewUsageCostSettlement(
   valuationUsd: number,
   estimated: boolean,
   provenance: string[],
+  unknownUsd = 0,
 ): BudgetSettlement {
-  const observed = cashUsd > 0 || valuationUsd > 0;
+  const observed = cashUsd > 0 || valuationUsd > 0 || unknownUsd > 0;
   return {
-    knowledge: observed ? (estimated ? "estimated" : "exact") : "unknown",
+    knowledge: observed && unknownUsd === 0 ? (estimated ? "estimated" : "exact") : "unknown",
     source: observed ? "review-usage" : "review-usage-missing",
     provenance,
     cashUsd: Math.max(0, cashUsd),
@@ -447,21 +448,34 @@ export function reviewUsageCostSettlement(
 }
 
 export function attemptUsageCostSettlement(
-  cashUsd: number,
+  totalUsd: number,
   estimated: boolean,
   attemptId: string,
   harnessId: string,
   authMode?: "local_session" | "api_key" | null,
+  split?: { cashUsd: number; valuationUsd: number; unknownUsd: number },
 ): BudgetSettlement {
+  if (split) {
+    const observed = split.cashUsd + split.valuationUsd + split.unknownUsd;
+    if (observed > 0) {
+      return {
+        knowledge: split.unknownUsd > 0 ? "unknown" : estimated ? "estimated" : "exact",
+        source: "harness-usage-by-route",
+        provenance: [`attempt:${attemptId}`, `harness:${harnessId}`, "route:per-usage-event"],
+        cashUsd: split.cashUsd,
+        valuationUsd: split.valuationUsd,
+      };
+    }
+  }
   if (isSubscriptionValuation(authMode)) {
     return {
       knowledge: "unknown",
       source: "harness-token-valuation",
       provenance: [`attempt:${attemptId}`, `harness:${harnessId}`, "route:vendor_native"],
-      valuationUsd: cashUsd,
+      valuationUsd: totalUsd,
     };
   }
-  return usageCostSettlement(cashUsd, estimated, "harness-usage", [
+  return usageCostSettlement(totalUsd, estimated, "harness-usage", [
     `attempt:${attemptId}`,
     `harness:${harnessId}`,
     ...(authMode ? [`route:${authMode}`] : []),

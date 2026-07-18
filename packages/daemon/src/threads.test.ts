@@ -296,6 +296,31 @@ describe("ThreadStore", () => {
     });
   });
 
+  it("profile deletion clears thread pins and invalidates its native sessions", () => {
+    const { s } = store();
+    const a = s.createThread({ repoRoot: "/tmp/a", credentialProfileId: "work" });
+    const b = s.createThread({ repoRoot: "/tmp/b", credentialProfileId: "work" });
+    s.recordSession(a.id, "claude", "native-a", null, "work");
+    s.recordSession(b.id, "codex", "native-b", null, "work");
+
+    expect(s.invalidateCredentialProfile("claude", "work")).toEqual({
+      clearedThreads: 2,
+      invalidatedSessions: 1,
+    });
+    expect(s.getThread(a.id)?.credential_profile_id).toBeNull();
+    expect(s.getThread(b.id)?.credential_profile_id).toBeNull();
+    expect(s.resumeMap(a.id, "work")).toEqual({});
+    expect(s.sessionsForThread(a.id)[0]).toMatchObject({
+      state: "stale",
+      native_session_id: null,
+      resume_kind: "none",
+    });
+    // Same id under another harness is not the deleted credential material.
+    expect(s.resumeMap(b.id, "work")).toEqual({
+      codex: { sessionId: "native-b", profileId: "work" },
+    });
+  });
+
   it("one cached session PER profile (round-16 #3): A→B→A resumes A's own native conversation", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

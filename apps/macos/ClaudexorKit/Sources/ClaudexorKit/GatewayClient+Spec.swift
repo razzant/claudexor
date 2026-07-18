@@ -44,6 +44,20 @@ extension GatewayClient {
         )
     }
 
+    public func specSession(_ sessionId: String) async throws -> SpecSessionSnapshot {
+        try await specSnapshotRequest(request("spec/sessions/\(encodedSessionId(sessionId))", method: "GET"))
+    }
+
+    public func resumeSpecSession(_ sessionId: String) async throws -> SpecSessionSnapshot {
+        try await specSnapshotRequest(
+            request("spec/sessions/\(encodedSessionId(sessionId))/resume", method: "POST"))
+    }
+
+    public func cancelSpecSession(_ sessionId: String) async throws -> SpecSessionSnapshot {
+        try await specSnapshotRequest(
+            request("spec/sessions/\(encodedSessionId(sessionId))/cancel", method: "POST"))
+    }
+
     public func specFreeze(_ body: SpecFreezeRequest) async throws -> SpecFreezeResponse {
         guard let sessionId = body.planDir, !sessionId.isEmpty else {
             throw GatewayError.http(status: 400, body: "durable spec session id is missing")
@@ -72,5 +86,19 @@ extension GatewayClient {
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return try Self.decoder.decode(SpecSessionWire.self, from: data)
+    }
+
+    private func specSnapshotRequest(_ request: URLRequest) async throws -> SpecSessionSnapshot {
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw GatewayError.http(
+                status: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(SpecSessionSnapshot.self, from: data)
+    }
+
+    private func encodedSessionId(_ sessionId: String) -> String {
+        sessionId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionId
     }
 }

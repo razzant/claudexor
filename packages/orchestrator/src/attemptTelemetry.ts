@@ -61,6 +61,8 @@ export interface AttemptTelemetry {
   observedModel: string | null;
   /** Auth route the adapter disclosed for this attempt (route evidence; null = undisclosed). */
   authMode: "local_session" | "api_key" | null;
+  /** Last typed route in the stream, used only for per-usage cost allocation. */
+  currentAuthMode: "local_session" | "api_key" | null;
   /** Concrete credential source disclosed alongside the route (never guessed). */
   authSource: AuthSourceKind | null;
   /** Credential profile the attempt ACTUALLY ran under (INV-135), first-wins
@@ -90,6 +92,9 @@ export interface AttemptTelemetry {
     outputTokens: number | null;
     cachedInputTokens: number | null;
   };
+  /** Per-usage-event billing split. Route can change across native retries,
+   * so this is deliberately not derived from the attempt's first route. */
+  usageCost: { cashUsd: number; valuationUsd: number; unknownUsd: number };
 }
 
 export function createAttemptTelemetry(
@@ -117,6 +122,7 @@ export function createAttemptTelemetry(
     },
     observedModel: null,
     authMode: null,
+    currentAuthMode: null,
     authSource: null,
     profileId: null,
     requestedModel,
@@ -124,6 +130,7 @@ export function createAttemptTelemetry(
     rateLimits: [],
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
+    usageCost: { cashUsd: 0, valuationUsd: 0, unknownUsd: 0 },
   };
 }
 
@@ -147,6 +154,23 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   if (!t.authMode) {
     if (ev.credential_route === "vendor_native") t.authMode = "local_session";
     else if (ev.credential_route === "managed_api_key") t.authMode = "api_key";
+  }
+  if (ev.credential_route === "vendor_native") t.currentAuthMode = "local_session";
+  else if (ev.credential_route === "managed_api_key") t.currentAuthMode = "api_key";
+  if (ev.type === "message" && ev.payload?.["auth_switched"] === true) {
+    if (ev.payload["to_auth_mode"] === "subscription") t.currentAuthMode = "local_session";
+    if (ev.payload["to_auth_mode"] === "api_key") t.currentAuthMode = "api_key";
+  }
+  if (ev.usage?.cost_usd) {
+    const usageMode =
+      ev.credential_route === "vendor_native"
+        ? "local_session"
+        : ev.credential_route === "managed_api_key"
+          ? "api_key"
+          : t.currentAuthMode;
+    if (usageMode === "local_session") t.usageCost.valuationUsd += ev.usage.cost_usd;
+    else if (usageMode === "api_key") t.usageCost.cashUsd += ev.usage.cost_usd;
+    else t.usageCost.unknownUsd += ev.usage.cost_usd;
   }
   // First-wins like the route: the source is decided once before spawn.
   if (!t.authSource && ev.credential_source) t.authSource = ev.credential_source;

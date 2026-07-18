@@ -89,7 +89,14 @@ describe("QuotaRegistry", () => {
       credential_route: "vendor_native",
       subject_id: "acc2",
     });
+    expect(slot.current().removeSubject("codex", "acc2")).toBe(1);
+    expect(slot.current().read().snapshots).toEqual([]);
     manager.close();
+    const restarted = new JournalManager(root);
+    const restartedSlot = restarted.registerProjection(quotaProjection());
+    restarted.start();
+    expect(restartedSlot.current().read().snapshots).toEqual([]);
+    restarted.close();
     rmSync(root, { recursive: true, force: true });
   });
 

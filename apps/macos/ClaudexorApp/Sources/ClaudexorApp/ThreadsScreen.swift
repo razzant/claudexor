@@ -332,66 +332,7 @@ struct ThreadsScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The SPEC-FLOW card(s) for the current thread: the question interview while
-    /// asking, a working spinner while freezing, and a "Spec frozen" card with an
-    /// Implement button once frozen. Driven entirely off `model.specFlow`.
-    @ViewBuilder private var specFlowSection: some View {
-        // `specFlow` is non-nil only for the selected thread, so `tid` is the OWNING
-        // thread — captured here and passed into the cards so their actions bind to
-        // it (not to whatever is selected when the async submit/implement resolves).
-        if let tid = model.selectedThreadId, let flow = model.specFlow {
-        switch flow {
-        case .askingQuestions(_, let questions, let planDir, let planRunId, let answers, let error):
-            // Seed the card from `answers` so an unresolved-clarifications 400
-            // re-opens with the user's prior picks intact (they fix only the missing
-            // fields, never re-answer everything). `id:` keys the @State to the
-            // current answer set so a re-derived card re-seeds instead of reusing
-            // stale @State from the previous render.
-            SpecQuestionCard(threadId: tid, questions: questions, planDir: planDir, planRunId: planRunId,
-                             initialAnswers: answers, errorMessage: error)
-                .id(SpecQuestionCard.seedIdentity(answers))
-                .padding(.horizontal, Theme.Spacing.lg)
-                .padding(.bottom, Theme.Spacing.sm)
-        case .grounding:
-            // Pre-questions: the grounding plan is reading the repo to derive the
-            // interview. Nothing is frozen yet — don't claim it is.
-            HStack(spacing: Theme.Spacing.sm) {
-                ProgressView().controlSize(.small)
-                Text("Running the grounding plan…")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .help("Reading the project to prepare the spec interview — this can take a few minutes.")
-                Spacer()
-            }
-            .padding(.horizontal, Theme.Spacing.lg)
-            .padding(.vertical, Theme.Spacing.sm)
-        case .freezing:
-            HStack(spacing: Theme.Spacing.sm) {
-                ProgressView().controlSize(.small)
-                Text("Freezing the spec…")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .help("Assembling and freezing the SpecPack from your answers — this can take a few minutes.")
-                Spacer()
-            }
-            .padding(.horizontal, Theme.Spacing.lg)
-            .padding(.vertical, Theme.Spacing.sm)
-        case .frozen(let specId, let specPath, let specHash, let changes):
-            SpecFrozenCard(threadId: tid, specId: specId, specPath: specPath, specHash: specHash, changes: changes)
-                .padding(.horizontal, Theme.Spacing.lg)
-                .padding(.bottom, Theme.Spacing.sm)
-        case .error(let message):
-            HStack(spacing: Theme.Spacing.sm) {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout).foregroundStyle(.orange)
-                    .textSelection(.enabled)
-                Spacer()
-                Button("Dismiss") { model.cancelSpec(threadId: tid) }
-                    .buttonStyle(.bordered).controlSize(.small)
-            }
-            .padding(.horizontal, Theme.Spacing.lg)
-            .padding(.vertical, Theme.Spacing.sm)
-        }
-        }
-    }
+    private var specFlowSection: some View { SpecFlowSection() }
 
     /// The conversation's window title/subtitle — the thread title lives in the
     /// ONE system toolbar (no second custom header strip). Empty in the draft state.

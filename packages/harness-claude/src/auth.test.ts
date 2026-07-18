@@ -362,7 +362,8 @@ describe("Claude scoped-HOME doctor honesty (INV-067)", () => {
     expect(report.status).toBe("unavailable");
     const reason = report.reasons.join(" ");
     expect(reason).toContain("Native setup");
-    expect(reason).toContain("claude auth login --claudeai");
+    expect(reason).toContain("Accounts → Claude → Login");
+    expect(reason).not.toContain("claude auth login --claudeai");
     expect(reason).not.toContain("setup-token");
   });
 });

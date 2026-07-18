@@ -93,7 +93,7 @@ export interface FixtureStreamExpectations {
   /**
    * The typed identity of the wire event finality came from — the adapter
    * stamps `payload.final_source` on every final message ("result",
-   * "structured_output", "last_agent_message"). Machine-checked: a parser
+   * "structured_output", "last_agent_message", "assistant_message"). Machine-checked: a parser
    * that starts finalizing from a different wire event fails this even when
    * the count and position happen to survive (final sol review #5).
    */

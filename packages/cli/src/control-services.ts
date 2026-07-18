@@ -53,6 +53,8 @@ import { ACTIVE_SETUP_STATES, SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
+import { assertCredentialProfileCompatibility } from "./profile-compatibility.js";
+import { assertSpecThreadScope } from "./spec-thread-scope.js";
 import {
   buildGroundingPrompt,
   extractQuestionsFromPlan,
@@ -208,8 +210,16 @@ export function controlServices(
     registerProject: async (input: Parameters<ProjectStore["register"]>[0]) =>
       threads.registerProject(input),
     relinkProject: async (id: string, root: string) => threads.relinkProject(id, root),
-    createThread: async (input: unknown) =>
-      threads.createThread((input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0]),
+    createThread: async (input: unknown) => {
+      const request = (input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0];
+      assertCredentialProfileCompatibility(
+        request.credentialProfileId,
+        request.primaryHarness,
+        request.eligibleHarnesses ?? [],
+        loadConfig(NO_PROJECT_ROOT).global.credential_profiles,
+      );
+      return threads.createThread(request);
+    },
     listThreads: async () => ({ threads: threads.listThreads() as unknown[] }),
     threadDetail: async (id: string) => {
       const thread = threads.getThread(id);
@@ -247,14 +257,30 @@ export function controlServices(
         credentialProfileId?: string | null;
         eligibleHarnesses?: string[];
       },
-    ) =>
-      threads.updateThread(id, {
+    ) => {
+      const current = threads.getThread(id);
+      if (!current) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
+      const profileId =
+        patch.credentialProfileId === undefined
+          ? current.credential_profile_id
+          : patch.credentialProfileId;
+      const pool = patch.eligibleHarnesses ?? current.eligible_harnesses;
+      const primary =
+        patch.primaryHarness === undefined ? current.primary_harness : patch.primaryHarness;
+      assertCredentialProfileCompatibility(
+        profileId,
+        primary,
+        pool,
+        loadConfig(NO_PROJECT_ROOT).global.credential_profiles,
+      );
+      return threads.updateThread(id, {
         title: patch.title,
         state: patch.state as any,
         primaryHarness: patch.primaryHarness,
         credentialProfileId: patch.credentialProfileId,
         eligibleHarnesses: patch.eligibleHarnesses,
-      }),
+      });
+    },
     trashThread: async (id: string) => threads.trashThread(id),
     restoreThread: async (id: string) => threads.restoreThread(id),
     purgeThread: async (id: string) => {
@@ -380,11 +406,7 @@ export function controlServices(
       }
       return { profiles: out };
     },
-    // DELETE /credential-profiles/:harness/:id (INV-135): removes the
-    // registry entry AND the profile's OWN credential material — its scoped
-    // login dir (canonicalized + confinement-checked, NEVER the default
-    // vendor store) or its namespaced secret. Registry removal comes first;
-    // a failed cleanup is disclosed as a warning, never silently ignored.
+    // INV-135 deletion: registry first; scoped material cleanup is fenced and disclosed.
     deleteCredentialProfile: async (input: unknown) => {
       const p = (input ?? {}) as Record<string, unknown>;
       const harnessId = typeof p["harnessId"] === "string" ? p["harnessId"] : "";
@@ -405,7 +427,17 @@ export function controlServices(
       }
       const entry = removeProfileFromRegistry(harnessId, profileId);
       let credentialCleanup: "config_dir_removed" | "secret_deleted" | "none" = "none";
-      let cleanupWarning: string | undefined;
+      const cleanupWarnings: string[] = [];
+      try {
+        threads.invalidateCredentialProfile(harnessId, profileId);
+        quotaRegistry().removeSubject(harnessId, profileId);
+      } catch (err) {
+        cleanupWarnings.push(
+          `registry entry removed, but dependent thread/quota state cleanup failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       try {
         if (entry.credential_kind === "config_dir_login" && entry.isolation_locator) {
           const dir =
@@ -437,16 +469,18 @@ export function controlServices(
           credentialCleanup = "secret_deleted";
         }
       } catch (err) {
-        cleanupWarning = `registry entry removed, but credential cleanup failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`;
+        cleanupWarnings.push(
+          `registry entry removed, but credential cleanup failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
       }
       invalidateDoctorCache();
       return {
         profile: entry,
         removed: true,
         credentialCleanup,
-        ...(cleanupWarning ? { cleanupWarning } : {}),
+        ...(cleanupWarnings.length > 0 ? { cleanupWarning: cleanupWarnings.join("; ") } : {}),
       };
     },
     // POST /credential-profiles: the SAME ONE registration owner the CLI's
@@ -534,6 +568,13 @@ export function controlServices(
       idempotencyKey: string;
       clientId: string;
     }) => {
+      if (input.request.threadId) {
+        assertSpecThreadScope(
+          threads.getThread(input.request.threadId),
+          input.request.threadId,
+          input.request.scope.root,
+        );
+      }
       const store = threads.specsForRequest(input.request);
       const created = store.create(input);
       return created.reused ? created.session : groundSpec(created.session.sessionId);
