@@ -1089,14 +1089,18 @@ as last-wins `plan.progress` run events and projected on the run detail as
 `planProgress`; per-candidate evidence cards are projected on the run
 detail as `candidates` from attempt/review/decision artifacts.
 
-Repository release review is cumulative and SHA-bound. Reviewers inspect an
-external immutable packet for the exact clean committed candidate: both Tier 1
-critics, the three exact triad slots, and required scope reviewer start in one
-parallel wave against the same sealed evidence, and any tracked mutation
-invalidates every result. The old per-commit staged-diff hook, bypass log, and
-installer are removed so they cannot compete with or be mistaken for release
-authority. Product command `claudexor review --diff <file>` remains a normal
-engine capability; it is not this repository's release attestation.
+Repository release review is cumulative and SHA-bound. Under the owner-review
+protocol (INV-125, CHECKLISTS), at least two independent reviewer subagents
+inspect the exact clean committed candidate against the checklists and docs in
+at most three rounds; any tracked mutation invalidates every result and starts
+a new freeze, and the signed schemaVersion-3 attestation binds the candidate
+SHA/tree, gate receipt digest, and reviewer report digests + verdicts. (The
+retired six-slot triad/scope panel's schemaVersion-2 attestations stay
+verifiable for already-sealed releases.) The old per-commit staged-diff hook,
+bypass log, and installer are removed so they cannot compete with or be
+mistaken for release authority. Product command `claudexor review --diff
+<file>` remains a normal engine capability; it is not this repository's
+release attestation.
 
 Runtime resilience is typed. Adapters translate native transient failures
 (network lookup failures, stream disconnects, retryable HTTP statuses, timeouts)

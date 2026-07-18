@@ -478,14 +478,20 @@ process below. Never paper over the conflict.
   hand edit). Known failure class this guards: god-files absorbing every
   fix because appending is cheapest. verify:
   `scripts/complexity-ratchet.mjs` in CI.
-- **INV-125** Release tags additionally pass the external triad + scope
-  review gate on a pinned cross-vendor reviewer panel (at least three
-  models from at least two vendors, pinned in local gate config);
-  substituting or downgrading a pinned panel without an explicit
-  acknowledged override is a hard error, and any override is recorded in
-  the review summary. A whole-tree immune scan (docs-vs-code, dead
-  surface, invariants-vs-tree) is a mandatory pre-release checklist step.
-  verify: triad panel guard; CHECKLISTS Release section.
+- **INV-125** Release tags additionally pass the owner-review gate: at
+  least two independent full-context reviewer subagents (owner-directed
+  panel) review the frozen candidate SHA against the checklists and docs
+  in at most three rounds; a blocking verdict cannot be sealed, and the
+  signed schemaVersion-3 owner-review attestation binds the candidate
+  SHA/tree, the full-gate receipt digest, and every reviewer report
+  digest + verdict. Substituting, downgrading, or skipping the directed
+  panel without an explicit owner override is a hard error, and any
+  override is recorded in the review summary. Already-sealed
+  schemaVersion-2 six-slot attestations stay verifiable for their
+  releases. A whole-tree immune scan (docs-vs-code, dead surface,
+  invariants-vs-tree) is a mandatory pre-release checklist step.
+  verify: `scripts/seal-owner-review-attestation.mjs` (refuses <2
+  reviewers, >3 rounds, blocking verdicts); CHECKLISTS Release section.
 
 ## 13. Documentation Must Stay Current
 

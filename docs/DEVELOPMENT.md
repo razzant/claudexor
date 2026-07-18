@@ -109,12 +109,17 @@ bundle is incomplete.
 The workflow has two explicit manual modes. `candidate` accepts only a full
 40-character commit SHA and builds/signs/notarizes/attests without publishing.
 After review, `publish` accepts only an annotated stable tag on the exact
-`origin/main` commit plus the base64 signed schema-v2 review attestation. The
-workflow verifies its Ed25519 signature against the pinned public release-review
-key before reading any review claims, then recomputes the commit tree and
-validates the sealed packet, full-gate receipt, artifact digests, exact six
-reviewer slots, quorum, and pass result. Missing signing/notary/npm
-credentials fail; there is no unsigned or GitHub-only release fallback. npm
+`origin/main` commit plus a base64 signed review attestation. The workflow
+verifies its Ed25519 signature against the pinned public release-review key
+before reading any review claims, then recomputes the commit tree and
+validates the attestation's payload for its schema: schemaVersion 3 (the
+current owner-review protocol) binds the candidate SHA/tree, the full-gate
+receipt digest, and >=2 reviewer report digests with non-blocking verdicts
+within <=3 rounds; schemaVersion 2 (the retired six-slot panel, still
+verifiable for already-sealed evidence) additionally validates the sealed
+packet, artifact digests, exact six reviewer slots, quorum, and pass result.
+Missing signing/notary/npm credentials fail; there is no unsigned or
+GitHub-only release fallback. npm
 packages publish in dependency order with `--provenance`; a retry skips only an
 already-published byte-identical package carrying provenance, while any version
 collision fails. The GitHub Release is a draft until macOS and npm complete,
@@ -122,42 +127,36 @@ uploads only absent assets, rejects differing same-name bytes, and becomes
 public as the final mutation. The workflow never edits a published release and
 does not claim platform-enforced immutability. Version bumps still go through
 changesets (`pnpm changeset` + `pnpm version-packages`, fixed lockstep group).
-The decoded review attestation is an envelope with `schemaVersion: 2`, pinned
-`keyId`, `algorithm: "Ed25519"`, signed `payload`, and base64 `signature`.
-Schema 1, unsigned, unknown-key, and tampered inputs are rejected. The payload
-contains exact `candidateSha`, `candidateTree`, `packetManifestSha256`,
-`evidenceManifestSha256`, and the digest and terminal result of the full
-deterministic gate. Its `panelLock`
-uses the same `triad`, `scope`, `candidate_sha`, `candidate_tree`, and
-`packet_manifest_sha256` fields as the pre-created panel lock. `slots` contains
-the two Tier 1 slots, all three exact triad slots, and exact scope slot with
-route, requested/observed model, applicable effort, terminal status, result,
-and per-slot telemetry/result/artifact digests. `decision.status` must be
-`passed`, `blockingFindings` must be zero, and `openBlockers` must be empty.
-Both Tier 1 slots and scope must pass; the triad keeps the accepted quorum of
-two. Do not hand-author this JSON. Run
-`scripts/seal-release-review-attestation.mjs` with the sealed packet, exact
-terminal reviewer directories, full-gate receipt, external 0600 private key,
-tracked `release/review-attestation-authority.json`, and an external output
-path. The sealer refuses incomplete or inconsistent artifacts and can emit the
-base64 transport with `--base64-out`. Never put raw transcripts, the private
-key, or secrets in the repository or workflow input.
-The pre-tag triad/scope review uses `scripts/triad-scope-review.mjs` with the
-exact source-pinned models. It requires the sealed packet, full candidate SHA
-and tree, the packet manifest's expected SHA-256 digest, and a panel-lock path
-outside the candidate worktree. Create and validate that lock first with a
-separate `--prepare-panel-lock` invocation; a normal review refuses a missing
-or mismatched lock before creating output or making network calls. The three
-triad slots and required scope slot then start concurrently.
-`TRIAD_MAX_PACK_BYTES` may reduce supplemental context
-only. It never authorizes a model substitution or a scoped/truncated cumulative
-diff.
+The decoded review attestation is an envelope with a `schemaVersion`, pinned
+`keyId`, `algorithm: "Ed25519"`, signed `payload`, and base64 `signature`; the
+signature covers the schemaVersion, so the two contracts cannot be replayed
+into each other. Schema 1, unsigned, unknown-key, and tampered inputs are
+rejected.
+
+The CURRENT protocol is schemaVersion 3 (owner-review, INV-125): the payload
+binds exact `candidateSha`/`candidateTree`, the full-gate receipt digest and
+terminal result (`scripts/run-full-gate-receipt.mjs` runs
+`pnpm release:verify` and seals the receipt), the round count (<=3), and >=2
+reviewer entries each carrying the report file digest and a non-blocking
+verdict. Do not hand-author this JSON. Run
+`scripts/seal-owner-review-attestation.mjs` with the gate receipt, the
+reviewer report files + verdicts, the external 0600 private key, the tracked
+`release/review-attestation-authority.json`, and an external output path; it
+refuses blocking verdicts, fewer than two reviewers, or more than three
+rounds, and can emit the base64 transport with `--base64-out`.
+
+The RETIRED schemaVersion-2 six-slot protocol (sealed packet + panel lock +
+two Tier 1 slots + exact triad + scope slot, quorum two, sealed by
+`scripts/seal-release-review-attestation.mjs` after
+`scripts/triad-scope-review.mjs`) stays verifiable for already-sealed
+evidence; its machinery is deleted after the first v3 release ships (see
+`docs/BACKLOG.md`). Never put raw transcripts, the private key, or secrets in
+the repository or workflow input.
 
 Release review is cumulative and SHA-bound. First commit a clean candidate,
-then freeze its exact tree and evidence packet. Start both required Tier 1
-critics, all three exact triad slots, and the required scope reviewer in one
-parallel wave against that same sealed evidence, as described in
-`docs/CHECKLISTS.md`. Any tracked mutation makes every result stale and starts
+then freeze its exact tree. Reviewer subagents review that frozen SHA against
+the checklists and docs as described in `docs/CHECKLISTS.md` (Owner-review
+release protocol). Any tracked mutation makes every result stale and starts
 a new freeze. Staged-diff review is not release authority, so the old
 per-commit script and hook installer have been removed rather than retained as
 a competing workflow.
