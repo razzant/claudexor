@@ -1,5 +1,12 @@
 # @claudexor/gateway
 
+## 2.1.1
+
+### Patch Changes
+
+- @claudexor/core@2.1.1
+- @claudexor/schema@2.1.1
+
 ## 2.1.0
 
 ### Minor Changes

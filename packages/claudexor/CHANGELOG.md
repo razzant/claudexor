@@ -1,5 +1,23 @@
 # claudexor
 
+## 2.1.1
+
+### Patch Changes
+
+- Release-infra postmortem of the burned v2.1.0 publish: npm's post-publish
+  indexing lagged past the script's 10-second verification window, so each
+  publish run failed after landing one package and three internal packages
+  reached the registry at 2.1.0 from the now-retracted tag (a version npm
+  forbids ever re-publishing). The publisher now waits up to 10 minutes for
+  npm to expose each package, the one CI-flaky app test polls with a bounded
+  deadline instead of a fixed sleep, and CONTRIBUTING's review-authority
+  paragraph is aligned with the owner-review protocol (Bible INV-125). Also
+  in this release line: account deletion end-to-end
+  (`DELETE /v2/credential-profiles/:harness/:id`, `claudexor profiles remove`,
+  delete on account rows) and the ONE shared accounts surface reused by the
+  bottom-left popover and the Settings Harness Doctor's Manage sheet.
+  - @claudexor/cli@2.1.1
+
 ## 2.1.0
 
 ### Minor Changes

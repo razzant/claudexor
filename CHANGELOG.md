@@ -3,7 +3,20 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v2.1.0** (2026-07-17) — credential profiles (INV-135) and the honest-UI
+- **v2.1.1** (2026-07-18) — the credential-profiles release, republished as
+  2.1.1: the first v2.1.0 publish was burned mid-flight by npm's post-publish
+  indexing lag (three internal packages reached the registry at 2.1.0 from a
+  since-retracted tag; npm forbids re-publishing a version, so nothing
+  user-visible ever shipped as 2.1.0 — the publisher now waits out npm
+  indexing). On top of the 2.1.0 scope below, 2.1.1 adds account deletion
+  end-to-end (`DELETE /v2/credential-profiles/:harness/:id` with a
+  delete-grade confinement fence and disclosed cleanup, `claudexor profiles
+  remove`, delete on account rows) and ONE shared accounts surface
+  (`AccountsSurface`) reused by the bottom-left popover and the Settings
+  Harness Doctor's Manage sheet, plus the owner-review release protocol
+  constitutionalized as INV-125.
+
+  The 2.1.0 scope: credential profiles (INV-135) and the honest-UI
   finish of the 2.x cycle. Multiple subscriptions per harness: durable
   non-secret `credential_profiles` registry, isolated vendor config dirs
   (`claudexor profiles login`), namespaced secret slots, strict per-turn /

@@ -754,7 +754,12 @@ struct AppModelRefreshTests {
                 "payload": .object(["cash_spend_usd": .number(0.4), "valuation_usd": .number(2)])
             ])
         ), to: "run-cash")
-        try await Task.sleep(for: .milliseconds(150))
+        // The cash disclosure MUST land. A fixed 150ms wait proved flaky on a
+        // slow CI runner (v2.1.0 publish postmortem) — poll with a bounded
+        // deadline instead; the assertions below still fail loudly on timeout.
+        for _ in 0..<40 where model.liveBoxes["run-cash"]?.spendKnown != true {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(model.liveBoxes["run-cash"]?.spendUsd == 0.4)
         #expect(model.liveBoxes["run-cash"]?.spendKnown == true)
     }

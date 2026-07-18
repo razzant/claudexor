@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/cli",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "license": "MIT",
   "description": "Claudexor CLI (claudexor). Thin surface over the orchestrator.",
   "type": "module",

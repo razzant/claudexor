@@ -61,10 +61,18 @@ async function main() {
       continue;
     }
     run("npm", ["publish", tarball, "--access", "public", "--provenance"], root);
+    // npm indexing after publish is eventually consistent and has been
+    // observed to lag by MINUTES (v2.1.0 postmortem: a 10s window failed a
+    // release whose publish had succeeded, and the burned version could
+    // never be re-published). Poll for up to 10 minutes before declaring
+    // the publish unexposed.
     let published = null;
-    for (let attempt = 0; attempt < 5 && !published; attempt += 1) {
+    for (let attempt = 0; attempt < 60 && !published; attempt += 1) {
       published = view(spec);
-      if (!published) await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
+      if (!published) {
+        if (attempt % 6 === 5) console.log(`waiting for npm to expose ${spec}…`);
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10_000));
+      }
     }
     if (!published) fail(`npm did not expose ${spec} after publish`);
     await verifyPublished(published, expected, spec);

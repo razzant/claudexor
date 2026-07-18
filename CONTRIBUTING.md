@@ -60,15 +60,16 @@ node scripts/fixture-freshness-check.mjs  # recorded fixtures carry provenance +
 ```
 
 Review authority is the cumulative diff on an exact, clean, committed and
-frozen candidate SHA. Start Tier 1, the exact triad, and the required scope
-reviewer in one parallel wave following the procedure in
-[`docs/CHECKLISTS.md`](docs/CHECKLISTS.md); any tracked mutation invalidates
-the evidence and requires a new freeze. Claudexor intentionally has no
-per-commit review hook or staged-diff review authority.
+frozen candidate SHA, reviewed under the Owner-review release protocol in
+[`docs/CHECKLISTS.md`](docs/CHECKLISTS.md) (at least two independent
+full-context reviewer subagents, at most three rounds, sealed schemaVersion-3
+attestation — Bible INV-125); any tracked mutation invalidates the evidence
+and requires a new freeze. Claudexor intentionally has no per-commit review
+hook or staged-diff review authority.
 
-**External contributors without working harness auth or an OpenRouter key:**
-the CI gate suite above is what your PR must pass. The maintainer runs the
-cumulative frozen-SHA review; contributors are not expected to pay for it.
+**External contributors:** the CI gate suite above is what your PR must pass.
+The maintainer runs the frozen-SHA owner-review wave; contributors are not
+expected to run or pay for it.
 
 Contributions are accepted under the repository's MIT license
 (inbound = outbound); by opening a PR you license your change under MIT.
