@@ -34,6 +34,14 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "DELETE",
+      "path": "/v2/credential-profiles/:id/:id",
+      "mutating": true,
+      "request_schema": null,
+      "response_schema": "ControlCredentialProfileDeleteResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "GET",
       "path": "/v2/global/events",
       "mutating": false,

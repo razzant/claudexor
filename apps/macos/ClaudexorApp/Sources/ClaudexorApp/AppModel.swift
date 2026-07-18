@@ -151,6 +151,11 @@ final class AppModel {
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// bottom-left accounts popover (list + guided add + per-account login).
     var credentialProfiles: [CredentialProfileEntry] = []
+    /// Optimistic auto-balance toggle value while the settings save round-trips
+    /// (owner dogfood: the switch must flip INSTANTLY, not after the daemon
+    /// replies). Cleared when the save settles; a failed save snaps back.
+    /// Actions live in AppModel+CredentialProfiles.swift.
+    var autoBalanceOverride: Bool?
     /// DRAFT-thread workspace mode: false => in_place (default; turns mutate the live
     /// tree), true => isolated (turns accumulate in a thread worktree, applied later via
     /// "Apply thread"). Fixed at thread creation, so it's only editable in the draft.
@@ -963,72 +968,8 @@ final class AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
-    /// Registered credential profiles + doctor readiness (INV-135). Drives the
-    /// accounts popover; a failing fetch leaves the last snapshot in place.
-    func refreshCredentialProfiles() async {
-        guard let client else { return }
-        do { credentialProfiles = try await client.credentialProfiles().profiles } catch {
-            /* endpoint absent (older daemon) or offline — keep last snapshot */
-        }
-    }
-
-    /// Register a new credential profile (INV-135). On success the registry is
-    /// refreshed and the new entry returned so the accounts popover can offer its
-    /// login immediately. On failure the daemon's reason (409 duplicate id / 400
-    /// invalid slug or harness) is returned verbatim for inline display.
-    func createCredentialProfile(harnessId: String, profileId: String, displayName: String?) async
-        -> (entry: CredentialProfileEntry?, error: String?) {
-        guard let client else { return (nil, "Engine offline — reconnect to add an account.") }
-        do {
-            let entry = try await client.createCredentialProfile(
-                CreateCredentialProfileRequest(harnessId: harnessId, profileId: profileId, displayName: displayName))
-            await refreshCredentialProfiles()
-            return (entry, nil)
-        } catch {
-            return (nil, userMessage(for: error))
-        }
-    }
-
-    // MARK: Auto-balance (INV-135)
-
-    /// Harnesses that participate in credential-profile auto-balance — the
-    /// config_dir_login families the registry covers.
-    static let autoBalanceHarnessIds = ["claude", "codex"]
-
-    /// Aggregated auto-balance state across the profile-capable harnesses:
-    /// on = every harness rotates, off = none rotate, mixed = they disagree.
-    enum AutoBalanceState { case on, off, mixed }
-    /// Optimistic toggle value while the settings save round-trips (owner
-    /// dogfood: the switch must flip INSTANTLY, not after the daemon replies).
-    /// Cleared when the save settles; a failed save snaps the switch back.
-    var autoBalanceOverride: Bool?
-    var autoBalanceState: AutoBalanceState {
-        if let pending = autoBalanceOverride { return pending ? .on : .off }
-        let actions = Self.autoBalanceHarnessIds.map {
-            settingsSnapshot?.harnesses?[$0]?.profileLimitAction ?? "fail"
-        }
-        if actions.allSatisfy({ $0 == "rotate" }) { return .on }
-        if actions.allSatisfy({ $0 != "rotate" }) { return .off }
-        return .mixed
-    }
-
-    /// Flip auto-balance for BOTH profile-capable harnesses at once (on = rotate,
-    /// off = fail), so a mixed state resolves to a single consistent choice.
-    func setAutoBalance(_ on: Bool) async {
-        // ON sets rotate on both families. OFF only downgrades harnesses that
-        // are currently "rotate" — a hand-configured "ask" is not auto-switch,
-        // so the toggle must not erase it.
-        let patch = Dictionary(uniqueKeysWithValues: Self.autoBalanceHarnessIds.compactMap {
-            id -> (String, HarnessSettingsPatch)? in
-            let current = settingsSnapshot?.harnesses?[id]?.profileLimitAction ?? "fail"
-            if on { return current == "rotate" ? nil : (id, HarnessSettingsPatch(profileLimitAction: "rotate")) }
-            return current == "rotate" ? (id, HarnessSettingsPatch(profileLimitAction: "fail")) : nil
-        })
-        guard !patch.isEmpty else { return }
-        autoBalanceOverride = on
-        defer { autoBalanceOverride = nil }
-        _ = await saveSettings(SettingsUpdateRequest(harnesses: patch))
-    }
+    // Credential-profile registry + auto-balance actions live in
+    // AppModel+CredentialProfiles.swift (INV-135).
 
     /// Replace the sticky eligible pool (PATCH on a real thread; draft otherwise).
     func setEligiblePool(_ pool: [String]) async {

@@ -370,6 +370,14 @@ created under; resume never crosses profiles. `claudexor profiles login
 <harness> <id>` runs the same vendor login command the setup jobs use,
 interactively, scoped to the profile dir.
 
+Removal is daemon-owned and mirrors registration: `DELETE
+/v2/credential-profiles/:harness/:id` (CLI `claudexor profiles remove`) takes
+the registry entry out through the same locked global-config owner, then
+deletes the profile's OWN credential material — its confinement-checked scoped
+login dir or its namespaced secret, NEVER the default vendor store. A failed
+cleanup is disclosed on the receipt (`cleanupWarning`), never silent; removal
+refuses with a typed 409 while a login job for that account is active.
+
 Selection precedence is turn > thread-sticky > engine default: a turn's
 explicit `credentialProfileId` (CLI `--profile`) beats the thread's durable
 `credential_profile_id` (PATCH /v2/threads/:id), and null means the default
@@ -546,6 +554,7 @@ files.
 - `GET /v2/agent-capabilities`
 - `GET /v2/credential-profiles`
 - `POST /v2/credential-profiles`
+- `DELETE /v2/credential-profiles/:id/:id`
 - `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`

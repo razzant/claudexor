@@ -6,6 +6,7 @@ import { loadConfig } from "@claudexor/config";
 import { noProjectRepoRoot } from "@claudexor/util";
 import { parseArgs } from "./args.js";
 import { profilesCommand } from "./credential-commands.js";
+import { removeProfileFromRegistry } from "./profile-registration.js";
 
 // `profiles add` is the ONLY subcommand that does not talk to the daemon —
 // it writes the durable registry through the locked global-config owner. The
@@ -66,5 +67,45 @@ describe("claudexor profiles add (INV-135)", () => {
       await profilesCommand(parseArgs(["profiles", "add", "claude", "Bad Id"]), true),
     ).not.toBe(0);
     expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(0);
+  });
+});
+
+describe("removeProfileFromRegistry (INV-135 removal owner)", () => {
+  let dir: string;
+  let prev: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudexor-profiles-remove-"));
+    prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("removes exactly the named entry and returns it", async () => {
+    await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true);
+    await profilesCommand(parseArgs(["profiles", "add", "codex", "work"]), true);
+    const removed = removeProfileFromRegistry("claude", "work");
+    expect(removed).toMatchObject({ harness_id: "claude", profile_id: "work" });
+    const left = loadConfig(noProjectRepoRoot()).global.credential_profiles;
+    expect(left).toHaveLength(1);
+    expect(left[0]).toMatchObject({ harness_id: "codex", profile_id: "work" });
+  });
+
+  it("refuses an unknown id with a typed 404, leaving the registry intact", async () => {
+    await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true);
+    expect(() => removeProfileFromRegistry("claude", "ghost")).toThrow(/no credential profile/);
+    try {
+      removeProfileFromRegistry("codex", "work");
+      expect.unreachable("cross-harness removal must refuse");
+    } catch (err) {
+      expect((err as { status?: number }).status).toBe(404);
+    }
+    expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(1);
   });
 });

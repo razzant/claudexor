@@ -136,6 +136,27 @@ export type ControlCredentialProfileCreateRequest = z.infer<
   typeof ControlCredentialProfileCreateRequest
 >;
 
+/** DELETE /credential-profiles/:harness/:id — removes the registry entry and
+ * the profile's OWN credential material (its scoped login dir, or its
+ * namespaced secret). The default vendor store is untouchable by design. */
+export const ControlCredentialProfileDeleteResponse = z
+  .object({
+    profile: CredentialProfile.describe("The removed registry entry."),
+    removed: z.literal(true),
+    credentialCleanup: z
+      .enum(["config_dir_removed", "secret_deleted", "none"])
+      .describe("What credential material was deleted alongside the registry entry."),
+    cleanupWarning: z
+      .string()
+      .optional()
+      .describe("Present when the registry entry was removed but cleanup failed (orphan left)."),
+  })
+  .strict()
+  .describe("Receipt for a credential-profile removal.");
+export type ControlCredentialProfileDeleteResponse = z.infer<
+  typeof ControlCredentialProfileDeleteResponse
+>;
+
 export const ControlCredentialProfileCreateResponse = z
   .object({ profile: CredentialProfile, status: CredentialProfileStatus })
   .strict()

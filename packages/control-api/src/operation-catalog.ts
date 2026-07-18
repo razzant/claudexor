@@ -158,6 +158,14 @@ const operations: ControlOperationDescriptor[] = [
     "ControlCredentialProfileCreateResponse",
     { idempotency: "natural" },
   ),
+  j(
+    "DELETE",
+    "/v2/credential-profiles/:id/:id",
+    "mutating",
+    null,
+    "ControlCredentialProfileDeleteResponse",
+    { idempotency: "natural" },
+  ),
   j("POST", "/v2/quota", "mutating", null, "ControlQuotaResponse", {
     idempotency: "natural",
   }),

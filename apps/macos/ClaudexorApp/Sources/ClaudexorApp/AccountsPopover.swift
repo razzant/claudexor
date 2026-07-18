@@ -202,20 +202,14 @@ struct AccountsTriggerRow: View {
     }
 }
 
-/// The expanded accounts popover: per-account rows (readiness + one quota line +
-/// in-app Log in), the auto-balance toggle, quota refresh, and a guided add flow.
+/// The expanded accounts popover: the shared accounts surface plus the
+/// popover-only chrome (header with quota detail/refresh, auto-balance toggle).
 struct AccountsPopover: View {
     @Environment(AppModel.self) private var model
     @Binding var isPresented: Bool
 
-    @State private var addHarness = "claude"
-    @State private var addDisplayName = ""
-    @State private var addError: String?
-    @State private var adding = false
     @State private var refreshing = false
     @State private var showQuotaDetail = false
-
-    private var rows: [AccountRowModel] { AccountsPresentation.rows(model: model) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -225,15 +219,18 @@ struct AccountsPopover: View {
                       systemImage: "wifi.slash")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                accountsList
+                AccountsSurface(family: nil) { row in
+                    // Routed model-level so the AuthSheet survives this popover
+                    // dismissing.
+                    model.authSheetTarget = AuthSheetTarget(family: row.family, profileId: row.profileId)
+                    isPresented = false
+                }
                 autoBalanceToggle
-                Divider()
-                addSection
             }
         }
         .padding(Theme.Spacing.lg)
         .frame(width: 340)
-        .task { await model.refreshCredentialProfiles(); await model.refreshSettings() }
+        .task { await model.refreshSettings() }   // profiles refresh lives in AccountsSurface
         .popover(isPresented: $showQuotaDetail, arrowEdge: .trailing) {
             QuotaDetailView().environment(model).frame(width: 420, height: 460)
         }
@@ -264,20 +261,6 @@ struct AccountsPopover: View {
         }
     }
 
-    private var accountsList: some View {
-        VStack(spacing: Theme.Spacing.xs) {
-            if rows.isEmpty {
-                Label("No accounts yet — add one below.", systemImage: "person.crop.circle.badge.plus")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ForEach(rows) { row in
-                    AccountRowView(row: row) { startLogin(row) }
-                }
-            }
-        }
-    }
-
     private var autoBalanceToggle: some View {
         VStack(alignment: .leading, spacing: 2) {
             Toggle(isOn: Binding(
@@ -294,20 +277,108 @@ struct AccountsPopover: View {
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
+}
 
-    /// Owner dogfood: no ids to invent — pick the vendor, optionally name it,
-    /// press one button. The internal profile id is derived from the name (or
-    /// auto-numbered) and never asked for.
+/// The ONE accounts control surface (SSOT, owner directive): account rows with
+/// in-app log in + remove, and the no-ids-to-invent add flow. Hosted by the
+/// bottom-left popover (all families) AND the AuthSheet the Settings doctor's
+/// "Manage" opens (scoped to its family) — never forked per surface.
+struct AccountsSurface: View {
+    @Environment(AppModel.self) private var model
+    /// nil = every family (popover); set = only that family's accounts.
+    let family: HarnessFamily?
+    /// False when the host already IS the default login surface (AuthSheet) —
+    /// only registered profiles are listed there.
+    var includeDefaults = true
+    /// Present the login UI for a row's account; the host owns presentation.
+    let login: (AccountRowModel) -> Void
+
+    @State private var addDisplayName = ""
+    @State private var addHarnessChoice = "claude"
+    @State private var addError: String?
+    @State private var adding = false
+    @State private var pendingDelete: AccountRowModel?
+    @State private var deleting = false
+    @State private var deleteNotice: String?
+
+    /// The add form registers config_dir_login profiles (claude|codex only —
+    /// the same rule the daemon enforces).
+    private var addHarness: String? {
+        guard let family else { return addHarnessChoice }
+        let id = family.setupHarnessId
+        return id == "claude" || id == "codex" ? id : nil
+    }
+
+    private var rows: [AccountRowModel] {
+        AccountsPresentation.rows(model: model).filter { row in
+            (includeDefaults || row.isProfile)
+                && (family == nil || row.harnessId == family?.setupHarnessId)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            accountsList
+            if let notice = deleteNotice {
+                Text(notice).font(.caption2).foregroundStyle(Theme.status(.failed))
+                    .textSelection(.enabled)
+            }
+            if addHarness != nil {
+                Divider()
+                addSection
+            }
+        }
+        .task { await model.refreshCredentialProfiles() }
+        .confirmationDialog(
+            "Remove \(pendingDelete?.displayName ?? "account")?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Account", role: .destructive) {
+                if let row = pendingDelete { Task { await deleteAccount(row) } }
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("Deletes this account's registration and its own login/key from Claudexor. The default \(pendingDelete?.family.label ?? "vendor") login is untouched.")
+        }
+    }
+
+    private var accountsList: some View {
+        VStack(spacing: Theme.Spacing.xs) {
+            if rows.isEmpty {
+                Label("No accounts yet — add one below.", systemImage: "person.crop.circle.badge.plus")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(rows) { row in
+                    AccountRowView(
+                        row: row,
+                        login: { login(row) },
+                        delete: row.isProfile && !deleting ? { pendingDelete = row } : nil
+                    )
+                }
+            }
+        }
+    }
+
+    /// Owner dogfood: no ids to invent — pick the vendor (unless the host is
+    /// already family-scoped), optionally name it, press one button. The
+    /// internal profile id is derived from the name and never asked for.
     private var addSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             Text("Add account").font(.subheadline.weight(.semibold))
             HStack(spacing: Theme.Spacing.sm) {
-                Picker("", selection: $addHarness) {
-                    Text("Claude").tag("claude")
-                    Text("Codex").tag("codex")
+                if family == nil {
+                    Picker("", selection: $addHarnessChoice) {
+                        Text("Claude").tag("claude")
+                        Text("Codex").tag("codex")
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 }
-                .labelsHidden()
-                .fixedSize()
                 TextField("name (optional, e.g. Work)", text: $addDisplayName)
                     .textFieldStyle(.roundedBorder)
                     .font(.callout)
@@ -317,7 +388,7 @@ struct AccountsPopover: View {
                 Text(err).font(.caption2).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
             }
             HStack {
-                Text("A second Claude/Codex subscription — one click opens the official CLI login.")
+                Text("A second \(family?.label ?? "Claude/Codex") subscription — one click opens the official CLI login.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 Button(adding ? "Adding…" : "Add & log in") { Task { await addAccount() } }
@@ -329,33 +400,46 @@ struct AccountsPopover: View {
         }
     }
 
-    /// Open the shared AuthSheet for this account's login. Routed model-level so
-    /// the sheet survives this popover dismissing.
-    private func startLogin(_ row: AccountRowModel) {
-        model.authSheetTarget = AuthSheetTarget(family: row.family, profileId: row.profileId)
-        isPresented = false
-    }
-
     private func addAccount() async {
-        guard !adding else { return }
+        guard !adding, let harness = addHarness else { return }
         adding = true
         addError = nil
         defer { adding = false }
         let display = addDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let existing = Set(model.credentialProfiles
-            .filter { $0.profile.harnessId == addHarness }
+            .filter { $0.profile.harnessId == harness }
             .map(\.profile.profileId))
         let id = AccountsPresentation.generatedProfileId(displayName: display, existing: existing)
         let result = await model.createCredentialProfile(
-            harnessId: addHarness, profileId: id, displayName: display.isEmpty ? nil : display)
+            harnessId: harness, profileId: id, displayName: display.isEmpty ? nil : display)
         if let error = result.error {
             addError = error   // 409 duplicate id / 400 invalid slug or harness — server text.
             return
         }
         // Success: clear the form and immediately offer the new account's login.
         addDisplayName = ""
-        model.authSheetTarget = AuthSheetTarget(family: HarnessFamily(rawValue: addHarness), profileId: id)
-        isPresented = false
+        login(AccountRowModel(
+            id: "profile/\(harness)/\(id)",
+            displayName: display.isEmpty ? id : display,
+            harnessId: harness,
+            family: HarnessFamily(rawValue: harness),
+            readiness: .unknown,
+            verified: false,
+            profileId: id,
+            detail: nil,
+            quotaGroups: []
+        ))
+    }
+
+    private func deleteAccount(_ row: AccountRowModel) async {
+        guard let profileId = row.profileId, !deleting else { return }
+        deleting = true
+        deleteNotice = nil
+        defer { deleting = false; pendingDelete = nil }
+        // nil = removed cleanly; else the daemon's refusal (409 while a login
+        // job is active) or a disclosed cleanup warning — shown verbatim.
+        deleteNotice = await model.deleteCredentialProfile(
+            harnessId: row.harnessId, profileId: profileId)
     }
 }
 
@@ -364,6 +448,9 @@ struct AccountsPopover: View {
 private struct AccountRowView: View {
     let row: AccountRowModel
     let login: () -> Void
+    /// Present when the account can be removed (registered profiles only —
+    /// default vendor logins are not Claudexor's to delete).
+    var delete: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.sm) {
@@ -390,6 +477,14 @@ private struct AccountRowView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Start the official CLI login for this account — a Terminal window opens automatically")
+            }
+            if let delete {
+                Button(role: .destructive, action: delete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Remove this account: its registration and its own login/key. The default \(row.family.label) login is untouched.")
             }
         }
         .padding(.vertical, Theme.Spacing.xxs)

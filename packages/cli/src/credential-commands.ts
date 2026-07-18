@@ -7,6 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import {
+  ControlCredentialProfileDeleteResponse,
   ControlCredentialProfilesResponse,
   ControlSecretListResponse,
   ControlSecretMutationResponse,
@@ -134,10 +135,39 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       return printUsageError(json, err instanceof Error ? err.message : String(err));
     }
   }
+  if (sub === "remove" || sub === "rm") {
+    const harness = args._[2];
+    const profileId = args._[3];
+    if (!harness || !profileId) {
+      return printUsageError(json, "usage: claudexor profiles remove <harness> <profile-id>");
+    }
+    // Daemon-owned removal (one mutation path): registry entry + the profile's
+    // own credential material (scoped login dir / namespaced secret); refuses
+    // while a login job for the account is active.
+    const { addr } = await ensureDaemon();
+    const response = await controlApiFetch(
+      addr,
+      `/credential-profiles/${encodeURIComponent(harness)}/${encodeURIComponent(profileId)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${addr.token}` } },
+    );
+    if (!response.ok) {
+      return printUsageError(
+        json,
+        `profile removal failed (${response.status}): ${await response.text()}`,
+      );
+    }
+    const receipt = ControlCredentialProfileDeleteResponse.parse(await response.json());
+    if (json) printJson(receipt);
+    else {
+      print(`removed ${harness}/${profileId} (${receipt.credentialCleanup})`);
+      if (receipt.cleanupWarning) print(`warning: ${receipt.cleanupWarning}`);
+    }
+    return 0;
+  }
   if (sub !== "list") {
     return printUsageError(
       json,
-      "usage: claudexor profiles [list | add <harness> <profile-id> | login <harness> <profile-id>]",
+      "usage: claudexor profiles [list | add <harness> <profile-id> | login <harness> <profile-id> | remove <harness> <profile-id>]",
     );
   }
   const result = ControlCredentialProfilesResponse.parse(await daemonGet("/credential-profiles"));

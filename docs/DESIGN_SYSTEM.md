@@ -348,13 +348,20 @@ frequency and volume are. The contracts:
     handoff below). Each popover row is one account (a
     default vendor login labeled with the harness name, or a registered
     credential profile): a readiness dot, its name, ONE compact quota line
-    (worst window % + reset), and a "Log in" button until it verifies. The
-    popover adds accounts inline (harness + slug id + optional name →
-    `POST /v2/credential-profiles`, then that account's native login) and
-    toggles "Auto-switch accounts at quota limit" (the per-harness
-    `profileLimitAction` rotate/fail); a quota refresh and the full per-window
-    quota detail stay one click away. Two subscriptions of one vendor NEVER
-    merge — quota keys on `(harness, credential route, profile)`.
+    (worst window % + reset), a "Log in" button until it verifies, and — on
+    registered profiles only — a confirmed Remove (trash) that deletes the
+    registration plus the account's own login/key
+    (`DELETE /v2/credential-profiles/:harness/:id`; the default vendor login
+    is never Claudexor's to delete). The popover adds accounts inline
+    (harness + optional name → `POST /v2/credential-profiles`, then that
+    account's native login) and toggles "Auto-switch accounts at quota limit"
+    (the per-harness `profileLimitAction` rotate/fail); a quota refresh and
+    the full per-window quota detail stay one click away. Two subscriptions
+    of one vendor NEVER merge — quota keys on
+    `(harness, credential route, profile)`. The account list + add + remove
+    block is ONE shared component (`AccountsSurface`, SSOT): the Settings
+    Harness Doctor's "Manage" sheet hosts the same surface scoped to its
+    family — account control is never forked per surface.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Чат-V2, Ф2.5): a
     status line (harness identity + honest status pill + live elapsed clock),

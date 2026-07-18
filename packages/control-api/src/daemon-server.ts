@@ -101,6 +101,7 @@ import {
   ControlCredentialProfilesResponse,
   ControlCredentialProfileCreateRequest,
   ControlCredentialProfileCreateResponse,
+  ControlCredentialProfileDeleteResponse,
   ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
   ControlInteractionAnswerResponse,
@@ -244,6 +245,7 @@ export interface DaemonControlApiOptions {
       refreshQuota?: () => Promise<unknown>;
       credentialProfiles?: () => Promise<unknown>;
       createCredentialProfile?: (input: unknown) => Promise<unknown>;
+      deleteCredentialProfile?: (input: unknown) => Promise<unknown>;
       listSecrets?: () => Promise<unknown>;
       setSecret?: (input: unknown) => Promise<unknown>;
       deleteSecret?: (name: string) => Promise<unknown>;
@@ -1472,6 +1474,18 @@ export class DaemonControlApiServer {
         "createCredentialProfile",
         body,
         ControlCredentialProfileCreateResponse,
+      );
+    }
+    const profileDeleteMatch = /^\/credential-profiles\/([^/]+)\/([^/]+)$/.exec(path);
+    if (method === "DELETE" && profileDeleteMatch) {
+      return this.service(
+        res,
+        "deleteCredentialProfile",
+        {
+          harnessId: decodeURIComponent(profileDeleteMatch[1] as string),
+          profileId: decodeURIComponent(profileDeleteMatch[2] as string),
+        },
+        ControlCredentialProfileDeleteResponse,
       );
     }
     // (legacy /auth alias removed: it duplicated GET /harnesses byte-for-byte)

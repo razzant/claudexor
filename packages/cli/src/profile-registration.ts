@@ -65,3 +65,31 @@ export function registerConfigDirProfile(input: RegisterProfileInput): {
     });
   }
 }
+
+/** The ONE owner of registry removal (mirror of registerConfigDirProfile):
+ * locked global-config write returning the removed entry; unknown ids refuse
+ * with a typed 404. Credential-material cleanup stays with the caller. */
+export function removeProfileFromRegistry(harnessId: string, profileId: string): CredentialProfile {
+  let removed: CredentialProfile | undefined;
+  updateGlobalConfig((config) => {
+    removed = config.credential_profiles.find(
+      (profile) => profile.harness_id === harnessId && profile.profile_id === profileId,
+    );
+    if (!removed) {
+      throw Object.assign(
+        new Error(`no credential profile "${profileId}" for harness "${harnessId}"`),
+        { status: 404 },
+      );
+    }
+    return {
+      ...config,
+      credential_profiles: config.credential_profiles.filter(
+        (profile) => !(profile.harness_id === harnessId && profile.profile_id === profileId),
+      ),
+    };
+  });
+  if (!removed) {
+    throw Object.assign(new Error("profile removal did not persist"), { status: 500 });
+  }
+  return removed;
+}

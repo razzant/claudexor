@@ -75,6 +75,16 @@ public struct CreateCredentialProfileRequest: Encodable, Sendable, Equatable {
     }
 }
 
+/// Receipt for DELETE /v2/credential-profiles/:harness/:id. The registry entry
+/// is gone when this decodes; `cleanupWarning` discloses a failed cleanup of the
+/// profile's own credential material (scoped login dir / namespaced secret).
+public struct DeleteCredentialProfileReceipt: Decodable, Sendable {
+    public let removed: Bool
+    /// config_dir_removed | secret_deleted | none.
+    public let credentialCleanup: String
+    public let cleanupWarning: String?
+}
+
 public extension GatewayClient {
     func credentialProfiles() async throws -> CredentialProfilesResponse {
         let req = request("credential-profiles", method: "GET")
@@ -98,5 +108,20 @@ public extension GatewayClient {
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return try Self.decoder.decode(CredentialProfileEntry.self, from: data)
+    }
+
+    /// Remove a credential profile: the daemon deletes the registry entry plus
+    /// the profile's own credential material. 409 = a login job is active.
+    func deleteCredentialProfile(harnessId: String, profileId: String) async throws
+        -> DeleteCredentialProfileReceipt {
+        let harness = harnessId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? harnessId
+        let profile = profileId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? profileId
+        let req = request("credential-profiles/\(harness)/\(profile)", method: "DELETE")
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return try Self.decoder.decode(DeleteCredentialProfileReceipt.self, from: data)
     }
 }

@@ -3,7 +3,7 @@
  * claudexord composition root, which stays thin). Each closure binds one
  * typed control operation to the daemon's stores and engine entrypoints.
  */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
   type OperatorDecisionRecord,
@@ -30,9 +30,11 @@ import {
   type CredentialProfileStatus,
   ControlSettingsUpdateRequest,
 } from "@claudexor/schema";
-import { registerConfigDirProfile } from "./profile-registration.js";
+import { registerConfigDirProfile, removeProfileFromRegistry } from "./profile-registration.js";
 import { createRetentionRunner } from "./retention-service.js";
-import { invalidateDoctorCache, validateModel } from "@claudexor/core";
+import { canonicalIsolationLocator, invalidateDoctorCache, validateModel } from "@claudexor/core";
+import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
+import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import { AuthReadinessService, normalizeReadiness } from "@claudexor/gateway";
 import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
@@ -42,7 +44,7 @@ import {
   settingsSnapshot,
 } from "./settings-service.js";
 import { createSetupJobManager } from "./setup-jobs.js";
-import { SetupJobStore } from "./setup-job-store.js";
+import { ACTIVE_SETUP_STATES, SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
@@ -372,6 +374,59 @@ export function controlServices(
         out.push({ profile, status: await profileDoctorStatus(profile) });
       }
       return { profiles: out };
+    },
+    // DELETE /credential-profiles/:harness/:id (INV-135): removes the
+    // registry entry AND the profile's OWN credential material — its scoped
+    // login dir (canonicalized + confinement-checked, NEVER the default
+    // vendor store) or its namespaced secret. Registry removal comes first;
+    // a failed cleanup is disclosed as a warning, never silently ignored.
+    deleteCredentialProfile: async (input: unknown) => {
+      const p = (input ?? {}) as Record<string, unknown>;
+      const harnessId = typeof p["harnessId"] === "string" ? p["harnessId"] : "";
+      const profileId = typeof p["profileId"] === "string" ? p["profileId"] : "";
+      if (!harnessId || !profileId) {
+        throw Object.assign(new Error("harnessId and profileId are required"), { status: 400 });
+      }
+      const activeLogin = setupJobs()
+        .list({ harness: harnessId as "claude" | "codex" | "cursor" })
+        .find((job) => ACTIVE_SETUP_STATES.has(job.state) && job.profileId === profileId);
+      if (activeLogin) {
+        throw Object.assign(
+          new Error(
+            `a login for this account is in progress (${activeLogin.jobId}); cancel it before removing the account`,
+          ),
+          { status: 409 },
+        );
+      }
+      const entry = removeProfileFromRegistry(harnessId, profileId);
+      let credentialCleanup: "config_dir_removed" | "secret_deleted" | "none" = "none";
+      let cleanupWarning: string | undefined;
+      try {
+        if (entry.credential_kind === "config_dir_login" && entry.isolation_locator) {
+          const dir =
+            harnessId === "claude"
+              ? canonicalProfileConfigDir(entry.isolation_locator)
+              : harnessId === "codex"
+                ? canonicalCodexProfileHome(entry.isolation_locator)
+                : canonicalIsolationLocator(entry.isolation_locator, "credential profile dir");
+          rmSync(dir, { recursive: true, force: true });
+          credentialCleanup = "config_dir_removed";
+        } else if (entry.secret_ref) {
+          secretStore.delete(entry.secret_ref);
+          credentialCleanup = "secret_deleted";
+        }
+      } catch (err) {
+        cleanupWarning = `registry entry removed, but credential cleanup failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+      invalidateDoctorCache();
+      return {
+        profile: entry,
+        removed: true,
+        credentialCleanup,
+        ...(cleanupWarning ? { cleanupWarning } : {}),
+      };
     },
     // POST /credential-profiles: the SAME ONE registration owner the CLI's
     // `profiles add` uses (profile-registration.ts) — never a second write
