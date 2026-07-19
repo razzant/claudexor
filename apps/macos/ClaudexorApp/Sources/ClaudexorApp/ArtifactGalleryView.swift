@@ -13,10 +13,16 @@ struct ArtifactGalleryView: View {
     /// When true, source the project's PRODUCED outputs (`/runs/:id/produced`)
     /// instead of the run's orchestration tree — and skip the run-tree filter.
     var produced: Bool = false
-    @State private var artifacts: [ArtifactInfo] = []
-    @State private var loadError: String?
+    /// D15: identity-keyed load slot — switching runs shows loading/empty, never
+    /// the previous run's artifact list.
+    @State private var slot = PayloadSlot<[ArtifactInfo]>()
 
-    private var displayArtifacts: [ArtifactInfo] {
+    private var identity: PayloadIdentity {
+        PayloadIdentity(runId: runId, plane: produced ? .produced : .run)
+    }
+
+    /// Filter the loaded list for display; the raw slot value is the fetch truth.
+    private func display(_ artifacts: [ArtifactInfo]) -> [ArtifactInfo] {
         // The produced endpoint already returns only project outputs, so show all
         // files it returns. The run-tree filter only applies to the run artifacts.
         if produced {
@@ -29,6 +35,8 @@ struct ArtifactGalleryView: View {
                 && !$0.path.hasPrefix("attempts/")
         }
     }
+
+    private var displayArtifacts: [ArtifactInfo] { display(slot.state.value ?? []) }
 
     /// Images the run CHANGED anywhere in the project tree (typed diff
     /// evidence — F2.5 W-C7 part 3): agents drop screenshots wherever the
@@ -66,8 +74,19 @@ struct ArtifactGalleryView: View {
                 .padding(Theme.Spacing.md)
                 Divider()
             }
-            if let loadError {
-                Text(loadError).font(.callout).foregroundStyle(.secondary)
+            if case .failed(let error) = slot.state {
+                VStack(spacing: Theme.Spacing.sm) {
+                    Text(error.message).font(.callout).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Retry") { Task { await load() } }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                .frame(maxWidth: .infinity).padding(Theme.Spacing.xl)
+            } else if case .loading = slot.state, runChangedImages.isEmpty {
+                ProgressView("Loading artifacts…").controlSize(.small)
+                    .frame(maxWidth: .infinity).padding(Theme.Spacing.xl)
+            } else if case .idle = slot.state, runChangedImages.isEmpty {
+                ProgressView().controlSize(.small)
                     .frame(maxWidth: .infinity).padding(Theme.Spacing.xl)
             } else if displayArtifacts.isEmpty && runChangedImages.isEmpty {
                 Text(produced
@@ -85,25 +104,28 @@ struct ArtifactGalleryView: View {
                 .padding(Theme.Spacing.md)
             }
         }
-        // Loads on appear and whenever the selected run changes. (The inspector
-        // re-creates this view when you switch to the Artifacts tab, so re-opening
-        // it after the run produces output refreshes the list.)
-        .task(id: runId) { await load() }
+        // Loads on appear and whenever the selected run/plane changes. The slot's
+        // identity keying (D15) drops the previous run's list the instant `runId`
+        // changes, so a stale artifact list can never render under a new run.
+        .task(id: identity) { await load() }
     }
 
     private func load() async {
+        let id = identity
+        slot.begin(id)
         let list = produced
             ? await model.producedArtifacts(runId: runId)
             : await model.runArtifacts(runId: runId)
         guard let list else {
-            // Load FAILED (offline/transport): show the error state instead of
-            // silently rendering "no artifacts" over kept last-known data.
-            loadError = "Could not load artifacts — the engine is offline or the request failed. Re-open this tab to retry."
+            // Load FAILED (offline/transport): show the typed error state instead
+            // of silently rendering "no artifacts" over kept last-known data.
+            slot.commit(.failed(.offline), for: id)
             return
         }
-        if list.isEmpty && !artifacts.isEmpty { return } // keep last-known on a transient empty
-        artifacts = list
-        loadError = nil
+        // Keep last-known on a transient empty ONLY when we already have content
+        // for THIS identity (a live run still producing) — never across a switch.
+        if list.isEmpty, let existing = slot.state.value, !existing.isEmpty { return }
+        slot.commit(list.isEmpty ? .empty : .loaded(list), for: id)
     }
 }
 
@@ -113,10 +135,17 @@ private struct ArtifactCard: View {
     let art: ArtifactInfo
     /// Mirror of the gallery's flag — route byte/text fetches at the produced path.
     var produced: Bool = false
-    @State private var image: NSImage?
-    @State private var imageLoadFailed = false
+    /// D15 identity-keyed image slot: a card reused for a different run/path never
+    /// shows the previous file's bytes. `DecodedImage` boxes the actor crossing.
+    @State private var imageSlot = PayloadSlot<DecodedImage>()
     @State private var text: String?
     @State private var showText = false
+
+    private var identity: PayloadIdentity {
+        PayloadIdentity(runId: runId, plane: produced ? .produced : .run, path: art.path)
+    }
+    private var image: NSImage? { imageSlot.state.value?.image }
+    private var imageLoadFailed: Bool { if case .failed = imageSlot.state { return true }; return false }
 
     private var mime: String { art.mime ?? "" }
     private var isImage: Bool { mime.hasPrefix("image/") && mime != "image/svg+xml" }
@@ -136,7 +165,7 @@ private struct ArtifactCard: View {
         }
         .buttonStyle(.plain)
         .help(art.path)
-        .task(id: art.id) { if isImage { await loadImage() } }
+        .task(id: identity) { if isImage { await loadImage() } }
         .sheet(isPresented: $showText) { textSheet }
     }
 
@@ -193,16 +222,22 @@ private struct ArtifactCard: View {
     }
 
     /// Off-main handoff of an already-bounded decode (same Swift 6 actor-
-    /// crossing box as ScopedInlineImage).
-    private struct DecodedCard: @unchecked Sendable { let image: NSImage? }
+    /// crossing box as ScopedInlineImage). Equatable-by-identity so it can ride
+    /// the value-typed load slot.
+    struct DecodedImage: @unchecked Sendable, Equatable {
+        let image: NSImage?
+        static func == (lhs: DecodedImage, rhs: DecodedImage) -> Bool { lhs.image === rhs.image }
+    }
 
     private func loadImage() async {
-        guard image == nil, !imageLoadFailed else { return }
+        let id = identity
+        imageSlot.begin(id)
+        guard imageSlot.state.value == nil else { return }
         let data = produced
             ? await model.producedBytes(runId: runId, path: art.path)
             : await model.artifactBytes(runId: runId, path: art.path)
         guard let data else {
-            imageLoadFailed = true
+            imageSlot.commit(.failed(.offline), for: id)
             return
         }
         // W3.7: the SAME bounded decode as inline chat previews (thumbnail
@@ -210,12 +245,12 @@ private struct ArtifactCard: View {
         // full-resolution screenshots must not full-decode in `body`'s task.
         let key = "\(runId)|\(produced ? "produced" : "run")|\(art.path)"
         let decoded = await Task.detached(priority: .userInitiated) {
-            DecodedCard(image: ScopedInlineImage.boundedPreview(data: data, cacheKey: key))
+            DecodedImage(image: ScopedInlineImage.boundedPreview(data: data, cacheKey: key))
         }.value
-        if let loaded = decoded.image {
-            image = loaded
+        if decoded.image != nil {
+            imageSlot.commit(.loaded(decoded), for: id)
         } else {
-            imageLoadFailed = true
+            imageSlot.commit(.failed(.notRenderable("Too large to preview — tap to open externally")), for: id)
         }
     }
 

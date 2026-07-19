@@ -88,7 +88,16 @@ struct ProjectChip: View {
     let onBrowse: () -> Void
 
     var body: some View {
-        Menu {
+        ChipMenu(
+            tint: hasProject ? Color.secondary : Theme.accent,
+            fill: .outlined(stroke: hasProject ? Theme.separator : Theme.accent.opacity(0.5)),
+            help: bound
+                ? "Project for this thread (bound). Pick another to start a new thread there."
+                : "Working directory for the new thread — pick a recent project or Browse…"
+        ) {
+            Image(systemName: hasProject ? "folder.fill" : "folder.badge.questionmark").imageScale(.small)
+            Text(name).lineLimit(1)
+        } menu: {
             if !recent.isEmpty {
                 Section(bound ? "Switch project — starts a new thread" : "Recent projects") {
                     ForEach(recent, id: \.self) { path in
@@ -100,24 +109,7 @@ struct ProjectChip: View {
                 Divider()
             }
             Button { onBrowse() } label: { Label("Browse…", systemImage: "folder.badge.plus") }
-        } label: {
-            HStack(spacing: Theme.Spacing.xs) {
-                Image(systemName: hasProject ? "folder.fill" : "folder.badge.questionmark").imageScale(.small)
-                Text(name).lineLimit(1)
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
-            }
-            .font(.caption.weight(.medium))
-            .foregroundStyle(hasProject ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.accent))
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Controls.chipVPadding)
-            .background(Theme.surfaceRaisedHi, in: Capsule())
-            .overlay(Capsule().strokeBorder(hasProject ? Theme.separator : Theme.accent.opacity(0.5), lineWidth: 1))
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help(bound
-              ? "Project for this thread (bound). Pick another to start a new thread there."
-              : "Working directory for the new thread — pick a recent project or Browse…")
     }
 }
 

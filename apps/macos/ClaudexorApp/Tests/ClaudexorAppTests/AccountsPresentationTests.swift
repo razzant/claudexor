@@ -67,6 +67,43 @@ import Testing
         #expect(!row.verified)
     }
 
+    @MainActor
+    @Test func profileEnabledIsSourcedFromTheWireNotFaked() throws {
+        // D25 accounts symmetry: the Enabled state is wire truth (profile.enabled),
+        // rendered read-only. A disabled profile must read as disabled.
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        let json = """
+        {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+        "credential_kind":"config_dir_login","enabled":false},
+        "status":{"availability":"available","verification":"passed","detail":null,
+        "last_verified_at":null}}
+        """
+        model.credentialProfiles = [
+            try JSONDecoder().decode(CredentialProfileEntry.self, from: Data(json.utf8)),
+        ]
+        let row = try #require(AccountsPresentation.rows(model: model).first)
+        #expect(row.isProfile)
+        #expect(!row.enabled)
+    }
+
+    @MainActor
+    @Test func cliLoginRowIsAlwaysEnabledAndNotDeletable() throws {
+        // The native vendor login is a symmetric row: always enabled, never a
+        // credential profile (so never Claudexor's to delete).
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "session ready",
+            intents: ["implement"])]
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available", verification: "passed"),
+        ]
+        let row = try #require(AccountsPresentation.rows(model: model).first { $0.isCliLogin })
+        #expect(row.enabled)
+        #expect(!row.isProfile)
+        #expect(row.profileId == nil)
+    }
+
     @Test func generatedIdSlugifiesTheDisplayName() {
         #expect(AccountsPresentation.generatedProfileId(displayName: "Work", existing: []) == "work")
         #expect(AccountsPresentation.generatedProfileId(displayName: "Experiment A (max)", existing: [])

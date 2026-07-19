@@ -66,6 +66,27 @@ enum RunFacts {
         }
     }
 
+    /// Best-of degradation (M5c): a best-of run that produced FEWER candidates
+    /// than requested must say so honestly ("best-of 2/3"), never silently read
+    /// as a full race. Returns nil for non-multi-candidate runs and for a single
+    /// requested candidate (not a best-of). `degraded` is true only when fewer
+    /// candidates landed than were asked for.
+    static func bestOfLabel(isMultiCandidate: Bool, requested: Int, delivered: Int)
+        -> (text: String, degraded: Bool)? {
+        guard isMultiCandidate, requested >= 2 else { return nil }
+        let landed = max(delivered, 0)
+        let degraded = landed < requested
+        return degraded
+            ? ("best-of \(landed)/\(requested)", true)
+            : ("best-of \(requested)", false)
+    }
+
+    /// Convenience over a task's own mode + requested `n` + delivered candidates.
+    static func bestOfLabel(_ task: TaskRun) -> (text: String, degraded: Bool)? {
+        bestOfLabel(isMultiCandidate: task.mode.isMultiCandidate,
+                    requested: task.n, delivered: task.candidates.count)
+    }
+
     // MARK: Header composition (Run Detail)
 
     /// The PRIMARY header facts (W4.5: 3-4 facts — route, apply, attention;
@@ -90,6 +111,18 @@ enum RunFacts {
             facts.append(Fact(id: "needs_answer", text: "Needs your answer",
                               glyph: "questionmark.bubble.fill", tone: .warning,
                               help: "The harness asked a question; the run is waiting for you (it declines benignly on timeout)."))
+        }
+        // Best-of count — honest degradation when fewer candidates landed than
+        // requested (never a silent full-race read).
+        if let bestOf = bestOfLabel(task) {
+            facts.append(Fact(
+                id: "best_of",
+                text: bestOf.text,
+                glyph: bestOf.degraded ? "flag.slash" : "flag.checkered.2.crossed",
+                tone: bestOf.degraded ? .warning : .neutral,
+                help: bestOf.degraded
+                    ? "Best-of degraded: \(task.candidates.count) of \(task.n) requested candidates were produced."
+                    : "Best-of race across \(task.n) candidates."))
         }
         return facts
     }

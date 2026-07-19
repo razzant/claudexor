@@ -260,7 +260,7 @@ struct ThreadsScreen: View {
                 .scrollContentBackground(.hidden)   // let the Liquid Glass panel show through
             }
 
-            AccountsTriggerRow()
+            SidebarFooter()
         }
         .padding(.top, Theme.Spacing.xs)
         .sheet(isPresented: Binding(
@@ -290,6 +290,11 @@ struct ThreadsScreen: View {
                             }
                         }
                         .padding(Theme.Spacing.lg)
+                        // Global text selection (M5c): the environment modifier
+                        // propagates to every descendant Text — messages, turn
+                        // cards, and progress cards become selectable. Buttons and
+                        // menus keep their own gestures.
+                        .textSelection(.enabled)
                     }
                     .onChange(of: detail.turns.count) {
                         if let last = detail.turns.last { proxy.scrollTo(last.id, anchor: .bottom) }

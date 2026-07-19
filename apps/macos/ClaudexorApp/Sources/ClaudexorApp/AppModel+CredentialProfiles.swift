@@ -86,6 +86,33 @@ extension AppModel {
         }
     }
 
+    // MARK: Footer profile (M5c) — the active credential identity in the sidebar
+
+    /// The harness + credential profile the NEXT turn of the current thread/draft
+    /// will authenticate as, resolved from the wire (thread sticky > draft). The
+    /// profile name is looked up in the registered profiles; nil = the engine's
+    /// automatic account routing (no pinned profile). Truth from the wire only.
+    var activeAccountFooter: (harnessLabel: String, profileName: String?)? {
+        guard let harnessId = effectivePrimaryHarness else { return nil }
+        let label = HarnessFamily(rawValue: harnessId).label
+        let profileId = selectedThreadId == nil
+            ? draftCredentialProfileId
+            : currentThread?.credentialProfileId
+        guard let profileId else { return (label, nil) }
+        let name = credentialProfiles.first {
+            $0.profile.profileId == profileId && $0.profile.harnessId == harnessId
+        }?.profile.displayName
+        return (label, name ?? profileId)
+    }
+
+    // MARK: Update availability (M5c shell)
+
+    /// Re-read the local update override. Renders a chip only when the shell
+    /// actually finds a pending version — no fake states (M7 fills the provider).
+    func refreshUpdateAvailability() {
+        updateAvailability = updateProvider.current()
+    }
+
     // MARK: Auto-balance
 
     /// Harnesses that participate in credential-profile auto-balance — the

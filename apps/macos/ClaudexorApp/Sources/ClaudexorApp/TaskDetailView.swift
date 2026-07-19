@@ -13,7 +13,7 @@ func browserRequirementDetail(_ requirements: [RequestRequirementResolution]?) -
 struct TaskDetailView: View {
     @Environment(AppModel.self) private var model
     let taskId: String
-    @State private var tab: Tab = .answer
+    @State private var tab: RunDetailTab = .outcome
     @State private var verbosity: Verbosity = .normal
     @State private var userSelectedTab = false
     @State private var detailsExpanded = false
@@ -27,59 +27,27 @@ struct TaskDetailView: View {
     @State private var runAgainPrompt = ""
     @State private var showRunAgain = false
     @State private var runningAgain = false
-    @State private var diffLoading = false
-    @State private var diffLoadError: String?
-
-    enum Tab: String, CaseIterable, Identifiable {
-        case answer, plan, activity, candidates, diff, review, artifacts, diagnostics
-        var id: String { rawValue }
-        var label: String {
-            switch self {
-            case .answer: return "Outcome"
-            case .plan: return "Plan"
-            case .activity: return "Timeline"
-            case .candidates: return "Candidates"
-            case .diff: return "Diff"
-            case .review: return "Review"
-            case .artifacts: return "Artifacts"
-            case .diagnostics: return "Diagnostics"
-            }
-        }
-        var glyph: String {
-            switch self {
-            case .answer: return "text.bubble"
-            case .plan: return "checklist"
-            case .activity: return "waveform"
-            case .candidates: return "flag.checkered.2.crossed"
-            case .diff: return "plusminus.circle"
-            case .review: return "person.2.badge.gearshape"
-            case .artifacts: return "photo.on.rectangle.angled"
-            case .diagnostics: return "stethoscope"
-            }
-        }
-    }
+    /// D15: identity-keyed diff load slot — switching runs shows loading/empty,
+    /// never the previous run's diff or a stale error banner.
+    @State private var diffSlot = PayloadSlot<[DiffFile]>()
 
     private var task: TaskRun? { model.task(taskId) }
 
-    private func defaultTab(for task: TaskRun) -> Tab {
-        if task.phase.isActive {
-            return .activity
-        }
-        // A review-blocked run's deliverable IS the findings that need a human.
-        if task.reviewNeedsDecision {
-            return task.findings.isEmpty ? .diagnostics : .review
-        }
-        // A failure-shaped lifecycle terminal opens on its diagnostics unless it
-        // produced a real answer.
-        if task.phase.isFailureShaped {
-            return task.answerText == nil ? .diagnostics : .answer
-        }
-        return .answer
+    private func tabInputs(_ task: TaskRun) -> RunDetailTabInputs {
+        RunDetailTabInputs(
+            isActive: task.phase.isActive,
+            isFailureShaped: task.phase.isFailureShaped,
+            hasAnswer: task.answerText != nil)
     }
 
+    private func defaultTab(for task: TaskRun) -> RunDetailTab {
+        RunDetailTabPolicy.defaultTab(tabInputs(task))
+    }
+
+    /// Re-apply the default ONLY while the user hasn't manually chosen a tab
+    /// (the no-auto-jump guard, D15).
     private func autoSelectDefaultTab(for task: TaskRun) {
-        guard !userSelectedTab else { return }
-        tab = defaultTab(for: task)
+        tab = RunDetailTabPolicy.resolve(current: tab, userSelected: userSelectedTab, inputs: tabInputs(task))
     }
 
     var body: some View {
@@ -100,6 +68,9 @@ struct TaskDetailView: View {
                     .padding(Theme.Spacing.xxl)
                     .frame(maxWidth: Theme.Layout.contentMaxWidth, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // Global text selection (M5c): propagates to all Run Detail
+                    // text (banner, facts, diagnostics, artifact paths, findings).
+                    .textSelection(.enabled)
                 }
                 .scrollContentBackground(.hidden)
             }
@@ -115,7 +86,7 @@ struct TaskDetailView: View {
             // reload that restores them from the server timeline.
             .task(id: task.id) { if task.isLive { await model.loadRunDetail(task.id) } }
             .task(id: "\(task.id):\(tab.rawValue):\(task.hasPatchArtifact)") {
-                if tab == .diff && task.hasPatchArtifact { await loadDiff(task.id) }
+                if tab == .changes { await loadDiff(task.id) }
             }
             .sheet(isPresented: $showRunAgain) { runAgainSheet }
         } else {
@@ -196,7 +167,7 @@ struct TaskDetailView: View {
         // Canonical segmented control (shared with the rest of the app); kept inside a
         // horizontal ScrollView so a long tab set never forces a wide minimum window.
         ScrollView(.horizontal, showsIndicators: false) {
-            SegmentedTabs(items: Tab.allCases.map { ($0, $0.label, $0.glyph) },
+            SegmentedTabs(items: RunDetailTab.allCases.map { ($0, $0.label, $0.glyph) },
                           selection: Binding(get: { tab }, set: { newValue in
                               userSelectedTab = true
                               tab = newValue
@@ -207,15 +178,19 @@ struct TaskDetailView: View {
         }
     }
 
-    private func badge(for t: Tab, task: TaskRun) -> Int? {
+    private func badge(for t: RunDetailTab, task: TaskRun) -> Int? {
         switch t {
-        case .answer: return task.answerText == nil ? nil : 1
-        case .plan: return task.plan.isEmpty ? nil : task.plan.count
-        case .candidates: return task.candidates.isEmpty ? nil : task.candidates.count
-        case .diff: return task.diff.isEmpty ? nil : task.diff.count
-        case .review: return task.findings.isEmpty ? nil : task.findings.count
-        case .diagnostics: return task.engineError == nil && task.diagnosticText == nil ? nil : 1
-        case .activity, .artifacts: return nil
+        case .outcome:
+            // The findings that need a human are the loudest thing to badge.
+            if !task.findings.isEmpty { return task.findings.count }
+            return task.answerText == nil ? nil : 1
+        case .changes:
+            let n = task.diff.count + task.candidates.count
+            return n == 0 ? nil : n
+        case .evidence:
+            return task.engineError == nil && task.diagnosticText == nil ? nil : 1
+        case .activity:
+            return nil
         }
     }
 
@@ -224,104 +199,130 @@ struct TaskDetailView: View {
     @ViewBuilder
     private func content(_ task: TaskRun) -> some View {
         switch tab {
-        case .answer:
-            answerContent(task)
-        case .plan:
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                SectionLabel("Plan", systemImage: "checklist",
-                             accessory: AnyView(Text("\(task.planDone)/\(task.plan.count) done").font(.caption).foregroundStyle(.secondary)))
-                Panel { PlanListView(items: task.plan) }
-            }
+        case .outcome:
+            outcomeContent(task)
         case .activity:
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                SectionLabel("Timeline", systemImage: "waveform", accessory: AnyView(verbosityMenu))
-                // Live-first feed: the run's streaming box while live (only
-                // this tab re-renders per batch), the folded task history after.
-                Panel {
-                    ActivityFeedView(events: model.activityFor(task),
-                                     droppedOlder: model.liveBox(task.id)?.activityDropped ?? 0,
-                                     verbosity: verbosity)
-                }
-            }
-        case .candidates:
-            candidatesContent(task)
-        case .diff:
-            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                // Offer Revert here when the server says this turn's in-place change
-                // is still safely revertable (tree unchanged since). Server-owned.
-                if task.revertable {
-                    Panel(padding: Theme.Spacing.md) {
-                        HStack(spacing: Theme.Spacing.sm) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Label("Applied in place", systemImage: "arrow.uturn.backward.circle")
-                                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                                if let revertError {
-                                    Text(revertError).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-                                }
-                            }
-                            Spacer()
-                            Button(reverting ? "Reverting…" : "Revert") {
-                                reverting = true
-                                Task {
-                                    let outcome = await model.revertRun(runId: task.id)
-                                    reverting = false
-                                    switch outcome {
-                                    case .reverted: revertError = nil
-                                    case .diverged(let message), .error(let message): revertError = message
-                                    }
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(reverting)
-                            .help("Restore the project to this turn's pre-turn state (server refuses if you've edited since).")
-                        }
-                    }
-                }
-                if task.diff.isEmpty, task.hasPatchArtifact {
-                    if let diffLoadError {
-                        Panel {
-                            VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                                Label(diffLoadError, systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(Theme.status(.caution))
-                                    .textSelection(.enabled)
-                                Text("Full patch: final/patch.diff")
-                                    .font(.caption.monospaced()).foregroundStyle(.secondary)
-                                Button("Retry") { Task { await loadDiff(task.id) } }
-                                    .buttonStyle(.bordered).controlSize(.small)
-                            }
-                        }
-                    } else if diffLoading {
-                        ProgressView("Loading diff…").controlSize(.small)
-                    }
-                } else if task.hasPatchArtifact {
-                    DiffView(files: task.diff)
-                } else {
-                    EmptyStateView(
-                        title: "No diff",
-                        message: "This run did not produce a patch.",
-                        systemImage: "plusminus.circle")
-                }
-            }
-        case .review:
-            reviewContent(task)
-        case .artifacts:
-            ArtifactGalleryView(runId: task.id)
-        case .diagnostics:
-            diagnosticsContent(task)
+            activityContent(task)
+        case .changes:
+            changesContent(task)
+        case .evidence:
+            evidenceContent(task)
         }
     }
 
-    private func loadDiff(_ runId: String) async {
-        diffLoading = true
-        diffLoadError = nil
-        switch await model.loadRunDiff(runId) {
-        case .loaded, .unavailable:
-            break
-        case .failed(let message):
-            diffLoadError = message
+    // MARK: Activity (timeline + interactions)
+
+    private func activityContent(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            SectionLabel("Timeline", systemImage: "waveform", accessory: AnyView(verbosityMenu))
+            // Live-first feed: the run's streaming box while live (only this tab
+            // re-renders per batch), the folded task history after. Pending
+            // interactions stay pinned above every tab (they park the run on the
+            // user); their history is part of the timeline events here.
+            Panel {
+                ActivityFeedView(events: model.activityFor(task),
+                                 droppedOlder: model.liveBox(task.id)?.activityDropped ?? 0,
+                                 verbosity: verbosity)
+            }
         }
-        diffLoading = false
+    }
+
+    // MARK: Changes (diff + candidates)
+
+    @ViewBuilder
+    private func changesContent(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            diffSection(task)
+            if !task.candidates.isEmpty {
+                candidatesContent(task)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func diffSection(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            SectionLabel("Diff", systemImage: "plusminus.circle")
+            // Offer Revert here when the server says this turn's in-place change
+            // is still safely revertable (tree unchanged since). Server-owned.
+            if task.revertable {
+                Panel(padding: Theme.Spacing.md) {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label("Applied in place", systemImage: "arrow.uturn.backward.circle")
+                                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            if let revertError {
+                                Text(revertError).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                            }
+                        }
+                        Spacer()
+                        Button(reverting ? "Reverting…" : "Revert") {
+                            reverting = true
+                            Task {
+                                let outcome = await model.revertRun(runId: task.id)
+                                reverting = false
+                                switch outcome {
+                                case .reverted: revertError = nil
+                                case .diverged(let message), .error(let message): revertError = message
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(reverting)
+                        .help("Restore the project to this turn's pre-turn state (server refuses if you've edited since).")
+                    }
+                }
+            }
+            // D15: the diff renders from its identity-keyed load slot, so a run
+            // switch never paints the previous run's patch (or a stale error).
+            switch diffSlot.state {
+            case .loaded(let files):
+                DiffView(files: files)
+            case .failed(let error):
+                Panel {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                        Label(error.message, systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Theme.status(.caution))
+                            .textSelection(.enabled)
+                        Text("Full patch: final/patch.diff")
+                            .font(.caption.monospaced()).foregroundStyle(.secondary)
+                        Button("Retry") { Task { await loadDiff(task.id) } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            case .empty:
+                EmptyStateView(
+                    title: "No diff",
+                    message: "This run did not produce a patch.",
+                    systemImage: "plusminus.circle")
+            case .idle, .loading:
+                ProgressView("Loading diff…").controlSize(.small)
+            }
+        }
+    }
+
+    /// Load the diff into its identity-keyed slot (D15). Reuses the heavy
+    /// tab-only fetch (INV-136) and re-reads the model's parsed store on success.
+    private func loadDiff(_ runId: String) async {
+        let id = PayloadIdentity(runId: runId, plane: .diff)
+        diffSlot.begin(id)
+        guard let task = model.task(runId), task.hasPatchArtifact else {
+            diffSlot.commit(.empty, for: id)
+            return
+        }
+        if !task.diff.isEmpty {
+            diffSlot.commit(.loaded(task.diff), for: id)
+            return
+        }
+        switch await model.loadRunDiff(runId) {
+        case .loaded:
+            diffSlot.commit(.loaded(model.task(runId)?.diff ?? []), for: id)
+        case .unavailable:
+            diffSlot.commit(.empty, for: id)
+        case .failed(let message):
+            diffSlot.commit(.failed(.transport(message)), for: id)
+        }
     }
 
     /// Tone for the server-owned outcome banner: a failure-shaped lifecycle or a
@@ -333,7 +334,61 @@ struct TaskDetailView: View {
         return .positive
     }
 
-    private func answerContent(_ task: TaskRun) -> some View {
+    // MARK: Outcome (banner + facts + review verdict + plan readiness/questions
+    // + apply/decision controls) — the terminal-truth surface.
+
+    @ViewBuilder
+    private func outcomeContent(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            answerBlock(task)
+            if task.planReadiness != nil || !task.planQuestions.isEmpty || !task.plan.isEmpty {
+                planSection(task)
+            }
+            if task.reviewVerdict != .notRun || task.reviewNeedsDecision || !task.findings.isEmpty {
+                reviewContent(task)
+            }
+        }
+    }
+
+    /// Plan readiness (D17) + open questions + the plan checklist, folded into
+    /// Outcome. Interactive answering stays on the chat turn card (thread-bound);
+    /// here it is the honest readiness + reference of what's still open.
+    @ViewBuilder
+    private func planSection(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            SectionLabel("Plan", systemImage: "checklist",
+                         accessory: task.plan.isEmpty ? nil
+                            : AnyView(Text("\(task.planDone)/\(task.plan.count) done")
+                                .font(.caption).foregroundStyle(.secondary)))
+            if let readiness = task.planReadiness {
+                let ready = readiness.state == "ready"
+                Label(ready ? "Plan is ready to implement"
+                            : "Plan needs answers before implementing",
+                      systemImage: ready ? "checkmark.seal.fill" : "questionmark.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.status(ready ? .positive : .caution))
+                    .textSelection(.enabled)
+            }
+            if !task.planQuestions.isEmpty {
+                Panel {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        Text("Open questions — answer on the plan turn in chat to continue.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(task.planQuestions) { q in
+                            Label(q.prompt, systemImage: "questionmark.circle")
+                                .font(.caption).foregroundStyle(.primary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            if !task.plan.isEmpty {
+                Panel { PlanListView(items: task.plan) }
+            }
+        }
+    }
+
+    private func answerBlock(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionLabel(task.mode == .ask ? "Answer" : "Outcome", systemImage: "text.bubble")
             // D18: the SERVER-OWNED outcome banner is the Outcome headline,
@@ -378,7 +433,7 @@ struct TaskDetailView: View {
                         Text("Target \(String(receipt.targetPreimageSha.prefix(12))) · verifier \(receipt.finalVerify.attempted ? "ran" : "not run") · gates \(receipt.finalVerify.gatesPassed == true ? "passed" : "not passed")")
                             .font(.caption.monospaced()).foregroundStyle(.secondary)
                         Button {
-                            tab = .diff
+                            tab = .changes
                             userSelectedTab = true
                         } label: {
                             Label("Open Diff", systemImage: "plusminus.circle")
@@ -408,7 +463,15 @@ struct TaskDetailView: View {
 
     private func candidatesContent(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            SectionLabel("Candidates", systemImage: "flag.checkered.2.crossed")
+            SectionLabel("Candidates", systemImage: "flag.checkered.2.crossed",
+                         accessory: RunFacts.bestOfLabel(task).map { bestOf in
+                             AnyView(Text(bestOf.text)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(bestOf.degraded ? Theme.status(.caution) : .secondary)
+                                .help(bestOf.degraded
+                                    ? "Fewer candidates than requested — best-of degraded."
+                                    : "Best-of race count."))
+                         })
             if task.candidates.isEmpty {
                 Panel { Text("No candidates yet — this mode runs a single envelope or hasn't spawned candidates.").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
             } else {
@@ -460,6 +523,19 @@ struct TaskDetailView: View {
             if !task.findings.isEmpty {
                 ForEach(task.findings) { FindingCard(finding: $0) }
             }
+        }
+    }
+
+    // MARK: Evidence (artifacts + diagnostics + telemetry)
+
+    private func evidenceContent(_ task: TaskRun) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                SectionLabel("Artifacts", systemImage: "photo.on.rectangle.angled")
+                ArtifactGalleryView(runId: task.id)
+                    .frame(minHeight: 160)
+            }
+            diagnosticsContent(task)
         }
     }
 
@@ -534,7 +610,7 @@ struct TaskDetailView: View {
             if !task.artifactPaths.isEmpty {
                 Panel {
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                        SectionLabel("Artifacts", systemImage: "folder")
+                        SectionLabel("All artifact paths", systemImage: "folder")
                         ForEach(task.artifactPaths, id: \.self) { path in
                             Text(path)
                                 .font(.system(.caption, design: .monospaced))

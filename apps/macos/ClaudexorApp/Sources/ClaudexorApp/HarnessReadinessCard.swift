@@ -20,19 +20,36 @@ struct HarnessReadinessPresentation: Equatable {
     var rawEvidence: String
 
     static func from(family: HarnessFamily, info: HarnessInfo?) -> HarnessReadinessPresentation {
-        HarnessReadinessPresentation(
+        // M5c: the daemon can emit the same finding more than once (aggregated
+        // across probes) — dedupe here, the ONE readiness render owner, so a
+        // repeated check/reason never shows twice (owner-reported).
+        let rows = dedupeChecks(info?.readiness ?? [])
+        let reasons = dedupeOrdered(info?.reasons ?? [])
+        return HarnessReadinessPresentation(
             family: family,
             available: !(info?.routableIntents.isEmpty ?? true),
             health: info?.health ?? .unavailable,
             summary: info?.auth ?? "Harness Doctor has not loaded this harness.",
-            rows: info?.readiness ?? [],
+            rows: rows,
             rawEvidence: (
-                (info?.reasons ?? [])
-                    + (info?.readiness ?? []).map { row in
+                reasons
+                    + rows.map { row in
                         "\(row.id): \(row.status)\(row.detail.map { " — \($0)" } ?? "")"
                     }
             ).joined(separator: "\n")
         )
+    }
+
+    /// Order-preserving de-duplication of readiness checks by id (first wins).
+    static func dedupeChecks(_ checks: [ReadinessCheck]) -> [ReadinessCheck] {
+        var seen = Set<String>()
+        return checks.filter { seen.insert($0.id).inserted }
+    }
+
+    /// Order-preserving de-duplication of identical reason strings.
+    static func dedupeOrdered(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
     }
 }
 

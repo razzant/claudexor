@@ -17,7 +17,14 @@ struct PrimaryHarnessChip: View {
     private var options: [HarnessFamily] { pool.isEmpty ? model.selectableHarnesses.filter { $0 != .fake && $0 != .raw } : pool }
 
     var body: some View {
-        Menu {
+        ChipMenu(
+            tint: tint,
+            fill: .tinted(tint),
+            help: "Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool."
+        ) {
+            if let current { HarnessLogo(family: current, size: 13) } else { Image(systemName: "wand.and.stars").imageScale(.small) }
+            if !compact { Text(current?.label ?? "Auto") }
+        } menu: {
             Button { onPick(nil) } label: {
                 Label("Auto", systemImage: "wand.and.stars")
                 if current == nil { Image(systemName: "checkmark") }
@@ -29,21 +36,7 @@ struct PrimaryHarnessChip: View {
                     if current == f { Image(systemName: "checkmark") }
                 }
             }
-        } label: {
-            HStack(spacing: Theme.Spacing.xs) {
-                if let current { HarnessLogo(family: current, size: 13) } else { Image(systemName: "wand.and.stars").imageScale(.small) }
-                if !compact { Text(current?.label ?? "Auto") }
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
-            }
-            .font(.caption.weight(.medium))
-            .foregroundStyle(tint)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Controls.chipVPadding)
-            .background(tint.opacity(0.14), in: Capsule())
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool.")
     }
 }
 
@@ -69,29 +62,22 @@ struct AccessChip: View {
     var body: some View { chipMenu }
 
     private var chipMenu: some View {
-        Menu {
+        ChipMenu(
+            tint: tint,
+            fill: .tinted(tint),
+            disabled: writeDisabled || browserArmed,
+            help: chipHelp
+        ) {
+            Image(systemName: access.glyph).imageScale(.small)
+            Text(browserArmed ? "\(access.label) · Browser" : access.label)
+        } menu: {
             ForEach(AccessProfile.composerCases) { profile in
                 Button { access = profile } label: {
                     Label(profile.label, systemImage: profile.glyph)
                     if access == profile { Image(systemName: "checkmark") }
                 }
             }
-        } label: {
-            HStack(spacing: Theme.Spacing.xs) {
-                Image(systemName: access.glyph).imageScale(.small)
-                Text(browserArmed ? "\(access.label) · Browser" : access.label)
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
-            }
-            .font(.caption.weight(.medium))
-            .foregroundStyle(tint)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Controls.chipVPadding)
-            .background(tint.opacity(0.14), in: Capsule())
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(writeDisabled || browserArmed)
-        .help(chipHelp)
     }
 
     private var chipHelp: String {
@@ -166,7 +152,16 @@ struct IntentMenu: View {
     }
 
     var body: some View {
-        Menu {
+        ChipMenu(
+            tint: Theme.accent,
+            fill: .selected(active: true, tint: Theme.accent),
+            help: projectScoped
+                ? "Intent for the next turn — Agent strategy (Best-of / until-clean / create / delegate) and Plan council live in ⋯"
+                : "No Current Project — only Ask (read-only) is available."
+        ) {
+            Image(systemName: selection.glyph).imageScale(.small)
+            Text(selection.label).fontWeight(.medium)
+        } menu: {
             ForEach(options) { m in
                 Button {
                     selection = m
@@ -175,22 +170,6 @@ struct IntentMenu: View {
                     if m == selection { Image(systemName: "checkmark") }
                 }
             }
-        } label: {
-            HStack(spacing: Theme.Spacing.xs) {
-                Image(systemName: selection.glyph).imageScale(.small)
-                Text(selection.label).fontWeight(.medium)
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
-            }
-            .font(.caption)
-            .foregroundStyle(Theme.accent)
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Controls.chipVPadding)
-            .selectedChip(active: true, tint: Theme.accent)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help(projectScoped
-              ? "Intent for the next turn — Agent strategy (Best-of / until-clean / create / delegate) and Plan council live in ⋯"
-              : "No Current Project — only Ask (read-only) is available.")
     }
 }

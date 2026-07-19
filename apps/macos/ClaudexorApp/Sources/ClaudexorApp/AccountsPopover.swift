@@ -32,12 +32,21 @@ struct AccountRowModel: Identifiable {
     let family: HarnessFamily
     let readiness: AccountReadiness
     let verified: Bool
-    /// nil => the engine-default login for `family`; else the credential profile.
+    /// nil => the engine-default login for `family` (the "CLI login" row); else
+    /// the credential profile.
     let profileId: String?
     let detail: String?
     let quotaGroups: [QuotaPresentation.Group]
+    /// D25 Enabled: participates in pickers + the auto-rotation pool. Sourced
+    /// from the wire (`profile.enabled`); the CLI login is always enabled (a
+    /// vendor login is never disable-able from here). READ-ONLY — the daemon
+    /// exposes no enabled-mutation route yet (reported gap), so the toggle
+    /// reflects wire truth and never fakes a client-side flip.
+    let enabled: Bool
 
     var isProfile: Bool { profileId != nil }
+    /// The native vendor login row (not one of Claudexor's credential profiles).
+    var isCliLogin: Bool { profileId == nil }
 
     /// The single worst usage window across the account's quota groups; drives
     /// the ONE compact quota line the popover shows per account.
@@ -72,7 +81,10 @@ enum AccountsPresentation {
                 verified: source?.isVerifiedNativeSession == true,
                 profileId: nil,
                 detail: source?.detail,
-                quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue }
+                quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue },
+                // A native vendor login is never disabled from here (login/logout
+                // happen via the vendor CLI) — it is symmetrically "enabled".
+                enabled: true
             ))
         }
 
@@ -91,7 +103,8 @@ enum AccountsPresentation {
                 detail: entry.status.detail,
                 quotaGroups: groups.filter {
                     $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
-                }
+                },
+                enabled: entry.profile.enabled
             ))
         }
         return rows
@@ -157,6 +170,79 @@ enum AccountsPresentation {
         let tail = head.union("-_")
         guard let first = s.first, head.contains(first) else { return false }
         return s.dropFirst().allSatisfy { tail.contains($0) }
+    }
+}
+
+/// The sidebar footer (bottom-left): a quiet update chip (M5c shell), the active
+/// credential-profile line, and the accounts trigger. Composed so the footer is
+/// ONE ordered stack rather than three ad-hoc rows scattered in the thread list.
+struct SidebarFooter: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(spacing: 0) {
+            UpdateChip()
+            FooterProfileRow()
+            AccountsTriggerRow()
+        }
+        // Read the local override on appear; the real updater (M7) will drive
+        // the same field. Cheap file read — no network, no fake state.
+        .onAppear { model.refreshUpdateAvailability() }
+    }
+}
+
+/// The bottom-left update chip (M5c shell). Renders NOTHING until the (future
+/// M7) updater — via the local override for now — reports a pending version.
+struct UpdateChip: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let update = model.updateAvailability {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.caption).foregroundStyle(Theme.accent)
+                Text("Update available")
+                    .font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                Text("v\(update.version)")
+                    .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
+                    .monospacedDigit()
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+            .help(update.url.map { "Update to v\(update.version) — \($0)" }
+                  ?? "Update to v\(update.version) is available.")
+        }
+    }
+}
+
+/// The active credential-profile line: which account the next turn will use,
+/// shown next to its harness. Truth from the wire (thread/draft sticky); hidden
+/// when there is no resolved harness.
+struct FooterProfileRow: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if let footer = model.activeAccountFooter {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "person.crop.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(footer.harnessLabel)
+                    .font(.caption.weight(.medium)).foregroundStyle(.primary)
+                if let name = footer.profileName {
+                    Text("·").font(.caption).foregroundStyle(.tertiary)
+                    Text(name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else {
+                    Text("· auto routing").font(.caption2).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.top, Theme.Spacing.xs)
+            .help(footer.profileName.map { "Next turn authenticates as \(footer.harnessLabel) · \($0)." }
+                  ?? "Next turn uses automatic account routing for \(footer.harnessLabel).")
+        }
     }
 }
 
@@ -378,6 +464,39 @@ struct AccountsSurface: View {
         }
     }
 
+    /// The D25 Active marker, symmetric across profile rows AND the CLI login:
+    /// a profile is active when the thread/draft is pinned to it; the CLI login
+    /// is active when NO profile is pinned for its harness (the vendor login is
+    /// what the harness authenticates as). Truth from the wire only.
+    private func isActive(_ row: AccountRowModel) -> Bool {
+        if row.isProfile {
+            return row.profileId == selectedProfileId
+                && (selectedHarnessId == nil || selectedHarnessId == row.harnessId)
+        }
+        // CLI login row: active when its harness is the thread/draft primary and
+        // no profile is pinned.
+        return selectedProfileId == nil && selectedHarnessId == row.harnessId
+    }
+
+    /// The "Use" action for a row, or nil when it is already active / cannot be
+    /// made active. Verified profiles pin the thread; the CLI login clears the
+    /// pin back to the vendor login. Both are the wire-backed thread PATCH.
+    private func useAction(_ row: AccountRowModel) -> (() -> Void)? {
+        guard !isActive(row) else { return nil }
+        if row.isProfile, row.verified {
+            return {
+                Task {
+                    await model.setThreadCredentialProfile(row.profileId, harnessId: row.harnessId)
+                }
+            }
+        }
+        if row.isCliLogin, selectedHarnessId == row.harnessId {
+            // Clear the manual pin → the harness falls back to its CLI login.
+            return { Task { await model.setThreadCredentialProfile(nil, harnessId: row.harnessId) } }
+        }
+        return nil
+    }
+
     private var accountsList: some View {
         VStack(spacing: Theme.Spacing.xs) {
             if rows.isEmpty {
@@ -390,17 +509,12 @@ struct AccountsSurface: View {
                         row: row,
                         login: { login(row) },
                         loginDisabled: loginDisabled(row),
-                        selected: row.isProfile
-                            && row.profileId == selectedProfileId
-                            && (selectedHarnessId == nil || selectedHarnessId == row.harnessId),
-                        use: row.isProfile && row.verified
-                            ? {
-                                Task {
-                                    await model.setThreadCredentialProfile(
-                                        row.profileId, harnessId: row.harnessId)
-                                }
-                            }
-                            : nil,
+                        active: isActive(row),
+                        // "Use" makes a row the thread's active account (wire-backed
+                        // PATCH of thread.credentialProfileId). Offered for a verified
+                        // profile, and for the CLI login (nil profile = clear the pin
+                        // back to the vendor login) — symmetric across row kinds.
+                        use: useAction(row),
                         delete: row.isProfile && !deleting ? { pendingDelete = row } : nil
                     )
                 }
@@ -471,7 +585,8 @@ struct AccountsSurface: View {
             verified: false,
             profileId: id,
             detail: nil,
-            quotaGroups: []
+            quotaGroups: [],
+            enabled: true
         ))
     }
 
@@ -493,7 +608,8 @@ private struct AccountRowView: View {
     let row: AccountRowModel
     let login: () -> Void
     var loginDisabled = false
-    var selected = false
+    /// The active account for the current thread/draft (the D25 Active marker).
+    var active = false
     var use: (() -> Void)? = nil
     /// Present when the account can be removed (registered profiles only —
     /// default vendor logins are not Claudexor's to delete).
@@ -509,7 +625,9 @@ private struct AccountRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Theme.Spacing.xs) {
                     Text(row.displayName).font(.callout.weight(.medium))
-                    Text(row.isProfile ? row.harnessId : "default")
+                    // D25: the native vendor login is a symmetric "CLI login" row,
+                    // no longer visually "the default".
+                    Text(row.isProfile ? row.harnessId : "CLI login")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 quotaLine
@@ -519,6 +637,20 @@ private struct AccountRowView: View {
                 }
             }
             Spacer()
+            // D25 Enabled: symmetric on every row. READ-ONLY — the daemon exposes
+            // `profile.enabled` but no mutation route, so the toggle reflects wire
+            // truth and cannot be flipped from here (no faked client-side state).
+            Toggle("", isOn: .constant(row.enabled))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .tint(Theme.accent)
+                .disabled(true)
+                .help(row.isCliLogin
+                    ? "The CLI login always participates (enable/disable happens via the vendor CLI)."
+                    : row.enabled
+                        ? "Enabled — participates in account pickers and the auto-rotation pool (read-only: the engine owns this state)."
+                        : "Disabled on the engine — excluded from pickers and rotation (read-only here).")
             Button(row.verified ? "Manage" : "Log in", action: login)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -526,17 +658,20 @@ private struct AccountRowView: View {
                 .help(row.verified
                     ? "Manage this account's native login"
                     : "Start the official CLI login for this account — a Terminal window opens automatically")
-            if selected {
-                Label("Using", systemImage: "checkmark")
+            // D25 Active marker: symmetric across profile rows AND the CLI login —
+            // the account the current thread/draft authenticates as. No row is
+            // visually "the default" beyond THIS marker.
+            if active {
+                Label("Active", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Theme.accent)
-                    .help("This thread is pinned to this account")
+                    .help("New/continued turns of this thread use this account.")
             } else if let use {
                 Button("Use", action: use)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .tint(Theme.accentSolid)
-                    .help("Pin this account and its harness as the thread's eligible pool")
+                    .help("Make this the active account for the thread")
             }
             if let delete {
                 Button(role: .destructive, action: delete) {

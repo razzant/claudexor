@@ -99,6 +99,12 @@ final class AppModel {
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// bottom-left accounts popover (list + guided add + per-account login).
     var credentialProfiles: [CredentialProfileEntry] = []
+    /// M5c update-chip shell: the latest availability read from the local
+    /// override (nil = nothing to advertise). Populated by refreshUpdateAvailability().
+    var updateAvailability: UpdateAvailability?
+    /// The provider behind the update chip — the on-disk override by default,
+    /// injectable for tests.
+    var updateProvider: UpdateAvailabilityProviding = FileUpdateAvailabilityProvider()
     /// Optimistic auto-balance toggle value while the settings save round-trips
     /// (owner dogfood: the switch must flip INSTANTLY, not after the daemon
     /// replies). Cleared when the save settles; a failed save snaps back.
