@@ -8,6 +8,7 @@ import {
   CODEX_FILE_AUTH_OVERRIDE,
   codexAuthModeAt,
   codexExecArgs,
+  codexNativeEnv,
   createCodexAdapter,
   defaultNativeCodexHome,
   ensureCodexApiAuth,
@@ -30,6 +31,81 @@ describe("Codex strict runtime auth routing", () => {
       if (previousNative === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
       else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previousNative;
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("honors CLAUDEXOR_CODEX_NATIVE_HOME carried in the RUN env, not only process.env", () => {
+    const previous = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    const loggedIn = mkdtempSync(join(tmpdir(), "codex-native-override-"));
+    writeFileSync(
+      join(loggedIn, "auth.json"),
+      JSON.stringify({ auth_mode: "chatgpt", tokens: {} }),
+    );
+    delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME; // override lives ONLY in the run env
+    try {
+      const runEnv = { HOME: "/scoped/home", CLAUDEXOR_CODEX_NATIVE_HOME: loggedIn };
+      // The owner reads the override from the authoritative run env.
+      expect(defaultNativeCodexHome(runEnv)).toBe(loggedIn);
+      // codexNativeEnv (doctor/run probe env builder) routes CODEX_HOME to it.
+      expect(codexNativeEnv(runEnv).CODEX_HOME).toBe(loggedIn);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previous;
+      rmSync(loggedIn, { recursive: true, force: true });
+    }
+  });
+
+  it("the default native home is unchanged when no override is set anywhere", () => {
+    const root = mkdtempSync(join(tmpdir(), "codex-default-home-"));
+    const prevConfig = process.env.CLAUDEXOR_CONFIG_DIR;
+    const prevNative = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
+    delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    try {
+      const withoutOverride = { HOME: "/scoped/home" };
+      expect(defaultNativeCodexHome(withoutOverride)).toBe(join(root, "native", "codex"));
+      expect(defaultNativeCodexHome()).toBe(join(root, "native", "codex"));
+    } finally {
+      if (prevConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prevConfig;
+      if (prevNative === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = prevNative;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("the doctor probe inspects the override home when it rides the spec env only", async () => {
+    const previous = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    const loggedIn = mkdtempSync(join(tmpdir(), "codex-doctor-override-"));
+    writeFileSync(
+      join(loggedIn, "auth.json"),
+      JSON.stringify({ auth_mode: "chatgpt", tokens: {} }),
+    );
+    delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    try {
+      let probeEnv: Record<string, string | null | undefined> | undefined;
+      const adapter = createCodexAdapter({
+        detectVersion: async () => "codex 0.144.1",
+        probeLogin: async (_bin, options) => {
+          probeEnv = options?.env;
+          return { authed: true, method: "chatgpt", probeError: null };
+        },
+        hasApiKey: () => false,
+        codexApiKey: () => undefined,
+        smokeIsolatedApiKey: async () => ({ ok: false, detail: "x" }),
+      });
+      await adapter.doctor({
+        cwd: "/repo",
+        env: { HOME: "/scoped/home", CLAUDEXOR_CODEX_NATIVE_HOME: loggedIn },
+        authPreference: "subscription",
+        authSource: "native_session",
+        fresh: true,
+      });
+      expect(probeEnv?.CODEX_HOME).toBe(loggedIn);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previous;
+      rmSync(loggedIn, { recursive: true, force: true });
     }
   });
 

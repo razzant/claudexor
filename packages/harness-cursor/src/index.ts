@@ -777,6 +777,7 @@ async function* runCursor(
   const cursorParser = createCursorParser(
     route === "local_session" ? "vendor_native" : "managed_api_key",
     route === "local_session" ? "native_session" : "api_key_env",
+    spec.intent === "plan",
   );
   yield* deps.runCliHarness({
     bin: BIN,

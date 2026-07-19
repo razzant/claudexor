@@ -30,6 +30,24 @@ describe("Claude-only macOS Keychain bridge (INV-067)", () => {
     vi.stubEnv("CLAUDEXOR_CLAUDE_NATIVE_DIR", join(config, "..", ".claude"));
     expect(() => defaultNativeClaudeConfigDir()).toThrow(/must stay inside/);
   });
+  it("honors CLAUDEXOR_CLAUDE_NATIVE_DIR carried in the RUN env, not only process.env", () => {
+    const config = root("claudexor-owned-config-");
+    vi.stubEnv("CLAUDEXOR_CONFIG_DIR", config);
+    // Override lives ONLY in the run env (process.env is unset for it).
+    vi.stubEnv("CLAUDEXOR_CLAUDE_NATIVE_DIR", "");
+    const runDir = join(config, "native", "claude", "work");
+    const runEnv = { HOME: "/scoped/home", CLAUDEXOR_CLAUDE_NATIVE_DIR: runDir };
+    expect(defaultNativeClaudeConfigDir(runEnv)).toBe(runDir);
+    // Default is unchanged when no override rides the run env either.
+    expect(defaultNativeClaudeConfigDir({ HOME: "/scoped/home" })).toBe(
+      join(config, "native", "claude", "default"),
+    );
+    // The config-root containment guard still applies to a run-env override.
+    expect(() =>
+      defaultNativeClaudeConfigDir({ CLAUDEXOR_CLAUDE_NATIVE_DIR: join(config, "..", ".claude") }),
+    ).toThrow(/must stay inside/);
+  });
+
   it("bridges only a disposable Claude child HOME and is idempotent", () => {
     const real = root("claudexor-real-home-");
     const scoped = root("claudexor-scoped-home-");

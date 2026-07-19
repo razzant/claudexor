@@ -81,7 +81,7 @@ export async function resolveCodexProfileRoute(
     const tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-ro-codex-auth-"));
     try {
       ensureCodexApiAuth({ CODEX_HOME: tempCodexHome }, true, key);
-      if (codexAuthModeAt(tempCodexHome) === "api_key")
+      if (codexAuthModeAt(tempCodexHome, specEnv) === "api_key")
         return { route: "api_key", nativeEnv, tempCodexHome, key, refusal: null };
     } catch (err) {
       rmSync(tempCodexHome, { recursive: true, force: true });

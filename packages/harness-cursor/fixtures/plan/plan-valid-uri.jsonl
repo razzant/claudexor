@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","model":"gpt-5"}
+{"type":"tool_call","subtype":"started","call_id":"p1","tool_call":{"createPlanToolCall":{"args":{"overview":"Fix add","plan":"do it"}}}}
+{"type":"tool_call","subtype":"completed","call_id":"p1","tool_call":{"createPlanToolCall":{"args":{"overview":"Fix add","plan":"do it"},"result":{"success":{},"planUri":"cursor://plans/abc123"}}}}
+{"type":"assistant","message":{"content":[{"text":"Plan created."}]}}
+{"type":"result","subtype":"success","result":"Plan created.","total_cost_usd":0.01}

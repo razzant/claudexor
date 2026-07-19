@@ -27,3 +27,11 @@ fixtures:
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: false
+  # Plan-mode createPlan recovery fixtures (Defect 1). Replayed with planMode=true
+  # by src/plan.test.ts, NOT by the root conformance loop (which is agent-mode).
+  plan/plan-empty-uri-inline.jsonl:
+    source: synthetic
+  plan/plan-valid-uri.jsonl:
+    source: synthetic
+  plan/plan-no-plan.jsonl:
+    source: synthetic

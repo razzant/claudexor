@@ -139,7 +139,7 @@ export function codexNativeEnv(
   return {
     ...(base ?? {}),
     ...providerScrubEnv(),
-    CODEX_HOME: codexHome ?? defaultNativeCodexHome(),
+    CODEX_HOME: codexHome ?? defaultNativeCodexHome(base),
   };
 }
 
@@ -674,7 +674,7 @@ async function* runCodex(
       if (!key) return false;
       tempCodexHome = mkdtempSync(join(tmpdir(), "claudexor-codex-auth-"));
       ensureCodexApiAuth({ CODEX_HOME: tempCodexHome });
-      if (codexAuthModeAt(tempCodexHome) === "api_key") return true;
+      if (codexAuthModeAt(tempCodexHome, spec.env) === "api_key") return true;
       rmSync(tempCodexHome, { recursive: true, force: true });
       tempCodexHome = null;
       return false;

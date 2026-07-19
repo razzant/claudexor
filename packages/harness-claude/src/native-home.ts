@@ -3,15 +3,27 @@ import { join, resolve, sep } from "node:path";
 import { ensureDir, userConfigDir, userHomeDir } from "@claudexor/util";
 
 export const CLAUDE_KEYCHAIN_BRIDGE_ENV = "CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE";
+export const CLAUDE_NATIVE_DIR_ENV = "CLAUDEXOR_CLAUDE_NATIVE_DIR";
 
 export interface ClaudeNativeHomeOptions {
   platform?: NodeJS.Platform;
   userHome?: string;
 }
 
-/** Claudexor-owned default store; ordinary ~/.claude is never used. */
-export function defaultNativeClaudeConfigDir(): string {
-  const override = process.env.CLAUDEXOR_CLAUDE_NATIVE_DIR;
+/**
+ * Claudexor-owned default store; ordinary ~/.claude is never used.
+ *
+ * The `CLAUDEXOR_CLAUDE_NATIVE_DIR` override is read from the AUTHORITATIVE run
+ * env first (the exact env the claude child spawns under, threaded through
+ * `claudeNativeEnv`/`probeAuthStatus`), falling back to `process.env` — reading
+ * only `process.env` made the doctor/run auth probe ignore an override carried
+ * in the run env and silently probe the default store (symmetry with codex's
+ * defaultNativeCodexHome). The config-root containment guard still applies.
+ */
+export function defaultNativeClaudeConfigDir(
+  env?: Record<string, string | null | undefined>,
+): string {
+  const override = env?.[CLAUDE_NATIVE_DIR_ENV] ?? process.env.CLAUDEXOR_CLAUDE_NATIVE_DIR;
   if (!override?.trim()) return join(userConfigDir(), "native", "claude", "default");
   const ownedRoot = resolve(userConfigDir());
   const target = resolve(override.trim());

@@ -41,7 +41,7 @@ export function ensureCodexApiAuth(
   if (!allowApiKey) return;
   const home = env?.["CODEX_HOME"];
   if (!home) return;
-  if (resolve(home) === resolve(defaultNativeCodexHome())) {
+  if (resolve(home) === resolve(defaultNativeCodexHome(env))) {
     throw new Error("refusing to read or write the vendor-owned native Codex auth store");
   }
   // A profile's namespaced key (INV-135) beats the engine-default slot; the
@@ -56,9 +56,18 @@ export function ensureCodexApiAuth(
   });
 }
 
-/** Claudexor's independent Codex profile; never the operator's ordinary ~/.codex. */
-export function defaultNativeCodexHome(): string {
-  const override = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+/**
+ * Claudexor's independent Codex profile; never the operator's ordinary ~/.codex.
+ *
+ * The `CLAUDEXOR_CODEX_NATIVE_HOME` override is read from the AUTHORITATIVE run
+ * env first (the exact env the codex child will spawn under, threaded through
+ * `codexNativeEnv`/`probeLogin`), falling back to `process.env`. Reading only
+ * `process.env` made the doctor/run auth probe ignore an override that lived in
+ * the run env — it silently probed the default store and reported
+ * not_authenticated even when the override pointed at a logged-in home.
+ */
+export function defaultNativeCodexHome(env?: Record<string, string | null | undefined>): string {
+  const override = env?.["CLAUDEXOR_CODEX_NATIVE_HOME"] ?? process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
   if (override && override.trim()) return override;
   return join(userConfigDir(), "native", "codex");
 }
@@ -96,7 +105,7 @@ export async function probeLogin(
   options: CodexLoginProbeOptions = {},
 ): Promise<CodexLoginProbe> {
   try {
-    const home = options.codexHome ?? defaultNativeCodexHome();
+    const home = options.codexHome ?? defaultNativeCodexHome(options.env);
     ensureDir(home);
     const env: Record<string, string | null | undefined> = {
       ...(options.env ?? {}),
@@ -175,8 +184,11 @@ export function hasApiKey(): boolean {
  * absent/unreadable or carries an unknown mode — callers must treat that as
  * undisclosed, never guess.
  */
-export function codexAuthModeAt(home: string): "local_session" | "api_key" | null {
-  if (!home.trim() || resolve(home) === resolve(defaultNativeCodexHome())) return null;
+export function codexAuthModeAt(
+  home: string,
+  env?: Record<string, string | null | undefined>,
+): "local_session" | "api_key" | null {
+  if (!home.trim() || resolve(home) === resolve(defaultNativeCodexHome(env))) return null;
   try {
     const parsed = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) as {
       auth_mode?: unknown;

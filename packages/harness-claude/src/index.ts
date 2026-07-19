@@ -199,7 +199,7 @@ export function claudeNativeEnv(
     : raw;
   return {
     ...native,
-    CLAUDE_CONFIG_DIR: configDir ?? defaultNativeClaudeConfigDir(),
+    CLAUDE_CONFIG_DIR: configDir ?? defaultNativeClaudeConfigDir(base),
   };
 }
 

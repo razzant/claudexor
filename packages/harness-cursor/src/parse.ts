@@ -73,6 +73,35 @@ export type CursorEventParser = (obj: Json, sessionId: string) => HarnessEvent[]
 interface CursorParserState {
   pending: Map<string, ToolRef>;
   lastCompleteAssistant: string | null;
+  /** Inline plan recovered from a `createPlan` call whose vendor `planUri`
+   * came back empty — provenance-stamped so the final answer never pretends
+   * to be a vendor-written plan file. Null when the URI was valid (unchanged
+   * path) or no plan content exists anywhere (honest failure). */
+  fallbackPlan: { text: string; source: string } | null;
+}
+
+/**
+ * Assemble a plan from the inline `createPlan` arguments (protobuf
+ * `agent.v1.CreatePlanArgs`: `overview` + `plan` markdown + `todos[].content`).
+ * cursor-agent stores the authored plan HERE and, in headless `-p` mode, often
+ * returns an EMPTY `planUri` — so this inline content is the only faithful copy
+ * of the plan the model actually produced.
+ */
+function cursorInlinePlanText(args: Json): string {
+  if (!args || typeof args !== "object") return "";
+  const parts: string[] = [];
+  if (typeof args.overview === "string" && args.overview.trim()) parts.push(args.overview.trim());
+  if (typeof args.plan === "string" && args.plan.trim()) parts.push(args.plan.trim());
+  if (Array.isArray(args.todos)) {
+    const items = args.todos
+      .map((t: Json) =>
+        t && typeof t === "object" && typeof t.content === "string" ? t.content.trim() : "",
+      )
+      .filter((s: string) => s.length > 0)
+      .map((s: string) => `- ${s}`);
+    if (items.length > 0) parts.push(items.join("\n"));
+  }
+  return parts.join("\n\n");
 }
 
 /**
@@ -87,10 +116,15 @@ interface CursorParserState {
 export function createCursorParser(
   credentialRoute?: CredentialRoute,
   credentialSource?: AuthSourceKind,
+  planMode = false,
 ): CursorEventParser {
-  const state: CursorParserState = { pending: new Map(), lastCompleteAssistant: null };
+  const state: CursorParserState = {
+    pending: new Map(),
+    lastCompleteAssistant: null,
+    fallbackPlan: null,
+  };
   return (obj: Json, sessionId: string): HarnessEvent[] | null =>
-    parseCursorEventStateful(obj, sessionId, state, credentialRoute, credentialSource);
+    parseCursorEventStateful(obj, sessionId, state, credentialRoute, credentialSource, planMode);
 }
 
 /** Stateless convenience used by tests; resolves results within one call only. */
@@ -98,6 +132,7 @@ export function parseCursorEvent(obj: Json, sessionId: string): HarnessEvent[] |
   return parseCursorEventStateful(obj, sessionId, {
     pending: new Map(),
     lastCompleteAssistant: null,
+    fallbackPlan: null,
   });
 }
 
@@ -107,6 +142,7 @@ function parseCursorEventStateful(
   state: CursorParserState,
   credentialRoute?: CredentialRoute,
   credentialSource?: AuthSourceKind,
+  planMode = false,
 ): HarnessEvent[] | null {
   const ts = nowIso();
   const type = obj?.type;
@@ -215,9 +251,36 @@ function parseCursorEventStateful(
       (result && typeof result === "object" && "error" in result && result.error);
     const detail = resultSummary(result);
     const status: ToolRef["status"] = rejected ? "denied" : failed ? "error" : "ok";
+    const kind = origin?.kind ?? toolKindFor(variant);
+    // Plan mode is READ-ONLY exploration: a read/search that misses (a probed
+    // path that does not exist) is speculative negative information, never a
+    // destructive failure, and the model routinely adapts and still produces a
+    // plan. Surface it as a DISCLOSED benign thinking event (detail preserved)
+    // instead of an `error` tool_result so the generic unrecovered-tool-error
+    // rule cannot fail a read-only planning pass over an exploration miss
+    // (mirrors claude's benign turn-control translation, CLAUDEXOR_BIBLE §5).
+    // Non-read-only kinds (command/web/mcp) still surface as real errors.
+    if (planMode && status === "error" && (kind === "file" || kind === "search")) {
+      const target = origin?.target ?? argsTarget(args);
+      return [
+        {
+          type: "thinking",
+          session_id: sessionId,
+          ts,
+          text: `plan-mode read-only probe unresolved (${origin?.name ?? variant}${
+            target ? `: ${target}` : ""
+          })${detail ? `: ${detail}` : ""}`,
+          payload: {
+            plan_probe_miss: true,
+            tool: origin?.name ?? variant,
+            ...(callId ? { tool_use_id: callId } : {}),
+          },
+        },
+      ];
+    }
     const tool: ToolRef = {
       name: origin?.name ?? variant,
-      kind: origin?.kind ?? toolKindFor(variant),
+      kind,
       use_id: callId,
       target: origin?.target ?? argsTarget(args),
       status,
@@ -234,6 +297,38 @@ function parseCursorEventStateful(
         tool,
       },
     ];
+    // cursor's `createPlan` is the plan-mode DELIVERABLE tool. Its authored plan
+    // lives in the call ARGS; the `planUri` in the result points at a vendor
+    // file cursor-agent frequently leaves EMPTY in headless `-p` mode. When the
+    // URI is empty/missing, recover the plan from the inline args (or, last
+    // resort, the assembled assistant text) so a completed plan run is not
+    // discarded — with stamped provenance so the answer never masquerades as a
+    // vendor-written plan file. A valid URI is left unchanged.
+    if (variant === "createPlan" && status === "ok") {
+      const planUri =
+        result && typeof result === "object" && typeof result.planUri === "string"
+          ? result.planUri.trim()
+          : "";
+      if (!planUri) {
+        const inline = cursorInlinePlanText(args);
+        const text = inline || (state.lastCompleteAssistant?.trim() ?? "");
+        if (text.trim()) {
+          state.fallbackPlan = {
+            text,
+            source: inline ? "cursor_plan_inline_args" : "cursor_plan_assistant_fallback",
+          };
+          events.push({
+            type: "thinking",
+            session_id: sessionId,
+            ts,
+            text: `cursor returned an empty plan URI; recovering the plan from the inline createPlan ${
+              inline ? "content" : "assistant narration"
+            }.`,
+            payload: { plan_uri_fallback: true, plan_source: state.fallbackPlan.source },
+          });
+        }
+      }
+    }
     if (status === "ok" && FILE_WRITE_VARIANTS.has(tool.name)) {
       const path = args?.path ?? args?.file_path;
       events.push({
@@ -260,8 +355,13 @@ function parseCursorEventStateful(
     // Finality only for a SUCCESS result (review sol #1): an is_error / non-
     // success result is aborted/partial text, never the authoritative answer.
     const successResult = obj.is_error !== true && (!obj.subtype || obj.subtype === "success");
-    const finalText =
-      successResult && state.lastCompleteAssistant?.trim()
+    // A recovered inline plan (empty vendor planUri) is the faithful deliverable
+    // and WINS over the trailing narration cursor emits as its `result`, which
+    // is only a preamble ("I'll inspect ...") — never the plan itself.
+    const planFallback = successResult ? state.fallbackPlan : null;
+    const finalText = planFallback?.text.trim()
+      ? planFallback.text
+      : successResult && state.lastCompleteAssistant?.trim()
         ? state.lastCompleteAssistant
         : typeof obj.result === "string"
           ? obj.result
@@ -276,7 +376,12 @@ function parseCursorEventStateful(
           ? {
               final: true,
               payload: {
-                final_source: state.lastCompleteAssistant ? "assistant_message" : "result",
+                final_source: planFallback
+                  ? planFallback.source
+                  : state.lastCompleteAssistant
+                    ? "assistant_message"
+                    : "result",
+                ...(planFallback ? { plan_recovered: true } : {}),
               },
             }
           : {}),
