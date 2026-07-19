@@ -226,19 +226,17 @@ pnpm test
   recovery, and duplicate-create suppression without logout or credential reads.
 - Packaged app/ZIP/DMG and the npm CLI package contain the setup-login runner;
   the bundle boot smoke starts both the daemon and helper with bundled Node.
-- Review gate: the Owner-review release protocol (see the Review Protocol
-  section below) — two fable reviewer subagents against this file and the
-  docs, at most three rounds, findings triaged under the convergence rules.
-  The six-slot triad/scope panel is RETIRED for new releases (its machinery
-  remains only until the BACKLOG deletion entry ships).
+- Review gate: the Release review protocol (see the section below) — one
+  sealed-packet wave (critic subagents + exact triad + scope reviewer), one
+  adjudication, one batched fix commit, one confirmation wave on the delta.
 - Local unsigned app packages are smoke artifacts only. Final DMG/ZIP assets
   come from GitHub Actions `candidate` then `publish` mode; missing signing or
   notarization credentials block publication.
 - The publish input is an annotated stable tag on exact `origin/main` plus a
-  signed attestation: for new releases the schema-v3 owner-review attestation
-  (candidate SHA/tree, full-gate receipt digest, two reviewer report digests
-  with non-blocking verdicts, round count — see the Owner-review release
-  protocol); already-sealed schema-v2 panel attestations stay verifiable.
+  signed attestation: the owner-review attestation binds the candidate
+  SHA/tree, the full-gate receipt digest, and every panel reviewer report
+  digest with non-blocking verdicts plus the wave count (see the Release
+  review protocol); already-sealed older-schema attestations stay verifiable.
   Verify the Ed25519 signature against the tracked pinned public key before
   semantic validation; reject schema 1, unsigned, unknown-key, and tampered
   inputs.
@@ -284,6 +282,10 @@ pnpm test
     plan for fixing add()" — the agent must call `claudexor_status` then
     `claudexor_plan` with an explicit `repoPath`, and the run dir must appear
     in the fixture repo (not Cursor's cwd).
+  - When no human operator is available for the MANUAL phases, they are
+    recorded as an explicitly-waived `docs/FEATURES.md` row naming the
+    untested surface, and the release report calls the waiver out — never
+    silently skipped, never replaced with "equivalent" scripted checks.
 
 ## Review Protocol
 
@@ -373,56 +375,57 @@ pnpm test
   `reviewer.completed`, `reviewer.timed_out`, `reviewer.failed`) so a concurrent
   panel is diagnosable and does not look like a hang.
 
-### Convergence rules (owner-locked after the 2.1.0 release loop)
+### Release review protocol (v3, owner-locked — INV-125/INV-139)
 
-The 2.1.0 release ran 18 wave rounds without converging (findings oscillated
-1–7 per round; ~40% were re-surfacings of earlier "accepted" fixes; ~26% of
-the whole release diff was authored by the loop itself). These rules bound
-the loop; they are process law, not advisory:
+This is the ONLY release review protocol. History for context: the 2.1.0
+release ran 18 wave rounds without converging (~40% of findings re-surfaced
+earlier "accepted" fixes; ~26% of the release diff was authored by the loop
+itself). The v3 protocol bounds the loop mechanically.
 
-- **Wave budget: three.** Wave 1 accepts every verified finding. Wave 2
-  accepts only BLOCK-severity findings that are data-loss, security, or
-  reachable in the DEFAULT configuration. Wave 3 accepts only
-  release-stopping findings. Everything else becomes a `docs/FEATURES.md`
-  row or a backlog entry in the same commit — recorded, never silently
-  dropped, never fixed mid-freeze.
-- **Reachability caps severity.** A finding on a path unreachable in the
-  default configuration (an opt-in policy nobody enables, a knob with no
-  producer) caps at WARN regardless of its theoretical class.
-- **Delta review after wave 1.** Tier-1 reviews the FULL diff exactly once;
-  later waves review the delta since the previous wave plus any file a fix
-  touched. Re-reviewing a 25k-line diff every round invites unbounded depth.
-- **Fix minimalism.** One owner per invariant — a fix never duplicates the
-  same check into additional layers. A fix may not add a schema field
-  without its consumer in the same commit. A fix disproportionate to its
-  finding (new abstraction, new config knob, cross-cutting rename) is
-  answered with a decided-tradeoff entry instead.
-- **Ship rule.** Tier-2 pass + every open tier-1 finding at WARN-or-below
-  (each with its FEATURES/backlog row) is releasable. A perfectly clean
-  same-wave board is not required.
-- **Review-harness self-test.** The checklist validator is exercised in CI
-  against a synthetic deep review (multi-row items, hostile JSON escapes).
-  A quorum failure is a diagnosis task — read the parse errors and raw
-  outputs before any retry; two identical failures from different models
-  mean the PROTOCOL is wrong, not the models.
-
-### Owner-review release protocol (v2.1.0+, owner-directed)
-
-The six-slot OpenRouter panel (tier-1 pair + triad + scope) is RETIRED for
-new releases; its sealer machinery stays in-tree only until the deletion
-backlog entry ships. The publishing gate is now:
-
-- **Two fable reviewer subagents**, each reviewing the release diff and tree
-  against this file and the docs (Bible/ARCHITECTURE/DEVELOPMENT), run
-  directly by the release operator — no OpenRouter or local-subscription
-  routes. At most **three** rounds (the wave budget above applies verbatim).
-- **Ship rule unchanged:** every open finding at WARN-or-below with its
-  FEATURES/backlog row. A blocking verdict cannot be sealed.
+- **One wave, in parallel, on a frozen candidate SHA**: independent
+  full-context critic subagents + the exact model-diverse triad
+  (`openai/gpt-5.6-sol`, `anthropic/claude-fable-5`,
+  `google/gemini-3.5-flash` via OpenRouter) + a scope reviewer
+  (`anthropic/claude-fable-5`). No substitute models, no "closest
+  equivalents".
+- **One sealed packet** for every reviewer: `MANIFEST.sha256`,
+  `FREEZE.json`, `DIFF.patch` + digest, `TESTS.txt`, the decision registry
+  (change → D#/invariant mapping), `FORBIDDEN_FINDINGS.md`,
+  `DECLINED_FINDINGS.md` (previously rejected findings with reasons), and
+  `BLOCKER_FILTER.md` (the blocker contract below) — present from wave 1.
+- **Blocker contract (INV-139)**: a blocking finding must cite a violated
+  invariant or owner-accepted criterion, carry reproducible evidence, and
+  be reachable in the default configuration. Reachability caps severity at
+  WARN otherwise. Reviewer `proposed_fix` is advisory. A finding that
+  re-litigates a recorded owner decision is out-of-scope by construction —
+  ledgered, never fixed.
+- **One adjudication → one batched fix commit.** Only findings passing the
+  blocker contract earn fixes; everything else becomes a `docs/FEATURES.md`
+  row, a BACKLOG entry, or a DECLINED ledger row in the same commit. No
+  "while I'm here" fixes inside the batch.
+- **One confirmation wave on the delta** (the fix diff + every file a fix
+  touched; the full diff is reviewed exactly once, in wave 1). A
+  confirmation blocker on UNCHANGED code without new evidence is invalid.
+- **Stop.** New proven blockers after confirmation get a fix + targeted
+  re-check of exactly those findings. Anything beyond that requires an
+  explicit owner decision — the protocol never self-extends.
+- **Ship rule**: confirmation pass + every open finding at WARN-or-below
+  (each with its FEATURES/BACKLOG/DECLINED row) is releasable. A perfectly
+  clean board is not required.
+- **Reviewer liveness**: a slot counts only with a parsed typed verdict and
+  a plausible duration; an empty/instant/unparseable response is an
+  infrastructure failure — one retry on the same SHA, then the slot is
+  reported failed. A failed required slot blocks sealing.
+- **Review-harness self-test**: the packet/verdict validator is exercised
+  in CI against synthetic fixtures (deep multi-row review, hostile JSON,
+  empty output, instant null verdict). Two identical failures from
+  different models mean the PROTOCOL is wrong, not the models.
 - **Attestation:** `scripts/run-full-gate-receipt.mjs` runs
   `pnpm release:verify` and seals the hash-bound gate receipt;
-  `scripts/seal-owner-review-attestation.mjs` signs a schemaVersion-3
-  attestation (exact candidate SHA/tree, gate receipt digest, both reviewer
-  report digests + verdicts, round count) with the same offline Ed25519
-  authority. `verify-release-input.mjs` accepts either schema; the signature
-  covers the schemaVersion so the two contracts cannot be replayed into
-  each other.
+  `scripts/seal-owner-review-attestation.mjs` signs the attestation (exact
+  candidate SHA/tree, gate receipt digest, every panel reviewer report
+  digest + verdict, wave count) with the offline Ed25519 authority.
+  `verify-release-input.mjs` verifies the signature before semantic
+  validation; older sealed schemas stay verifiable for their releases. An
+  owner override is a distinct recorded fact in the attestation, never a
+  reviewer PASS.

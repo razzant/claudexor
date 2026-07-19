@@ -31,6 +31,43 @@ process below. Never paper over the conflict.
 - Some invariants below encode locked owner decisions; their `verify:` notes
   name the enforcement. They are constitution first, implementation second —
   code converges to them, never the reverse.
+- Documentation is a hierarchy with one home per fact: this Bible
+  (constitution — wins conflicts, or is amended via `CONCEPT-CHANGE`) →
+  `docs/WHITEPAPER.md` (concept + rationale; zero operational claims) →
+  `docs/ARCHITECTURE.md` (map of what is implemented now) →
+  `docs/DESIGN_SYSTEM.md` (macOS UI contract) → `docs/CHECKLISTS.md`
+  (process gates; the sole home of the release protocol) →
+  `docs/DEVELOPMENT.md` (contributor commands; links instead of restating) →
+  `docs/INTEGRATIONS.md` (external surfaces) → `docs/FEATURES.md`
+  (non-solid ledger) → `docs/BACKLOG.md` (deferred with owner decision) →
+  `docs/AGENT_ONBOARDING.md` (agent orientation). A fact lives in exactly ONE
+  of these; every other mention is a link. Mantras worth repeating live only
+  here. Two prose docs describing the same behavior differently is a
+  release-blocking docs bug, not a style issue.
+
+## 0. Zen
+
+Orientation for every contributor and reviewer. The numbered invariants are
+the enforceable law; this list is the spirit they serve. When a proposed
+change pulls against one of these lines, stop and find the governing
+invariant or owner decision before proceeding.
+
+1. Simple beats complex; compact beats exhaustive. (INV-120)
+2. Explicit beats implicit; self-explanatory beats clever.
+3. Honest states: no silent fallback; unknown ≠ zero; absence ≠ empty; every
+   async surface can show loading, loaded, empty, and failed.
+   (INV-044, INV-093, INV-116)
+4. One owner per fact; derived, not hand-maintained. (INV-122, INV-138)
+5. Meta over patch when the class is proven (≥2 surfaces, or a broken
+   SSOT/security boundary); otherwise the minimal local fix. Both directions
+   are violations. (INV-121)
+6. A positive promise exists only with an executable check or an explicit
+   FEATURES row. (INV-022, INV-131)
+7. Reviewers find defects; they do not author concept. (INV-139)
+8. Routing is not strategy: who executes vs how many participate. (INV-140)
+9. Product copy is English-only; user, model, and vendor content is never
+   rewritten. (INV-141)
+10. CLI-first; every other surface is a thin, honest view. (INV-001, INV-002)
 
 ## 1. Claudexor Is CLI-First
 
@@ -75,6 +112,13 @@ process below. Never paper over the conflict.
   or decide review policy — those live in the engine/orchestrator. verify:
   review question; grep for orchestration/review imports in `harness-*`
   packages.
+- **INV-140** Routing and strategy are orthogonal axes and never share a
+  control: routing picks WHO executes a unit of work (harness + credential
+  profile + model — manually or policy/quota-driven); strategy picks HOW MANY
+  units run and how their results combine (single, best-of, council,
+  deep-scan, delegation). No control that selects an account may narrow the
+  harness pool; no strategy knob may pin an account. verify: composer and
+  accounts UI review; schema separation of routing vs strategy fields.
 
 ## 3. Schema Is The Contract
 
@@ -500,20 +544,42 @@ process below. Never paper over the conflict.
   hand edit). Known failure class this guards: god-files absorbing every
   fix because appending is cheapest. verify:
   `scripts/complexity-ratchet.mjs` in CI.
-- **INV-125** Release tags additionally pass the owner-review gate: at
-  least two independent full-context reviewer subagents (owner-directed
-  panel) review the frozen candidate SHA against the checklists and docs
-  in at most three rounds; a blocking verdict cannot be sealed, and the
-  signed schemaVersion-3 owner-review attestation binds the candidate
-  SHA/tree, the full-gate receipt digest, and every reviewer report
-  digest + verdict. Substituting, downgrading, or skipping the directed
-  panel without an explicit owner override is a hard error, and any
-  override is recorded in the review summary. Already-sealed
-  schemaVersion-2 six-slot attestations stay verifiable for their
+- **INV-125** Release tags additionally pass the owner-review gate: ONE
+  parallel review wave on the frozen candidate SHA — independent
+  full-context critic subagents plus the exact model-diverse triad
+  (`openai/gpt-5.6-sol`, `anthropic/claude-fable-5`,
+  `google/gemini-3.5-flash`) and a scope reviewer
+  (`anthropic/claude-fable-5`) — all reading one sealed packet; ONE
+  adjudication under INV-139; ONE batched fix commit; ONE confirmation wave
+  on the delta. A blocking verdict cannot be sealed. Rounds beyond the
+  confirmation wave require an explicit owner decision. The signed
+  owner-review attestation binds the candidate SHA/tree, the full-gate
+  receipt digest, and every reviewer report digest + verdict. Substituting
+  or skipping the panel without an explicit owner override is a hard error;
+  an override is a distinct recorded fact, never a reviewer PASS.
+  Already-sealed older-schema attestations stay verifiable for their
   releases. A whole-tree immune scan (docs-vs-code, dead surface,
   invariants-vs-tree) is a mandatory pre-release checklist step.
-  verify: `scripts/seal-owner-review-attestation.mjs` (refuses <2
-  reviewers, >3 rounds, blocking verdicts); CHECKLISTS Release section.
+  verify: `scripts/seal-owner-review-attestation.mjs` (panel + round
+  constraints); `verify-release-input.mjs`; CHECKLISTS Release + Review
+  Protocol sections.
+- **INV-138** Derived surfaces are generated, never hand-maintained:
+  operation catalogs, endpoint docs, capability/parity matrices,
+  per-subject refresher lists, and similar projections are produced from a
+  single declared source (route descriptors, adapter manifests, the profile
+  registry). A hand-edited shadow of a generatable artifact is the same
+  defect class as a staged field. verify: generated-catalog diff gates;
+  review question "what declaration produces this list?".
+- **INV-139** Review finds defects; it does not author concept. A blocking
+  finding must cite a violated invariant or owner-accepted criterion, carry
+  reproducible evidence, and be reachable in the default configuration;
+  reviewer `proposed_fix` text is advisory; consensus without evidence
+  blocks nothing; later waves cannot open blockers on unchanged code
+  without new evidence. Owner decisions and this Bible outrank reviewer
+  preference — a finding that re-litigates a recorded owner decision is
+  adjudicated out-of-scope and ledgered, never silently fixed. verify:
+  review packet template (BLOCKER_FILTER, DECLINED_FINDINGS); adjudication
+  ledger; CHECKLISTS Review Protocol.
 
 ## 13. Documentation Must Stay Current
 
@@ -577,3 +643,24 @@ process below. Never paper over the conflict.
   release. verify: DESIGN_SYSTEM §3.2; detail single-flight + diagnostics/
   patch no-fetch tests; >4 MiB/transient Diff failures disclose path + Retry
   rather than spin; transcript row/text-bound tests; Spec interview visual QA.
+- **INV-141** Claudexor-owned presentation (UI strings, CLI output, docs,
+  generated notices, dates and numbers) is English-only, independent of the
+  host locale. User, model, and vendor content is never rewritten or
+  translated. verify: product-copy locale scan (planned gate); runtime
+  `ru_RU` spot check in visual QA.
+
+## 14. Continuity Is The Product
+
+- **INV-137** A Thread is ONE conversation regardless of which harness or
+  account executes its turns. A lane is (thread, harness, profile). The same
+  lane resumes its native vendor session — read-only modes included: their
+  sessions persist per lane and are never disposable. Switching lanes
+  hydrates the new lane with a bounded continuation packet (recent turns
+  verbatim, a summarized older prefix, accepted decisions, the active plan
+  reference, a workspace anchor), and the turn DISCLOSES the hydration
+  visibly in both UI and CLI. Returning to a previously used lane resumes
+  it natively and injects only the missed delta. Native sessions never
+  cross profiles (INV-135). Silent conversation loss on any switch is a
+  release-blocking bug of the same class as data loss. verify: continuity
+  canary (A→B→A marker story); lane checkpoint tests; disclosure UI/CLI
+  review.
