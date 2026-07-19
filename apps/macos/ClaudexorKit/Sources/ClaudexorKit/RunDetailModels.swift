@@ -12,6 +12,55 @@ public struct PrimaryOutput: Codable, Sendable, Equatable {
     public let truncated: Bool?
 }
 
+/// One member of a plan council draft round (D31): who drafted or merged, and
+/// whether their draft survived. Projected verbatim from the council receipt.
+public struct CouncilMember: Codable, Sendable, Equatable, Hashable, Identifiable {
+    public let harnessId: String
+    /// primary | member
+    public let role: String
+    /// drafted | failed | merged
+    public let status: String
+    /// First redacted draft error; null unless the member failed.
+    public let error: String?
+    public var id: String { harnessId }
+
+    public init(harnessId: String, role: String, status: String, error: String?) {
+        self.harnessId = harnessId
+        self.role = role
+        self.status = status
+        self.error = error
+    }
+}
+
+/// Council plan-strategy projection (D31): how many members were requested,
+/// how many drafts survived to the merge, whether the round degraded, and the
+/// per-member roster. Null for non-council runs.
+public struct CouncilInfo: Codable, Sendable, Equatable, Hashable {
+    public let requested: Int
+    public let drafted: Int
+    public let degraded: Bool
+    /// Harness that produced the unified plan (the primary); null if the merge failed.
+    public let mergedBy: String?
+    public let members: [CouncilMember]
+
+    public init(requested: Int, drafted: Int, degraded: Bool, mergedBy: String?, members: [CouncilMember]) {
+        self.requested = requested
+        self.drafted = drafted
+        self.degraded = degraded
+        self.mergedBy = mergedBy
+        self.members = members
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        requested = try c.decode(Int.self, forKey: .requested)
+        drafted = try c.decode(Int.self, forKey: .drafted)
+        degraded = try c.decodeIfPresent(Bool.self, forKey: .degraded) ?? false
+        mergedBy = try c.decodeIfPresent(String.self, forKey: .mergedBy)
+        members = try c.decodeIfPresent([CouncilMember].self, forKey: .members) ?? []
+    }
+}
+
 /// Auth ROUTE RECEIPT (INV-061 disclosure, W10/W11): the requested auth
 /// preference, the effective route/source the deciding attempt disclosed, a
 /// deterministic typed reason, and the requested-vs-observed model mismatch
@@ -108,9 +157,23 @@ public struct RunDetail: Codable, Sendable, Equatable {
     /// Server-persisted operator unblock decision (hash-bound); the apply
     /// affordance derives from THIS, never from local UI state.
     public let operatorDecisionAction: String?
+    /// Server-owned outcome headline (status-projection.outcomeBanner). Rendered
+    /// VERBATIM as the Outcome-tab headline — never composed client-side. Null
+    /// while the run is not terminal.
+    public let outcomeBanner: String?
+    /// Derived apply-gate verdict (single producer: the delivery gate); the
+    /// Apply controls follow THIS exclusively. Null when the run has no patch.
+    public let applyEligibility: ApplyEligibility?
+    /// Server-derived readiness of a plan run (D17); null for non-plan runs.
+    public let planReadiness: PlanReadiness?
+    /// Open questions of a plan run (projected from final/questions.json); empty otherwise.
+    public let planQuestions: [PlanQuestion]
+    /// Council plan-strategy projection (D31); null for non-council runs.
+    public let council: CouncilInfo?
 
     enum CodingKeys: String, CodingKey {
         case summary, lastSeq, artifacts, primaryOutput, timeline, budget, finalSummary, decision, workProduct, reviewFindings, pendingInteractions, failure, candidates, planProgress, operatorDecision
+        case outcomeBanner, applyEligibility, planReadiness, planQuestions, council
     }
 
     private struct OperatorDecisionDto: Codable { let action: String? }
@@ -132,6 +195,11 @@ public struct RunDetail: Codable, Sendable, Equatable {
         candidates = try c.decodeIfPresent([CandidateInfo].self, forKey: .candidates) ?? []
         planProgress = try c.decodeIfPresent(PlanProgress.self, forKey: .planProgress)
         operatorDecisionAction = (try c.decodeIfPresent(OperatorDecisionDto.self, forKey: .operatorDecision))?.action
+        outcomeBanner = try c.decodeIfPresent(String.self, forKey: .outcomeBanner)
+        applyEligibility = try c.decodeIfPresent(ApplyEligibility.self, forKey: .applyEligibility)
+        planReadiness = try c.decodeIfPresent(PlanReadiness.self, forKey: .planReadiness)
+        planQuestions = try c.decodeIfPresent([PlanQuestion].self, forKey: .planQuestions) ?? []
+        council = try c.decodeIfPresent(CouncilInfo.self, forKey: .council)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -151,6 +219,11 @@ public struct RunDetail: Codable, Sendable, Equatable {
         try c.encode(candidates, forKey: .candidates)
         try c.encodeIfPresent(planProgress, forKey: .planProgress)
         try c.encodeIfPresent(operatorDecisionAction.map { OperatorDecisionDto(action: $0) }, forKey: .operatorDecision)
+        try c.encodeIfPresent(outcomeBanner, forKey: .outcomeBanner)
+        try c.encodeIfPresent(applyEligibility, forKey: .applyEligibility)
+        try c.encodeIfPresent(planReadiness, forKey: .planReadiness)
+        try c.encode(planQuestions, forKey: .planQuestions)
+        try c.encodeIfPresent(council, forKey: .council)
     }
 }
 

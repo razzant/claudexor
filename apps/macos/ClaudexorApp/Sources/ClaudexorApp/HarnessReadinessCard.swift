@@ -111,8 +111,8 @@ struct HarnessReadinessCard<Actions: View>: View {
 
     static func rowColor(_ status: String) -> Color {
         switch status {
-        case "pass": return Theme.status(.succeeded)
-        case "fail": return Theme.status(.failed)
+        case "pass": return Theme.status(.positive)
+        case "fail": return Theme.status(.negative)
         default: return .secondary
         }
     }

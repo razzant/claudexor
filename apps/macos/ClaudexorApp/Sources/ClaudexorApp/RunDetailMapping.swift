@@ -19,13 +19,16 @@ extension TaskRun {
 /// Server-projection → domain-model mapping for the run inspector (one owner):
 /// candidate evidence cards and the live plan checklist.
 enum RunDetailMapping {
+    /// The review verdict, derived from the honest v3 axes: persisted findings,
+    /// the server-owned `outcomeFacts.review` (approved / blocked / not_run), the
+    /// decision record, and candidate evidence. No mixed status enum — the wire
+    /// `state` is lifecycle only.
     static func reviewVerdict(
         decision: JSONValue?, candidates: [CandidateInfo], findings: [Finding],
-        failure: RunFailureInfo?, status: RunStatus
+        failure: RunFailureInfo?, phase: RunPhase, outcomeFacts: RunOutcomeFacts?
     ) -> ReviewVerdict {
         if !findings.isEmpty { return .findings }
-        if status == .ungated { return .ungated }
-        if status == .reviewNotRun { return .notRun }
+        if outcomeFacts?.review == "blocked" { return .findings }
         if failure?.phase == "review" { return .error }
         let outcome = decision?["outcome"]?.stringValue
         let basis = decision?["verification_basis"]?.stringValue
@@ -35,7 +38,8 @@ enum RunDetailMapping {
         if candidates.contains(where: { $0.winner && $0.reviewVerified && $0.finalReviewClean == true }) {
             return .clean
         }
-        return status.isActive ? .running : .notRun
+        if outcomeFacts?.review == "approved" { return .clean }
+        return phase.isActive ? .running : .notRun
     }
 
     /// Live plan checklist: nil when the run never emitted plan.progress
@@ -53,15 +57,16 @@ enum RunDetailMapping {
 
     /// Candidate cards from the server projection. Honest per-candidate glyph:
     /// a candidate in a BLOCKED/failed run must not render green.
-    static func candidates(_ cards: [CandidateInfo], runStatus: RunStatus) -> [Candidate] {
+    static func candidates(_ cards: [CandidateInfo], runPhase: RunPhase) -> [Candidate] {
         cards.map { c in
             Candidate(
                 id: c.label ?? c.attemptId,
                 family: HarnessFamily(rawValue: c.harnessId),
-                // Errored → failed; review blockers → blocked; otherwise the
-                // candidate INHERITS the run terminal — a clean loser card in
-                // a failed/cancelled run must not render green.
-                status: c.errored ? .failed : c.blockers > 0 && runStatus != .running ? .blocked : runStatus,
+                // Errored → failed; otherwise the candidate INHERITS the run
+                // lifecycle — a clean loser card in a failed/cancelled run must
+                // not render green. The review-blocker nuance is carried by
+                // `reviewState` (.changesRequested), not the lifecycle phase.
+                status: c.errored ? .failed : runPhase,
                 costUsd: c.costUsd,
                 estimated: c.costEstimated,
                 gatesPassed: c.gatesPassed,
@@ -94,7 +99,7 @@ enum RunDetailMapping {
         guard candidate.reviewVerified else {
             return "\(selection) Final review is unverified; selection does not claim a clean review."
         }
-        if candidate.status == .blocked || candidate.finalReviewClean == false {
+        if candidate.finalReviewClean == false {
             return "\(selection) Final review is verified but blocked or not clean."
         }
         if candidate.finalReviewClean == true {

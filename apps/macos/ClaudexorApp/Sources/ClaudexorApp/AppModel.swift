@@ -356,7 +356,7 @@ final class AppModel {
             }
             // Live progress for EVERY active run — including CLI-started runs and
             // runs that were already active when the app (re)connected.
-            for task in liveTasks where task.isLive && task.status.isActive {
+            for task in liveTasks where task.isLive && task.phase.isActive {
                 stream(runId: task.id)
             }
         } catch {
@@ -492,7 +492,7 @@ final class AppModel {
             title: title,
             prompt: prompt,
             mode: RunMode(apiValue: s.mode, strategy: s.strategy),
-            status: RunStatus(api: s.state),
+            phase: RunPhase(api: s.state),
             project: projectName,
             harnesses: families,
             n: s.n ?? max(1, families.count),
@@ -509,6 +509,10 @@ final class AppModel {
         task.engineError = s.failure?.safeMessage ?? s.error
         task.runDir = s.runDir ?? s.failure?.runDir
         task.outputReadyState = s.outputReadyState
+        // The v3 terminal-truth axes (D8/D18): the SINGLE source review/checks
+        // presentation projects from. Rides the LIST summary so a refresh keeps
+        // the honest outcome; Run Detail refines banner/applyEligibility later.
+        task.outcomeFacts = s.outcomeFacts
         task.waitingOnUser = s.waitingOnUser ?? false
         if let route = s.route {
             task.observedModel = route.observedModel
@@ -580,7 +584,7 @@ final class AppModel {
             title: String(prompt.prefix(64)),
             prompt: prompt,
             mode: mode,
-            status: .queued,
+            phase: .queued,
             project: launchProjectName,
             harnesses: harnesses,
             n: n,
@@ -602,7 +606,7 @@ final class AppModel {
 
         guard let client else {
             if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
-                liveTasks[idx].status = .failed
+                liveTasks[idx].phase = .failed
                 liveTasks[idx].engineError = "Engine offline: reconnect the local engine before launching a run."
                 liveTasks[idx].diagnosticText = liveTasks[idx].engineError
                 liveTasks[idx].activity.append(ActivityEvent(.system, "Engine offline: reconnect the local engine before launching a run."))
@@ -646,7 +650,7 @@ final class AppModel {
                     let prev = idx.map { liveTasks[$0] } ?? optimistic
                     var started = TaskRun(
                         id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
-                        status: .running, project: prev.project, harnesses: prev.harnesses,
+                        phase: .running, project: prev.project, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now,
                         spendUsd: prev.spendUsd, capUsd: prev.capUsd,
                         spendKnown: false, capKnown: prev.capKnown,
@@ -669,7 +673,7 @@ final class AppModel {
                     let prev = idx.map { liveTasks[$0] } ?? optimistic
                     var row = TaskRun(
                         id: info.jobId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
-                        status: .queued, project: prev.project, harnesses: prev.harnesses,
+                        phase: .queued, project: prev.project, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now,
                         spendUsd: prev.spendUsd, capUsd: prev.capUsd,
                         spendKnown: false, capKnown: prev.capKnown,
@@ -691,7 +695,7 @@ final class AppModel {
             }
         } catch {
             if let idx = liveTasks.firstIndex(where: { $0.id == optimistic.id }) {
-                liveTasks[idx].status = .failed
+                liveTasks[idx].phase = .failed
                 liveTasks[idx].engineError = "Failed to start: \(error)"
                 liveTasks[idx].diagnosticText = liveTasks[idx].engineError
                 liveTasks[idx].activity.append(ActivityEvent(.system, "Failed to start: \(error)"))
@@ -712,7 +716,7 @@ final class AppModel {
             // always-correct for that id and never needs pruning for correctness.
             cancelledRunIds.insert(id)
             if let idx = liveTasks.firstIndex(where: { $0.id == id }) {
-                liveTasks[idx].status = .cancelled
+                liveTasks[idx].phase = .cancelled
                 liveTasks[idx].updatedAt = .now
             }
         } catch {
@@ -818,9 +822,9 @@ final class AppModel {
         // composer would stay on Stop after a successful cancel in the not-yet-
         // hydrated window (the embedded card still says "running").
         let hydratedRowActive: Bool? = headRunId.flatMap { id in
-            cancelledRunIds.contains(id) ? false : task(id)?.status.isActive
+            cancelledRunIds.contains(id) ? false : task(id)?.phase.isActive
         }
-        let embeddedStateActive = last.run.map { RunStatus(api: $0.state).isActive } ?? false
+        let embeddedStateActive = last.run.map { RunPhase(api: $0.state).isActive } ?? false
         return resolveComposerTurnState(headRunId: headRunId,
                                         hydratedRowActive: hydratedRowActive,
                                         embeddedStateActive: embeddedStateActive)
@@ -855,7 +859,7 @@ final class AppModel {
         // by the per-thread server turn serialization, which rejects a real overlap.
         guard let headRunId = threads.first(where: { $0.id == id })?.headRunId else { return false }
         if cancelledRunIds.contains(headRunId) { return false }
-        return task(headRunId)?.status.isActive ?? false
+        return task(headRunId)?.phase.isActive ?? false
     }
 
     /// True while the selected thread's head turn is live (a submit is in flight,
@@ -1156,6 +1160,7 @@ final class AppModel {
                 web: options.web,
                 browser: options.browser ? true : nil,
                 planRunId: planRunId,
+                overridePlanReadiness: options.overridePlanReadiness ? true : nil,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
                 protectedPathApprovals: options.protectedPathApprovals,
                 authPreference: options.authRoute,
@@ -1384,9 +1389,18 @@ final class AppModel {
             snapshotReplayFences[id] = max(snapshotReplayFences[id] ?? 0, detail.lastSeq)
             lastEventIds[id] = max(lastEventIds[id] ?? 0, detail.lastSeq)
             var task = liveTasks[baseIdx]
-            task.status = RunStatus(api: detail.summary.state)
+            task.phase = RunPhase(api: detail.summary.state)
             task.mode = RunMode(apiValue: detail.summary.mode, strategy: detail.summary.strategy)
             task.operatorDecisionAction = detail.operatorDecisionAction
+            // v3 terminal-truth axes + Run Detail satellites (D8/D17/D18/D31):
+            // the outcome facts, the server-owned banner rendered verbatim, the
+            // single-producer apply eligibility, and plan/council projections.
+            task.outcomeFacts = detail.summary.outcomeFacts ?? task.outcomeFacts
+            task.outcomeBanner = detail.outcomeBanner
+            task.applyEligibility = detail.applyEligibility
+            task.planReadiness = detail.planReadiness
+            task.planQuestions = detail.planQuestions
+            task.council = detail.council
             if let result = detail.summary.result {
                 task.applyState = result.applyState
                 task.revertable = result.revertable
@@ -1431,7 +1445,7 @@ final class AppModel {
             // Live plan checklist + candidate cards: mapping owned
             // by RunDetailMapping.swift.
             if let planItems = RunDetailMapping.planItems(detail.planProgress) { task.plan = planItems }
-            task.candidates = RunDetailMapping.candidates(detail.candidates, runStatus: task.status)
+            task.candidates = RunDetailMapping.candidates(detail.candidates, runPhase: task.phase)
             if let budget = detail.budget {
                 if let cap = budget.maxUsd { task.capUsd = cap }
                 if let spend = budget.spendUsd { task.spendUsd = spend }
@@ -1491,7 +1505,7 @@ final class AppModel {
             }
             task.reviewVerdict = RunDetailMapping.reviewVerdict(
                 decision: detail.decision, candidates: detail.candidates,
-                findings: task.findings, failure: failure, status: task.status
+                findings: task.findings, failure: failure, phase: task.phase, outcomeFacts: task.outcomeFacts
             )
             if !detail.artifacts.isEmpty, task.plan.isEmpty, task.mode == .plan {
                 // Only the actual SpecPack artifact is a "plan" row; arbitrary

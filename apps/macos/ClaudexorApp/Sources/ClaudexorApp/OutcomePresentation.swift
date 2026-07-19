@@ -2,12 +2,13 @@ import SwiftUI
 import ClaudexorKit
 
 /// W21 (Quiz-7a): ONE owner reconciles a turn's terminal presentation from
-/// three ORTHOGONAL axes — the execution terminal (`RunStatus`), the
-/// delivery/apply state (`RunResult.applyState`), and the review gate — into a
-/// headline that names at most TWO material facts ("Applied · review blocked"),
-/// with everything else demoted to chips. Composition is the point: an
-/// applied-but-review-blocked turn must NEVER read as a single clean winner,
-/// and a failed terminal must never be drowned out by a delivery fact.
+/// three ORTHOGONAL v3 axes — the lifecycle terminal (`RunPhase` + typed
+/// `RunReason`), the delivery/apply state (`RunResult.applyState`), and the
+/// review gate (`ReviewVerdict`) — into a headline that names at most TWO
+/// material facts ("Applied · review blocked"), with everything else demoted to
+/// chips. Composition is the point: an applied-but-review-blocked turn must
+/// NEVER read as a single clean winner, and a failed terminal must never be
+/// drowned out by a delivery fact.
 enum OutcomePresentation {
     struct Line: Equatable {
         var headline: String
@@ -25,32 +26,30 @@ enum OutcomePresentation {
 
         var color: Color {
             switch self {
-            case .success: return Theme.status(.succeeded)
-            case .warning: return Theme.status(.blocked)
-            case .failure: return Theme.status(.failed)
+            case .success: return Theme.status(.positive)
+            case .warning: return Theme.status(.caution)
+            case .failure: return Theme.status(.negative)
             case .neutral: return .secondary
             }
         }
     }
 
-    /// Execution terminals that must LEAD the headline (a delivery fact never
-    /// outranks a failure-shaped end). Cancelled is neutral, not red.
-    private static let failureShaped: Set<RunStatus> = [
-        .failed, .interrupted, .costUnverifiable, .exhaustedOvershoot,
-        .exhausted, .notConverged, .stuckNoProgress, .unknown,
-    ]
-
     /// The composed line for a TERMINAL turn; nil while active or when no axis
-    /// produced a material fact (a plain answer needs no outcome row).
-    static func line(status: RunStatus, result: RunResult?, reviewVerdict: ReviewVerdict) -> Line? {
-        guard status.isTerminal else { return nil }
+    /// produced a material fact (a plain answer needs no outcome row). Driven by
+    /// the honest v3 axes: `phase` is the lifecycle terminal, `reason` the typed
+    /// `RunOutcomeFacts.reason` qualifying a non-clean end, `reviewVerdict` the
+    /// review gate — no mixed status enum, no client-side banner composition.
+    static func line(phase: RunPhase, reason: String?, result: RunResult?, reviewVerdict: ReviewVerdict) -> Line? {
+        guard phase.isTerminal else { return nil }
         // Ordered material facts: execution failure > delivery > review gate.
         var facts: [(text: String, tone: Tone)] = []
 
-        if failureShaped.contains(status) {
-            facts.append((status.label, .failure))
-        } else if status == .cancelled {
-            facts.append((status.label, .neutral))
+        if phase.isFailureShaped {
+            // A typed reason names the failure precisely ("Cost unverifiable",
+            // "Budget overshot"); otherwise the bare lifecycle word.
+            facts.append((RunReasonLabel.label(reason) ?? phase.label, .failure))
+        } else if phase == .cancelled {
+            facts.append((phase.label, .neutral))
         }
 
         // The ONE apply-state mapper (RunFacts, W4.5) — the detail header and
@@ -62,14 +61,12 @@ enum OutcomePresentation {
         }
 
         // Review gate — only when the apply state has not already voiced it.
+        // The gate word comes from the honest review verdict, not a status enum.
         if result?.applyState != "applied_review_blocked" {
-            switch status {
-            case .blocked: facts.append(("blocked on your decision", .warning))
-            case .needsReview: facts.append(("needs review", .warning))
-            case .ungated: facts.append(("ungated", .warning))
-            case .reviewNotRun: facts.append(("review not run", .neutral))
-            default:
-                if reviewVerdict == .findings { facts.append(("review findings", .warning)) }
+            switch reviewVerdict {
+            case .findings: facts.append(("Needs review", .warning))
+            case .ungated: facts.append(("Ungated", .warning))
+            default: break
             }
         }
         // Chip-only facts: confirmations and counts never claim a headline

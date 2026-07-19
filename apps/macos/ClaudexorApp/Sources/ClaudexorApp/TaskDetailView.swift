@@ -62,14 +62,16 @@ struct TaskDetailView: View {
     private var task: TaskRun? { model.task(taskId) }
 
     private func defaultTab(for task: TaskRun) -> Tab {
-        if task.status.isActive {
+        if task.phase.isActive {
             return .activity
         }
-        // A blocked run's deliverable IS the findings that need a human.
-        if task.status == .blocked {
+        // A review-blocked run's deliverable IS the findings that need a human.
+        if task.reviewNeedsDecision {
             return task.findings.isEmpty ? .diagnostics : .review
         }
-        if task.status == .failed || task.status == .unknown || task.status == .costUnverifiable || task.status == .exhaustedOvershoot || task.status == .notConverged || task.status == .stuckNoProgress || task.status == .exhausted {
+        // A failure-shaped lifecycle terminal opens on its diagnostics unless it
+        // produced a real answer.
+        if task.phase.isFailureShaped {
             return task.answerText == nil ? .diagnostics : .answer
         }
         return .answer
@@ -105,7 +107,7 @@ struct TaskDetailView: View {
                 tab = defaultTab(for: task)
                 userSelectedTab = false
             }
-            .onChange(of: task.status) { _, _ in autoSelectDefaultTab(for: task) }
+            .onChange(of: task.phase) { _, _ in autoSelectDefaultTab(for: task) }
             .onChange(of: task.engineError ?? "") { _, _ in autoSelectDefaultTab(for: task) }
             .onChange(of: task.answerText ?? "") { _, _ in autoSelectDefaultTab(for: task) }
             // Reload on open for every live-sourced run (terminal included):
@@ -131,7 +133,7 @@ struct TaskDetailView: View {
                          // Terminal status is only PRESENTED with its content;
                          // until the final snapshot lands the run is Finalizing.
                          accessory: AnyView(Group {
-                             if task.isFinalizing { FinalizingPill() } else { StatusPill(status: task.status) }
+                             if task.isFinalizing { FinalizingPill() } else { StatusPill(status: task.phase) }
                          }))
 
             // W4.5: a PRIMARY row of 3-4 facts (route / apply / attention +
@@ -149,7 +151,7 @@ struct TaskDetailView: View {
                 // (per-run invalidation), the task snapshot once terminal.
                 let spend = model.spendDisplay(task)
                 BudgetMini(spend: spend.usd, cap: task.capUsd, spendKnown: spend.known, capKnown: task.capKnown, capUnlimited: task.budgetUnlimited, spendEstimated: spend.estimated)
-                if task.isLive && task.status.isActive {
+                if task.isLive && task.phase.isActive {
                     Button(role: .destructive) { Task { await model.cancel(task.id) } } label: {
                         Label("Cancel", systemImage: "stop.circle")
                     }
@@ -281,7 +283,7 @@ struct TaskDetailView: View {
                         Panel {
                             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                                 Label(diffLoadError, systemImage: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(Theme.status(.blocked))
+                                    .foregroundStyle(Theme.status(.caution))
                                     .textSelection(.enabled)
                                 Text("Full patch: final/patch.diff")
                                     .font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -322,9 +324,40 @@ struct TaskDetailView: View {
         diffLoading = false
     }
 
+    /// Tone for the server-owned outcome banner: a failure-shaped lifecycle or a
+    /// review-blocked delivery must never read green.
+    private func bannerTone(_ task: TaskRun) -> StatusTone {
+        if task.phase.isFailureShaped { return .negative }
+        if task.reviewNeedsDecision || task.outcomeFacts?.review == "blocked"
+            || task.applyState == "applied_review_blocked" { return .caution }
+        return .positive
+    }
+
     private func answerContent(_ task: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionLabel(task.mode == .ask ? "Answer" : "Outcome", systemImage: "text.bubble")
+            // D18: the SERVER-OWNED outcome banner is the Outcome headline,
+            // rendered VERBATIM — it always outranks model prose and is never
+            // composed client-side ("Candidate ready — NOT APPLIED").
+            if let banner = task.outcomeBanner,
+               !banner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Label(banner, systemImage: "flag.fill")
+                    .font(.headline)
+                    .foregroundStyle(Theme.status(bannerTone(task)))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // D18: the apply gate is server-owned. When the run carries a patch,
+            // its apply eligibility (single producer) states verbatim whether it
+            // can be applied now and, if not, the honest next action.
+            if let eligibility = task.applyEligibility, !eligibility.eligible,
+               let action = eligibility.requiredAction ?? eligibility.reason {
+                Label(action, systemImage: "hand.raised.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.status(.caution))
+                    .textSelection(.enabled)
+                    .help("Apply is server-refused until this is resolved (apply eligibility).")
+            }
             Panel {
                 if let answer = task.answerText, !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     MarkdownOutputView(markdown: answer,
@@ -341,7 +374,7 @@ struct TaskDetailView: View {
                     VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                         Label("Delivery receipt", systemImage: receipt.applied ? "checkmark.seal.fill" : "xmark.seal")
                             .font(.headline)
-                            .foregroundStyle(receipt.applied ? Theme.status(.succeeded) : Theme.status(.failed))
+                            .foregroundStyle(receipt.applied ? Theme.status(.positive) : Theme.status(.negative))
                         Text("Target \(String(receipt.targetPreimageSha.prefix(12))) · verifier \(receipt.finalVerify.attempted ? "ran" : "not run") · gates \(receipt.finalVerify.gatesPassed == true ? "passed" : "not passed")")
                             .font(.caption.monospaced()).foregroundStyle(.secondary)
                         Button {
@@ -411,8 +444,7 @@ struct TaskDetailView: View {
             // (the tab used to show findings with no way to act: a dead end,
             // owner QA 2.1.0). Same server-owned decisions, same conditions.
             let decidable =
-                (task.status == .blocked || task.status == .needsReview
-                    || task.applyState == "applied_review_blocked")
+                (task.reviewNeedsDecision || task.applyState == "applied_review_blocked")
                 && task.operatorDecisionAction == nil
             if decidable {
                 DecisionBar(runId: task.id) {
@@ -421,7 +453,7 @@ struct TaskDetailView: View {
             } else if let action = task.operatorDecisionAction {
                 Label("Operator decision recorded: \(action)", systemImage: "checkmark.seal")
                     .font(.caption).foregroundStyle(.secondary)
-            } else if task.status == .ungated {
+            } else if task.reviewVerdict == .clean {
                 Text("No blocking findings — apply this run from its chat card.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -483,13 +515,13 @@ struct TaskDetailView: View {
                 .help("Open a new editable draft; this is not an exact retry.")
             }
             if let actionError {
-                Text(actionError).font(.caption).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
+                Text(actionError).font(.caption).foregroundStyle(Theme.status(.negative)).textSelection(.enabled)
             }
             if let error = task.engineError, !error.isEmpty {
                 Panel(padding: Theme.Spacing.md) {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .font(.callout)
-                        .foregroundStyle(Theme.status(.failed))
+                        .foregroundStyle(Theme.status(.negative))
                         .textSelection(.enabled)
                 }
             }
@@ -555,7 +587,7 @@ struct TaskDetailView: View {
         var text = [
             "run: \(task.id)",
             "mode: \(task.mode.apiValue)",
-            "status: \(task.status.label)",
+            "phase: \(task.phase.label)",
             "project: \(task.project)",
         ].joined(separator: "\n")
         if let runDir = task.runDir { text += "\nrunDir: \(runDir)" }

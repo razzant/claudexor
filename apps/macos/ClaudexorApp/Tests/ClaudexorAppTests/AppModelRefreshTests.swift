@@ -14,7 +14,7 @@ struct AppModelRefreshTests {
         model.endpoint = "127.0.0.1:1234"
         model.route = .task("stale-run")
         model.liveTasks = [TaskRun(
-            id: "stale-run", title: "Stale", prompt: "", mode: .agent, status: .running,
+            id: "stale-run", title: "Stale", prompt: "", mode: .agent, phase: .running,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
@@ -276,7 +276,7 @@ struct AppModelRefreshTests {
 
     @Test func taggedUnlimitedBudgetRendersUnlimitedInsteadOfUnknown() {
         var task = TaskRun(
-            id: "run", title: "Run", prompt: "", mode: .agent, status: .running,
+            id: "run", title: "Run", prompt: "", mode: .agent, phase: .running,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
@@ -293,7 +293,7 @@ struct AppModelRefreshTests {
     @Test func budgetEventAcceptsAnExplicitFiniteZeroCap() {
         let model = AppModel(requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
-            id: "run-zero", title: "Run", prompt: "", mode: .agent, status: .running,
+            id: "run-zero", title: "Run", prompt: "", mode: .agent, phase: .running,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 1, spendKnown: false, capKnown: false,
@@ -666,14 +666,14 @@ struct AppModelRefreshTests {
     @MainActor
     @Test func emptyFindingsNeverBecomeCleanWithoutEngineEvidence() {
         #expect(RunDetailMapping.reviewVerdict(
-            decision: nil, candidates: [], findings: [], failure: nil, status: .succeeded
+            decision: nil, candidates: [], findings: [], failure: nil, phase: .succeeded, outcomeFacts: nil
         ) == .notRun)
         let decision = JSONValue.object([
             "outcome": .string("ready"),
             "verification_basis": .string("cross_family_review")
         ])
         #expect(RunDetailMapping.reviewVerdict(
-            decision: decision, candidates: [], findings: [], failure: nil, status: .succeeded
+            decision: decision, candidates: [], findings: [], failure: nil, phase: .succeeded, outcomeFacts: nil
         ) == .clean)
     }
 
@@ -730,7 +730,7 @@ struct AppModelRefreshTests {
             session: URLSession(configuration: config)
         ), requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
-            id: "run-delayed", title: "Run", prompt: "", mode: .agent, status: .running,
+            id: "run-delayed", title: "Run", prompt: "", mode: .agent, phase: .running,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
@@ -774,7 +774,7 @@ struct AppModelRefreshTests {
             session: URLSession(configuration: config)
         ), requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
-            id: "run-diag", title: "Run", prompt: "", mode: .agent, status: .failed,
+            id: "run-diag", title: "Run", prompt: "", mode: .agent, phase: .failed,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
@@ -838,7 +838,7 @@ struct AppModelRefreshTests {
             session: URLSession(configuration: config)
         ), requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
-            id: "run-burst", title: "Run", prompt: "", mode: .agent, status: .running,
+            id: "run-burst", title: "Run", prompt: "", mode: .agent, phase: .running,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
@@ -884,7 +884,7 @@ struct AppModelRefreshTests {
         ), requestNotificationAuthorization: false)
         var task = TaskRun(
             id: "run-large-diff", title: "Run", prompt: "", mode: .agent,
-            status: .succeeded, project: "Project",
+            phase: .succeeded, project: "Project",
             harnesses: [], n: 1, createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -917,7 +917,7 @@ struct AppModelRefreshTests {
             client: GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test"),
             requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
-            id: "run-cash", title: "Run", prompt: "", mode: .agent, status: .running,
+            id: "run-cash", title: "Run", prompt: "", mode: .agent, phase: .running,
             project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
@@ -959,7 +959,7 @@ struct AppModelRefreshTests {
              "blockers":\(blockers),"reviewVerified":\(reviewVerified)\(cleanField),"winner":true}
             """
             let info = try JSONDecoder().decode(CandidateInfo.self, from: Data(json.utf8))
-            return try #require(RunDetailMapping.candidates([info], runStatus: blockers > 0 ? .blocked : .succeeded).first)
+            return try #require(RunDetailMapping.candidates([info], runPhase: .succeeded).first)
         }
 
         let clean = try candidate(reviewVerified: true, finalReviewClean: true)

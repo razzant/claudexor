@@ -18,7 +18,7 @@ struct InteractionCard: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HStack(spacing: Theme.Spacing.sm) {
                 Image(systemName: "questionmark.bubble.fill")
-                    .foregroundStyle(Theme.status(.needsReview))
+                    .foregroundStyle(Theme.status(.attention))
                 Text("Needs your answer")
                     .font(.subheadline.weight(.semibold))
                 if let harness = interaction.harnessId.flatMap({ HarnessFamily(rawValue: $0) }) {
@@ -81,12 +81,12 @@ struct InteractionCard: View {
                 .tint(Theme.accent)
                 .disabled(sending || !hasAnyAnswer)
                 if let errorMessage {
-                    Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.failed))
+                    Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.negative))
                 }
             }
         }
         .padding(Theme.Spacing.lg)
-        .cardSurface(stroke: true, strokeColor: Theme.status(.needsReview).opacity(0.5))
+        .cardSurface(stroke: true, strokeColor: Theme.status(.attention).opacity(0.5))
     }
 
     private var hasAnyAnswer: Bool {

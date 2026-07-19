@@ -87,8 +87,10 @@ struct TurnCard: View {
                 // inspector affordance. The pill is dissolved (W4.2): quiet
                 // facts are quiet text; attention states raise ONE loud chip.
                 let line = TurnPresentation.statusLine(
-                    status: run.status, harnesses: run.harnesses, n: run.n,
-                    retryLabel: run.status.isActive ? run.retryStatus?.label : nil,
+                    phase: run.phase, reason: run.outcomeFacts?.reason,
+                    harnesses: run.harnesses, n: run.n,
+                    retryLabel: run.phase.isActive ? run.retryStatus?.label : nil,
+                    reviewNeedsDecision: run.reviewNeedsDecision,
                     waitingOnUser: run.waitingOnUser)
                 HStack(spacing: Theme.Spacing.sm) {
                     if let identity = line.identity {
@@ -111,8 +113,10 @@ struct TurnCard: View {
                     if let word = line.stateWord {
                         Text(word).font(.caption).foregroundStyle(.secondary)
                     }
-                    if let chip = TurnPresentation.attention(status: run.status,
-                                                             waitingOnUser: run.waitingOnUser) {
+                    if let chip = TurnPresentation.attention(
+                        phase: run.phase, reason: run.outcomeFacts?.reason,
+                        reviewNeedsDecision: run.reviewNeedsDecision,
+                        waitingOnUser: run.waitingOnUser) {
                         Text(chip.text)
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, Theme.Spacing.xs)
@@ -145,10 +149,10 @@ struct TurnCard: View {
                 if let note = run.attentionNote {
                     Label(note, systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption)
-                        .foregroundStyle(Theme.status(.blocked))
+                        .foregroundStyle(Theme.status(.caution))
                         .padding(.horizontal, Theme.Spacing.sm)
                         .padding(.vertical, Theme.Spacing.xxs)
-                        .background(Theme.status(.blocked).opacity(0.12), in: Capsule())
+                        .background(Theme.status(.caution).opacity(0.12), in: Capsule())
                         .textSelection(.enabled)
                 }
                 // ONE labeled Activity strip (W4.1): «Thinking 40s · 9 tools ·
@@ -158,7 +162,7 @@ struct TurnCard: View {
                 if let runId = turn.runId {
                     let blocks = model.transcriptBlocks(runId)
                     if !blocks.isEmpty, let summary = TurnPresentation.activitySummary(blocks: blocks) {
-                        let live = run.status.isActive
+                        let live = run.phase.isActive
                         DisclosureGroup(isExpanded: Binding(
                             get: { transcriptExpanded ?? live },
                             set: { transcriptExpanded = $0 }
@@ -176,7 +180,7 @@ struct TurnCard: View {
                 // bubble right under the activity strip; quiet outcome rows and
                 // the action footer follow). W22: markdown, long answers start
                 // height-collapsed with an explicit toggle.
-                if let answer = run.answerText, !answer.isEmpty, run.status.isTerminal {
+                if let answer = run.answerText, !answer.isEmpty, run.phase.isTerminal {
                     let long = Self.isLongAnswer(answer)
                     VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                         // Collapsed = a bounded PREFIX: frame+clipped alone still
@@ -217,21 +221,27 @@ struct TurnCard: View {
                 if let result = turn.run?.result {
                     outcomeRow(result)
                 }
+                // D17: a plan that came back needs_answers surfaces its open
+                // questions right here; answering submits a follow-up plan turn.
+                if run.mode == .plan, run.planReadiness?.state == "needs_answers",
+                   !run.planQuestions.isEmpty {
+                    PlanQuestionCard(questions: run.planQuestions, threadId: turn.threadId)
+                }
                 applyStateRow(turn.run?.result, run: run)
                 // ACTION FOOTER (fixed position, last): decision, apply
                 // pre-flight, apply. Server-derived: a persisted operator
                 // decision (from ANY surface) unblocks apply; `riskAccepted`
                 // bridges the moment between decide() and the refreshed detail.
                 let unblocked = run.operatorDecisionAction != nil || riskAccepted
-                if (run.status == .blocked || run.status == .needsReview) && !unblocked {
+                if run.reviewNeedsDecision && !riskAccepted {
                     DecisionBar(runId: run.id) {
                         riskAccepted = true
                     }
                 }
                 if applied {
                     Label("Applied to project", systemImage: "checkmark.seal.fill")
-                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
-                } else if (run.status == .succeeded && run.hasPatchArtifact) || unblocked {
+                        .font(.caption).foregroundStyle(Theme.status(.positive))
+                } else if (run.phase == .succeeded && run.hasPatchArtifact) || unblocked {
                     // Apply PRE-FLIGHT: dry-run the gate when the apply bar appears so
                     // a refusal reason is shown UP FRONT, not only on press.
                     if let reason = applyBlockReason {
@@ -279,7 +289,7 @@ struct TurnCard: View {
             if model.transcriptBlocks(runId).isEmpty {
                 model.openRun(run.id)
             } else {
-                transcriptExpanded = !(transcriptExpanded ?? run.status.isActive)
+                transcriptExpanded = !(transcriptExpanded ?? run.phase.isActive)
             }
         }
     }
@@ -288,7 +298,7 @@ struct TurnCard: View {
     /// once terminal. Auto-updating via Text(_:style:) — no timer plumbing.
     @ViewBuilder
     private func elapsedText(_ run: TaskRun) -> some View {
-        if run.status.isActive {
+        if run.phase.isActive {
             Text(run.createdAt, style: .relative)
                 .font(.caption).foregroundStyle(.secondary)
                 .help("Time since the run started")
@@ -311,15 +321,14 @@ struct TurnCard: View {
     /// produced no visible content (no answer, no transcript, no diff). Without
     /// this the card shows only a status pill — silently idle-looking.
     ///
-    /// ALLOW-LIST (not an exclude-list): only real failures get the red card.
-    /// Benign/neutral terminals are NOT failures and must keep their own status —
-    /// `noOp` (legitimately nothing to do), `ungated`/`reviewNotRun` (delivery/
-    /// review policy states), `cancelled` (user-stopped), `needsReview`/`blocked`
-    /// (carry their own decision/apply affordances). Rendering any of those as a
-    /// red "failed" card would be dishonest.
+    /// ALLOW-LIST (not an exclude-list): only failure-shaped LIFECYCLE terminals
+    /// (failed / interrupted / lost-stream unknown, further qualified by the
+    /// typed `RunOutcomeFacts.reason`) get the red card. Benign/neutral terminals
+    /// are NOT failures and keep their own presentation — a no-changes success,
+    /// `cancelled` (user-stopped), and review-blocked terminals (which carry
+    /// their own decision/apply affordances) must never render as a red "failed".
     private func isSilentFailure(_ run: TaskRun) -> Bool {
-        let failureShaped: Set<RunStatus> = [.failed, .interrupted, .costUnverifiable, .exhaustedOvershoot, .exhausted, .notConverged, .stuckNoProgress]
-        guard failureShaped.contains(run.status) else { return false }
+        guard run.phase.isFailureShaped else { return false }
         let hasAnswer = !(run.answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasTranscript = !(turn.runId.map { model.transcriptBlocks($0) } ?? []).isEmpty
         return !hasAnswer && !hasTranscript && !run.hasPatchArtifact
@@ -330,18 +339,19 @@ struct TurnCard: View {
     private func failureCard(_ run: TaskRun) -> some View {
         HStack(alignment: .top, spacing: Theme.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Theme.status(.failed))
+                .foregroundStyle(Theme.status(.negative))
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 HStack(spacing: Theme.Spacing.xs) {
-                    Text(run.status.label).font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                    Text(RunReasonLabel.label(run.outcomeFacts?.reason) ?? run.phase.label)
+                        .font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.negative))
                     // W18: the TYPED failure category + the auth route that was
                     // tried — never inferred from prose.
                     if let category = run.failureCategory, category != "unknown" {
                         Text(category.replacingOccurrences(of: "_", with: " "))
                             .font(.caption2)
                             .padding(.horizontal, Theme.Spacing.xs)
-                            .background(Theme.status(.failed).opacity(0.12), in: Capsule())
-                            .foregroundStyle(Theme.status(.failed))
+                            .background(Theme.status(.negative).opacity(0.12), in: Capsule())
+                            .foregroundStyle(Theme.status(.negative))
                     }
                     if let route = run.authRoute, let effective = route.effective, effective != "unknown" {
                         Text("route: \(RunFacts.authModeLabel(effective))")
@@ -358,7 +368,7 @@ struct TurnCard: View {
                 .help("Open this run in the inspector — failure detail, timeline, logs")
         }
         .padding(Theme.Spacing.sm)
-        .background(Theme.status(.failed).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .background(Theme.status(.negative).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
     }
 
     /// The engine's honest reason for a silent failure, or a neutral fallback when
@@ -368,6 +378,21 @@ struct TurnCard: View {
         return reason.isEmpty
             ? "This turn ended without producing an answer, diff, or transcript."
             : reason
+    }
+
+    /// Start an agent turn implementing this plan, bound to the plan turn's
+    /// OWNING thread. `override` sets `overridePlanReadiness` for the explicit
+    /// destructive path when open questions remain (the engine otherwise 409s).
+    private func implementPlan(override: Bool) {
+        guard let runId = turn.runId else { return }
+        implementingPlan = true
+        var options = TurnOptions()
+        options.overridePlanReadiness = override
+        Task {
+            await model.composerSend(prompt: "Implement this plan.", mode: .agent,
+                                     planRunId: runId, options: options, onThread: turn.threadId)
+            implementingPlan = false
+        }
     }
 
     /// The honest terminal outcome of this turn (what it actually did).
@@ -383,21 +408,27 @@ struct TurnCard: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Spacer()
-                Button(implementingPlan ? "Implementing…" : "Implement plan") {
-                    guard let runId = turn.runId else { return }
-                    implementingPlan = true
-                    Task {
-                        // Bind to the plan turn's OWNING thread, not live selection.
-                        await model.composerSend(prompt: "Implement this plan.", mode: .agent,
-                                                 planRunId: runId, onThread: turn.threadId)
-                        implementingPlan = false
+                // D17: Implement follows the server plan-readiness gate. When the
+                // plan still has open questions the engine REFUSES implement (409);
+                // the primary path is the answer card above. The only way past is
+                // the explicit, destructive-style "Implement anyway" override.
+                if run?.planReadiness?.state == "needs_answers" {
+                    Button(implementingPlan ? "Implementing…" : "Implement anyway") {
+                        implementPlan(override: true)
                     }
+                    .buttonStyle(.bordered).controlSize(.small).tint(.red)
+                    .disabled(implementingPlan || model.selectedThreadBusy)
+                    .help("Override the plan-readiness gate and implement with questions still open")
+                } else {
+                    Button(implementingPlan ? "Implementing…" : "Implement plan") {
+                        implementPlan(override: false)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    // Can't start an Implement turn over a live head run (the composer's
+                    // busy gate also rejects it, but the button must reflect the invariant).
+                    .disabled(implementingPlan || model.selectedThreadBusy)
+                    .help("Run an agent turn that implements this plan")
                 }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-                // Can't start an Implement turn over a live head run (the composer's
-                // busy gate also rejects it, but the button must reflect the invariant).
-                .disabled(implementingPlan || model.selectedThreadBusy)
-                .help("Run an agent turn that implements this plan")
             }
         case "patch":
             if let d = result.diffStat {
@@ -424,8 +455,8 @@ struct TurnCard: View {
             ? result.map { RunResult(kind: $0.kind, diffStat: $0.diffStat, blockers: $0.blockers,
                                      adopted: $0.adopted, applyState: "reverted") }
             : result
-        if let line = OutcomePresentation.line(status: run.status, result: effective,
-                                               reviewVerdict: run.reviewVerdict) {
+        if let line = OutcomePresentation.line(phase: run.phase, reason: run.outcomeFacts?.reason,
+                                               result: effective, reviewVerdict: run.reviewVerdict) {
             HStack(spacing: Theme.Spacing.sm) {
                 Text(line.headline)
                     .font(.caption.weight(.medium))
@@ -438,10 +469,10 @@ struct TurnCard: View {
                         .background(chip.tone.color.opacity(0.12), in: Capsule())
                         .foregroundStyle(chip.tone.color)
                 }
-                // An ungated / review-blocked outcome must offer its NEXT STEP
-                // right in the chat — the findings and decisions live in the
-                // run's Review tab, not behind a dead end.
-                if run.status == .ungated || effective?.applyState == "applied_review_blocked" {
+                // A review-blocked outcome must offer its NEXT STEP right in the
+                // chat — the findings and decisions live in the run's Review tab,
+                // not behind a dead end.
+                if run.reviewNeedsDecision || effective?.applyState == "applied_review_blocked" {
                     Button("Review & decide") { model.openRun(run.id) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

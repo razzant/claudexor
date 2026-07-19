@@ -29,25 +29,27 @@ enum TurnPresentation {
         var tone: OutcomePresentation.Tone
     }
 
-    private static let failureShaped: Set<RunStatus> = [
-        .failed, .interrupted, .costUnverifiable, .exhaustedOvershoot,
-        .exhausted, .notConverged, .stuckNoProgress, .unknown,
-    ]
-
-    static func attention(status: RunStatus, waitingOnUser: Bool) -> Attention? {
+    /// The ONE loud chip, driven by the honest v3 axes: a pending question, a
+    /// review gate awaiting your decision, or a failure-shaped terminal (named
+    /// by its typed reason when present). Quiet states return nil.
+    static func attention(
+        phase: RunPhase, reason: String?, reviewNeedsDecision: Bool, waitingOnUser: Bool
+    ) -> Attention? {
         if waitingOnUser { return Attention(text: "Needs your answer", tone: .warning) }
-        if status == .blocked || status == .needsReview {
-            return Attention(text: "Needs you", tone: .warning)
+        if reviewNeedsDecision { return Attention(text: "Needs you", tone: .warning) }
+        if phase.isFailureShaped {
+            return Attention(text: RunReasonLabel.label(reason) ?? phase.label, tone: .failure)
         }
-        if failureShaped.contains(status) { return Attention(text: status.label, tone: .failure) }
         return nil
     }
 
     static func statusLine(
-        status: RunStatus,
+        phase: RunPhase,
+        reason: String?,
         harnesses: [HarnessFamily],
         n: Int,
         retryLabel: String?,
+        reviewNeedsDecision: Bool,
         waitingOnUser: Bool
     ) -> StatusLine {
         let racing = n > 1 || harnesses.count > 1
@@ -67,12 +69,13 @@ enum TurnPresentation {
         // facts): whenever a chip exists the quiet word yields — including a
         // waiting-active run, where "Needs your answer" outranks "Working…".
         let stateWord: String?
-        if attention(status: status, waitingOnUser: waitingOnUser) != nil {
+        if attention(phase: phase, reason: reason, reviewNeedsDecision: reviewNeedsDecision,
+                     waitingOnUser: waitingOnUser) != nil {
             stateWord = nil
-        } else if status.isActive {
+        } else if phase.isActive {
             stateWord = retryLabel ?? "Working…"
         } else {
-            stateWord = status.label
+            stateWord = phase.label
         }
         return StatusLine(identity: identity, family: family, stateWord: stateWord)
     }

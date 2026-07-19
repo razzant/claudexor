@@ -208,9 +208,9 @@ struct TurnRefusalCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: Theme.Spacing.sm) {
             Image(systemName: "hand.raised.fill")
-                .foregroundStyle(Theme.status(.failed))
+                .foregroundStyle(Theme.status(.negative))
             VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
-                Text("Not started").font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                Text("Not started").font(.caption.weight(.semibold)).foregroundStyle(Theme.status(.negative))
                 Text(refusal.message)
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 if refusal.retryable == false {
@@ -241,7 +241,7 @@ struct TurnRefusalCard: View {
             Spacer()
         }
         .padding(Theme.Spacing.sm)
-        .background(Theme.status(.failed).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .background(Theme.status(.negative).opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
     }
 
     @ViewBuilder

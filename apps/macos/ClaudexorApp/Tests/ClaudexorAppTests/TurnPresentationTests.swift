@@ -10,21 +10,31 @@ import ClaudexorKit
 /// identity never guesses a winner.
 @Suite struct TurnPresentationTests {
     private func line(
-        _ status: RunStatus,
+        _ phase: RunPhase,
+        reason: String? = nil,
         harnesses: [HarnessFamily] = [.codex],
         n: Int = 1,
         retry: String? = nil,
+        needsDecision: Bool = false,
         waiting: Bool = false
     ) -> TurnPresentation.StatusLine {
         TurnPresentation.statusLine(
-            status: status, harnesses: harnesses, n: n, retryLabel: retry, waitingOnUser: waiting)
+            phase: phase, reason: reason, harnesses: harnesses, n: n, retryLabel: retry,
+            reviewNeedsDecision: needsDecision, waitingOnUser: waiting)
+    }
+
+    private func attention(
+        _ phase: RunPhase, reason: String? = nil, needsDecision: Bool = false, waiting: Bool = false
+    ) -> TurnPresentation.Attention? {
+        TurnPresentation.attention(
+            phase: phase, reason: reason, reviewNeedsDecision: needsDecision, waitingOnUser: waiting)
     }
 
     @Test func activeRunSaysWorkingAndFoldsRetryIntoTheStateWord() {
         #expect(line(.running).stateWord == "Working…")
         // Retry is FOLDED into the state word (never a second capsule).
         #expect(line(.running, retry: "Retrying 2/10 · in 2.5s").stateWord == "Retrying 2/10 · in 2.5s")
-        #expect(TurnPresentation.attention(status: .running, waitingOnUser: false) == nil)
+        #expect(attention(.running) == nil)
     }
 
     @Test func identityIsSingleHarnessOrBestOfNeverAGuess() {
@@ -39,26 +49,31 @@ import ClaudexorKit
     }
 
     @Test func quietTerminalsKeepAQuietStateWordAndNoChip() {
-        #expect(line(.succeeded).stateWord == RunStatus.succeeded.label)
-        #expect(TurnPresentation.attention(status: .succeeded, waitingOnUser: false) == nil)
-        #expect(line(.cancelled).stateWord == RunStatus.cancelled.label)
-        #expect(TurnPresentation.attention(status: .cancelled, waitingOnUser: false) == nil)
+        #expect(line(.succeeded).stateWord == RunPhase.succeeded.label)
+        #expect(attention(.succeeded) == nil)
+        #expect(line(.cancelled).stateWord == RunPhase.cancelled.label)
+        #expect(attention(.cancelled) == nil)
     }
 
     @Test func attentionStatesRaiseOneLoudChipWithoutStutter() {
-        // Failure: the chip voices the state; the state word goes silent —
-        // never "Failed [Failed]".
-        let failed = TurnPresentation.attention(status: .failed, waitingOnUser: false)
-        #expect(failed == TurnPresentation.Attention(text: RunStatus.failed.label, tone: .failure))
+        // Failure: the chip voices the lifecycle terminal; the state word goes
+        // silent — never "Failed [Failed]".
+        let failed = attention(.failed)
+        #expect(failed == TurnPresentation.Attention(text: RunPhase.failed.label, tone: .failure))
         #expect(line(.failed).stateWord == nil)
+        // A typed reason names the failure precisely in the chip.
+        #expect(attention(.failed, reason: "budget_overshoot")
+            == TurnPresentation.Attention(text: "Budget overshot", tone: .failure))
 
-        let blocked = TurnPresentation.attention(status: .blocked, waitingOnUser: false)
-        #expect(blocked == TurnPresentation.Attention(text: "Needs you", tone: .warning))
-        #expect(line(.blocked).stateWord == nil)
+        // A review that needs an operator decision (the ex `.blocked`/
+        // `.needsReview` status) is derived from the axis, not a status enum.
+        let needsDecision = attention(.succeeded, needsDecision: true)
+        #expect(needsDecision == TurnPresentation.Attention(text: "Needs you", tone: .warning))
+        #expect(line(.succeeded, needsDecision: true).stateWord == nil)
 
         // A pending question outranks everything — and the chip IS the state
         // fact: the quiet word yields so the line stays at four facts.
-        let waiting = TurnPresentation.attention(status: .running, waitingOnUser: true)
+        let waiting = attention(.running, waiting: true)
         #expect(waiting == TurnPresentation.Attention(text: "Needs your answer", tone: .warning))
         #expect(line(.running, waiting: true).stateWord == nil)
     }

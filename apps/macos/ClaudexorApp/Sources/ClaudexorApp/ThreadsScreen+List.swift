@@ -41,7 +41,7 @@ extension ThreadsScreen {
                 Text(thread.title ?? "Untitled thread").font(.body).lineLimit(1)
                 if thread.needsHuman {
                     Image(systemName: "person.fill.questionmark")
-                        .foregroundStyle(Theme.status(.blocked))
+                        .foregroundStyle(Theme.status(.caution))
                         .help("This thread is blocked on your decision")
                 }
             }

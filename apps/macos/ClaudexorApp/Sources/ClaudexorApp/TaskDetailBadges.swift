@@ -34,10 +34,10 @@ extension TaskDetailView {
 
     func reviewVerdictColor(_ verdict: ReviewVerdict) -> Color {
         switch verdict {
-        case .clean: return Theme.status(.succeeded)
-        case .findings, .ungated: return Theme.status(.blocked)
-        case .running: return Theme.status(.running)
-        case .failed, .error: return Theme.status(.failed)
+        case .clean: return Theme.status(.positive)
+        case .findings, .ungated: return Theme.status(.caution)
+        case .running: return Theme.status(.info)
+        case .failed, .error: return Theme.status(.negative)
         case .notRun: return .secondary
         }
     }

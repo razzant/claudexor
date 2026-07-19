@@ -36,7 +36,7 @@ struct TranscriptView: View {
                 case .toolGroup(_, let name, let kind, let count):
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(Theme.status(.succeeded))
+                            .foregroundStyle(Theme.status(.positive))
                             .font(.caption2)
                         Image(systemName: ToolRow.kindGlyph(kind))
                             .foregroundStyle(.secondary)
@@ -92,7 +92,7 @@ struct ToolRow: View {
                 header
                 Text(error)
                     .font(.caption.monospaced())
-                    .foregroundStyle(Theme.status(.failed).opacity(0.85))
+                    .foregroundStyle(Theme.status(.negative).opacity(0.85))
                     .lineLimit(3)
                     .textSelection(.enabled)
                     .padding(.leading, Theme.Spacing.lg)
@@ -130,7 +130,7 @@ struct ToolRow: View {
             }
             Spacer()
             if let code = tool.exitCode, code != 0 {
-                Text("exit \(code)").font(.caption2).foregroundStyle(Theme.status(.failed))
+                Text("exit \(code)").font(.caption2).foregroundStyle(Theme.status(.negative))
             }
         }
     }
@@ -179,8 +179,8 @@ struct ToolRow: View {
     private var statusColor: Color {
         switch tool.status {
         case .running: return .secondary
-        case .ok: return Theme.status(.succeeded)
-        case .error: return Theme.status(.failed)
+        case .ok: return Theme.status(.positive)
+        case .error: return Theme.status(.negative)
         }
     }
 }

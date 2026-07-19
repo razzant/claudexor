@@ -139,7 +139,7 @@ extension AppModel {
         for idx in liveTasks.indices {
             let t = liveTasks[idx]
             // Evict exactly the TERMINAL runs OUTSIDE the keep-set.
-            let evictable = !keep.contains(t.id) && t.status.isTerminal
+            let evictable = !keep.contains(t.id) && t.phase.isTerminal
             if evictable, !t.activity.isEmpty { liveTasks[idx].activity = [] }
         }
         // Snapshot the keys BEFORE mutating: removing entries while iterating
@@ -147,7 +147,7 @@ extension AppModel {
         for runId in Array(transcripts.keys) where !keep.contains(runId) {
             // A transcript without a task row is orphaned bookkeeping; a task
             // row keeps its transcript only while active (mid-run reconnects).
-            if let t = task(runId), !t.status.isTerminal { continue }
+            if let t = task(runId), !t.phase.isTerminal { continue }
             transcripts[runId] = nil
         }
     }

@@ -18,6 +18,23 @@ import AppKit
 /// 5. Make glass feel alive by placing colorful content near native chrome, but do not
 ///    stretch a custom full-window glow into rounded window chrome with
 ///    `backgroundExtensionEffect()`; that produced hard side cutouts in dark/light mode.
+/// Semantic status color tokens — the app's ONE status palette, decoupled from
+/// any particular state enum. Lifecycle (`RunPhase`), review/checks/severity,
+/// and plan/activity kinds all map into these; `Theme.status(_:)` resolves the
+/// color. Replaces the old `Theme.status(RunStatus)` (the retired presentation
+/// enum): the palette lives on, the RunStatus dependency is gone.
+enum StatusTone: Equatable, Hashable {
+    case info        // active / in-progress (blue)
+    case positive    // clean success (green)
+    case attention   // needs your review (lavender)
+    case caution     // blocked / warning (amber)
+    case negative    // failure (red)
+    case warn        // budget overshoot / exhausted (orange)
+    case interrupted // interrupted terminal (tan)
+    case neutral     // inert / cancelled / no-op (secondary)
+    case queued      // waiting to start
+}
+
 enum Theme {
 
     // MARK: Surfaces (graphite dark signature; light mirrors with inverted luminance).
@@ -60,27 +77,25 @@ enum Theme {
         }
     }
 
-    // MARK: Status semantics (always paired with a glyph + label in views).
+    // MARK: Status semantics — a SEMANTIC-TOKEN palette (always paired with a
+    // glyph + label in views). This is the app's status color language; the
+    // retired `RunStatus` presentation enum no longer owns it. Lifecycle
+    // (`RunPhase`), review/checks/severity states, and the plan/activity kinds
+    // all MAP INTO these tones, so the palette survives one central switch.
 
-    static func status(_ state: RunStatus) -> Color {
-        switch state {
-        case .running: return Color(dark: (0.36, 0.67, 0.95), light: (0.14, 0.47, 0.86))
-        case .succeeded: return Color(dark: (0.34, 0.81, 0.53), light: (0.11, 0.61, 0.35))
-        case .noOp: return Color.secondary
-        case .needsReview: return Color(dark: (0.64, 0.74, 0.99), light: (0.28, 0.45, 0.88))
-        case .blocked: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
-        case .ungated, .reviewNotRun: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
-        case .failed: return Color(dark: (0.94, 0.44, 0.44), light: (0.80, 0.22, 0.22))
-        case .cancelled: return Color.secondary
-        case .interrupted: return Color(dark: (0.80, 0.66, 0.42), light: (0.60, 0.46, 0.20))
-        case .costUnverifiable: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
-        case .exhaustedOvershoot, .exhausted: return Color(dark: (0.97, 0.60, 0.30), light: (0.82, 0.38, 0.12))
-        case .notConverged, .stuckNoProgress: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))
-        case .unknown: return Color.secondary
+    static func status(_ tone: StatusTone) -> Color {
+        switch tone {
+        case .info: return Color(dark: (0.36, 0.67, 0.95), light: (0.14, 0.47, 0.86))       // active blue
+        case .positive: return Color(dark: (0.34, 0.81, 0.53), light: (0.11, 0.61, 0.35))   // success green
+        case .attention: return Color(dark: (0.64, 0.74, 0.99), light: (0.28, 0.45, 0.88))  // review lavender
+        case .caution: return Color(dark: (0.97, 0.74, 0.33), light: (0.80, 0.56, 0.10))    // blocked amber
+        case .negative: return Color(dark: (0.94, 0.44, 0.44), light: (0.80, 0.22, 0.22))   // failure red
+        case .warn: return Color(dark: (0.97, 0.60, 0.30), light: (0.82, 0.38, 0.12))       // overshoot orange
+        case .interrupted: return Color(dark: (0.80, 0.66, 0.42), light: (0.60, 0.46, 0.20))// interrupted tan
+        case .neutral: return Color.secondary
         case .queued: return Color.secondary.opacity(0.85)
         }
     }
-    static func status(_ raw: String) -> Color { status(RunStatus(api: raw)) }
 
     // MARK: Spacing scale (pt).
 

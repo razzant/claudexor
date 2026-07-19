@@ -20,8 +20,8 @@ struct DiffView: View {
     private var diffSummary: some View {
         HStack(spacing: Theme.Spacing.sm) {
             Text("\(files.count) files").font(.caption).foregroundStyle(.secondary)
-            Text("+\(files.reduce(0) { $0 + $1.added })").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.succeeded))
-            Text("−\(files.reduce(0) { $0 + $1.removed })").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.failed))
+            Text("+\(files.reduce(0) { $0 + $1.added })").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.positive))
+            Text("−\(files.reduce(0) { $0 + $1.removed })").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.negative))
         }
     }
 }
@@ -53,8 +53,8 @@ private struct FileDiff: View {
             Image(systemName: "doc.text").foregroundStyle(.secondary)
             Text(file.path).font(.system(.callout, design: .monospaced)).lineLimit(1).truncationMode(.middle)
             Spacer()
-            Text("+\(file.added)").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.succeeded))
-            Text("−\(file.removed)").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.failed))
+            Text("+\(file.added)").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.positive))
+            Text("−\(file.removed)").font(.caption.weight(.medium)).foregroundStyle(Theme.status(.negative))
             Image(systemName: "lock.doc")
                 .imageScale(.small)
                 .foregroundStyle(.secondary)
@@ -107,12 +107,12 @@ private struct DiffLineRow: View {
     }
 
     private var marker: String { line.kind == .add ? "+" : (line.kind == .remove ? "−" : " ") }
-    private var markerColor: Color { line.kind == .add ? Theme.status(.succeeded) : (line.kind == .remove ? Theme.status(.failed) : .clear) }
+    private var markerColor: Color { line.kind == .add ? Theme.status(.positive) : (line.kind == .remove ? Theme.status(.negative) : .clear) }
     private var textColor: Color { line.kind == .context ? .secondary : .primary }
     private var rowBackground: Color {
         switch line.kind {
-        case .add: return Theme.status(.succeeded).opacity(0.10)
-        case .remove: return Theme.status(.failed).opacity(0.10)
+        case .add: return Theme.status(.positive).opacity(0.10)
+        case .remove: return Theme.status(.negative).opacity(0.10)
         default: return .clear
         }
     }

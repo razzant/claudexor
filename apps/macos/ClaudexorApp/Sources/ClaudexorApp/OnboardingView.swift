@@ -108,7 +108,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
             Label("Ready", systemImage: "checkmark.seal")
                 .font(.title3.weight(.semibold))
-                .foregroundStyle(Theme.status(.succeeded))
+                .foregroundStyle(Theme.status(.positive))
             Text("Everything happens in one chat. Pick your project in the composer's project chip (the only place projects are selected); the composer opens in Agent for direct edits (Ask is the fallback with no project); switch to Best-of to run the harness pool against each other, or Plan to draft an approach you can then implement in the same thread.")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {

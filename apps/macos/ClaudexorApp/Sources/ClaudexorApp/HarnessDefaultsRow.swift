@@ -139,7 +139,7 @@ struct HarnessDefaultsRow: View {
             }
             if !maxUsdValid {
                 Label("Budget cap must be a non-negative number, or empty.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2).foregroundStyle(Theme.status(.failed))
+                    .font(.caption2).foregroundStyle(Theme.status(.negative))
             }
         }
         .padding(Theme.Spacing.sm)
@@ -186,10 +186,10 @@ struct HarnessDefaultsRow: View {
                 .font(.caption2).foregroundStyle(.secondary).labelStyle(.titleAndIcon)
         case .saved:
             Label("Saved", systemImage: "checkmark.circle.fill")
-                .font(.caption2).foregroundStyle(Theme.status(.succeeded)).labelStyle(.titleAndIcon)
+                .font(.caption2).foregroundStyle(Theme.status(.positive)).labelStyle(.titleAndIcon)
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(.caption2).foregroundStyle(Theme.status(.failed)).labelStyle(.titleAndIcon)
+                .font(.caption2).foregroundStyle(Theme.status(.negative)).labelStyle(.titleAndIcon)
                 .lineLimit(2).help(message)
         }
     }

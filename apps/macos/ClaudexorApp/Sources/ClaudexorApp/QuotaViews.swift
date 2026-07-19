@@ -100,8 +100,8 @@ private func usageText(_ ratio: Double?) -> String {
 
 private func freshnessColor(_ freshness: String) -> Color {
     switch freshness {
-    case "fresh": return Theme.status(.succeeded)
-    case "stale": return Theme.status(.blocked)
+    case "fresh": return Theme.status(.positive)
+    case "stale": return Theme.status(.caution)
     default: return .secondary
     }
 }

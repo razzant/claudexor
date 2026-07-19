@@ -81,7 +81,7 @@ struct SettingsScreen: View {
     @ViewBuilder private var generalGroup: some View {
         @Bindable var model = model
         settingsGroup("General", "gearshape") {
-                    KeyValueRow(key: "Engine status", value: model.health.label, valueColor: model.health == .connected ? Theme.status(.succeeded) : .secondary)
+                    KeyValueRow(key: "Engine status", value: model.health.label, valueColor: model.health == .connected ? Theme.status(.positive) : .secondary)
                     HStack {
                         Button { Task { await model.connect() } } label: { Label("Reconnect", systemImage: "arrow.clockwise") }.buttonStyle(.bordered)
                         Button { Task { await refreshAll() } } label: { Label("Refresh metadata", systemImage: "arrow.triangle.2.circlepath") }.buttonStyle(.bordered)
@@ -222,7 +222,7 @@ struct SettingsScreen: View {
                     if !runCapValid {
                         Label("Use a non-negative USD number for a finite budget.", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
-                            .foregroundStyle(Theme.status(.failed))
+                            .foregroundStyle(Theme.status(.negative))
                     }
                     Button { Task { await saveEngineDefaults() } } label: { Label("Save budget defaults", systemImage: "checkmark.circle") }
                         .buttonStyle(.bordered)
@@ -247,7 +247,7 @@ struct SettingsScreen: View {
                     if !interactionTimeoutValid {
                         Label("Use a positive whole number of minutes, or leave the field empty.", systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
-                            .foregroundStyle(Theme.status(.failed))
+                            .foregroundStyle(Theme.status(.negative))
                     }
                 }
     }

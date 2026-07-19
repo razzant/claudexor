@@ -279,6 +279,12 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     public let toolWarningsTotal: Int?
     /// Honest terminal outcome (patch/answer/plan/report/none + diffstat/adopted).
     public let result: RunResult?
+    /// The v3 terminal truth axes (D8/D18): lifecycle + noChanges + checks +
+    /// review + typed reason. Null while the run is not terminal. This is the
+    /// SINGLE source the App projects review/checks/apply presentation from —
+    /// the wire `state` field is lifecycle ONLY (queued/running/succeeded/
+    /// failed/cancelled/interrupted).
+    public let outcomeFacts: RunOutcomeFacts?
     /// True while at least one harness question awaits the user's answer.
     public let waitingOnUser: Bool?
     public let route: RouteInfo?

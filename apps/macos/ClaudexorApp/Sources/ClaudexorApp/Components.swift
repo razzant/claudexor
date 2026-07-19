@@ -3,7 +3,7 @@ import SwiftUI
 // MARK: - Status pill (solid tinted — content layer)
 
 struct StatusPill: View {
-    let status: RunStatus
+    let status: RunPhase
     var compact = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
@@ -32,10 +32,10 @@ struct FinalizingPill: View {
             Text("Finalizing…")
         }
         .font(.caption.weight(.medium))
-        .foregroundStyle(Theme.status(.running))
+        .foregroundStyle(Theme.status(.info))
         .padding(.horizontal, Theme.Spacing.md)
         .padding(.vertical, Theme.Spacing.xs)
-        .background(Theme.status(.running).opacity(0.15), in: Capsule())
+        .background(Theme.status(.info).opacity(0.15), in: Capsule())
         .accessibilityLabel("Status finalizing")
         .help("The run reached a terminal state; the output snapshot is loading.")
     }
@@ -157,7 +157,7 @@ struct EstimatedCostBadge: View {
             if estimated { Text("est").italic() }
         }
         .font(.caption2)
-        .foregroundStyle(estimated ? Theme.status(.blocked) : .secondary)
+        .foregroundStyle(estimated ? Theme.status(.caution) : .secondary)
         .help(estimated ? "Estimated spend (native quota best-effort)." : "Exact spend.")
     }
 }
@@ -166,13 +166,13 @@ struct ProvenanceTag: View {
     let isLive: Bool
     var body: some View {
         HStack(spacing: 3) {
-            Circle().fill(isLive ? Theme.status(.running) : Color.secondary).frame(width: 5, height: 5)
+            Circle().fill(isLive ? Theme.status(.info) : Color.secondary).frame(width: 5, height: 5)
             Text(isLive ? "Live" : "Sample")
         }
         .font(.caption2.weight(.medium))
-        .foregroundStyle(isLive ? Theme.status(.running) : .secondary)
+        .foregroundStyle(isLive ? Theme.status(.info) : .secondary)
         .padding(.horizontal, 6).padding(.vertical, 2)
-        .background((isLive ? Theme.status(.running) : Color.secondary).opacity(0.12), in: Capsule())
+        .background((isLive ? Theme.status(.info) : Color.secondary).opacity(0.12), in: Capsule())
         .accessibilityLabel(isLive ? "Live data" : "Sample data")
     }
 }

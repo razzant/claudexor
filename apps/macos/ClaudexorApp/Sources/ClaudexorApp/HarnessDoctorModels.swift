@@ -6,9 +6,9 @@ import ClaudexorKit
 enum HarnessHealth: String { case ok, degraded, unavailable
     var color: Color {
         switch self {
-        case .ok: return Theme.status(.succeeded)
-        case .degraded: return Theme.status(.blocked)
-        case .unavailable: return Theme.status(.failed)
+        case .ok: return Theme.status(.positive)
+        case .degraded: return Theme.status(.caution)
+        case .unavailable: return Theme.status(.negative)
         }
     }
     var glyph: String {

@@ -106,50 +106,42 @@ struct HarnessFamily: RawRepresentable, Identifiable, Hashable {
     }
 }
 
-enum RunStatus: String, CaseIterable, Identifiable, Hashable {
-    case queued, running, needsReview, blocked, succeeded, noOp, ungated, reviewNotRun, failed, cancelled, interrupted, costUnverifiable, exhaustedOvershoot, exhausted, notConverged, stuckNoProgress, unknown
+/// The run LIFECYCLE (D8), the ONLY axis derived from the server run `state`.
+/// This replaces the old `RunStatus` presentation enum: the six wire lifecycle
+/// values plus an `unknown` sentinel used only when a stream is lost before a
+/// terminal frame. Outcome quality — checks / review / delivery / typed reason —
+/// is ORTHOGONAL and lives on `RunOutcomeFacts`; the presentation mappers read
+/// those axes, never a mixed status enum. `isActive`/`isTerminal` drive the
+/// streaming state machine.
+enum RunPhase: String, CaseIterable, Identifiable, Hashable {
+    case queued, running, succeeded, failed, cancelled, interrupted, unknown
     var id: String { rawValue }
 
+    /// Map a wire lifecycle string. The v3 server `state` emits exactly the six
+    /// lifecycle values; the aliases keep older dogfood artifacts and typed
+    /// terminal reasons (crash_interrupted) decoding to the right phase.
     init(api: String) {
         switch api.lowercased() {
         case "queued", "pending": self = .queued
         case "running", "active", "in_progress": self = .running
-        case "needs-review", "needs_review", "review": self = .needsReview
-        case "blocked", "needs-permission": self = .blocked
         case "succeeded", "success", "done", "completed", "ok": self = .succeeded
-        case "no_op", "no-op": self = .noOp
-        case "ungated": self = .ungated
-        case "review_not_run", "review-not-run": self = .reviewNotRun
         case "failed", "error": self = .failed
-        case "cost_unverifiable": self = .costUnverifiable
-        case "exhausted_overshoot": self = .exhaustedOvershoot
-        case "exhausted": self = .exhausted
-        case "not_converged", "not-converged": self = .notConverged
-        case "stuck_no_progress", "stuck-no-progress": self = .stuckNoProgress
         case "cancelled", "canceled": self = .cancelled
-        case "interrupted_unknown": self = .interrupted
+        case "interrupted", "interrupted_unknown", "crash_interrupted": self = .interrupted
         default: self = .unknown
         }
     }
 
+    /// The lifecycle word (D8 UI labels). Outcome nuance ("Done · not verified",
+    /// "Needs review") is composed by `OutcomePresentation`, not baked here.
     var label: String {
         switch self {
         case .queued: return "Queued"
-        case .running: return "Running"
-        case .needsReview: return "Needs review"
-        case .blocked: return "Blocked"
-        case .succeeded: return "Succeeded"
-        case .noOp: return "No-op"
-        case .ungated: return "Ungated"
-        case .reviewNotRun: return "Review not run"
+        case .running: return "Working"
+        case .succeeded: return "Done"
         case .failed: return "Failed"
-        case .costUnverifiable: return "Cost unverifiable"
-        case .exhaustedOvershoot: return "Budget overshot"
         case .cancelled: return "Cancelled"
         case .interrupted: return "Interrupted"
-        case .exhausted: return "Exhausted"
-        case .notConverged: return "Not converged"
-        case .stuckNoProgress: return "Stuck/no progress"
         case .unknown: return "Unknown"
         }
     }
@@ -157,27 +149,61 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .queued: return "clock"
         case .running: return "circle.dotted"
-        case .needsReview: return "checkmark.seal"
-        case .blocked: return "exclamationmark.triangle.fill"
         case .succeeded: return "checkmark.circle.fill"
-        case .noOp: return "minus.circle"
-        case .ungated: return "shield.slash"
-        case .reviewNotRun: return "person.2.slash"
         case .failed: return "xmark.octagon.fill"
-        case .costUnverifiable: return "questionmark.circle"
-        case .exhaustedOvershoot: return "gauge.with.dots.needle.100percent"
         case .cancelled: return "slash.circle"
         case .interrupted: return "pause.circle"
-        case .exhausted: return "gauge.with.dots.needle.100percent"
-        case .notConverged: return "arrow.triangle.2.circlepath.circle"
-        case .stuckNoProgress: return "arrow.triangle.2.circlepath.circle"
         case .unknown: return "questionmark.diamond"
         }
     }
-    var color: Color { Theme.status(self) }
+    var tone: StatusTone {
+        switch self {
+        case .queued: return .queued
+        case .running: return .info
+        case .succeeded: return .positive
+        case .failed: return .negative
+        case .cancelled: return .neutral
+        case .interrupted: return .interrupted
+        case .unknown: return .neutral
+        }
+    }
+    var color: Color { Theme.status(tone) }
     var isActive: Bool { self == .running || self == .queued }
     var isTerminal: Bool { !isActive && self != .unknown }
-    var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .costUnverifiable || self == .exhaustedOvershoot || self == .exhausted || self == .notConverged || self == .stuckNoProgress || self == .unknown }
+    /// A failure-shaped terminal: the lifecycle itself ended badly (a `.reason`
+    /// on `RunOutcomeFacts` further qualifies it). Cancelled is NOT failure.
+    var isFailureShaped: Bool { self == .failed || self == .interrupted || self == .unknown }
+}
+
+/// Human label for a typed terminal `RunReason` (RunOutcomeFacts.reason). The
+/// reason qualifies a non-clean terminal; it is projected verbatim from the
+/// engine and never composed client-side beyond this display mapping.
+enum RunReasonLabel {
+    static func label(_ reason: String?) -> String? {
+        switch reason {
+        case "harness_failed": return "Harness failed"
+        case "no_changes": return "No changes"
+        case "review_blocked": return "Review blocked"
+        case "checks_failed": return "Checks failed"
+        case "budget_exhausted": return "Exhausted"
+        case "budget_overshoot": return "Budget overshot"
+        case "cost_unverifiable": return "Cost unverifiable"
+        case "not_converged": return "Not converged"
+        case "stuck_no_progress": return "Stuck/no progress"
+        case "wall_clock_exceeded": return "Time limit reached"
+        case "crash_interrupted": return "Interrupted"
+        case "user_cancelled": return "Cancelled"
+        default: return nil
+        }
+    }
+    /// The tone a failure-shaped reason should carry (budget overshoot/exhaust
+    /// reads as an orange warning; everything else inherits the phase tone).
+    static func tone(_ reason: String?) -> StatusTone? {
+        switch reason {
+        case "budget_exhausted", "budget_overshoot": return .warn
+        default: return nil
+        }
+    }
 }
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
     case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, unknown
@@ -334,6 +360,10 @@ struct TurnOptions: Equatable {
     /// Per-turn reasoning effort from the primary harness's declared ladder;
     /// nil = harness default (the control hides when the ladder is empty).
     var effort: String? = nil
+    /// D17: override the server's plan-readiness gate. Set ONLY by the explicit,
+    /// destructive-style "Implement anyway" action when open plan questions/
+    /// blockers remain — the engine otherwise refuses implement with 409.
+    var overridePlanReadiness: Bool = false
 }
 
 // MARK: - Agent plan / todo list (the "task list" Codex & Claude Code surface)
@@ -351,9 +381,9 @@ enum PlanItemState: String, Hashable {
     var color: Color {
         switch self {
         case .pending: return .secondary
-        case .active: return Theme.status(.running)
-        case .done: return Theme.status(.succeeded)
-        case .blocked: return Theme.status(.blocked)
+        case .active: return Theme.status(.info)
+        case .done: return Theme.status(.positive)
+        case .blocked: return Theme.status(.caution)
         }
     }
 }
@@ -391,8 +421,8 @@ enum ActivityKind: String, Hashable {
         case .tool: return Theme.accent
         case .file: return Theme.accent
         case .message: return .secondary
-        case .gate: return Theme.status(.succeeded)
-        case .review: return Theme.status(.needsReview)
+        case .gate: return Theme.status(.positive)
+        case .review: return Theme.status(.attention)
         case .system: return .secondary
         }
     }
@@ -430,11 +460,11 @@ enum ReviewState: String, Hashable {
     }
     var color: Color {
         switch self {
-        case .pending: return Theme.status(.running)
-        case .clean: return Theme.status(.succeeded)
-        case .changesRequested: return Theme.status(.blocked)
+        case .pending: return Theme.status(.info)
+        case .clean: return Theme.status(.positive)
+        case .changesRequested: return Theme.status(.caution)
         case .winner: return Theme.accent
-        case .rejected: return Theme.status(.failed)
+        case .rejected: return Theme.status(.negative)
         }
     }
 }
@@ -442,7 +472,7 @@ enum ReviewState: String, Hashable {
 struct Candidate: Identifiable, Hashable {
     let id: String
     var family: HarnessFamily
-    var status: RunStatus
+    var status: RunPhase
     var costUsd: Double
     var estimated: Bool
     var gatesPassed: Int
@@ -472,9 +502,9 @@ enum Severity: String, CaseIterable, Hashable {
     }
     var color: Color {
         switch self {
-        case .blocker: return Theme.status(.failed)
-        case .major: return Theme.status(.blocked)
-        case .minor: return Theme.status(.running)
+        case .blocker: return Theme.status(.negative)
+        case .major: return Theme.status(.caution)
+        case .minor: return Theme.status(.info)
         case .nit: return .secondary
         }
     }
@@ -501,10 +531,10 @@ enum RouteProof: String, Hashable {
     }
     var color: Color {
         switch self {
-        case .verified: return Theme.status(.succeeded)
+        case .verified: return Theme.status(.positive)
         case .acceptedModelArg: return Theme.accent
         case .unverified: return .secondary
-        case .sameModelFallback: return Theme.status(.blocked)
+        case .sameModelFallback: return Theme.status(.caution)
         }
     }
 }
@@ -550,9 +580,9 @@ enum FindingStatus: String, Hashable {
 
     var color: Color {
         switch self {
-        case .accepted, .fixed: return Theme.status(.succeeded)
-        case .rebutted, .outOfScope: return Theme.status(.failed)
-        case .insufficientEvidence, .acceptedRisk: return Theme.status(.blocked)
+        case .accepted, .fixed: return Theme.status(.positive)
+        case .rebutted, .outOfScope: return Theme.status(.negative)
+        case .insufficientEvidence, .acceptedRisk: return Theme.status(.caution)
         case .duplicate, .stale, .proposed: return .secondary
         }
     }
@@ -628,7 +658,9 @@ struct TaskRun: Identifiable, Hashable {
     var title: String
     var prompt: String
     var mode: RunMode
-    var status: RunStatus
+    /// The run LIFECYCLE (D8). Presentation of outcome quality (review / checks /
+    /// delivery) reads `outcomeFacts` + `reviewVerdict`, never this phase.
+    var phase: RunPhase
     var project: String
     var harnesses: [HarnessFamily]
     var n: Int
@@ -690,6 +722,33 @@ struct TaskRun: Identifiable, Hashable {
     var revertable: Bool = false
     /// Last immutable delivery receipt returned by the server for this run.
     var deliveryReceipt: ApplyResultInfo?
+    /// The v3 terminal-truth axes (D8/D18) projected from the run summary:
+    /// lifecycle + noChanges + checks + review + typed reason. The SINGLE source
+    /// the presentation projects review/checks/apply state from — never the
+    /// wire `state` (that is lifecycle only). Nil while non-terminal.
+    var outcomeFacts: RunOutcomeFacts?
+    /// Server-owned outcome headline (D18), rendered VERBATIM as the Run Detail
+    /// Outcome headline — never composed client-side. Nil while non-terminal.
+    var outcomeBanner: String?
+    /// Derived apply-gate verdict (single producer: the delivery gate). Apply
+    /// controls in Run Detail follow THIS exclusively. Nil when no patch / not
+    /// yet loaded (chat cards fall back to phase + review state).
+    var applyEligibility: ApplyEligibility?
+    /// Server-derived plan readiness (D17); nil for non-plan runs.
+    var planReadiness: PlanReadiness?
+    /// Engine-parsed open plan questions (D17); empty for non-plan runs.
+    var planQuestions: [PlanQuestion] = []
+    /// Council plan-strategy projection (D31); nil for non-council runs.
+    var council: CouncilInfo?
+
+    /// The review gate needs an operator decision: blocking findings remain and
+    /// no decision has been recorded yet. Derived from the honest axes
+    /// (outcomeFacts.review / reviewVerdict), never from a mixed status enum.
+    var reviewNeedsDecision: Bool {
+        guard phase.isTerminal else { return false }
+        let blocked = outcomeFacts?.review == "blocked" || reviewVerdict == .findings
+        return blocked && operatorDecisionAction == nil
+    }
 
     /// "Full access" or "Read-only → Workspace write" style badge; nil when unknown.
     /// Humanizes raw engine wire values (all five profiles) instead of leaking them.
@@ -714,7 +773,7 @@ struct TaskRun: Identifiable, Hashable {
     /// its final content. Until the snapshot lands, the run is "Finalizing" —
     /// never a green Succeeded badge next to an empty Outcome.
     var isFinalizing: Bool {
-        guard isLive, status.isTerminal, status != .cancelled else { return false }
+        guard isLive, phase.isTerminal, phase != .cancelled else { return false }
         // loadRunDetail ALWAYS fills diagnosticText with at least a
         // placeholder, so for a GREEN badge (succeeded) diagnostics only
         // count as content when the engine explicitly marked the output as
@@ -722,7 +781,7 @@ struct TaskRun: Identifiable, Hashable {
         // Outcome, exactly the bug this state exists to prevent. For
         // failure-shaped terminals (failed/blocked/exhausted/no-op/...) the
         // diagnostics blob IS the legitimate final content.
-        let diagnosticIsContent = status != .succeeded || outputReadyState == "diagnostic"
+        let diagnosticIsContent = phase != .succeeded || outputReadyState == "diagnostic"
         let hasContent =
             !(answerText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || hasPatchArtifact

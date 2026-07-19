@@ -17,9 +17,9 @@ enum AccountReadiness: Int, Comparable {
     static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
     var color: Color {
         switch self {
-        case .ready: return Theme.status(.succeeded)
-        case .unknown: return Theme.status(.blocked)
-        case .unavailable: return Theme.status(.failed)
+        case .ready: return Theme.status(.positive)
+        case .unknown: return Theme.status(.caution)
+        case .unavailable: return Theme.status(.negative)
         }
     }
 }
@@ -200,7 +200,7 @@ struct AccountsTriggerRow: View {
             if let pct = AccountsPresentation.worstPercent(rows) {
                 Text("\(pct)%")
                     .font(.callout).monospacedDigit()
-                    .foregroundStyle(pct >= 90 ? Theme.status(.blocked) : .secondary)
+                    .foregroundStyle(pct >= 90 ? Theme.status(.caution) : .secondary)
             }
             Image(systemName: "chevron.up.chevron.down")
                 .font(.caption).foregroundStyle(.secondary)
@@ -352,7 +352,7 @@ struct AccountsSurface: View {
             }
             accountsList
             if let notice = deleteNotice {
-                Text(notice).font(.caption2).foregroundStyle(Theme.status(.failed))
+                Text(notice).font(.caption2).foregroundStyle(Theme.status(.negative))
                     .textSelection(.enabled)
             }
             if addHarness != nil {
@@ -429,7 +429,7 @@ struct AccountsSurface: View {
                     .onSubmit { Task { await addAccount() } }
             }
             if let err = addError {
-                Text(err).font(.caption2).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
+                Text(err).font(.caption2).foregroundStyle(Theme.status(.negative)).textSelection(.enabled)
             }
             HStack {
                 Text("A second \(family?.label ?? "Claude/Codex") subscription — one click opens the official CLI login.")
@@ -556,7 +556,7 @@ private struct AccountRowView: View {
             HStack(spacing: Theme.Spacing.xs) {
                 Text("\(pct)% used")
                     .font(.caption2).monospacedDigit()
-                    .foregroundStyle(pct >= 90 ? Theme.status(.blocked) : .secondary)
+                    .foregroundStyle(pct >= 90 ? Theme.status(.caution) : .secondary)
                 if let reset = formattedDate(window.resetsAt) {
                     Text("· resets \(reset)").font(.caption2).foregroundStyle(.secondary)
                 }

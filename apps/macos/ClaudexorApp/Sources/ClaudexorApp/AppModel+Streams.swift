@@ -199,20 +199,20 @@ extension AppModel {
     /// snapshot so status and content land atomically, fold the live box back
     /// into value-type state, then notify.
     private func finalizeStream(runId: String, lostStream: Bool) async {
-        let before = liveTasks.first(where: { $0.id == runId })?.status
+        let before = liveTasks.first(where: { $0.id == runId })?.phase
         await loadRunDetail(runId)
         // Terminal fold AFTER the snapshot: server timeline/spend from the
         // snapshot stay authoritative; the box fills gaps, then retires.
         foldLiveBox(runId)
         flushRates[runId] = nil
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
-        if lostStream, liveTasks[idx].status.isActive {
-            liveTasks[idx].status = .unknown
+        if lostStream, liveTasks[idx].phase.isActive {
+            liveTasks[idx].phase = .unknown
             liveTasks[idx].activity.append(ActivityEvent(.system, "Lost engine stream before a terminal status. Reconnect to refresh this run."))
         }
         liveTasks[idx].updatedAt = .now
         if let before {
-            Self.notifyTransition(from: before, to: liveTasks[idx].status, title: liveTasks[idx].title)
+            Self.notifyTransition(from: before, to: liveTasks[idx].phase, title: liveTasks[idx].title)
         }
     }
 
@@ -284,19 +284,16 @@ extension AppModel {
         if streamTasks[runId] == nil, isTerminalEvent || type == "interaction.requested" { await loadRunDetail(runId) }
     }
 
-    /// Native notification when a live run reaches a state that wants the user's attention.
-    private static func notifyTransition(from: RunStatus, to: RunStatus, title: String) {
+    /// Native notification when a live run reaches a terminal LIFECYCLE phase.
+    /// Outcome-quality notifications (review blocked, exhausted, …) are no longer
+    /// keyed off a mixed status enum — they belong to the outcome axes surfaced
+    /// in the card/Run Detail; the lifecycle transition is what warrants a push.
+    private static func notifyTransition(from: RunPhase, to: RunPhase, title: String) {
         guard from != to else { return }
         switch to {
         case .succeeded: Notifier.post(title: "Run succeeded", body: title)
         case .failed: Notifier.post(title: "Run failed", body: title)
-        case .needsReview: Notifier.post(title: "Needs your review", body: title)
-        case .blocked: Notifier.post(title: "Run blocked — needs permission", body: title)
-        case .ungated: Notifier.post(title: "Run ungated", body: title)
-        case .reviewNotRun: Notifier.post(title: "Review not run", body: title)
-        case .exhausted: Notifier.post(title: "Run exhausted", body: title)
-        case .notConverged: Notifier.post(title: "Run did not converge", body: title)
-        case .stuckNoProgress: Notifier.post(title: "Run stuck with no progress", body: title)
+        case .interrupted: Notifier.post(title: "Run interrupted", body: title)
         case .unknown: Notifier.post(title: "Run status unknown", body: title)
         default: break
         }
@@ -335,7 +332,7 @@ extension AppModel {
         guard let idx = liveTasks.firstIndex(where: { $0.id == runId }) else { return }
         let type = env.event["type"]?.stringValue ?? env.kind
         let payload = env.event["payload"] ?? env.event
-        let before = liveTasks[idx].status
+        let before = liveTasks[idx].phase
         var t = liveTasks[idx]
         var taskChanged = false
         var shouldLoadDetail = false
@@ -343,7 +340,7 @@ extension AppModel {
             if taskChanged {
                 t.updatedAt = .now
                 liveTasks[idx] = t
-                Self.notifyTransition(from: before, to: t.status, title: t.title)
+                Self.notifyTransition(from: before, to: t.phase, title: t.title)
             }
             if shouldLoadDetail {
                 Task { await self.loadRunDetail(runId) }
@@ -354,30 +351,39 @@ extension AppModel {
             return
         }
         if type.hasPrefix("run.") {
+            // The wire carries LIFECYCLE only (queued/running/succeeded/failed/
+            // cancelled/interrupted). Terminal frames flip the phase optimistically
+            // and trigger a snapshot reload, which lands the authoritative
+            // outcomeFacts/banner/applyEligibility. `run.blocked` is a review
+            // OUTCOME (not a lifecycle) — the reload sets the axes; we only flip
+            // the phase when the frame carries a real lifecycle state.
             if type == "run.completed" {
                 if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue {
-                    t.status = RunStatus(api: s)
+                    t.phase = RunPhase(api: s)
                 } else {
-                    t.status = .succeeded
+                    t.phase = .succeeded
                 }
                 shouldLoadDetail = true
             } else if type == "run.failed" {
                 if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue {
-                    t.status = RunStatus(api: s)
+                    t.phase = RunPhase(api: s)
                 } else {
-                    t.status = .failed
+                    t.phase = .failed
                 }
                 shouldLoadDetail = true
             }
             else if type == "run.blocked" {
-                t.status = RunStatus(api: payload["status"]?.stringValue ?? "blocked")
+                if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue,
+                   RunPhase(api: s) != .unknown {
+                    t.phase = RunPhase(api: s)
+                }
                 shouldLoadDetail = true
             }
-            else if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue { t.status = RunStatus(api: s) }
-            else if t.status == .queued { t.status = .running }
-            // Only an ACTUAL status change rewrites the tasks array (a
-            // repeated same-status run.* frame is a no-op for the lists).
-            if t.status != before { taskChanged = true }
+            else if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue { t.phase = RunPhase(api: s) }
+            else if t.phase == .queued { t.phase = .running }
+            // Only an ACTUAL phase change rewrites the tasks array (a
+            // repeated same-phase run.* frame is a no-op for the lists).
+            if t.phase != before { taskChanged = true }
         } else if type.hasPrefix("harness.") {
             let detail = payload["type"]?.stringValue ?? payload["kind"]?.stringValue ?? ""
             let kind: ActivityKind = detail.contains("file") ? .file

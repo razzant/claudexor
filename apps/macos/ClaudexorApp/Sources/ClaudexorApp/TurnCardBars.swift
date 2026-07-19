@@ -29,13 +29,13 @@ struct ApplyThreadBar: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
             Image(systemName: isApplied ? "checkmark.seal.fill" : "arrow.up.doc.on.clipboard")
-                .foregroundStyle(isApplied ? Theme.status(.succeeded) : Theme.accent)
+                .foregroundStyle(isApplied ? Theme.status(.positive) : Theme.accent)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Isolated workspace").font(.caption.weight(.medium))
                 switch outcome {
                 case .applied:
                     Text("Applied to the project — this thread's worktree has been delivered.")
-                        .font(.caption).foregroundStyle(Theme.status(.succeeded))
+                        .font(.caption).foregroundStyle(Theme.status(.positive))
                 case .failed(let message):
                     Text(message).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                 case .idle:
@@ -49,7 +49,7 @@ struct ApplyThreadBar: View {
             if isApplied {
                 Label("Applied", systemImage: "checkmark.seal.fill")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(Theme.status(.succeeded))
+                    .foregroundStyle(Theme.status(.positive))
             } else {
                 Button(applying ? "Applying…" : "Apply thread") {
                     applying = true

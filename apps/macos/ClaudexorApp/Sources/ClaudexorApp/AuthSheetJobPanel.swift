@@ -43,7 +43,7 @@ struct AuthSheetJobPanel: View {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         Label(Self.deadlineText(deadline, now: context.date), systemImage: "timer")
                             .font(.caption.monospacedDigit())
-                            .foregroundStyle(deadline <= context.date ? Theme.status(.blocked) : .secondary)
+                            .foregroundStyle(deadline <= context.date ? Theme.status(.caution) : .secondary)
                     }
                 }
 
@@ -58,7 +58,7 @@ struct AuthSheetJobPanel: View {
                     Label("A previous process may still be alive. New Login and Retry stay disabled until the daemon can prove a safe replacement. API-key storage remains a separate operation.",
                           systemImage: "exclamationmark.shield.fill")
                         .font(.caption2)
-                        .foregroundStyle(Theme.status(.blocked))
+                        .foregroundStyle(Theme.status(.caution))
                         .textSelection(.enabled)
                 }
 
@@ -76,10 +76,10 @@ struct AuthSheetJobPanel: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 } else if lifecycle.connection == .streamLost {
                     Text("Setup stream lost after bounded reconnects. The job was not marked failed; reconnect to fetch its current server state.")
-                        .font(.caption2).foregroundStyle(Theme.status(.blocked))
+                        .font(.caption2).foregroundStyle(Theme.status(.caution))
                 }
                 if let error = lifecycle.lastError, !error.isEmpty {
-                    Text(error).font(.caption2).foregroundStyle(Theme.status(.failed)).textSelection(.enabled)
+                    Text(error).font(.caption2).foregroundStyle(Theme.status(.negative)).textSelection(.enabled)
                 }
             }
         }
@@ -154,10 +154,10 @@ struct AuthSheetJobPanel: View {
 
     static func color(_ state: SetupJobState) -> Color {
         switch state {
-        case .succeeded: return Theme.status(.succeeded)
-        case .failed, .timedOut, .interruptedUnknown: return Theme.status(.failed)
-        case .waitingForInput: return Theme.status(.blocked)
-        case .running: return Theme.status(.running)
+        case .succeeded: return Theme.status(.positive)
+        case .failed, .timedOut, .interruptedUnknown: return Theme.status(.negative)
+        case .waitingForInput: return Theme.status(.caution)
+        case .running: return Theme.status(.info)
         default: return .secondary
         }
     }
@@ -183,11 +183,11 @@ struct AuthSheetConnectionPanel: View {
                 if connection == .streamLost {
                     Text("The active setup state is unknown. A request may have reached the daemon even though its response was lost; reconnect before starting another job.")
                         .font(.caption)
-                        .foregroundStyle(Theme.status(.blocked))
+                        .foregroundStyle(Theme.status(.caution))
                     if let error = lastError, !error.isEmpty {
                         Text(error)
                             .font(.caption2)
-                            .foregroundStyle(Theme.status(.failed))
+                            .foregroundStyle(Theme.status(.negative))
                             .textSelection(.enabled)
                     }
                     Button("Reconnect", action: reconnect)

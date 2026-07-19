@@ -34,12 +34,12 @@ private struct PlanRow: View {
                     .strikethrough(item.state == .done, color: .secondary)
                     .foregroundStyle(item.state == .done ? .secondary : .primary)
                 if let note = item.note {
-                    Text(note).font(.caption).foregroundStyle(item.state == .blocked ? Theme.status(.blocked) : .secondary)
+                    Text(note).font(.caption).foregroundStyle(item.state == .blocked ? Theme.status(.caution) : .secondary)
                 }
             }
             Spacer(minLength: Theme.Spacing.sm)
             if item.state == .active {
-                Text("In progress").font(.caption2.weight(.medium)).foregroundStyle(Theme.status(.running))
+                Text("In progress").font(.caption2.weight(.medium)).foregroundStyle(Theme.status(.info))
             }
         }
         .padding(.vertical, Theme.Spacing.sm)
@@ -94,8 +94,8 @@ private struct ActivityRow: View {
     /// Engine-typed severity overrides the kind tint: warnings amber, errors red.
     private var tint: Color {
         switch event.severity {
-        case "error": return Theme.status(.failed)
-        case "warning": return Theme.status(.needsReview)
+        case "error": return Theme.status(.negative)
+        case "warning": return Theme.status(.attention)
         default: return event.kind.tint
         }
     }
@@ -114,9 +114,9 @@ private struct ActivityRow: View {
                     }
                     Text(event.title).font(.callout.weight(.medium))
                     if event.severity == "error" {
-                        Text("error").font(.caption2.weight(.semibold)).foregroundStyle(Theme.status(.failed))
+                        Text("error").font(.caption2.weight(.semibold)).foregroundStyle(Theme.status(.negative))
                     } else if event.severity == "warning" {
-                        Text("warning").font(.caption2.weight(.semibold)).foregroundStyle(Theme.status(.needsReview))
+                        Text("warning").font(.caption2.weight(.semibold)).foregroundStyle(Theme.status(.attention))
                     }
                     Spacer(minLength: Theme.Spacing.sm)
                     Text(event.timestamp, style: .relative).font(.caption2).foregroundStyle(.tertiary).fixedSize()
@@ -169,7 +169,7 @@ struct CandidateCard: View {
             Text(candidate.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
             HStack(spacing: Theme.Spacing.md) {
                 Label("\(candidate.gatesPassed)/\(candidate.gatesTotal)", systemImage: "checklist")
-                    .foregroundStyle(candidate.gatesTotal > 0 && candidate.gatesPassed == candidate.gatesTotal ? Theme.status(.succeeded) : Theme.status(.blocked))
+                    .foregroundStyle(candidate.gatesTotal > 0 && candidate.gatesPassed == candidate.gatesTotal ? Theme.status(.positive) : Theme.status(.caution))
                 Label("+\(candidate.added) −\(candidate.removed)", systemImage: "plusminus").foregroundStyle(.secondary)
                 Spacer()
                 EstimatedCostBadge(cost: candidate.costUsd, estimated: candidate.estimated)

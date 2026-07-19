@@ -49,7 +49,7 @@ public struct ControlHandshakeResponse: Codable, Sendable, Equatable {
 /// `lifecycle` says how far the PROCESS got; `noChanges`/`checks`/`review` say
 /// what the work amounted to; `reason` qualifies a non-clean terminal (null on
 /// a clean success). RunStatus/DecisionOutcome are dead.
-public struct RunOutcomeFacts: Codable, Sendable, Equatable {
+public struct RunOutcomeFacts: Codable, Sendable, Equatable, Hashable {
     /// succeeded | failed | cancelled | interrupted
     public let lifecycle: String
     /// True when the run finished without changing any files (the ex `no_op`).
@@ -74,7 +74,7 @@ public struct RunOutcomeFacts: Codable, Sendable, Equatable {
 
 /// Derived "can this run's WorkProduct be applied RIGHT NOW, and if not what
 /// unblocks it" verdict, projected identically on every surface.
-public struct ApplyEligibility: Codable, Sendable, Equatable {
+public struct ApplyEligibility: Codable, Sendable, Equatable, Hashable {
     /// True when the apply gate would accept this run's patch right now.
     public let eligible: Bool
     /// The gate's apply-eligibility classification (needs_review | not_verified
@@ -96,7 +96,7 @@ public struct ApplyEligibility: Codable, Sendable, Equatable {
 // MARK: - Plan lifecycle v3 (D17/D31)
 
 /// Server-derived readiness of a plan run (one derivation owner).
-public struct PlanReadiness: Codable, Sendable, Equatable {
+public struct PlanReadiness: Codable, Sendable, Equatable, Hashable {
     /// ready | needs_answers | unverified
     public let state: String
     public let questionCount: Int
@@ -139,6 +139,19 @@ public struct PlanQuestion: Codable, Sendable, Equatable, Hashable, Identifiable
         self.prompt = prompt
         self.options = options
         self.allowText = allowText
+    }
+
+    // `options` and `allow_text` carry Zod defaults ([] / false) and are not
+    // required on the wire — decode them leniently so a server that omits the
+    // defaulted fields does not fail the whole plan projection. Encoding stays
+    // synthesized (byte-identical to the round-trip fixtures, which include both).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decode(String.self, forKey: .kind)
+        prompt = try c.decode(String.self, forKey: .prompt)
+        options = try c.decodeIfPresent([PlanQuestionOption].self, forKey: .options) ?? []
+        allowText = try c.decodeIfPresent(Bool.self, forKey: .allowText) ?? false
     }
 }
 

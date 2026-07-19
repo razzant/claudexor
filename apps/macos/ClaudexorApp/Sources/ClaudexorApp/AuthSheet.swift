@@ -200,9 +200,9 @@ struct AuthSheet: View {
                                  systemImage: targetVerified ? "checkmark.seal.fill" : "exclamationmark.triangle")
                     HStack(spacing: Theme.Spacing.sm) {
                         Circle()
-                            .fill(targetVerified ? Theme.status(.succeeded)
-                                : profileStatus?.availability == "unknown" ? Theme.status(.blocked)
-                                : Theme.status(.failed))
+                            .fill(targetVerified ? Theme.status(.positive)
+                                : profileStatus?.availability == "unknown" ? Theme.status(.caution)
+                                : Theme.status(.negative))
                             .frame(width: 8, height: 8)
                         Text(profileStatus.map {
                             "\($0.availability) · verification \($0.verification)"
