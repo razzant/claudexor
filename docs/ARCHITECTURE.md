@@ -1377,6 +1377,41 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   HEADED, and navigation snapshots land in the run artifact tree. Cursor/OpenCode/raw-api report
   `browser_tool: false` (honest — no injector wired).
 
+### Engine runtime updater (M7, D22/D23)
+
+The app updates its **engine runtime closure** in place without a new DMG. The
+update unit is a `claudexor-runtime-<version>.tar.gz` — everything the DMG stages
+into `Contents/Resources` EXCEPT Node (the bundled daemon, the setup-login
+runner, the Browser MCP deployment, and the native process-identity helper).
+Node stays app-owned, so a Node bump ships a new signed DMG. Each release also
+publishes `runtime-manifest.json` (`{version, sha256, minAppVersion, signature:
+null (reserved), notes}`) built straight from the signed app bundle by
+`scripts/build-runtime-closure.mjs`, so the shipped closure is byte-identical to
+the one the release gates smoke-tested. `release/runtime-min-app-version.json`
+is the tracked `minAppVersion` floor (validated `<=` the release version by
+`scripts/verify-version-parity.mjs`), the app-vs-engine skew guard.
+
+- **Layout.** Runtimes live under `~/.claudexor/runtime/versions/<version>/`; the
+  active one is named by `runtime/current.json` (version + path + sha256), and
+  `runtime/last-known-good.json` is the rollback target. `DaemonLauncher` resolves
+  the daemon script through `current.json` when it points at a valid version dir,
+  else the bundled `Contents/Resources` path (first run). Node is ALWAYS the
+  app-bundled binary; because the whole closure unpacks together, the Browser MCP
+  resolves adjacent to the daemon inside the same version dir.
+- **Flow** (foreground / bottom-left chip / Check for Updates — no timer): GET the
+  latest release manifest (`api.github.com`, ETag-cached) → compare `version` to
+  the running engine and gate on `minAppVersion` → download the tarball →
+  sha256-verify (mismatch aborts before any unpack) → unpack to `versions/<v>` →
+  probe-start with an empty `CLAUDEXOR_CONFIG_DIR` → stop the idle daemon →
+  atomically swap `current.json` (previous copied to last-known-good) → start →
+  handshake-verify the serving engine's identity (`POST /v2/handshake`, D20) →
+  any failure rolls the pointer back to last-known-good.
+- **Engine side.** `claudexor release check` reads the same manifest and reports
+  whether a newer runtime is published (npm installs update via npm; only the app
+  swaps the closure). `claudexor release stats` is the owner-facing install
+  counter (D23) — GitHub asset download counts + the npm downloads API, zero
+  infra, no telemetry, no ping. Both hit the network only when invoked.
+
 ## 10. Change Rules
 
 - Change data shapes in `packages/schema` first, regenerate JSON Schema, then

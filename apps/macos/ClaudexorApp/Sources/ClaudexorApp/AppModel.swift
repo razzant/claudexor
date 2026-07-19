@@ -103,12 +103,22 @@ final class AppModel {
     /// CLI-login state + the server-computed Active identity. The accounts
     /// surface reads Enabled/Active from HERE so nothing re-derives the symmetry.
     var harnessAccounts: [HarnessAccounts] = []
-    /// M5c update-chip shell: the latest availability read from the local
-    /// override (nil = nothing to advertise). Populated by refreshUpdateAvailability().
+    /// M7 update-chip: latest availability (nil = nothing to advertise), read
+    /// cheaply by refreshUpdateAvailability(); populated by checkForRuntimeUpdate().
+    /// `updateProvider` (injectable for tests/dogfood) defaults to the real
+    /// manifest-backed `runtimeUpdateProvider` cache each check writes.
     var updateAvailability: UpdateAvailability?
-    /// The provider behind the update chip — the on-disk override by default,
-    /// injectable for tests.
     var updateProvider: UpdateAvailabilityProviding = FileUpdateAvailabilityProvider()
+    let runtimeUpdateProvider = RuntimeUpdateProvider()
+    /// M7 last check result (verbatim in Check-for-Updates) + in-flight flag.
+    var runtimeUpdateStatus: String?
+    var runtimeUpdateChecking = false
+    /// The M7 updater (actor, off the observable graph) + an injectable transport
+    /// factory so tests drive a stub without the network. One auto foreground
+    /// check per session; the menu command forces a re-check.
+    @ObservationIgnored var runtimeUpdater: RuntimeUpdater?
+    @ObservationIgnored var makeRuntimeTransport: @Sendable () -> RuntimeReleaseTransport = { GitHubRuntimeReleaseTransport() }
+    @ObservationIgnored var didAutoCheckRuntime = false
     /// Optimistic auto-balance toggle value while the settings save round-trips
     /// (owner dogfood: the switch must flip INSTANTLY, not after the daemon
     /// replies). Cleared when the save settles; a failed save snaps back.
@@ -211,6 +221,9 @@ final class AppModel {
 
     init(client: GatewayClient? = nil, requestNotificationAuthorization: Bool = true) {
         self.client = client
+        // Bind the update chip to the real, manifest-backed provider by default.
+        // Tests/dogfood can still swap in the file-override provider.
+        updateProvider = runtimeUpdateProvider
         // Without this first-run authorization request, run-completion
         // notifications are silently dropped in the bundled .app forever.
         if requestNotificationAuthorization { Notifier.requestAuthIfPossible() }

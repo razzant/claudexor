@@ -208,8 +208,8 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "release",
-    usageArgs: "check-name <name>",
-    summary: "Naming gate (npm/pypi/crates/github)",
+    usageArgs: "check-name <name> | check | stats",
+    summary: "Naming gate, engine runtime update check, and owner-facing install counter",
     flags: ["json"],
     mutability: "read",
     stability: "experimental",

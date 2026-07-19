@@ -206,6 +206,30 @@ jobs:
           test -s "$zipstage/Claudexor.app/Contents/Resources/setup-login-runner.cjs"
           test -s "$zipstage/Claudexor.app/Contents/Resources/browser-mcp-runtime/dist/browser-mcp-launcher.js"
 
+      - name: Build engine runtime update closure
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          closure="$RUNNER_TEMP/runtime-closure"
+          rm -rf "$closure"
+          # Built straight from the signed+verified app bundle, so the M7 update
+          # unit is byte-identical to the closure the gates above smoke-tested.
+          node scripts/build-runtime-closure.mjs \
+            --app-bundle apps/macos/dist/Claudexor.app \
+            --version "$VERSION" \
+            --out "$closure"
+          tarball="$closure/claudexor-runtime-$VERSION.tar.gz"
+          manifest="$closure/runtime-manifest.json"
+          test -s "$tarball" || { echo "::error::runtime closure tarball missing"; exit 1; }
+          test -s "$manifest" || { echo "::error::runtime manifest missing"; exit 1; }
+          # The manifest must never claim a digest the shipped tarball does not
+          # have — recompute and compare before the tarball leaves this runner.
+          declared="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).sha256)' "$manifest")"
+          actual="$(shasum -a 256 "$tarball" | awk '{print $1}')"
+          test "$declared" = "$actual" || { echo "::error::runtime manifest sha256 does not match the tarball"; exit 1; }
+
       - name: Assemble checksums, SBOM and review evidence
         shell: bash
         env:
@@ -216,6 +240,8 @@ jobs:
           mkdir -p "$assets"
           cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"
           cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"
+          cp "$RUNNER_TEMP/runtime-closure/claudexor-runtime-$VERSION.tar.gz" "$assets/"
+          cp "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" "$assets/"
           pnpm licenses list --prod --json | node scripts/generate-release-sbom.mjs \
             --app-bundle apps/macos/dist/Claudexor.app \
             > "$assets/Claudexor-$VERSION.spdx.json"

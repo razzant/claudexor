@@ -49,6 +49,23 @@ for (const [label, pattern] of [
     "SBOM inventories the packaged app",
     /generate-release-sbom\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/Claudexor\.app/,
   ],
+  ["engine runtime update closure is built (M7)", /build-runtime-closure\.mjs/],
+  [
+    "runtime closure is built from the signed app bundle",
+    /build-runtime-closure\.mjs\s+\\\s*\n\s*--app-bundle apps\/macos\/dist\/Claudexor\.app/,
+  ],
+  [
+    "runtime manifest digest is self-verified before upload",
+    /runtime manifest sha256 does not match the tarball/,
+  ],
+  [
+    "runtime closure tarball ships as a release asset",
+    /cp "\$RUNNER_TEMP\/runtime-closure\/claudexor-runtime-\$VERSION\.tar\.gz" "\$assets\/"/,
+  ],
+  [
+    "runtime manifest ships as a release asset",
+    /cp "\$RUNNER_TEMP\/runtime-closure\/runtime-manifest\.json" "\$assets\/"/,
+  ],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
 }

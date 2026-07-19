@@ -21,6 +21,13 @@ struct ClaudexorApp: App {
                 Button("New Thread") { model.startDraftThread() }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            // M7: user-invokable engine-runtime update check (no background timer).
+            CommandGroup(after: .appInfo) {
+                Button(model.runtimeUpdateChecking ? "Checking for Updates…" : "Check for Updates…") {
+                    Task { await model.checkForRuntimeUpdate() }
+                }
+                .disabled(model.runtimeUpdateChecking)
+            }
         }
 
         Settings {

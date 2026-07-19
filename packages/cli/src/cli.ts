@@ -6,7 +6,7 @@ import { Readable, Transform } from "node:stream";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
-import { checkName } from "./release.js";
+import { releaseCommand } from "./release-command.js";
 import { serveAcpBridge, serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
@@ -1332,27 +1332,8 @@ async function main(): Promise<number> {
     case "decision":
       return decisionCommand(args, json);
 
-    case "release": {
-      if (args._[1] === "check-name") {
-        const name = args._[2] ?? "claudexor";
-        const checks = await checkName(name);
-        if (json) printJson({ name, checks });
-        else {
-          print(`naming gate for "${name}":`);
-          for (const c of checks) {
-            const tag =
-              c.availability === "free"
-                ? "[free]   "
-                : c.availability === "taken"
-                  ? "[taken]  "
-                  : "[unknown]";
-            print(`  ${tag} ${c.registry}: ${c.detail}`);
-          }
-        }
-        return 0;
-      }
-      return printUsageError(json, "usage: claudexor release check-name <name>");
-    }
+    case "release":
+      return releaseCommand(args, json);
 
     case "plugin": {
       const sub = args._[1];

@@ -23,34 +23,58 @@ struct SidebarFooter: View {
             FooterProfileRow()
             AccountsTriggerRow()
         }
-        // Read the local override on appear; the real updater (M7) will drive
-        // the same field. Cheap file read — no network, no fake state.
-        .onAppear { model.refreshUpdateAvailability() }
+        // Cheap cached read of the last decision (no network); then one
+        // ETag-cached foreground check per session. The menu command
+        // (Check for Updates…) forces a re-check.
+        .onAppear {
+            model.refreshUpdateAvailability()
+            Task { await model.checkForRuntimeUpdate(force: false) }
+        }
     }
 }
 
-/// The bottom-left update chip (M5c shell). Renders NOTHING until the (future
-/// M7) updater — via the local override for now — reports a pending version.
+/// The bottom-left update chip (M7). Renders a pending-version chip when the
+/// real, manifest-backed updater reports a runnable `.available` closure. When
+/// there is no advertised update it renders NOTHING except an honest status line
+/// for the app-update-required / failure cases (never a fake "up to date"). Tap
+/// to re-check.
 struct UpdateChip: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         if let update = model.updateAvailability {
+            Button {
+                Task { await model.checkForRuntimeUpdate() }
+            } label: {
+                HStack(spacing: Theme.Spacing.xs) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.caption).foregroundStyle(Theme.accent)
+                    Text("Update available")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                    Text("v\(update.version)")
+                        .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
+                        .monospacedDigit()
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+            .help(update.url.map { "Update to v\(update.version) — \($0)" }
+                  ?? "Update to v\(update.version) is available. Click to re-check.")
+        } else if let status = model.runtimeUpdateStatus, status != "Up to date" {
+            // App-update-required / failure / unknown: a quiet, verbatim line.
             HStack(spacing: Theme.Spacing.xs) {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.caption).foregroundStyle(Theme.accent)
-                Text("Update available")
-                    .font(.caption).foregroundStyle(.secondary)
-                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                Text("v\(update.version)")
-                    .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
-                    .monospacedDigit()
+                Image(systemName: "exclamationmark.circle")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                Text(status)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, Theme.Spacing.xs)
-            .help(update.url.map { "Update to v\(update.version) — \($0)" }
-                  ?? "Update to v\(update.version) is available.")
+            .help(status)
         }
     }
 }

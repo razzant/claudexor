@@ -78,6 +78,27 @@ for terminal use. (The v1.0.0 DMG was unsigned — if you kept it, either
 upgrade or approve it via System Settings → Privacy & Security → Open
 Anyway.)
 
+### Updates
+
+- **macOS app** — the app can update its **engine runtime in place** without a
+  new DMG. Each release publishes a `claudexor-runtime-<version>.tar.gz` closure
+  (the bundled daemon, setup-login runner, Browser MCP, and native
+  process-identity helper — everything except Node) plus a `runtime-manifest.json`
+  describing it. On foreground and from the bottom-left update chip / **Check for
+  Updates**, the app reads that manifest, and if a newer runtime is offered it
+  downloads, sha256-verifies, unpacks under `~/.claudexor/runtime/versions/`,
+  probe-starts and handshake-verifies the new engine, then atomically swaps it
+  in — rolling back to the last-known-good runtime on any failure. Node stays
+  app-owned, so a Node bump ships a new signed DMG. There is no background
+  update timer; the check runs only when you open the app or click Check for
+  Updates. The manifest's `minAppVersion` floor means an app that is too old is
+  told to update the app itself rather than silently taking an incompatible
+  engine.
+- **npm** — CLI/daemon installs update the ordinary way:
+  `npm install -g claudexor@latest`. `claudexor release check` reports whether a
+  newer engine runtime is published (npm users update via npm; only the macOS
+  app swaps the runtime closure in place).
+
 ## Quickstart
 
 ```bash
@@ -585,10 +606,14 @@ GitHub account without their explicit approval.
 ## Privacy
 
 Claudexor collects **no telemetry**: no analytics, no crash reporting, no
-auto-update pings. The only outbound network traffic is what you configure —
-the vendor harness CLIs and model APIs your runs use (plus the user-invoked
-`claudexor release check-name`, which queries public package registries when
-YOU run it). The `telemetry/` names you may see under `~/.claudexor/v2/` and in
+background auto-update pings. The only outbound network traffic is what you
+configure — the vendor harness CLIs and model APIs your runs use — plus a few
+strictly user-invoked lookups against public endpoints: `claudexor release
+check-name` (package registries), `claudexor release check` and the app's Check
+for Updates (the GitHub release manifest), and `claudexor release stats` (GitHub
+release download counts + the npm downloads API, owner-facing). The app's engine
+update check runs only on foreground or when you click Check for Updates — never
+on a timer. The `telemetry/` names you may see under `~/.claudexor/v2/` and in
 run artifacts are **local files only** (per-harness cost/latency averages and
 per-run evidence); nothing is transmitted.
 

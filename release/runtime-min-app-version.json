@@ -1,0 +1,4 @@
+{
+  "minAppVersion": "2.1.0",
+  "rationale": "The oldest Claudexor.app that can run any newer engine runtime closure delivered by the M7 updater. The app owns Node and the native process-identity ABI; bump this floor ONLY when a new engine closure genuinely requires a newer app (a Node major, a native-helper ABI break, or a new bundled sidecar). It must stay a valid semver <= the release version (enforced by verify-version-parity.mjs)."
+}

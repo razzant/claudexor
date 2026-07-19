@@ -146,12 +146,79 @@ extension AppModel {
         return (label, name ?? profileId)
     }
 
-    // MARK: Update availability (M5c shell)
+    // MARK: Update availability (M7 runtime updater)
 
-    /// Re-read the local update override. Renders a chip only when the shell
-    /// actually finds a pending version — no fake states (M7 fills the provider).
+    /// Cheap, non-blocking cached read: reflect the last decision the provider
+    /// holds into the chip. No network — the actual fetch is checkForRuntimeUpdate().
     func refreshUpdateAvailability() {
         updateAvailability = updateProvider.current()
+    }
+
+    /// The app's own version (`CFBundleShortVersionString`), or "dev" for the
+    /// SwiftPM/CI executable with no bundle (which satisfies any minAppVersion).
+    static func appVersionString() -> String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
+    }
+
+    /// The engine version currently running: an installed runtime's pinned
+    /// version when `current.json` exists, else the app's own version (the
+    /// bundled first-run engine ships lockstep with the app).
+    private func resolvedRunningEngineVersion() -> String {
+        if let installed = RuntimeInstaller().readCurrent()?.version { return installed }
+        return Self.appVersionString()
+    }
+
+    /// CHECK for an engine-runtime update (foreground / Check-for-Updates —
+    /// never a background timer). Cheap and ETag-cached; reports the outcome
+    /// verbatim into `runtimeUpdateStatus` and refreshes the chip. `force`
+    /// bypasses the once-per-session auto-check guard.
+    func checkForRuntimeUpdate(force: Bool = true) async {
+        if !force {
+            guard !didAutoCheckRuntime else { return }
+        }
+        didAutoCheckRuntime = true
+        if runtimeUpdateChecking { return }
+        runtimeUpdateChecking = true
+        defer { runtimeUpdateChecking = false }
+
+        let updater = runtimeUpdater ?? RuntimeUpdater(transport: makeRuntimeTransport())
+        runtimeUpdater = updater
+        let running = resolvedRunningEngineVersion()
+        let app = Self.appVersionString()
+        do {
+            let outcome = try await updater.check(runningEngineVersion: running, appVersion: app)
+            switch outcome {
+            case .notModified:
+                if let cached = await updater.cachedDecision {
+                    applyRuntimeDecision(cached)
+                } else {
+                    runtimeUpdateStatus = "Up to date"
+                }
+            case let .decided(decision):
+                applyRuntimeDecision(decision)
+            }
+        } catch {
+            // Honest failure: never a fake "up to date".
+            runtimeUpdateStatus = (error as? RuntimeUpdateError)?.errorDescription
+                ?? "Update check failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Project a decision onto the provider cache, the chip, and the verbatim
+    /// status line.
+    private func applyRuntimeDecision(_ decision: RuntimeUpdateDecision) {
+        runtimeUpdateProvider.store(decision)
+        updateAvailability = decision.chipAvailability
+        switch decision {
+        case .upToDate:
+            runtimeUpdateStatus = "Up to date"
+        case let .available(manifest):
+            runtimeUpdateStatus = "Update available: v\(manifest.version)"
+        case let .appUpdateRequired(minAppVersion, _):
+            runtimeUpdateStatus = "App update required — install the latest app (needs v\(minAppVersion) or newer), then re-check."
+        case let .unknown(reason):
+            runtimeUpdateStatus = "Update status unknown: \(reason)"
+        }
     }
 
     // MARK: Auto-balance
