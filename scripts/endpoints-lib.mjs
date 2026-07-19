@@ -102,13 +102,6 @@ const ROUTE_RESPONSE_OVERRIDES = new Map([
   ["GET /v2/projects", "ControlProjectListResponse"],
   ["POST /v2/projects", "ControlProject"],
   ["POST /v2/projects/:id/relink", "ControlProject"],
-  ["GET /v2/spec/sessions", "ControlSpecSessionListResponse"],
-  ["POST /v2/spec/sessions", "ControlSpecSession"],
-  ["GET /v2/spec/sessions/:id", "ControlSpecSession"],
-  ["POST /v2/spec/sessions/:id/answers", "ControlSpecSession"],
-  ["POST /v2/spec/sessions/:id/freeze", "ControlSpecSession"],
-  ["POST /v2/spec/sessions/:id/cancel", "ControlSpecSession"],
-  ["POST /v2/spec/sessions/:id/resume", "ControlSpecSession"],
   ["GET /v2/runs/:id", "ControlRunDetail"],
   ["GET /v2/runs", "ControlRunListResponse"],
   ["POST /v2/runs", "ControlRunStartResponse"],
@@ -158,9 +151,6 @@ const ROUTE_REQUEST_OVERRIDES = new Map([
   ["GET /v2/runs/:id/run-again", null],
   ["POST /v2/projects", "ControlProjectRegisterRequest"],
   ["POST /v2/projects/:id/relink", "ControlProjectRelinkRequest"],
-  ["POST /v2/spec/sessions", "ControlSpecQuestionsRequest"],
-  ["POST /v2/spec/sessions/:id/answers", "ControlSpecAnswersRequest"],
-  ["POST /v2/spec/sessions/:id/resume", null],
   ["POST /v2/recovery/partitions/:id/quarantine", "ControlJournalQuarantineRequest"],
 ]);
 

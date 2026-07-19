@@ -7,7 +7,6 @@ export * from "./events.js";
 export * from "./interactions.js";
 export * from "./operator-decisions.js";
 export * from "./run-events.js";
-export * from "./spec-sessions.js";
 export * from "./threads.js";
 export * from "./thread-head-ping.js";
 export * from "./projects.js";

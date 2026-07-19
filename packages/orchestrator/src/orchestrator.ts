@@ -66,7 +66,6 @@ import {
   FinalVerifyRecord,
   WorkProduct as WorkProductSchema,
   SessionReboundLineage as SessionReboundLineageSchema,
-  SpecPack as SpecPackZ,
   ModeKind as ModeKindSchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
@@ -78,7 +77,6 @@ import {
   estimateEffectiveAuthRoute,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
-import { specPackToTaskContract } from "@claudexor/interview";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
   AnswerAssembly,
@@ -302,10 +300,6 @@ export interface RunInput {
   models?: Record<string, string>;
   /** Optional reasoning-effort hint forwarded to harnesses that support it. */
   effort?: EffortHint;
-  /** Frozen SpecPack provenance when a run is bound to a hard-locked spec. */
-  specId?: string;
-  specHash?: string;
-  specPath?: string;
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
@@ -1486,66 +1480,19 @@ export class Orchestrator {
       );
     }
     const externalContextPolicy = input.web ?? input.externalContextPolicy ?? "auto";
-    // A frozen SpecPack's CONTENT reaches the contract (success criteria,
-    // non-goals, forbidden approaches, tradeoffs, task graph) — previously only
-    // its metadata did, leaving the arbitration acceptance axis permanently
-    // empty and the interview pipeline dead in production.
-    let specFields: Partial<TaskContract> = {};
-    let specTestCommands: TestCommandInvocation[] = [];
-    if (input.specPath) {
-      try {
-        const spec = SpecPackZ.parse(JSON.parse(readFileSync(input.specPath, "utf8")));
-        // Tamper fence (INV-081): the frozen spec's recorded hash must
-        // match what we just read — a spec.json edited AFTER freeze would
-        // otherwise silently rewrite success criteria/tests/protected paths
-        // while the contract records the stale hash as provenance.
-        if (input.specHash && hashJson(spec) !== input.specHash) {
-          throw new Error(
-            `frozen SpecPack hash mismatch (expected ${input.specHash}, got ${hashJson(spec)}); the spec was modified after freeze — re-freeze it or drop --spec`,
-          );
-        }
-        const fromSpec = specPackToTaskContract(spec, {
-          repoRoot: input.repoRoot,
-          mode,
-          baseRef: input.baseRef,
-          paidBudget: input.paidBudget,
-        });
-        specFields = {
-          success_criteria: fromSpec.success_criteria,
-          non_goals: fromSpec.non_goals,
-          forbidden_approaches: fromSpec.forbidden_approaches,
-          decided_tradeoffs: fromSpec.decided_tradeoffs,
-          task_graph: fromSpec.task_graph,
-          constraints: fromSpec.constraints,
-        };
-        specTestCommands = fromSpec.tests.commands.map(({ program, args, cwd, envAllowlist }) => ({
-          program,
-          args,
-          ...(cwd === undefined ? {} : { cwd }),
-          envAllowlist,
-        }));
-      } catch (err) {
-        // An unreadable/unfrozen spec must fail the run loudly, never silently
-        // degrade into an unspecced contract.
-        throw new Error(
-          `failed to resolve frozen SpecPack at ${input.specPath}: ${safeErrorMessage(err)}`,
-        );
-      }
-    }
-    // Deterministic gate commands come from the frozen SpecPack, explicit run
-    // input, then versioned project config. Without these, gateSpecs is empty
-    // and convergence is review-only; with them, convergence is test-driven.
+    // Deterministic gate commands come from explicit run input, then versioned
+    // project config. Without these, gateSpecs is empty and convergence is
+    // review-only; with them, convergence is test-driven.
     const resolvedGates = resolveContractGates({
       repoRoot: input.repoRoot,
       effectiveAccess,
       config: cfg,
       trustGrants: resolvedCfg.trust.test_command_grants,
-      specCommands: specTestCommands,
       operatorCommands: input.tests ?? [],
       projectCommands: cfg.tests?.commands ?? [],
     });
     const commands = resolvedGates.commands;
-    const protectedPaths = [...new Set(specFields.constraints?.protected_paths ?? [])];
+    const protectedPaths: string[] = [];
     const autoProtectedPaths = resolvedGates.autoProtectedPaths;
     const protectedPathApprovals = [
       ...new Map(
@@ -1571,15 +1518,6 @@ export class Orchestrator {
       auth_preference: input.authPreference ?? "auto",
       credential_profile_id: input.credentialProfileId ?? null,
       max_turns: input.maxTurns ?? null,
-      spec:
-        input.specId || input.specHash || input.specPath
-          ? {
-              id: input.specId,
-              hash: input.specHash,
-              path: input.specPath,
-            }
-          : undefined,
-      ...specFields,
       constraints: {
         protected_paths: protectedPaths,
         deny_paths: [...new Set(input.denyPaths ?? [])],
@@ -4584,7 +4522,7 @@ export class Orchestrator {
     };
   }
 
-  /** plan mode: multi-harness planning -> aggregate -> (optional) plan review -> SpecPack. Read-only. */
+  /** plan mode: multi-harness planning -> aggregate -> (optional) plan review -> plan. Read-only. */
   /**
    * Wrap the user's goal in an explicit "plan, do not implement" instruction.
    * Without this the raw prompt ("make a racing game") reaches the harness with

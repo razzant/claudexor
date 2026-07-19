@@ -147,8 +147,6 @@ const CLI_ONLY_EXEMPT = {
   autonomy: "orchestrate executor autonomy; MCP orchestrate is suggest-mode (plan only)",
   portfolio: "removed v2 flag retained only to emit a hard error",
   "routing-goal": "MCP callers currently use the daemon default routing goal",
-  answers: "spec-interview plumbing (CLI spec flow only)",
-  spec: "spec-file attach (CLI spec flow only)",
   attach:
     "MCP surface does not support attachments yet (native-attachment delivery is CLI/app-only; a prompt cannot carry an image)",
   image:

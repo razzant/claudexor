@@ -7,7 +7,7 @@
  * that invariant.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -51,44 +51,14 @@ describe("canary golden stories", () => {
     expect(r.stdout + r.stderr).toMatch(/unknown flag|frobnicate/i);
   });
 
-  it("[INV-021:spec-grounding-flags] spec --answers refuses grounding-only flags instead of silently ignoring them", () => {
-    const r = cli(sb, [
-      "spec",
-      "add a multiply feature",
-      "--answers",
-      "does-not-matter.json",
-      "--effort",
-      "low",
-      "--json",
-    ]);
+  it("[INV-033:spec-retired] the retired 'spec' verb hard-errors and names the plan lifecycle, never silently runs", () => {
+    // The spec interview was retired; ambiguity is now handled by the plan
+    // lifecycle (typed open questions + Implement freezes the plan). The old
+    // verb must fail loudly and point at the replacement, not alias to a run.
+    const r = cli(sb, ["spec", "add a multiply feature", "--json"]);
     expect(r.code).toBe(2);
-    expect(r.stdout + r.stderr).toMatch(/grounding plan run/);
-    const withHarness = cli(sb, [
-      "spec",
-      "add a multiply feature",
-      "--answers",
-      "does-not-matter.json",
-      "--harness",
-      "fake-success",
-      "--json",
-    ]);
-    expect(withHarness.code).toBe(2);
-    const withReviewer = cli(sb, [
-      "spec",
-      "add a multiply feature",
-      "--answers",
-      "does-not-matter.json",
-      "--reviewer-effort",
-      "openai=low",
-      "--json",
-    ]);
-    expect(withReviewer.code).toBe(2);
-    expect(withReviewer.stdout + withReviewer.stderr).toMatch(
-      /reviewer-effort.*grounding plan run/,
-    );
-    // And malformed values fail loudly on the grounding path too.
-    const bad = cli(sb, ["spec", "add a multiply feature", "--max-usd", "not-a-number", "--json"]);
-    expect(bad.code).toBe(2);
+    expect(r.stdout + r.stderr).toMatch(/retired/);
+    expect(r.stdout + r.stderr).toMatch(/plan/);
   });
 
   it("[INV-033:verbs-renamed] the retired verbs run/race hard-error with the new spelling, never silently alias", () => {
@@ -300,73 +270,6 @@ describe("canary golden stories", () => {
     expect(out.status, JSON.stringify(events)).toBe("cancelled");
     expect(runFileExists(runDir as string, "final/telemetry.yaml")).toBe(true);
   }, 90_000);
-
-  it("[INV-111:blocked-needs-decision] a NEEDS_HUMAN-blocked run refuses apply until a typed operator decision exists, then applies", async () => {
-    // Protected-path tamper is the deterministic NEEDS_HUMAN trigger: the spec
-    // freezes FAKE_CHANGE.txt as protected, the file EXISTS in the repo, and
-    // fake-implement overwrites it -> reviewer escalates -> blocked terminal.
-    execFileSync("git", ["-C", sb.repo, "config", "user.email", "c@c"]);
-    execFileSync("git", ["-C", sb.repo, "config", "user.name", "c"]);
-    writeFileSync(join(sb.repo, "FAKE_CHANGE.txt"), "protected original\n");
-    execFileSync("git", ["-C", sb.repo, "add", "-A"]);
-    execFileSync("git", ["-C", sb.repo, "commit", "-qm", "protect fixture"]);
-    const spec = {
-      schema_version: 2,
-      id: "spec-canary-protected",
-      created_at: new Date().toISOString(),
-      version: 1,
-      frozen: true,
-      intent: { raw: "change the protected file" },
-      constraints: { protected_paths: ["FAKE_CHANGE.txt"] },
-      tests: [
-        {
-          id: "t1",
-          program: process.execPath,
-          args: ["-e", "process.exit(0)"],
-          envAllowlist: [],
-          required: true,
-          trust_required: false,
-          trust_grant: null,
-        },
-      ],
-    };
-    const specPath = join(sb.repo, "spec.json");
-    writeFileSync(specPath, JSON.stringify(spec));
-    execFileSync("git", ["-C", sb.repo, "add", "spec.json"]);
-    execFileSync("git", ["-C", sb.repo, "commit", "-qm", "add spec fixture"]);
-    const r = cli(sb, [
-      "best-of",
-      "tamper the protected file",
-      "--spec",
-      specPath,
-      "--harness",
-      "fake-implement",
-      "--n",
-      "2",
-      "--json",
-    ]);
-    const out = r.json() as { runId: string; runDir: string; status: string };
-    expect(out.status).toBe("blocked");
-    expect(readRunFile(out.runDir, "final/failure.yaml")).toMatch(/NEEDS_HUMAN|human/i);
-    // Apply REFUSES while no typed operator decision exists, naming the remedy.
-    const refused = cli(sb, ["apply", out.runId, "--dry-run"]);
-    expect(refused.code).toBe(1);
-    expect(refused.stdout + refused.stderr).toMatch(/refusing apply|not applyable/);
-    expect(refused.stdout + refused.stderr).toMatch(/decision/i);
-    // The typed operator decision (public surface: claudexor decision --override)
-    // unblocks apply for THIS patch.
-    const decided = cli(sb, ["decision", out.runId, "--override", "--json"]);
-    expect(decided.code).toBe(0);
-    const applied = cli(sb, ["apply", out.runId, "--json"]);
-    expect(applied.code, applied.stdout + applied.stderr).toBe(0);
-    const receipt = applied.json() as {
-      finalVerify: { attempted: boolean };
-      targetPreimageSha: string;
-    };
-    expect(receipt.finalVerify.attempted).toBe(true);
-    expect(receipt.targetPreimageSha).toMatch(/^[0-9a-f]{40}$/);
-    expect(readFileSync(join(sb.repo, "FAKE_CHANGE.txt"), "utf8")).not.toBe("protected original\n");
-  }, 120_000);
 
   it("[INV-041:crlf-diff-fidelity] a candidate patch over CRLF content survives byte-faithfully and applies onto the live tree", () => {
     // The repo holds a COMMITTED CRLF file; fake-implement overwrites it with

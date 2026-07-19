@@ -2,7 +2,6 @@ import { z } from "zod";
 import {
   AccessProfile,
   AuthPreference,
-  ContentHash,
   ExternalContextPolicy,
   Id,
   ModeKind,
@@ -178,9 +177,6 @@ export const ControlRunStartRequest = z
       .describe(
         "Typed per-run approvals for changing auto-protected gate/test paths; does not bypass built-in critical/security path human gates.",
       ),
-    specPath: NonBlankString.optional().describe("Path to a frozen SpecPack the run is held to."),
-    specId: z.string().optional().describe("Id of the SpecPack the run is held to."),
-    specHash: ContentHash.optional().describe("Content hash of the SpecPack the run is held to."),
     /** Thread/session linkage: a run is a turn inside a thread. */
     threadId: Id.optional().describe("Thread this run is a turn of."),
     /** INTERNAL single-writer handoff: control-api pre-creates the turn and
@@ -308,7 +304,7 @@ export const ControlRunStartRequest = z
   })
   .strict()
   .describe(
-    "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and spec/thread linkage.",
+    "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and thread linkage.",
   );
 export type ControlRunStartRequest = z.infer<typeof ControlRunStartRequest>;
 
@@ -732,8 +728,6 @@ export const ControlRunSummary = z
       .default(null)
       .describe("Route evidence from telemetry; null when no telemetry exists (legacy runs)."),
     tests: z.array(TestCommandInvocation).optional().describe("Typed argv gates."),
-    specId: z.string().optional().describe("SpecPack id the run was held to."),
-    specHash: ContentHash.optional().describe("Content hash of the SpecPack the run was held to."),
     createdAt: z.string().optional().describe("When the run was created."),
     startedAt: z.string().optional().describe("When the run started."),
     finishedAt: z.string().optional().describe("When the run finished."),

@@ -1,6 +1,5 @@
 import type { GateResult, ReviewFinding, TaskContract } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import { gatesPassed } from "@claudexor/review";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { toolWarnings } from "./attemptTelemetry.js";
 
@@ -29,11 +28,9 @@ export function toCandidateEvidence(
   finalReviewClean: boolean,
   reviewVerified = false,
 ): CandidateEvidence {
-  const passed = gatesPassed(run.gates) && !run.errored;
-  const acceptanceCovered =
-    passed && contract.success_criteria.length > 0
-      ? contract.success_criteria.map((criterion) => criterion.id)
-      : [];
+  // Success criteria were a spec-only producer (retired with the spec
+  // machinery); the acceptance axis is now always empty.
+  const acceptanceCovered: string[] = [];
   // A harness error is an explicit failed required gate — never vacuous 0/0.
   const gates = run.errored
     ? [
@@ -56,7 +53,7 @@ export function toCandidateEvidence(
     label: run.label,
     gates,
     acceptanceCovered,
-    acceptanceTotal: contract.success_criteria.length,
+    acceptanceTotal: 0,
     findings,
     testsPassed: gates.filter((gate) => gate.status === "passed").length,
     testsTotal: gates.length,

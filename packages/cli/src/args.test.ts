@@ -105,13 +105,13 @@ describe("cli args", () => {
 
   it("rejects value-taking flags when no value is provided", () => {
     expect(
-      requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "--json"]), ["spec"]),
-    ).toBe("claudexor: --spec requires a value");
-    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--spec="]), ["spec"])).toBe(
-      "claudexor: --spec requires a value",
+      requiredStringFlagError(parseArgs(["run", "fix it", "--model", "--json"]), ["model"]),
+    ).toBe("claudexor: --model requires a value");
+    expect(requiredStringFlagError(parseArgs(["run", "fix it", "--model="]), ["model"])).toBe(
+      "claudexor: --model requires a value",
     );
     expect(
-      requiredStringFlagError(parseArgs(["run", "fix it", "--spec", "spec.json"]), ["spec"]),
+      requiredStringFlagError(parseArgs(["run", "fix it", "--model", "gpt-5"]), ["model"]),
     ).toBeNull();
     expect(
       requiredStringFlagError(

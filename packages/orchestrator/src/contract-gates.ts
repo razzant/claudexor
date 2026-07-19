@@ -12,14 +12,13 @@ import type { GateSpec } from "@claudexor/review";
 
 type GateCommands = TaskContract["tests"]["commands"];
 
-/** Merge the three command authorities once and attach external grants only
- * to versioned project commands. Spec/operator commands are explicit input. */
+/** Merge the command authorities once and attach external grants only
+ * to versioned project commands. Operator commands are explicit input. */
 export function resolveContractGates(input: {
   repoRoot: string;
   effectiveAccess: AccessProfile;
   config: ProjectConfig;
   trustGrants: TestCommandGrant[];
-  specCommands: TestCommandInvocation[];
   operatorCommands: TestCommandInvocation[];
   projectCommands: TestCommandInvocation[];
 }): { commands: GateCommands; autoProtectedPaths: string[] } {
@@ -27,7 +26,6 @@ export function resolveContractGates(input: {
   const configDigest = hashJson(input.config);
   const seen = new Set<string>();
   const sourced = [
-    ...input.specCommands.map((command) => ({ command, source: "spec" as const })),
     ...input.operatorCommands.map((command) => ({ command, source: "operator" as const })),
     ...input.projectCommands.map((command) => ({ command, source: "project" as const })),
   ];

@@ -926,15 +926,6 @@
                 },
                 "description": "Typed argv gates."
               },
-              "specId": {
-                "type": "string",
-                "description": "SpecPack id the run was held to."
-              },
-              "specHash": {
-                "type": "string",
-                "minLength": 1,
-                "description": "Content hash of the SpecPack the run was held to."
-              },
               "createdAt": {
                 "type": "string",
                 "description": "When the run was created."

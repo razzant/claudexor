@@ -7,8 +7,6 @@ import {
   ControlSetupJobCreateRequest,
   ControlSetupJobEvent,
   ControlSettingsSnapshot,
-  ControlSpecAnswersRequest,
-  ControlSpecQuestionsRequest,
   ControlThread,
   ConformanceReport,
   FrozenTaskContractArtifact,
@@ -18,7 +16,6 @@ import {
   OrchestrateContract,
   OrchestratePlan,
   OrchestratePlanProgress,
-  SpecPack,
   TOOL_RISK,
   toolRisk,
   ReviewFinding,
@@ -104,25 +101,6 @@ describe("TaskContract", () => {
     expect(
       FrozenTaskContractArtifact.parse({ ...minimal, tests: { commands: [] } }).tests.commands,
     ).toEqual([]);
-  });
-});
-
-describe("SpecPack", () => {
-  it("rejects per-run protected path approvals inside frozen spec constraints", () => {
-    expect(() =>
-      SpecPack.parse({
-        schema_version: 2,
-        id: "spec-1",
-        created_at: "2026-06-29T00:00:00Z",
-        version: 1,
-        frozen: true,
-        intent: { raw: "update tests" },
-        constraints: {
-          protected_paths: ["test/**"],
-          protected_path_approvals: [{ path: "test/**", reason: "self-authorized by spec" }],
-        },
-      }),
-    ).toThrow(/protected_path_approvals/);
   });
 });
 
@@ -383,13 +361,6 @@ describe("Control API schemas", () => {
       ControlRunStartRequest.parse({
         prompt: "bad",
         mode: "ask",
-        specPath: "   ",
-      }),
-    ).toThrow();
-    expect(() =>
-      ControlRunStartRequest.parse({
-        prompt: "bad",
-        mode: "ask",
         protectedPathApprovals: [{ path: "   " }],
       }),
     ).toThrow();
@@ -486,39 +457,6 @@ describe("Control API schemas", () => {
     expect(() =>
       ControlSetupJobEvent.parse({ ...eventBase, previousCursor: null, sequence: 0 }),
     ).toThrow();
-
-    const specReq = ControlSpecQuestionsRequest.parse({
-      prompt: "scope it",
-      scope: { kind: "project", root: "/repo" },
-    });
-    expect(specReq.scope.root).toBe("/repo");
-    expect(specReq.scope.context).toBe("auto"); // defaulted
-    // The macOS RunScope serializes `context` — the spec scope MUST accept it (a
-    // strict scope without it rejects session creation before grounding runs).
-    const specWithCtx = ControlSpecQuestionsRequest.parse({
-      prompt: "x",
-      scope: { kind: "project", root: "/repo", context: "auto" },
-    });
-    expect(specWithCtx.scope.context).toBe("auto");
-    // "deep" was retired in the v0.15 triage — it never had distinct behavior;
-    // an old client sending it must fail loudly, not silently rewrite.
-    expect(() =>
-      ControlSpecQuestionsRequest.parse({
-        prompt: "x",
-        scope: { kind: "project", root: "/repo", context: "deep" },
-      }),
-    ).toThrow();
-    expect(() =>
-      ControlSpecQuestionsRequest.parse({ prompt: "legacy", repoRoot: "/repo" }),
-    ).toThrow();
-    expect(() =>
-      ControlSpecQuestionsRequest.parse({
-        prompt: "legacy",
-        scope: { kind: "project", root: "/repo" },
-        contextMode: "off",
-      }),
-    ).toThrow();
-    expect(() => ControlSpecAnswersRequest.parse({ answers: [], plan: "legacy" })).toThrow();
   });
 });
 
@@ -715,7 +653,7 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
     expect(ct.state).toBe("active");
   });
 
-  it("defaults the new convergence + task_graph fields on a TaskContract", () => {
+  it("defaults the convergence fields on a TaskContract", () => {
     const tc = TaskContract.parse({
       task_id: "t-1",
       created_at: "2026-06-12T00:00:00Z",
@@ -725,7 +663,6 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
       user_intent: { raw: "do the thing" },
     });
     expect(tc.convergence.require_no_accepted_needs_human_open).toBe(true);
-    expect(tc.task_graph).toBeNull();
   });
 });
 

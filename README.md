@@ -117,7 +117,8 @@ Canonical mode ids (engine strategies are FLAGS, not modes):
   the bounded multi-scout research sweep with synthesis (per-scout findings,
   omissions, follow-up questions). Also the macOS composer's no-project
   fallback intent (Agent is the default on a project thread).
-- `plan` - read-only multi-harness planning and draft SpecPack grounding.
+- `plan` - read-only multi-harness planning; the plan lifecycle surfaces typed
+  open questions and Implement freezes the plan as a content-hashed contract.
 - `agent` - default `claudexor agent` route. Strategy flags: `--n N` (best-of-N
   race with isolated candidates, review, synthesis, arbitration),
   `--attempts N` (repair loop with a hard cap), `--until-clean` (repair loop

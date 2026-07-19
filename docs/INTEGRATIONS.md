@@ -500,8 +500,8 @@ the full current layout.
   gates, artifacts, and reviewer evidence.
 - When a client intentionally starts test-authoring work that edits existing
   protected gate/test files, it should pass `protectedPathApprovals` on the run
-  request instead of inferring approval from prompt prose or from frozen
-  SpecPack/config state.
+  request instead of inferring approval from prompt prose or from repo config
+  state.
 - Integrations should display disclosed limitations instead of silently falling
   back to another harness or another mode.
 

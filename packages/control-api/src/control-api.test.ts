@@ -94,30 +94,6 @@ describe("normalizeRunStart prompt validation", () => {
       normalizeRunStartRequest({ ...projectScope(), prompt: "   \n\t ", mode: "agent" }),
     ).toThrowError(/prompt must not be empty/);
   });
-  it("allows an empty prompt only when a frozen specPath supplies the intent", () => {
-    const req = normalizeRunStartRequest({
-      ...projectScope(),
-      prompt: "",
-      mode: "agent",
-      specPath: " /tmp/spec.yaml ",
-    });
-    expect(req.specPath).toBe("/tmp/spec.yaml");
-  });
-  it("rejects a whitespace-only specPath as an empty-prompt substitute", () => {
-    expect(() =>
-      normalizeRunStartRequest({
-        ...projectScope(),
-        prompt: "",
-        mode: "agent",
-        specPath: "   ",
-      }),
-    ).toThrow();
-  });
-  it("rejects an empty prompt with only a specId (no spec content loaded at enqueue)", () => {
-    expect(() =>
-      normalizeRunStartRequest({ ...projectScope(), prompt: "", mode: "agent", specId: "spec-1" }),
-    ).toThrowError(/prompt must not be empty/);
-  });
   it("accepts a real prompt", () => {
     expect(() =>
       normalizeRunStartRequest({ ...projectScope(), prompt: "do the thing", mode: "agent" }),
@@ -2145,7 +2121,7 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("threads: a turn forwards per-turn model/spec/review controls to daemon enqueue", async () => {
+  it("threads: a turn forwards per-turn model/review controls to daemon enqueue", async () => {
     // HTTP-boundary proof for the macOS per-turn model picker, spec Implement,
     // explicit reviewer panel, test gates, and protected-path approvals: the
     // thin gateway must accept and forward them to enqueue, not silently drop
@@ -2205,15 +2181,12 @@ describe("DaemonControlApiServer", () => {
     await withDaemonServer(
       wrapped,
       async (base) => {
-        // A spec Implement turn: empty prompt is allowed because a frozen specPath
-        // supplies the intent (mirrors normalizeRunStart's prompt-or-specPath rule).
         const r = await apiFetch(`${base}/threads/th-11/turns`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({
-            prompt: "",
+            prompt: "implement it",
             model: "gpt-5-codex",
-            specPath: "/repo/.claudexor/specs/s1/spec.json",
             authPreference: "subscription",
             reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8", effort: "max" }],
             reviewerModels: { openai: "gpt-5.5" },
@@ -2225,7 +2198,6 @@ describe("DaemonControlApiServer", () => {
         expect(r.status).toBe(200);
         expect(enqueued).toMatchObject({
           model: "gpt-5-codex",
-          specPath: "/repo/.claudexor/specs/s1/spec.json",
           authPreference: "subscription",
           reviewerPanel: [{ harness: "claude", model: "claude-opus-4.8", effort: "max" }],
           reviewerModels: { openai: "gpt-5.5" },
@@ -3734,117 +3706,6 @@ describe("DaemonControlApiServer", () => {
       {
         setupJobStatus: async () => current,
         setupJobEvents: async () => [],
-      },
-    );
-  });
-
-  it("validates and projects durable spec-session lifecycle routes", async () => {
-    const { daemon } = fakeDaemon();
-    const seen: unknown[] = [];
-    const session = {
-      sessionId: "spec-session-1",
-      prompt: "Plan this",
-      scope: { kind: "project", root: "/tmp/project", context: "auto" },
-      state: "questions",
-      planRunId: "run-plan",
-      questions: [],
-      answers: [],
-      priorDecisions: [],
-      specId: null,
-      specDir: null,
-      specPath: null,
-      specHash: null,
-      error: null,
-      createdAt: "2026-07-14T00:00:00.000Z",
-      updatedAt: "2026-07-14T00:00:00.000Z",
-    };
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const missingKey = await apiFetch(`${base}/spec/sessions`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ prompt: "Plan this", scope: session.scope }),
-        });
-        expect(missingKey.status).toBe(400);
-
-        const validQuestions = await apiFetch(`${base}/spec/sessions`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "Idempotency-Key": "spec-create-1",
-          },
-          body: JSON.stringify({
-            prompt: "Plan this",
-            scope: { kind: "project", root: "/tmp/project" },
-            harnesses: ["codex"],
-          }),
-        });
-        expect(validQuestions.status).toBe(200);
-        expect(await validQuestions.json()).toMatchObject({ sessionId: "spec-session-1" });
-
-        for (const body of [
-          { prompt: "legacy", repoRoot: "/tmp/project" },
-          {
-            prompt: "legacy",
-            scope: { kind: "project", root: "/tmp/project" },
-            contextMode: "off",
-          },
-          { prompt: "legacy", scope: { kind: "project", root: "/tmp/project" }, inPlace: true },
-        ]) {
-          const bad = await apiFetch(`${base}/spec/sessions`, {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${token}`,
-              "Idempotency-Key": "spec-create-bad",
-            },
-            body: JSON.stringify(body),
-          });
-          expect(bad.status).toBe(400);
-        }
-
-        const answer = await apiFetch(`${base}/spec/sessions/spec-session-1/answers`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ answers: [] }),
-        });
-        expect(answer.status).toBe(200);
-
-        const validFreeze = await apiFetch(`${base}/spec/sessions/spec-session-1/freeze`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-        });
-        expect(validFreeze.status).toBe(200);
-        expect(await validFreeze.json()).toMatchObject({ state: "frozen", specId: "spec-1" });
-
-        const list = await apiFetch(`${base}/spec/sessions`, {
-          headers: { authorization: `Bearer ${token}` },
-        });
-        expect(await list.json()).toMatchObject({ sessions: [{ sessionId: "spec-session-1" }] });
-        expect(seen).toHaveLength(3);
-      },
-      undefined,
-      {
-        createSpecSession: async (input) => {
-          seen.push(input);
-          return session;
-        },
-        listSpecSessions: async () => ({ sessions: [session] }),
-        answerSpecSession: async (_id, input) => {
-          seen.push(input);
-          return { ...session, state: "answered", answers: input.answers };
-        },
-        freezeSpecSession: async () => {
-          seen.push("freeze");
-          return {
-            ...session,
-            state: "frozen",
-            specId: "spec-1",
-            specDir: "/tmp/spec-1",
-            specPath: "/tmp/spec-1/spec.json",
-            specHash: "sha256:" + "a".repeat(64),
-          };
-        },
       },
     );
   });

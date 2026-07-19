@@ -20,13 +20,6 @@ const shellGate = (command: string) => ({
   envAllowlist: [] as string[],
 });
 
-const frozenShellGate = (id: string, command: string) => ({
-  id,
-  ...shellGate(command),
-  required: true,
-  trust_required: false,
-  trust_grant: null,
-});
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
@@ -698,7 +691,7 @@ describe("Orchestrator", () => {
     ).rejects.toThrow(/secret-like/);
   });
 
-  it("plan mode produces a SpecPack without mutating", async () => {
+  it("plan mode produces a plan without mutating", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
       ["fake-success", createFakeHarness("fake-success")],
@@ -1092,83 +1085,6 @@ describe("Orchestrator", () => {
     expect(review).toContain(".github/workflows/release.yml");
   });
 
-  it("uses frozen SpecPack protected paths when calculating critical review depth", async () => {
-    const repo = await initRepo();
-    mkdirSync(join(repo, "guarded"), { recursive: true });
-    writeFileSync(join(repo, "guarded", "rules.txt"), "locked\n");
-    await runCapture("git", ["-C", repo, "add", "guarded/rules.txt"]);
-    await runCapture("git", [
-      "-C",
-      repo,
-      "-c",
-      "user.email=t@t.dev",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-m",
-      "add guarded file",
-    ]);
-    const specPath = join(repo, "spec.json");
-    writeFileSync(
-      specPath,
-      JSON.stringify({
-        schema_version: 2,
-        id: "spec-protected-depth",
-        version: 1,
-        created_at: new Date().toISOString(),
-        intent: { raw: "modify guarded file" },
-        summary: "guarded path work",
-        success_criteria: [],
-        non_goals: [],
-        forbidden_approaches: [],
-        decided_tradeoffs: [],
-        constraints: { protected_paths: ["guarded/**"] },
-        tests: [],
-        tasks: [],
-        open_questions: [],
-        frozen: true,
-      }),
-    );
-    let seenPrompt = "";
-    const adapter: HarnessAdapter = {
-      ...diffImplementer("protected-depth-impl"),
-      async *run(spec) {
-        seenPrompt = spec.prompt;
-        const ts = new Date().toISOString();
-        yield {
-          type: "started",
-          session_id: spec.session_id,
-          ts,
-          observed_model: "protected-depth-model",
-        };
-        writeFileSync(join(spec.cwd, "guarded", "rules.txt"), "changed\n");
-        yield { type: "message", session_id: spec.session_id, ts, text: "changed guarded file" };
-        yield { type: "completed", session_id: spec.session_id, ts };
-      },
-    };
-    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
-    const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "modify guarded file",
-      mode: "agent",
-      harnesses: [adapter.id],
-      specPath,
-      protectedPathApprovals: [{ path: "guarded/**", reason: "must not suppress spec path" }],
-      n: 1,
-    });
-
-    expect(res.status).toBe("blocked");
-    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
-    expect(review).toContain("level: critical");
-    expect(review).toContain("critical-risk diff requires human approval: protected-path change");
-    expect(review).toContain("guarded/rules.txt");
-    expect(seenPrompt).toContain("spec/config protected paths");
-    expect(seenPrompt).toContain("guarded/**");
-    expect(seenPrompt).not.toContain("Approved protected gate/test path changes");
-    expect(seenPrompt).not.toContain("Approved auto-protected gate/test path changes");
-  });
-
   it("blocks renaming a built-in human path out of the protected glob", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, ".github", "workflows"), { recursive: true });
@@ -1317,128 +1233,6 @@ describe("Orchestrator", () => {
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("test/math.test.js");
     expect(review).toContain("severity: BLOCK");
-  });
-
-  it("resolves a frozen SpecPack: provenance AND content (criteria/non-goals/task graph) reach the contract", async () => {
-    const repo = await initRepo();
-    mkdirSync(join(repo, ".claudexor"), { recursive: true });
-    writeFileSync(
-      join(repo, ".claudexor", "config.yaml"),
-      'tests:\n  commands:\n    - program: node\n      args: ["-e", "console.log(\\"project gate\\")"]\n      envAllowlist: []\n',
-    );
-    const specPath = join(repo, "spec.json");
-    const specGate = "node -e \"console.log('spec gate')\"";
-    const explicitGate = "node -e \"console.log('explicit gate')\"";
-    writeFileSync(
-      specPath,
-      JSON.stringify({
-        schema_version: 2,
-        id: "spec-123",
-        version: 1,
-        created_at: new Date().toISOString(),
-        intent: { raw: "implement the widget" },
-        summary: "widget work",
-        success_criteria: [{ id: "AC-1", behavior: "widget renders", required: true }],
-        non_goals: ["no redesign"],
-        forbidden_approaches: ["no global state"],
-        decided_tradeoffs: [],
-        constraints: { protected_paths: [] },
-        tests: [frozenShellGate("spec-gate", specGate)],
-        tasks: [
-          { id: "t1", title: "scaffold", depends_on: [] },
-          { id: "t2", title: "wire", depends_on: ["t1"] },
-        ],
-        open_questions: [],
-        frozen: true,
-      }),
-    );
-    const registry = new Map<string, HarnessAdapter>([
-      ["fake-success", createFakeHarness("fake-success")],
-    ]);
-    // The tamper fence verifies the recorded hash — use the REAL one
-    // (parse-normalized, matching both producers).
-    const { hashJson } = await import("@claudexor/util");
-    const { SpecPack } = await import("@claudexor/schema");
-    const realHash = hashJson(SpecPack.parse(JSON.parse(readFileSync(specPath, "utf8"))));
-    const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["fake-success"],
-      specId: "spec-123",
-      specHash: realHash,
-      specPath,
-      tests: [shellGate(specGate), shellGate(explicitGate)],
-    });
-    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
-    expect(taskYaml).toContain("id: spec-123");
-    expect(taskYaml).toContain(`hash: ${realHash}`);
-    // Spec CONTENT now reaches the contract (the previously-dead pipeline):
-    expect(taskYaml).toContain("widget renders");
-    expect(taskYaml).toContain("no redesign");
-    expect(taskYaml).toContain("no global state");
-    // ...including the topologically-ordered task graph.
-    expect(taskYaml).toContain("task_graph");
-    expect(taskYaml.indexOf("t1")).toBeGreaterThan(-1);
-    expect(taskYaml).toContain(specGate);
-    expect(taskYaml).toContain(explicitGate);
-    expect(taskYaml).toContain("project gate");
-    expect(taskYaml.match(/spec gate/g)?.length).toBe(1);
-    expect(taskYaml.indexOf(specGate)).toBeLessThan(taskYaml.indexOf(explicitGate));
-    expect(taskYaml.indexOf(explicitGate)).toBeLessThan(taskYaml.indexOf("project gate"));
-  });
-
-  it("does not let a frozen SpecPack self-authorize protected path edits", async () => {
-    const repo = await initRepo();
-    const specPath = join(repo, "spec.json");
-    writeFileSync(
-      specPath,
-      JSON.stringify({
-        schema_version: 2,
-        id: "spec-approval",
-        version: 1,
-        created_at: new Date().toISOString(),
-        intent: { raw: "update tests" },
-        constraints: {
-          protected_paths: ["test/**"],
-          protected_path_approvals: [{ path: "test/**", reason: "self-authorized by frozen spec" }],
-        },
-        open_questions: [],
-        frozen: true,
-      }),
-    );
-    const registry = new Map<string, HarnessAdapter>([
-      ["fake-success", createFakeHarness("fake-success")],
-    ]);
-    const orch = new Orchestrator({ registry, reviewers: [] });
-
-    await expect(
-      orch.run({
-        repoRoot: repo,
-        prompt: "x",
-        mode: "agent",
-        harnesses: ["fake-success"],
-        specPath,
-      }),
-    ).rejects.toThrow(/failed to resolve frozen SpecPack/);
-  });
-
-  it("fails loudly when the spec path cannot be resolved (no silent unspecced contract)", async () => {
-    const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([
-      ["fake-success", createFakeHarness("fake-success")],
-    ]);
-    const orch = new Orchestrator({ registry, reviewers: [] });
-    await expect(
-      orch.run({
-        repoRoot: repo,
-        prompt: "x",
-        mode: "agent",
-        harnesses: ["fake-success"],
-        specPath: join(repo, "missing-spec.json"),
-      }),
-    ).rejects.toThrow(/failed to resolve frozen SpecPack/);
   });
 
   it("rejects a primary harness outside the selected eligible pool", async () => {
@@ -3027,56 +2821,6 @@ describe("Orchestrator", () => {
     expect(noBase.applied_cleanly).toBeNull();
     const { finalVerifyBlocks } = await import("@claudexor/delivery");
     expect(finalVerifyBlocks(noBase)).toBe(true);
-  });
-
-  it("spec tamper fence: a frozen spec modified after freeze refuses the run loudly (INV-081)", async () => {
-    const repo = await initRepo();
-    const spec = {
-      schema_version: 2,
-      id: "spec-tamper",
-      created_at: new Date().toISOString(),
-      version: 1,
-      frozen: true,
-      intent: { raw: "do the thing" },
-      summary: "frozen contract",
-    };
-    const { hashJson } = await import("@claudexor/util");
-    const specPath = join(repo, "spec.json");
-    writeFileSync(specPath, JSON.stringify(spec));
-    // Parse-normalized hash (defaults applied) — matching both producers.
-    const { SpecPack } = await import("@claudexor/schema");
-    const goodHash = hashJson(SpecPack.parse(JSON.parse(readFileSync(specPath, "utf8"))));
-    const orch = new Orchestrator({
-      registry: new Map([["fake-impl", diffImplementer("fake-impl")]]),
-      reviewers: [],
-    });
-    // Tamper AFTER freeze: success criteria silently rewritten.
-    writeFileSync(specPath, JSON.stringify({ ...spec, summary: "TAMPERED contract" }));
-    await expect(
-      orch.run({
-        repoRoot: repo,
-        prompt: "implement",
-        mode: "agent",
-        harnesses: ["fake-impl"],
-        n: 1,
-        specPath,
-        specHash: goodHash,
-        specId: "spec-tamper",
-      }),
-    ).rejects.toThrow(/SpecPack hash mismatch/);
-    // The recorded hash still accepts the UNMODIFIED spec.
-    writeFileSync(specPath, JSON.stringify(spec));
-    const ok = await orch.run({
-      repoRoot: repo,
-      prompt: "implement",
-      mode: "agent",
-      harnesses: ["fake-impl"],
-      n: 1,
-      specPath,
-      specHash: goodHash,
-      specId: "spec-tamper",
-    });
-    expect(ok.status).not.toBe("failed");
   });
 
   it("inactivity watchdog: a wedged harness stream ends as a typed failure, never a forever-running run (INV-116)", async () => {
@@ -5089,126 +4833,6 @@ describe("Orchestrator", () => {
     expect(res.status).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("secrets/key.txt");
-    expect(review).toContain("severity: BLOCK");
-  });
-
-  it("blocks CREATING a new file under a protected glob — added paths are not a bypass (W3.4/G1)", async () => {
-    const repo = await initRepo();
-    const specPath = join(repo, "spec.json");
-    writeFileSync(
-      specPath,
-      JSON.stringify({
-        schema_version: 2,
-        id: "spec-protected-add",
-        version: 1,
-        created_at: new Date().toISOString(),
-        intent: { raw: "work near guarded" },
-        summary: "guarded add",
-        success_criteria: [],
-        non_goals: [],
-        forbidden_approaches: [],
-        decided_tradeoffs: [],
-        constraints: { protected_paths: ["guarded/**"] },
-        tests: [],
-        tasks: [],
-        open_questions: [],
-        frozen: true,
-      }),
-    );
-    // The adapter creates a brand-new file INSIDE the protected glob. The
-    // pre-W3.4 gate matched only existingPaths, so an added file (or the
-    // added side of an undetected rename INTO the glob) sailed through.
-    const adapter: HarnessAdapter = {
-      ...diffImplementer("protected-add-impl"),
-      async *run(spec) {
-        const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts };
-        mkdirSync(join(spec.cwd, "guarded"), { recursive: true });
-        writeFileSync(join(spec.cwd, "guarded", "planted.txt"), "planted\n");
-        yield { type: "message", session_id: spec.session_id, ts, text: "planted a file" };
-        yield { type: "completed", session_id: spec.session_id, ts };
-      },
-    };
-    const res = await new Orchestrator({
-      registry: new Map([[adapter.id, adapter]]),
-      reviewers: [],
-    }).run({
-      repoRoot: repo,
-      prompt: "work near guarded",
-      mode: "agent",
-      harnesses: [adapter.id],
-      specPath,
-      tests: [shellGate("true")],
-      n: 1,
-    });
-    expect(res.status).toBe("blocked");
-    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
-    expect(review).toContain("guarded/planted.txt");
-    expect(review).toContain("severity: BLOCK");
-  });
-
-  it("blocks a rename OUT of a protected glob — the source side is not a bypass (W3.4/G1)", async () => {
-    const repo = await initRepo();
-    mkdirSync(join(repo, "guarded"), { recursive: true });
-    writeFileSync(join(repo, "guarded", "rules.txt"), "rules\n");
-    await runCapture("git", ["-C", repo, "add", "guarded/rules.txt"]);
-    await runCapture("git", [
-      "-C",
-      repo,
-      "-c",
-      "user.email=t@t.dev",
-      "-c",
-      "user.name=t",
-      "commit",
-      "-m",
-      "seed guarded",
-    ]);
-    const specPath = join(repo, "spec.json");
-    writeFileSync(
-      specPath,
-      JSON.stringify({
-        schema_version: 2,
-        id: "spec-protected-rename",
-        version: 1,
-        created_at: new Date().toISOString(),
-        intent: { raw: "reorganize" },
-        summary: "guarded rename",
-        success_criteria: [],
-        non_goals: [],
-        forbidden_approaches: [],
-        decided_tradeoffs: [],
-        constraints: { protected_paths: ["guarded/**"] },
-        tests: [],
-        tasks: [],
-        open_questions: [],
-        frozen: true,
-      }),
-    );
-    const adapter: HarnessAdapter = {
-      ...diffImplementer("protected-rename-impl"),
-      async *run(spec) {
-        const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts };
-        renameSync(join(spec.cwd, "guarded", "rules.txt"), join(spec.cwd, "free.txt"));
-        yield { type: "message", session_id: spec.session_id, ts, text: "moved it out" };
-        yield { type: "completed", session_id: spec.session_id, ts };
-      },
-    };
-    const res = await new Orchestrator({
-      registry: new Map([[adapter.id, adapter]]),
-      reviewers: [],
-    }).run({
-      repoRoot: repo,
-      prompt: "reorganize",
-      mode: "agent",
-      harnesses: [adapter.id],
-      specPath,
-      tests: [shellGate("true")],
-      n: 1,
-    });
-    expect(res.status).toBe("blocked");
-    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
-    expect(review).toContain("guarded/rules.txt");
     expect(review).toContain("severity: BLOCK");
   });
 

@@ -44,7 +44,6 @@ export const RUN_FLAGS: readonly string[] = [
   "routing-goal",
   "profile",
   "in-place",
-  "spec",
   "instructions",
   "instructions-file",
   "attach",
@@ -169,8 +168,6 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "in-place",
     "Run write turns against the live project tree (single-candidate\n                           in-place; best-of-N candidates stay isolated and the winner is adopted)\n                           instead of a throwaway envelope",
   ),
-  valueFlag("answers", "<file>", "Answers JSON for claudexor spec (batch mode)"),
-  valueFlag("spec", "<spec.json>", "Frozen SpecPack context for agent/best-of/create/convergence"),
   valueFlag(
     "instructions",
     '"<text>"',

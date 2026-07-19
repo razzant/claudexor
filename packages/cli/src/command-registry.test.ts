@@ -64,14 +64,16 @@ describe("command registry — the one owner of the CLI surface", () => {
   it("every command restricts flags to its declared set (registry-enforced scope)", () => {
     // A known flag outside the command's declared set fails loudly.
     expect(commandFlagScopeError("plugin", ["harness"])).toContain("--harness");
-    expect(commandFlagScopeError("spec", ["model", "attach"])).toContain("--model");
+    expect(commandFlagScopeError("review", ["model", "attach"])).toContain("--model");
     expect(commandFlagScopeError("ask", ["force"])).toContain("--force");
     // Declared flags plus the global affordances pass; aliases resolve.
     expect(commandFlagScopeError("plugin", ["dry-run", "force", "json"])).toBeNull();
-    expect(commandFlagScopeError("spec", ["answers", "help"])).toBeNull();
+    expect(commandFlagScopeError("quota", ["refresh", "json"])).toBeNull();
     expect(commandFlagScopeError("map", ["swarm"])).toBeNull(); // audit alias
-    // Unknown/renamed verbs are dispatch's problem, not the scope check's.
+    // Unknown/renamed verbs (incl. the retired `spec`) are dispatch's problem,
+    // not the scope check's.
     expect(commandFlagScopeError("run", ["harness"])).toBeNull();
+    expect(commandFlagScopeError("spec", ["model"])).toBeNull();
   });
 
   it("host fallback examples and recovery verbs project the registry, not hand lists", () => {

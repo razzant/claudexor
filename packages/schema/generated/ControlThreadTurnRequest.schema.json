@@ -297,19 +297,6 @@
           },
           "description": "Typed per-run approvals for changing auto-protected gate/test paths; does not bypass built-in critical/security path human gates."
         },
-        "specPath": {
-          "$ref": "#/definitions/ControlThreadTurnRequest/properties/harnesses/items",
-          "description": "Path to a frozen SpecPack the run is held to."
-        },
-        "specId": {
-          "type": "string",
-          "description": "Id of the SpecPack the run is held to."
-        },
-        "specHash": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Content hash of the SpecPack the run is held to."
-        },
         "planRunId": {
           "type": "string",
           "minLength": 1,

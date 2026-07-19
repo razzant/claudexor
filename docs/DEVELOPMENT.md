@@ -43,7 +43,6 @@ Read these together before changing shared behavior:
   named control-plane subsystems.
 - `packages/artifact-store` and `packages/event-log` own run artifact trees and
   the append-only event log.
-- `packages/interview` owns the spec interview engine.
 - `packages/claudexor` is the bare-name bin wrapper over `@claudexor/cli`
   (the only package that installs the global `claudexor`/`claudexord` bins).
 - `packages/cli`, `packages/daemon`, `packages/control-api`,

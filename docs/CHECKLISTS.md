@@ -136,16 +136,16 @@ pnpm test
   event/rollout/log bodies, chat discloses its bounded tail, Diagnostics stays
   metadata-first, and the app remains responsive. Full evidence must still
   open from the run folder.
-- Exercise a long Spec interview at compact height: questions/options scroll
-  lazily inside a bounded middle while header and Ask deeper/Freeze/Cancel stay
-  visible and clickable. Restart the app, reopen the owning thread, and verify
-  its durable session/questions/prior answers restore (never a blank chat).
-- Spec lifecycle: Cancel/Dismiss and successful Implement must persist a
-  terminal server disposition (including frozen sessions); restart during
-  grounding/freezing shows live follow or explicit Resume/Dismiss, never a
-  resurrected or blank card. Recovered frozen work must disclose/reconfirm
-  lost unsent run options. Ask Deeper must supersede older active tiers in the
-  same journal mutation; exactly one session per thread remains recoverable.
+- Exercise a plan with many open questions at compact height: the plan question
+  card scrolls its questions/options lazily inside a bounded middle while the
+  header and Implement/answer controls stay visible and clickable. Restart the
+  app, reopen the owning thread, and verify the plan's open questions and prior
+  answers restore from the run artifact (never a blank chat).
+- Plan loop: readiness is derived server-side from `final/questions.json`
+  (`ready`/`needs_answers`/`unverified`); the card renders that projection and
+  never re-parses plan text. Implement freezes the plan (sha256 on the turn);
+  a tampered or unreadable plan must fail loudly, and implementing with open
+  questions must be an explicit, recorded choice — never a silent default.
 - Check the inline per-turn review/diff surfaces and other dense content (in the
   run inspector and on turn cards) do not force the whole app window to a wide
   fixed minimum.
@@ -304,8 +304,7 @@ pnpm test
   wrong tree, treat the review gate as failed rather than ceremonial.
 - If a change intentionally edits existing protected gate/test files, record the
   approval through the typed run surface (`--allow-protected-path` or
-  `protectedPathApprovals`) instead of relying on prompt prose, frozen SpecPack
-  constraints, or repo config.
+  `protectedPathApprovals`) instead of relying on prompt prose or repo config.
 - When the required review gate names exact reviewers or repeated models from
   the same harness, use the explicit `reviewerPanel` / `--reviewer-panel` path
   and verify the per-reviewer telemetry records every requested entry separately.

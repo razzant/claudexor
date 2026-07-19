@@ -9,7 +9,6 @@ import {
   type OperatorDecisionStore,
 } from "./operator-decisions.js";
 import { runEventProjection, type RunEventStore } from "./run-events.js";
-import { specSessionProjection, type SpecSessionStore } from "./spec-sessions.js";
 import type { ProjectStore } from "./projects.js";
 import {
   threadProjection,
@@ -27,7 +26,6 @@ interface ProjectPartition {
   interactions: JournalProjectionSlot<InteractionStore>;
   decisions: JournalProjectionSlot<OperatorDecisionStore>;
   runEvents: JournalProjectionSlot<RunEventStore>;
-  specs: JournalProjectionSlot<SpecSessionStore>;
   threads: JournalProjectionSlot<ThreadStore>;
 }
 
@@ -84,24 +82,6 @@ export class ProjectPartitions implements CommandAuthority {
 
   recordRunEvent(params: unknown, event: RunEvent): RunEvent {
     return this.runEventStoreForRequest(params).record(event);
-  }
-
-  specsForRequest(params: unknown): SpecSessionStore {
-    const input = record(params);
-    const scope = record(input.scope);
-    if (scope.kind !== "project")
-      throw Object.assign(new Error("spec sessions require a project"), { status: 400 });
-    return this.partitionForRoot(stringField(scope, "root")).specs.current();
-  }
-
-  specStoreForSession(id: string): SpecSessionStore | undefined {
-    return this.healthy()
-      .map((entry) => entry.specs.current())
-      .find((store) => store.get(id));
-  }
-
-  listSpecSessions() {
-    return this.healthy().flatMap((entry) => entry.specs.current().list());
   }
 
   forRequest(params: unknown): CommandStore {
@@ -359,10 +339,9 @@ export class ProjectPartitions implements CommandAuthority {
     const interactions = manager.registerProjection(interactionProjection());
     const decisions = manager.registerProjection(operatorDecisionProjection());
     const runEvents = manager.registerProjection(runEventProjection());
-    const specs = manager.registerProjection(specSessionProjection());
     const threads = manager.registerProjection(threadProjection(this.headPing));
     manager.start();
-    const entry = { manager, commands, interactions, decisions, runEvents, specs, threads };
+    const entry = { manager, commands, interactions, decisions, runEvents, threads };
     this.partitions.set(projectId, entry);
     return entry;
   }

@@ -24,7 +24,6 @@
     "@claudexor/daemon": "workspace:*",
     "@claudexor/mcp-server": "workspace:*",
     "@claudexor/gateway": "workspace:*",
-    "@claudexor/interview": "workspace:*",
     "@claudexor/journal": "workspace:*",
     "@claudexor/orchestrator": "workspace:*",
     "@claudexor/review": "workspace:*",

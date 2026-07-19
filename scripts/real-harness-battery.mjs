@@ -1469,41 +1469,25 @@ function runWebPhase() {
   } else skip(phase, "cursor web negative", { reason: "cursor not ok" });
 }
 
-function answerQuestionsFile(path) {
-  const draft = JSON.parse(readFileSync(path, "utf8"));
-  const answers = (draft.questions ?? []).map((q) => {
-    if (q.kind === "text" || q.allow_text || !q.options?.length)
-      return {
-        question_id: q.id,
-        option_ids: [],
-        text: "Use the simplest public API and include node:test coverage.",
-      };
-    const first = q.options[0]?.id;
-    return { question_id: q.id, option_ids: first ? [first] : [], text: null };
-  });
-  const answered = { ...draft, answers };
-  const out = path.replace(/questions\.json$/, "answers.json");
-  writeFileSync(out, JSON.stringify(answered, null, 2) + "\n");
-  return out;
-}
-
-function runSpecPhase() {
+function runPlanPhase() {
   const phase = "phase8";
   const multi = available(requestedHarnesses);
   if (multi.length < 2) {
-    skip(phase, "spec interview", { reason: "need >=2 doctor-ok harnesses" });
+    skip(phase, "plan lifecycle", { reason: "need >=2 doctor-ok harnesses" });
     return;
   }
-  const repo = makeMathRepo(`${phase}-spec`, {
+  const repo = makeMathRepo(`${phase}-plan`, {
     addBug: true,
     multiplyBug: true,
     testMultiply: true,
   });
   const prompt =
-    "Add a multiply feature and fix math so all node:test tests pass. Use a small public API. Ask material open questions if ambiguous.";
-  const q = runCliJson(
+    "Add a multiply feature and fix math so all node:test tests pass. Use a small public API. Surface material open questions if ambiguous.";
+  // Plan lifecycle step 1: multi-harness read-only planning produces a plan
+  // (final/plan.md) and never mutates the repo.
+  const plan = runCliJson(
     [
-      "spec",
+      "plan",
       prompt,
       "--harness",
       multi.join(","),
@@ -1514,36 +1498,24 @@ function runSpecPhase() {
       "--max-usd",
       maxUsd,
     ],
-    { cwd: repo, name: `${phase}-questions`, timeoutMs: 30 * 60_000 },
+    { cwd: repo, name: `${phase}-plan`, timeoutMs: 30 * 60_000 },
   );
-  if (q.code !== 0 || !q.json?.questionsPath) {
-    fail(phase, "spec questions", { exit: q.code, json: q.json, log: rel(q.log) });
+  if (plan.code !== 0 || plan.json?.status !== "success") {
+    fail(phase, "plan produced", { exit: plan.code, json: plan.json, log: rel(plan.log) });
     return;
   }
-  pass(phase, "spec questions", {
-    questions: q.json.questions?.length ?? 0,
-    path: q.json.questionsPath,
-  });
-  const answers = answerQuestionsFile(q.json.questionsPath);
-  // Grounding-only flags (--harness/--n/--web/--effort/--max-usd) are a
-  // usage error on the --answers path by design: no grounding run exists
-  // there for them to control.
-  const frozen = runCliJson(["spec", prompt, "--answers", answers], {
-    cwd: repo,
-    name: `${phase}-freeze`,
-  });
-  if (frozen.code === 0 && frozen.json?.specDir)
-    pass(phase, "spec freeze", { specId: frozen.json.specId, specDir: frozen.json.specDir });
+  const planMd = plan.json?.runDir ? join(plan.json.runDir, "final", "plan.md") : null;
+  if (planMd && existsSync(planMd)) pass(phase, "plan produced", { runId: plan.json?.runId });
   else {
-    fail(phase, "spec freeze", { exit: frozen.code, json: frozen.json, log: rel(frozen.log) });
+    fail(phase, "plan produced", { reason: "no final/plan.md", json: plan.json });
     return;
   }
-  const specPath = join(frozen.json.specDir, "spec.json");
+  // Plan lifecycle step 2: implement the work as an ordinary gated race and
+  // verify a non-empty, gate-verified patch results.
   const runOut = runCliJson(
     [
       "best-of",
-      "--spec",
-      specPath,
+      prompt,
       "--harness",
       multi.join(","),
       "--n",
@@ -1555,18 +1527,18 @@ function runSpecPhase() {
       "--max-usd",
       maxUsd,
     ],
-    { cwd: repo, name: `${phase}-race-spec`, timeoutMs: 30 * 60_000 },
+    { cwd: repo, name: `${phase}-implement`, timeoutMs: 30 * 60_000 },
   );
-  const ev = recordRunEvidence(phase, "race --spec evidence", runOut, repo);
+  const ev = recordRunEvidence(phase, "implement evidence", runOut, repo);
   if (runOut.envFailure) return;
   if (ev?.patchNonEmpty)
-    pass(phase, "race --spec patch", {
+    pass(phase, "implement patch", {
       runId: runOut.json?.runId,
       status: runOut.json?.status,
       basis: ev.decision?.verification_basis,
     });
   else
-    fail(phase, "race --spec patch", {
+    fail(phase, "implement patch", {
       status: runOut.json?.status,
       error: runOut.json?.error,
       log: rel(runOut.log),
@@ -1948,7 +1920,7 @@ async function main() {
     if (phaseEnabled("phase5")) runCreatePhase();
     if (phaseEnabled("phase6")) runVisionPhase();
     if (phaseEnabled("phase7")) runWebPhase();
-    if (phaseEnabled("phase8")) runSpecPhase();
+    if (phaseEnabled("phase8")) runPlanPhase();
     if (phaseEnabled("phase9")) runOrchestratePhase();
     if (phaseEnabled("phase10")) await runMcpServePhase();
     if (phaseEnabled("phase11")) await runAcpServePhase();

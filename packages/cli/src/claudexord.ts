@@ -330,9 +330,6 @@ async function main(): Promise<void> {
             protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
               ? p.protectedPathApprovals
               : undefined,
-            specId: typeof p.specId === "string" ? p.specId : undefined,
-            specHash: typeof p.specHash === "string" ? p.specHash : undefined,
-            specPath: typeof p.specPath === "string" ? p.specPath : undefined,
             inPlace,
             signal: runSignal,
             onRunStart,

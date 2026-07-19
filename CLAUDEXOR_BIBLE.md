@@ -362,20 +362,25 @@ invariant or owner decision before proceeding.
   `.gitignore`; repo `.claudexor/` is user-owned state and runtime stays
   external. verify: git-init and gitignore non-interference workspace tests.
 
-## 8. Spec-Driven Work Is First-Class
+## 8. Plan-Driven Work Is First-Class
 
-- **INV-080** When a task is ambiguous, Claudexor moves toward a frozen
-  SpecPack: plan, ask clarifying questions, record user answers, freeze
-  acceptance criteria and non-goals, then run against that contract. The
-  Spec Interview is plan/draft owned, not a permanent top-level app
-  identity. verify: interview engine tests; spec endpoints.
-- **INV-081** A frozen SpecPack is a content-hashed contract: the engine
-  verifies the hash when a run consumes a spec, and a tampered spec fails
-  loudly instead of silently running against altered criteria. verify:
-  spec tamper fence test.
-- **INV-082** Frozen SpecPacks and repo config cannot carry protected-path
-  approvals; operator approval is always supplied on the current run.
-  verify: schema strictness test (SpecConstraints).
+- **INV-080** When a task is ambiguous, Claudexor moves toward a READY plan:
+  the plan lifecycle surfaces typed open questions, answers are ordinary
+  turns in the same conversation, and readiness is derived by ONE
+  server-side owner — surfaces consume the projection, never re-parse plan
+  text. The interview is plan-owned, not a separate top-level identity.
+  verify: plan question parser tests; planReadiness projection tests;
+  CHECKLISTS plan-loop QA row.
+- **INV-081** An implemented plan is a content-hashed contract: Implement
+  FREEZES the plan (sha256 recorded on the turn), delivery to the executor
+  is a server-owned file reference materialized outside every worktree, the
+  engine verifies the hash before any harness spawns, and a tampered or
+  unreadable plan fails loudly. Retry replays the reference verbatim — a
+  retried implement can never silently run without its plan. verify:
+  withPlanBrief hash tests; thread-turn plan_hash/409 tests.
+- **INV-082** Plans and repo config cannot carry protected-path approvals;
+  operator approval is always supplied on the current run. verify:
+  run-level approval schema strictness.
 
 ## 9. macOS UX Must Be Native, Honest, And Familiar
 

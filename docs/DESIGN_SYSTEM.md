@@ -582,8 +582,8 @@ views in the shared design-system files; screens compose them.
   gated by the pool's finite `capability_profile.attachment_inputs` declarations.
   Upload progress/cancel happens before Send; if any selected lane lacks the
   MIME/size/count transport, Send is blocked with the engine's typed reason — an
-  attachment the model never saw must never look delivered. The Spec interview takes no attachments
-  and says so instead of silently dropping them.
+  attachment the model never saw must never look delivered. A read-only plan run
+  takes no attachments and says so instead of silently dropping them.
 - **Agent-driven browser toggle.** A per-turn `Browser` toggle in the "⋯"
   popover, offered ONLY when a pooled harness reports the `browser_tool`
   capability (hidden otherwise — never a dead switch). It is live egress and is
@@ -706,22 +706,18 @@ views in the shared design-system files; screens compose them.
   full access (user-level trust files) with per-row Revoke; legacy
   pre-provenance grants (no recorded repo root) are disclosed as revocable only
   via `claudexor trust` in that repo.
-- **Spec interview cards.** The Spec intent runs the server-owned interview as
-  cards in the conversation: each round renders the structured multiple-choice
-  questions (single/multi/text with options), and the answer card ends with two
-  explicit continuations — **"Ask deeper"** (another durable `/spec/sessions` round
-  carrying the accumulated `priorDecisions`) and **"Enough — freeze"**
-  (`/spec/sessions/:id/freeze` → the frozen SpecPack, then Implement as a normal agent turn
-  carrying the returned `specPath`). Spec is a macOS UI intent over the
-  server-owned spec flow, not a wire run mode; the grounding plan uses the
-  composer's eligible pool with each harness's default model, while the
-  per-turn model/budget/access/web/repair options are captured and applied to
-  the write Implement turn. Header and action footer remain fixed; the
+- **Plan question cards (M5).** The retired Spec-interview cards are replaced by
+  plan question cards driven by the plan lifecycle: a `plan` run's typed open
+  questions (`final/questions.json`) render as structured multiple-choice cards
+  in the conversation, readiness is the server-derived projection
+  (`ready`/`needs_answers`/`unverified`), and Implement freezes the plan and
+  runs as a normal agent turn carrying `planRunId` — no separate spec surface or
+  session identity. The header and action footer stay fixed while the
   potentially long question/options middle is a max-height `ScrollView` with a
-  `LazyVStack`, so an interview never grows beyond the window or forces the
-  entire card to re-layout on every chip selection. The durable server session
-  carries its owning `threadId`; reopening that thread after app restart
-  restores the interview and prior answers instead of showing a blank chat.
+  `LazyVStack`, so answering never grows beyond the window or re-lays out the
+  whole card on chip selection, and reopening the thread after restart restores
+  the open questions and prior answers from the run artifact. The macOS card
+  itself lands in M5; the Swift surface is knowingly stale until then.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
   rides the run inspector.

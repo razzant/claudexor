@@ -67,12 +67,7 @@ export async function checkPatch(repoRoot: string, patch: string): Promise<Apply
 }
 
 export type DeliverMode = "apply" | "branch" | "commit" | "pr";
-export const DELIVER_MODES = new Set<DeliverMode>([
-  "apply",
-  "branch",
-  "commit",
-  "pr",
-]);
+export const DELIVER_MODES = new Set<DeliverMode>(["apply", "branch", "commit", "pr"]);
 
 export interface DeliverOptions {
   mode: DeliverMode;

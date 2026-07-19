@@ -365,19 +365,6 @@
           },
           "description": "Typed per-run approvals for changing auto-protected gate/test paths; does not bypass built-in critical/security path human gates."
         },
-        "specPath": {
-          "$ref": "#/definitions/ControlRunStartRequest/properties/harnesses/items",
-          "description": "Path to a frozen SpecPack the run is held to."
-        },
-        "specId": {
-          "type": "string",
-          "description": "Id of the SpecPack the run is held to."
-        },
-        "specHash": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Content hash of the SpecPack the run is held to."
-        },
         "threadId": {
           "type": "string",
           "minLength": 1,
@@ -512,7 +499,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and spec/thread linkage."
+      "description": "Request body for POST /runs: prompt, mode, scope, routing, strategy flags, budget, policies, and thread linkage."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

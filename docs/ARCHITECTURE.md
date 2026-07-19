@@ -124,7 +124,6 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/journal`: the checksummed append-only journal primitive
   (frame codec, fsync ACK discipline) that the daemon's durable state rides on.
 - `packages/daemon`: durable local Unix-socket queue and journal projections for commands, projects, and threads.
-- `packages/interview`: spec interview engine for Plan/draft flows.
 - `packages/cli`: thin command surface plus local host-integration lifecycle
   (`claudexor plugin`) for generated Claude Code/Codex/Cursor/OpenCode
   skill/MCP artifacts and command artifacts where hosts support them. Plugin
@@ -290,9 +289,8 @@ gate warns when the installed vendor CLI drifts from the verified version.
 Candidate diffs additionally pass a typed policy gate: protected-path changes
 and critical-risk diffs escalate as `NEEDS_HUMAN` findings that block the run;
 explicit per-run `protected_path_approvals` can narrow only the auto-protected
-gate/test path portion of that policy. Frozen SpecPacks and repo config cannot
-carry approvals; they may declare protected paths, but operator approval is
-always supplied on the current run.
+gate/test path portion of that policy. Plans and repo config cannot carry
+approvals; operator approval is always supplied on the current run.
 
 Large synthesis inputs are file-backed: findings + full candidate diffs land
 temporarily as `.claudexor-synthesis-input.md` inside the synthesis envelope,
@@ -572,9 +570,10 @@ blind. It
 also writes `final/work_product.yaml` with `result_kind: plan` and a null
 diffstat, so a surface reports "plan only — no files changed" rather than a green
 "succeeded" over nothing. A follow-up turn implements it via the `planRunId`
-field (the engine prefixes the approved plan into the next agent turn's prompt).
-The spec interview is Plan/draft-owned, not a permanent top-level app sidebar
-concept.
+field: Implement freezes the plan (sha256 recorded on the turn) and delivers it
+to the executor as a server-owned file reference. The plan lifecycle — typed
+open questions, server-derived readiness, plan freeze on Implement — is
+plan-owned, not a permanent top-level app sidebar concept.
 
 ### Audit (single report)
 
@@ -647,13 +646,6 @@ files.
 - `POST /v2/setup/jobs/:id/extend`
 - `POST /v2/setup/jobs/:id/reconcile`
 - `GET /v2/setup/jobs/:id/snapshot`
-- `GET /v2/spec/sessions`
-- `POST /v2/spec/sessions`
-- `GET /v2/spec/sessions/:id`
-- `POST /v2/spec/sessions/:id/answers`
-- `POST /v2/spec/sessions/:id/cancel`
-- `POST /v2/spec/sessions/:id/freeze`
-- `POST /v2/spec/sessions/:id/resume`
 - `GET /v2/threads`
 - `POST /v2/threads`
 - `GET /v2/threads/:id`
@@ -689,9 +681,9 @@ Endpoint semantics beyond the inventory:
   work. A best-of-N race runs candidates in isolated envelopes and auto-applies
   the winner to the execution tree (a typed `session.rebound` disclosure covers
   those isolated candidates). A `planRunId` body field implements an approved
-  plan from an earlier turn; a `specPath` body field implements the turn
-  against a frozen SpecPack — the agent runs against that contract instead of
-  a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated
+  plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
+  turn) and delivers it to the executor as a server-owned file reference, so the
+  agent runs against the frozen plan rather than a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated
   worktree diff to the project; in-place threads write the project directly and
   never need it.
 - Refused turns are honest end-to-end: when a turn's run dies BEFORE it starts
@@ -744,39 +736,29 @@ Endpoint semantics beyond the inventory:
 `GET /healthz` is the only unauthenticated route; it is loopback-host guarded
 and returns liveness only.
 
-### Spec flow (interview → frozen SpecPack → Implement)
+### Plan lifecycle (typed open questions → readiness → Implement freezes the plan)
 
-The server owns the interactive spec interview and journals each session in its
-project partition before running the grounding model; a surface is a thin driver.
-`POST /v2/spec/sessions` runs a read-only grounding `plan` over the prompt, with a
-grounding instruction that asks the harness to end its plan with a structured
-`## Open Questions` block; the server parses that into multiple-choice
-`InterviewQuestion`s (`single`/`multi` with `options`, or free-text `text`) and
-returns the durable session projection (`sessionId`, `planRunId`, `questions`). Parsing is tolerant for
-backward compatibility: a plain untagged bullet under the heading (no `[kind]`
-tag, no `::` options) degrades to a free-text question. The surface renders the
-choices and records answers through `POST /v2/spec/sessions/:id/answers`, then
-`POST /v2/spec/sessions/:id/freeze` freezes the SpecPack under the daemon-owned
-external data root. The returned session carries `specId`, `specDir`, `specPath`
-and `specHash`. List/get/cancel/resume use the same durable session authority;
-app-created sessions also persist their owning `threadId`, so opening that
-thread after restart restores questions/answers/frozen state. Recovered
-grounding/freezing sessions are polled from the durable authority; failed or
-`interrupted_unknown` sessions present explicit Resume/Dismiss actions.
-Cancel, Dismiss, and a successfully-started Implement all persist `cancelled`
-on the server (including a frozen session), so resolved work never resurrects.
-Recovered frozen sessions disclose that unsent per-turn model/options were
-lost and require the explicit “Implement with defaults” action. Legacy unbound
-sessions are recovered only when exactly one active session matches the
-project — never guessed. An in-flight operation becomes `interrupted_unknown`
-after restart. An Implement run is then a normal
-agent thread turn: `POST /v2/threads/:id/turns` carrying that `specPath`, so the
-agent runs against the frozen SpecPack contract rather than a bare prompt. The
-interview is multi-tier (`priorDecisions` carries earlier answers into the next
-question round); creating the successor tier atomically marks every older
-active session for that thread cancelled in the same journal mutation, so only
-one tier is ever recoverable. The frozen SpecPack remains single-commit in v1 — one
-freeze, no post-freeze spec-version ladder.
+Ambiguity is plan-owned: a read-only `plan` run ends its report with a
+structured `## Open Questions` block that the engine parses ONCE into
+`final/questions.json` (multiple-choice `single`/`multi` with `options`, or
+free-text `text`). Readiness is DERIVED from that artifact by one server-side
+owner — `ready` (block parsed, zero open questions), `needs_answers` (open
+questions remain), or `unverified` (no parseable block) — and every surface
+consumes the projection; nothing re-parses plan text. Answers are ordinary
+turns in the same conversation, not a separate session identity.
+
+Implement is a normal agent thread turn that carries `planRunId`
+(`POST /v2/threads/:id/turns`). The server FREEZES the referenced plan: it reads
+the plan artifact, records its `sha256` on the turn (`plan_hash`), and hands the
+executor a server-owned `planRef` (`{ runId, sha256, path }`) whose file is
+materialized as `context/PLAN.md` OUTSIDE every worktree. The engine verifies
+the hash before any harness spawns — a tampered or unreadable plan fails loudly
+(`plan hash mismatch` / missing plan), never runs against altered intent. Exact
+Retry replays the `planRef` verbatim, so a retried Implement can never silently
+run without its plan. Implementing while open questions remain is an explicit,
+recorded operator choice (`plan_readiness_overridden`), not a silent default;
+plans and repo config never carry protected-path approvals — operator approval
+is always supplied on the current run.
 
 ### Event streaming contract (snapshot-then-subscribe)
 
@@ -1027,14 +1009,15 @@ recovers the model it actually ran from its own session rollout transcript
 `accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
 `review_not_run` outcomes the apply gate states the real path forward (add a gate
 or obtain a verified review) — the risk override applies only to `blocked` runs.
-`TaskContract.constraints.protected_paths` contains spec/config-owned protected
-globs, while `TaskContract.constraints.auto_protected_paths` is derived from
-configured deterministic gates. Existing auto-protected gate/test path edits
-block unless the run carries a typed `protected_path_approvals` entry for the
-matching glob (CLI: `--allow-protected-path`). Those approvals are scoped only to
-`auto_protected_paths`; they do not suppress spec/config-owned protected paths or
+`TaskContract.constraints.protected_paths` holds config-owned protected globs,
+while `TaskContract.constraints.auto_protected_paths` is derived from configured
+deterministic gates. Existing auto-protected gate/test path edits block unless
+the run carries a typed `protected_path_approvals` entry for the matching glob
+(CLI: `--allow-protected-path`). Those approvals are scoped only to
+`auto_protected_paths`; they do not suppress config-owned protected paths or
 built-in critical/security path gates such as `.github/workflows`. They are
-accepted only from the run request surface, not from frozen SpecPack constraints.
+accepted only from the run request surface — plans and repo config never carry
+approvals.
 
 ### Live-tree mutation paths
 
@@ -1292,10 +1275,11 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   `/v2/runs/:id/decision`, `/v2/runs/:id/control`,
   `/v2/runs/:id/interactions/:id/answer`), harness status (`/v2/harnesses`,
   `/v2/harnesses/:id/models`), setup jobs (`/v2/setup/jobs`), settings and secrets
-  (`/v2/settings`, `/v2/secrets`), journal recovery
-  (`/v2/recovery/partitions/:id` and validate/export/quarantine actions), and the server-owned spec flow
-  (`/v2/spec/sessions` and its answers/freeze/cancel/resume actions; the app's Spec intent is a thin driver
-  over these endpoints, not a new `ModeKind`).
+  (`/v2/settings`, `/v2/secrets`), and journal recovery
+  (`/v2/recovery/partitions/:id` and validate/export/quarantine actions). The
+  plan lifecycle rides the normal thread/turn endpoints — a `plan` run surfaces
+  typed open questions, and an Implement turn carries `planRunId`; there is no
+  separate spec surface or `ModeKind`.
 - The app must not invent server state: delivery, decisions, review verdicts,
   routing readiness, setup progress, and budget truth are projections of
   control-api DTOs and run artifacts, never app-local logic. Read-only modes
@@ -1383,19 +1367,17 @@ code touching one of these areas must honor it or change it explicitly here.
 - The staged-field gate is a token-level reference check, not data-flow
   analysis: any identifier occurrence in non-schema TS — including an
   adapter's own capability declaration — counts as a consumer.
-- Arbitration's acceptance-coverage axis is a gate-derived proxy — all
-  acceptance criteria count as covered only when required gates pass; there is
-  no per-criterion acceptance evidence.
+- Arbitration's acceptance-coverage axis is inert: acceptance criteria were a
+  spec-only producer (retired with the spec machinery), so every candidate now
+  reports `acceptanceTotal: 0`. Convergence is driven by deterministic gates and
+  cross-family review, not per-criterion acceptance evidence.
 - Run-artifact writes are non-atomic by design: the engine is the single
   writer of a run directory; external writers into the external runtime
   namespace are unsupported.
-- The durable v2 spec-session freeze endpoint has no spec-revision lineage and
-  currently reports an empty SpecPack `changes` list. The lower-level SpecPack
-  persistence helper can calculate a diff when an internal caller supplies a
-  previous pack, but no public CLI flag exposes that compatibility path.
-- Spec interviews parse the harness's instructed `## Open Questions` block by
-  delimiters (never as governance); output deviating from the instructed
-  format degrades to free-text questions instead of failing the interview.
+- The plan lifecycle parses the planner's instructed `## Open Questions` block
+  by delimiters (never as governance); output deviating from the instructed
+  format degrades to free-text questions (or an `unverified` readiness when no
+  block parses) instead of failing the plan run.
 - Startup crash GC sweeps orphaned envelopes only under project roots recorded
   in the daemon command journal; envelopes created by CLI/MCP/ACP runs
   in roots the daemon never saw are reclaimed only by their own process.

@@ -13,18 +13,6 @@ import {
 } from "./primitives.js";
 import { PaidBudget, RoutingGoal } from "./budget.js";
 
-export const SuccessCriterion = z
-  .object({
-    id: Id.describe("Criterion id."),
-    text: z.string().describe("Human-readable statement of what must hold for the run to succeed."),
-    required: z
-      .boolean()
-      .default(true)
-      .describe("Whether this criterion is required (vs advisory)."),
-  })
-  .describe("A single success criterion the run is held to.");
-export type SuccessCriterion = z.infer<typeof SuccessCriterion>;
-
 export const TestCommandInvocation = z
   .object({
     program: NonBlankString.describe("Executable invoked directly without an implicit shell."),
@@ -170,32 +158,6 @@ export const ConvergencePredicate = z
   .describe("Predicate deciding when an until-clean/convergence run may stop as successful.");
 export type ConvergencePredicate = z.infer<typeof ConvergencePredicate>;
 
-/** One node of the spec-derived task graph; edges are `depends_on`. */
-export const TaskGraphNode = z
-  .object({
-    id: Id.describe("Task node id."),
-    title: z.string().default("").describe("Human-readable task title."),
-    depends_on: z
-      .array(Id)
-      .default([])
-      .describe("Ids of tasks this node depends on (graph edges)."),
-  })
-  .describe("One node of the spec-derived task graph; edges are depends_on.");
-export type TaskGraphNode = z.infer<typeof TaskGraphNode>;
-
-/** A topologically-ordered task graph built from a frozen SpecPack's tasks. */
-export const TaskGraph = z
-  .object({
-    nodes: z.array(TaskGraphNode).default([]).describe("Task nodes of the graph."),
-    /** Topological execution order (node ids); empty when there are no tasks. */
-    order: z
-      .array(Id)
-      .default([])
-      .describe("Topological execution order (node ids); empty when there are no tasks."),
-  })
-  .describe("A topologically-ordered task graph built from a frozen SpecPack's tasks.");
-export type TaskGraph = z.infer<typeof TaskGraph>;
-
 /**
  * Immutable contract describing a single run. Built once, hashed, never mutated.
  */
@@ -265,31 +227,6 @@ export const TaskContract = z
       .nullable()
       .default(null)
       .describe("Per-run turn cap (beats per-harness settings); null when the caller set none."),
-    spec: z
-      .object({
-        id: Id.optional().describe("SpecPack id."),
-        hash: z.string().optional().describe("Content hash of the frozen SpecPack."),
-        path: z.string().optional().describe("On-disk path of the SpecPack artifact."),
-      })
-      .optional()
-      .describe("Reference to the frozen SpecPack this contract was derived from, if any."),
-    success_criteria: z
-      .array(SuccessCriterion)
-      .default([])
-      .describe("Criteria the run must satisfy to succeed."),
-    non_goals: z.array(z.string()).default([]).describe("Explicitly out-of-scope outcomes."),
-    forbidden_approaches: z
-      .array(z.string())
-      .default([])
-      .describe("Approaches the run must not take."),
-    decided_tradeoffs: z
-      .array(z.string())
-      .default([])
-      .describe("Tradeoffs already decided; reviewers must not re-litigate them."),
-    /** Spec-derived task graph; null until a frozen SpecPack with tasks is resolved. */
-    task_graph: TaskGraph.nullable()
-      .default(null)
-      .describe("Spec-derived task graph; null until a frozen SpecPack with tasks is resolved."),
     constraints: TaskConstraints.default({}),
     tests: z
       .object({

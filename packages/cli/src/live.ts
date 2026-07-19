@@ -238,7 +238,6 @@ export function controlApiFetch(
     (externalPath === "/v2/runs" ||
       externalPath === "/v2/uploads" ||
       externalPath === "/v2/projects" ||
-      externalPath === "/v2/spec/sessions" ||
       externalPath === "/v2/setup/jobs" ||
       externalPath === "/v2/threads" ||
       /^\/v2\/recovery\/partitions\/[^/]+\/quarantine$/.test(externalPath) ||

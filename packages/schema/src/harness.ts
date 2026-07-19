@@ -597,10 +597,9 @@ export const HarnessRunSpec = z
       .default(null)
       .describe("Agent-driven browser wiring; null = no browser tool this run (the common case)."),
     /**
-     * JSON Schema constraining the harness's FINAL message. Producers:
-     * the orchestrate planner (OrchestratePlan schema) and spec-questions
-     * grounding (InterviewQuestion block). Passed only to routes whose manifest
-     * declares `json_schema_output`; consumers add the native CLI flag.
+     * JSON Schema constraining the harness's FINAL message. Producer:
+     * the orchestrate planner (OrchestratePlan schema). Passed only to routes
+     * whose manifest declares `json_schema_output`; consumers add the native CLI flag.
      */
     output_schema: z
       .unknown()

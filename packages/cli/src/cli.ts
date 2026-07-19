@@ -5,19 +5,12 @@ import { createHash } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
-import {
-  CLAUDEXOR_VERSION,
-  containsSecretLikeToken,
-  noProjectRepoRoot,
-  readTextSafe,
-  userConfigDir,
-} from "@claudexor/util";
+import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
 import { checkName } from "./release.js";
 import { serveAcpBridge, serveMcpBridge } from "./bridge-serve.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
-  ControlSpecSession,
   EffortHint,
   ExternalContextPolicy,
   type ProtectedPathApproval,
@@ -90,7 +83,6 @@ import { settingsCommand } from "./settings-command.js";
 import { quotaCommand } from "./quota-command.js";
 import { trustCommand } from "./trust-command.js";
 import { projectCommand } from "./project-command.js";
-import { loadFrozenSpec, readAnswers, resolveRunTestCommands } from "./spec.js";
 import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
 import {
@@ -348,42 +340,7 @@ async function orchestrate(
       return printUsageError(json, "claudexor: stdin prompt (`-`) was empty");
     }
   }
-  const specPath = flagStr(args, "spec");
-  let loadedSpec: ReturnType<typeof loadFrozenSpec> | null = null;
-  try {
-    loadedSpec = specPath ? loadFrozenSpec(specPath) : null;
-  } catch (err) {
-    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  const prompt = loadedSpec
-    ? [
-        rawPrompt || loadedSpec.spec.intent.raw,
-        "",
-        "Use this frozen Claudexor SpecPack as the contract. Do not re-litigate settled choices; implement against the acceptance criteria and tests.",
-        "",
-        `Spec id: ${loadedSpec.spec.id} v${loadedSpec.spec.version}`,
-        `Spec hash: ${loadedSpec.specHash}`,
-        "",
-        "## Summary",
-        loadedSpec.spec.summary || "(none)",
-        "",
-        "## Acceptance Criteria",
-        ...(loadedSpec.spec.success_criteria.length
-          ? loadedSpec.spec.success_criteria.map((c) => `- [${c.id}] ${c.behavior}`)
-          : ["- (none)"]),
-        "",
-        "## Non-goals",
-        ...(loadedSpec.spec.non_goals.length
-          ? loadedSpec.spec.non_goals.map((x) => `- ${x}`)
-          : ["- (none)"]),
-        "",
-        "## Forbidden approaches",
-        ...(loadedSpec.spec.forbidden_approaches.length
-          ? loadedSpec.spec.forbidden_approaches.map((x) => `- ${x}`)
-          : ["- (none)"]),
-      ].join("\n")
-    : rawPrompt;
-  const spec = loadedSpec?.spec ?? null;
+  const prompt = rawPrompt;
   if (!prompt) {
     return printUsageError(json, "claudexor: missing prompt");
   }
@@ -473,7 +430,7 @@ async function orchestrate(
   let tests: TestCommandInvocation[] | undefined;
   try {
     const cliTests = testCommands(args) ?? [];
-    tests = resolveRunTestCommands(cliTests, spec);
+    tests = cliTests.length > 0 ? cliTests : undefined;
     assertCliRunParamsHaveNoInlineSecrets({
       prompt,
       instructions: resolvedInstructions,
@@ -494,9 +451,6 @@ async function orchestrate(
       externalContextPolicy: resolvedWebPolicy,
       synthesis: resolvedSynthesis,
       autonomy,
-      specId: spec?.id,
-      specHash: loadedSpec?.specHash,
-      specPath: loadedSpec?.specPath,
     });
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
@@ -538,9 +492,6 @@ async function orchestrate(
     resolvedModel,
     nFlag,
     attemptsFlag,
-    specId: spec?.id,
-    specHash: loadedSpec?.specHash,
-    specPath: loadedSpec?.specPath,
     attachmentRequest,
     forced,
   });
@@ -573,9 +524,6 @@ interface DaemonRunParams {
   resolvedModel: string | undefined;
   nFlag: number | undefined;
   attemptsFlag: number | undefined;
-  specId: string | undefined;
-  specHash: string | undefined;
-  specPath: string | undefined;
   attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
   forced: { deepScan?: boolean; create?: boolean; race?: boolean };
 }
@@ -696,9 +644,6 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.reviewerPanel ? { reviewerPanel: p.reviewerPanel } : {}),
     ...(p.reviewerModels ? { reviewerModels: p.reviewerModels } : {}),
     ...(p.reviewerEfforts ? { reviewerEfforts: p.reviewerEfforts } : {}),
-    ...(p.specId ? { specId: p.specId } : {}),
-    ...(p.specHash ? { specHash: p.specHash } : {}),
-    ...(p.specPath ? { specPath: p.specPath } : {}),
   };
 
   try {
@@ -953,143 +898,6 @@ async function resolveRunStore(
   return null;
 }
 
-async function specCommand(args: ParsedArgs, json: boolean): Promise<number> {
-  const prompt = args._.slice(1).join(" ").trim();
-  if (!prompt) {
-    return printUsageError(json, "claudexor: missing spec prompt");
-  }
-  if (containsSecretLikeToken(prompt)) {
-    return printUsageError(
-      json,
-      "claudexor spec: prompt contains a secret-like token; specs are durable artifacts, so store secrets by ref and retry with a sanitized prompt",
-    );
-  }
-  const answersPath = flagStr(args, "answers");
-  // The grounding step is a real (multi-)harness plan run, so the same
-  // routing/cost/review controls as the plan verb apply — but ONLY that step
-  // spawns a run. Parse them up-front so malformed values fail loudly on
-  // every path, and refuse ALL grounding-only flags on the --answers path,
-  // where no grounding run exists for them to control.
-  let groundingEffort: EffortHint | undefined;
-  let groundingMaxUsd: number | undefined;
-  let groundingHarnesses: string[] | undefined;
-  let groundingN: number | undefined;
-  let groundingWeb: ReturnType<typeof webPolicy>;
-  let groundingReviewerPanel: ReturnType<typeof reviewerPanel>;
-  let groundingReviewerModels: ReturnType<typeof reviewerModels>;
-  let groundingReviewerEfforts: ReturnType<typeof reviewerEfforts>;
-  try {
-    groundingEffort = effortHint(args);
-    groundingMaxUsd = floatFlag(args, "max-usd");
-    groundingHarnesses = harnessList(args);
-    groundingN = intFlag(args, "n");
-    groundingWeb = webPolicy(args);
-    groundingReviewerPanel = reviewerPanel(args);
-    groundingReviewerModels = reviewerModels(args);
-    groundingReviewerEfforts = reviewerEfforts(args);
-  } catch (err) {
-    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (
-    answersPath &&
-    (groundingEffort !== undefined ||
-      groundingMaxUsd !== undefined ||
-      groundingHarnesses !== undefined ||
-      groundingN !== undefined ||
-      groundingWeb !== undefined ||
-      groundingReviewerPanel !== undefined ||
-      groundingReviewerModels !== undefined ||
-      groundingReviewerEfforts !== undefined)
-  ) {
-    return printUsageError(
-      json,
-      "claudexor spec: --harness/--n/--web/--effort/--max-usd/--reviewer-panel/--reviewer-model/--reviewer-effort control the grounding plan run and only apply when generating questions; drop them when re-running with --answers",
-    );
-  }
-  try {
-    const { addr } = await ensureDaemon();
-    await controlJson(addr, "/projects", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ root: process.cwd() }),
-    });
-    if (!answersPath) {
-      const session = ControlSpecSession.parse(
-        await controlJson(addr, "/spec/sessions", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            prompt,
-            scope: { kind: "project", root: process.cwd(), context: "auto" },
-            harnesses: groundingHarnesses,
-            n: groundingN,
-            effort: groundingEffort,
-            paidBudget:
-              groundingMaxUsd === undefined
-                ? undefined
-                : { kind: "finite", maxUsd: groundingMaxUsd },
-            web: groundingWeb,
-            reviewerPanel: groundingReviewerPanel,
-            reviewerModels: groundingReviewerModels,
-            reviewerEfforts: groundingReviewerEfforts,
-          }),
-        }),
-      );
-      if (json) printJson(session);
-      else {
-        print(`durable spec session: ${session.sessionId}`);
-        print(`grounding run: ${session.planRunId ?? "pending"}`);
-        for (const question of session.questions) print(`- [${question.id}] ${question.prompt}`);
-        print(
-          "save `claudexor spec ... --json` output, fill its answers array, then pass it with --answers",
-        );
-      }
-      return session.state === "failed" || session.state === "interrupted_unknown" ? 1 : 0;
-    }
-
-    const answers = readAnswers(answersPath);
-    if (!answers.sessionId) {
-      throw new Error("answers file must contain sessionId from the durable spec session");
-    }
-    const encodedId = encodeURIComponent(answers.sessionId);
-    await controlJson(addr, `/spec/sessions/${encodedId}/answers`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        answers: answers.answers,
-        priorDecisions: answers.priorDecisions,
-      }),
-    });
-    const session = ControlSpecSession.parse(
-      await controlJson(addr, `/spec/sessions/${encodedId}/freeze`, { method: "POST" }),
-    );
-    if (session.state !== "frozen" || !session.specPath || !session.specId || !session.specHash) {
-      throw new Error(`spec session ended as ${session.state}`);
-    }
-    const runHint = `claudexor best-of --spec ${JSON.stringify(session.specPath)}`;
-    if (json) printJson({ ...session, status: "frozen", runHint });
-    else {
-      print(`frozen SpecPack: ${session.specId}`);
-      print(`  path: ${session.specPath}`);
-      print(`  hash: ${session.specHash}`);
-      print(`run: ${runHint}`);
-    }
-    return 0;
-  } catch (err) {
-    // Same runtime-error envelope contract as the run/race commands: --json
-    // callers get a machine-readable {ok:false} on stdout, never bare stderr.
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor spec: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else
-      process.stderr.write(`claudexor spec: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 1;
-  }
-}
-
 async function controlJson(
   addr: Awaited<ReturnType<typeof ensureDaemon>>["addr"],
   path: string,
@@ -1152,7 +960,7 @@ async function main(): Promise<number> {
   const valueFlagError = requiredStringFlagError(args, VALUE_FLAGS);
   if (valueFlagError) return printPreflightError(args, json, valueFlagError);
   // Registry-enforced per-command flag scope: a KNOWN flag outside the
-  // command's declared set (e.g. `spec --model`, `ask --force`) fails loudly
+  // command's declared set (e.g. `plan --create`, `ask --force`) fails loudly
   // instead of being silently ignored. Data-driven from CLI_COMMANDS for
   // every verb (this replaced the old hand-listed plugin/--force special cases).
   const scopeError = commandFlagScopeError(cmd, Object.keys(args.flags));
@@ -1181,21 +989,6 @@ async function main(): Promise<number> {
       return projectCommand(args, json);
 
     case "agent": {
-      const specStrategyError =
-        "claudexor: --spec requires a gated strategy; use 'claudexor best-of --spec <file>' or 'claudexor agent --attempts N --spec <file>'";
-      // ONE gate for both spellings: `agent --spec` and `agent --mode agent --spec`
-      // must enforce the same gated-strategy requirement (a flag spelling must
-      // never bypass a policy the bare verb enforces).
-      const agentSpecGateError = (): string | null => {
-        if (!flagStr(args, "spec") || flagBool(args, "until-clean")) return null;
-        try {
-          const hasGatedStrategy =
-            intFlag(args, "attempts") !== undefined || intFlag(args, "n") !== undefined;
-          return hasGatedStrategy ? null : specStrategyError;
-        } catch (err) {
-          return `claudexor: ${err instanceof Error ? err.message : String(err)}`;
-        }
-      };
       const modeStr = flagStr(args, "mode");
       if (modeStr !== undefined) {
         const mode = normalizeMode(modeStr);
@@ -1205,17 +998,8 @@ async function main(): Promise<number> {
             `claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}`,
           );
         }
-        if (mode === "ask" && flagStr(args, "spec")) {
-          return printUsageError(json, specStrategyError);
-        }
-        if (mode === "agent") {
-          const gateError = agentSpecGateError();
-          if (gateError) return printUsageError(json, gateError);
-        }
         return orchestrate(args, mode, json);
       }
-      const gateError = agentSpecGateError();
-      if (gateError) return printUsageError(json, gateError);
       return orchestrate(args, "agent", json);
     }
 
@@ -1231,13 +1015,16 @@ async function main(): Promise<number> {
     case "race":
     case "audit":
     case "map":
-    case "explore": {
+    case "explore":
+    case "spec": {
       const replacement =
         cmd === "run"
           ? "claudexor agent (same flags)"
           : cmd === "race"
             ? "claudexor best-of (same flags)"
-            : "claudexor ask --deep-scan <prompt>";
+            : cmd === "spec"
+              ? "claudexor plan <prompt> then Implement (the plan lifecycle surfaces open questions and freezes the plan on implement)"
+              : "claudexor ask --deep-scan <prompt>";
       return printPreflightError(
         args,
         json,
@@ -1250,9 +1037,6 @@ async function main(): Promise<number> {
 
     case "plan":
       return orchestrate(args, "plan", json);
-
-    case "spec":
-      return specCommand(args, json);
 
     case "create":
       return orchestrate(args, "agent", json, { create: true });

@@ -63,7 +63,6 @@ import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { controlProblemError } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
-import { handleSpecRoute, type SpecRouteServices } from "./spec-routes.js";
 import {
   PlanQuestionsArtifact,
   derivePlanReadiness,
@@ -251,13 +250,6 @@ export interface DaemonControlApiOptions {
       listSecrets?: () => Promise<unknown>;
       setSecret?: (input: unknown) => Promise<unknown>;
       deleteSecret?: (name: string) => Promise<unknown>;
-      createSpecSession?: SpecRouteServices["createSpecSession"];
-      listSpecSessions?: SpecRouteServices["listSpecSessions"];
-      getSpecSession?: SpecRouteServices["getSpecSession"];
-      answerSpecSession?: SpecRouteServices["answerSpecSession"];
-      freezeSpecSession?: SpecRouteServices["freezeSpecSession"];
-      cancelSpecSession?: SpecRouteServices["cancelSpecSession"];
-      resumeSpecSession?: SpecRouteServices["resumeSpecSession"];
       pendingInteractions?: (runId: string) => ControlPendingInteraction[];
       answerInteraction?: (
         runId: string,
@@ -1433,21 +1425,6 @@ export class DaemonControlApiServer {
       )
     )
       return;
-    if (
-      await handleSpecRoute(
-        {
-          services: this.opts.services,
-          readBody: (request) => this.readBody(request),
-          json: (response, status, body) => this.json(response, status, body),
-          requestError: (response, error) => this.requestError(response, error),
-        },
-        method,
-        path,
-        req,
-        res,
-      )
-    )
-      return;
     if (method === "GET" && path === "/settings")
       return this.service(res, "settings", undefined, ControlSettingsSnapshot);
     if (method === "POST" && path === "/settings") {
@@ -2328,8 +2305,6 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     result: controlRunResult(rec),
     route: controlRoute(telemetry, p),
     tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
-    specId: typeof p["specId"] === "string" ? p["specId"] : undefined,
-    specHash: typeof p["specHash"] === "string" ? p["specHash"] : undefined,
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,
     finishedAt: rec.finishedAt,

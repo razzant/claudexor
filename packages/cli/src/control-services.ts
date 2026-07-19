@@ -13,18 +13,14 @@ import {
   ProjectStore,
   ResourceStore,
   QuotaRegistry,
-  daemonDir,
 } from "@claudexor/daemon";
-import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
 import { SecretStore, isManagedSecretName } from "@claudexor/secrets";
 import { purgeThreadWorktree } from "@claudexor/workspace";
-import { claudexorOwnedRoot, noProjectRepoRoot, readTextSafe } from "@claudexor/util";
+import { claudexorOwnedRoot, noProjectRepoRoot } from "@claudexor/util";
 import {
   type ResourceAttachmentRef,
-  type ControlSpecAnswersRequest,
-  type ControlSpecQuestionsRequest,
   ControlCredentialProfileCreateRequest,
   type CredentialProfile,
   type CredentialProfileStatus,
@@ -57,13 +53,6 @@ import {
   assertCredentialProfileCompatibility,
   assertCredentialProfileRegistered,
 } from "./profile-compatibility.js";
-import { assertSpecThreadScope } from "./spec-thread-scope.js";
-import {
-  buildGroundingPrompt,
-  extractQuestionsFromPlan,
-  freezeSpecFromGrounding,
-  persistSpecAt,
-} from "./spec.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -111,80 +100,6 @@ export function controlServices(
       ) {
         Object.assign(error, { evidenceRefs: journalManager.inspect().evidenceRefs });
       }
-      throw error;
-    }
-  };
-  const requireSpecStore = (id: string) => {
-    const store = threads.specStoreForSession(id);
-    if (!store) throw Object.assign(new Error(`no such spec session: ${id}`), { status: 404 });
-    return store;
-  };
-  const specControllers = new Map<string, AbortController>();
-  const groundSpec = async (id: string) => {
-    const store = requireSpecStore(id);
-    const material = store.material(id);
-    const controller = new AbortController();
-    specControllers.set(id, controller);
-    try {
-      const plan = await new Orchestrator({
-        registry: buildRegistry(),
-        quotaSnapshots: () => quotaRegistry().read().snapshots,
-        quotaEventSink: (harnessId, event) => quotaRegistry().ingest(harnessId, event),
-        reviewerPanel: material.request.reviewerPanel,
-        reviewerModels: material.request.reviewerModels,
-        reviewerEfforts: material.request.reviewerEfforts,
-      }).run({
-        repoRoot: material.request.scope.root,
-        prompt: buildGroundingPrompt(
-          material.request.prompt,
-          material.request.priorDecisions ?? [],
-        ),
-        mode: "plan",
-        harnesses: material.request.harnesses,
-        n: material.request.n,
-        effort: material.request.effort,
-        paidBudget: material.request.paidBudget,
-        web: material.request.web,
-        signal: controller.signal,
-        access: "readonly",
-      });
-      const planText = readTextSafe(join(plan.runDir, "final", "plan.md")) ?? plan.summary;
-      return store.completeGrounding(id, {
-        planRunId: plan.runId,
-        planText,
-        questions: extractQuestionsFromPlan(planText),
-      });
-    } catch (error) {
-      const current = store.get(id);
-      if (current?.state === "cancelled") return current;
-      store.fail(id, error instanceof Error ? error.message : String(error));
-      throw error;
-    } finally {
-      if (specControllers.get(id) === controller) specControllers.delete(id);
-    }
-  };
-  const freezeSpecSession = async (id: string) => {
-    const store = requireSpecStore(id);
-    const material = store.material(id);
-    const active = store.beginFreeze(id);
-    try {
-      const priorLines = material.answers.priorDecisions?.map(
-        (decision) => `Interview (prior tier) — ${decision.question} → ${decision.answer}`,
-      );
-      const spec = await freezeSpecFromGrounding(material.request.prompt, material.planText, {
-        answers: material.answers.answers,
-        decided_tradeoffs: priorLines,
-      });
-      const persisted = persistSpecAt(join(daemonDir(), "specs"), spec, material.planText);
-      return store.completeFreeze(id, {
-        specId: spec.id,
-        specDir: persisted.specDir,
-        specPath: join(persisted.specDir, "spec.json"),
-        specHash: persisted.specHash,
-        changes: persisted.changes,
-      });
-    } catch (error) {
-      store.rejectFreeze(active.sessionId, error instanceof Error ? error.message : String(error));
       throw error;
     }
   };
@@ -564,38 +479,6 @@ export function controlServices(
       secretStore.delete(name);
       invalidateDoctorCache();
       return { name, deleted: true };
-    },
-    createSpecSession: async (input: {
-      request: ControlSpecQuestionsRequest;
-      idempotencyKey: string;
-      clientId: string;
-    }) => {
-      if (input.request.threadId) {
-        assertSpecThreadScope(
-          threads.getThread(input.request.threadId),
-          input.request.threadId,
-          input.request.scope.root,
-        );
-      }
-      const store = threads.specsForRequest(input.request);
-      const created = store.create(input);
-      return created.reused ? created.session : groundSpec(created.session.sessionId);
-    },
-    listSpecSessions: async () => ({ sessions: threads.listSpecSessions() }),
-    getSpecSession: async (id: string) => requireSpecStore(id).get(id),
-    answerSpecSession: async (id: string, input: ControlSpecAnswersRequest) =>
-      requireSpecStore(id).recordAnswers(id, input),
-    freezeSpecSession,
-    cancelSpecSession: async (id: string) => {
-      specControllers.get(id)?.abort();
-      return requireSpecStore(id).cancel(id);
-    },
-    resumeSpecSession: async (id: string) => {
-      const store = requireSpecStore(id);
-      const session = store.get(id)!;
-      if (session.state !== "interrupted_unknown" && session.state !== "failed") return session;
-      const resumed = store.restart(id);
-      return resumed.action === "freezing" ? freezeSpecSession(id) : groundSpec(id);
     },
   };
 }
