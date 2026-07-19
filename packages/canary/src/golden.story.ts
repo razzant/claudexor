@@ -324,6 +324,26 @@ describe("canary golden stories", () => {
     expect(runFileExists(out.runDir, "final/patch.diff")).toBe(true);
   });
 
+  it("[INV-116:banner-outranks-prose] a green candidate is announced as NOT APPLIED by the server banner — model prose never outranks delivery truth", () => {
+    // D18/D7: the escaped class was a harness saying "implemented ✅" while
+    // nothing was applied. The SERVER banner is the one headline: a succeeded
+    // run with an unapplied patch candidate must carry the NOT APPLIED banner
+    // in the machine surface regardless of what the model prose claimed.
+    const r = cli(sb, [
+      "agent",
+      "change something and claim success loudly",
+      "--harness",
+      "fake-implement",
+      "--test",
+      PASS_GATE,
+      "--json",
+    ]);
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    const out = r.json() as { status: string; outcomeBanner?: string };
+    expect(out.status).toBe("succeeded");
+    expect(out.outcomeBanner).toMatch(/NOT APPLIED/);
+  });
+
   it("[INV-041:crlf-diff-fidelity] a candidate patch over CRLF content survives byte-faithfully and applies onto the live tree", () => {
     // The repo holds a COMMITTED CRLF file; fake-implement overwrites it with
     // LF content. The captured patch must carry the original CR bytes (raw
