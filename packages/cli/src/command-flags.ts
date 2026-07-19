@@ -22,6 +22,7 @@ export const RUN_FLAGS: readonly string[] = [
   "until-clean",
   "create",
   "delegate",
+  "council",
   "synthesis",
   "test",
   "allow-protected-path",
@@ -102,6 +103,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "NDJSON machine surface: early runId frame, one line per run event, terminal object last (--json stays exactly one object)",
   ),
   booleanFlag("create", "Create-from-scratch intent (agent)"),
+  booleanFlag(
+    "council",
+    "Council (plan): N harnesses draft in parallel, the primary merges into one plan + one question set; --n sets members (2..4)",
+  ),
   booleanFlag(
     "delegate",
     "Delegation belt (agent): inject the Claudexor belt so the harness can spawn bounded isolated sub-runs (claude/codex only)",

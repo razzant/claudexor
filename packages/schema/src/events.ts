@@ -74,6 +74,12 @@ export const RunEventType = z
     "plan.progress",
     "plan.questions",
     "plan.brief.materialized",
+    /** Council plan strategy (INV-031): membership announced, per-member draft
+     * landed / failed, and the primary's merge completed. */
+    "council.started",
+    "council.draft",
+    "council.member.failed",
+    "council.merged",
     "budget.quota_pressure",
     "output.ready",
     "gate.started",

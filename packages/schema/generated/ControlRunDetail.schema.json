@@ -1597,6 +1597,96 @@
           "description": "Derived readiness of a plan run; null for non-plan runs.",
           "default": null
         },
+        "council": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "description": "Requested member count (n; 2..4)."
+                },
+                "drafted": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Members whose draft survived to the merge."
+                },
+                "degraded": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True when fewer members drafted than requested (failures disclosed per member)."
+                },
+                "mergedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Harness that produced the unified plan (the primary); null if the merge failed."
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "harnessId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Harness that drafted (or merged) this member's plan."
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "primary",
+                          "member"
+                        ],
+                        "description": "primary = the merger that synthesizes the unified plan; member = draft only."
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "drafted",
+                          "failed",
+                          "merged"
+                        ],
+                        "description": "drafted = draft landed; merged = this member produced the unified plan; failed."
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null,
+                        "description": "First redacted draft error; null unless the member failed."
+                      }
+                    },
+                    "required": [
+                      "harnessId",
+                      "role",
+                      "status"
+                    ],
+                    "additionalProperties": false,
+                    "description": "One council member's role and draft/merge outcome."
+                  },
+                  "default": [],
+                  "description": "Per-member role and outcome."
+                }
+              },
+              "required": [
+                "requested",
+                "drafted"
+              ],
+              "additionalProperties": false,
+              "description": "Council membership + merge disclosure for a --council plan run."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Council membership + merge disclosure; null for solo plans and non-plan runs.",
+          "default": null
+        },
         "applyEligibility": {
           "anyOf": [
             {

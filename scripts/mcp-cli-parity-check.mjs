@@ -68,6 +68,10 @@ const MCP_TO_CLI = {
     cli: null,
     reason: "boolean strategy flag; the CLI spells it --deep-scan (see BOOLEAN_FLAG_MAP)",
   },
+  council: {
+    cli: null,
+    reason: "boolean plan strategy flag; the CLI spells it --council (see BOOLEAN_FLAG_MAP)",
+  },
   repoPath: {
     cli: null,
     reason: "the CLI runs in its cwd; MCP hosts pass the project root explicitly",
@@ -88,6 +92,7 @@ const MCP_TO_CLI = {
 // BOOLEAN CLI strategy flags -> how MCP expresses them (or a reason).
 const BOOLEAN_FLAG_MAP = {
   "deep-scan": { mcp: "deepScan", reason: "ask deep-scan strategy; same arg on every run tool" },
+  council: { mcp: "council", reason: "plan council strategy; same arg on every run tool" },
   "until-clean": { mcp: null, reason: "convergence strategy; not exposed one-shot (CLI/app only)" },
   create: { mcp: null, reason: "encoded in the claudexor_create TOOL NAME" },
   delegate: {

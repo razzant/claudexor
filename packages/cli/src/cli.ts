@@ -64,6 +64,7 @@ import {
   enqueueAndAwait,
   exitCodeForState,
   fetchApplyEligibility,
+  fetchCouncil,
   fetchPlanReadiness,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
@@ -365,6 +366,7 @@ async function orchestrate(
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
   let delegate: boolean | undefined;
+  let council: boolean | undefined;
   let resolvedSynthesis: ReturnType<typeof synthesisMode> = undefined;
   let resolvedHarnesses: string[] | undefined;
   let resolvedPrimaryHarness: string | undefined;
@@ -391,6 +393,7 @@ async function orchestrate(
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
     delegate = flagBool(args, "delegate") ? true : undefined;
+    council = flagBool(args, "council") ? true : undefined;
     resolvedSynthesis = synthesisMode(args);
     attachmentRequest = attachmentInputs(args);
     resolvedProtectedPathApprovals = protectedPathApprovals(args);
@@ -454,9 +457,13 @@ async function orchestrate(
   if (delegate && mode !== "agent") {
     return printUsageError(json, `claudexor: --delegate is an agent strategy (got mode '${mode}')`);
   }
+  if (council && mode !== "plan") {
+    return printUsageError(json, `claudexor: --council is a plan strategy (got mode '${mode}')`);
+  }
   return daemonRun(args, json, {
     mode,
     delegate,
+    council,
     prompt: prompt || "audit this repository",
     instructions: resolvedInstructions,
     maxSeconds: resolvedMaxSeconds,
@@ -488,6 +495,7 @@ async function orchestrate(
 interface DaemonRunParams {
   mode: ModeKind;
   delegate: boolean | undefined;
+  council: boolean | undefined;
   prompt: string;
   instructions: string | undefined;
   maxSeconds: number | undefined;
@@ -607,6 +615,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     mode: p.mode,
     ...(threadId ? { threadId } : {}),
     ...(p.delegate ? { delegate: true } : {}),
+    ...(p.council ? { council: true } : {}),
     scope: { kind: "project", root: process.cwd() },
     execution: { isolation: inPlace ? "live" : "envelope" },
     ...(p.resolvedHarnesses ? { harnesses: p.resolvedHarnesses } : {}),
@@ -728,6 +737,20 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // Plan runs surface their derived readiness (D17): the server's ONE
       // derivation over final/questions.json, never a client re-parse.
       if (p.mode === "plan") {
+        // Council disclosure (INV-031): membership + merge, projected by the
+        // server (never a client re-derivation).
+        if (p.council) {
+          const council = await fetchCouncil(addr, started.runId);
+          if (council) {
+            print(
+              `  council: merged by ${council.mergedBy ?? "(none)"} from ${council.drafted} of ${council.requested} member(s)${council.degraded ? " (degraded)" : ""}`,
+            );
+            const failed = council.members.filter((m) => m.status === "failed");
+            if (failed.length > 0) {
+              print(`  council failures: ${failed.map((m) => m.harnessId).join(", ")}`);
+            }
+          }
+        }
         const readiness = await fetchPlanReadiness(addr, started.runId);
         if (readiness?.state === "needs_answers") {
           print(

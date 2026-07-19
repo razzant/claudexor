@@ -39,6 +39,7 @@ export function validateRunControls(params: unknown): RunControlError | null {
     "untilClean",
     "deepScan",
     "create",
+    "council",
     "tests",
     "paidBudget",
     "access",
@@ -62,7 +63,7 @@ export function validateRunControls(params: unknown): RunControlError | null {
   }
   const harnessError = validateOptionalNonEmptyString(params.harness, "harness");
   if (harnessError) return msg(harnessError);
-  for (const flag of ["race", "untilClean", "deepScan", "create"] as const) {
+  for (const flag of ["race", "untilClean", "deepScan", "create", "council"] as const) {
     if (params[flag] !== undefined && typeof params[flag] !== "boolean") {
       return msg(`${flag} must be a boolean`);
     }

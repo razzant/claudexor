@@ -117,8 +117,11 @@ Canonical mode ids (engine strategies are FLAGS, not modes):
   the bounded multi-scout research sweep with synthesis (per-scout findings,
   omissions, follow-up questions). Also the macOS composer's no-project
   fallback intent (Agent is the default on a project thread).
-- `plan` - read-only multi-harness planning; the plan lifecycle surfaces typed
-  open questions and Implement freezes the plan as a content-hashed contract.
+- `plan` - read-only planning; the plan lifecycle surfaces typed open questions
+  and Implement freezes the plan as a content-hashed contract. Solo is the
+  default; `--council` (optionally `--n 2..4`) drafts plans across N harnesses in
+  parallel, then the primary merges them into ONE unified plan whose open
+  questions reach you as a single set (see below).
 - `agent` - default `claudexor agent` route. Strategy flags: `--n N` (best-of-N
   race with isolated candidates, review, synthesis, arbitration),
   `--attempts N` (repair loop with a hard cap), `--until-clean` (repair loop
@@ -142,6 +145,25 @@ parent budget ledger's headroom. Only harnesses whose adapter declares
 `--delegate` on any other harness is a typed preflight refusal. This replaces the
 former `orchestrate` mode (retired in v3): "suggest"-style planning is ordinary
 `claudexor plan`.
+
+### Council planning (`plan --council`)
+
+`--council` (plan-only) runs the Council plan strategy: N harnesses each draft a
+plan in parallel (round 1, native plan mode, read-only, each in its own lane on a
+thread turn), the drafts land as file-backed run artifacts
+(`council/draft-<harness>.md`), and then the PRIMARY runs one merge iteration that
+POINTS at the draft files by absolute path (never embedding their full text) and
+synthesizes ONE unified plan. The tagged `## Open Questions` parser runs on the
+MERGE output only, so you always answer a single question set — the downstream
+readiness/freeze/Implement flow is byte-for-byte identical to a solo plan.
+`--n 2..4` sets the member count (default: distinct available harnesses, up to 3,
+primary first); `--n` on a plan is legal ONLY with `--council`. Degradation is
+honest: a failed member is disclosed (event + `council/membership.yaml`) and the
+merge proceeds with the survivors (one survivor still merges — it normalizes the
+format and extracts the questions); every member failing is a typed failure. Run
+detail carries a `council` projection (membership + per-member status + who
+merged). Council is the plan critique path — the standalone "plan review" entity
+was retired in v3.
 
 Unknown modes fail loudly. The retired mode ids (`audit`, `best_of_n`,
 `max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`, `daily`,

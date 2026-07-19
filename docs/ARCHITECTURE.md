@@ -775,6 +775,28 @@ recorded operator choice (`plan_readiness_overridden`), not a silent default;
 plans and repo config never carry protected-path approvals — operator approval
 is always supplied on the current run.
 
+Planning is solo by default. The **Council** plan strategy (`plan --council`,
+optionally `--n 2..4`) turns it into a multi-harness draft-then-merge: round 1
+runs N members as parallel planner attempts (each the SAME native-plan-mode
+read-only spawn the solo loop drives, in its own lane on a thread turn), whose
+drafts land as file-backed artifacts (`council/draft-<harness>.md`). The primary
+then runs ONE merge iteration (intent `synthesize`) whose prompt POINTS at the
+draft files by absolute path — like the frozen-plan brief, full text never rides
+the prompt bubble — and produces a single unified plan. The `## Open Questions`
+parser runs on the MERGE output only, so `final/plan.md` + `final/questions.json`
+are shape-identical to a solo plan and the readiness/freeze/Implement flow above
+is unchanged. Council owns no new state machine: it is round-1 attempts plus a
+merge attempt, with a `council/membership.yaml` projection served on
+`ControlRunDetail.council` (requested/drafted/degraded/mergedBy + per-member
+role and status). Degradation is disclosed, not silent — a failed member is
+carried on the projection and the merge proceeds with survivors (one survivor
+still merges); all members failing is a typed failure. `council` is a strategy
+FLAG refused off `mode=plan`, and `--n` on a plan is legal only with it (shared
+`runStartStrategyViolations` owner). The strategy is engine-owned in
+`packages/orchestrator/src/planRun.ts` (round orchestration) and
+`packages/orchestrator/src/council.ts` (member selection, merge prompt,
+projection).
+
 ### Event streaming contract (snapshot-then-subscribe)
 
 Every `RunEvent` carries a monotonic per-run `seq` stamped by the engine's

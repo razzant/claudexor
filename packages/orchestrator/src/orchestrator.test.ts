@@ -4664,6 +4664,258 @@ describe("Orchestrator", () => {
     expect(res.candidates.map((c) => c.status)).toEqual(["failed", "success"]);
   });
 
+  // Council (INV-031): a planner that emits DRAFT questions on intent=plan and
+  // a DIFFERENT merged set on intent=synthesize, so the "parser runs on the
+  // merge output only" promise is verifiable — draft questions must not leak.
+  function councilPlannerAdapter(id: string, draftMarker: string): HarnessAdapter {
+    return {
+      id,
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { plan: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: id,
+          status: "ok",
+          enabled_intents: ["plan", "synthesize"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        const text =
+          spec.intent === "synthesize"
+            ? [
+                "# Merged plan",
+                "1. Unified step",
+                "",
+                "## Open Questions",
+                "- [single] Merged decision? :: keep :: drop",
+              ].join("\n")
+            : [
+                `# Draft ${draftMarker}`,
+                "1. Draft step",
+                "",
+                "## Open Questions",
+                `- [text] Draft-only question ${draftMarker}?`,
+              ].join("\n");
+        yield { type: "message", session_id: spec.session_id, ts, text };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+  }
+
+  it("council: parallel drafts + primary merge produce ONE question set (drafts do not leak)", async () => {
+    const repo = await initRepo();
+    const eventTypes: string[] = [];
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", councilPlannerAdapter("planner-a", "A")],
+        ["planner-b", councilPlannerAdapter("planner-b", "B")],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      harnesses: ["planner-a", "planner-b"],
+      onEvent: (event) => eventTypes.push(event.type),
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    // Drafts landed as FILE-backed artifacts, one per member.
+    expect(existsSync(join(res.runDir, "council", "draft-planner-a.md"))).toBe(true);
+    expect(existsSync(join(res.runDir, "council", "draft-planner-b.md"))).toBe(true);
+    // final/plan.md is the MERGE output, not a draft.
+    const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
+    expect(plan).toContain("# Merged plan");
+    expect(plan).not.toContain("# Draft");
+    // The parser ran on the MERGE only: exactly the merged question, no drafts.
+    const questions = JSON.parse(
+      readFileSync(join(res.runDir, "final", "questions.json"), "utf8"),
+    ) as { parse: string; questions: Array<{ prompt: string }> };
+    expect(questions.parse).toBe("found");
+    expect(questions.questions).toHaveLength(1);
+    expect(questions.questions[0]?.prompt).toBe("Merged decision?");
+    expect(questions.questions.some((q) => q.prompt.startsWith("Draft-only"))).toBe(false);
+    // Membership projection artifact.
+    const membership = readFileSync(join(res.runDir, "council", "membership.yaml"), "utf8");
+    expect(membership).toContain("mergedBy: planner-a");
+    expect(membership).toContain("requested: 2");
+    expect(membership).toContain("drafted: 2");
+    expect(eventTypes).toContain("council.started");
+    expect(eventTypes).toContain("council.draft");
+    expect(eventTypes).toContain("council.merged");
+  });
+
+  it("council degrades honestly when a member fails but the merge still runs", async () => {
+    const repo = await initRepo();
+    const failing: HarnessAdapter = {
+      ...councilPlannerAdapter("planner-a", "A"),
+      async *run(spec) {
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          error: "planner-a exploded",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", failing],
+        ["planner-b", councilPlannerAdapter("planner-b", "B")],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      // planner-a is primary AND fails — the merge must fall to a survivor's
+      // work but still runs on the (surviving) primary lane.
+      harnesses: ["planner-b", "planner-a"],
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    const membership = readFileSync(join(res.runDir, "council", "membership.yaml"), "utf8");
+    expect(membership).toContain("degraded: true");
+    expect(membership).toContain("drafted: 1");
+    // The surviving primary (planner-b, listed first) merges.
+    expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain("# Merged plan");
+    const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
+    expect(summary).toContain("council degraded");
+  });
+
+  it("council records a native session per member lane on a thread turn", async () => {
+    const repo = await initRepo();
+    // Each member emits its own native session id in the started event; a
+    // thread turn (threadId set) must record each lane for round-2 resume.
+    const laneAdapter = (id: string): HarnessAdapter => {
+      const base = councilPlannerAdapter(id, id);
+      return {
+        ...base,
+        async *run(spec) {
+          const ts = new Date().toISOString();
+          yield {
+            type: "started",
+            session_id: spec.session_id,
+            ts,
+            payload: { native_session_id: `native-${id}` },
+          };
+          const text =
+            spec.intent === "synthesize"
+              ? "# Merged plan\n\n## Open Questions\n- (none)"
+              : `# Draft ${id}\n\n## Open Questions\n- (none)`;
+          yield { type: "message", session_id: spec.session_id, ts, text };
+          yield { type: "completed", session_id: spec.session_id, ts };
+        },
+      };
+    };
+    const observed: string[] = [];
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", laneAdapter("planner-a")],
+        ["planner-b", laneAdapter("planner-b")],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      threadId: "thr_council",
+      harnesses: ["planner-a", "planner-b"],
+      onSessionObserved: (harnessId, nativeSessionId) => {
+        observed.push(`${harnessId}:${nativeSessionId}`);
+      },
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    // Each member's lane recorded its native session (primary also records the
+    // merge session under the same lane).
+    expect(observed).toContain("planner-a:native-planner-a");
+    expect(observed).toContain("planner-b:native-planner-b");
+  });
+
+  it("council merges on a surviving member when the nominal primary fails its draft", async () => {
+    const repo = await initRepo();
+    const failing: HarnessAdapter = {
+      ...councilPlannerAdapter("planner-a", "A"),
+      async *run(spec) {
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          error: "planner-a exploded",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", failing],
+        ["planner-b", councilPlannerAdapter("planner-b", "B")],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      // planner-a is the NOMINAL primary (listed first) but fails its draft —
+      // the merge must fall to the surviving member rather than sink.
+      harnesses: ["planner-a", "planner-b"],
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain("# Merged plan");
+    const membership = readFileSync(join(res.runDir, "council", "membership.yaml"), "utf8");
+    expect(membership).toContain("mergedBy: planner-b");
+  });
+
+  it("council fails typed when ALL members fail", async () => {
+    const repo = await initRepo();
+    const explode = (id: string): HarnessAdapter => ({
+      ...councilPlannerAdapter(id, id),
+      async *run(spec) {
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          error: `${id} exploded`,
+        };
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    });
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", explode("planner-a")],
+        ["planner-b", explode("planner-b")],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      harnesses: ["planner-a", "planner-b"],
+    });
+    expect(legacyOutcome(res)).toBe("failed");
+    expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(false);
+    expect(res.candidates.every((c) => c.status !== "success")).toBe(true);
+  });
+
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {
     const repo = await initRepo();
     const writer: HarnessAdapter = {

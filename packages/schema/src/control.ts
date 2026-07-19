@@ -138,6 +138,17 @@ export const ControlRunStartRequest = z
       .describe("Ask flag: bounded multi-scout research sweep with synthesis."),
     /** agent flag: create-from-scratch intent (the old `create` mode). */
     create: z.boolean().optional().describe("Agent flag: create-from-scratch intent."),
+    /** plan strategy (D31/INV-031): N harnesses draft plans in parallel, the
+     * primary merges them into ONE unified plan whose open questions reach the
+     * user as one set. `n` (2..4) sets the member count; default = distinct
+     * available harnesses up to 3. Legal only on mode=plan (and `n` on a plan
+     * run is legal ONLY with council). */
+    council: z
+      .boolean()
+      .optional()
+      .describe(
+        "Plan strategy: N harnesses draft plans in parallel, the primary merges into one unified plan + one question set. Plan mode only.",
+      ),
     /** Best-of-N synthesis policy. `auto` (default) only synthesizes a 3rd
      * candidate when n>=3 and candidates genuinely complement; `always`/`never`
      * force it. Threaded to the orchestrator's decideSynthesis. */

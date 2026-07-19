@@ -111,6 +111,54 @@ describe("normalizeRunStart prompt validation", () => {
     expect(req.protectedPathApprovals?.[0]?.path).toBe("packages/**/*.test.ts");
     expect(req.protectedPathApprovals?.[0]?.reason).toBe("test authoring requested");
   });
+  // Council (INV-031) is a PLAN strategy; `--n` on a plan is legal ONLY with it.
+  it("accepts council on a plan run", () => {
+    expect(() =>
+      normalizeRunStartRequest({
+        ...projectScope(),
+        prompt: "plan it",
+        mode: "plan",
+        council: true,
+      }),
+    ).not.toThrow();
+  });
+  it("accepts --n with council on a plan run", () => {
+    expect(() =>
+      normalizeRunStartRequest({
+        ...projectScope(),
+        prompt: "plan it",
+        mode: "plan",
+        council: true,
+        n: 3,
+      }),
+    ).not.toThrow();
+  });
+  it("rejects council on a non-plan mode", () => {
+    expect(() =>
+      normalizeRunStartRequest({
+        ...projectScope(),
+        prompt: "do it",
+        mode: "agent",
+        council: true,
+      }),
+    ).toThrowError(/council is a plan strategy/);
+  });
+  it("rejects --n on a plan run WITHOUT council", () => {
+    expect(() =>
+      normalizeRunStartRequest({ ...projectScope(), prompt: "plan it", mode: "plan", n: 3 }),
+    ).toThrowError(/council membership width|pass --council/);
+  });
+  it("rejects an out-of-range council membership n", () => {
+    expect(() =>
+      normalizeRunStartRequest({
+        ...projectScope(),
+        prompt: "plan it",
+        mode: "plan",
+        council: true,
+        n: 9,
+      }),
+    ).toThrowError(/between 2 and 4/);
+  });
 });
 
 describe("DaemonControlApiServer", () => {

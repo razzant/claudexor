@@ -158,8 +158,9 @@ invariant or owner decision before proceeding.
 - **INV-031** Engine strategies are FLAGS on a mode, never modes of their
   own: best-of-N (`--n`), capped repair (`--attempts`), repair-to-clean
   (`--until-clean`), research sweep (`ask --deep-scan`), create-from-scratch
-  (`agent --create`), delegation belt (`agent --delegate`). verify: CLI help +
-  docs-truth flag check.
+  (`agent --create`), delegation belt (`agent --delegate`), council planning
+  (`plan --council`, with `--n 2..4` legal only under council). verify: CLI
+  help + docs-truth flag check.
 - **INV-032** Old mode ids are not compatibility aliases; they hard-error at
   every wire boundary unless explicitly reintroduced in schema and docs.
   verify: canary `[INV-032:modes-canonical]`; CLI mode validation tests.

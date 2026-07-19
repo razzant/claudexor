@@ -376,6 +376,11 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
         description:
           "Ask only: widen the answer into a bounded multi-scout research sweep with synthesis.",
       },
+      council: {
+        type: "boolean",
+        description:
+          "Plan only (claudexor_plan): N harnesses draft plans in parallel, the primary merges them into one unified plan + one question set. Pass n (2..4) to set the member count.",
+      },
       repoPath: {
         type: "string",
         description: "Absolute path of the target project. Defaults to the MCP server cwd.",

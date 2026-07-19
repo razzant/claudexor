@@ -158,6 +158,10 @@
           "type": "boolean",
           "description": "Agent flag: create-from-scratch intent."
         },
+        "council": {
+          "type": "boolean",
+          "description": "Plan strategy: N harnesses draft plans in parallel, the primary merges into one unified plan + one question set. Plan mode only."
+        },
         "synthesis": {
           "type": "string",
           "enum": [

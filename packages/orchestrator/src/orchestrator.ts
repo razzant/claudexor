@@ -54,8 +54,12 @@ import type {
   WebPolicySupport,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
-import { PlanQuestionsArtifact, derivePlanReadiness } from "@claudexor/schema";
-import { extractPlanQuestions } from "./planQuestions.js";
+import {
+  type PlanRunDeps,
+  finalizePlanRun,
+  runCouncilPlan,
+  writePlanHarnessFailure,
+} from "./planRun.js";
 import {
   HarnessRunSpec,
   type ExtraMcpServer,
@@ -285,6 +289,10 @@ export interface RunInput {
   planRef?: { runId: string; sha256: string; path: string };
   /** agent flag: create-from-scratch intent (the old `create` mode). */
   create?: boolean;
+  /** plan strategy (INV-031): N harnesses draft plans in parallel, the primary
+   * merges them into one unified plan + one question set. Plan mode only;
+   * `n` sets the member count (2..4). */
+  council?: boolean;
   /** agent flag (D32): the harness may spawn bounded isolated sub-runs through
    * the injected delegation belt. Requires a lane with
    * `capability_profile.mcp_injection`; else a typed preflight refusal. */
@@ -449,7 +457,7 @@ interface HarnessRouteSettings {
 }
 
 /** A routed candidate adapter plus its manifest capabilities and user settings. */
-interface RoutedAdapter {
+export interface RoutedAdapter {
   adapter: HarnessAdapter;
   adapterAccess: AccessProfile;
   webSupport: WebPolicySupport;
@@ -505,6 +513,41 @@ async function runBounded<T>(
     }
   });
   await Promise.all(workers);
+}
+
+/** Result of one planner spawn (solo pool member, council draft, or the
+ * council merge iteration). Bookkeeping that differs per path — artifact
+ * naming, fallback disclosure, accumulation — stays with the caller. */
+export interface PlannerAttemptOutcome {
+  attemptId: string;
+  harnessId: string;
+  status: "success" | "failed" | "blocked";
+  error: string | null;
+  /** Plan/merge body on success; null otherwise. */
+  text: string | null;
+  telemetry: AttemptTelemetry | null;
+  /** True when the budget lease was denied — the solo loop stops trying
+   * further fallbacks; council treats it as a failed member. */
+  budgetDenied: boolean;
+}
+
+/** Inputs to one planner spawn. Shared by the solo plan loop and the Council
+ * strategy (planRun.ts) so both drive the SAME machinery. */
+export interface PlannerAttemptArgs {
+  input: RunInput;
+  contract: TaskContract;
+  taskId: string;
+  runId: string;
+  log: EventLog;
+  store: ArtifactStore;
+  paths: RunPaths;
+  ledger: BudgetLedger;
+  routed: RoutedAdapter;
+  attemptId: string;
+  laneRun: boolean;
+  fallbackHome: Record<string, string>;
+  promptBody: string;
+  intent: Intent;
 }
 
 export class Orchestrator {
@@ -4753,6 +4796,237 @@ export class Orchestrator {
     ].join("\n");
   }
 
+  /**
+   * Run ONE planner spawn (native plan mode, read-only) end to end: budget
+   * lease, spec build, continuity hydration, event streaming, telemetry, and
+   * settle. Shared by the solo plan loop (each pool member is a sequential
+   * fallback) and the Council strategy (each member is a parallel draft, then
+   * one merge iteration on the primary — same machinery, different prompt +
+   * intent). The caller owns bookkeeping that differs per path: which artifact
+   * a success writes to, fallback disclosure, and accumulation.
+   */
+  async runPlannerAttempt(args: PlannerAttemptArgs): Promise<PlannerAttemptOutcome> {
+    const { input, contract, taskId, runId, log, store, paths, ledger, routed, attemptId } = args;
+    const adapter = routed.adapter;
+    const lease = ledger.reserve({
+      taskId,
+      attemptId,
+      intent: args.intent,
+      harnessId: adapter.id,
+      cost: attemptCostEvidence(
+        adapter.id,
+        attemptId,
+        undefined,
+        this.routeBillingKnowledge(input, adapter.id),
+      ),
+    });
+    if (!lease.granted) {
+      log.emit("budget.lease.created", {
+        granted: false,
+        reason: lease.reason,
+        attempt_id: attemptId,
+        harness_id: adapter.id,
+      });
+      return {
+        attemptId,
+        harnessId: adapter.id,
+        status: "failed",
+        error: lease.reason ?? "budget lease denied",
+        text: null,
+        telemetry: null,
+        budgetDenied: true,
+      };
+    }
+    const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
+    const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
+    const planSessionFields = this.sessionSpecFields(input, adapter.id, log);
+    // Continuity (INV-137): a thread PLAN turn is a chat turn — hydrate a
+    // lane switch/gap with a packet and disclose it.
+    const laneContinuity = args.laneRun
+      ? await this.resolveContinuity(
+          input,
+          adapter.id,
+          planSessionFields.credential_profile?.profile_id ?? input.credentialProfileId ?? null,
+          planSessionFields.resume_session_id !== null,
+          store,
+          paths,
+          this.execRootOf(input),
+          log,
+        )
+      : null;
+    const spec = HarnessRunSpec.parse({
+      session_id: newId("ses"),
+      intent: args.intent,
+      prompt: laneContinuity?.pointerLine
+        ? `${args.promptBody}\n\n${laneContinuity.pointerLine}`
+        : args.promptBody,
+      cwd: this.execRootOf(input),
+      access: "readonly",
+      // Planners must SEE any image/file the user attached (e.g. "plan a fix for
+      // what's in this screenshot"), not just agent/race runs.
+      attachments: input.attachments ?? [],
+      ...planSessionFields,
+      ...this.harnessSpecKnobs(contract, knobs, args.intent),
+      env_inheritance: envInheritance(this.config(input.repoRoot)),
+      // A thread plan turn spawns in its DURABLE per-lane home so its native
+      // session is reachable for resume next turn (INV-034); a non-thread
+      // plan keeps the disposable route-context home.
+      env: (args.laneRun ? this.laneHomeEnvFor(input, adapter.id) : null) ?? args.fallbackHome,
+    });
+    const plannerAbort = new AbortController();
+    spec.extra["abortSignal"] = input.signal
+      ? AbortSignal.any([input.signal, plannerAbort.signal])
+      : plannerAbort.signal;
+    const planInteraction = this.interactionChannelFor(
+      input,
+      log,
+      runId,
+      taskId,
+      attemptId,
+      adapter.id,
+      routed.supportsInteractive,
+    );
+    if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
+    const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
+    const answer = new AnswerAssembly();
+    const telemetry = createAttemptTelemetry(
+      knobs.webPolicy,
+      contract.external_context.web_required ||
+        knobs.webPolicy === "cached" ||
+        knobs.webPolicy === "live",
+      effectiveWeb,
+      [],
+      // Requested-model capture: a plan lane silently downgraded to another
+      // model surfaces the mismatch in its route receipt, just like agent.
+      knobs.model,
+    );
+    const onAbort = () => {
+      void adapter.cancel?.(spec.session_id)?.catch(() => {});
+    };
+    if (input.signal) {
+      if (input.signal.aborted) onAbort();
+      else input.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    let cost = 0;
+    let costEstimated = false;
+    let harnessError: string | null = null;
+    const budgetSignalState = { quotaPressureDisclosed: false };
+    try {
+      log.emit("harness.started", {
+        harness_id: adapter.id,
+        attempt_id: attemptId,
+        external_context_policy: knobs.webPolicy,
+        ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
+      });
+      if (!input.signal?.aborted) {
+        const watchedPlan = withInactivityWatchdog(adapter.run(spec), {
+          timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
+          onTimeout: () => {
+            plannerAbort.abort();
+            void adapter.cancel?.(spec.session_id)?.catch(() => {});
+          },
+          isSuspended: () => (planInteraction?.pendingCount?.() ?? 0) > 0,
+        });
+        for await (const ev of watchedPlan) {
+          if (input.signal?.aborted) break;
+          const safeEv = redactHarnessEvent(ev);
+          safeInvoke(input.onHarnessEvent, safeEv);
+          // A thread PLAN turn IS a chat turn now (INV-034): its native
+          // session lives in the DURABLE per-lane home, so record it for the
+          // next lane turn's resume. Council members are distinct lanes.
+          if (args.laneRun) observeNativeSessionEvent(input, adapter.id, safeEv);
+          observeAuthSwitch(log, adapter.id, attemptId, safeEv);
+          log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
+          appendLine(attemptEventsPath, JSON.stringify(safeEv));
+          observeAttemptTelemetry(telemetry, safeEv);
+          if (safeEv.plan_progress) {
+            log.emit("plan.progress", {
+              attempt_id: attemptId,
+              harness_id: adapter.id,
+              items: safeEv.plan_progress.items,
+            });
+          }
+          // read-only routes burn quota too — same single owner as the agent loop.
+          observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
+          this.deps.quotaEventSink?.(adapter.id, safeEv);
+          if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
+            cost += safeEv.usage.cost_usd;
+            if (safeEv.usage.estimated) costEstimated = true;
+            log.emit("budget.observation", {
+              harness_id: adapter.id,
+              attempt_id: attemptId,
+              kind: "spend",
+              usd: safeEv.usage.cost_usd,
+              estimated: safeEv.usage.estimated === true,
+            });
+          }
+          // A TYPED final message wins verbatim over joined narration.
+          answer.observe(safeEv);
+          if (safeEv.type === "error")
+            harnessError = safeEv.error ? redactSecrets(safeEv.error) : "harness emitted an error";
+        }
+      }
+    } catch (err) {
+      harnessError = safeErrorMessage(err);
+    } finally {
+      input.signal?.removeEventListener("abort", onAbort);
+      ledger.settle(
+        lease.lease?.lease_id ?? "",
+        attemptUsageCostSettlement(
+          cost,
+          costEstimated,
+          attemptId,
+          adapter.id,
+          telemetry.authMode,
+          telemetry.usageCost,
+        ),
+      );
+    }
+    const unrecovered = unrecoveredToolErrors(telemetry);
+    const webBlocked = webUnsatisfied(telemetry);
+    if (!harnessError && webBlocked) {
+      harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
+    }
+    if (!harnessError && unrecovered.length > 0) {
+      const first = unrecovered[0] as ToolErrorRecord;
+      harnessError = `${first.tool} failed without recovery: ${first.summary}`;
+    }
+    if (harnessError) {
+      log.emit("harness.completed", {
+        harness_id: adapter.id,
+        attempt_id: attemptId,
+        status: webBlocked ? "blocked" : "failed",
+        error: harnessError,
+        ...telemetrySummary(telemetry),
+      });
+      return {
+        attemptId,
+        harnessId: adapter.id,
+        status: webBlocked ? "blocked" : "failed",
+        error: harnessError,
+        text: null,
+        telemetry,
+        budgetDenied: false,
+      };
+    }
+    const text = answer.text() || "(no output)";
+    log.emit("harness.completed", {
+      harness_id: adapter.id,
+      attempt_id: attemptId,
+      status: "success",
+      ...telemetrySummary(telemetry),
+    });
+    return {
+      attemptId,
+      harnessId: adapter.id,
+      status: "success",
+      error: null,
+      text,
+      telemetry,
+      budgetDenied: false,
+    };
+  }
+
   private async runPlan(
     input: RunInput,
     announce?: (a: AnnouncedRunContext) => void,
@@ -4883,6 +5157,25 @@ export class Orchestrator {
       };
     }
 
+    // Council strategy (INV-031): N members draft in parallel, the primary
+    // merges them into ONE plan + one question set. It owns roHome disposal.
+    if (input.council) {
+      return runCouncilPlan(this.planRunDeps(), {
+        input,
+        contract,
+        taskId,
+        runId,
+        store,
+        paths,
+        log,
+        ledger,
+        adapters,
+        roHome,
+        contextSection,
+        laneRun,
+      });
+    }
+
     const plans: { id: string; text: string }[] = [];
     let fallbackFrom: string | null = null;
     const planAttempts: {
@@ -4899,238 +5192,67 @@ export class Orchestrator {
     try {
       for (const [idx, routed] of adapters.entries()) {
         if (input.signal?.aborted) break;
-        const adapter = routed.adapter;
         const attemptId = `p${String(idx + 1).padStart(2, "0")}`;
-        const lease = ledger.reserve({
-          taskId,
-          attemptId,
-          intent: "plan",
-          harnessId: adapter.id,
-          cost: attemptCostEvidence(
-            adapter.id,
-            attemptId,
-            undefined,
-            this.routeBillingKnowledge(input, adapter.id),
-          ),
-        });
-        if (!lease.granted) {
-          log.emit("budget.lease.created", {
-            granted: false,
-            reason: lease.reason,
-            attempt_id: attemptId,
-            harness_id: adapter.id,
-          });
-          break;
-        }
-        const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
-        const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
-        const planSessionFields = this.sessionSpecFields(input, adapter.id, log);
-        // Continuity (INV-137): a thread PLAN turn is a chat turn — hydrate a
-        // lane switch/gap with a packet and disclose it.
-        const laneContinuity = laneRun
-          ? await this.resolveContinuity(
-              input,
-              adapter.id,
-              planSessionFields.credential_profile?.profile_id ?? input.credentialProfileId ?? null,
-              planSessionFields.resume_session_id !== null,
-              store,
-              paths,
-              this.execRootOf(input),
-              log,
-            )
-          : null;
-        const spec = HarnessRunSpec.parse({
-          session_id: newId("ses"),
-          intent: "plan",
-          prompt: laneContinuity?.pointerLine
-            ? `${this.planPrompt(input.prompt) + contextSection}\n\n${laneContinuity.pointerLine}`
-            : this.planPrompt(input.prompt) + contextSection,
-          cwd: this.execRootOf(input),
-          access: "readonly",
-          // Planners must SEE any image/file the user attached (e.g. "plan a fix for
-          // what's in this screenshot"), not just agent/race runs.
-          attachments: input.attachments ?? [],
-          ...planSessionFields,
-          ...this.harnessSpecKnobs(contract, knobs, "plan"),
-          env_inheritance: envInheritance(this.config(input.repoRoot)),
-          // A thread plan turn spawns in its DURABLE per-lane home so its native
-          // session is reachable for resume next turn (INV-034); a non-thread
-          // plan keeps the disposable route-context home.
-          env: (laneRun ? this.laneHomeEnvFor(input, adapter.id) : null) ?? roHome.env,
-        });
-        const plannerAbort = new AbortController();
-        spec.extra["abortSignal"] = input.signal
-          ? AbortSignal.any([input.signal, plannerAbort.signal])
-          : plannerAbort.signal;
-        const planInteraction = this.interactionChannelFor(
+        const outcome = await this.runPlannerAttempt({
           input,
-          log,
-          runId,
+          contract,
           taskId,
+          runId,
+          log,
+          store,
+          paths,
+          ledger,
+          routed,
           attemptId,
-          adapter.id,
-          routed.supportsInteractive,
-        );
-        if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
-        const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
-        const answer = new AnswerAssembly();
-        const telemetry = createAttemptTelemetry(
-          knobs.webPolicy,
-          contract.external_context.web_required ||
-            knobs.webPolicy === "cached" ||
-            knobs.webPolicy === "live",
-          effectiveWeb,
-          [],
-          // Requested-model capture: a plan lane silently downgraded to another
-          // model surfaces the mismatch in its route receipt, just like agent.
-          knobs.model,
-        );
-        const onAbort = () => {
-          void adapter.cancel?.(spec.session_id)?.catch(() => {});
-        };
-        if (input.signal) {
-          if (input.signal.aborted) onAbort();
-          else input.signal.addEventListener("abort", onAbort, { once: true });
-        }
-        let cost = 0;
-        let costEstimated = false;
-        let harnessError: string | null = null;
-        const budgetSignalState = { quotaPressureDisclosed: false };
-        try {
-          log.emit("harness.started", {
-            harness_id: adapter.id,
-            attempt_id: attemptId,
-            external_context_policy: knobs.webPolicy,
-            ...(knobs.ignored.length > 0 ? { ignored_settings: knobs.ignored } : {}),
-          });
-          if (!input.signal?.aborted) {
-            const watchedPlan = withInactivityWatchdog(adapter.run(spec), {
-              timeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
-              onTimeout: () => {
-                plannerAbort.abort();
-                void adapter.cancel?.(spec.session_id)?.catch(() => {});
-              },
-              isSuspended: () => (planInteraction?.pendingCount?.() ?? 0) > 0,
-            });
-            for await (const ev of watchedPlan) {
-              if (input.signal?.aborted) break;
-              const safeEv = redactHarnessEvent(ev);
-              safeInvoke(input.onHarnessEvent, safeEv);
-              // A thread PLAN turn IS a chat turn now (INV-034): its native
-              // session lives in the DURABLE per-lane home, so record it for the
-              // next lane turn's resume. Plan candidates are distinct harnesses
-              // run sequentially, so there is no parallel same-lane race.
-              if (laneRun) observeNativeSessionEvent(input, adapter.id, safeEv);
-              observeAuthSwitch(log, adapter.id, attemptId, safeEv);
-              log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
-              appendLine(attemptEventsPath, JSON.stringify(safeEv));
-              observeAttemptTelemetry(telemetry, safeEv);
-              if (safeEv.plan_progress) {
-                log.emit("plan.progress", {
-                  attempt_id: attemptId,
-                  harness_id: adapter.id,
-                  items: safeEv.plan_progress.items,
-                });
-              }
-              // read-only routes burn quota too (the orchestrate PLANNER is
-              // the loudest) — same single owner as the agent loop.
-              observeBudgetSignals(ledger, log, adapter.id, attemptId, safeEv, budgetSignalState);
-              this.deps.quotaEventSink?.(adapter.id, safeEv);
-              if (safeEv.type === "usage" && safeEv.usage?.cost_usd) {
-                cost += safeEv.usage.cost_usd;
-                if (safeEv.usage.estimated) costEstimated = true;
-                log.emit("budget.observation", {
-                  harness_id: adapter.id,
-                  attempt_id: attemptId,
-                  kind: "spend",
-                  usd: safeEv.usage.cost_usd,
-                  estimated: safeEv.usage.estimated === true,
-                });
-              }
-              // A TYPED final message wins verbatim over joined narration.
-              answer.observe(safeEv);
-              if (safeEv.type === "error")
-                harnessError = safeEv.error
-                  ? redactSecrets(safeEv.error)
-                  : "harness emitted an error";
-            }
-          }
-        } catch (err) {
-          harnessError = safeErrorMessage(err);
-        } finally {
-          input.signal?.removeEventListener("abort", onAbort);
-          ledger.settle(
-            lease.lease?.lease_id ?? "",
-            attemptUsageCostSettlement(
-              cost,
-              costEstimated,
-              attemptId,
-              adapter.id,
-              telemetry.authMode,
-              telemetry.usageCost,
-            ),
-          );
-        }
-        attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
-        const unrecovered = unrecoveredToolErrors(telemetry);
-        const webBlocked = webUnsatisfied(telemetry);
-        if (!harnessError && webBlocked) {
-          harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
-        }
-        if (!harnessError && unrecovered.length > 0) {
-          const first = unrecovered[0] as ToolErrorRecord;
-          harnessError = `${first.tool} failed without recovery: ${first.summary}`;
-        }
-        if (harnessError) {
-          // One failed planner does not abort a multi-harness plan; the run fails
-          // only when EVERY planner fails (parity with explore).
-          log.emit("harness.completed", {
-            harness_id: adapter.id,
-            attempt_id: attemptId,
-            status: webBlocked ? "blocked" : "failed",
-            error: harnessError,
-            ...telemetrySummary(telemetry),
-          });
-          planAttempts.push({
+          laneRun,
+          fallbackHome: roHome.env,
+          promptBody: this.planPrompt(input.prompt) + contextSection,
+          intent: "plan",
+        });
+        if (outcome.budgetDenied) break;
+        if (outcome.telemetry)
+          attemptTelemetries.push({
             attemptId,
-            harnessId: adapter.id,
-            status: webBlocked ? "blocked" : "failed",
-            error: harnessError,
+            harnessId: outcome.harnessId,
+            telemetry: outcome.telemetry,
           });
+        planAttempts.push({
+          attemptId,
+          harnessId: outcome.harnessId,
+          status: outcome.status,
+          error: outcome.error,
+        });
+        if (outcome.status !== "success") {
           const next = adapters[idx + 1];
           if (next && !input.signal?.aborted) {
-            fallbackFrom = adapter.id;
+            fallbackFrom = outcome.harnessId;
             log.emit("route.fallback.started", {
-              from_harness: adapter.id,
+              from_harness: outcome.harnessId,
               to_harness: next.adapter.id,
               attempt_id: attemptId,
               reason: "planner_failed",
             });
           } else if (fallbackFrom || next === undefined) {
             log.emit("route.fallback.exhausted", {
-              harness_id: adapter.id,
+              harness_id: outcome.harnessId,
               attempt_id: attemptId,
               reason: "planner_failed",
             });
           }
           continue;
         }
-        const text = answer.text() || "(no output)";
-        log.emit("harness.completed", {
-          harness_id: adapter.id,
-          attempt_id: attemptId,
-          status: "success",
-          ...telemetrySummary(telemetry),
-        });
-        planAttempts.push({ attemptId, harnessId: adapter.id, status: "success", error: null });
-        plans.push({ id: adapter.id, text });
-        store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
+        const text = outcome.text ?? "(no output)";
+        plans.push({ id: outcome.harnessId, text });
+        store.writeText(
+          join(paths.root, "plans", `${outcome.harnessId}.md`),
+          redactSecrets(text) + "\n",
+        );
         // Solo planning (D31): the FIRST successful planner is the plan; later
         // pool members are a sequential fallback chain (ask parity), not
         // parallel co-authors. Council re-enables the multi-draft round.
         if (fallbackFrom) {
           log.emit("route.fallback.completed", {
-            harness_id: adapter.id,
+            harness_id: outcome.harnessId,
             attempt_id: attemptId,
             status: "success",
             reason: "planner_failed",
@@ -5173,74 +5295,22 @@ export class Orchestrator {
     }
 
     if (plans.length === 0) {
-      const blocked = planAttempts.some((p) => p.status === "blocked");
-      const message =
-        planAttempts
-          .map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`)
-          .join("\n") || "all planners failed";
-      this.writeRunTelemetry(
-        store,
-        paths,
-        contract,
-        runId,
-        taskId,
-        "plan",
-        attemptTelemetries,
-        null,
+      return writePlanHarnessFailure(
+        this.planRunDeps(),
+        {
+          input,
+          contract,
+          taskId,
+          runId,
+          store,
+          paths,
+          log,
+          ledger,
+          planAttempts,
+          attemptTelemetries,
+        },
+        "all planners failed",
       );
-      store.writeText(
-        join(paths.contextDir, "context_error.md"),
-        `# Harness Error\n\n${message}\n`,
-      );
-      writeFailure(store, paths, {
-        phase: "harness",
-        category: blocked ? "policy" : "harness_error",
-        safeMessage: message,
-        eventRefs: planAttempts.map((p) => `attempts/${p.attemptId}/events.jsonl`),
-        runDir: paths.root,
-        nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
-      });
-      store.writeText(
-        join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (plan)\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : "failed"}\n\n${message}\n`,
-      );
-      log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      const planFailFacts = blocked
-        ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
-        : makeOutcomeFacts("failed", { reason: "harness_failed" });
-      if (blocked)
-        log.emit("run.blocked", {
-          lifecycle: planFailFacts.lifecycle,
-          facts: planFailFacts,
-          phase: "harness",
-          error: message,
-          failure_ref: "final/failure.yaml",
-        });
-      else
-        log.emit("run.failed", {
-          lifecycle: planFailFacts.lifecycle,
-          facts: planFailFacts,
-          reason: planFailFacts.reason,
-          phase: "harness",
-          error: message,
-          failure_ref: "final/failure.yaml",
-        });
-      return {
-        spendUsd: ledger.spend(),
-        runId,
-        taskId,
-        mode: "plan",
-        lifecycle: planFailFacts.lifecycle,
-        facts: planFailFacts,
-        winner: null,
-        runDir: paths.root,
-        summary: message,
-        candidates: planAttempts.map((p) => ({
-          attemptId: p.attemptId,
-          harnessId: p.harnessId,
-          status: p.status,
-        })),
-      };
     }
 
     if (input.signal?.aborted) {
@@ -5272,91 +5342,41 @@ export class Orchestrator {
       );
     }
 
-    const failedPlanners = planAttempts.filter((p) => p.status !== "success");
-    const winner = plans[0];
-    const winnerAttempt = planAttempts.find((p) => p.status === "success");
-    // final/plan.md is the PURE plan body (the winning planner's own text):
-    // implement freezes and hashes THIS file, so wrapper prose (goal, planner
-    // omissions, statuses) lives in summary.md instead (advisor pass, V6a).
-    const planDoc = redactSecrets(winner?.text ?? "(no output)");
-    store.writeText(join(paths.finalDir, "plan.md"), planDoc + "\n");
-    // Engine-parsed open questions (final/questions.json): the ONE artifact
-    // plan readiness derives from. An absent tagged block is DISCLOSED as
-    // none_found — never silently equated with "ready".
-    const parsedQuestions = extractPlanQuestions(planDoc);
-    store.writeJson(join(paths.finalDir, "questions.json"), parsedQuestions);
-    // A plan is a delivered work product (a report), even with risks — parity
-    // with the other read-only modes. result_kind=plan tells surfaces NO
-    // files changed.
-    store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
-      id: newId("wp"),
-      kind: "report",
-      source_task_id: taskId,
-      producer_attempt_id: winnerAttempt?.attemptId ?? null,
-      meta: {
-        mode: "plan",
-        result_kind: "plan",
-        planners: plans.length,
-        diffstat: { files: 0, additions: 0, deletions: 0 },
-        blockers: 0,
-        adopted: null,
-      },
-    });
-    const readiness = derivePlanReadiness(PlanQuestionsArtifact.parse(parsedQuestions));
-    store.writeText(
-      join(paths.finalDir, "summary.md"),
-      [
-        `# Run ${runId} (plan)`,
-        "",
-        `- Lifecycle: succeeded (plan only — no files changed)`,
-        `- Planner: ${winnerAttempt?.harnessId ?? "(none)"}`,
-        `- Plan: final/plan.md`,
-        `- Open questions: ${readiness.questionCount}${parsedQuestions.parse === "none_found" ? " (no tagged block — unverified)" : ""}`,
-        `- Goal: ${redactSecrets(input.prompt).slice(0, 400)}`,
-        ...(failedPlanners.length > 0
-          ? [
-              `- Fallback omissions: ${failedPlanners
-                .map((p) => `${p.harnessId} ${p.status}`)
-                .join(", ")}`,
-            ]
-          : []),
-        "",
-      ].join("\n"),
-    );
-    this.writeRunTelemetry(
+    return finalizePlanRun(this.planRunDeps(), {
+      input,
+      contract,
+      taskId,
+      runId,
       store,
       paths,
-      contract,
-      runId,
-      taskId,
-      "plan",
+      log,
+      ledger,
+      plans,
+      planAttempts,
       attemptTelemetries,
-      planAttempts.find((p) => p.status === "success")?.attemptId ?? null,
-    );
-    log.emit("output.ready", { kind: "plan", path: "final/plan.md" });
-    log.emit("plan.questions", {
-      parse: parsedQuestions.parse,
-      question_count: readiness.questionCount,
-      readiness: readiness.state,
+      council: null,
     });
-    const planFacts = makeOutcomeFacts("succeeded", { noChanges: true });
-    log.emit("run.completed", { lifecycle: planFacts.lifecycle, facts: planFacts, reason: null });
+  }
 
+  /** Bind the few orchestrator methods planRun.ts needs (the rest of its
+   * collaborators are module-level imports). Kept as a factory so each call
+   * gets correctly-bound `this` without leaking the whole orchestrator. */
+  private planRunDeps(): PlanRunDeps {
     return {
-      spendUsd: ledger.spend(),
-      runId,
-      taskId,
-      mode: "plan",
-      lifecycle: planFacts.lifecycle,
-      facts: planFacts,
-      winner: null,
-      runDir: paths.root,
-      summary: `Plan by ${winnerAttempt?.harnessId ?? "(none)"}; ${readiness.questionCount} open question(s)${parsedQuestions.parse === "none_found" ? " (untagged plan — unverified)" : ""}.`,
-      candidates: planAttempts.map((p) => ({
-        attemptId: p.attemptId,
-        harnessId: p.harnessId,
-        status: p.status,
-      })),
+      runPlannerAttempt: (a) => this.runPlannerAttempt(a),
+      writeRunTelemetry: (store, paths, contract, runId, taskId, mode, attempts, finalAttemptId) =>
+        this.writeRunTelemetry(
+          store,
+          paths,
+          contract,
+          runId,
+          taskId,
+          mode,
+          attempts,
+          finalAttemptId,
+        ),
+      execRootOf: (input) => this.execRootOf(input),
+      planPrompt: (goal) => this.planPrompt(goal),
     };
   }
 

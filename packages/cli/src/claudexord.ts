@@ -393,6 +393,7 @@ async function main(): Promise<void> {
             untilClean: p.untilClean === true,
             deepScan: p.deepScan === true,
             create: p.create === true,
+            council: p.council === true,
             delegate: p.delegate === true,
             // Belt descriptor (D32): built once per delegate run with the parent
             // budget snapshot; injected into agent lanes whose adapter can host

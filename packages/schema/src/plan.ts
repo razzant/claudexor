@@ -68,6 +68,51 @@ export const PlanReadiness = z
   .describe("Server-derived readiness of a plan run (one derivation owner; D17).");
 export type PlanReadiness = z.infer<typeof PlanReadiness>;
 
+/** One council member's role and outcome (INV-031). `primary` is the merger;
+ * `member` is a draft-only participant. A council with one surviving member
+ * still merges (the primary normalizes the format + extracts questions). */
+export const CouncilMember = z
+  .object({
+    harnessId: z.string().min(1).describe("Harness that drafted (or merged) this member's plan."),
+    role: z
+      .enum(["primary", "member"])
+      .describe("primary = the merger that synthesizes the unified plan; member = draft only."),
+    status: z
+      .enum(["drafted", "failed", "merged"])
+      .describe("drafted = draft landed; merged = this member produced the unified plan; failed."),
+    error: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("First redacted draft error; null unless the member failed."),
+  })
+  .strict()
+  .describe("One council member's role and draft/merge outcome.");
+export type CouncilMember = z.infer<typeof CouncilMember>;
+
+/** Council membership + merge projection (INV-031), projected from
+ * `council/membership.yaml`. Present only for `--council` plan runs; the
+ * downstream plan artifacts (final/plan.md, questions.json, readiness) are
+ * shape-identical to a solo plan, so this field is purely additive disclosure. */
+export const CouncilProjection = z
+  .object({
+    requested: z.number().int().positive().describe("Requested member count (n; 2..4)."),
+    drafted: z.number().int().nonnegative().describe("Members whose draft survived to the merge."),
+    degraded: z
+      .boolean()
+      .default(false)
+      .describe("True when fewer members drafted than requested (failures disclosed per member)."),
+    mergedBy: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Harness that produced the unified plan (the primary); null if the merge failed."),
+    members: z.array(CouncilMember).default([]).describe("Per-member role and outcome."),
+  })
+  .strict()
+  .describe("Council membership + merge disclosure for a --council plan run.");
+export type CouncilProjection = z.infer<typeof CouncilProjection>;
+
 /** THE single derivation authority for plan readiness (declared per the v3
  * plan-lifecycle decision): every surface consumes this projection of
  * final/questions.json; nothing re-parses plan text. */

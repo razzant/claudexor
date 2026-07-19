@@ -65,6 +65,7 @@ import { controlProblemError } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import {
   PlanQuestionsArtifact,
+  CouncilProjection,
   derivePlanReadiness,
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
@@ -2417,6 +2418,7 @@ function detailFor(
     // Derived apply-gate verdict (single producer: delivery's
     // deriveApplyEligibility) — null when the run has no patch artifact.
     planReadiness: planReadinessFor(rec, summary.mode),
+    council: councilFor(rec, summary.mode),
     applyEligibility: applyEligibilityFor(rec, operator),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
@@ -2629,6 +2631,17 @@ function planReadinessFor(rec: DaemonRunRecord, mode: string | null | undefined)
   if (mode !== "plan" || !rec.runDir) return null;
   const artifact = safeReadStructuredArtifact(rec, "final/questions.json", PlanQuestionsArtifact);
   return artifact ? derivePlanReadiness(artifact) : null;
+}
+
+/** Council membership + merge disclosure (INV-031), projected from
+ * `council/membership.yaml`. Null for solo plans and non-plan runs — the plan
+ * artifacts themselves are shape-identical, so this is purely additive. */
+function councilFor(
+  rec: DaemonRunRecord,
+  mode: string | null | undefined,
+): CouncilProjection | null {
+  if (mode !== "plan" || !rec.runDir) return null;
+  return safeReadStructuredArtifact(rec, "council/membership.yaml", CouncilProjection);
 }
 
 function applyEligibilityFor(

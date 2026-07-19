@@ -375,6 +375,41 @@ export async function fetchPlanReadiness(
   }
 }
 
+/** Council membership + merge disclosure (INV-031) for a --council plan run;
+ * null for solo plans and non-plan runs. Server-projected — the CLI never
+ * re-derives membership. */
+export async function fetchCouncil(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<{
+  requested: number;
+  drafted: number;
+  degraded: boolean;
+  mergedBy: string | null;
+  members: { harnessId: string; role: string; status: string; error: string | null }[];
+} | null> {
+  if (!runId) return null;
+  try {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
+    if (!res.ok) return null;
+    const detail = (await res.json()) as Record<string, unknown>;
+    const v = detail["council"];
+    return v && typeof v === "object"
+      ? (v as {
+          requested: number;
+          drafted: number;
+          degraded: boolean;
+          mergedBy: string | null;
+          members: { harnessId: string; role: string; status: string; error: string | null }[];
+        })
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchApplyEligibility(
   addr: ControlApiAddress,
   runId: string,

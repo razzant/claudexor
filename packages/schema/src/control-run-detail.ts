@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PlanReadiness } from "./plan.js";
+import { CouncilProjection, PlanReadiness } from "./plan.js";
 import { ApplyEligibility } from "./apply-eligibility.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
@@ -155,6 +155,12 @@ export const ControlRunDetail = z
     planReadiness: PlanReadiness.nullable()
       .default(null)
       .describe("Derived readiness of a plan run; null for non-plan runs."),
+    /** Council membership + merge disclosure (INV-031); null for solo plans
+     * and every non-plan run. Purely additive — the plan artifacts themselves
+     * are shape-identical to a solo plan. */
+    council: CouncilProjection.nullable()
+      .default(null)
+      .describe("Council membership + merge disclosure; null for solo plans and non-plan runs."),
     applyEligibility: ApplyEligibility.nullable()
       .default(null)
       .describe(
