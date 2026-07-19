@@ -170,24 +170,83 @@ private struct PathLexer {
     }
 }
 
-// MARK: - Logo view
+// MARK: - Harness icon (ONE owner of vendor iconography, M9-UX item 5)
 
-/// Renders an official harness mark, tinted with the family color (the brand's own color).
-struct HarnessLogo: View {
+/// The single mapping from a harness id to its brand mark. Every surface that
+/// shows a vendor icon (the harness picker, accounts, composer chips, run/turn
+/// identity, readiness) renders through `HarnessIcon` — there are NO scattered
+/// per-vendor SF-Symbol/emoji placeholders. Vendors we ship an official mark for
+/// (Codex/Claude/Cursor/OpenCode, from simple-icons) render it tinted with the
+/// brand color; EVERY unknown/future harness gets ONE shared generic glyph.
+enum HarnessIconCatalog {
+    /// The single generic glyph for any harness without a bundled brand mark
+    /// (raw-api/openrouter meta-hosts and every future harness id).
+    static let genericSymbol = "shippingbox.fill"
+
+    static func mark(for harnessId: String) -> HarnessLogoData.Mark? {
+        HarnessLogoData.marks[harnessId]
+    }
+    /// True when the vendor ships a real bundled brand mark (else the generic
+    /// glyph is used). Pure — unit-tested so the mapping never silently drifts.
+    static func hasBrandMark(_ harnessId: String) -> Bool { mark(for: harnessId) != nil }
+}
+
+/// Renders a harness's official brand mark, tinted with the family color (the
+/// brand's own color), or the ONE shared generic glyph for any vendor without a
+/// bundled mark. The single owner of harness iconography.
+struct HarnessIcon: View {
     let family: HarnessFamily
     var size: CGFloat = 16
+    /// Render monochrome (menu/label contexts) rather than in the brand color.
+    var monochrome = false
+
+    private var tint: Color { monochrome ? .primary : family.color }
 
     var body: some View {
-        if let mark = HarnessLogoData.marks[family.rawValue] {
+        if let mark = HarnessIconCatalog.mark(for: family.rawValue) {
             Canvas { ctx, canvasSize in
-                let rect = CGRect(origin: .zero, size: canvasSize).insetBy(dx: canvasSize.width * 0.06, dy: canvasSize.height * 0.06)
+                let rect = CGRect(origin: .zero, size: canvasSize)
+                    .insetBy(dx: canvasSize.width * 0.06, dy: canvasSize.height * 0.06)
                 let p = SVGPath.path(mark.path, viewBox: mark.viewBox, in: rect)
-                ctx.fill(p, with: .color(family.color), style: FillStyle(eoFill: true))
+                ctx.fill(p, with: .color(tint), style: FillStyle(eoFill: true))
             }
             .frame(width: size, height: size)
             .accessibilityLabel("\(family.label) logo")
         } else {
-            Image(systemName: family.glyph).font(.system(size: size * 0.8)).foregroundStyle(family.color)
+            Image(systemName: HarnessIconCatalog.genericSymbol)
+                .font(.system(size: size * 0.8))
+                .foregroundStyle(tint)
+                .accessibilityLabel("\(family.label) icon")
         }
+    }
+}
+
+/// Native NSMenu items and `Label(_:image:)` icons cannot host a live `Canvas`,
+/// so the brand marks are rasterized ONCE into template images (auto-tinting to
+/// the menu/label foreground) and cached. Vendors without a mark fall back to
+/// the shared generic SF Symbol.
+@MainActor
+enum HarnessIconImage {
+    private static var cache: [String: Image] = [:]
+
+    static func image(for family: HarnessFamily, size: CGFloat = 14) -> Image {
+        guard HarnessIconCatalog.hasBrandMark(family.rawValue) else {
+            return Image(systemName: HarnessIconCatalog.genericSymbol)
+        }
+        let key = "\(family.rawValue)@\(Int(size))"
+        if let cached = cache[key] { return cached }
+        let renderer = ImageRenderer(
+            content: HarnessIcon(family: family, size: size, monochrome: true)
+                .frame(width: size, height: size))
+        renderer.scale = 2
+        let image: Image
+        if let ns = renderer.nsImage {
+            ns.isTemplate = true
+            image = Image(nsImage: ns)
+        } else {
+            image = Image(systemName: HarnessIconCatalog.genericSymbol)
+        }
+        cache[key] = image
+        return image
     }
 }

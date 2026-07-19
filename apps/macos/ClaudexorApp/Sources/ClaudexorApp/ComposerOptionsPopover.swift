@@ -45,7 +45,7 @@ extension ThreadsScreen {
                         // Never synthesize "<glyph>.slash" (no such SF Symbol → blank
                         // icon); disabled dimming + hover reason convey unavailability.
                         FilterChip(label: family.label,
-                                   systemImage: family.glyph,
+                                   iconImage: HarnessIconImage.image(for: family),
                                    isActive: resolvedPoolFamilies.contains(family), tint: family.color) {
                             togglePool(family)
                         }

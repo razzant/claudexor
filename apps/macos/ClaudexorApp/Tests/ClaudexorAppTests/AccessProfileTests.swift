@@ -32,8 +32,9 @@ import Testing
 
     @Test func harnessAndAccessGlyphsAreValidSFSymbols() {
         var names = AccessProfile.allCases.map(\.glyph)
-        names += (HarnessFamily.builtIns + [.fake]).map(\.glyph)
-        names.append("cpu") // HarnessFamily's unknown-family fallback glyph.
+        // Vendor iconography now lives in HarnessIcon; its ONE generic fallback
+        // must still resolve as a real SF Symbol.
+        names.append(HarnessIconCatalog.genericSymbol)
         for name in names {
             #expect(
                 NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil,

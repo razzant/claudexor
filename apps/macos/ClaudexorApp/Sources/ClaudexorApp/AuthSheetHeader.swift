@@ -20,7 +20,7 @@ struct AuthSheetHeader: View {
                           ? "Finish or cancel the active login before going back"
                           : "Back to \(family.label) accounts")
             }
-            HarnessLogo(family: family, size: 26)
+            HarnessIcon(family: family, size: 26)
             VStack(alignment: .leading, spacing: 2) {
                 Text(profileDisplayName.map { "\(family.label) · \($0)" } ?? "\(family.label) Auth")
                     .font(.title3.weight(.semibold))

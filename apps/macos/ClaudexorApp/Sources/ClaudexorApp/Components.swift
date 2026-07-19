@@ -49,7 +49,7 @@ struct HarnessChip: View {
     var available = true
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
-            HarnessLogo(family: family, size: 13).opacity(selected && available ? 1 : 0.45)
+            HarnessIcon(family: family, size: 13).opacity(selected && available ? 1 : 0.45)
             Text(family.label)
             if !available {
                 Image(systemName: "slash.circle").imageScale(.small)
@@ -279,6 +279,8 @@ struct SegmentedTabs<T: Hashable>: View {
 struct FilterChip: View {
     let label: String
     var systemImage: String?
+    /// A pre-rendered icon (e.g. a brand mark) shown INSTEAD of `systemImage`.
+    var iconImage: Image?
     var count: Int?
     let isActive: Bool
     var tint: Color = Theme.accent
@@ -287,7 +289,8 @@ struct FilterChip: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Theme.Spacing.xs) {
-                if let systemImage { Image(systemName: systemImage).imageScale(.small) }
+                if let iconImage { iconImage.imageScale(.small) }
+                else if let systemImage { Image(systemName: systemImage).imageScale(.small) }
                 Text(label)
                 if let count, count > 0 {
                     Text("\(count)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)

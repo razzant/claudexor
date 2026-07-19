@@ -131,9 +131,54 @@ enum AccountsPresentation {
         rows.map(\.readiness).min()
     }
 
+    /// The composer Harness+Account chip's account segment (M9-UX item 2): what
+    /// the segment shows for `harnessId` given the thread/draft's pinned profile.
+    /// A pin overrides; otherwise the segment follows the harness's GLOBAL Active
+    /// default (server-computed). Pure so it is unit-tested.
+    struct AccountSegment: Equatable {
+        /// True when the thread pins a specific account (vs. following the default).
+        let pinned: Bool
+        let label: String
+        let systemImage: String
+    }
+
+    @MainActor
+    static func composerAccountSegment(
+        model: AppModel, harnessId: String, pinnedProfileId: String?
+    ) -> AccountSegment {
+        func profileName(_ id: String) -> String {
+            model.credentialProfiles.first {
+                $0.profile.profileId == id && $0.profile.harnessId == harnessId
+            }?.profile.displayName ?? id
+        }
+        if let pinned = pinnedProfileId {
+            return AccountSegment(pinned: true, label: profileName(pinned), systemImage: "pin.fill")
+        }
+        // No pin → follow the harness's Active default from the server projection.
+        guard let identity = model.harnessAccounts(for: harnessId)?.activeIdentity else {
+            return AccountSegment(pinned: false, label: "Default", systemImage: "person.crop.circle")
+        }
+        switch identity {
+        case .profile(let id): return AccountSegment(pinned: false, label: profileName(id), systemImage: "person.crop.circle")
+        case .native: return AccountSegment(pinned: false, label: "CLI login", systemImage: "person.crop.circle")
+        case .none: return AccountSegment(pinned: false, label: "No account", systemImage: "exclamationmark.circle")
+        }
+    }
+
     /// Highest used-% across every account — the trigger's quota summary.
     static func worstPercent(_ rows: [AccountRowModel]) -> Int? {
         rows.compactMap(\.worstPercent).max()
+    }
+
+    /// The Active-marker wording for a row (M9-UX item 1). When the Active
+    /// identity is not ready the marker DEGRADES verbally so it never reads as
+    /// operational — pure so the vocabulary is unit-tested in one place.
+    static func activeMarkerLabel(readiness: AccountReadiness) -> String {
+        switch readiness {
+        case .ready: return "Active"
+        case .unknown: return "Active · unverified"
+        case .unavailable: return "Active · not logged in"
+        }
     }
 
     /// The trigger's label: a single account's name, else "N accounts".

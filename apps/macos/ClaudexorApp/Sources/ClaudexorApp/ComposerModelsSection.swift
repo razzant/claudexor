@@ -44,7 +44,7 @@ struct ComposerModelsSection: View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             ForEach(families) { family in
                 HStack(spacing: Theme.Spacing.sm) {
-                    Label(family.label, systemImage: family.glyph)
+                    Label { Text(family.label) } icon: { HarnessIcon(family: family, size: 12) }
                         .font(.caption)
                         .foregroundStyle(family.color)
                         .frame(width: 92, alignment: .leading)

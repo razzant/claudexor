@@ -301,14 +301,36 @@ extension View {
 /// (the real cause of the low frame rate on idle) with a STATIC behind-window
 /// material: the desktop shows through the main window like frosted glass, and
 /// nothing animates when the app is idle. Honors Reduce Transparency (solid).
+/// The window backdrop variant (M9-UX item 7). Pure so the state switch is
+/// unit-tested without a live window.
+enum WindowBackdrop: Equatable {
+    /// Behind-window vibrancy — the desktop shows faintly through the window.
+    case vibrant
+    /// A solid opaque fill — used when there is no desktop behind the window
+    /// (full screen) or Reduce Transparency is on, where vibrancy is wrong.
+    case opaque
+}
+
+enum BackdropPresentation {
+    /// Vibrancy only when the window actually floats over the desktop. Full
+    /// screen (no desktop behind) and Reduce Transparency both force the opaque
+    /// variant — vibrancy washes out to gray otherwise.
+    static func backdrop(isFullScreen: Bool, reduceTransparency: Bool) -> WindowBackdrop {
+        (isFullScreen || reduceTransparency) ? .opaque : .vibrant
+    }
+}
+
 struct GlassBackground: View {
+    @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        if reduceTransparency {
+        switch BackdropPresentation.backdrop(
+            isFullScreen: model.isFullScreen, reduceTransparency: reduceTransparency) {
+        case .opaque:
             Theme.surfaceBase
-        } else {
+        case .vibrant:
             BehindWindowMaterial(colorScheme: colorScheme)
         }
     }

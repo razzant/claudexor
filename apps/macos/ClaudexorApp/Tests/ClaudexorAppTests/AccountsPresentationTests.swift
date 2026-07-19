@@ -180,6 +180,50 @@ import Testing
         #expect(work.serverActive == false)
     }
 
+    @Test func activeMarkerDegradesWhenNotReady() {
+        // M9-UX item 1: the Active marker never reads as operational when the
+        // identity is not green — it gains a plain verbal qualifier.
+        #expect(AccountsPresentation.activeMarkerLabel(readiness: .ready) == "Active")
+        #expect(AccountsPresentation.activeMarkerLabel(readiness: .unknown) == "Active · unverified")
+        #expect(AccountsPresentation.activeMarkerLabel(readiness: .unavailable) == "Active · not logged in")
+    }
+
+    @MainActor
+    @Test func composerAccountSegmentFollowsPinThenActiveDefault() throws {
+        // M9-UX item 2: the composer chip's account segment shows the thread's
+        // pinned account, else the harness's server-computed Active default.
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        let profilesJSON = """
+        [{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]
+        """
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self, from: Data(profilesJSON.utf8))
+
+        // No projection yet → generic default.
+        var seg = AccountsPresentation.composerAccountSegment(
+            model: model, harnessId: "claude", pinnedProfileId: nil)
+        #expect(seg.pinned == false)
+        #expect(seg.label == "Default")
+
+        // Projection: the native CLI login is Active.
+        model.harnessAccounts = try JSONDecoder().decode([HarnessAccounts].self, from: Data("""
+        [{"harness_id":"claude","active_profile_id":null,"native_credentials_enabled":true,
+          "native_login_detected":true,"active_identity":{"kind":"native"}}]
+        """.utf8))
+        seg = AccountsPresentation.composerAccountSegment(
+            model: model, harnessId: "claude", pinnedProfileId: nil)
+        #expect(seg.pinned == false)
+        #expect(seg.label == "CLI login")
+
+        // A thread pin overrides the default and resolves to the profile's name.
+        seg = AccountsPresentation.composerAccountSegment(
+            model: model, harnessId: "claude", pinnedProfileId: "work")
+        #expect(seg.pinned == true)
+        #expect(seg.label == "Work")
+    }
+
     @Test func generatedIdSlugifiesTheDisplayName() {
         #expect(AccountsPresentation.generatedProfileId(displayName: "Work", existing: []) == "work")
         #expect(AccountsPresentation.generatedProfileId(displayName: "Experiment A (max)", existing: [])

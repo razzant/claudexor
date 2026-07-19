@@ -86,7 +86,7 @@ struct OnboardingView: View {
                 FlowLayout(spacing: Theme.Spacing.sm) {
                     ForEach(model.selectableHarnesses) { family in
                         Button { model.authSheetTarget = AuthSheetTarget(family: family) } label: {
-                            Label(family.label, systemImage: family.glyph)
+                            Label { Text(family.label) } icon: { HarnessIconImage.image(for: family) }
                         }
                         .buttonStyle(.bordered)
                         .help("Open \(family.label) Auth for native setup and API-key fallback.")

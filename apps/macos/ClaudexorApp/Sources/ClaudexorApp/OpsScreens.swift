@@ -122,7 +122,7 @@ struct SettingsScreen: View {
                     Picker("Primary harness", selection: $primaryHarness) {
                         Text("None").tag("__none")
                         ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
-                            Label(family.label, systemImage: family.glyph).tag(family.rawValue)
+                            Label { Text(family.label) } icon: { HarnessIconImage.image(for: family) }.tag(family.rawValue)
                         }
                     }
                     .help("Primary is a bias, not a hardcoded semantic role.")
@@ -139,7 +139,7 @@ struct SettingsScreen: View {
                     .help("Which credential route harness runs prefer. Auto seeds the native subscription session and falls back to a stored API key; an explicit route discloses any fallback in the run events.")
                     FlowLayout(spacing: Theme.Spacing.sm) {
                         ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
-                            FilterChip(label: family.label, systemImage: family.glyph,
+                            FilterChip(label: family.label, iconImage: HarnessIconImage.image(for: family),
                                        isActive: eligibleHarnesses.contains(family), tint: family.color) {
                                 if eligibleHarnesses.contains(family) { eligibleHarnesses.remove(family) }
                                 else { eligibleHarnesses.insert(family) }
@@ -187,7 +187,7 @@ struct SettingsScreen: View {
                     FlowLayout(spacing: Theme.Spacing.sm) {
                         ForEach(model.selectableHarnesses) { family in
                             Button { model.authSheetTarget = AuthSheetTarget(family: family) } label: {
-                                Label("Open \(family.label) Auth", systemImage: family.glyph)
+                                Label { Text("Open \(family.label) Auth") } icon: { HarnessIconImage.image(for: family) }
                             }
                             .buttonStyle(.bordered)
                             .help("Store fallback refs and run setup jobs in the shared \(family.label) Auth sheet.")

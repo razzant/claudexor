@@ -136,9 +136,8 @@ struct AuthSheet: View {
 
             if showsActionFooter {
                 Divider().overlay(Theme.separator)
-                // ONE prominent CTA by cause; a quiet/healthy sheet closes
-                // through the always-visible header Done instead of duplicating
-                // Done at both edges.
+                // ONE prominent CTA by cause; a quiet/healthy sheet closes through
+                // the always-visible header Done, not a duplicated footer Done.
                 HStack {
                     if let job, job.isActive {
                         Label(AuthSheetPresentation.jobStatusLine(
@@ -189,9 +188,8 @@ struct AuthSheet: View {
         return entry?.profile.displayName ?? profileId
     }
 
-    /// W4.7-UI: the shared readiness card (typed rows + "copy raw") for the
-    /// DEFAULT store; a profile target shows ITS doctor projection instead —
-    /// the default card would misattribute readiness to the wrong store.
+    /// W4.7-UI: the shared readiness card for the DEFAULT store; a profile target
+    /// shows ITS doctor projection (the default card would misattribute readiness).
     private var readinessPanel: some View {
         Panel {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
@@ -215,47 +213,49 @@ struct AuthSheet: View {
                     }
                 } else {
                     SectionLabel("Readiness", systemImage: isReady ? "checkmark.seal.fill" : "exclamationmark.triangle")
-                    HarnessReadinessCard(
-                        presentation: .from(family: family, info: currentInfo)
-                    ) { EmptyView() }
+                    HarnessReadinessCard(presentation: .from(family: family, info: currentInfo)) { EmptyView() }
                 }
             }
         }
     }
 
-    /// Account-capable default surface: the implicit default login and every
-    /// named profile are rendered by ONE AccountsSurface (no parallel Native
-    /// setup vs Additional accounts UI).
+    /// Account-capable default surface: the implicit default login and every named
+    /// profile render through ONE AccountsSurface (no parallel setup-vs-accounts UI).
     private var supportsAccountsPanel: Bool {
-        profileId == nil
-            && (family.setupHarnessId == "claude" || family.setupHarnessId == "codex")
+        profileId == nil && (family.setupHarnessId == "claude" || family.setupHarnessId == "codex")
     }
 
     private var nativeSetupPanel: some View {
         Panel {
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-                SectionLabel("Native setup", systemImage: "terminal")
+                SectionLabel("Native setup", systemImage: "person.crop.circle")
+                // M9-UX item 4: Log in is THE filled primary; Recheck the quiet secondary.
                 HStack(spacing: Theme.Spacing.sm) {
                     Button { Task { await runLogin() } } label: {
-                        Label(targetVerified ? "Manage Login" : "Login", systemImage: "person.crop.circle.badge.checkmark")
+                        Label(targetVerified ? "Manage Login" : "Log in", systemImage: "person.crop.circle.badge.checkmark")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accentSolid)
+                    .controlSize(.large)
                     .disabled(newSetupDisabled)
-                    .help(targetVerified ? "Open the native \(family.label) login flow to manage the verified session." : "Start the native \(family.label) login flow.")
+                    .help(targetVerified ? "Open the native \(family.label) login flow to manage the verified session." : "Start the native \(family.label) login flow — a Terminal window opens automatically.")
 
                     Button { Task { await recheck() } } label: {
                         Label("Recheck", systemImage: "arrow.clockwise")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accentSolid)
+                    .buttonStyle(.bordered)
                     .disabled(actionInFlight)
                     .help("Run a fresh, non-cached Harness Doctor probe for installed/authenticated/routable status.")
+                    Spacer(minLength: 0)
                 }
-                Text(profileId == nil
-                    ? "Native login is daemon-owned. Completing its Terminal command is not readiness: only the exact native probe and same-harness smoke mark the session ready."
-                    : "Native login is daemon-owned and scoped to this account's own store. Its doctor probe is the verification truth; the default-route capability smoke does not apply.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                // The daemon-owned "run in terminal" caveat is secondary — collapsed.
+                DisclosureGroup("Advanced — run in terminal") {
+                    Text(profileId == nil
+                        ? "Native login is daemon-owned. Completing its Terminal command is not readiness: only the exact native probe and same-harness smoke mark the session ready."
+                        : "Native login is daemon-owned and scoped to this account's own store. Its doctor probe is the verification truth; the default-route capability smoke does not apply.")
+                        .font(.caption2).foregroundStyle(.secondary).padding(.top, Theme.Spacing.xs)
+                }
+                .font(.caption)
             }
         }
     }

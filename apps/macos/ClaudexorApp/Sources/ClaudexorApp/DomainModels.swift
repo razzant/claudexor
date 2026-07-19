@@ -61,15 +61,9 @@ struct HarnessFamily: RawRepresentable, Identifiable, Hashable {
         if self == .fake { return "Fake" }
         return rawValue.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
     }
-    var glyph: String {
-        if self == .codex { return "chevron.left.forwardslash.chevron.right" }
-        if self == .claude { return "sparkles" }
-        if self == .cursor { return "cursorarrow.rays" }
-        if self == .opencode { return "curlybraces" }
-        if self == .raw { return "bolt.horizontal" }
-        if self == .fake { return "testtube.2" }
-        return "cpu"
-    }
+    // Vendor iconography is owned solely by `HarnessIcon` (M9-UX item 5): a real
+    // brand mark where we ship one, else ONE shared generic glyph. No per-family
+    // SF-Symbol placeholder lives on the model any more.
     var color: Color { Theme.harness(rawValue) }
     /// Setup and runtime use the same canonical harness id. The retired `raw`
     /// alias must never reappear at a client boundary.

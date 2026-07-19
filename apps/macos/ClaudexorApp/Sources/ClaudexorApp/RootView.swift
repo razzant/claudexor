@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// v0.10 chat-first cockpit: ONE screen. The thread list + conversation IS the
 /// app (ThreadsScreen); a run's detail (diff/timeline/review) opens in the
@@ -52,6 +53,15 @@ struct RootView: View {
         // desktop beneath it) shows through — the missing piece that made the window
         // read as a solid gray panel. Window opacity is set in AppDelegate.
         .containerBackground(.clear, for: .window)
+        // M9-UX item 7: track native full-screen so the backdrop switches to its
+        // opaque variant (no desktop behind the window) and the floating insets
+        // collapse (no stray rounded-corner chrome artifacts).
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willEnterFullScreenNotification)) { _ in
+            model.isFullScreen = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in
+            model.isFullScreen = false
+        }
         .sheet(item: $model.authSheetTarget) { target in
             AuthSheet(family: target.family, profileId: target.profileId).environment(model)
         }

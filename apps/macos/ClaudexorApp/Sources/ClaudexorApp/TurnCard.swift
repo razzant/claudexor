@@ -98,7 +98,12 @@ struct TurnCard: View {
                         // (capsule fill + border), not a bare colored glyph —
                         // a raw Label read as an unfinished stray control
                         // (owner visual QA, 2.1.0).
-                        Label(identity, systemImage: line.family?.glyph ?? "flag.checkered.2.crossed")
+                        Label {
+                            Text(identity)
+                        } icon: {
+                            if let family = line.family { HarnessIcon(family: family, size: 12) }
+                            else { Image(systemName: "flag.checkered.2.crossed") }
+                        }
                             .font(.caption.weight(.medium))
                             .foregroundStyle(line.family?.color ?? .secondary)
                             .padding(.horizontal, Theme.Spacing.sm)

@@ -38,14 +38,14 @@ final class AppModel {
     var health: Health = .connecting
     var endpoint: String = ""
     var route: SidebarRoute = .threads {
-        // Leaving a run's inspector is the P3 eviction point: terminal runs
-        // that just went off-screen release their heavy feed/transcript
-        // arrays (reopening reloads from the server).
+        // Leaving a run's inspector is the P3 eviction point: an off-screen
+        // terminal run releases its heavy feed/transcript arrays (reopen reloads).
         didSet { if oldValue != route { evictBackgroundRunData() } }
     }
-    /// THE inspector visibility (W4.6 sol #17): explicit open (⧉/toolbar),
-    /// manual close respected, no route-derived auto-open, no reveal seqs.
+    /// THE inspector visibility (W4.6 sol #17): explicit open/close, no auto-open.
     var inspectorPresented = false
+    /// Native full-screen (item 7) — drives the opaque backdrop (BackdropPresentation).
+    var isFullScreen = false
 
     /// Open a run in the inspector — the ONE owner of the reveal semantics
     /// (a direct assignment re-presents on same-route clicks; no counter).

@@ -184,7 +184,7 @@ struct AccountsPopover: View {
             }
         }
         .padding(Theme.Spacing.lg)
-        .frame(width: 340)
+        .frame(width: 400)
         .task { await model.refreshSettings() }   // profiles refresh lives in AccountsSurface
         .popover(isPresented: $showQuotaDetail, arrowEdge: .trailing) {
             QuotaDetailView().environment(model).frame(width: 420, height: 460)
@@ -274,30 +274,8 @@ struct AccountsSurface: View {
         }
     }
 
-    private var selectedProfileId: String? {
-        model.selectedThreadId == nil
-            ? model.draftCredentialProfileId
-            : model.currentThread?.credentialProfileId
-    }
-
-    private var selectedHarnessId: String? {
-        model.selectedThreadId == nil
-            ? model.draftPrimaryHarness
-            : model.currentThread?.primaryHarness
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            if selectedProfileId != nil {
-                Button {
-                    Task { await model.setThreadCredentialProfile(nil) }
-                } label: {
-                    Label("Use automatic account routing", systemImage: "arrow.triangle.branch")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("Clear the thread's manual account choice and return to the engine-default ladder")
-            }
             accountsList
             if let notice = deleteNotice {
                 Text(notice).font(.caption2).foregroundStyle(Theme.status(.negative))
@@ -326,21 +304,13 @@ struct AccountsSurface: View {
         }
     }
 
-    /// The D25 Active marker, symmetric across profile rows AND the CLI login.
-    /// V11b: the SERVER computes the Active identity per harness (the account a
-    /// new run defaults to), so the marker binds to that projection verbatim.
-    /// Only when the projection is absent (pre-V11b daemon) does it fall back to
-    /// the client-derived thread/draft pin state.
-    private func isActive(_ row: AccountRowModel) -> Bool {
-        if let serverActive = row.serverActive { return serverActive }
-        if row.isProfile {
-            return row.profileId == selectedProfileId
-                && (selectedHarnessId == nil || selectedHarnessId == row.harnessId)
-        }
-        // CLI login row: active when its harness is the thread/draft primary and
-        // no profile is pinned.
-        return selectedProfileId == nil && selectedHarnessId == row.harnessId
-    }
+    /// The Active marker (M9-UX item 2): the GLOBAL routing default per harness —
+    /// the account a new run picks. V11b: the SERVER computes the Active identity
+    /// from `active_profile_id`, so the marker binds to that projection verbatim.
+    /// The popover is the global surface; the per-thread override lives on the
+    /// composer's Harness+Account chip. A pre-V11b daemon (no projection) shows no
+    /// Active marker rather than faking one.
+    private func isActive(_ row: AccountRowModel) -> Bool { row.serverActive ?? false }
 
     /// The Enabled-toggle action for a row (V11b — LIVE). A profile row PATCHes
     /// its own `enabled`; the CLI-login row drives the harness's
@@ -360,23 +330,23 @@ struct AccountsSurface: View {
         }
     }
 
-    /// The "Use" action for a row, or nil when it is already active / cannot be
-    /// made active. Verified profiles pin the thread; the CLI login clears the
-    /// pin back to the vendor login. Both are the wire-backed thread PATCH.
-    private func useAction(_ row: AccountRowModel) -> (() -> Void)? {
-        guard !isActive(row) else { return nil }
-        if row.isProfile, row.verified {
+    /// The "Make active" action for a row, or nil when it is already active /
+    /// cannot become the routing default (M9-UX item 2). Sets the harness's
+    /// GLOBAL `active_profile_id` via the settings PATCH — a verified+enabled
+    /// profile becomes Active; the CLI login clears the Active profile back to the
+    /// native login. This is the global level; per-thread pinning is the
+    /// composer's job. No V11b projection ⇒ no affordance (nothing to target).
+    private func makeActiveAction(_ row: AccountRowModel) -> (() -> Void)? {
+        guard row.serverActive != nil, !isActive(row) else { return nil }
+        if row.isProfile {
+            // Only a verified, enabled profile can be the routing default.
+            guard row.verified, row.enabled else { return nil }
             return {
-                Task {
-                    await model.setThreadCredentialProfile(row.profileId, harnessId: row.harnessId)
-                }
+                Task { await model.setHarnessActiveProfile(harnessId: row.harnessId, profileId: row.profileId) }
             }
         }
-        if row.isCliLogin, selectedHarnessId == row.harnessId {
-            // Clear the manual pin → the harness falls back to its CLI login.
-            return { Task { await model.setThreadCredentialProfile(nil, harnessId: row.harnessId) } }
-        }
-        return nil
+        // CLI-login row: clear the Active profile → the native login is Active.
+        return { Task { await model.setHarnessActiveProfile(harnessId: row.harnessId, profileId: nil) } }
     }
 
     private var accountsList: some View {
@@ -396,11 +366,11 @@ struct AccountsSurface: View {
                         // its own `enabled`; the CLI-login row drives the harness's
                         // `native_credentials_enabled` via the settings surface.
                         setEnabled: enabledAction(row),
-                        // "Use" makes a row the thread's active account (wire-backed
-                        // PATCH of thread.credentialProfileId). Offered for a verified
-                        // profile, and for the CLI login (nil profile = clear the pin
-                        // back to the vendor login) — symmetric across row kinds.
-                        use: useAction(row),
+                        // "Make active" sets the harness's GLOBAL routing default
+                        // (wire-backed settings PATCH of active_profile_id). Offered
+                        // for a verified+enabled profile, and for the CLI login (clear
+                        // the Active profile back to the native login).
+                        makeActive: makeActiveAction(row),
                         delete: row.isProfile && !deleting ? { pendingDelete = row } : nil
                     )
                 }
@@ -486,114 +456,5 @@ struct AccountsSurface: View {
         // job is active) or a disclosed cleanup warning — shown verbatim.
         deleteNotice = await model.deleteCredentialProfile(
             harnessId: row.harnessId, profileId: profileId)
-    }
-}
-
-/// One account row inside the popover. A separate view so the popover's body
-/// stays small for the Swift type-checker (composerControlsRow precedent).
-private struct AccountRowView: View {
-    let row: AccountRowModel
-    let login: () -> Void
-    var loginDisabled = false
-    /// The active account for the current thread/draft (the D25 Active marker).
-    var active = false
-    /// V11b: live Enabled toggle action — PATCHes the profile / native setting.
-    /// nil renders a read-only toggle (defensive; the surface always supplies it).
-    var setEnabled: ((Bool) -> Void)? = nil
-    var use: (() -> Void)? = nil
-    /// Present when the account can be removed (registered profiles only —
-    /// default vendor logins are not Claudexor's to delete).
-    var delete: (() -> Void)? = nil
-
-    var body: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-            Circle()
-                .fill(row.readiness.color)
-                .frame(width: 8, height: 8)
-                .padding(.top, 4)
-                .help(row.verified ? "Verified" : "Not verified — log in")
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Text(row.displayName).font(.callout.weight(.medium))
-                    // D25: the native vendor login is a symmetric "CLI login" row,
-                    // no longer visually "the default".
-                    Text(row.isProfile ? row.harnessId : "CLI login")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                quotaLine
-                if let detail = row.detail {
-                    Text(detail).font(.caption2).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.tail).help(detail)
-                }
-            }
-            Spacer()
-            // D25 Enabled: symmetric on every row and LIVE (V11b). A profile row
-            // PATCHes its own `enabled`; the CLI-login row drives the harness's
-            // `native_credentials_enabled`. The toggle reads wire truth and the
-            // set fires the PATCH (reload-after-PATCH — no faked client state).
-            Toggle("", isOn: Binding(
-                get: { row.enabled },
-                set: { setEnabled?($0) }
-            ))
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .tint(Theme.accent)
-                .disabled(setEnabled == nil)
-                .help(row.isCliLogin
-                    ? (row.enabled
-                        ? "Enabled — the native/CLI login participates in this harness's credential ladder. Turn off to exclude it."
-                        : "Disabled — the native/CLI login is excluded from this harness's credential ladder.")
-                    : (row.enabled
-                        ? "Enabled — participates in account pickers and the auto-rotation pool. Turn off to exclude it."
-                        : "Disabled — excluded from account pickers and the auto-rotation pool."))
-            Button(row.verified ? "Manage" : "Log in", action: login)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(loginDisabled)
-                .help(row.verified
-                    ? "Manage this account's native login"
-                    : "Start the official CLI login for this account — a Terminal window opens automatically")
-            // D25 Active marker: symmetric across profile rows AND the CLI login —
-            // the account the current thread/draft authenticates as. No row is
-            // visually "the default" beyond THIS marker.
-            if active {
-                Label("Active", systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Theme.accent)
-                    .help("New/continued turns of this thread use this account.")
-            } else if let use {
-                Button("Use", action: use)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(Theme.accentSolid)
-                    .help("Make this the active account for the thread")
-            }
-            if let delete {
-                Button(role: .destructive, action: delete) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("Remove this account: its registration and its own login/key. The default \(row.family.label) login is untouched.")
-            }
-        }
-        .padding(.vertical, Theme.Spacing.xxs)
-    }
-
-    /// ONE compact quota line: the worst window's used-% and its reset.
-    @ViewBuilder private var quotaLine: some View {
-        if let window = row.worstWindow, let pct = row.worstPercent {
-            HStack(spacing: Theme.Spacing.xs) {
-                Text("\(pct)% used")
-                    .font(.caption2).monospacedDigit()
-                    .foregroundStyle(pct >= 90 ? Theme.status(.caution) : .secondary)
-                if let reset = formattedDate(window.resetsAt) {
-                    Text("· resets \(reset)").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        } else {
-            Text("Quota unknown").font(.caption2).foregroundStyle(.secondary)
-        }
     }
 }

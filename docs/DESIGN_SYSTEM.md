@@ -199,7 +199,30 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 - **SF Symbols** first (monochrome in toolbars per Tahoe; tint only for meaning).
   Animated symbols for run state. Provide an accessibility label for every icon.
 - A small set of custom marks: the Claudexor app icon (Icon Composer, layered,
-  Light/Dark/Clear/Tinted) and harness-family glyphs.
+  Light/Dark/Clear/Tinted) and the vendor harness marks.
+- **Vendor iconography has ONE owner: `HarnessIcon`.** Every surface that shows a
+  harness's identity (the harness picker, accounts, composer chips, run/turn
+  identity, readiness) renders through `HarnessIcon` — never a scattered
+  per-vendor SF-Symbol/emoji literal. Vendors we ship a real brand mark for
+  (Codex/Claude/Cursor/OpenCode) render it (tinted with the brand color inline,
+  monochrome template in menus via `HarnessIconImage`); **every** unknown/future
+  harness — the raw-api/openrouter meta-hosts included — falls back to ONE shared
+  generic glyph. Never substitute a random lookalike for a missing vendor mark.
+
+### 2.8 Row alignment
+
+- **Trailing controls in sibling rows sit on a shared column edge.** When a list
+  renders repeated rows (accounts, per-harness settings, option rows) whose
+  trailing controls (a toggle, a button, a status marker) differ in width between
+  rows, those controls MUST line up on a common column edge — a control that
+  drifts row-to-row reads as broken. Achieve this with a fixed-position trailing
+  column, not a `Spacer()` that pushes a variable-width control cluster to the
+  right (the cluster's leading edge then moves per row).
+- Use the shared row components: `OptionRow` (a fixed-width label column + one
+  trailing control) for label/value rows; for a multi-control row, give each
+  trailing control its own fixed-width column and let the leading identity absorb
+  the slack (`.frame(maxWidth: .infinity, alignment: .leading)`), so empty cells
+  still reserve their column and nothing shifts (see the accounts popover row).
 
 ---
 
@@ -257,7 +280,7 @@ The app targets macOS 26 (Tahoe), so these are used directly (no `if #available`
   one sampling region (constrains the sample zone — it *helps* perf). Group; don't
   scatter bare `glassEffect`s.
 - **Chrome controls inside glass** — the chat composer controls use custom solid
-  capsule/menu labels (`IntentMenu`, `ProjectChip`, `PrimaryHarnessChip`, and the
+  capsule/menu labels (`IntentMenu`, `ProjectChip`, `HarnessAccountChip`, and the
   options icon button) inside `GlassEffectContainer`, not system `.glass` buttons.
   That keeps repeated controls legible on the floating glass panel and avoids a
   glass-on-glass read. Native `.buttonStyle(.glass)` remains available for sparse
@@ -501,8 +524,8 @@ views in the shared design-system files; screens compose them.
     Best-of as the best-of-N agent strategy),
     the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
     thread's project, an open thread's repo is bound; the ONLY place project
-    selection lives in the app), the `PrimaryHarnessChip` (which
-    harness answers in chat; sticky on the thread), the composite **`AccessChip`**
+    selection lives in the app), the `HarnessAccountChip` (which
+    harness answers in chat + the thread's account, sticky on the thread), the composite **`AccessChip`**
     (the per-turn write scope — Read-only / Workspace write / Full access — as a
     first-class chip; it reads "Full access · Browser" and DISABLES while the
     agent browser is armed, because Browser derives Full access and a downgrade
@@ -846,9 +869,12 @@ DesignSystemComponents.swift, DesignTokens.swift.)
 - **`composerGlass()`** — the floating-panel glass modifier: static `.glassEffect(.regular)`
   (NOT `.interactive()` — see §3.1) with a `surfaceRaised` solid fallback under Reduce
   Transparency. Chrome only.
-- **`PrimaryHarnessChip`** — a single shared view (one instance in the composer controls row),
-  logo + label + chevron `Menu`, switching the thread's sticky primary harness (a change
-  applies from the next turn).
+- **`HarnessAccountChip`** — a single shared view (one instance in the composer controls row):
+  ONE capsule with two menu segments. The harness segment (brand mark + label + chevron `Menu`)
+  switches the thread's sticky primary harness (a change applies from the next turn); the
+  account segment shows the thread's pinned account or the harness's Active default, and picking
+  pins the thread's credential profile (the per-thread override — the accounts popover owns the
+  global routing default).
 
 - **Titles / H1.** Headed surfaces (Settings tabs, the run inspector's `TaskDetail` header)
   use the shared `ScreenHeader` recipe (`.title2.weight(.bold)` + optional `.callout`

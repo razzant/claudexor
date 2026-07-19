@@ -82,6 +82,13 @@ struct ThreadsScreen: View {
     var resolvedPoolFamilies: [HarnessFamily] {
         model.effectiveEligiblePool.map { HarnessFamily(rawValue: $0) }
     }
+    /// The thread/draft's pinned credential profile (M9-UX item 2): the composer
+    /// Harness+Account chip's per-thread override. nil = follow the harness default.
+    var composerPinnedProfileId: String? {
+        model.selectedThreadId == nil
+            ? model.draftCredentialProfileId
+            : model.currentThread?.credentialProfileId
+    }
     /// Per-turn options the "⋯" panel collects, mapped onto engine run-start fields.
     private var currentOptions: TurnOptions {
         TurnOptions(
@@ -202,7 +209,10 @@ struct ThreadsScreen: View {
     }
 
     /// Inset of the floating sidebar panel from the window edges (leading + vertical).
-    private let sidebarInset: CGFloat = Theme.Metrics.floatingSidebarInset
+    /// Collapses to 0 in native full screen (M9-UX item 7) so the panel sits
+    /// flush — the windowed floating gap otherwise exposed the clear window
+    /// background at the rounded corners as a stray artifact.
+    private var sidebarInset: CGFloat { model.isFullScreen ? 0 : Theme.Metrics.floatingSidebarInset }
     /// Gap between the floating sidebar and the conversation (replaces the divider).
     private let sidebarGap: CGFloat = Theme.Spacing.sm
     /// Invisible drag strip width for the sidebar resize affordance.
@@ -340,7 +350,12 @@ struct ThreadsScreen: View {
     // The composer's controls row (mode/project/harness/access chips + ⋯),
     // extracted so the composer VStack stays type-checkable (round-19).
     @ViewBuilder private var composerControlsRow: some View {
-        HStack(spacing: Theme.Spacing.sm) {
+        // M9-UX item 6: the chips WRAP (FlowLayout) rather than overflowing the
+        // conversation column. Fixed-size chips in a plain HStack kept their ideal
+        // widths and pushed the composer glass wider than the column at narrow
+        // widths / with the inspector open, spilling under the side panels. A
+        // wrapping layout bounded to the column width can never overflow.
+        FlowLayout(spacing: Theme.Spacing.sm) {
             IntentMenu(selection: $composerMode, projectScoped: threadHasProject)
             ProjectChip(name: projectChipName,
                         bound: model.selectedThreadId != nil,
@@ -349,9 +364,20 @@ struct ThreadsScreen: View {
                         onPick: { model.pickProject($0) },
                         onBrowse: { model.browseProject() })
             if threadHasProject {
-                PrimaryHarnessChip(current: primaryFamily, pool: resolvedPoolFamilies) { picked in
-                    Task { await model.setPrimaryHarness(picked?.rawValue) }
-                }
+                HarnessAccountChip(
+                    current: primaryFamily,
+                    pool: resolvedPoolFamilies,
+                    pinnedProfileId: composerPinnedProfileId,
+                    onPickHarness: { picked in Task { await model.setPrimaryHarness(picked?.rawValue) } },
+                    onPickAccount: { profileId in
+                        Task {
+                            if let profileId {
+                                await model.setThreadCredentialProfile(profileId, harnessId: primaryFamily?.rawValue)
+                            } else {
+                                await model.setThreadCredentialProfile(nil)
+                            }
+                        }
+                    })
                 // D26: the write scope is STICKY per thread — the chip reflects
                 // the thread's server-side `access` and a switch PATCHes it
                 // (persists across turns/reload). " · Browser" appends while armed.
@@ -380,9 +406,8 @@ struct ThreadsScreen: View {
             .popover(isPresented: $showOptions, arrowEdge: .bottom) {
                 composerOptions
             }
-            Spacer(minLength: Theme.Spacing.sm)
-            composerHint
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { if !threadHasProject { composerMode = .ask } }
         .onChange(of: model.selectedThreadId) {
             if !threadHasProject { composerMode = .ask }
@@ -429,7 +454,7 @@ struct ThreadsScreen: View {
         GlassEffectContainer(spacing: Theme.Spacing.sm) {
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 composerControlsRow
-
+                composerHint
                 composerAccessHint
                 composerGrantCTA
                 if !composerAttachments.isEmpty { attachmentChips }

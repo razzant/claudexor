@@ -20,6 +20,10 @@ struct AuthSheetJobPanel: View {
     let retryJob: () -> Void
     let reconnect: () -> Void
 
+    /// M9-UX item 4: the terminal command + Guide/Retry are secondary detail,
+    /// collapsed by default so the live-login controls stay the clear focus.
+    @State private var showAdvanced = false
+
     var body: some View {
         Panel {
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
@@ -62,15 +66,24 @@ struct AuthSheetJobPanel: View {
                         .textSelection(.enabled)
                 }
 
-                if let command = job.command {
-                    Text(command)
-                        .font(.system(.caption, design: .monospaced))
-                        .padding(Theme.Spacing.sm)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.surfaceCode, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
-                        .textSelection(.enabled)
+                primaryActionsRow
+                if job.command != nil || job.canRetry || job.guideUrl != nil {
+                    DisclosureGroup("Advanced — terminal command & guide", isExpanded: $showAdvanced) {
+                        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+                            if let command = job.command {
+                                Text(command)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .padding(Theme.Spacing.sm)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(Theme.surfaceCode, in: RoundedRectangle(cornerRadius: Theme.Radius.control))
+                                    .textSelection(.enabled)
+                            }
+                            advancedActionsRow
+                        }
+                        .padding(.top, Theme.Spacing.xs)
+                    }
+                    .font(.caption)
                 }
-                actionsRow
                 if lifecycle.connection == .reconnecting {
                     Text("Reconnecting setup stream (\(lifecycle.reconnectAttempt)/\(SetupLifecycleController.maximumReconnects))…")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -85,7 +98,10 @@ struct AuthSheetJobPanel: View {
         }
     }
 
-    private var actionsRow: some View {
+    /// The live-login controls the user acts on directly (extend / cancel /
+    /// reconcile) — always visible. Retry + Guide are secondary detail and live
+    /// in the Advanced disclosure (item 4).
+    @ViewBuilder private var primaryActionsRow: some View {
         HStack(spacing: Theme.Spacing.sm) {
             // W4.8: named for what it extends (canExtend gates to a live login).
             if job.canExtend {
@@ -100,12 +116,6 @@ struct AuthSheetJobPanel: View {
                     .disabled(actionInFlight)
                     .help("Request cancellation and keep observing until the engine confirms termination.")
             }
-            if job.canRetry {
-                Button("Retry", action: retryJob)
-                    .buttonStyle(.bordered)
-                    .disabled(actionInFlight || activeStateUnknown)
-                    .help("Create a new \(familyLabel) \(Self.humanize(job.action.rawValue)) setup job.")
-            }
             if lifecycle.connection == .streamLost || job.blocksReplacement {
                 Button(job.blocksReplacement ? "Reconcile" : "Reconnect", action: reconnect)
                     .buttonStyle(.bordered)
@@ -114,6 +124,17 @@ struct AuthSheetJobPanel: View {
                           : job.blocksReplacement
                             ? "Ask the daemon to prove the recorded process group empty before allowing replacement."
                             : "Re-snapshot setup state and refresh native readiness without starting another process.")
+            }
+        }
+    }
+
+    @ViewBuilder private var advancedActionsRow: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            if job.canRetry {
+                Button("Retry", action: retryJob)
+                    .buttonStyle(.bordered)
+                    .disabled(actionInFlight || activeStateUnknown)
+                    .help("Create a new \(familyLabel) \(Self.humanize(job.action.rawValue)) setup job.")
             }
             if let raw = job.guideUrl, let url = URL(string: raw) {
                 Button("Guide") { NSWorkspace.shared.open(url) }

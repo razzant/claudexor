@@ -1,42 +1,117 @@
 import SwiftUI
+import ClaudexorKit
 
 // MARK: - Composer controls-row chips
 //
 // Extracted from `ThreadsScreen.swift` (INV-124 readability ratchet): the
 // primary-harness chip and the intent picker. Pure move — zero behavior change.
 
-/// The PRIMARY harness chip: shows which harness answers in chat (logo + name)
-struct PrimaryHarnessChip: View {
+/// The combined Harness + Account chip (M9-UX item 2): ONE capsule with two
+/// menu segments — the harness (logo + name) and, when a concrete harness is
+/// chosen, a compact account segment. The account segment shows the thread's
+/// pinned account or the harness's Active default; picking pins the thread via
+/// the existing thread PATCH (`setThreadCredentialProfile`). This is the
+/// PER-THREAD account override; the popover owns the global routing default.
+struct HarnessAccountChip: View {
     @Environment(AppModel.self) private var model
     let current: HarnessFamily?
     let pool: [HarnessFamily]
-    var compact: Bool = false
-    let onPick: (HarnessFamily?) -> Void
+    /// The thread/draft's pinned credential profile (nil = follow the default).
+    let pinnedProfileId: String?
+    let onPickHarness: (HarnessFamily?) -> Void
+    /// nil = automatic (clear the pin); else pin that profile id.
+    let onPickAccount: (String?) -> Void
 
     private var tint: Color { current?.color ?? .secondary }
-    private var options: [HarnessFamily] { pool.isEmpty ? model.selectableHarnesses.filter { $0 != .fake && $0 != .raw } : pool }
+    private var options: [HarnessFamily] {
+        pool.isEmpty ? model.selectableHarnesses.filter { $0 != .fake && $0 != .raw } : pool
+    }
+    private var profiles: [CredentialProfileEntry] {
+        guard let current else { return [] }
+        return model.credentialProfiles.filter { $0.profile.harnessId == current.rawValue }
+    }
 
     var body: some View {
-        ChipMenu(
-            tint: tint,
-            fill: .tinted(tint),
-            help: "Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool."
-        ) {
-            if let current { HarnessLogo(family: current, size: 13) } else { Image(systemName: "wand.and.stars").imageScale(.small) }
-            if !compact { Text(current?.label ?? "Auto") }
-        } menu: {
-            Button { onPick(nil) } label: {
+        HStack(spacing: 0) {
+            harnessSegment
+            if let current {
+                Divider().frame(height: 14).opacity(0.5)
+                accountSegment(harness: current)
+            }
+        }
+        .background(tint.opacity(0.14), in: Capsule())
+        .fixedSize()
+    }
+
+    private var harnessSegment: some View {
+        Menu {
+            Button { onPickHarness(nil) } label: {
                 Label("Auto", systemImage: "wand.and.stars")
                 if current == nil { Image(systemName: "checkmark") }
             }
             Divider()
             ForEach(options) { f in
-                Button { onPick(f) } label: {
-                    Label(f.label, systemImage: f.glyph)
+                Button { onPickHarness(f) } label: {
+                    Label { Text(f.label) } icon: { HarnessIconImage.image(for: f) }
                     if current == f { Image(systemName: "checkmark") }
                 }
             }
+        } label: {
+            HStack(spacing: Theme.Spacing.xs) {
+                if let current { HarnessIcon(family: current, size: 13) }
+                else { Image(systemName: "wand.and.stars").imageScale(.small) }
+                Text(current?.label ?? "Auto")
+                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(tint)
+            .padding(.leading, Theme.Spacing.md)
+            .padding(.trailing, Theme.Spacing.sm)
+            .padding(.vertical, Theme.Controls.chipVPadding)
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool.")
+    }
+
+    private func accountSegment(harness: HarnessFamily) -> some View {
+        let segment = AccountsPresentation.composerAccountSegment(
+            model: model, harnessId: harness.rawValue, pinnedProfileId: pinnedProfileId)
+        return Menu {
+            Button { onPickAccount(nil) } label: {
+                Label("Automatic (harness default)", systemImage: "wand.and.stars")
+                if pinnedProfileId == nil { Image(systemName: "checkmark") }
+            }
+            if !profiles.isEmpty {
+                Divider()
+                ForEach(profiles) { entry in
+                    Button { onPickAccount(entry.profile.profileId) } label: {
+                        Label(entry.profile.displayName, systemImage: "person.crop.circle")
+                        if pinnedProfileId == entry.profile.profileId { Image(systemName: "checkmark") }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: segment.systemImage).imageScale(.small)
+                    .foregroundStyle(segment.pinned ? tint : .secondary)
+                Text(segment.label).lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: 90, alignment: .leading)
+                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
+            }
+            .font(.caption.weight(segment.pinned ? .semibold : .regular))
+            .foregroundStyle(segment.pinned ? tint : .secondary)
+            .padding(.leading, Theme.Spacing.sm)
+            .padding(.trailing, Theme.Spacing.md)
+            .padding(.vertical, Theme.Controls.chipVPadding)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(segment.pinned
+            ? "This thread is pinned to \(segment.label). Pick Automatic to follow the harness's active default instead."
+            : "Account for this thread: following the harness's active default (\(segment.label)). Pick a specific account to pin it to this thread.")
     }
 }
 

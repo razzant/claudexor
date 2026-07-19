@@ -36,6 +36,20 @@ extension AppModel {
         }
     }
 
+    /// Set a harness's ACTIVE account — the global routing default a new run
+    /// picks (M9-UX item 2). `profileId == nil` clears back to the native/CLI
+    /// login. Drives the per-harness `active_profile_id` via the settings PATCH
+    /// (V11b wire), then reloads settings + the accounts projection so the Active
+    /// marker reflects wire truth. Returns nil on success, else the reason.
+    @discardableResult
+    func setHarnessActiveProfile(harnessId: String, profileId: String?) async -> String? {
+        let ok = await saveSettings(SettingsUpdateRequest(
+            harnesses: [harnessId: HarnessSettingsPatch(activeProfileId: .some(profileId))]))
+        await refreshSettings()
+        await refreshCredentialProfiles()
+        return ok ? nil : (settingsStatus ?? "Could not update the active account.")
+    }
+
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// accounts popover; a failing fetch leaves the last snapshot in place.
     func refreshCredentialProfiles() async {
