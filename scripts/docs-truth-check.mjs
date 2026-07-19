@@ -471,13 +471,14 @@ function collectSourceHaystack() {
 // --------------------------------------------------------------------------
 
 {
+  // D15: the four-tab enum lives in its own file since the M5 restructure.
   const taskDetail = readFileSync(
-    "apps/macos/ClaudexorApp/Sources/ClaudexorApp/TaskDetailView.swift",
+    "apps/macos/ClaudexorApp/Sources/ClaudexorApp/RunDetailTabs.swift",
     "utf8",
   );
-  const tabEnum = /enum Tab[^{]*\{([\s\S]*?)\n\s*\}/.exec(taskDetail);
+  const tabEnum = /enum RunDetailTab[^{]*\{([\s\S]*?)\n\s*\}/.exec(taskDetail);
   if (!tabEnum) {
-    failures.push("could not locate the inspector Tab enum in TaskDetailView.swift");
+    failures.push("could not locate the RunDetailTab enum in RunDetailTabs.swift");
   } else {
     // Declaration lines only (`case a, b, c` — no dot, no colon), NOT the
     // switch labels of the label accessor. A one-line comma list must yield
@@ -488,7 +489,7 @@ function collectSourceHaystack() {
       .filter(Boolean);
     if (tabs.length < 2) {
       failures.push(
-        `inspector Tab enum extraction looks broken: found ${tabs.length} tab(s) in TaskDetailView.swift`,
+        `inspector Tab enum extraction looks broken: found ${tabs.length} tab(s) in RunDetailTabs.swift`,
       );
     }
     // Docs speak the user-facing label (`Outcome`, `Timeline`), so parity
@@ -504,7 +505,7 @@ function collectSourceHaystack() {
       const label = labelByCase.get(tab);
       if (!design.includes(tab) && !(label && design.includes(label))) {
         failures.push(
-          `docs/DESIGN_SYSTEM.md does not mention inspector tab '${tab}'${label ? ` (label "${label}")` : ""} (TaskDetailView.swift Tab enum)`,
+          `docs/DESIGN_SYSTEM.md does not mention inspector tab '${tab}'${label ? ` (label "${label}")` : ""} (RunDetailTabs.swift RunDetailTab enum)`,
         );
       }
     }
