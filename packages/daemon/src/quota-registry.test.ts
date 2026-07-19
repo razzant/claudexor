@@ -192,20 +192,22 @@ describe("QuotaRegistry", () => {
         async () => {
           calls += 1;
           if (calls === 1) throw new Error("offline");
-          return [
-            {
-              subject: {
-                harness: "codex",
-                credential_route: "vendor_native",
-                plan_label: "Plus",
-                subject_id: null,
+          return {
+            snapshots: [
+              {
+                subject: {
+                  harness: "codex",
+                  credential_route: "vendor_native",
+                  plan_label: "Plus",
+                  subject_id: null,
+                },
+                constraints: [],
+                source: "codex_app_server",
+                observed_at: new Date(nowMs).toISOString(),
+                freshness: "fresh",
               },
-              constraints: [],
-              source: "codex_app_server",
-              observed_at: new Date(nowMs).toISOString(),
-              freshness: "fresh",
-            },
-          ];
+            ],
+          };
         },
       ],
       () => new Date(nowMs),
@@ -231,29 +233,31 @@ describe("QuotaRegistry", () => {
       async () => {
         throw new Error("Codex unavailable");
       },
-      async () => [
-        {
-          subject: {
-            harness: "claude",
-            credential_route: "vendor_native",
-            plan_label: null,
-            subject_id: null,
-          },
-          constraints: [
-            {
-              id: "five_hour",
-              label: "5 hour",
-              used_ratio: 0.2,
-              window_seconds: 18_000,
-              resets_at: null,
-              cooldown_until: null,
+      async () => ({
+        snapshots: [
+          {
+            subject: {
+              harness: "claude",
+              credential_route: "vendor_native",
+              plan_label: null,
+              subject_id: null,
             },
-          ],
-          source: "claude_statusline",
-          observed_at: new Date().toISOString(),
-          freshness: "fresh",
-        },
-      ],
+            constraints: [
+              {
+                id: "five_hour",
+                label: "5 hour",
+                used_ratio: 0.2,
+                window_seconds: 18_000,
+                resets_at: null,
+                cooldown_until: null,
+              },
+            ],
+            source: "claude_statusline",
+            observed_at: new Date().toISOString(),
+            freshness: "fresh",
+          },
+        ],
+      }),
     ]);
 
     await expect(registry.refresh()).resolves.toMatchObject({
@@ -299,6 +303,79 @@ describe("QuotaRegistry", () => {
     // Time passing prunes the survivor too — nothing dead lingers in the footer.
     nowIso = "2026-07-17T12:00:00.000Z";
     expect(registry.read().snapshots).toEqual([]);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("aggregates typed absences: snapshot suppresses, claim wins over no_source, universe gap → no_source", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-absence-")));
+    const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
+    const now = () => new Date("2026-07-16T12:00:00.000Z");
+    const subject = (harness: string, subjectId: string | null) => ({
+      harness,
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: subjectId,
+    });
+    // Universe: claude default (will get a snapshot), codex default (a refresher
+    // claim), and a codex "work" profile (no snapshot, no claim → no_source).
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        async () => ({
+          snapshots: [
+            {
+              subject: subject("claude", null),
+              constraints: [
+                {
+                  id: "five_hour",
+                  label: "5 hour",
+                  used_ratio: 0.3,
+                  window_seconds: 18_000,
+                  resets_at: null,
+                  cooldown_until: null,
+                },
+              ],
+              source: "claude_oauth_usage" as const,
+              observed_at: now().toISOString(),
+              freshness: "fresh" as const,
+            },
+          ],
+          // A claim for the claude subject that DOES have a snapshot must be
+          // suppressed; the codex-default claim must survive.
+          absences: [
+            {
+              subject: subject("claude", null),
+              reason: "not_logged_in" as const,
+              detail: "should be suppressed by the snapshot",
+              observed_at: now().toISOString(),
+            },
+            {
+              subject: subject("codex", null),
+              reason: "not_logged_in" as const,
+              detail: "no login",
+              observed_at: now().toISOString(),
+            },
+          ],
+        }),
+      ],
+      now,
+      () => [subject("claude", null), subject("codex", null), subject("codex", "work")],
+    );
+
+    const value = await registry.refresh();
+    expect(value.snapshots.map((s) => s.subject.harness)).toEqual(["claude"]);
+    const byKey = new Map(
+      value.absences.map((a) => [`${a.subject.harness}/${a.subject.subject_id ?? "default"}`, a]),
+    );
+    // claude/default is covered by a snapshot — no absence.
+    expect(byKey.has("claude/default")).toBe(false);
+    // codex/default: the refresher claim wins.
+    expect(byKey.get("codex/default")?.reason).toBe("not_logged_in");
+    // codex/work: in the universe with neither snapshot nor claim → no_source.
+    expect(byKey.get("codex/work")?.reason).toBe("no_source");
+    expect(value.absences).toHaveLength(2);
 
     journal.close();
     rmSync(root, { recursive: true, force: true });

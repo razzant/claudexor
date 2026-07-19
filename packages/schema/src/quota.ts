@@ -61,9 +61,37 @@ export const QuotaSnapshot = z
   .describe("All independently reported quota windows for one vendor-owned subject.");
 export type QuotaSnapshot = z.infer<typeof QuotaSnapshot>;
 
+export const QuotaAbsenceReason = z
+  .enum([
+    "not_logged_in",
+    "transport_unavailable",
+    "platform_unsupported",
+    "refresh_failed",
+    "no_source",
+  ])
+  .describe("Why a registered subject has no quota snapshot, in the source's own vocabulary.");
+export type QuotaAbsenceReason = z.infer<typeof QuotaAbsenceReason>;
+
+export const QuotaAbsence = z
+  .object({
+    subject: QuotaSubject,
+    reason: QuotaAbsenceReason,
+    detail: z.string().nullable().default(null),
+    observed_at: z.string().datetime({ offset: true }),
+  })
+  .strict()
+  .describe("A registered subject's typed missing-snapshot — absence is stated, never inferred.");
+export type QuotaAbsence = z.infer<typeof QuotaAbsence>;
+
 export const ControlQuotaResponse = z
   .object({
     snapshots: z.array(QuotaSnapshot),
+    absences: z
+      .array(QuotaAbsence)
+      .default([])
+      .describe(
+        "Every registered subject reports either a snapshot or a typed absence — absence is never silent emptiness (zen: absence ≠ empty).",
+      ),
     refreshed_at: z.string().datetime({ offset: true }).nullable(),
   })
   .strict()

@@ -49,7 +49,7 @@ describe("Claude official statusline quota source", () => {
     const stored = readFileSync(claudeStatuslineSnapshotPath(), "utf8");
     expect(stored).not.toContain("session_id");
     expect(stored).not.toContain("must-not-persist");
-    await expect(refreshClaudeStatuslineQuota()).resolves.toEqual([snapshot]);
+    await expect(refreshClaudeStatuslineQuota()).resolves.toEqual({ snapshots: [snapshot] });
   });
 
   it("stays unknown when the official subscriber fields are absent or invalid", () => {

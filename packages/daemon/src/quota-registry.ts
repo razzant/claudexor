@@ -4,7 +4,9 @@ import {
   HarnessEvent,
   QuotaSnapshot as QuotaSnapshotSchema,
   type CredentialRoute,
+  type QuotaAbsence,
   type QuotaSnapshot,
+  type QuotaSubject,
 } from "@claudexor/schema";
 
 const UPSERTED = "quota.snapshot.upserted";
@@ -16,11 +18,28 @@ const MAX_POLL_BACKOFF_MS = 15 * 60_000;
  * row forever just clutters the footer with dead subjects. */
 const MAX_SNAPSHOT_AGE_MS = 24 * 60 * 60_000;
 
-export type QuotaRefresher = () => Promise<QuotaSnapshot[]>;
+/** One refresh cycle's fruit: the snapshots a source observed, plus the typed
+ * absences it CLAIMS for subjects it tried and could not observe. Absence is
+ * stated by the source, never inferred from an empty snapshot list. */
+export interface QuotaRefreshResult {
+  snapshots: QuotaSnapshot[];
+  absences?: QuotaAbsence[];
+}
+
+export type QuotaRefresher = () => Promise<QuotaRefreshResult>;
+
+/** The registered subject UNIVERSE: every subject the daemon expects to hear
+ * about, so a subject with neither snapshot nor a source claim still surfaces
+ * a "no_source" absence instead of vanishing. */
+export type QuotaSubjectUniverse = () => QuotaSubject[];
 
 /** Global-journal authority for vendor-owned quota snapshots. */
 export class QuotaRegistry {
   private readonly snapshots = new Map<string, QuotaSnapshot>();
+  /** Ephemeral typed-absence state, recomputed each refresh/poll cycle — NOT
+   * journaled: an absence is a live derivation of "who reported nothing this
+   * cycle", never a durable fact to replay. */
+  private absences: QuotaAbsence[] = [];
   private pollFailures = 0;
   private pollNotBefore = 0;
 
@@ -28,6 +47,7 @@ export class QuotaRegistry {
     private readonly journal: DurableJournal,
     private readonly refreshers: readonly QuotaRefresher[] = [],
     private readonly now: () => Date = () => new Date(),
+    private readonly subjects: QuotaSubjectUniverse = () => [],
   ) {
     for (const record of journal.records()) {
       if (record.type === UPSERTED) this.apply(QuotaSnapshotSchema.parse(record.payload));
@@ -42,8 +62,10 @@ export class QuotaRegistry {
   }
 
   read() {
+    const now = this.now().getTime();
     return ControlQuotaResponse.parse({
-      snapshots: this.activeSnapshots(this.now().getTime()),
+      snapshots: this.activeSnapshots(now),
+      absences: this.activeAbsences(now),
       refreshed_at: null,
     });
   }
@@ -77,9 +99,12 @@ export class QuotaRegistry {
     }
     let successfulSources = 0;
     const failures: string[] = [];
+    const claims: QuotaAbsence[] = [];
     for (const refresher of this.refreshers) {
       try {
-        for (const snapshot of await refresher()) this.upsert(snapshot);
+        const result = await refresher();
+        for (const snapshot of result.snapshots) this.upsert(snapshot);
+        if (result.absences) claims.push(...result.absences);
         successfulSources += 1;
       } catch (error) {
         failures.push(error instanceof Error ? error.message : String(error));
@@ -91,10 +116,55 @@ export class QuotaRegistry {
         status: 503,
       });
     }
+    const now = this.now().getTime();
+    this.recomputeAbsences(claims, now);
     return ControlQuotaResponse.parse({
-      snapshots: this.activeSnapshots(this.now().getTime()),
+      snapshots: this.activeSnapshots(now),
+      absences: this.activeAbsences(now),
       refreshed_at: this.now().toISOString(),
     });
+  }
+
+  /** Aggregate one cycle's snapshots + absence claims against the subject
+   * universe (release cut V11a): a subject with a fresh-or-stale snapshot from
+   * ANY source has no absence; otherwise the first refresher-claimed absence
+   * for that subject wins; a universe subject with neither gets "no_source".
+   * Identity is (harness, subject_id) — credential_route/source never split a
+   * subject for absence purposes. */
+  private recomputeAbsences(claims: readonly QuotaAbsence[], now: number): void {
+    const covered = new Set(
+      this.activeSnapshots(now).map((snapshot) => subjectIdentity(snapshot.subject)),
+    );
+    const result: QuotaAbsence[] = [];
+    const claimed = new Set<string>();
+    for (const claim of claims) {
+      const key = subjectIdentity(claim.subject);
+      if (covered.has(key) || claimed.has(key)) continue;
+      claimed.add(key);
+      result.push(claim);
+    }
+    for (const subject of this.subjects()) {
+      const key = subjectIdentity(subject);
+      if (covered.has(key) || claimed.has(key)) continue;
+      claimed.add(key);
+      result.push({
+        subject,
+        reason: "no_source",
+        detail: null,
+        observed_at: new Date(now).toISOString(),
+      });
+    }
+    this.absences = result;
+  }
+
+  /** Absences whose subject is not (any longer) covered by an active snapshot —
+   * a snapshot arriving via ingest between cycles silences its absence at once,
+   * so read() never shows a subject with both a snapshot and an absence. */
+  private activeAbsences(now: number): QuotaAbsence[] {
+    const covered = new Set(
+      this.activeSnapshots(now).map((snapshot) => subjectIdentity(snapshot.subject)),
+    );
+    return this.absences.filter((absence) => !covered.has(subjectIdentity(absence.subject)));
   }
 
   /** Background official-source refresh for empty/stale projections with bounded backoff. */
@@ -229,10 +299,14 @@ export class QuotaRegistry {
   }
 }
 
-export function quotaProjection(refreshers: readonly QuotaRefresher[] = []) {
+export function quotaProjection(
+  refreshers: readonly QuotaRefresher[] = [],
+  subjects: QuotaSubjectUniverse = () => [],
+) {
   return {
     name: "quota",
-    create: (journal: DurableJournal) => new QuotaRegistry(journal, refreshers),
+    create: (journal: DurableJournal) =>
+      new QuotaRegistry(journal, refreshers, () => new Date(), subjects),
     validate: (registry: QuotaRegistry) => registry.validateProjection(),
   };
 }
@@ -245,6 +319,12 @@ function snapshotKey(snapshot: QuotaSnapshot): string {
     subject.subject_id ?? "",
     snapshot.source,
   ].join("\0");
+}
+
+/** Absence-matching identity: (harness, subject_id) only — one credential
+ * subject is one subject regardless of which route or source observed it. */
+function subjectIdentity(subject: QuotaSubject): string {
+  return [subject.harness, subject.subject_id ?? ""].join("\0");
 }
 
 function staleAt(snapshot: QuotaSnapshot, now: number): QuotaSnapshot {

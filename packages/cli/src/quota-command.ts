@@ -43,7 +43,7 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
 }
 
 function printQuota(value: ReturnType<typeof ControlQuotaResponse.parse>): void {
-  if (value.snapshots.length === 0) {
+  if (value.snapshots.length === 0 && value.absences.length === 0) {
     print("quota: unknown (no vendor-owned snapshot available)");
     return;
   }
@@ -58,5 +58,12 @@ function printQuota(value: ReturnType<typeof ControlQuotaResponse.parse>): void 
         `  ${constraint.label}: used=${used} reset=${constraint.resets_at ?? "unknown"} cooldown=${constraint.cooldown_until ?? "none"}`,
       );
     }
+  }
+  // Every registered subject reports either a snapshot above or a typed absence
+  // here — absence is stated, never silent emptiness (zen: absence ≠ empty).
+  for (const absence of value.absences) {
+    const subject = `${absence.subject.harness}/${absence.subject.subject_id ?? "default"}`;
+    const detail = absence.detail ? ` (${absence.detail})` : "";
+    print(`${subject}: no snapshot — ${absence.reason}${detail}`);
   }
 }

@@ -153,6 +153,48 @@
             "description": "All independently reported quota windows for one vendor-owned subject."
           }
         },
+        "absences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "$ref": "#/definitions/ControlQuotaResponse/properties/snapshots/items/properties/subject"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "not_logged_in",
+                  "transport_unavailable",
+                  "platform_unsupported",
+                  "refresh_failed",
+                  "no_source"
+                ],
+                "description": "Why a registered subject has no quota snapshot, in the source's own vocabulary."
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "subject",
+              "reason",
+              "observed_at"
+            ],
+            "additionalProperties": false,
+            "description": "A registered subject's typed missing-snapshot — absence is stated, never inferred."
+          },
+          "default": [],
+          "description": "Every registered subject reports either a snapshot or a typed absence — absence is never silent emptiness (zen: absence ≠ empty)."
+        },
         "refreshed_at": {
           "anyOf": [
             {

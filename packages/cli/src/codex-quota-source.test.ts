@@ -38,7 +38,7 @@ describe("Codex app-server quota source", () => {
     ]);
   });
 
-  it("binds quota reads to the Claudexor-owned native profile and scrubs provider secrets", () => {
+  it("defaults quota reads to the Claudexor-owned native home and scrubs provider secrets", () => {
     const invocation = codexQuotaInvocation({
       PATH: "/bin",
       HOME: "/operator",
@@ -61,10 +61,36 @@ describe("Codex app-server quota source", () => {
     expect(invocation.env.HOME).toBe("/operator");
   });
 
-  it("rejects a missing Codex binary without an unhandled child-process error", async () => {
-    await expect(refreshCodexQuota({ bin: "/definitely/missing/claudexor-codex" })).rejects.toThrow(
-      "Codex app-server quota refresh failed",
+  it("honors an explicit CODEX_HOME (per-profile quota reads bind to the profile home)", () => {
+    const invocation = codexQuotaInvocation(
+      { PATH: "/bin", HOME: "/operator" },
+      "/scoped/work-home",
     );
+    expect(invocation.env.CODEX_HOME).toBe("/scoped/work-home");
+    expect(invocation.env.HOME).toBe("/operator");
+  });
+
+  it("stamps subject_id onto the snapshot for a profiled candidate", () => {
+    const [snapshot] = parseCodexRateLimitsResponse(
+      {
+        rateLimits: {
+          limitId: "codex",
+          primary: { usedPercent: 10, windowDurationMins: 300, resetsAt: 1782360000 },
+        },
+      },
+      new Date("2026-07-15T12:00:00.000Z"),
+      "work",
+    );
+    expect(snapshot?.subject.subject_id).toBe("work");
+  });
+
+  it("a missing Codex binary yields a transport absence claim, not a throw", async () => {
+    const result = await refreshCodexQuota({ bin: "/definitely/missing/claudexor-codex" });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.subject.harness).toBe("codex");
+    expect(nativeAbsence?.reason).toBe("transport_unavailable");
+    expect(nativeAbsence?.detail).toContain("Codex app-server quota refresh failed");
   });
 });
 

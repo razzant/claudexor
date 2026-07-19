@@ -32,7 +32,7 @@ import { Orchestrator } from "@claudexor/orchestrator";
 import { loadConfig } from "@claudexor/config";
 import { ensureThreadWorktree } from "@claudexor/workspace";
 import { noProjectRepoRoot, redactSecrets } from "@claudexor/util";
-import { type ResourceAttachmentRef } from "@claudexor/schema";
+import { type QuotaSubject, type ResourceAttachmentRef } from "@claudexor/schema";
 import { scheduleStartupRetention } from "./retention-service.js";
 import { controlServices } from "./control-services.js";
 import { AuthReadinessService } from "@claudexor/gateway";
@@ -45,6 +45,35 @@ import { refreshCodexQuota } from "./codex-quota-source.js";
 import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
 import { refreshClaudeOauthUsageQuota } from "./claude-oauth-usage.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
+
+/** The registered quota-subject UNIVERSE (release cut V11a): for each harness,
+ * the engine-default credential (subject null) plus one subject per enabled
+ * config_dir_login profile. A subject the refreshers never report on still
+ * surfaces a typed "no_source" absence instead of vanishing. Pure derivation
+ * of the current config — recomputed every refresh cycle. */
+export function quotaSubjectUniverse(): QuotaSubject[] {
+  const profiles = loadConfig(noProjectRepoRoot()).global.credential_profiles;
+  const subjects: QuotaSubject[] = [];
+  for (const harness of ["claude", "codex"] as const) {
+    subjects.push({
+      harness,
+      credential_route: "vendor_native",
+      plan_label: null,
+      subject_id: null,
+    });
+    for (const profile of profiles) {
+      if (profile.harness_id !== harness || !profile.enabled) continue;
+      if (profile.credential_kind !== "config_dir_login") continue;
+      subjects.push({
+        harness,
+        credential_route: "vendor_native",
+        plan_label: null,
+        subject_id: profile.profile_id,
+      });
+    }
+  }
+  return subjects;
+}
 
 async function main(): Promise<void> {
   ensureDaemonRuntimeRoot();
@@ -76,11 +105,10 @@ async function main(): Promise<void> {
     const runEventStoreSlot = journalManager.registerProjection(runEventProjection());
     const projectStoreSlot = journalManager.registerProjection(projectProjection());
     const quotaStoreSlot = journalManager.registerProjection(
-      quotaProjection([
-        refreshCodexQuota,
-        refreshClaudeStatuslineQuota,
-        () => refreshClaudeOauthUsageQuota(),
-      ]),
+      quotaProjection(
+        [refreshCodexQuota, refreshClaudeStatuslineQuota, () => refreshClaudeOauthUsageQuota()],
+        quotaSubjectUniverse,
+      ),
     );
     // Sidebar invalidation ping (W12): a GLOBAL-partition emitter every
     // ThreadStore (global + per-project) writes through, so any thread

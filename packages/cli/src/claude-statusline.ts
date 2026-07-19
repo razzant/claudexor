@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { QuotaRefreshResult } from "@claudexor/daemon";
 import { QuotaSnapshot as QuotaSnapshotSchema, type QuotaSnapshot } from "@claudexor/schema";
 import { ensureDir, readJsonSafe, sha256, userConfigDir, writeJson } from "@claudexor/util";
 
@@ -69,12 +70,14 @@ export function ingestClaudeStatuslineQuota(
   return snapshot;
 }
 
-/** Daemon refresher: the spool is Claudexor-owned and contains no raw statusline payload. */
-export async function refreshClaudeStatuslineQuota(): Promise<QuotaSnapshot[]> {
+/** Daemon refresher: the spool is Claudexor-owned and contains no raw statusline payload.
+ * A secondary source — it never claims typed absences (the oauth-usage source
+ * owns the claude subject universe); missing spool stays a plain throw. */
+export async function refreshClaudeStatuslineQuota(): Promise<QuotaRefreshResult> {
   const parsed = readJsonSafe(claudeStatuslineSnapshotPath());
   const snapshot = QuotaSnapshotSchema.safeParse(parsed);
   if (!snapshot.success) throw new Error("Claude statusline quota is not available");
-  return [snapshot.data];
+  return { snapshots: [snapshot.data] };
 }
 
 export async function runClaudeStatuslineCollector(

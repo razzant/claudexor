@@ -1,16 +1,98 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { loadConfig } from "@claudexor/config";
 import { providerScrubEnv } from "@claudexor/core";
-import { CODEX_FILE_AUTH_ARGS, defaultNativeCodexHome } from "@claudexor/harness-codex";
-import type { QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
+import type { QuotaRefreshResult } from "@claudexor/daemon";
+import {
+  CODEX_FILE_AUTH_ARGS,
+  canonicalCodexProfileHome,
+  defaultNativeCodexHome,
+  redactCodexDoctorDetail,
+} from "@claudexor/harness-codex";
+import type { QuotaAbsence, QuotaConstraint, QuotaSnapshot } from "@claudexor/schema";
+import { noProjectRepoRoot } from "@claudexor/util";
 
 const CODEX_BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 
+/** One subject per logged-in CODEX_HOME: the default native home (subject null)
+ * plus every enabled codex config_dir_login profile (subject = profile_id).
+ * Each candidate is one sequential app-server invocation; a candidate that
+ * cannot be observed yields a typed absence CLAIM, never a throw — a single
+ * account's failure must never blind the others (release cut V11a). */
 export async function refreshCodexQuota(
   options: { bin?: string; baseEnv?: NodeJS.ProcessEnv } = {},
+): Promise<QuotaRefreshResult> {
+  const snapshots: QuotaSnapshot[] = [];
+  const absences: QuotaAbsence[] = [];
+  for (const candidate of codexQuotaCandidates()) {
+    try {
+      snapshots.push(
+        ...(await readCodexCandidate(
+          candidate.subjectId,
+          candidate.home,
+          options.baseEnv,
+          options.bin,
+        )),
+      );
+    } catch (error) {
+      absences.push(codexAbsenceClaim(candidate.subjectId, error));
+    }
+  }
+  return { snapshots, absences };
+}
+
+/** The default native home plus every enabled codex config_dir_login profile,
+ * resolved to its scoped CODEX_HOME (the profile's isolation_locator dir). */
+function codexQuotaCandidates(): Array<{ subjectId: string | null; home: string }> {
+  const candidates: Array<{ subjectId: string | null; home: string }> = [
+    { subjectId: null, home: defaultNativeCodexHome() },
+  ];
+  for (const profile of loadConfig(noProjectRepoRoot()).global.credential_profiles) {
+    if (profile.harness_id !== "codex" || !profile.enabled) continue;
+    if (profile.credential_kind !== "config_dir_login" || !profile.isolation_locator) continue;
+    try {
+      candidates.push({
+        subjectId: profile.profile_id,
+        home: canonicalCodexProfileHome(profile.isolation_locator),
+      });
+    } catch {
+      /* a mis-registered locator is a doctor problem, not a quota crash */
+    }
+  }
+  return candidates;
+}
+
+/** Map one candidate's failure onto a typed absence claim. readCodexCandidate
+ * tags the error with the reason it could distinguish; an untagged error (never
+ * expected here) is the honest catch-all refresh_failed. The detail is already
+ * redacted — this source carries no raw provider payload in its errors. */
+function codexAbsenceClaim(subjectId: string | null, error: unknown): QuotaAbsence {
+  const message = error instanceof Error ? error.message : String(error);
+  const tagged = (error as { quotaAbsenceReason?: QuotaAbsence["reason"] })?.quotaAbsenceReason;
+  return {
+    subject: {
+      harness: "codex",
+      credential_route: "vendor_native",
+      plan_label: null,
+      subject_id: subjectId,
+    },
+    reason: tagged ?? "refresh_failed",
+    detail: message,
+    observed_at: new Date().toISOString(),
+  };
+}
+
+/** One app-server invocation for a single candidate CODEX_HOME. Stamps the
+ * resolved subject_id onto every snapshot it returns. Throws a reason-tagged
+ * error on failure; the caller converts it to an absence claim. */
+async function readCodexCandidate(
+  subjectId: string | null,
+  codexHome: string,
+  baseEnv: NodeJS.ProcessEnv | undefined,
+  bin?: string,
 ): Promise<QuotaSnapshot[]> {
-  const invocation = codexQuotaInvocation(options.baseEnv);
-  const child = spawn(options.bin ?? CODEX_BIN, invocation.args, {
+  const invocation = codexQuotaInvocation(baseEnv, codexHome);
+  const child = spawn(bin ?? CODEX_BIN, invocation.args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: invocation.env,
   });
@@ -83,10 +165,18 @@ export async function refreshCodexQuota(
     const response = await request(2, "account/rateLimits/read", null);
     const result = response["result"];
     if (!result || typeof result !== "object") throw new Error("Codex quota response is missing");
-    return parseCodexRateLimitsResponse(result, new Date());
+    return parseCodexRateLimitsResponse(result, new Date(), subjectId);
   } catch (error) {
-    throw new Error(
-      `Codex app-server quota refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+    const raw = error instanceof Error ? error.message : String(error);
+    // A spawn/exit/stdin transport fault (missing binary, crash, timeout) is a
+    // transport absence; an app-server refusal we cannot prove is auth-shaped
+    // stays refresh_failed (we never fabricate not_logged_in we can't tell).
+    const transport =
+      processFailure !== null || /spawn|ENOENT|exited|timed out|code=|signal=/.test(raw);
+    const reason: QuotaAbsence["reason"] = transport ? "transport_unavailable" : "refresh_failed";
+    throw Object.assign(
+      new Error(`Codex app-server quota refresh failed: ${redactCodexDoctorDetail(raw)}`),
+      { quotaAbsenceReason: reason },
     );
   } finally {
     clearTimeout(timeout);
@@ -96,7 +186,11 @@ export async function refreshCodexQuota(
   }
 }
 
-export function parseCodexRateLimitsResponse(value: unknown, observedAt: Date): QuotaSnapshot[] {
+export function parseCodexRateLimitsResponse(
+  value: unknown,
+  observedAt: Date,
+  subjectId: string | null = null,
+): QuotaSnapshot[] {
   if (!value || typeof value !== "object") return [];
   const response = value as Record<string, unknown>;
   const historical = objectOrNull(response["rateLimits"]);
@@ -152,7 +246,7 @@ export function parseCodexRateLimitsResponse(value: unknown, observedAt: Date): 
         harness: "codex",
         credential_route: "vendor_native",
         plan_label: historical ? textOrNull(historical["planType"]) : null,
-        subject_id: null,
+        subject_id: subjectId,
       },
       constraints,
       source: "codex_app_server",
@@ -162,13 +256,18 @@ export function parseCodexRateLimitsResponse(value: unknown, observedAt: Date): 
   ];
 }
 
-export function codexQuotaInvocation(baseEnv: NodeJS.ProcessEnv = process.env): {
+export function codexQuotaInvocation(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  codexHome?: string,
+): {
   args: string[];
   env: NodeJS.ProcessEnv;
 } {
   const env = { ...baseEnv };
   for (const key of Object.keys(providerScrubEnv())) delete env[key];
-  env["CODEX_HOME"] = defaultNativeCodexHome();
+  // Explicit home wins (per-profile quota reads); the default stays the
+  // Claudexor-owned native home so a bare call still binds to it.
+  env["CODEX_HOME"] = codexHome ?? defaultNativeCodexHome();
   return {
     args: [...CODEX_FILE_AUTH_ARGS, "app-server", "--stdio"],
     env,

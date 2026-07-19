@@ -2,8 +2,13 @@ import { execFile } from "node:child_process";
 import { userInfo } from "node:os";
 import { promisify } from "node:util";
 import { loadConfig } from "@claudexor/config";
+import type { QuotaRefreshResult } from "@claudexor/daemon";
 import { canonicalProfileConfigDir, defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
-import { QuotaSnapshot as QuotaSnapshotSchema, type QuotaSnapshot } from "@claudexor/schema";
+import {
+  QuotaSnapshot as QuotaSnapshotSchema,
+  type QuotaAbsence,
+  type QuotaSnapshot,
+} from "@claudexor/schema";
 import { noProjectRepoRoot, sha256 } from "@claudexor/util";
 
 const SOURCE = "claude_oauth_usage" as const;
@@ -170,11 +175,35 @@ async function fetchUsageDefault(accessToken: string): Promise<unknown> {
   return res.json();
 }
 
+function claudeOauthAbsence(
+  subjectId: string | null,
+  reason: QuotaAbsence["reason"],
+  detail: string,
+  observedAt: Date,
+): QuotaAbsence {
+  return {
+    subject: {
+      harness: "claude",
+      credential_route: "vendor_native",
+      plan_label: null,
+      subject_id: subjectId,
+    },
+    reason,
+    detail,
+    observed_at: observedAt.toISOString(),
+  };
+}
+
 /** One subject per logged-in config dir: the default native dir (subject null)
- * plus every enabled claude config_dir_login profile (subject = profile_id). */
+ * plus every enabled claude config_dir_login profile (subject = profile_id).
+ * The PRIMARY claude source (release cut V11a) — it owns the claude subject
+ * universe, so every candidate resolves to a snapshot OR a typed absence:
+ * a null credential is not_logged_in (readClaudeOauthCredential cannot tell a
+ * missing item from an unavailable keychain, so the detail states both), and a
+ * fetch refusal is refresh_failed. Absence is stated, never inferred. */
 export async function refreshClaudeOauthUsageQuota(
   deps: Partial<ClaudeOauthUsageDeps> = {},
-): Promise<QuotaSnapshot[]> {
+): Promise<QuotaRefreshResult> {
   const readCredential = deps.readCredential ?? readClaudeOauthCredential;
   const fetchUsage = deps.fetchUsage ?? fetchUsageDefault;
   const now = deps.now ?? (() => new Date());
@@ -194,9 +223,20 @@ export async function refreshClaudeOauthUsageQuota(
     }
   }
   const snapshots: QuotaSnapshot[] = [];
+  const absences: QuotaAbsence[] = [];
   for (const candidate of candidates) {
     const credential = await readCredential(candidate.configDir);
-    if (!credential) continue;
+    if (!credential) {
+      absences.push(
+        claudeOauthAbsence(
+          candidate.subjectId,
+          "not_logged_in",
+          "no OAuth credential in the keychain item (no login, or the keychain tool is unavailable)",
+          now(),
+        ),
+      );
+      continue;
+    }
     try {
       const usage = await fetchUsage(credential.accessToken);
       const snapshot = parseClaudeOauthUsage(
@@ -206,15 +246,16 @@ export async function refreshClaudeOauthUsageQuota(
         now(),
       );
       if (snapshot) snapshots.push(snapshot);
-    } catch {
-      /* endpoint refusal = no snapshot; NEVER an auth-readiness signal */
+    } catch (error) {
+      absences.push(
+        claudeOauthAbsence(
+          candidate.subjectId,
+          "refresh_failed",
+          error instanceof Error ? error.message : String(error),
+          now(),
+        ),
+      );
     }
   }
-  // Empty = this source simply has nothing (no logged-in claude subject, or a
-  // non-macOS host with no `security` keychain tool) — return [] like the
-  // sibling refreshers (codex/statusline) instead of throwing. The registry's
-  // refresh loop already reports "no source produced" when EVERY source is
-  // empty; a per-source throw here only added a noisy failure line and made
-  // this source the odd one out (round-21 #4).
-  return snapshots;
+  return { snapshots, absences };
 }

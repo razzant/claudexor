@@ -75,18 +75,36 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(parseClaudeOauthCredential(JSON.stringify({ refreshToken: "only" }))).toBeNull();
   });
 
-  it("returns [] (never throws) when no subject responds — a source, not a gate (round-21 #4)", async () => {
+  it("claims a typed not_logged_in absence (never throws) when no subject responds", async () => {
     // Default user / non-macOS: no credential is readable, so the refresher
-    // has nothing. It must return [] like its sibling sources, never throw
-    // (a throw only polluted the registry's aggregate failure line).
-    await expect(
-      refreshClaudeOauthUsageQuota({
-        readCredential: async () => null,
-        fetchUsage: async () => {
-          throw new Error("should not be called");
-        },
-        now: () => new Date("2026-07-18T00:00:00Z"),
-      }),
-    ).resolves.toEqual([]);
+    // produces no snapshot — but the absence is STATED, not silent emptiness
+    // (release cut V11a). It never throws (a throw only polluted the registry's
+    // aggregate failure line).
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => null,
+      fetchUsage: async () => {
+        throw new Error("should not be called");
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.subject.harness).toBe("claude");
+    expect(nativeAbsence?.reason).toBe("not_logged_in");
+    expect(result.absences?.every((a) => a.reason === "not_logged_in")).toBe(true);
+  });
+
+  it("claims a refresh_failed absence when the usage endpoint refuses", async () => {
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      fetchUsage: async () => {
+        throw new Error("oauth/usage responded 500");
+      },
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("refresh_failed");
+    expect(nativeAbsence?.detail).toContain("500");
   });
 });
