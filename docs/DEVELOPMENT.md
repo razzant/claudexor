@@ -113,11 +113,14 @@ After review, `publish` accepts only an annotated stable tag on the exact
 verifies its Ed25519 signature against the pinned public release-review key
 before reading any review claims, then recomputes the commit tree and
 validates the attestation's payload for its schema: schemaVersion 3 (the
-current owner-review protocol) binds the candidate SHA/tree, the full-gate
-receipt digest, and >=2 reviewer report digests with non-blocking verdicts
-within <=3 rounds; schemaVersion 2 (the retired six-slot panel, still
-verifiable for already-sealed evidence) additionally validates the sealed
-packet, artifact digests, exact six reviewer slots, quorum, and pass result.
+current contract) binds the candidate SHA/tree, the full-gate receipt
+digest, and the panel reviewer report digests with non-blocking verdicts —
+the workflow enforces the structural floors (>=2 reviewers, <=3 rounds);
+the exact panel composition and wave discipline are process law in
+`docs/CHECKLISTS.md` (Release review protocol). schemaVersion 2 (the
+retired six-slot panel, still verifiable for already-sealed evidence)
+additionally validates the sealed packet, artifact digests, exact six
+reviewer slots, quorum, and pass result.
 Missing signing/notary/npm credentials fail; there is no unsigned or
 GitHub-only release fallback. npm
 packages publish in dependency order with `--provenance`; a retry skips an
@@ -138,33 +141,30 @@ signature covers the schemaVersion, so the two contracts cannot be replayed
 into each other. Schema 1, unsigned, unknown-key, and tampered inputs are
 rejected.
 
-The CURRENT protocol is schemaVersion 3 (owner-review, INV-125): the payload
-binds exact `candidateSha`/`candidateTree`, the full-gate receipt digest and
-terminal result (`scripts/run-full-gate-receipt.mjs` runs
-`pnpm release:verify` and seals the receipt), the round count (<=3), and >=2
-reviewer entries each carrying the report file digest and a non-blocking
-verdict. Do not hand-author this JSON. Run
-`scripts/seal-owner-review-attestation.mjs` with the gate receipt, the
-reviewer report files + verdicts, the external 0600 private key, the tracked
-`release/review-attestation-authority.json`, and an external output path; it
-refuses blocking verdicts, fewer than two reviewers, or more than three
-rounds, and can emit the base64 transport with `--base64-out`.
+The review process itself (panel composition, sealed packet contents, the
+blocker contract, wave discipline) is defined ONCE, in `docs/CHECKLISTS.md`
+(Release review protocol) — this file only covers the attestation transport.
+Do not hand-author the attestation JSON. Run
+`scripts/seal-owner-review-attestation.mjs` with the gate receipt
+(`scripts/run-full-gate-receipt.mjs` runs `pnpm release:verify` and seals
+it), the reviewer report files + verdicts, the external 0600 private key,
+the tracked `release/review-attestation-authority.json`, and an external
+output path; it refuses blocking verdicts and structural-floor violations,
+and can emit the base64 transport with `--base64-out`.
 
-The RETIRED schemaVersion-2 six-slot protocol (sealed packet + panel lock +
-two Tier 1 slots + exact triad + scope slot, quorum two, sealed by
-`scripts/seal-release-review-attestation.mjs` after
-`scripts/triad-scope-review.mjs`) stays verifiable for already-sealed
-evidence; its machinery is deleted after the first v3 release ships (see
-`docs/BACKLOG.md`). Never put raw transcripts, the private key, or secrets in
-the repository or workflow input.
+The RETIRED schemaVersion-2 six-slot protocol stays verifiable for
+already-sealed evidence; its orchestration machinery was deleted in v3.0.0
+(the OpenRouter transport was refitted for the current triad+scope wave).
+Never put raw transcripts, the private key, or secrets in the repository or
+workflow input.
 
 Release review is cumulative and SHA-bound. First commit a clean candidate,
-then freeze its exact tree. Reviewer subagents review that frozen SHA against
-the checklists and docs as described in `docs/CHECKLISTS.md` (Owner-review
-release protocol). Any tracked mutation makes every result stale and starts
-a new freeze. Staged-diff review is not release authority, so the old
-per-commit script and hook installer have been removed rather than retained as
-a competing workflow.
+then freeze its exact tree. The panel reviews that frozen SHA against the
+checklists and docs as described in `docs/CHECKLISTS.md` (Release review
+protocol). Any tracked mutation makes every result stale and starts a new
+freeze. Staged-diff review is not release authority, so the old per-commit
+script and hook installer have been removed rather than retained as a
+competing workflow.
 
 RESTART `claudexord` AFTER REBUILDING: the daemon loads the engine at start
 and serves that build until stopped — a long-lived daemon silently runs

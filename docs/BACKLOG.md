@@ -39,19 +39,6 @@ deferred; they are recorded here now.
   sheet immediately re-attaches to the same job (harness-scoped recovery) and
   a second login stays blocked — nothing is lost or unobserved.
 
-## Release machinery retirement (owner decision, 2.1.0 release)
-
-- Delete the retired six-slot release-review machinery after v2.1.0 ships:
-  `scripts/seal-release-review-attestation.mjs`,
-  `scripts/lib/release-review-attestation.mjs` (+ `.d.mts`),
-  `scripts/triad-scope-review.mjs` / `scripts/lib/openrouter-panel.mjs`,
-  the v2 branch of `validateReleaseAttestation`
-  (schemaVersion-2 payload/panel-lock/slot validators in
-  `scripts/lib/release-review-contract.mjs`), and their fixtures/tests.
-  Blocked until: the first schemaVersion-3-attested release is published (the
-  burned 2.1.0/2.1.1 npm flights moved the version; see CHECKLISTS
-  "Owner-review release protocol").
-
 ## Deferred from the v3 plan itself (sol triage #13/#34)
 
 - HarnessLogo overlay everywhere (old W27) — cosmetics, after 2.1.0.
@@ -61,8 +48,6 @@ deferred; they are recorded here now.
 
 ## F2.5 leftovers surfaced by the 2.1.0 audit (previously untriaged)
 
-- C1: CLI live-printer double-prints codex narration+final (dedup fix exists
-  on an unmerged branch).
 - C2: `claudexor follow` reports "stream ended without a terminal event" on
   some successful runs.
 - C3: cancelling a QUEUED run emits no head ping / `enqueue_error` — the

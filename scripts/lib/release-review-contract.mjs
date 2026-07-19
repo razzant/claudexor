@@ -16,44 +16,6 @@ export const REQUIRED_TRIAD_MODELS = Object.freeze([
 
 export const REQUIRED_SCOPE_MODEL = "anthropic/claude-fable-5";
 
-// Tier-1 critics run on the OpenRouter route (same as the triad) rather than
-// the local claude/codex subscription CLIs. Rationale (owner-directed,
-// round-22): the local-subscription reviewers authenticate against a
-// keychain login that is NOT reachable under the review sandbox's scoped
-// read-only HOME, so tier1-claude fails "not authenticated" every wave. The
-// SAME models (gpt-5.6-sol, claude-fable-5) reviewed via the API key give
-// equivalent adversarial value on the sealed packet (diff + full named-file
-// contents); all six slots now use one key-only route with no local
-// subscription dependency. The review subject is the DIFF, which the packet
-// carries in full.
-export const REQUIRED_RELEASE_REVIEW_SLOTS = Object.freeze([
-  Object.freeze({
-    slot: "tier1-sol",
-    route: "openrouter",
-    model: "openai/gpt-5.6-sol",
-    effort: null,
-  }),
-  Object.freeze({
-    slot: "tier1-fable",
-    route: "openrouter",
-    model: "anthropic/claude-fable-5",
-    effort: null,
-  }),
-  ...REQUIRED_TRIAD_MODELS.map((model, index) =>
-    Object.freeze({ slot: `triad-${index + 1}`, route: "openrouter", model, effort: null }),
-  ),
-  Object.freeze({ slot: "scope", route: "openrouter", model: REQUIRED_SCOPE_MODEL, effort: null }),
-]);
-
-export const RELEASE_NATIVE_CHECKLIST_ITEMS = Object.freeze([
-  "sealed_evidence",
-  "intent_and_scope",
-  "runtime_and_security",
-  "tests_and_release",
-]);
-
-export const MAX_RELEASE_REVIEW_START_SKEW_MS = 10_000;
-
 export const TRIAD_ITEMS = Object.freeze([
   "review_protocol",
   "runtime_behavior_changes",
@@ -115,18 +77,10 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SEMVER_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION = 2;
-export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
-
-// Owner-review attestation (schemaVersion 3, owner-directed): the six-slot
-// OpenRouter panel is RETIRED for this and future releases. The publishing
-// proof is now the owner's own signed statement that (a) the full
-// deterministic gate passed unchanged on the exact candidate and (b) at
-// least two independent fable reviewer subagents reviewed the release
-// against the checklists and returned no blocking verdict (ship rule:
-// pass/warn only), within at most three convergence rounds. The same
-// offline Ed25519 authority signs both schema versions; the v2 path stays
-// valid for already-sealed attestations until its machinery is deleted.
+// Owner-review attestation (schemaVersion 3): the signed publishing proof.
+// The retired schemaVersion-2 six-slot contract was removed in v3.0.0;
+// already-sealed v2 artifacts remain archived with valid signatures, but
+// the publish workflow no longer accepts them as input.
 export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION = 3;
 export const OWNER_REVIEW_PROTOCOL = "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS = 2;
@@ -168,16 +122,11 @@ export function releaseAttestationSigningBytes(attestation) {
   );
 }
 
-export function releaseReviewConcurrencyDigest(concurrency) {
-  const { evidenceSha256: _evidenceSha256, ...evidence } = concurrency ?? {};
-  return createHash("sha256").update(canonicalJson(evidence)).digest("hex");
-}
-
 /** Verify authority before trusting any caller-supplied review semantics. */
 export function verifyReleaseAttestationSignature(
   attestation,
   authority,
-  expectedSchemaVersion = RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION,
+  expectedSchemaVersion = OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
 ) {
   const reasons = [];
   if (!attestation || typeof attestation !== "object" || Array.isArray(attestation)) {
@@ -299,160 +248,24 @@ export function validateOwnerReviewAttestationPayload(payload, expected) {
   return { ok: reasons.length === 0, reasons };
 }
 
-/**
- * Semantic validation runs only after signature verification. Publication
- * accepts the exact reviewed SHA/tree, sealed evidence, full gate, and panel.
- */
-export function validateReleaseAttestationPayload(payload, expected) {
-  const reasons = [];
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { ok: false, reasons: ["review attestation payload is not an object"] };
-  }
-  if (payload.candidateSha !== expected.candidateSha || !SHA1.test(payload.candidateSha ?? "")) {
-    reasons.push("review attestation candidate SHA mismatch");
-  }
-  if (payload.candidateTree !== expected.candidateTree || !SHA1.test(payload.candidateTree ?? "")) {
-    reasons.push("review attestation candidate tree mismatch");
-  }
-  if (!SHA256.test(payload.packetManifestSha256 ?? "")) {
-    reasons.push("review attestation packet manifest SHA-256 is missing or malformed");
-  }
-  if (
-    payload.evidenceManifestSha256 !== payload.packetManifestSha256 ||
-    !SHA256.test(payload.evidenceManifestSha256 ?? "")
-  ) {
-    reasons.push("review attestation evidence manifest digest mismatch");
-  }
-  reasons.push(...validateFullGateEvidence(payload.fullGate, expected));
-  const lock = validatePanelLock(payload.panelLock ?? null, {
-    candidateSha: expected.candidateSha,
-    candidateTree: expected.candidateTree,
-    packetManifestSha256: payload.packetManifestSha256 ?? "",
-  });
-  reasons.push(...lock.reasons);
-
-  const slots = Array.isArray(payload.slots) ? payload.slots : [];
-  let responsiveTriad = 0;
-  if (slots.length !== REQUIRED_RELEASE_REVIEW_SLOTS.length) {
-    reasons.push(
-      `review attestation must contain exactly ${REQUIRED_RELEASE_REVIEW_SLOTS.length} slots`,
-    );
-  } else {
-    for (const required of REQUIRED_RELEASE_REVIEW_SLOTS) {
-      const actual = slots.find((slot) => slot?.slot === required.slot);
-      if (!actual) {
-        reasons.push(`review slot ${required.slot} is missing`);
-        continue;
-      }
-      const triad = required.slot.startsWith("triad-");
-      if (actual.status === "responded" && actual.result === "passed" && triad) {
-        responsiveTriad += 1;
-      }
-      if (!triad && (actual.status !== "responded" || actual.result !== "passed")) {
-        reasons.push(`review slot ${required.slot} did not pass`);
-      }
-      if (
-        actual.route !== required.route ||
-        actual.requestedModel !== required.model ||
-        (actual.status === "responded" && actual.observedModel !== required.model) ||
-        (actual.observedModel && actual.observedModel !== required.model)
-      ) {
-        reasons.push(`review slot ${required.slot} model mismatch`);
-      }
-      if (required.effort && actual.effort !== required.effort)
-        reasons.push(`review slot ${required.slot} effort mismatch`);
-      if (
-        !SHA256.test(actual.telemetrySha256 ?? "") ||
-        !SHA256.test(actual.resultSha256 ?? "") ||
-        !SHA256.test(actual.artifactManifestSha256 ?? "") ||
-        !Array.isArray(actual.artifacts) ||
-        actual.artifacts.length === 0 ||
-        actual.artifacts.some(
-          (artifact) =>
-            !artifact || typeof artifact.name !== "string" || !SHA256.test(artifact.sha256 ?? ""),
-        )
-      ) {
-        reasons.push(`review slot ${required.slot} artifact digests are invalid`);
-      }
-    }
-    const unique = new Set(slots.map((slot) => slot?.slot));
-    if (unique.size !== slots.length) reasons.push("review attestation contains duplicate slots");
-    if (responsiveTriad < 2) {
-      reasons.push(`review attestation triad quorum not met: ${responsiveTriad}/2`);
-    }
-  }
-  if (
-    payload.decision?.status !== "passed" ||
-    payload.decision?.quorum !== 2 ||
-    payload.decision?.responsiveTriad !== responsiveTriad ||
-    payload.decision?.blockingFindings !== 0
-  ) {
-    reasons.push("review attestation decision is not passed");
-  }
-  const concurrency = payload.concurrency;
-  if (!concurrency || typeof concurrency !== "object" || Array.isArray(concurrency)) {
-    reasons.push("review attestation concurrency evidence is missing");
-  } else {
-    const starts = Array.isArray(concurrency.slots) ? concurrency.slots : [];
-    const startTimes = starts.map((entry) => Date.parse(entry?.startedAt ?? ""));
-    const firstStart = Date.parse(concurrency.firstStartAt ?? "");
-    const lastStart = Date.parse(concurrency.lastStartAt ?? "");
-    const firstCompletion = Date.parse(concurrency.firstCompletionAt ?? "");
-    if (
-      !UUID_V4.test(concurrency.reviewWaveId ?? "") ||
-      typeof concurrency.reviewRunId !== "string" ||
-      concurrency.reviewRunId.length === 0 ||
-      !SHA256.test(concurrency.promptSha256?.triad ?? "") ||
-      !SHA256.test(concurrency.promptSha256?.scope ?? "") ||
-      concurrency.maxStartSkewMs !== MAX_RELEASE_REVIEW_START_SKEW_MS ||
-      !Number.isFinite(concurrency.observedStartSkewMs) ||
-      concurrency.observedStartSkewMs < 0 ||
-      concurrency.observedStartSkewMs > MAX_RELEASE_REVIEW_START_SKEW_MS ||
-      starts.length !== REQUIRED_RELEASE_REVIEW_SLOTS.length ||
-      starts.some(
-        (entry, index) =>
-          entry?.slot !== REQUIRED_RELEASE_REVIEW_SLOTS[index]?.slot ||
-          !Number.isFinite(startTimes[index]),
-      ) ||
-      !Number.isFinite(firstStart) ||
-      !Number.isFinite(lastStart) ||
-      !Number.isFinite(firstCompletion) ||
-      Math.min(...startTimes) !== firstStart ||
-      Math.max(...startTimes) !== lastStart ||
-      lastStart - firstStart !== concurrency.observedStartSkewMs ||
-      lastStart >= firstCompletion ||
-      !SHA256.test(concurrency.tier1ProgressSha256 ?? "") ||
-      !SHA256.test(concurrency.triadProgressSha256 ?? "") ||
-      payload.evidence?.tier1ProgressSha256 !== concurrency.tier1ProgressSha256 ||
-      payload.evidence?.triadProgressSha256 !== concurrency.triadProgressSha256 ||
-      !SHA256.test(concurrency.evidenceSha256 ?? "") ||
-      releaseReviewConcurrencyDigest(concurrency) !== concurrency.evidenceSha256
-    ) {
-      reasons.push("review attestation concurrency evidence is invalid");
-    }
-  }
-  if (!Array.isArray(payload.openBlockers) || payload.openBlockers.length !== 0) {
-    reasons.push("review attestation has open blockers");
-  }
-  return { ok: reasons.length === 0, reasons };
-}
-
 export function validateReleaseAttestation(attestation, authority, expected) {
-  // schemaVersion selects the contract BEFORE signature verification pins it:
-  // the signature covers schemaVersion itself, so a v2 payload can never be
-  // replayed as v3 (or vice versa) without breaking the Ed25519 check.
-  if (attestation?.schemaVersion === OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION) {
-    const signature = verifyReleaseAttestationSignature(
-      attestation,
-      authority,
-      OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
-    );
-    if (!signature.ok) return signature;
-    return validateOwnerReviewAttestationPayload(attestation.payload, expected);
+  // The signature covers schemaVersion itself, so an old payload can never be
+  // replayed into the current contract without breaking the Ed25519 check.
+  if (attestation?.schemaVersion !== OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      reasons: [
+        `review attestation schemaVersion ${attestation?.schemaVersion ?? "(missing)"} is not accepted: the retired six-slot v2 contract was removed in v3.0.0 (sealed v2 artifacts remain archived)`,
+      ],
+    };
   }
-  const signature = verifyReleaseAttestationSignature(attestation, authority);
+  const signature = verifyReleaseAttestationSignature(
+    attestation,
+    authority,
+    OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
+  );
   if (!signature.ok) return signature;
-  return validateReleaseAttestationPayload(attestation.payload, expected);
+  return validateOwnerReviewAttestationPayload(attestation.payload, expected);
 }
 
 export function pathIsWithin(root, target) {

@@ -119,44 +119,25 @@ readiness. The status-line collector stays as a secondary source: an explicit
 documented windows and provenance in the Claudexor-owned v2 root and does not
 read Claude credential or session files. See the official
 [Claude Code status-line contract](https://code.claude.com/docs/en/statusline).
-Native login commands are server allowlisted and use setup jobs with
-typed phase/deadline/outcome,
-restart reconciliation, watchdog timeouts, and a polling-backed SSE lifecycle
-stream (`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
+Native login commands are server allowlisted and run as setup jobs with
+typed phase/deadline/outcome and a polling-backed SSE lifecycle stream
+(`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
 heartbeats, and closes on every terminal state including `timed_out` and
-`interrupted_unknown`. A client that reconnects first GET-resnapshots the job;
-every event names its exact request-relative predecessor cursor. Missing,
-duplicate, regressive, dropped, unknown, malformed, or EOF-without-terminal
-frames require a scoped resnapshot. Network loss never changes the server-owned
-outcome.
-Native login is executed by the bundled Node runner with an absolute vendor
-binary and argv (never `sh -c`), inherited Terminal TTY, and a provider-secret-
-scrubbed environment. Stdout/stderr stay in Terminal. The global journal records
-the immutable command authorization and fsynced one-use permit before the runner
-may spawn; operational sidecars record only process identity and the hash-bound
-result, which is journaled before readiness verification. The native-login path
-neither receives nor copies/persists vendor session tokens or credential files.
-Cancellation or
-restart signals a process group only after PID + kernel-start proof. Missing
-identity fails closed as `termination_unconfirmed`, not a claimed cancellation.
-Terminal presents the final exit result and remains open until Return.
-The exact native-source probe runs in process through the same gateway code as
-Harness Doctor, never as a shell command. API-key fallback goes through
-`/secrets` as a separate operation, not through setup jobs or inline setup
-payloads. Native login then runs an isolated same-harness
-capability smoke on the exact native route; status-probe success, another
-provider, or an API key cannot satisfy it. The receipt proves credential
-transport only, not plan tier, entitlement, quota, or zero cost.
-`GET /v2/setup/jobs` optionally filters by `harness`, `action`, `active`, and
-`limit`; no-query behavior returns the v2 journal projection. `POST /v2/setup/jobs/:id/extend`
-adds the fixed 15-minute login extension without a cumulative limit. Cancel is
-asynchronous and resolves only after termination is proved. Duplicate create
-returns the same active login instead of opening another Terminal. The checksummed global journal is the only
-lifecycle authority. Private per-job directories hold runner handshake
-artifacts only; v1 registries and per-job snapshots are neither read nor
-imported.
-`POST /v2/setup/jobs/:id/reconcile` is the sole replacement-fence recovery path:
-it succeeds only after a fresh daemon-side probe proves the recorded group empty.
+`interrupted_unknown`. A reconnecting client first GET-resnapshots the job;
+every event names its exact request-relative predecessor cursor, and
+missing, duplicate, regressive, dropped, unknown, malformed, or
+EOF-without-terminal frames require a scoped resnapshot. Network loss never
+changes the server-owned outcome. `GET /v2/setup/jobs` optionally filters by
+`harness`, `action`, `active`, and `limit`. `POST /v2/setup/jobs/:id/extend`
+adds the fixed 15-minute login extension. Cancel is asynchronous and
+resolves only after termination is proved; duplicate create returns the same
+active login instead of opening another Terminal.
+`POST /v2/setup/jobs/:id/reconcile` is the sole replacement-fence recovery
+path. The execution mechanics behind these jobs — the bundled runner, the
+journal authority, process-identity fences, and the same-harness capability
+smoke — are engine internals owned by `docs/ARCHITECTURE.md` (native login
+and setup jobs); API-key fallback goes through `/secrets` as a separate
+operation, never through setup jobs.
 
 `GET /v2/runs/:id` includes `lastSeq` (the snapshot's event cursor for
 gap-free `Last-Event-ID` subscriptions), `pendingInteractions`,
