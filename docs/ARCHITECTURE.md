@@ -345,10 +345,11 @@ Adapters declare the physical credential transport they support (`config_file`,
 containment strategy that keeps it honest. Native-session state remains owned by
 the vendor: Codex reads a Claudexor-dedicated `CODEX_HOME` with
 `cli_auth_credentials_store="file"`, never the operator's ordinary Codex profile
-or OS Keychain; Claude reads the vendor config directory and
-uses the macOS login Keychain; Cursor declares an OS-keychain native route. The
-Claude/Cursor native route points at that host-user context; Codex keeps its
-separate vendor credential file outside every envelope. No route copies a vendor
+or OS Keychain; Claude reads a Claudexor-owned config dir and its disposable
+child HOME bridges only the macOS login Keychain; Cursor declares an
+OS-keychain native route. Claude/Cursor expose only that narrow host Keychain
+context; Codex keeps its separate vendor credential file outside every
+envelope. No route copies a vendor
 credential file into an envelope. Separate fallback routes may materialize only
 their selected source: Codex API-key auth seeds a temporary scoped `auth.json`,
 Claude injects either the stored setup token or `ANTHROPIC_API_KEY`, and Cursor
@@ -600,7 +601,7 @@ files.
 - `GET /v2/agent-capabilities`
 - `GET /v2/credential-profiles`
 - `POST /v2/credential-profiles`
-- `DELETE /v2/credential-profiles/:id/:id`
+- `DELETE /v2/credential-profiles/:harness/:profileId`
 - `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`

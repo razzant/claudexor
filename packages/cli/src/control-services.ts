@@ -67,8 +67,6 @@ import {
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
-/** ONE doctor projection for a profile (INV-135), shared by the GET listing
- * and the POST registration response; no-probe adapters report honest unknown. */
 async function profileDoctorStatus(profile: CredentialProfile): Promise<CredentialProfileStatus> {
   const adapter = buildRegistry().get(profile.harness_id);
   return adapter?.probeCredentialProfile
@@ -270,12 +268,18 @@ export function controlServices(
       const pool = patch.eligibleHarnesses ?? current.eligible_harnesses;
       const primary =
         patch.primaryHarness === undefined ? current.primary_harness : patch.primaryHarness;
-      assertCredentialProfileCompatibility(
-        profileId,
-        primary,
-        pool,
-        loadConfig(NO_PROJECT_ROOT).global.credential_profiles,
-      );
+      if (
+        patch.credentialProfileId !== undefined ||
+        patch.primaryHarness !== undefined ||
+        patch.eligibleHarnesses !== undefined
+      ) {
+        assertCredentialProfileCompatibility(
+          profileId,
+          primary,
+          pool,
+          loadConfig(NO_PROJECT_ROOT).global.credential_profiles,
+        );
+      }
       return threads.updateThread(id, {
         title: patch.title,
         state: patch.state as any,
@@ -446,12 +450,7 @@ export function controlServices(
               : harnessId === "codex"
                 ? canonicalCodexProfileHome(entry.isolation_locator)
                 : canonicalIsolationLocator(entry.isolation_locator, "credential profile dir");
-          // DELETE-grade fence (stricter than the creation-grade confinement,
-          // which accepts the owned root itself): a recursive delete may only
-          // target a STRICT descendant of the registry's own profiles tree —
-          // never the owned root, the v2 config/secret store, or any sibling
-          // engine state. A hand-edited locator outside it fails here and is
-          // disclosed as a cleanup warning; the registry entry is still gone.
+          // Recursive deletion is fenced to a strict descendant of the profiles tree.
           const profilesRoot = normalizeThroughExistingAncestor(
             join(claudexorOwnedRoot(), "profiles"),
           );

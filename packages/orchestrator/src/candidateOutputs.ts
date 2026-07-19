@@ -120,11 +120,26 @@ export function persistCandidateOutputs(input: {
   return preserved;
 }
 
+export function rasterLinksInMarkdown(markdown: string): string[] {
+  const paths: string[] = [];
+  for (const match of markdown.matchAll(/!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)) {
+    const raw = match[1];
+    if (!raw || /^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("#")) continue;
+    try {
+      paths.push(decodeURIComponent(raw).replace(/^\.\//, ""));
+    } catch {
+      // Invalid URL escapes are not a usable file target.
+    }
+  }
+  return [...new Set(paths)];
+}
+
 export function writeCandidateAttemptArtifacts(input: {
   store: ArtifactStore;
   attemptDir: string;
   worktreePath: string;
   diff: string;
+  answerText?: string;
   record: Record<string, unknown>;
 }): string[] {
   input.store.writeText(join(input.attemptDir, "patch.diff"), input.diff);
@@ -132,7 +147,7 @@ export function writeCandidateAttemptArtifacts(input: {
   const produced = persistCandidateOutputs({
     worktreePath: input.worktreePath,
     attemptDir: input.attemptDir,
-    changedPaths: stats.paths,
+    changedPaths: [...new Set([...stats.paths, ...rasterLinksInMarkdown(input.answerText ?? "")])],
   });
   input.store.writeYaml(join(input.attemptDir, "attempt.yaml"), {
     ...input.record,

@@ -16,6 +16,7 @@ fixtures:
       final_is_last_message: true
       thinking_events: 0
       delta_messages: 0
+      tool_error_results: 2
       typed_rate_limit: false
   session-resume.jsonl:
     source: synthetic

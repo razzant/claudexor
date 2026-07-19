@@ -160,7 +160,7 @@ const operations: ControlOperationDescriptor[] = [
   ),
   j(
     "DELETE",
-    "/v2/credential-profiles/:id/:id",
+    "/v2/credential-profiles/:harness/:profileId",
     "mutating",
     null,
     "ControlCredentialProfileDeleteResponse",

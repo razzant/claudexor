@@ -2128,6 +2128,7 @@ export class Orchestrator {
       attemptDir,
       worktreePath: envelope.worktree_path,
       diff,
+      answerText,
       record: {
         attempt_id: attemptId,
         harness_id: adapter.id,

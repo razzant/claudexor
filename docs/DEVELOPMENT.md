@@ -255,9 +255,11 @@ Do not fork contracts in UI code, CLI parsing, adapter output, or docs.
   failure = `unknown + not_run`, and present-but-unusable = `available + failed`.
 - Native session transport remains vendor-owned. Codex uses a
   Claudexor-dedicated `CODEX_HOME` with the vendor's file credential store forced,
-  never the operator's ordinary Codex home or OS Keychain. Claude uses the vendor config plus macOS
-  Keychain, and Cursor uses its Keychain-backed state. Do not read or copy those
-  credential files/tokens into Claudexor state or an envelope. API keys and the
+  never the operator's ordinary Codex home or OS Keychain. Claude uses a
+  Claudexor-owned `CLAUDE_CONFIG_DIR`; only its disposable child HOME bridges
+  the macOS login Keychain so the vendor can read the item keyed by that dir.
+  Cursor uses its Keychain-backed state. Do not read or copy those credential
+  files/tokens into Claudexor state or an envelope. API keys and the
   Claude setup-token are separate secret-store/env routes with separate typed
   source evidence.
 - Browser MCP is an exact production dependency of `@claudexor/core`. App

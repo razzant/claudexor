@@ -4,4 +4,6 @@
 {"type":"tool_call","subtype":"completed","call_id":"c1","tool_call":{"writeToolCall":{"args":{"path":"src/a.ts"},"result":{"linesCreated":1}}}}
 {"type":"tool_call","subtype":"started","call_id":"c2","tool_call":{"shellToolCall":{"args":{"command":"pnpm test"}}}}
 {"type":"tool_call","subtype":"failed","call_id":"c2","tool_call":{"shellToolCall":{"args":{"command":"pnpm test"},"result":{"error":"exit 1"}}}}
+{"type":"tool_call","subtype":"started","call_id":"c3","tool_call":{"editToolCall":{"args":{"path":"src/a.ts"}}}}
+{"type":"tool_call","subtype":"completed","call_id":"c3","tool_call":{"editToolCall":{"args":{"path":"src/a.ts"},"result":{"failure":{"exitCode":1,"error":"invalid edit"}}}}}
 {"type":"result","subtype":"success","result":"All done","total_cost_usd":0.02}

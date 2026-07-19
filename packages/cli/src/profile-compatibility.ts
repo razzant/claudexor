@@ -9,13 +9,18 @@ export function assertCredentialProfileCompatibility(
   registry: readonly CredentialProfile[],
 ): void {
   if (!profileId) return;
+  const enabledMatches = registry.filter(
+    (profile) => profile.enabled && profile.profile_id === profileId,
+  );
+  if (enabledMatches.length === 0) {
+    throw Object.assign(
+      new Error(`credential profile "${profileId}" is not registered or enabled`),
+      { status: 400 },
+    );
+  }
   const requiredHarnesses = pool.length > 0 ? pool : primary ? [primary] : [];
   const missing = requiredHarnesses.filter(
-    (harness) =>
-      !registry.some(
-        (profile) =>
-          profile.enabled && profile.harness_id === harness && profile.profile_id === profileId,
-      ),
+    (harness) => !enabledMatches.some((profile) => profile.harness_id === harness),
   );
   if (missing.length > 0) {
     throw Object.assign(

@@ -43,10 +43,13 @@ function preview(
   } finally {
     closeSync(fd);
   }
+  const redacted = redactSecrets(decodeValidUtf8(data));
   return {
-    text: truncateUtf8(redactSecrets(decodeValidUtf8(data)), PRIMARY_OUTPUT_PREVIEW_BYTES),
+    text: truncateUtf8(redacted, PRIMARY_OUTPUT_PREVIEW_BYTES),
     bytes: st.size,
-    truncated: st.size > PRIMARY_OUTPUT_PREVIEW_BYTES,
+    truncated:
+      st.size > PRIMARY_OUTPUT_PREVIEW_BYTES ||
+      Buffer.byteLength(redacted, "utf8") > PRIMARY_OUTPUT_PREVIEW_BYTES,
   };
 }
 

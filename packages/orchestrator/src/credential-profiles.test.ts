@@ -57,8 +57,25 @@ describe("selectedProfileAvailability", () => {
       }),
     });
     expect(failed).toBe("wrong credential route");
-    const presenceOnly = await selectedProfileAvailability({
+    const unverifiedNative = await selectedProfileAvailability({
       registry: [work],
+      profileId: "work",
+      harnessId: "claude",
+      probe: async () => ({
+        availability: "available",
+        verification: "not_run",
+        detail: "native session unverified",
+      }),
+    });
+    expect(unverifiedNative).toBe("native session unverified");
+    const apiKey = {
+      ...work,
+      credential_kind: "api_key" as const,
+      isolation_locator: null,
+      secret_ref: "anthropic:work",
+    };
+    const presenceOnly = await selectedProfileAvailability({
+      registry: [apiKey],
       profileId: "work",
       harnessId: "claude",
       probe: async () => ({

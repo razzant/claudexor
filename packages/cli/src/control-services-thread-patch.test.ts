@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { controlServices } from "./control-services.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
+import { updateGlobalConfig } from "@claudexor/config";
 
 describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
   it("updateThread forwards EVERY typed patch field — credentialProfileId included", async () => {
@@ -86,6 +87,51 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
         eligibleHarnesses: ["claude", "codex"],
       }),
     ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      services.updateThread("th-1", { credentialProfileId: "ghost" }),
+    ).rejects.toMatchObject({ status: 400 });
+    if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previous;
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("allows title/state edits when an existing pinned profile was disabled", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-thread-disabled-"));
+    const previous = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
+    updateGlobalConfig((config) => ({
+      ...config,
+      credential_profiles: config.credential_profiles.map((profile) => ({
+        ...profile,
+        enabled: false,
+      })),
+    }));
+    let updated = false;
+    const threads = {
+      getThread: () => ({
+        credential_profile_id: "work",
+        eligible_harnesses: ["claude"],
+        primary_harness: "claude",
+      }),
+      updateThread: () => {
+        updated = true;
+        return { id: "th-1" };
+      },
+    };
+    const services = controlServices(
+      undefined as never,
+      undefined as never,
+      threads as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      async () => [],
+    );
+    await services.updateThread("th-1", { title: "Renamed" });
+    expect(updated).toBe(true);
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     rmSync(configDir, { recursive: true, force: true });

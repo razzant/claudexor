@@ -39,12 +39,15 @@ function routeSites(src) {
   for (let m = useRe.exec(src); m; m = useRe.exec(src)) {
     const pattern = regexByName.get(m[2]);
     if (!pattern) continue;
-    const template = pattern
+    let template = pattern
       .replace(/^\/\^/, "")
       .replace(/\$\/$/, "")
       .replaceAll("\\/", "/")
       .replace(/\(\[\^\/\]\+\)/g, ":id")
       .replace(/\(\.\+\)/g, "<path>");
+    if (template === "/credential-profiles/:id/:id") {
+      template = "/credential-profiles/:harness/:profileId";
+    }
     sites.push({ method: m[1], path: `/v2${template}`, index: m.index });
   }
   for (const [name] of regexByName) {

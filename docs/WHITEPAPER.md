@@ -67,9 +67,13 @@ each new session round carries prior answers so the next plan can go
 deeper on unresolved choices. Freeze remains a single contract commit for v1:
 after the session freezes there is no spec-version ladder.
 
-Auth is subscription-first where that route is readiness-proven: native
-Codex, Claude, and Cursor routes use the vendor-owned native store rather than
-copying session credentials into envelopes. `auto` stays native-first in host
+Auth is subscription-first where that route is readiness-proven. Native Codex,
+Claude, and Cursor routes use Claudexor-owned route-local config dirs rather
+than copying session credentials into envelopes or mutating ordinary vendor
+defaults. On macOS the Claude child alone receives a narrow symlink to the
+user's login Keychain so the vendor can access the item keyed by that exact
+Claudexor-owned `CLAUDE_CONFIG_DIR`; no credential bytes are copied.
+`auto` stays native-first in host
 and scoped/envelope runs, reaches a smoke-proven API-key route only when native
 readiness fails (and Claude's setup-token source is not ready), and discloses
 that paid-route choice. Explicit `subscription` fails closed when all of its
@@ -194,10 +198,9 @@ a model reported in the harness stream, or — for a CLI whose stream omits the
 model (codex) — the model the CLI recorded in its own session transcript. An
 unobserved reviewer does not count toward verification. Read-only and reviewer
 harness runs execute with a scoped, throwaway HOME so relocatable route-local
-state cannot leak into the worktree or operator home. A selected native
-Codex/Claude route is the explicit exception for its vendor-owned config/session
-store: it uses that store in place rather than copying credentials into the
-throwaway home.
+state cannot leak into the worktree or operator home. Selected native Codex and
+Claude routes keep their writable config/session state in Claudexor-owned dirs;
+Claude's disposable child HOME adds only the Keychain bridge described above.
 
 Release and dogfood reviews can name an explicit `reviewerPanel`, preserving
 ordered reviewers and repeated harness entries for same-provider multi-model
@@ -382,9 +385,12 @@ remain separate services instead of masquerading as setup-job phases.
 
 ## Budget And Settings
 
-Budget truth is part of trust. Claudexor distinguishes exact native cost from
-estimated token-derived cost and keeps unknown spend unknown. It does not render
-missing data as `$0`.
+Budget truth is part of trust. Incremental API-key cash and subscription token
+valuation are separate even when a vendor reports an exact dollar equivalent:
+native entitlement is valuation, never cash. Every usage event settles by its
+own/current typed route so a native→API retry cannot hide metered spend under
+the first route; undisclosed routes stay unknown. Missing data never renders as
+`$0`.
 
 A per-run cap also has to survive concurrency: candidates in a race settle
 usage at different moments, so each parallel slot after the first reserves a
@@ -422,7 +428,12 @@ stored assertion.
 Selection is explicit and layered: a turn's choice beats the thread's sticky
 profile beats the engine default, and an explicit profile is strict — exactly
 its transport or a typed refusal, never a silent fallback into someone else's
-credentials. Vendor-session resume never crosses profiles. Subscription quota
+credentials. Explicit pools require a compatible profile on every lane;
+presence-only API-key probes may be `not_run`, but native/config-dir profiles
+must be `available + passed`. Vendor-session resume never crosses profiles.
+Deletion invalidates pins, matching session caches, and quota subjects before
+registry removal, refusing while any project partition needs recovery.
+Subscription quota
 is read per profile from the vendor's own usage endpoint, proactively, so the
 footer can show two subscriptions' real five-hour and seven-day headroom side
 by side. On top of that sits one typed policy per harness: on a limit, fail,

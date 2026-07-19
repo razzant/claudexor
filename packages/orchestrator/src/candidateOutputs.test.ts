@@ -17,6 +17,7 @@ import {
   materializeWinnerOutputs,
   persistCandidateOutputs,
   stageFileBackedContext,
+  writeCandidateAttemptArtifacts,
 } from "./candidateOutputs.js";
 
 const roots: string[] = [];
@@ -114,5 +115,28 @@ describe("candidate produced-output persistence", () => {
       Buffer.from([0x89, 0x50, 0x4e]),
     );
     rmSync(outside, { force: true });
+  });
+
+  it("preserves a linked gitignored screenshot even when absent from the diff", () => {
+    const worktree = root("claudexor-linked-output-tree-");
+    const runRoot = root("claudexor-linked-output-run-");
+    const attemptDir = join(runRoot, "attempts", "a01");
+    mkdirSync(join(worktree, "screenshots"), { recursive: true });
+    writeFileSync(join(worktree, "screenshots", "ignored.png"), Buffer.from([0x89, 0x50]));
+    const writes: Record<string, unknown>[] = [];
+    const produced = writeCandidateAttemptArtifacts({
+      store: {
+        writeText: () => undefined,
+        writeYaml: (_path: string, value: unknown) => writes.push(value as Record<string, unknown>),
+      } as never,
+      attemptDir,
+      worktreePath: worktree,
+      diff: "diff --git a/game.js b/game.js\n",
+      answerText: "Result: ![race](screenshots/ignored.png)",
+      record: { attempt_id: "a01" },
+    });
+    expect(produced).toEqual(["screenshots/ignored.png"]);
+    expect(existsSync(join(attemptDir, "produced", "screenshots", "ignored.png"))).toBe(true);
+    expect(writes[0]?.["produced_files"]).toEqual(["screenshots/ignored.png"]);
   });
 });

@@ -46,7 +46,10 @@ function documentedEndpoints(docText) {
   const re = /`((?:GET|POST|DELETE|PUT|PATCH)(?:\|(?:GET|POST|DELETE|PUT|PATCH))*) ([^`]+)`/g;
   for (let m = re.exec(docText); m; m = re.exec(docText)) {
     for (const method of m[1].split("|")) {
-      const path = m[2].trim().replace(/:[A-Za-z_]+/g, ":id");
+      const rawPath = m[2].trim();
+      const path = /^\/v2\/credential-profiles\/:[^/]+\/:[^/]+$/.test(rawPath)
+        ? "/v2/credential-profiles/:harness/:profileId"
+        : rawPath.replace(/:[A-Za-z_]+/g, ":id");
       out.add(`${method} ${path}`);
     }
   }

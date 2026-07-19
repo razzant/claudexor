@@ -109,6 +109,8 @@ export interface FixtureStreamExpectations {
   thinking_events?: number;
   /** Exact count of display-stream delta chunks (payload.delta === true). */
   delta_messages?: number;
+  /** Exact count of typed error tool results. */
+  tool_error_results?: number;
   /** Whether the stream surfaces a typed rate_limit signal. */
   typed_rate_limit?: boolean;
   /**
@@ -130,6 +132,7 @@ export function streamExpectationViolations(
   let thinking = 0;
   let deltas = 0;
   let rateLimits = 0;
+  let toolErrorResults = 0;
   let lastMessageWasFinal = false;
   const finalSources = new Set<string>();
   const retryClasses = new Set<string>();
@@ -147,6 +150,7 @@ export function streamExpectationViolations(
       lastMessageWasFinal = ev.final === true;
     }
     if (ev.type === "thinking") thinking += 1;
+    if (ev.type === "tool_result" && ev.tool?.status === "error") toolErrorResults += 1;
     if (ev.rate_limit !== undefined) rateLimits += 1;
     // The typed retry CLASS is ONLY the adapter's classification. Deriving a
     // class from the mere presence of a rate_limit signal would make this
@@ -164,6 +168,7 @@ export function streamExpectationViolations(
   check("final_messages", expectations.final_messages, finals);
   check("thinking_events", expectations.thinking_events, thinking);
   check("delta_messages", expectations.delta_messages, deltas);
+  check("tool_error_results", expectations.tool_error_results, toolErrorResults);
   if (expectations.final_source !== undefined) {
     const got = [...finalSources];
     if (got.length !== 1 || got[0] !== expectations.final_source) {
