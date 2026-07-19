@@ -53,6 +53,8 @@ import type {
   WebPolicySupport,
   WorkspaceEnvelope,
 } from "@claudexor/schema";
+import { PlanQuestionsArtifact, derivePlanReadiness } from "@claudexor/schema";
+import { extractPlanQuestions } from "./planQuestions.js";
 import {
   HarnessRunSpec,
   OrchestrateContract as OrchestrateContractSchema,
@@ -113,7 +115,6 @@ import {
   reviewerTimeoutMs,
   harnessInactivityTimeoutMs,
   observeAuthSwitch,
-  relayPriorPlansSection,
   deliveryRefusalFailure,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
@@ -148,7 +149,7 @@ import {
   renderTestsEvidence,
   resolveContractGates,
 } from "./contract-gates.js";
-import { ArtifactStore } from "@claudexor/artifact-store";
+import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import {
   assertMandatoryContext,
@@ -199,6 +200,7 @@ import {
   reviewUsageCostSettlement,
 } from "@claudexor/budget";
 import {
+  readTextSafe,
   appendLine,
   assertNoInlineSecretValues,
   containsSecretLikeToken,
@@ -269,6 +271,10 @@ export interface RunInput {
   untilClean?: boolean;
   /** ask flag: bounded multi-scout research sweep with synthesis. */
   deepScan?: boolean;
+  /** Server-owned frozen-plan reference (implement-plan turns): the engine
+   * verifies the hash and materializes the plan as a file in the run context —
+   * plan text NEVER rides the prompt (D17/D27). */
+  planRef?: { runId: string; sha256: string; path: string };
   /** agent flag: create-from-scratch intent (the old `create` mode). */
   create?: boolean;
   synthesis?: SynthesisMode;
@@ -2234,6 +2240,46 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Freeze-on-implement delivery (D17/D27): verify the frozen plan's hash and
+   * materialize it as context/PLAN.md in the run artifact tree — OUTSIDE every
+   * worktree, so it can never dirty a diff — then point the prompt at the
+   * absolute path. A mismatched or unreadable plan fails LOUDLY before any
+   * harness spawns (the tamper fence; retry replays planRef verbatim, so a
+   * retried implement can never silently run without its plan).
+   */
+  private withPlanBrief(
+    input: RunInput,
+    store: ArtifactStore,
+    paths: RunPaths,
+    log: EventLog,
+  ): RunInput {
+    if (!input.planRef) return input;
+    const text = readTextSafe(input.planRef.path);
+    if (!text || !text.trim()) {
+      throw new Error(
+        `implement plan: the frozen plan at ${input.planRef.path} is missing or unreadable`,
+      );
+    }
+    const digest = sha256(text).replace(/^sha256:/, "");
+    if (digest !== input.planRef.sha256) {
+      throw new Error(
+        `implement plan: plan hash mismatch (expected ${input.planRef.sha256}, got ${digest}) — the plan was modified after freeze; re-run Implement from the plan turn`,
+      );
+    }
+    const briefPath = join(paths.contextDir, "PLAN.md");
+    store.writeText(briefPath, text);
+    log.emit("plan.brief.materialized", {
+      plan_run_id: input.planRef.runId,
+      sha256: input.planRef.sha256,
+      path: "context/PLAN.md",
+    });
+    return {
+      ...input,
+      prompt: `${input.prompt}\n\nThe approved plan is at: ${briefPath} — read it before starting and re-read it as needed.`,
+    };
+  }
+
   private async runRace(
     input: RunInput,
     mode: ModeKind,
@@ -2248,6 +2294,7 @@ export class Orchestrator {
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
+    input = this.withPlanBrief(input, store, paths, log);
     // The execution root is the tree the harness mutates: the project itself for
     // in-place threads/ordinary runs, or the thread's persistent worktree for an
     // isolated thread. Config/artifacts/contract stay anchored to repoRoot. Both
@@ -3678,6 +3725,7 @@ export class Orchestrator {
     const store = this.artifactStore(input);
     const paths = store.createRun(runId);
     const log = new EventLog(paths.eventsPath, runId, taskId, input.onEvent, input.threadId);
+    input = this.withPlanBrief(input, store, paths, log);
     // The execution root is the tree the harness mutates (thread worktree for an
     // isolated thread, else the project). The WorkspaceManager AND the git
     // boundary must resolve against the SAME root — the race path does so via the
@@ -4555,7 +4603,18 @@ export class Orchestrator {
       `1. Approach — 2-3 sentences on how you'd solve this.`,
       `2. Steps — a numbered list; each step names the file(s) it touches and what changes.`,
       `3. Risks & edge cases.`,
-      `4. Open questions — anything ambiguous that needs a decision before implementation.`,
+      `4. End your response with a section titled exactly:`,
+      ``,
+      `## Open Questions`,
+      ``,
+      `List every decision the user must make before implementation, one per bullet, in EXACTLY this format:`,
+      ``,
+      `- [single] <question> :: <option A> :: <option B>`,
+      `- [multi] <question> :: <option A> :: <option B>`,
+      `- [text] <question that has no good fixed options>`,
+      ``,
+      `Rules: [single] = pick exactly one; [multi] = pick one or more; [text] = free-form (no "::" options). Ground every option in THIS repository. If nothing is ambiguous, write a single bullet: - (none)`,
+      ``,
       `Keep it concise. Reference real paths you found. Do NOT paste large code blocks; describe the change instead.`,
     ].join("\n");
   }
@@ -4588,18 +4647,6 @@ export class Orchestrator {
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
-
-    const reviewersOutcome = await this.resolveReviewersWithArtifacts(
-      input,
-      log,
-      store,
-      paths,
-      runId,
-      taskId,
-      "plan",
-    );
-    if ("failed" in reviewersOutcome) return reviewersOutcome.failed;
-    const reviewers = reviewersOutcome.reviewers;
 
     // W3.3: ONE resolved read-only context — the routing point-probe and every
     // planner spawn consume the SAME scoped env (see routeContext.ts).
@@ -4690,6 +4737,7 @@ export class Orchestrator {
     }
 
     const plans: { id: string; text: string }[] = [];
+    let fallbackFrom: string | null = null;
     const planAttempts: {
       attemptId: string;
       harnessId: string;
@@ -4732,7 +4780,7 @@ export class Orchestrator {
         const spec = HarnessRunSpec.parse({
           session_id: newId("ses"),
           intent: "plan",
-          prompt: this.planPrompt(input.prompt) + contextSection + relayPriorPlansSection(plans),
+          prompt: this.planPrompt(input.prompt) + contextSection,
           cwd: this.execRootOf(input),
           access: "readonly",
           // Planners must SEE any image/file the user attached (e.g. "plan a fix for
@@ -4881,6 +4929,22 @@ export class Orchestrator {
             status: webBlocked ? "blocked" : "failed",
             error: harnessError,
           });
+          const next = adapters[idx + 1];
+          if (next && !input.signal?.aborted) {
+            fallbackFrom = adapter.id;
+            log.emit("route.fallback.started", {
+              from_harness: adapter.id,
+              to_harness: next.adapter.id,
+              attempt_id: attemptId,
+              reason: "planner_failed",
+            });
+          } else if (fallbackFrom || next === undefined) {
+            log.emit("route.fallback.exhausted", {
+              harness_id: adapter.id,
+              attempt_id: attemptId,
+              reason: "planner_failed",
+            });
+          }
           continue;
         }
         const text = answer.text() || "(no output)";
@@ -4893,6 +4957,18 @@ export class Orchestrator {
         planAttempts.push({ attemptId, harnessId: adapter.id, status: "success", error: null });
         plans.push({ id: adapter.id, text });
         store.writeText(join(paths.root, "plans", `${adapter.id}.md`), redactSecrets(text) + "\n");
+        // Solo planning (D31): the FIRST successful planner is the plan; later
+        // pool members are a sequential fallback chain (ask parity), not
+        // parallel co-authors. Council re-enables the multi-draft round.
+        if (fallbackFrom) {
+          log.emit("route.fallback.completed", {
+            harness_id: adapter.id,
+            attempt_id: attemptId,
+            status: "success",
+            reason: "planner_failed",
+          });
+        }
+        break;
       }
     } finally {
       // Planners done (or threw) — reclaim scoped scratch/API-route state.
@@ -4992,83 +5068,6 @@ export class Orchestrator {
       };
     }
 
-    let ambiguities: ReviewFinding[] = [];
-    let reviewFindings: ReviewFinding[] = [];
-    if (reviewers.length > 0 && plans.length > 0) {
-      const reviewDir = join(paths.root, "review-evidence");
-      const planEvidence = plans.map((p) => `## Plan from ${p.id}\n${p.text}`).join("\n\n");
-      const planReviewDiff = "(plan review — no code diff)\n";
-      writeEvidencePacket(reviewDir, {
-        userIntent: redactSecrets(input.prompt),
-        planAccepted: planEvidence,
-        diff: planReviewDiff,
-        tests: renderTestsEvidence(contract),
-      });
-      // Reserve BEFORE spending: a hard budget tier must stop the paid plan
-      // review from starting, not account for it after the fact.
-      const lease = ledger.reserve({
-        taskId,
-        attemptId: "plan-review",
-        intent: "review",
-        harnessId: "review-panel",
-        cost: attemptCostEvidence("review-panel", "plan-review"),
-      });
-      if (lease.granted) {
-        const res = await this.reviewScoped({
-          candidateLabel: "Plan",
-          reviewSubject: "plan",
-          diff: planReviewDiff,
-          evidenceDir: reviewDir,
-          artifactsDir: join(paths.reviewsDir, "plan-reviewers"),
-          cwd: this.execRootOf(input),
-          reviewers,
-          envInheritance: envInheritance(this.config(input.repoRoot)),
-          signal: input.signal,
-          onReviewerEvent: (event) => log.emit(event.type, { ...event }),
-        });
-        reviewFindings = await revalidateFindings(res.findings, {
-          candidateRoot: this.execRootOf(input),
-          evidenceDir: reviewDir,
-        });
-        ambiguities = reviewFindings.filter(
-          (f) => f.category === "spec_gap" || f.severity === "NEEDS_HUMAN",
-        );
-        store.writeYaml(join(paths.reviewsDir, "plan-review.yaml"), {
-          findings: reviewFindings,
-          route_proofs: res.routeProofs,
-          reviewer_requests: res.reviewerRequests,
-        });
-        ledger.settle(
-          lease.lease?.lease_id ?? "",
-          reviewUsageCostSettlement(
-            res.reviewCashUsd,
-            res.reviewValuationUsd,
-            res.reviewSpendEstimated,
-            ["attempt:plan-review", "review:panel"],
-            res.reviewUnknownUsd,
-          ),
-        );
-        if ((res.reviewSpendUsd ?? 0) > 0) {
-          log.emit("budget.observation", {
-            harness_id: "review-panel",
-            kind: "spend",
-            usd: res.reviewSpendUsd,
-            cash_usd: res.reviewCashUsd,
-            valuation_usd: res.reviewValuationUsd,
-            unknown_usd: res.reviewUnknownUsd,
-            estimated: res.reviewSpendEstimated,
-          });
-        }
-      } else {
-        log.emit("budget.lease.created", {
-          granted: false,
-          reason: lease.reason,
-          attempt_id: "plan-review",
-          harness_id: "review-panel",
-        });
-      }
-    }
-
     if (input.signal?.aborted) {
       return cancelledResult(
         log,
@@ -5099,68 +5098,55 @@ export class Orchestrator {
     }
 
     const failedPlanners = planAttempts.filter((p) => p.status !== "success");
-    // ALL review findings are shown (severity-marked), so a BLOCK like "the
-    // requested feature is not delivered" is visible on the plan itself — not
-    // silently filtered down to spec_gap/NEEDS_HUMAN the way v0.9 hid it.
-    const blockingFindings = reviewFindings.filter((f) => isBlocking(f));
-    const sevMark: Record<string, string> = {
-      BLOCK: "🔴 BLOCK",
-      FIX_FIRST: "🟠 FIX_FIRST",
-      NEEDS_HUMAN: "🟠 NEEDS_HUMAN",
-    };
-    const planDoc = [
-      `# Plan`,
-      "",
-      `## Goal`,
-      redactSecrets(input.prompt),
-      "",
-      `## Plan${plans.length > 1 ? "s" : ""} (${plans.length}/${planAttempts.length} planner${planAttempts.length === 1 ? "" : "s"})`,
-      ...plans.map((p) => `\n### Plan — ${p.id}\n${redactSecrets(p.text)}`),
-      ...(reviewFindings.length > 0
-        ? [
-            "",
-            "## Review findings",
-            ...reviewFindings.map(
-              (f) => `- ${sevMark[f.severity] ?? f.severity}: ${redactSecrets(f.claim)}`,
-            ),
-          ]
-        : []),
-      ...(ambiguities.length > 0
-        ? ["", "## Open questions", ...ambiguities.map((a) => `- ${redactSecrets(a.claim)}`)]
-        : []),
-      ...(failedPlanners.length > 0
-        ? [
-            "",
-            "## Planner omissions",
-            ...failedPlanners.map(
-              (p) => `- ${p.attemptId} / ${p.harnessId} ${p.status}: ${p.error}`,
-            ),
-          ]
-        : []),
-      "",
-    ].join("\n");
+    const winner = plans[0];
+    const winnerAttempt = planAttempts.find((p) => p.status === "success");
+    // final/plan.md is the PURE plan body (the winning planner's own text):
+    // implement freezes and hashes THIS file, so wrapper prose (goal, planner
+    // omissions, statuses) lives in summary.md instead (advisor pass, V6a).
+    const planDoc = redactSecrets(winner?.text ?? "(no output)");
     store.writeText(join(paths.finalDir, "plan.md"), planDoc + "\n");
+    // Engine-parsed open questions (final/questions.json): the ONE artifact
+    // plan readiness derives from. An absent tagged block is DISCLOSED as
+    // none_found — never silently equated with "ready".
+    const parsedQuestions = extractPlanQuestions(planDoc);
+    store.writeJson(join(paths.finalDir, "questions.json"), parsedQuestions);
     // A plan is a delivered work product (a report), even with risks — parity
-    // with the other read-only modes (removes the "only successful mode with no
-    // work_product" anomaly). result_kind=plan tells surfaces NO files changed.
+    // with the other read-only modes. result_kind=plan tells surfaces NO
+    // files changed.
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
       source_task_id: taskId,
-      producer_attempt_id: planAttempts.find((p) => p.status === "success")?.attemptId ?? null,
+      producer_attempt_id: winnerAttempt?.attemptId ?? null,
       meta: {
         mode: "plan",
         result_kind: "plan",
         planners: plans.length,
         diffstat: { files: 0, additions: 0, deletions: 0 },
-        blockers: blockingFindings.length,
+        blockers: 0,
         adopted: null,
       },
     });
-    // Canonical summary artifact (parity with every other mode's final/ layout).
+    const readiness = derivePlanReadiness(PlanQuestionsArtifact.parse(parsedQuestions));
     store.writeText(
       join(paths.finalDir, "summary.md"),
-      `# Run ${runId} (plan)\n\n- Status: success (plan only — no files changed)\n- Planners: ${plans.length}/${planAttempts.length} succeeded\n- Plan: final/plan.md\n- Review blockers: ${blockingFindings.length}\n- Open questions: ${ambiguities.length}\n${failedPlanners.length > 0 ? `- Omissions: ${failedPlanners.map((p) => `${p.harnessId} ${p.status}`).join(", ")}\n` : ""}`,
+      [
+        `# Run ${runId} (plan)`,
+        "",
+        `- Status: success (plan only — no files changed)`,
+        `- Planner: ${winnerAttempt?.harnessId ?? "(none)"}`,
+        `- Plan: final/plan.md`,
+        `- Open questions: ${readiness.questionCount}${parsedQuestions.parse === "none_found" ? " (no tagged block — unverified)" : ""}`,
+        `- Goal: ${redactSecrets(input.prompt).slice(0, 400)}`,
+        ...(failedPlanners.length > 0
+          ? [
+              `- Fallback omissions: ${failedPlanners
+                .map((p) => `${p.harnessId} ${p.status}`)
+                .join(", ")}`,
+            ]
+          : []),
+        "",
+      ].join("\n"),
     );
     this.writeRunTelemetry(
       store,
@@ -5173,6 +5159,11 @@ export class Orchestrator {
       planAttempts.find((p) => p.status === "success")?.attemptId ?? null,
     );
     log.emit("output.ready", { kind: "plan", path: "final/plan.md" });
+    log.emit("plan.questions", {
+      parse: parsedQuestions.parse,
+      question_count: readiness.questionCount,
+      readiness: readiness.state,
+    });
     log.emit("run.completed", { status: "success" });
 
     return {
@@ -5183,7 +5174,7 @@ export class Orchestrator {
       status: "success",
       winner: null,
       runDir: paths.root,
-      summary: `Plan from ${plans.length} planner(s); ${blockingFindings.length} blocker(s), ${ambiguities.length} open question(s).`,
+      summary: `Plan by ${winnerAttempt?.harnessId ?? "(none)"}; ${readiness.questionCount} open question(s)${parsedQuestions.parse === "none_found" ? " (untagged plan — unverified)" : ""}.`,
       candidates: planAttempts.map((p) => ({
         attemptId: p.attemptId,
         harnessId: p.harnessId,

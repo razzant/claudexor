@@ -7,8 +7,8 @@
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/GatewayClient.swift": 666,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 688,
   "packages/acp-server/src/index.ts": 374,
-  "packages/cli/src/claudexord.ts": 448,
-  "packages/cli/src/cli.ts": 1655,
+  "packages/cli/src/claudexord.ts": 480,
+  "packages/cli/src/cli.ts": 1668,
   "packages/cli/src/command-registry.ts": 501,
   "packages/cli/src/plugins.ts": 1860,
   "packages/cli/src/setup-jobs.ts": 1221,
@@ -17,11 +17,12 @@
   "packages/daemon/src/server.ts": 643,
   "packages/harness-claude/src/index.ts": 953,
   "packages/harness-codex/src/index.ts": 840,
-  "packages/harness-cursor/src/index.ts": 791,
+  "packages/harness-cursor/src/index.ts": 795,
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 699,
   "packages/orchestrator/src/orchestrator.ts": 6613,
   "packages/review/src/reviewEngine.ts": 1396,
-  "packages/schema/src/control.ts": 1523,
-  "packages/schema/src/harness.ts": 929
+  "packages/schema/src/control.ts": 1534,
+  "packages/schema/src/harness.ts": 929,
+  "packages/cli/src/control-services.ts": 602
 }

@@ -71,6 +71,7 @@ import {
   enqueueAndAwait,
   exitCodeForState,
   fetchApplyEligibility,
+  fetchPlanReadiness,
   runStatusForCli,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
@@ -795,6 +796,20 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         `  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
       );
     } else if (exitCodeForState(status) === 0) {
+      // Plan runs surface their derived readiness (D17): the server's ONE
+      // derivation over final/questions.json, never a client re-parse.
+      if (p.mode === "plan") {
+        const readiness = await fetchPlanReadiness(addr, started.runId);
+        if (readiness?.state === "needs_answers") {
+          print(
+            `  plan needs answers: ${readiness.questionCount} open question(s) — answer in a follow-up plan turn, then implement`,
+          );
+        } else if (readiness?.state === "unverified") {
+          print(`  plan questions unverified: the planner emitted no tagged Open Questions block`);
+        } else if (readiness?.state === "ready") {
+          print(`  plan ready: no open questions`);
+        }
+      }
       // Offer apply only after a positive gate; otherwise print inspect/unblock guidance.
       const eligibility = await fetchApplyEligibility(addr, started.runId);
       if (eligibility?.eligible) {

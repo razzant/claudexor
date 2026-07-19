@@ -341,6 +341,25 @@ export function runStatusForCli(state: string): string {
  * hiccup must never eat a finished run's result. Shared by the CLI post-run
  * hints and the MCP structured results so both surfaces tell the same truth.
  */
+/** Server-derived plan readiness projection (mode=plan runs). */
+export async function fetchPlanReadiness(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<{ state: string; questionCount: number } | null> {
+  if (!runId) return null;
+  try {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
+    if (!res.ok) return null;
+    const detail = (await res.json()) as Record<string, unknown>;
+    const v = detail["planReadiness"];
+    return v && typeof v === "object" ? (v as { state: string; questionCount: number }) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchApplyEligibility(
   addr: ControlApiAddress,
   runId: string,

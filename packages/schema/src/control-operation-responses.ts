@@ -44,7 +44,16 @@ export const ControlThreadTurnRequest = ControlRunStartRequest.omit({
   turnId: true,
   parentRunId: true,
   retryOf: true,
-}).describe("Client-settable thread-turn request; scope, execution and lineage are server-owned.");
+})
+  .extend({
+    /** Implement-plan only: explicitly proceed although the plan still has
+     * open questions (D17). Recorded on the turn for provenance. */
+    overridePlanReadiness: z
+      .boolean()
+      .optional()
+      .describe("Implement a not-ready plan anyway; recorded on the turn."),
+  })
+  .describe("Client-settable thread-turn request; scope, execution and lineage are server-owned.");
 export type ControlThreadTurnRequest = z.infer<typeof ControlThreadTurnRequest>;
 
 export const ControlThreadTurnResponse = z

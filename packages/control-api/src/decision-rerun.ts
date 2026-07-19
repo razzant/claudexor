@@ -35,7 +35,7 @@ export async function rerunWithFeedback(
   if (!body.feedback?.trim()) return ctx.json(res, 400, { error: "feedback is required" });
   const source = paramsRecord(rec);
   const originalPrompt = typeof source["prompt"] === "string" ? source["prompt"] : "";
-  const { turnId: _turnId, planRunId: _planRunId, ...original } = source;
+  const { turnId: _turnId, planRunId: _planRunId, planRef: _planRef, ...original } = source;
   let params: ControlRunStartRequest;
   try {
     params = runStart.normalizeRunStart(

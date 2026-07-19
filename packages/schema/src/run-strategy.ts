@@ -13,6 +13,7 @@ export function runStartStrategyViolations(value: {
   n?: number;
   autonomy?: unknown;
   maxToolCalls?: number;
+  reviewerPanel?: unknown;
 }): string[] {
   const mode = value.mode ?? "agent";
   const violations: string[] = [];
@@ -38,6 +39,11 @@ export function runStartStrategyViolations(value: {
   }
   if (value.maxToolCalls !== undefined && mode !== "orchestrate") {
     violations.push(`maxToolCalls is an orchestrate knob; mode is '${mode}'`);
+  }
+  if (value.reviewerPanel !== undefined && mode !== "agent") {
+    violations.push(
+      `reviewerPanel only applies to agent runs (plan review was retired in v3; Council is the plan critique path); mode is '${mode}'`,
+    );
   }
   return violations;
 }

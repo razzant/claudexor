@@ -442,6 +442,31 @@ const reviewers = () => [
   cleanReviewer("rev-anthropic", "anthropic"),
 ];
 
+function markdownPlannerAdapter(id: string, planLines: string[]): HarnessAdapter {
+  return {
+    id,
+    async discover() {
+      return HarnessManifest.parse({
+        id,
+        display_name: id,
+        kind: "local_cli",
+        provider_family: "openai",
+        capabilities: { plan: true },
+        access_profiles_supported: ["readonly"],
+      });
+    },
+    async doctor() {
+      return ConformanceReport.parse({ harness_id: id, status: "ok", enabled_intents: ["plan"] });
+    },
+    async *run(spec) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: spec.session_id, ts };
+      yield { type: "message", session_id: spec.session_id, ts, text: planLines.join("\n") };
+      yield { type: "completed", session_id: spec.session_id, ts };
+    },
+  };
+}
+
 describe("Orchestrator", () => {
   it("keeps review evidence external even when a candidate path would block the old in-tree copy", () => {
     const source = mkdtempSync(join(tmpdir(), "claudexor-review-source-"));
@@ -4659,146 +4684,113 @@ describe("Orchestrator", () => {
     expect(decision).toContain("delivery_receipt: final/delivery_receipt.yaml");
   });
 
-  it("plan mode writes an honest plan (no SpecPack) that surfaces review findings", async () => {
+  it("plan mode writes the pure plan body and engine-parsed questions.json", async () => {
     const repo = await initRepo();
-    // A reviewer that BLOCKs: the plan must still surface it, not hide it.
-    const blocker: ReviewerSpec = {
-      providerFamily: "anthropic",
-      adapter: {
-        id: "rev-block",
-        async discover() {
-          return HarnessManifest.parse({
-            id: "rev-block",
-            display_name: "rev-block",
-            kind: "local_cli",
-            provider_family: "anthropic",
-            capabilities: { review: true },
-          });
-        },
-        async doctor() {
-          return ConformanceReport.parse({
-            harness_id: "rev-block",
-            status: "ok",
-            enabled_intents: ["review"],
-          });
-        },
-        async *run(spec) {
-          const ts = new Date().toISOString();
-          yield {
-            type: "started",
-            session_id: spec.session_id,
-            ts,
-            observed_model: "rev-block-model",
-          };
-          yield {
-            type: "message",
-            session_id: spec.session_id,
-            ts,
-            text:
-              "```json\n" +
-              JSON.stringify([
-                {
-                  severity: "BLOCK",
-                  category: "deploy",
-                  claim: "the requested feature is not delivered",
-                  evidence: { files: [{ path: "DIFF.patch", lines: "1" }] },
-                },
-              ]) +
-              "\n```",
-          };
-          yield { type: "completed", session_id: spec.session_id, ts };
-        },
-      },
-    };
-    const orch = new Orchestrator({
-      registry: new Map([["fake-success", createFakeHarness("fake-success")]]),
-      reviewers: [blocker],
-    });
+    const planner = markdownPlannerAdapter("planner", [
+      "# Plan body",
+      "1. Do the thing in src/a.ts",
+      "",
+      "## Open Questions",
+      "- [single] Which store? :: sqlite :: json",
+      "- [text] Anything else ambiguous?",
+    ]);
+    const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "make a racing game",
       mode: "plan",
-      harnesses: ["fake-success"],
+      harnesses: ["planner"],
     });
     expect(res.status).toBe("success");
+    // PURE body: the wrapper (goal/status) lives in summary.md — implement
+    // freezes and hashes plan.md, so it must be the plan and nothing else.
     const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
-    expect(plan).toContain("# Plan");
-    expect(plan).not.toContain("SpecPack");
-    expect(plan).toContain("## Review findings");
-    expect(plan).toContain("the requested feature is not delivered"); // BLOCK is visible, not hidden
-    // Plan is a work product (report) with result_kind=plan: NO files changed.
+    expect(plan).toContain("# Plan body");
+    expect(plan).not.toContain("## Goal");
+    const questions = JSON.parse(
+      readFileSync(join(res.runDir, "final", "questions.json"), "utf8"),
+    ) as { parse: string; questions: Array<Record<string, unknown>> };
+    expect(questions.parse).toBe("found");
+    expect(questions.questions).toHaveLength(2);
+    expect(questions.questions[0]).toMatchObject({
+      kind: "single",
+      options: [
+        { id: "o1", label: "sqlite" },
+        { id: "o2", label: "json" },
+      ],
+    });
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("result_kind: plan");
-    expect(wp).toContain("blockers: 1");
     const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
-    expect(summary).toContain("- Review blockers: 1");
-    const reviewYaml = readFileSync(join(res.runDir, "reviews", "plan-review.yaml"), "utf8");
-    expect(reviewYaml).toContain("status: accepted");
-    const reviewPlanEvidence = readFileSync(
-      join(res.runDir, "review-evidence", "PLAN_ACCEPTED.md"),
-      "utf8",
-    );
-    expect(reviewPlanEvidence).toContain("## Plan from fake-success");
-    expect(reviewPlanEvidence).toContain("Implemented by the fake harness.");
-    const reviewDiffEvidence = readFileSync(
-      join(res.runDir, "review-evidence", "DIFF.patch"),
-      "utf8",
-    );
-    expect(reviewDiffEvidence).toBe("(plan review — no code diff)\n");
-    expect(reviewDiffEvidence).not.toContain("Implemented by the fake harness.");
+    expect(summary).toContain("Open questions: 2");
+    expect(summary).toContain("Goal: make a racing game");
   });
 
-  it("validates explicit reviewer panel before starting plan harness work", async () => {
+  it("an untagged plan is DISCLOSED as unverified, never silently ready", async () => {
     const repo = await initRepo();
-    let plannerStarted = false;
-    let runStarted = false;
-    const planner: HarnessAdapter = {
-      id: "planner",
-      async discover() {
-        return HarnessManifest.parse({
-          id: "planner",
-          display_name: "planner",
-          kind: "local_cli",
-          provider_family: "openai",
-          capabilities: { plan: true },
-          access_profiles_supported: ["readonly"],
-        });
-      },
-      async doctor() {
-        return ConformanceReport.parse({
-          harness_id: "planner",
-          status: "ok",
-          enabled_intents: ["plan"],
-        });
-      },
+    const planner = markdownPlannerAdapter("planner", ["# Plan body without the tagged block"]);
+    const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "vague ask",
+      mode: "plan",
+      harnesses: ["planner"],
+    });
+    expect(res.status).toBe("success");
+    const questions = JSON.parse(
+      readFileSync(join(res.runDir, "final", "questions.json"), "utf8"),
+    ) as { parse: string };
+    expect(questions.parse).toBe("none_found");
+    expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain("unverified");
+    expect(res.summary).toContain("unverified");
+  });
+
+  it("solo planning falls back to the next pool member when the primary planner fails", async () => {
+    const repo = await initRepo();
+    const failing: HarnessAdapter = {
+      ...markdownPlannerAdapter("planner-a", []),
       async *run(spec) {
-        plannerStarted = true;
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          error: "planner-a exploded",
+        };
         yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
       },
     };
+    const succeeding = markdownPlannerAdapter("planner-b", [
+      "# Plan B",
+      "",
+      "## Open Questions",
+      "- (none)",
+    ]);
+    const eventTypes: string[] = [];
     const orch = new Orchestrator({
-      registry: new Map([["planner", planner]]),
-      reviewerPanel: [{ harness: "missing-reviewer" }],
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", failing],
+        ["planner-b", succeeding],
+      ]),
+      reviewers: [],
     });
-
-    const planRes = await orch.run({
+    const res = await orch.run({
       repoRoot: repo,
-      prompt: "plan",
+      prompt: "plan it",
       mode: "plan",
-      harnesses: ["planner"],
-      runId: "invalid-panel-plan",
-      onRunStart: () => {
-        runStarted = true;
-      },
+      harnesses: ["planner-a", "planner-b"],
+      onEvent: (event) => eventTypes.push(event.type),
     });
-    // The doomed panel ends the run with typed failure ARTIFACTS after the
-    // run dir exists — but still BEFORE any planner harness work spawns.
-    expect(planRes.status).toBe("failed");
-    expect(planRes.summary).toMatch(/unknown reviewer harness 'missing-reviewer'/);
-    expect(plannerStarted).toBe(false);
-    expect(runStarted).toBe(true);
-    const failure = readFileSync(join(planRes.runDir, "final", "failure.yaml"), "utf8");
-    expect(failure).toContain("review_preflight");
+    expect(res.status).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain("# Plan B");
+    // Zero open questions with a FOUND tagged block => ready.
+    const questions = JSON.parse(
+      readFileSync(join(res.runDir, "final", "questions.json"), "utf8"),
+    ) as { parse: string; questions: unknown[] };
+    expect(questions.parse).toBe("found");
+    expect(questions.questions).toHaveLength(0);
+    expect(eventTypes).toContain("route.fallback.started");
+    expect(eventTypes).toContain("route.fallback.completed");
+    expect(res.candidates.map((c) => c.status)).toEqual(["failed", "success"]);
   });
 
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {
@@ -5833,74 +5825,42 @@ describe("Orchestrator", () => {
     expect(race.status).toBe("cancelled");
   });
 
-  it("cancels plan mode after a plan-review abort instead of writing a success plan", async () => {
+  it("cancels plan mode mid-planner instead of writing a success plan", async () => {
     const repo = await initRepo();
-    let reviewerStarted = false;
-    const reviewer: ReviewerSpec = {
-      providerFamily: "anthropic",
-      adapter: {
-        id: "slow-plan-reviewer",
-        async discover() {
-          return HarnessManifest.parse({
-            id: "slow-plan-reviewer",
-            display_name: "slow plan reviewer",
-            kind: "local_cli",
-            provider_family: "anthropic",
-            capabilities: { review: true },
-          });
-        },
-        async doctor() {
-          return ConformanceReport.parse({
-            harness_id: "slow-plan-reviewer",
-            status: "ok",
-            enabled_intents: ["review"],
-          });
-        },
-        async *run(spec) {
-          reviewerStarted = true;
-          const ts = new Date().toISOString();
-          yield {
-            type: "started",
-            session_id: spec.session_id,
-            ts,
-            observed_model: "slow-plan-reviewer-model",
-          };
-          const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
-          await new Promise<void>((resolve) => {
-            if (!signal || signal.aborted) {
-              resolve();
-              return;
-            }
-            signal.addEventListener("abort", () => resolve(), { once: true });
-          });
-        },
+    let plannerStarted = false;
+    const slow: HarnessAdapter = {
+      ...markdownPlannerAdapter("slow-planner", []),
+      async *run(spec) {
+        plannerStarted = true;
+        yield { type: "started", session_id: spec.session_id, ts: new Date().toISOString() };
+        const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
+        await new Promise<void>((resolve) => {
+          if (!signal || signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
       },
     };
     const controller = new AbortController();
-    const eventTypes: string[] = [];
     const orch = new Orchestrator({
-      registry: new Map([["fake-success", createFakeHarness("fake-success")]]),
-      reviewers: [reviewer],
+      registry: new Map([["slow-planner", slow]]),
+      reviewers: [],
     });
     const res = await orch.run({
       repoRoot: repo,
       prompt: "map cancellation",
       mode: "plan",
-      harnesses: ["fake-success"],
+      harnesses: ["slow-planner"],
       signal: controller.signal,
       onEvent: (event) => {
-        eventTypes.push(event.type);
-        if (event.type === "reviewer.first_event") controller.abort();
+        if (event.type === "harness.event") controller.abort();
       },
     });
-    expect(reviewerStarted).toBe(true);
-    expect(eventTypes).toContain("reviewer.first_event");
+    expect(plannerStarted).toBe(true);
     expect(res.status).toBe("cancelled");
-    expect(res.candidates.some((candidate) => candidate.status === "success")).toBe(true);
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(false);
-    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
-    expect(events).toContain('"type":"run.failed"');
-    expect(events).toContain('"status":"cancelled"');
   });
 
   it("cancels agent mode after a reviewer-panel abort instead of continuing to arbitration", async () => {

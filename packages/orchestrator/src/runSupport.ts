@@ -83,23 +83,6 @@ export function writeRaceDeliveryDecision(
  * sequentially, so each leg after the first sees what the earlier ones
  * proposed and is asked to reconcile/extend them (not blindly repeat).
  */
-export function relayPriorPlansSection(plans: { id: string; text: string }[]): string {
-  if (plans.length === 0) return "";
-  // No silent truncation: a relayed plan cut at the cap carries an explicit
-  // in-band marker so the next planner KNOWS it saw a prefix, not the whole.
-  const CAP = 4000;
-  const blocks = plans
-    .map((p) => {
-      const cut = p.text.length > CAP;
-      const body = cut
-        ? `${p.text.slice(0, CAP)}\n[... plan truncated at ${CAP} chars — the source run's plan artifact carries the full text]`
-        : p.text;
-      return `### Plan already proposed by ${p.id}\n${body}`;
-    })
-    .join("\n\n");
-  return `\n\n---\nOTHER HARNESSES HAVE ALREADY PROPOSED PLANS FOR THIS SAME TASK (below). Read them, then produce YOUR plan: build on what is solid, RECONCILE the differences, and EXPLICITLY call out where you disagree and why. Do not blindly repeat them — converge toward one aligned plan.\n\n${blocks}\n---\n`;
-}
-
 export interface TransientRetryPolicy {
   maxRetries: number;
   initialDelayMs: number;

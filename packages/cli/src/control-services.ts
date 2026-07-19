@@ -238,6 +238,8 @@ export function controlServices(
         kind?: unknown;
         parentRunId?: string | null;
         planRunId?: string | null;
+        planHash?: string | null;
+        planOverridden?: boolean;
         attachments?: ResourceAttachmentRef[];
         idempotency?: { key: string; client: string; request: unknown };
       },
@@ -246,6 +248,8 @@ export function controlServices(
         kind: opts.kind as any,
         parentRunId: opts.parentRunId,
         planRunId: opts.planRunId,
+        planHash: opts.planHash,
+        planOverridden: opts.planOverridden,
         attachments: resources.resolve(opts.attachments),
         idempotency: opts.idempotency,
       }),

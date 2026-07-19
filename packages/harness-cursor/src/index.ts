@@ -706,6 +706,10 @@ async function* runCursor(
     return;
   }
   const args = ["-p", "--output-format", "stream-json", ...accessArgs(spec.access)];
+  // Native plan mode (D31): cursor exposes a first-class read-only planning
+  // mode; ride it for plan-intent lanes instead of prompt-templating only.
+  // (codex/opencode have no headless plan flag — they keep the template.)
+  if (spec.intent === "plan") args.push("--mode", "plan");
   // W-C4 live deltas (engine-gated; the parser applies the documented taxonomy).
   if (spec.stream_deltas) args.push("--stream-partial-output");
   if (spec.model_hint) args.push("--model", spec.model_hint);

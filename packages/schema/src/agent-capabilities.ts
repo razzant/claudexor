@@ -22,7 +22,7 @@ import { AttachmentInputClass } from "./attachment.js";
  * from the advertised run-control keys, or the catalog would lie to agents.
  * ONE list, two consumers — keep them in lockstep here.
  */
-export const RUN_START_CLIENT_REJECTED_KEYS = ["turnId", "planRunId"] as const;
+export const RUN_START_CLIENT_REJECTED_KEYS = ["turnId", "planRunId", "planRef"] as const;
 
 /**
  * Mode -> tree mutability. ask/plan/audit are read-only BY CONSTRUCTION

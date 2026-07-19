@@ -70,6 +70,8 @@ export const RunEventType = z
     "interaction.timeout",
     "interaction.answer_discarded",
     "plan.progress",
+    "plan.questions",
+    "plan.brief.materialized",
     "budget.quota_pressure",
     "output.ready",
     "gate.started",

@@ -1530,6 +1530,39 @@
           "description": "The run's work product; null when none was produced.",
           "default": null
         },
+        "planReadiness": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "ready",
+                    "needs_answers",
+                    "unverified"
+                  ],
+                  "description": "Derived plan readiness: ready (block parsed, zero open questions), needs_answers (open questions remain), unverified (no parseable block — the planner ignored the format)."
+                },
+                "questionCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 0
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "additionalProperties": false,
+              "description": "Server-derived readiness of a plan run (one derivation owner; D17)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Derived readiness of a plan run; null for non-plan runs.",
+          "default": null
+        },
         "applyEligibility": {
           "anyOf": [
             {

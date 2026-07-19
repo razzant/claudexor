@@ -65,6 +65,8 @@ import { controlProblemError } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import { handleSpecRoute, type SpecRouteServices } from "./spec-routes.js";
 import {
+  PlanQuestionsArtifact,
+  derivePlanReadiness,
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
   ControlAuthReadinessRefreshResponse,
@@ -281,6 +283,8 @@ export interface DaemonControlApiOptions {
           kind?: unknown;
           parentRunId?: string | null;
           planRunId?: string | null;
+          planHash?: string | null;
+          planOverridden?: boolean;
           attachments?: ResourceAttachmentRef[];
           idempotency?: { key: string; client: string; request: unknown };
         },
@@ -1853,6 +1857,7 @@ export class DaemonControlApiServer {
       json: (res, status, body) => this.json(res, status, body),
       waitForRunStart: (jobId) => this.waitForRunStart(jobId),
       readRunArtifactText: (runId, rel) => this.readRunArtifactText(runId, rel),
+      resolveRunArtifactPath: async (runId, rel) => this.resolveRunArtifactPath(runId, rel),
       normalizeStart: runStart.normalizeRunStart,
       preflightRunRequirements: services.preflightRunRequirements,
       isTerminalState: (state) => TERMINAL_STATES.has(state),
@@ -1898,6 +1903,13 @@ export class DaemonControlApiServer {
       appendAudit: appendRunAuditEvent,
       gateSpecs: gateSpecsForRun,
     };
+  }
+
+  private async resolveRunArtifactPath(runId: string, rel: string): Promise<string | null> {
+    const rec = await this.findRun(runId);
+    if (!rec?.runDir) return null;
+    const abs = join(rec.runDir, rel);
+    return existsSync(abs) ? abs : null;
   }
 
   private async readRunArtifactText(runId: string, rel: string): Promise<string | null> {
@@ -2388,6 +2400,7 @@ function detailFor(
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     // Derived apply-gate verdict (single producer: delivery's
     // deriveApplyEligibility) — null when the run has no patch artifact.
+    planReadiness: planReadinessFor(rec, summary.mode),
     applyEligibility: applyEligibilityFor(rec, operator),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
@@ -2602,6 +2615,13 @@ function applyGateInputFor(
  * patch artifact (nothing to apply); otherwise the derived verdict against
  * the run's own original project root.
  */
+
+function planReadinessFor(rec: DaemonRunRecord, mode: string | null | undefined) {
+  if (mode !== "plan" || !rec.runDir) return null;
+  const artifact = safeReadStructuredArtifact(rec, "final/questions.json", PlanQuestionsArtifact);
+  return artifact ? derivePlanReadiness(artifact) : null;
+}
+
 function applyEligibilityFor(
   rec: DaemonRunRecord,
   operatorDecision: ControlOperatorDecisionRecord | null,

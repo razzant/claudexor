@@ -47,6 +47,10 @@ export interface CreateTurnInput {
   parentRunId?: string | null;
   /** Set when this turn implements an approved plan from an earlier run. */
   planRunId?: string | null;
+  /** Freeze-on-implement provenance (D17): sha256 of the implemented plan. */
+  planHash?: string | null;
+  /** True when the user explicitly implemented a not-ready plan. */
+  planOverridden?: boolean;
   /** Files/images attached to this turn, already resolved to scoped on-disk paths. */
   attachments?: Attachment[];
   idempotency?: { key: string; client: string; request: unknown };
@@ -413,6 +417,8 @@ export class ThreadStore {
       run_id: null,
       parent_run_id: input.parentRunId !== undefined ? input.parentRunId : thread.head_run_id,
       plan_run_id: input.planRunId ?? null,
+      plan_hash: input.planHash ?? null,
+      plan_readiness_overridden: input.planOverridden === true,
       kind,
       // The durable conversation store is read back into UIs: redact at the
       // persistence boundary exactly like other durable state projections do.

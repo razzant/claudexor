@@ -6,8 +6,11 @@
  * ctx of bound helpers; these functions own the per-thread serialization and
  * the refused-turn honesty rules (persist the refusal ON the turn, INV-093).
  */
+import { createHash } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import {
+  PlanQuestionsArtifact,
+  derivePlanReadiness,
   ControlRunStartInfo,
   ControlRunStartRequest,
   ControlThreadTurnResponse,
@@ -20,6 +23,7 @@ export interface ThreadTurnRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
   waitForRunStart(jobId: string): Promise<DaemonRunRecord>;
   readRunArtifactText(runId: string, relPath: string): Promise<string | null>;
+  resolveRunArtifactPath(runId: string, relPath: string): Promise<string | null>;
   /** The server's single run-start normalizer (scope/prompt/policy validation). */
   normalizeStart(parsed: ControlRunStartRequest): ControlRunStartRequest;
   preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
@@ -33,6 +37,8 @@ export interface ThreadTurnRouteCtx {
     opts: {
       parentRunId?: string | null;
       planRunId?: string | null;
+      planHash?: string | null;
+      planOverridden?: boolean;
       attachments?: ResourceAttachmentRef[];
       idempotency?: { key: string; client: string; request: unknown };
     },
@@ -222,9 +228,15 @@ export function handleThreadTurnCreate(
       let mode = typeof body["mode"] === "string" ? (body["mode"] as string) : thread.mode;
       const planRunId =
         typeof body["planRunId"] === "string" ? (body["planRunId"] as string) : null;
-      // "Implement plan": prefix the approved plan from an earlier turn into
-      // the prompt and force agent mode. The plan run must belong to THIS
-      // thread (no cross-thread artifact reads).
+      // "Implement plan" (D17/D27): the plan is FROZEN at implement time
+      // (sha256 of final/plan.md recorded on the turn and delivered to the
+      // executor as a server-owned planRef file reference) — never
+      // re-embedded into the prompt text, so the visible turn stays a
+      // compact card and an in-place native session cannot see the plan
+      // twice. The plan run must belong to THIS thread.
+      let planRef: { runId: string; sha256: string; path: string } | null = null;
+      let planHash: string | null = null;
+      let planOverridden = false;
       if (planRunId) {
         if (!(thread.run_ids ?? []).includes(planRunId)) {
           throw Object.assign(new Error(`planRunId ${planRunId} is not a turn of this thread`), {
@@ -240,8 +252,36 @@ export function handleThreadTurnCreate(
             { status: 400 },
           );
         }
+        // Readiness gate (D17): open questions refuse implement with a typed
+        // 409 unless the user explicitly overrides; the override is recorded
+        // on the turn for provenance.
+        const questions = await ctx.readRunArtifactText(planRunId, "final/questions.json");
+        const readiness = planReadinessFromArtifactText(questions);
+        planOverridden = body["overridePlanReadiness"] === true;
+        if (readiness.state === "needs_answers" && !planOverridden) {
+          throw Object.assign(
+            new Error(
+              `plan ${planRunId} is not ready: ${readiness.questionCount} open question(s) — answer them in a follow-up plan turn, or pass overridePlanReadiness:true`,
+            ),
+            { status: 409, code: "plan_not_ready" },
+          );
+        }
+        const digest = createHash("sha256").update(planText, "utf8").digest("hex");
+        planHash = digest;
+        const planPath = await ctx.resolveRunArtifactPath(planRunId, "final/plan.md");
+        if (!planPath) {
+          throw Object.assign(
+            new Error(`plan run ${planRunId} artifact path could not be resolved`),
+            { status: 400 },
+          );
+        }
+        planRef = { runId: planRunId, sha256: digest, path: planPath };
+        const extra = prompt.trim();
         prompt =
-          `Implement the following approved plan. Deviate only where the code contradicts it, and say so.\n\n${planText}\n\n## Additional instruction\n${prompt}`.trim();
+          `Implement the approved plan of this thread (delivered as a plan file in your run context; the engine appends its exact path). Re-read it as needed; deviate only where the code contradicts it, and say so.` +
+          (extra && extra !== "Implement this plan."
+            ? `\n\n## Additional instruction\n${extra}`
+            : "");
         mode = "agent";
       }
       // Agent turns run "live" in the execution tree (in-place project or the
@@ -288,6 +328,7 @@ export function handleThreadTurnCreate(
           // clamps read-only modes to readonly regardless).
           ...(body["access"] === undefined && thread.access ? { access: thread.access } : {}),
           ...(inheritPrimary ? { primaryHarness: inheritPrimary } : {}),
+          ...(planRef ? { planRef } : {}),
           ...(body["harnesses"] === undefined &&
           thread.eligible_harnesses &&
           thread.eligible_harnesses.length > 0
@@ -303,6 +344,8 @@ export function handleThreadTurnCreate(
         // No explicit kind: the store auto-detects initial vs followup so the
         // FIRST turn of a thread is "initial", not "followup" (review #4).
         parentRunId: thread.head_run_id ?? null,
+        planHash,
+        planOverridden,
         planRunId,
         attachments: params.attachments,
         idempotency: {
@@ -499,4 +542,19 @@ export function handleThreadTurnRetry(
       });
     }
   });
+}
+
+/** Derive readiness from a raw final/questions.json body. Missing/corrupt
+ * artifact (pre-v3 plan runs mid-branch) counts as unverified: implement is
+ * allowed but never silently "ready". */
+function planReadinessFromArtifactText(text: string | null): {
+  state: "ready" | "needs_answers" | "unverified";
+  questionCount: number;
+} {
+  if (!text) return { state: "unverified", questionCount: 0 };
+  try {
+    return derivePlanReadiness(PlanQuestionsArtifact.parse(JSON.parse(text)));
+  } catch {
+    return { state: "unverified", questionCount: 0 };
+  }
 }

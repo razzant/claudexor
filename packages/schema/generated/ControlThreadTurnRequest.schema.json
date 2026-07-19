@@ -315,6 +315,29 @@
           "minLength": 1,
           "description": "Internal daemon handoff only; rejected (400) on POST /runs. When set, the turn implements an approved plan from that run."
         },
+        "planRef": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "$ref": "#/definitions/ControlThreadTurnRequest/properties/planRunId"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "runId",
+            "sha256",
+            "path"
+          ],
+          "additionalProperties": false,
+          "description": "Internal daemon handoff only; rejected (400) on POST /runs. Frozen-plan reference delivered to the executor as a file."
+        },
         "reviewerPanel": {
           "type": "array",
           "items": {
@@ -402,6 +425,10 @@
           "type": "integer",
           "exclusiveMinimum": 0,
           "description": "Per-run turn cap (beats per-harness settings)."
+        },
+        "overridePlanReadiness": {
+          "type": "boolean",
+          "description": "Implement a not-ready plan anyway; recorded on the turn."
         }
       },
       "additionalProperties": false,

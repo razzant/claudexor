@@ -194,11 +194,29 @@ export const ControlRunStartRequest = z
     retryOf: Id.optional().describe(
       "Server-owned Exact Retry lineage; direct POST /runs rejects it.",
     ),
-    /** When set, this turn implements an approved plan: the engine prefixes the
-     * parent plan run's final/plan.md into the prompt (mode is forced to agent). */
+    /** When set, this turn implements an approved plan (mode is forced to
+     * agent); the plan is DELIVERED AS A FILE (planRef), never re-embedded
+     * into the prompt text. */
     planRunId: Id.optional().describe(
       "Internal daemon handoff only; rejected (400) on POST /runs. When set, the turn implements an approved plan from that run.",
     ),
+    /** Server-owned frozen-plan reference (D17 freeze-on-implement): the plan
+     * run, the sha256 of its final/plan.md at implement time, and the
+     * engine-resolved absolute artifact path. The orchestrator re-reads the
+     * file, verifies the hash (tamper fence), and materializes it into the
+     * execution context; retry replays it verbatim so a retried implement can
+     * never silently run without its plan. */
+    planRef: z
+      .object({
+        runId: Id,
+        sha256: z.string().regex(/^[0-9a-f]{64}$/),
+        path: z.string().min(1),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "Internal daemon handoff only; rejected (400) on POST /runs. Frozen-plan reference delivered to the executor as a file.",
+      ),
     /** Explicit reviewer panel. When present it overrides the legacy
      * per-provider-family reviewerModels/reviewerEfforts maps and preserves
      * duplicate harness entries for multi-model same-provider reviews. */

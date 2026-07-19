@@ -52,6 +52,19 @@
           "description": "Set when this turn implements an approved plan from an earlier plan run.",
           "default": null
         },
+        "plan_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "sha256 of the implemented plan at freeze time; null for non-implement turns."
+        },
+        "plan_readiness_overridden": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the user explicitly implemented a plan with open questions."
+        },
         "kind": {
           "type": "string",
           "enum": [

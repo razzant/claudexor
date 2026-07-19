@@ -2834,6 +2834,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("accepts an explicit ordered reviewer panel at the HTTP boundary", async () => {
+    const panelRoot = mkdtempSync(join(tmpdir(), "claudexor-panel-"));
     const { daemon } = fakeDaemon();
     let enqueued: unknown;
     const wrapped: DaemonFacadeClient = {
@@ -2849,7 +2850,8 @@ describe("DaemonControlApiServer", () => {
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
           prompt: "review it",
-          mode: "ask",
+          mode: "agent",
+          scope: { kind: "project", root: panelRoot },
           reviewerPanel: [
             { harness: "claude", model: "claude-opus-4-8", effort: "max" },
             { harness: "cursor", model: "gemini-3.1-pro" },
@@ -2874,7 +2876,8 @@ describe("DaemonControlApiServer", () => {
         headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({
           prompt: "review it",
-          mode: "ask",
+          mode: "agent",
+          scope: { kind: "project", root: panelRoot },
           reviewerPanel: [{ harness: "cursor", effort: "turbo" }],
         }),
       });

@@ -51,8 +51,8 @@ describe("AgentCapabilityCatalog surfaces", () => {
     // The schema carries the internal keys (thread-turn pipeline)...
     for (const internal of RUN_START_CLIENT_REJECTED_KEYS) expect(keys).toContain(internal);
     // ...and the shared exclusion list covers exactly the daemon's 400-guards
-    // (turnId, planRunId) so the catalog never advertises a key that 400s.
-    expect([...RUN_START_CLIENT_REJECTED_KEYS].sort()).toEqual(["planRunId", "turnId"]);
+    // (turnId, planRunId, planRef) so the catalog never advertises a key that 400s.
+    expect([...RUN_START_CLIENT_REJECTED_KEYS].sort()).toEqual(["planRef", "planRunId", "turnId"]);
   });
 
   it("MODE_MUTABILITY covers every canonical mode with a closed verdict", () => {

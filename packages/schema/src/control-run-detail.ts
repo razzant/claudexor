@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PlanReadiness } from "./plan.js";
 import { ApplyEligibility } from "./apply-eligibility.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
@@ -150,6 +151,11 @@ export const ControlRunDetail = z
       .default(null)
       .describe("The run's work product; null when none was produced."),
     /** Derived apply-gate verdict (single producer: the delivery gate); null when the run has no patch artifact. */
+    /** Derived plan readiness (mode=plan runs; single derivation owner —
+     * derivePlanReadiness over final/questions.json). Null otherwise. */
+    planReadiness: PlanReadiness.nullable()
+      .default(null)
+      .describe("Derived readiness of a plan run; null for non-plan runs."),
     applyEligibility: ApplyEligibility.nullable()
       .default(null)
       .describe(

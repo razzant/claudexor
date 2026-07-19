@@ -288,6 +288,10 @@ async function main(): Promise<void> {
               interactions.answer(subRunId, interactionId, answers).status === "delivered",
             repoRoot,
             prompt: String(p.prompt ?? ""),
+            planRef:
+              p.planRef && typeof p.planRef === "object"
+                ? (p.planRef as { runId: string; sha256: string; path: string })
+                : undefined,
             instructions: typeof p.instructions === "string" ? p.instructions : undefined,
             denyPaths: Array.isArray(p.denyPaths) ? p.denyPaths : undefined,
             maxTurns: typeof p.maxTurns === "number" && p.maxTurns > 0 ? p.maxTurns : undefined,

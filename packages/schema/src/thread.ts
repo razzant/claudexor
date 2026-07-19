@@ -263,6 +263,19 @@ export const ThreadTurn = z
     plan_run_id: Id.nullable()
       .default(null)
       .describe("Set when this turn implements an approved plan from an earlier plan run."),
+    /** Freeze-on-implement (D17): sha256 of the plan run's final/plan.md at
+     * the moment this implement turn was created. */
+    plan_hash: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("sha256 of the implemented plan at freeze time; null for non-implement turns."),
+    /** True when the user explicitly overrode a not-ready plan (open
+     * questions remained); recorded for provenance, rendered on the card. */
+    plan_readiness_overridden: z
+      .boolean()
+      .default(false)
+      .describe("True when the user explicitly implemented a plan with open questions."),
     kind: ThreadTurnKind.default("followup"),
     prompt: z.string().default("").describe("The user's message for this turn."),
     /** Files/images the user attached to this turn (resolved scoped paths). */
