@@ -5831,7 +5831,6 @@ describe("DaemonControlApiServer", () => {
     const snapshot = {
       sources: [],
       routing: {
-        defaultPolicy: "auto" as const,
         primaryHarness: null,
         eligibleHarnesses: [],
         envInheritance: "mirror_native" as const,
@@ -5867,7 +5866,7 @@ describe("DaemonControlApiServer", () => {
       const badSettings = await apiFetch(`${base}/settings`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ routingPolicy: "surprise" }),
+        body: JSON.stringify({ envInheritance: "surprise" }),
       });
       expect(badSettings.status).toBe(400);
 

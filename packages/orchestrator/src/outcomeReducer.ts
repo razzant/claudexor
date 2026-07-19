@@ -59,7 +59,7 @@ export function reduceOrchestrateOutcome(steps: readonly OrchestrateStepOutcome[
 
 /** Delivery receipts, not the requested autonomy, determine whether execution mutated state. */
 export function deliveryReceiptMutated(receipt: DeliveryReceipt): boolean {
-  return receipt.treeMutated ?? (receipt.applied && receipt.mode !== "artifact_only");
+  return receipt.treeMutated ?? receipt.applied;
 }
 
 export interface ReferencedRunStatus {

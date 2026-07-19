@@ -7,13 +7,6 @@ import { TestCommandGrant, TestCommandInvocation } from "./task.js";
 
 // All retired v1 portfolio ids are rejected; v2 routing uses the explicit
 // auto, quality, and economy goals instead.
-export const RoutingPolicy = z
-  .enum(["auto", "primary"])
-  .describe(
-    "Default routing policy: auto (engine picks) or primary (prefer the configured primary harness).",
-  );
-export type RoutingPolicy = z.infer<typeof RoutingPolicy>;
-
 /**
  * Project config — safe, versioned settings. This shape may NOT carry sensitive
  * settings (full access, secrets, budget-above-cap, plugin auto-install, etc.);
@@ -114,7 +107,6 @@ export const GlobalConfig = z
       ),
     routing: z
       .object({
-        default_policy: RoutingPolicy.default("auto"),
         primary_harness: z
           .string()
           .nullable()

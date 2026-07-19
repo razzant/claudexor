@@ -23,7 +23,6 @@ export function settingsSnapshot(repoRoot: string) {
     sources: cfg.sources,
     interactionTimeoutMs: cfg.global.interaction_timeout_ms,
     routing: {
-      defaultPolicy: cfg.global.routing.default_policy,
       primaryHarness: cfg.global.routing.primary_harness,
       eligibleHarnesses: cfg.global.routing.eligible_harnesses,
       envInheritance: cfg.global.routing.env_inheritance,

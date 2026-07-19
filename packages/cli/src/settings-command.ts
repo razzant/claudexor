@@ -122,7 +122,6 @@ function settingPatch(key: string, value: string): SettingsPatch {
   }
   if (key === "env_inheritance")
     return ControlSettingsUpdateRequest.parse({ envInheritance: value });
-  if (key === "routing_policy") return ControlSettingsUpdateRequest.parse({ routingPolicy: value });
   if (key === "paid_budget_per_run") {
     if (value === "unlimited")
       return ControlSettingsUpdateRequest.parse({ paidBudgetPerRun: { kind: "unlimited" } });
@@ -144,7 +143,6 @@ function printSettings(settings: ReturnType<typeof ControlSettingsSnapshot.parse
   print(`sources: ${settings.sources.length ? settings.sources.join(", ") : "(defaults)"}`);
   print(`routing.goal: ${settings.routing.goal}`);
   print(`routing.paid_fallback: ${settings.routing.paidFallback}`);
-  print(`routing.default_policy: ${settings.routing.defaultPolicy}`);
   print(`routing.primary_harness: ${settings.routing.primaryHarness ?? "(none)"}`);
   print(
     `routing.eligible_harnesses: ${settings.routing.eligibleHarnesses.length ? settings.routing.eligibleHarnesses.join(", ") : "(auto)"}`,

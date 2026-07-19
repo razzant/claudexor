@@ -87,14 +87,6 @@
           "exclusiveMinimum": 0,
           "description": "New interactive-answer timeout, in milliseconds."
         },
-        "routingPolicy": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "primary"
-          ],
-          "description": "New default routing policy."
-        },
         "primaryHarness": {
           "anyOf": [
             {

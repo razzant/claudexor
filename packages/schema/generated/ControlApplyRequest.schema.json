@@ -48,14 +48,13 @@
         "mode": {
           "type": "string",
           "enum": [
-            "artifact_only",
             "apply",
             "branch",
             "commit",
             "pr"
           ],
           "default": "apply",
-          "description": "Delivery mode: artifact_only (export only), apply to the tree, or as a branch, commit, or PR."
+          "description": "Delivery mode: apply to the tree, or as a branch, commit, or PR."
         },
         "branch": {
           "type": "string",

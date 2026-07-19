@@ -933,11 +933,9 @@ export const ControlApplyRequest = z
   .object({
     target: ApplyTarget.default({ kind: "original_project" }),
     mode: z
-      .enum(["artifact_only", "apply", "branch", "commit", "pr"])
+      .enum(["apply", "branch", "commit", "pr"])
       .default("apply")
-      .describe(
-        "Delivery mode: artifact_only (export only), apply to the tree, or as a branch, commit, or PR.",
-      ),
+      .describe("Delivery mode: apply to the tree, or as a branch, commit, or PR."),
     branch: z.string().optional().describe("Branch name for branch/pr modes."),
     message: z.string().optional().describe("Commit message for commit/pr modes."),
   })
@@ -982,7 +980,7 @@ export const ControlRunDecisionRequest = z
       .describe("Risk reasons being explicitly accepted (recorded, never silent)."),
     /** Apply mode + target for accept_clean_patch. */
     applyMode: z
-      .enum(["artifact_only", "apply", "branch", "commit", "pr"])
+      .enum(["apply", "branch", "commit", "pr"])
       .optional()
       .describe("Delivery mode for accept_clean_patch."),
     target: ApplyTarget.optional().describe("Delivery target for accept_clean_patch."),
@@ -1288,10 +1286,6 @@ export const ControlSettingsSnapshot = z
       ),
     routing: z
       .object({
-        defaultPolicy: z
-          .enum(["auto", "primary"])
-          .default("auto")
-          .describe("Default routing policy."),
         primaryHarness: z
           .string()
           .nullable()
@@ -1484,7 +1478,6 @@ export const ControlSettingsUpdateRequest = z
       .positive()
       .optional()
       .describe("New interactive-answer timeout, in milliseconds."),
-    routingPolicy: z.enum(["auto", "primary"]).optional().describe("New default routing policy."),
     primaryHarness: NonBlankString.nullable()
       .optional()
       .describe("New global primary harness; null clears back to engine routing."),

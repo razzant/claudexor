@@ -40,9 +40,9 @@ export const RunStatus = z
 export type RunStatus = z.infer<typeof RunStatus>;
 
 export const ApplyRecommendation = z
-  .enum(["apply", "inspect", "continue", "split_task", "human_review"])
+  .enum(["apply", "inspect", "continue", "human_review"])
   .describe(
-    "Recommended next action for the run's work product: apply it, inspect first, continue working, split the task, or get human review.",
+    "Recommended next action for the run's work product: apply it, inspect first, continue working, or get human review.",
   );
 export type ApplyRecommendation = z.infer<typeof ApplyRecommendation>;
 

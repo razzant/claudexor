@@ -2,8 +2,8 @@ import { z } from "zod";
 import { Id } from "./primitives.js";
 
 export const GateStatus = z
-  .enum(["passed", "failed", "skipped", "timed_out"])
-  .describe("Outcome of a deterministic gate: passed, failed, skipped, or timed_out.");
+  .enum(["passed", "failed", "timed_out"])
+  .describe("Outcome of a deterministic gate: passed, failed, or timed_out.");
 export type GateStatus = z.infer<typeof GateStatus>;
 
 /** Result of a deterministic gate (build/test/lint/etc). Decided by exit code, not text. */

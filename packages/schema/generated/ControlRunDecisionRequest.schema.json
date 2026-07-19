@@ -40,7 +40,6 @@
         "applyMode": {
           "type": "string",
           "enum": [
-            "artifact_only",
             "apply",
             "branch",
             "commit",

@@ -21,15 +21,6 @@
         "routing": {
           "type": "object",
           "properties": {
-            "defaultPolicy": {
-              "type": "string",
-              "enum": [
-                "auto",
-                "primary"
-              ],
-              "default": "auto",
-              "description": "Default routing policy."
-            },
             "primaryHarness": {
               "type": [
                 "string",

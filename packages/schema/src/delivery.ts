@@ -4,7 +4,7 @@ import { FinalVerifyRecord } from "./decision.js";
 /** Immutable evidence for one DeliveryService attempt, shared by every apply surface. */
 export const DeliveryReceipt = z
   .object({
-    mode: z.enum(["artifact_only", "apply", "branch", "commit", "pr"]),
+    mode: z.enum(["apply", "branch", "commit", "pr"]),
     applied: z.boolean(),
     branch: z.string().optional(),
     commit: z.string().optional(),

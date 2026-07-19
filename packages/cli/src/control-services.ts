@@ -513,7 +513,6 @@ export function controlServices(
         routing: {
           ...cfg.routing,
           primary_harness: nullableName(p.primaryHarness, cfg.routing.primary_harness),
-          default_policy: p.routingPolicy ?? cfg.routing.default_policy,
           env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
           eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
           auth_preference: p.authPreference ?? cfg.routing.auth_preference,

@@ -176,13 +176,6 @@ describe("delivery", () => {
     expect((await git(repo, ["status", "--short"])).stdout.trim()).toBe("");
   });
 
-  it("artifact_only never mutates the tree", async () => {
-    const { repo, patch } = await makePatchRepo();
-    const res = await deliver(repo, patch, { mode: "artifact_only" });
-    expect(res.applied).toBe(false);
-    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
-  });
-
   it("refuses commit delivery when unrelated worktree changes are present", async () => {
     const { repo, patch } = await makePatchRepo();
     writeFileSync(join(repo, "unrelated.txt"), "secret local work\n");

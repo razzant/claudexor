@@ -892,14 +892,8 @@ export class Orchestrator {
     }
     const cfg = this.config(input.repoRoot);
     const configuredPool = cfg?.global.routing.eligible_harnesses;
-    const policy = cfg?.global.routing.default_policy;
     const harnesses =
-      input.harnesses ??
-      (configuredPool && configuredPool.length > 0
-        ? configuredPool
-        : policy === "primary" && cfg?.global.routing.primary_harness
-          ? [cfg.global.routing.primary_harness]
-          : undefined);
+      input.harnesses ?? (configuredPool && configuredPool.length > 0 ? configuredPool : undefined);
     const primaryHarness = input.primaryHarness ?? cfg?.global.routing.primary_harness ?? undefined;
     if (
       primaryHarness &&

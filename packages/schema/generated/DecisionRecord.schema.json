@@ -115,10 +115,9 @@
             "apply",
             "inspect",
             "continue",
-            "split_task",
             "human_review"
           ],
-          "description": "Recommended next action for the run's work product: apply it, inspect first, continue working, split the task, or get human review.",
+          "description": "Recommended next action for the run's work product: apply it, inspect first, continue working, or get human review.",
           "default": "inspect"
         },
         "verification_basis": {

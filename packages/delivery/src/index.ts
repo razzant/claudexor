@@ -66,9 +66,8 @@ export async function checkPatch(repoRoot: string, patch: string): Promise<Apply
   return { ok: r.code === 0, code: r.code, stderr: r.stderr };
 }
 
-export type DeliverMode = "artifact_only" | "apply" | "branch" | "commit" | "pr";
+export type DeliverMode = "apply" | "branch" | "commit" | "pr";
 export const DELIVER_MODES = new Set<DeliverMode>([
-  "artifact_only",
   "apply",
   "branch",
   "commit",
@@ -206,18 +205,10 @@ async function deliverUnlocked(
   patch: string,
   opts: DeliverOptions,
 ): Promise<DeliverResult> {
-  if (!DELIVER_MODES.has(opts.mode))
-    return {
-      mode: "artifact_only",
-      applied: false,
-      detail: `unsupported delivery mode: ${opts.mode}`,
-    };
-  if (opts.mode === "artifact_only") {
-    return {
-      mode: "artifact_only",
-      applied: false,
-      detail: "patch emitted; working tree untouched",
-    };
+  // Mode validity is schema-enforced at every ingress; reaching this layer
+  // with an unknown mode is a programming error, not a user state.
+  if (!DELIVER_MODES.has(opts.mode)) {
+    throw new Error(`unsupported delivery mode: ${opts.mode}`);
   }
   // Runtime is external in v2. Every path reported by the repository,
   // including `.claudexor*`, is user state and blocks a clean-tree mutation.

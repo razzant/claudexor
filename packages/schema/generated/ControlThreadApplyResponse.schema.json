@@ -42,7 +42,6 @@
                 "mode": {
                   "type": "string",
                   "enum": [
-                    "artifact_only",
                     "apply",
                     "branch",
                     "commit",

@@ -77,6 +77,8 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const SEMVER_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
+
 // Owner-review attestation (schemaVersion 3): the signed publishing proof.
 // The retired schemaVersion-2 six-slot contract was removed in v3.0.0;
 // already-sealed v2 artifacts remain archived with valid signatures, but

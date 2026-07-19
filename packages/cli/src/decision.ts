@@ -9,7 +9,7 @@ const ACTION_FLAGS: { flag: string; action: string }[] = [
   { flag: "rerun", action: "rerun_with_feedback" },
 ];
 
-const APPLY_MODES = ["artifact_only", "apply", "branch", "commit", "pr"];
+const APPLY_MODES = ["apply", "branch", "commit", "pr"];
 
 export type DecisionResolution =
   { ok: true; action: string; body: Record<string, unknown> } | { ok: false; message: string };
@@ -51,7 +51,7 @@ export function resolveDecisionBody(args: ParsedArgs): DecisionResolution {
       if (!APPLY_MODES.includes(applyMode)) {
         return {
           ok: false,
-          message: `invalid --apply-mode '${applyMode}' (expected apply|branch|commit|pr|artifact_only)`,
+          message: `invalid --apply-mode '${applyMode}' (expected apply|branch|commit|pr)`,
         };
       }
       body["applyMode"] = applyMode;
