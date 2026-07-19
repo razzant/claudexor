@@ -302,6 +302,30 @@ export class ProjectPartitions implements CommandAuthority {
     );
   }
 
+  recordLaneCheckpoint(
+    id: string,
+    harnessId: string,
+    profileId: string | null,
+    turnId: string,
+  ): void {
+    this.requireThreadStore(id).recordLaneCheckpoint(id, harnessId, profileId, turnId);
+  }
+
+  laneCheckpoint(id: string, harnessId: string, profileId: string | null): string | null {
+    return this.threadStoreForThread(id)?.laneCheckpoint(id, harnessId, profileId) ?? null;
+  }
+
+  laneCheckpointsForThread(id: string): import("@claudexor/schema").LaneCheckpoint[] {
+    return this.threadStoreForThread(id)?.laneCheckpointsForThread(id) ?? [];
+  }
+
+  setTurnContinuity(
+    turnId: string,
+    disclosure: import("@claudexor/schema").ContinuityDisclosure,
+  ): void {
+    this.threadStoreForTurn(turnId)?.setTurnContinuity(turnId, disclosure);
+  }
+
   /**
    * Run-terminal invalidation (the W12 path with no store mutation to ride):
    * a terminal changes the thread's presented state (needs-me, outcome), so

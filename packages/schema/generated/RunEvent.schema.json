@@ -52,7 +52,7 @@
             "route.profile.rotation_exhausted",
             "route.transient.exhausted",
             "route.fallback.auth_switched",
-            "session.rebound",
+            "session.continuity",
             "interaction.requested",
             "interaction.answered",
             "interaction.timeout",

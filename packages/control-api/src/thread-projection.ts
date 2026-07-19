@@ -75,6 +75,15 @@ export function projectTurn(
     | { message?: unknown; code?: unknown; retryable?: unknown; failed_at?: unknown }
     | null
     | undefined;
+  const continuity = t["continuity"] as
+    | {
+        kind?: unknown;
+        packet_turns?: unknown;
+        summarized?: unknown;
+        lane_switched_from?: { harness_id?: unknown; profile_id?: unknown } | null;
+      }
+    | null
+    | undefined;
   return ControlThreadTurn.parse({
     id: t["id"],
     threadId: t["thread_id"],
@@ -97,6 +106,29 @@ export function projectTurn(
             // the runner-hook path, where a job exists to replay.
             retryable: enqueueError.retryable !== false,
             failedAt: String(enqueueError.failed_at ?? ""),
+          }
+        : null,
+    // Continuity disclosure (INV-137): snake_case persisted record -> camelCase
+    // DTO so every surface renders the one-line "continued with thread context"
+    // label without re-deriving it from raw events.
+    continuity:
+      continuity && typeof continuity === "object" && typeof continuity.kind === "string"
+        ? {
+            kind: continuity.kind,
+            packetTurns: typeof continuity.packet_turns === "number" ? continuity.packet_turns : 0,
+            summarized: continuity.summarized === true,
+            laneSwitchedFrom:
+              continuity.lane_switched_from &&
+              typeof continuity.lane_switched_from === "object" &&
+              typeof continuity.lane_switched_from.harness_id === "string"
+                ? {
+                    harness: continuity.lane_switched_from.harness_id,
+                    profileId:
+                      typeof continuity.lane_switched_from.profile_id === "string"
+                        ? continuity.lane_switched_from.profile_id
+                        : null,
+                  }
+                : null,
           }
         : null,
     createdAt: t["created_at"],

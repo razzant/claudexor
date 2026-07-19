@@ -239,6 +239,35 @@ async function main(): Promise<void> {
               : threadId
                 ? (threads.getThread(threadId)?.credential_profile_id ?? null)
                 : null;
+        // Continuity context (INV-137): prior turns (for the delta packet) and
+        // every lane checkpoint of the thread. Only a bound thread turn carries
+        // it — a non-thread one-shot has no conversation to continue.
+        const continuityContext =
+          threadId && turnId
+            ? (() => {
+                const current = threads.getTurn(turnId);
+                const currentCreatedAt = current?.created_at ?? "";
+                const priorTurns = threads
+                  .turnsFor(threadId)
+                  .filter(
+                    (t) =>
+                      t.id !== turnId &&
+                      t.run_id != null &&
+                      (!currentCreatedAt || t.created_at < currentCreatedAt),
+                  )
+                  .map((t) => ({ id: t.id, prompt: t.prompt, runId: t.run_id }));
+                return {
+                  turnId,
+                  profileId: requestedProfileId,
+                  priorTurns,
+                  laneCheckpoints: threads.laneCheckpointsForThread(threadId).map((c) => ({
+                    harness: c.harness_id,
+                    profileId: c.profile_id ?? null,
+                    turnId: c.turn_id,
+                  })),
+                };
+              })()
+            : undefined;
         let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
         let runSignal: AbortSignal | undefined = ctx.signal;
         if (maxSeconds !== null) {
@@ -268,7 +297,7 @@ async function main(): Promise<void> {
             executionRoot,
             resumeSessions: threadId ? threads.resumeMap(threadId, requestedProfileId) : undefined,
             onSessionObserved: threadId
-              ? (harnessId, nativeSessionId, observedModel, profileId) =>
+              ? (harnessId, nativeSessionId, observedModel, profileId) => {
                   // The EVENT's profile is the cache truth (INV-135): rotation
                   // makes the effective profile differ from the requested one,
                   // and a mislabeled session would resume under the wrong
@@ -279,7 +308,31 @@ async function main(): Promise<void> {
                     nativeSessionId,
                     observedModel,
                     profileId ?? null,
-                  )
+                  );
+                  // The lane (thread, harness, effective profile) has now SEEN
+                  // this turn: its native session holds up to here (INV-137).
+                  // Keyed by the SAME effective profile as the session so the
+                  // next turn's packet math (checkpoint vs head) is exact.
+                  if (turnId)
+                    threads.recordLaneCheckpoint(threadId, harnessId, profileId ?? null, turnId);
+                }
+              : undefined,
+            // Continuity facts (INV-137): cheap thread-store data; the engine
+            // reads prior outputs + git anchor itself and does the packet math.
+            threadContinuity: continuityContext,
+            onContinuityResolved: threadId
+              ? (tid, disclosure) =>
+                  threads.setTurnContinuity(tid, {
+                    kind: disclosure.kind,
+                    packet_turns: disclosure.packetTurns,
+                    summarized: disclosure.summarized,
+                    lane_switched_from: disclosure.laneSwitchedFrom
+                      ? {
+                          harness_id: disclosure.laneSwitchedFrom.harness,
+                          profile_id: disclosure.laneSwitchedFrom.profileId,
+                        }
+                      : null,
+                  })
               : undefined,
             authPreference: p.authPreference,
             credentialProfileId: requestedProfileId,

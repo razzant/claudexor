@@ -2,7 +2,6 @@ import { z } from "zod";
 import {
   AccessProfile,
   AuthPreference,
-  FallbackReason,
   Id,
   IsoTimestamp,
   ModeKind,
@@ -15,11 +14,12 @@ import { Attachment } from "./attachment.js";
  *
  * A `Thread` is a Claudexor-owned conversation about a project; runs are "turns"
  * (moves) inside it. A `Session` is the *vendor* CLI session bound to one harness
- * for one thread — a re-hostable CACHE, not the source of truth. When a turn
- * cannot resume the native session in place (isolated-envelope candidates,
- * race lanes included, or re-hosting onto a different harness) the engine
- * serializes a `SessionReboundLineage` and emits a typed `session.rebound`
- * event (honest, lossy disclosure — never silent).
+ * for one thread — a re-hostable CACHE, not the source of truth. A lane is a
+ * (thread, harness, profile) triple; each lane keeps a `LaneCheckpoint` (the last
+ * turn it saw). When a turn runs on a lane whose checkpoint lags the thread head
+ * (a lane switch or gap) the engine hydrates it with a bounded continuation packet
+ * and stamps a `ContinuityDisclosure` on the turn + emits a typed
+ * `session.continuity` event (honest, visible — never silent, INV-137).
  */
 
 /** A thread is open, archived, in 30-day trash, or terminally purged.
@@ -252,6 +252,64 @@ export const TurnEnqueueError = z
   );
 export type TurnEnqueueError = z.infer<typeof TurnEnqueueError>;
 
+/** How a turn's lane was continued from the rest of the conversation (INV-137). */
+export const ContinuityKind = z
+  .enum(["native_resume", "packet", "fresh"])
+  .describe(
+    "How a turn's lane was continued: native_resume (the lane's own vendor session already held the delta), packet (a continuation packet hydrated a lane switch/gap), or fresh (nothing to carry — the thread's first turn on any lane).",
+  );
+export type ContinuityKind = z.infer<typeof ContinuityKind>;
+
+/** The lane a turn switched AWAY from (the lane that held the prior head). */
+export const LaneRef = z
+  .object({
+    harness_id: Id.describe("Harness of the prior lane."),
+    profile_id: Id.nullable()
+      .default(null)
+      .describe("Credential profile of the prior lane (null = engine default)."),
+  })
+  .describe("A (harness, profile) lane reference; the null profile is the engine default.");
+export type LaneRef = z.infer<typeof LaneRef>;
+
+/**
+ * Stamped on a ThreadTurn the moment its lane is resolved (INV-137). The engine
+ * NEVER continues a conversation silently: `packet` turns disclose how many
+ * delta turns were carried and whether the older prefix was collapsed
+ * (`summarized`); a genuine lane switch names the lane it left.
+ */
+export const ContinuityDisclosure = z
+  .object({
+    kind: ContinuityKind,
+    /** Delta turns carried in the continuation packet (0 for native_resume/fresh). */
+    packet_turns: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe(
+        "Number of delta turns carried in the continuation packet (0 for native_resume/fresh).",
+      ),
+    /** True when the packet collapsed an older prefix to one-line entries (the
+     * mechanical fallback for "summary unavailable"; the cached LLM summary is V9c). */
+    summarized: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True when the packet collapsed an older prefix to one-line entries (mechanical fallback).",
+      ),
+    /** The lane this turn switched away from, when the continuation crossed
+     * lanes; null for an in-lane continuation or the thread's first lane. */
+    lane_switched_from: LaneRef.nullable()
+      .default(null)
+      .describe(
+        "The lane this turn switched away from, when the continuation crossed lanes; null otherwise.",
+      ),
+  })
+  .describe(
+    "How a turn's lane was continued from the conversation (native resume / continuation packet / fresh), disclosed visibly per INV-137.",
+  );
+export type ContinuityDisclosure = z.infer<typeof ContinuityDisclosure>;
+
 /** One follow-up unit within a thread (a run is its backing execution). */
 export const ThreadTurn = z
   .object({
@@ -287,39 +345,41 @@ export const ThreadTurn = z
     enqueue_error: TurnEnqueueError.nullable()
       .default(null)
       .describe("Why this turn has no run (enqueue/preflight refusal); null once a run binds."),
+    /** How this turn's lane was continued (INV-137): native resume, a
+     * continuation packet, or a fresh start. Stamped by the engine at
+     * spec-build once the lane (harness, profile) is resolved; null until then
+     * (and for turns that never reached spec-build). */
+    continuity: ContinuityDisclosure.nullable()
+      .default(null)
+      .describe(
+        "How this turn's lane was continued (native resume / packet / fresh); null until stamped.",
+      ),
     created_at: IsoTimestamp.describe("When the turn was created."),
   })
   .describe("One follow-up unit within a thread; a run is its backing execution.");
 export type ThreadTurn = z.infer<typeof ThreadTurn>;
 
 /**
- * The lossy payload serialized when a turn cannot resume the native session
- * in place: isolated-envelope candidates (race lanes included) and re-hosting
- * onto a different harness (no native memory of the old session). Carried by
- * the typed `session.rebound` event; the disclosure is explicit, never silent.
+ * Per-lane checkpoint (INV-137): the last turn a lane (thread, harness, profile)
+ * has SEEN — either because it produced that turn or because a continuation
+ * packet hydrated it up to that turn. Journaled in the thread store alongside
+ * turns/sessions (fsync-before-ACK, INV-034); the enqueue path reads it to
+ * decide whether the next turn resumes natively or needs a packet.
  */
-export const SessionReboundLineage = z
+export const LaneCheckpoint = z
   .object({
-    thread_id: Id.describe("Thread whose session was re-hosted."),
-    harness_id: Id.describe("Harness the new session runs on."),
-    /** The vendor native session id we are leaving behind (not a Claudexor Id). */
-    from_native_session_id: z
-      .string()
-      .nullable()
+    /** Composite `<thread>::<harness>::<profileOrDefault>` — the lane identity. */
+    id: Id.describe("Composite lane id (thread::harness::profileOrDefault)."),
+    thread_id: Id.describe("Thread the lane belongs to."),
+    harness_id: Id.describe("Harness of the lane."),
+    profile_id: Id.nullable()
       .default(null)
-      .describe(
-        "The vendor native session id being left behind (not a Claudexor id); null when none existed.",
-      ),
-    to_session_id: Id.nullable()
-      .default(null)
-      .describe("New Claudexor session id; null when no new session was created."),
-    summary: z
-      .string()
-      .default("")
-      .describe("Carried-over conversation summary injected into the new session."),
-    reason: FallbackReason.default("not_portable"),
+      .describe("Credential profile of the lane (null = engine default)."),
+    /** The last turn this lane has seen. */
+    turn_id: Id.describe("The last turn this lane has seen."),
+    updated_at: IsoTimestamp.describe("When the checkpoint last advanced."),
   })
   .describe(
-    "The lossy payload serialized when a turn cannot resume the native session in place (isolated candidates or re-hosting onto a different harness); carried by the session.rebound event.",
+    "Per-lane checkpoint: the last turn a (thread, harness, profile) lane has seen; journaled in the thread store.",
   );
-export type SessionReboundLineage = z.infer<typeof SessionReboundLineage>;
+export type LaneCheckpoint = z.infer<typeof LaneCheckpoint>;

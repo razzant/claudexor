@@ -57,6 +57,29 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
   return "Done";
 }
 
+/**
+ * THE single owner of the continuity disclosure line (INV-137). Every surface
+ * — CLI print, macOS turn card, ACP — renders continuity through this helper
+ * so the phrasing never diverges. Returns null for the cases with nothing to
+ * disclose (a fresh first turn, or a plain in-lane native resume that carried
+ * no packet); a lane switch or a hydrated gap always yields a visible line.
+ */
+export function continuityLabel(disclosure: {
+  kind: "native_resume" | "packet" | "fresh";
+  packetTurns?: number;
+  summarized?: boolean;
+  laneSwitchedFrom?: { harness: string; profileId?: string | null } | null;
+}): string | null {
+  if (disclosure.kind !== "packet") return null;
+  const turns = disclosure.packetTurns ?? 0;
+  const noun = turns === 1 ? "turn" : "turns";
+  let line = `continued with thread context · ${turns} ${noun}`;
+  if (disclosure.summarized) line += " (older turns condensed)";
+  if (disclosure.laneSwitchedFrom)
+    line += ` · switched from ${disclosure.laneSwitchedFrom.harness}`;
+  return line;
+}
+
 /** True when a terminal run is waiting on a human decision: finished work
  * whose review blocked or checks failed, with no valid operator decision
  * recorded yet. The ONE producer of the needs-me/inbox signal. */

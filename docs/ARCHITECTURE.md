@@ -540,7 +540,8 @@ execution tree (the live project for an `in_place` thread, or the thread's
 persistent worktree for an `isolated` thread — the orchestrator's internal
 run-input carries this as `executionRoot`), so the
 routed harness resumes its own native CLI session and the next turn sees the
-work — no `session.rebound` for these. A best-of-N race still runs candidates in
+work — no continuation packet for these (the native session already holds the
+delta). A best-of-N race still runs candidates in
 throwaway envelopes from the tree's current state and may auto-adopt a verified
 winner through the shared preimage-bound protected apply path. It first runs
 `git apply --check`, then a plain all-or-nothing apply; stale or conflicting
@@ -690,8 +691,12 @@ Endpoint semantics beyond the inventory:
   in-place thread, or the thread's worktree for an isolated thread — so the
   routed harness resumes its own native CLI session and the next turn sees the
   work. A best-of-N race runs candidates in isolated envelopes and auto-applies
-  the winner to the execution tree (a typed `session.rebound` disclosure covers
-  those isolated candidates). A `planRunId` body field implements an approved
+  the winner to the execution tree. When a turn runs on a lane that has not seen
+  the whole conversation (a lane switch or an A→B→A gap), the engine hydrates it
+  with a bounded continuation packet delivered as `context/THREAD.md` and
+  discloses it via a typed `session.continuity` event + a `continuity` field on
+  the turn record (INV-137); a plain in-lane turn resumes natively with no
+  packet. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
   agent runs against the frozen plan rather than a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated

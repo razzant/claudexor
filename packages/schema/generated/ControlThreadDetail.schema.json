@@ -630,6 +630,74 @@
                 "default": null,
                 "description": "Why this turn has no run (enqueue/preflight refusal); null once a run binds."
               },
+              "continuity": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "native_resume",
+                          "packet",
+                          "fresh"
+                        ],
+                        "description": "How a turn's lane was continued: native_resume (the lane's own vendor session already held the delta), packet (a continuation packet hydrated a lane switch/gap), or fresh (nothing to carry — the thread's first turn on any lane)."
+                      },
+                      "packetTurns": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Delta turns carried in the continuation packet (0 for native_resume/fresh)."
+                      },
+                      "summarized": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "True when the packet collapsed an older prefix (mechanical fallback)."
+                      },
+                      "laneSwitchedFrom": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "harness": {
+                                "type": "string",
+                                "description": "Harness of the lane switched away from."
+                              },
+                              "profileId": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "default": null,
+                                "description": "Profile of the lane switched away from (null = engine default)."
+                              }
+                            },
+                            "required": [
+                              "harness"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "The lane this turn switched away from; null for an in-lane continuation."
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "How this turn's lane was continued (native resume / packet / fresh); null until stamped."
+              },
               "createdAt": {
                 "type": "string",
                 "description": "When the turn was created."

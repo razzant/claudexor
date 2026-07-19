@@ -1,0 +1,74 @@
+{
+  "$ref": "#/definitions/ContinuityDisclosure",
+  "definitions": {
+    "ContinuityDisclosure": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "native_resume",
+            "packet",
+            "fresh"
+          ],
+          "description": "How a turn's lane was continued: native_resume (the lane's own vendor session already held the delta), packet (a continuation packet hydrated a lane switch/gap), or fresh (nothing to carry — the thread's first turn on any lane)."
+        },
+        "packet_turns": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Number of delta turns carried in the continuation packet (0 for native_resume/fresh)."
+        },
+        "summarized": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the packet collapsed an older prefix to one-line entries (mechanical fallback)."
+        },
+        "lane_switched_from": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "harness_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Harness of the prior lane."
+                },
+                "profile_id": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Non-empty identifier string."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Credential profile of the prior lane (null = engine default).",
+                  "default": null
+                }
+              },
+              "required": [
+                "harness_id"
+              ],
+              "additionalProperties": false,
+              "description": "A (harness, profile) lane reference; the null profile is the engine default."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lane this turn switched away from, when the continuation crossed lanes; null otherwise.",
+          "default": null
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "How a turn's lane was continued from the conversation (native resume / continuation packet / fresh), disclosed visibly per INV-137."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

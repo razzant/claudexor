@@ -156,10 +156,21 @@ directly (the project for an `in_place` thread, or the thread's persistent git
 worktree for an `isolated` thread) and resumes the native vendor session, so
 the next turn sees the work. A race (`--n N` > 1) runs its candidates in
 isolated throwaway envelopes and AUTO-ADOPTS the winner's patch into the live
-tree. `session.rebound` is the typed disclosure for turns that CANNOT resume
-the native session in place — isolated-envelope candidates (race lanes
-included) and re-hosting onto a different harness; plain in-place turns
-resume natively with no rebound event.
+tree.
+
+When a turn runs on a lane that has NOT seen the whole conversation — a lane
+switch (a different harness or account) or a gap (A→B→A) — the engine hydrates
+it with a bounded **continuation packet**: the delta turns since that lane's
+checkpoint, verbatim (older ones condensed to one-liners past a byte budget —
+the mechanical fallback while the cached LLM summary is unavailable), plus the
+active plan pointer and a workspace anchor. The packet is written as a file
+(`context/THREAD.md` in the run's artifact tree) and the prompt only points at
+its absolute path — the packet body never rides the prompt. Every hydrated
+turn DISCLOSES it (INV-137): a typed `session.continuity` event carries the
+stats, the turn record stamps a `continuity` field (`native_resume` | `packet`
+| `fresh`), and the CLI prints one line (e.g. `continued with thread context ·
+3 turns`). Returning to a previously used lane resumes its native session and
+injects ONLY the missed delta — never the whole conversation again.
 
 Examples:
 

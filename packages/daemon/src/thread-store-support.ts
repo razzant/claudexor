@@ -1,5 +1,6 @@
-import type { Session, Thread, ThreadTurn } from "@claudexor/schema";
+import type { LaneCheckpoint, Session, Thread, ThreadTurn } from "@claudexor/schema";
 import {
+  LaneCheckpoint as LaneCheckpointSchema,
   Session as SessionSchema,
   Thread as ThreadSchema,
   ThreadTurn as ThreadTurnSchema,
@@ -18,6 +19,8 @@ export interface ThreadMutation {
   threads?: Thread[];
   sessions?: Session[];
   turns?: ThreadTurn[];
+  /** Per-lane checkpoints (INV-137): journaled alongside turns/sessions. */
+  checkpoints?: LaneCheckpoint[];
   idempotency?: { keyDigest: string; requestDigest: string; turnId: string };
   threadCreation?: { keyDigest: string; requestDigest: string; threadId: string };
 }
@@ -56,6 +59,9 @@ export function parseMutation(value: unknown): ThreadMutation {
       : {}),
     ...(mutation.turns
       ? { turns: mutation.turns.map((item) => ThreadTurnSchema.parse(item)) }
+      : {}),
+    ...(mutation.checkpoints
+      ? { checkpoints: mutation.checkpoints.map((item) => LaneCheckpointSchema.parse(item)) }
       : {}),
     ...(idempotency ? { idempotency: { ...idempotency } } : {}),
     ...(threadCreation ? { threadCreation: { ...threadCreation } } : {}),

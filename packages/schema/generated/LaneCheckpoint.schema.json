@@ -1,0 +1,59 @@
+{
+  "$ref": "#/definitions/LaneCheckpoint",
+  "definitions": {
+    "LaneCheckpoint": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Composite lane id (thread::harness::profileOrDefault)."
+        },
+        "thread_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Thread the lane belongs to."
+        },
+        "harness_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Harness of the lane."
+        },
+        "profile_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Non-empty identifier string."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Credential profile of the lane (null = engine default).",
+          "default": null
+        },
+        "turn_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The last turn this lane has seen."
+        },
+        "updated_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "When the checkpoint last advanced."
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "harness_id",
+        "turn_id",
+        "updated_at"
+      ],
+      "additionalProperties": false,
+      "description": "Per-lane checkpoint: the last turn a (thread, harness, profile) lane has seen; journaled in the thread store."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

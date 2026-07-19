@@ -1,12 +1,30 @@
 import type { DurableJournal } from "@claudexor/journal";
-import type { Attachment, Session, Thread, ThreadTurn, WorkspaceMode } from "@claudexor/schema";
+import type {
+  Attachment,
+  ContinuityDisclosure,
+  LaneCheckpoint,
+  Session,
+  Thread,
+  ThreadTurn,
+  WorkspaceMode,
+} from "@claudexor/schema";
 import {
+  LaneCheckpoint as LaneCheckpointSchema,
   SCHEMA_VERSION,
   Session as SessionSchema,
   Thread as ThreadSchema,
   ThreadTurn as ThreadTurnSchema,
 } from "@claudexor/schema";
 import { newId, nowIso, redactSecrets } from "@claudexor/util";
+import {
+  findLaneCheckpoint,
+  makeLaneCheckpoint,
+  makeSessionRecord,
+  resumeMapFrom,
+  staleSession,
+  stampContinuity,
+  threadLaneCheckpoints,
+} from "./thread-lane-checkpoints.js";
 import { reduceThreadLifecycle, type ThreadLifecycleAction } from "./thread-lifecycle.js";
 import {
   assertUnique,
@@ -22,6 +40,7 @@ interface ThreadStoreState {
   threads: Thread[];
   sessions: Session[];
   turns: ThreadTurn[];
+  checkpoints: LaneCheckpoint[]; // per-lane checkpoints (INV-137)
 }
 
 const UPSERTED = "thread.entities_upserted";
@@ -90,7 +109,7 @@ export type ThreadHeadPingSink = (ping: { threadId: string; projectId: string | 
 
 /** Journal-backed thread/session projection. Returned mutations are fsynced. */
 export class ThreadStore {
-  private state: ThreadStoreState = { threads: [], sessions: [], turns: [] };
+  private state: ThreadStoreState = { threads: [], sessions: [], turns: [], checkpoints: [] };
   private readonly turnIdByKey = new Map<string, { turnId: string; requestDigest: string }>();
   private readonly threadIdByKey = new Map<string, { threadId: string; requestDigest: string }>();
 
@@ -105,9 +124,11 @@ export class ThreadStore {
     for (const thread of this.state.threads) ThreadSchema.parse(thread);
     for (const session of this.state.sessions) SessionSchema.parse(session);
     for (const turn of this.state.turns) ThreadTurnSchema.parse(turn);
+    for (const checkpoint of this.state.checkpoints) LaneCheckpointSchema.parse(checkpoint);
     assertUnique(this.state.threads, "thread");
     assertUnique(this.state.sessions, "session");
     assertUnique(this.state.turns, "turn");
+    assertUnique(this.state.checkpoints, "lane checkpoint");
     for (const value of this.turnIdByKey.values()) {
       if (!this.getTurn(value.turnId)) throw new Error("thread idempotency index is dangling");
     }
@@ -130,14 +151,13 @@ export class ThreadStore {
     this.apply(parsed);
     // Every PERSISTED mutation invalidates the touched threads' summaries —
     // pinging here (the single writer) covers create/rename/archive/turn-add/
-    // enqueue-error/session/worktree without per-call-site wiring, so a future
-    // mutation path cannot forget the ping. Replay never pings (it goes
-    // through apply(), not commit()); the run-terminal path pings via
-    // pingHead() directly because no store mutation happens at terminal.
+    // enqueue-error/session/checkpoint without per-call-site wiring. Replay never
+    // pings (it goes through apply(), not commit()); run-terminal pings directly.
     const touched = new Set<string>([
       ...(parsed.threads ?? []).map((thread) => thread.id),
       ...(parsed.turns ?? []).map((turn) => turn.thread_id),
       ...(parsed.sessions ?? []).map((session) => session.thread_id),
+      ...(parsed.checkpoints ?? []).map((checkpoint) => checkpoint.thread_id),
     ]);
     for (const threadId of touched) this.pingHead(threadId);
   }
@@ -157,6 +177,7 @@ export class ThreadStore {
     for (const thread of mutation.threads ?? []) upsert(this.state.threads, thread);
     for (const session of mutation.sessions ?? []) upsert(this.state.sessions, session);
     for (const turn of mutation.turns ?? []) upsert(this.state.turns, turn);
+    for (const checkpoint of mutation.checkpoints ?? []) upsert(this.state.checkpoints, checkpoint);
     if (mutation.idempotency) {
       const { keyDigest, requestDigest, turnId } = mutation.idempotency;
       const prior = this.turnIdByKey.get(keyDigest);
@@ -362,17 +383,7 @@ export class ThreadStore {
     threadId: string,
     profileId: string | null = null,
   ): Record<string, { sessionId: string; profileId: string | null }> {
-    const map: Record<string, { sessionId: string; profileId: string | null }> = {};
-    for (const s of this.sessionsForThread(threadId)) {
-      // INV-135: resume never crosses credential profiles — a session recorded
-      // under one profile (or the null engine default) is eligible ONLY for a
-      // turn running as exactly that profile. The entry CARRIES its profile so
-      // the engine boundary re-verifies against the RESOLVED profile (which
-      // preflight rotation may have changed after this map was built).
-      if (s.state === "live" && s.native_session_id && (s.profile_id ?? null) === profileId)
-        map[s.harness_id] = { sessionId: s.native_session_id, profileId: s.profile_id ?? null };
-    }
-    return map;
+    return resumeMapFrom(this.state.sessions, threadId, profileId);
   }
 
   /**
@@ -420,8 +431,7 @@ export class ThreadStore {
       plan_hash: input.planHash ?? null,
       plan_readiness_overridden: input.planOverridden === true,
       kind,
-      // The durable conversation store is read back into UIs: redact at the
-      // persistence boundary exactly like other durable state projections do.
+      // Redact at the persistence boundary (the store is read back into UIs).
       prompt: redactSecrets(prompt),
       attachments: input.attachments ?? [],
       created_at: nowIso(),
@@ -484,11 +494,7 @@ export class ThreadStore {
     this.commit({ turns: [nextTurn], ...(nextThread ? { threads: [nextThread] } : {}) });
   }
 
-  /** Record/refresh the native CLI session a harness emitted for this thread.
-   * Keyed by (thread, harness, PROFILE) — resume eligibility is
-   * profile-specific (release wave round-16 #3), so profile B's session must
-   * never overwrite profile A's row: an A→B→A sequence resumes A's own native
-   * conversation (the null engine default is its own row too). */
+  /** Record/refresh a harness's native session; see `makeSessionRecord` (INV-135). */
   recordSession(
     threadId: string,
     harnessId: string,
@@ -502,24 +508,48 @@ export class ThreadStore {
         s.harness_id === harnessId &&
         (s.profile_id ?? null) === (profileId ?? null),
     );
-    const now = nowIso();
-    const session = SessionSchema.parse({
-      ...(existing ?? {
-        id: newId("se"),
-        thread_id: threadId,
-        harness_id: harnessId,
-        created_at: now,
-      }),
-      profile_id: profileId,
-      native_session_id: nativeSessionId,
-      last_observed_model: observedModel || existing?.last_observed_model || null,
-      resume_kind: "resume_by_id",
-      state: "live",
-      updated_at: now,
-    });
+    const session = makeSessionRecord(
+      existing,
+      threadId,
+      harnessId,
+      nativeSessionId,
+      observedModel,
+      profileId,
+    );
     const thread = this.getThread(threadId);
-    const nextThread = thread ? ThreadSchema.parse({ ...thread, updated_at: now }) : undefined;
+    const nextThread = thread
+      ? ThreadSchema.parse({ ...thread, updated_at: session.updated_at })
+      : undefined;
     this.commit({ sessions: [session], ...(nextThread ? { threads: [nextThread] } : {}) });
+  }
+
+  /** Advance a lane's checkpoint to `turnId` (INV-137): the lane
+   * (thread, harness, profile) has now SEEN that turn. Same (harness, profile)
+   * key as `resumeMap`, so the next turn's packet math is exact. */
+  recordLaneCheckpoint(
+    threadId: string,
+    harnessId: string,
+    profileId: string | null,
+    turnId: string,
+  ): void {
+    this.commit({ checkpoints: [makeLaneCheckpoint(threadId, harnessId, profileId, turnId)] });
+  }
+
+  /** The last turn a lane has seen, or null when the lane never ran. */
+  laneCheckpoint(threadId: string, harnessId: string, profileId: string | null): string | null {
+    return findLaneCheckpoint(this.state.checkpoints, threadId, harnessId, profileId);
+  }
+
+  /** All lane checkpoints of a thread (used to identify the prior head's lane). */
+  laneCheckpointsForThread(threadId: string): LaneCheckpoint[] {
+    return threadLaneCheckpoints(this.state.checkpoints, threadId);
+  }
+
+  /** Stamp how a turn's lane was continued (INV-137); last-writer-wins. */
+  setTurnContinuity(turnId: string, disclosure: ContinuityDisclosure): void {
+    const turn = this.state.turns.find((t) => t.id === turnId);
+    if (!turn) return;
+    this.commit({ turns: [stampContinuity(turn, disclosure)] });
   }
 
   relinkProjectRoot(root: string): void {
@@ -554,15 +584,7 @@ export class ThreadStore {
           session.profile_id === profileId &&
           session.state === "live",
       )
-      .map((session) =>
-        SessionSchema.parse({
-          ...session,
-          native_session_id: null,
-          resume_kind: "none",
-          state: "stale",
-          updated_at: now,
-        }),
-      );
+      .map(staleSession);
     if (threads.length > 0 || sessions.length > 0) this.commit({ threads, sessions });
     return { clearedThreads: threads.length, invalidatedSessions: sessions.length };
   }

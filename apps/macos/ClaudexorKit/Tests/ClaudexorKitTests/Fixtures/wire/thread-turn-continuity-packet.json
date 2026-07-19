@@ -1,0 +1,45 @@
+{
+  "schema": "ControlThreadTurn",
+  "value": {
+    "id": "tn-2",
+    "threadId": "th-1",
+    "runId": "run-3",
+    "parentRunId": "run-2",
+    "planRunId": null,
+    "kind": "followup",
+    "prompt": "now optimize it",
+    "run": {
+      "state": "succeeded",
+      "mode": "agent",
+      "strategy": null,
+      "n": 1,
+      "result": {
+        "kind": "answer",
+        "diffStat": null,
+        "blockers": 0,
+        "adopted": null,
+        "applyState": "not_applied",
+        "preTurnSha": null,
+        "postTurnSha": null,
+        "revertAnchorId": null,
+        "revertable": false
+      },
+      "outcomeFacts": null,
+      "spendUsd": 0.12,
+      "outputReadyState": "ready",
+      "waitingOnUser": false,
+      "finishedAt": "2026-07-19T12:00:00.000Z"
+    },
+    "enqueueError": null,
+    "continuity": {
+      "kind": "packet",
+      "packetTurns": 3,
+      "summarized": true,
+      "laneSwitchedFrom": {
+        "harness": "codex",
+        "profileId": "exp-a"
+      }
+    },
+    "createdAt": "2026-07-19T12:00:00.000Z"
+  }
+}

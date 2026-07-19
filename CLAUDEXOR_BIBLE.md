@@ -680,5 +680,6 @@ invariant or owner decision before proceeding.
   it natively and injects only the missed delta. Native sessions never
   cross profiles (INV-135). Silent conversation loss on any switch is a
   release-blocking bug of the same class as data loss. verify: continuity
-  canary (A→B→A marker story); lane checkpoint tests; disclosure UI/CLI
-  review.
+  canary `[INV-137:a-b-a-continuity]`; lane checkpoint + packet-builder tests
+  (`packages/orchestrator/src/continuity.test.ts`,
+  `packages/daemon/src/threads.test.ts`); disclosure UI/CLI review.

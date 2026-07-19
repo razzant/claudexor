@@ -66,7 +66,6 @@ import {
   DecisionRecord as DecisionRecordSchema,
   FinalVerifyRecord,
   WorkProduct as WorkProductSchema,
-  SessionReboundLineage as SessionReboundLineageSchema,
   ModeKind as ModeKindSchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
@@ -131,6 +130,12 @@ import {
   type OrchestrateApplyStepResult,
   type OrchestrateSafeStepResult,
 } from "./orchestrateExecutor.js";
+import {
+  buildContinuation,
+  type ContinuityDisclosureResult,
+  type ContinuityPlanPointer,
+  type ContinuityTurn,
+} from "./continuity.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
   type AttemptTelemetry,
@@ -166,6 +171,8 @@ import {
   ensureGitRepository,
   consumeRawPatchEnvelope,
   snapshotTree,
+  statusPorcelain,
+  revParse,
 } from "@claudexor/workspace";
 import {
   blockedDecisionOverride,
@@ -235,6 +242,22 @@ export interface OrchestratorDeps {
   reviewerModels?: Partial<Record<ProviderFamily, string>>;
   /** Optional per-provider-family reviewer effort override where the harness supports it. */
   reviewerEfforts?: Partial<Record<ProviderFamily, EffortHint>>;
+}
+
+/**
+ * Continuity facts the daemon hands the engine for a thread turn (INV-137).
+ * Cheap thread-store data only; the engine reads prior outputs + git anchor
+ * itself (it owns the artifact store) and does the checkpoint math.
+ */
+export interface ThreadContinuityContext {
+  /** The current turn being run (the disclosure is stamped here). */
+  turnId: string;
+  /** Requested credential profile for this run (null = engine default). */
+  profileId: string | null;
+  /** Prior turns of the thread, in order (EXCLUDES the current turn). */
+  priorTurns: Array<{ id: string; prompt: string; runId: string | null }>;
+  /** All lane checkpoints of the thread (to locate the prior head's lane). */
+  laneCheckpoints: Array<{ harness: string; profileId: string | null; turnId: string }>;
 }
 
 export interface RunInput {
@@ -327,6 +350,16 @@ export interface RunInput {
     observedModel?: string | null,
     profileId?: string | null,
   ) => void;
+  /**
+   * Continuity facts for this thread turn (INV-137), supplied by the daemon
+   * which owns the thread store. The engine computes the per-lane continuation
+   * packet at spec-build (checkpoint math + delta/budget), materializes it as a
+   * file, and points the prompt at it. Absent for non-thread one-shots.
+   */
+  threadContinuity?: ThreadContinuityContext;
+  /** Records the resolved continuity disclosure onto the current turn (the
+   * daemon writes it to the thread store). Called once per resolved lane. */
+  onContinuityResolved?: (turnId: string, disclosure: ContinuityDisclosureResult) => void;
   /** In-process sink for every RunEvent (mirrors events.jsonl) for live observers. */
   onEvent?: (event: RunEvent) => void;
   /** In-process sink for the full per-harness event stream (richer than RunEvent). */
@@ -1708,6 +1741,126 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Build the per-lane continuation packet for a thread turn (INV-137).
+   * Resolves the lane (harness + effective profile), computes the delta since
+   * the lane's checkpoint, reads prior outputs + the git anchor, and — for a
+   * lane switch or gap — materializes `context/THREAD.md` and returns the
+   * one-line prompt pointer. Emits `session.continuity` and stamps the turn.
+   * Returns null (no packet, no pointer) for native resume, a fresh thread, or
+   * a non-thread run. Never throws: continuity failure degrades to no packet.
+   */
+  private async resolveContinuity(
+    runInput: RunInput,
+    harnessId: string,
+    resolvedProfileId: string | null,
+    nativeResumeAvailable: boolean,
+    store: ArtifactStore,
+    paths: RunPaths,
+    repoRoot: string,
+    log?: EventLog,
+  ): Promise<{ pointerLine: string | null } | null> {
+    const ctx = runInput.threadContinuity;
+    if (!runInput.threadId || !ctx) return null;
+    try {
+      const profileId = resolvedProfileId ?? ctx.profileId ?? null;
+      const lane = { harness: harnessId, profileId };
+      const checkpoint = ctx.laneCheckpoints.find(
+        (c) => c.harness === harnessId && (c.profileId ?? null) === profileId,
+      );
+      const headTurnId = ctx.priorTurns.length
+        ? ctx.priorTurns[ctx.priorTurns.length - 1].id
+        : null;
+      const priorHeadOwner = headTurnId
+        ? ctx.laneCheckpoints.find((c) => c.turnId === headTurnId)
+        : undefined;
+      const priorHeadLane = priorHeadOwner
+        ? { harness: priorHeadOwner.harness, profileId: priorHeadOwner.profileId ?? null }
+        : null;
+      const priorTurns: ContinuityTurn[] = ctx.priorTurns.map((t) => ({
+        id: t.id,
+        prompt: t.prompt,
+        outputText: t.runId
+          ? (readTextSafe(join(store.runPaths(t.runId).finalDir, "answer.md")) ?? "")
+          : "",
+      }));
+      const result = buildContinuation({
+        lane,
+        priorTurns,
+        laneCheckpointTurnId: checkpoint?.turnId ?? null,
+        nativeResumeAvailable,
+        priorHeadLane,
+        activePlan: this.activePlanPointer(ctx, store),
+        anchor: await this.workspaceAnchor(repoRoot),
+      });
+      // Disclose on every lane and stamp the turn (INV-137: never silent).
+      log?.emit("session.continuity", {
+        thread_id: runInput.threadId,
+        harness_id: harnessId,
+        kind: result.disclosure.kind,
+        packet_turns: result.disclosure.packetTurns,
+        summarized: result.disclosure.summarized,
+        lane_switched_from: result.disclosure.laneSwitchedFrom,
+      });
+      runInput.onContinuityResolved?.(ctx.turnId, result.disclosure);
+      if (!result.packetMarkdown) return { pointerLine: null };
+      const briefPath = join(paths.contextDir, "THREAD.md");
+      store.writeText(briefPath, result.packetMarkdown);
+      return {
+        pointerLine: `Earlier conversation context for this thread is at: ${briefPath} — read it before answering.`,
+      };
+    } catch {
+      // Continuity is best-effort: a packet-build failure must never fail the
+      // run. The turn simply runs without the packet (honest degradation).
+      return { pointerLine: null };
+    }
+  }
+
+  /** The thread's most recent readable plan pointer (INV-137 packet section). */
+  private activePlanPointer(
+    ctx: ThreadContinuityContext,
+    store: ArtifactStore,
+  ): ContinuityPlanPointer | null {
+    for (let i = ctx.priorTurns.length - 1; i >= 0; i -= 1) {
+      const runId = ctx.priorTurns[i].runId;
+      if (!runId) continue;
+      const finalDir = store.runPaths(runId).finalDir;
+      const planText = readTextSafe(join(finalDir, "plan.md"));
+      if (!planText || !planText.trim()) continue;
+      const questions = readTextSafe(join(finalDir, "questions.json"));
+      let readiness = "unverified";
+      if (questions) {
+        try {
+          readiness = derivePlanReadiness(PlanQuestionsArtifact.parse(JSON.parse(questions))).state;
+        } catch {
+          readiness = "unverified";
+        }
+      }
+      return { path: join(finalDir, "plan.md"), readiness, planRunId: runId };
+    }
+    return null;
+  }
+
+  /** HEAD sha + dirty file count for the packet's workspace anchor. Best-effort:
+   * a non-git or unborn tree yields a null sha / zero dirty count, never a throw. */
+  private async workspaceAnchor(
+    repoRoot: string,
+  ): Promise<{ headSha: string | null; dirtyCount: number }> {
+    let headSha: string | null = null;
+    try {
+      headSha = await revParse(repoRoot, "HEAD");
+    } catch {
+      headSha = null;
+    }
+    let dirtyCount = 0;
+    try {
+      dirtyCount = (await statusPorcelain(repoRoot)).split("\n").filter((l) => l.trim()).length;
+    } catch {
+      dirtyCount = 0;
+    }
+    return { headSha, dirtyCount };
+  }
+
   private async runCandidateInEnvelope(
     routed: RoutedAdapter,
     envelope: WorkspaceEnvelope,
@@ -1739,11 +1892,30 @@ export class Orchestrator {
     const inPlaceEnvelope = envelope.worktree_path === envelope.repo_root;
     const rawContextPacket = await rawContextForEnvelope(routed.implementationTransport, envelope);
     const sessionFields = runInput ? this.sessionSpecFields(runInput, adapter.id, log) : undefined;
+    // Continuity (INV-137): once the lane (harness + resolved profile) is known,
+    // build the continuation packet, materialize context/THREAD.md, and point
+    // the prompt at it — never embed the packet body in the prompt. Replaces the
+    // old static session.rebound "not_portable" phrase with a real disclosure.
+    const laneContinuity = runInput
+      ? await this.resolveContinuity(
+          runInput,
+          adapter.id,
+          sessionFields?.credential_profile?.profile_id ?? runInput.credentialProfileId ?? null,
+          inPlaceEnvelope && !!sessionFields?.resume_session_id,
+          store,
+          paths,
+          envelope.repo_root,
+          log,
+        )
+      : null;
+    const promptWithContinuity = laneContinuity?.pointerLine
+      ? `${prompt}\n\n${laneContinuity.pointerLine}`
+      : prompt;
     let spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
       prompt: promptWithProtectedPathConstraint(
-        prompt,
+        promptWithContinuity,
         contract.constraints.protected_paths,
         contract.constraints.auto_protected_paths,
         contract.constraints.protected_path_approvals,
@@ -1772,20 +1944,6 @@ export class Orchestrator {
       raw_context_packet: rawContextPacket,
       stream_deltas: streamDeltas,
     });
-    if (!inPlaceEnvelope && runInput?.threadId && sessionFields?.resume_session_id) {
-      log?.emit(
-        "session.rebound",
-        SessionReboundLineageSchema.parse({
-          thread_id: runInput.threadId,
-          harness_id: adapter.id,
-          from_native_session_id: sessionFields.resume_session_id,
-          to_session_id: null,
-          summary:
-            "isolated envelope turn runs fresh: the native session is not portable into a scoped harness home; continuity rides on the thread prompt + repo state",
-          reason: "not_portable",
-        }) as unknown as Record<string, unknown>,
-      );
-    }
     if (interaction) spec.extra["interactionChannel"] = interaction;
     const inactivityMs = harnessInactivityTimeoutMs(this.config(contract.repo.root));
 
@@ -4847,16 +5005,33 @@ export class Orchestrator {
         }
         const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
         const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
+        const planSessionFields = this.sessionSpecFields(input, adapter.id, log);
+        // Continuity (INV-137): a thread PLAN turn is a chat turn — hydrate a
+        // lane switch/gap with a packet and disclose it.
+        const laneContinuity = laneRun
+          ? await this.resolveContinuity(
+              input,
+              adapter.id,
+              planSessionFields.credential_profile?.profile_id ?? input.credentialProfileId ?? null,
+              planSessionFields.resume_session_id !== null,
+              store,
+              paths,
+              this.execRootOf(input),
+              log,
+            )
+          : null;
         const spec = HarnessRunSpec.parse({
           session_id: newId("ses"),
           intent: "plan",
-          prompt: this.planPrompt(input.prompt) + contextSection,
+          prompt: laneContinuity?.pointerLine
+            ? `${this.planPrompt(input.prompt) + contextSection}\n\n${laneContinuity.pointerLine}`
+            : this.planPrompt(input.prompt) + contextSection,
           cwd: this.execRootOf(input),
           access: "readonly",
           // Planners must SEE any image/file the user attached (e.g. "plan a fix for
           // what's in this screenshot"), not just agent/race runs.
           attachments: input.attachments ?? [],
-          ...this.sessionSpecFields(input, adapter.id, log),
+          ...planSessionFields,
           ...this.harnessSpecKnobs(contract, knobs, "plan"),
           env_inheritance: envInheritance(this.config(input.repoRoot)),
           // A thread plan turn spawns in its DURABLE per-lane home so its native
@@ -5636,10 +5811,28 @@ export class Orchestrator {
       const grantResume =
         sessionFields.resume_session_id !== null && !resumeGranted.has(adapter.id);
       if (grantResume) resumeGranted.add(adapter.id);
+      // Continuity (INV-137): a thread ASK turn is a chat turn — hydrate a lane
+      // switch/gap with a packet and disclose it. Gated on laneRun (deep-scan
+      // scouts are excluded from laneRun); native resume is available only when
+      // this slot was granted the lane's recorded session.
+      const laneContinuity = laneRun
+        ? await this.resolveContinuity(
+            input,
+            adapter.id,
+            sessionFields.credential_profile?.profile_id ?? input.credentialProfileId ?? null,
+            grantResume,
+            store,
+            paths,
+            this.execRootOf(input),
+            log,
+          )
+        : null;
       let spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: opts.intent,
-        prompt: explorerPrompt,
+        prompt: laneContinuity?.pointerLine
+          ? `${explorerPrompt}\n\n${laneContinuity.pointerLine}`
+          : explorerPrompt,
         cwd: this.execRootOf(input),
         access: "readonly",
         // ASK/EXPLORE/AUDIT read-only runs must forward the user's attachments —

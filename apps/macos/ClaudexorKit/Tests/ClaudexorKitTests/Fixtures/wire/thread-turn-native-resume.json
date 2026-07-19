@@ -1,0 +1,21 @@
+{
+  "schema": "ControlThreadTurn",
+  "value": {
+    "id": "tn-3",
+    "threadId": "th-1",
+    "runId": "run-4",
+    "parentRunId": null,
+    "planRunId": null,
+    "kind": "followup",
+    "prompt": "and add a test",
+    "run": null,
+    "enqueueError": null,
+    "continuity": {
+      "kind": "native_resume",
+      "packetTurns": 0,
+      "summarized": false,
+      "laneSwitchedFrom": null
+    },
+    "createdAt": "2026-07-19T12:00:00.000Z"
+  }
+}

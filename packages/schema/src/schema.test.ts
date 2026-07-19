@@ -24,7 +24,8 @@ import {
   ProjectConfig,
   GlobalConfig,
   Session,
-  SessionReboundLineage,
+  ContinuityDisclosure,
+  LaneCheckpoint,
   TaskContract,
   Thread,
   ThreadTurn,
@@ -500,19 +501,35 @@ describe("v0.9 threads / sessions / orchestrate / decision", () => {
     expect(t.state).toBe("active");
   });
 
-  it("parses a ThreadTurn and a SessionReboundLineage", () => {
+  it("parses a ThreadTurn with a null continuity disclosure by default", () => {
     const turn = ThreadTurn.parse({
       id: "tn-1",
       thread_id: "th-1",
       created_at: "2026-06-12T00:00:00Z",
     });
     expect(turn.kind).toBe("followup");
-    const reb = SessionReboundLineage.parse({
+    expect(turn.continuity).toBeNull();
+  });
+
+  it("parses a ContinuityDisclosure and a LaneCheckpoint (INV-137)", () => {
+    const disclosure = ContinuityDisclosure.parse({
+      kind: "packet",
+      packet_turns: 3,
+      summarized: true,
+      lane_switched_from: { harness_id: "codex", profile_id: null },
+    });
+    expect(disclosure.kind).toBe("packet");
+    expect(disclosure.packet_turns).toBe(3);
+    expect(disclosure.lane_switched_from?.harness_id).toBe("codex");
+    const checkpoint = LaneCheckpoint.parse({
+      id: "th-1::claude::default",
       thread_id: "th-1",
       harness_id: "claude",
-      reason: "harness_error",
+      profile_id: null,
+      turn_id: "tn-1",
+      updated_at: "2026-06-12T00:00:00Z",
     });
-    expect(reb.reason).toBe("harness_error");
+    expect(checkpoint.turn_id).toBe("tn-1");
   });
 
   it("defaults the orchestrate tool belt to the autonomously-executable tools (answer_question excluded)", () => {

@@ -14,7 +14,7 @@ export { ControlQuotaResponse } from "./quota.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RunOutcomeFacts } from "./decision.js";
 import { EffortHint, HarnessModel, InteractionQuestion } from "./harness.js";
-import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
+import { ContinuityKind, ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy } from "./orchestrate.js";
 import { ResourceAttachmentRef } from "./attachment.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
@@ -1209,6 +1209,41 @@ export const ControlThreadTurn = z
       .nullable()
       .default(null)
       .describe("Why this turn has no run (enqueue/preflight refusal); null once a run binds."),
+    /** How this turn's lane was continued (INV-137): native resume, a
+     * continuation packet (with the delta-turn count + whether the older
+     * prefix was collapsed), or a fresh start. Surfaces render a one-line
+     * disclosure from this; null until the engine stamps the lane. */
+    continuity: z
+      .object({
+        kind: ContinuityKind,
+        packetTurns: z
+          .number()
+          .int()
+          .nonnegative()
+          .default(0)
+          .describe("Delta turns carried in the continuation packet (0 for native_resume/fresh)."),
+        summarized: z
+          .boolean()
+          .default(false)
+          .describe("True when the packet collapsed an older prefix (mechanical fallback)."),
+        laneSwitchedFrom: z
+          .object({
+            harness: z.string().describe("Harness of the lane switched away from."),
+            profileId: z
+              .string()
+              .nullable()
+              .default(null)
+              .describe("Profile of the lane switched away from (null = engine default)."),
+          })
+          .nullable()
+          .default(null)
+          .describe("The lane this turn switched away from; null for an in-lane continuation."),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "How this turn's lane was continued (native resume / packet / fresh); null until stamped.",
+      ),
     createdAt: z.string().describe("When the turn was created."),
   })
   .describe("Control-plane projection of one thread turn with its embedded run card.");

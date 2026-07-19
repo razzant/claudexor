@@ -446,4 +446,41 @@ describe("ThreadStore thread.head.updated ping (W12)", () => {
     );
     expect(replayed).toEqual([]);
   });
+
+  it("records + reads a per-lane checkpoint keyed by (thread, harness, profile), durable across restart", () => {
+    const { root, journal, s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj" });
+    const turn = s.createTurn(t.id, "first move");
+    expect(s.laneCheckpoint(t.id, "claude", null)).toBeNull();
+    s.recordLaneCheckpoint(t.id, "claude", null, turn.id);
+    // A DIFFERENT lane (same harness, different profile) is independent.
+    expect(s.laneCheckpoint(t.id, "claude", "exp-a")).toBeNull();
+    expect(s.laneCheckpoint(t.id, "claude", null)).toBe(turn.id);
+    // Second turn on the same lane advances the SAME checkpoint row (upsert).
+    const turn2 = s.createTurn(t.id, "second move");
+    s.recordLaneCheckpoint(t.id, "claude", null, turn2.id);
+    expect(s.laneCheckpointsForThread(t.id)).toHaveLength(1);
+    expect(s.laneCheckpoint(t.id, "claude", null)).toBe(turn2.id);
+    const reloaded = reload(root, journal);
+    expect(reloaded.laneCheckpoint(t.id, "claude", null)).toBe(turn2.id);
+  });
+
+  it("stamps a turn's continuity disclosure and survives replay (INV-137)", () => {
+    const { root, journal, s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj" });
+    const turn = s.createTurn(t.id, "switch lanes");
+    expect(s.getTurn(turn.id)?.continuity).toBeNull();
+    s.setTurnContinuity(turn.id, {
+      kind: "packet",
+      packet_turns: 2,
+      summarized: false,
+      lane_switched_from: { harness_id: "codex", profile_id: null },
+    });
+    const stamped = s.getTurn(turn.id)?.continuity;
+    expect(stamped?.kind).toBe("packet");
+    expect(stamped?.packet_turns).toBe(2);
+    expect(stamped?.lane_switched_from?.harness_id).toBe("codex");
+    const reloaded = reload(root, journal);
+    expect(reloaded.getTurn(turn.id)?.continuity?.kind).toBe("packet");
+  });
 });

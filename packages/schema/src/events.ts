@@ -63,8 +63,10 @@ export const RunEventType = z
     /** A subscription->API (or harness->harness) auth switch driven by a typed
      * quota/money signal. Distinct from a plain harness rotation; never silent. */
     "route.fallback.auth_switched",
-    /** A thread re-hosted onto a different harness; payload is SessionReboundLineage. */
-    "session.rebound",
+    /** A thread turn was continued across the conversation (INV-137); payload
+     * carries the ContinuityDisclosure stats (kind, packet_turns, summarized,
+     * lane_switched_from). Replaces the old static session.rebound phrase. */
+    "session.continuity",
     "interaction.requested",
     "interaction.answered",
     "interaction.timeout",

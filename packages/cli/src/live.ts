@@ -6,6 +6,7 @@ import { daemonDir, readToken } from "@claudexor/daemon";
 import type { InteractionAnswerSet, InteractionQuestion } from "@claudexor/schema";
 import {
   InteractionQuestion as InteractionQuestionSchema,
+  continuityLabel,
   processExitCode,
 } from "@claudexor/schema";
 
@@ -49,6 +50,24 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       }
       if (sub === "interaction_requested") return `[${who}] waiting on your answer…`;
       return null;
+    }
+    case "session.continuity": {
+      // INV-137 disclosure: one line when a lane switch/gap was hydrated with a
+      // continuation packet; the projection owner suppresses native_resume/fresh.
+      const line = continuityLabel({
+        kind: (p["kind"] as "native_resume" | "packet" | "fresh") ?? "fresh",
+        packetTurns: typeof p["packet_turns"] === "number" ? p["packet_turns"] : 0,
+        summarized: p["summarized"] === true,
+        laneSwitchedFrom:
+          p["lane_switched_from"] && typeof p["lane_switched_from"] === "object"
+            ? {
+                harness: String(
+                  (p["lane_switched_from"] as Record<string, unknown>)["harness"] ?? "?",
+                ),
+              }
+            : null,
+      });
+      return line;
     }
     case "interaction.requested":
       return `[${who}] QUESTION pending (interaction ${String(p["interaction_id"] ?? "?")})`;

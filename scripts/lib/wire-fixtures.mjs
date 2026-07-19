@@ -78,6 +78,57 @@ export function buildWireFixtures() {
     updatedAt: NOW,
   });
 
+  // ControlThreadTurn: minimal (no continuity yet) + a lane-switch continuation
+  // (INV-137). The continuity field is the V9b DTO extension the Swift decoder
+  // must round-trip.
+  add("thread-turn-minimal", "ControlThreadTurn", {
+    id: "tn-1",
+    threadId: "th-1",
+    kind: "initial",
+    prompt: "add a multiply feature",
+    createdAt: NOW,
+  });
+  add("thread-turn-continuity-packet", "ControlThreadTurn", {
+    id: "tn-2",
+    threadId: "th-1",
+    runId: "run-3",
+    parentRunId: "run-2",
+    kind: "followup",
+    prompt: "now optimize it",
+    run: {
+      state: "succeeded",
+      mode: "agent",
+      strategy: null,
+      n: 1,
+      result: { kind: "answer" },
+      spendUsd: 0.12,
+      outputReadyState: "ready",
+      waitingOnUser: false,
+      finishedAt: NOW,
+    },
+    continuity: {
+      kind: "packet",
+      packetTurns: 3,
+      summarized: true,
+      laneSwitchedFrom: { harness: "codex", profileId: "exp-a" },
+    },
+    createdAt: NOW,
+  });
+  add("thread-turn-native-resume", "ControlThreadTurn", {
+    id: "tn-3",
+    threadId: "th-1",
+    runId: "run-4",
+    kind: "followup",
+    prompt: "and add a test",
+    continuity: {
+      kind: "native_resume",
+      packetTurns: 0,
+      summarized: false,
+      laneSwitchedFrom: null,
+    },
+    createdAt: NOW,
+  });
+
   add("outcome-facts-clean", "RunOutcomeFacts", {
     lifecycle: "succeeded",
     noChanges: false,

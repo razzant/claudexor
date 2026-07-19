@@ -1,0 +1,252 @@
+/**
+ * Continuation-packet builder (INV-137, V9b) — PURE.
+ *
+ * A lane is a (thread, harness, profile) triple. When a turn runs on a lane
+ * whose checkpoint lags the thread head — a lane switch (A→B→A) or a gap — the
+ * new lane has no native memory of the missed turns, so the engine hydrates it
+ * with a bounded MECHANICAL continuation packet: recent delta turns verbatim,
+ * older ones collapsed to one-line entries when the budget is exceeded, plus
+ * the active plan pointer and a workspace anchor. (The cached LLM summary that
+ * replaces the collapsed prefix is V9c; here `summarized` marks the mechanical
+ * fallback — the packet always works.)
+ *
+ * This module takes fully-resolved structured data (the daemon supplies thread
+ * facts; the orchestrator reads prior outputs + git anchor) and returns the
+ * disclosure + the packet body. No I/O, no clock — trivially unit-testable.
+ */
+
+/** Per delta turn: verbatim budget (user prompt + primary output). */
+export const PER_TURN_BUDGET_BYTES = 8 * 1024;
+/** Whole-packet verbatim budget; older turns collapse past this. */
+export const TOTAL_BUDGET_BYTES = 24 * 1024;
+/** One-line collapsed entry keeps this many chars of each field. */
+export const COLLAPSE_PREFIX_CHARS = 200;
+
+export interface ContinuityTurn {
+  /** Turn id (checkpoint math keys off this). */
+  id: string;
+  /** The user's message for the turn (already redacted). */
+  prompt: string;
+  /** The turn's primary output text (final/answer.md), "" when none. */
+  outputText: string;
+}
+
+export interface ContinuityLane {
+  harness: string;
+  profileId: string | null;
+}
+
+export interface ContinuityPlanPointer {
+  /** Absolute path to the approved plan.md the packet points at. */
+  path: string;
+  /** derivePlanReadiness state: ready | needs_answers | unverified. */
+  readiness: string;
+  planRunId: string;
+}
+
+export interface ContinuityAnchor {
+  headSha: string | null;
+  dirtyCount: number;
+}
+
+export interface ContinuityRequest {
+  /** This turn's resolved lane. */
+  lane: ContinuityLane;
+  /** All prior turns of the thread, in order (EXCLUDES the current turn). */
+  priorTurns: ContinuityTurn[];
+  /** The last turn id this lane has seen, or null when the lane never ran. */
+  laneCheckpointTurnId: string | null;
+  /** True when the lane can resume its OWN native vendor session in place. */
+  nativeResumeAvailable: boolean;
+  /** The lane that produced the prior head turn, when known (for laneSwitchedFrom). */
+  priorHeadLane: ContinuityLane | null;
+  /** Active plan pointer to append, when any. */
+  activePlan: ContinuityPlanPointer | null;
+  /** Workspace anchor to append, when available. */
+  anchor: ContinuityAnchor | null;
+}
+
+export interface ContinuityDisclosureResult {
+  kind: "native_resume" | "packet" | "fresh";
+  packetTurns: number;
+  summarized: boolean;
+  laneSwitchedFrom: ContinuityLane | null;
+}
+
+export interface ContinuityResult {
+  disclosure: ContinuityDisclosureResult;
+  /** The THREAD.md packet body, or null when no packet is delivered. */
+  packetMarkdown: string | null;
+}
+
+function bytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+/** Truncate to at most `maxBytes` UTF-8 bytes on a safe char boundary. */
+function boundBytes(text: string, maxBytes: number): string {
+  if (bytes(text) <= maxBytes) return text;
+  // Buffer slice can split a multi-byte scalar; back off a few bytes until valid.
+  const buf = Buffer.from(text, "utf8").subarray(0, maxBytes);
+  for (let trim = 0; trim <= 3 && trim <= buf.length; trim += 1) {
+    try {
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(
+        trim === 0 ? buf : buf.subarray(0, buf.length - trim),
+      );
+      return `${decoded}\n…[truncated]`;
+    } catch {
+      /* prefix ended inside a scalar; back off */
+    }
+  }
+  return `${buf.toString("utf8")}\n…[truncated]`;
+}
+
+function oneLine(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > COLLAPSE_PREFIX_CHARS ? `${flat.slice(0, COLLAPSE_PREFIX_CHARS)}…` : flat;
+}
+
+/** Delta turns for this lane: everything AFTER the checkpoint (all prior when
+ * the lane never ran / has no reachable native session to trust). */
+function deltaTurns(req: ContinuityRequest): ContinuityTurn[] {
+  // Without a reachable native session the lane starts blank — carry the whole
+  // prior conversation regardless of any stale checkpoint.
+  if (!req.nativeResumeAvailable) return req.priorTurns;
+  if (!req.laneCheckpointTurnId) return req.priorTurns;
+  const idx = req.priorTurns.findIndex((t) => t.id === req.laneCheckpointTurnId);
+  // Checkpoint not among the retained prior turns → carry everything (safe).
+  return idx < 0 ? req.priorTurns : req.priorTurns.slice(idx + 1);
+}
+
+function verbatimEntry(turn: ContinuityTurn, index: number): string {
+  const prompt = boundBytes(turn.prompt.trim(), PER_TURN_BUDGET_BYTES / 2);
+  const output = turn.outputText.trim()
+    ? boundBytes(turn.outputText.trim(), PER_TURN_BUDGET_BYTES / 2)
+    : "_(no recorded output)_";
+  return `### Turn ${index + 1}\n\n**User asked:**\n\n${prompt}\n\n**The assistant answered:**\n\n${output}\n`;
+}
+
+function collapsedEntry(turn: ContinuityTurn, index: number): string {
+  const prompt = oneLine(turn.prompt) || "(empty)";
+  const output = turn.outputText.trim() ? oneLine(turn.outputText) : "(no recorded output)";
+  return `- Turn ${index + 1} — user: ${prompt} · assistant: ${output}`;
+}
+
+/**
+ * Assemble the packet body from delta turns, collapsing the OLDEST turns to
+ * one-liners while the verbatim total exceeds the budget. Returns the body and
+ * whether any collapse happened.
+ */
+function renderPacket(
+  delta: ContinuityTurn[],
+  activePlan: ContinuityPlanPointer | null,
+  anchor: ContinuityAnchor | null,
+): { body: string; summarized: boolean } {
+  // Start all verbatim; collapse from the oldest until the total fits.
+  const verbatim = delta.map((t, i) => ({ turn: t, index: i, text: verbatimEntry(t, i) }));
+  let collapsedCount = 0;
+  const totalBytes = (): number =>
+    verbatim.reduce(
+      (sum, e, i) => sum + bytes(i < collapsedCount ? collapsedEntry(e.turn, e.index) : e.text),
+      0,
+    );
+  while (collapsedCount < verbatim.length && totalBytes() > TOTAL_BUDGET_BYTES) {
+    collapsedCount += 1;
+  }
+  const summarized = collapsedCount > 0;
+
+  const parts: string[] = [
+    "# Thread continuation packet",
+    "",
+    "You are continuing an existing Claudexor conversation on a new lane. The earlier turns below did not run on this lane's native session — read them before answering the new prompt at the end of your instructions.",
+    "",
+  ];
+  if (summarized) {
+    parts.push(
+      "> The older turns are condensed to one-line entries below (a cached conversation summary is unavailable in this build). The most recent turns are verbatim.",
+      "",
+    );
+  }
+  parts.push("## Earlier turns", "");
+  const collapsedLines: string[] = [];
+  for (let i = 0; i < verbatim.length; i += 1) {
+    if (i < collapsedCount) {
+      collapsedLines.push(collapsedEntry(verbatim[i].turn, verbatim[i].index));
+    } else {
+      if (collapsedLines.length > 0) {
+        parts.push(...collapsedLines, "");
+        collapsedLines.length = 0;
+      }
+      parts.push(verbatim[i].text);
+    }
+  }
+  if (collapsedLines.length > 0) parts.push(...collapsedLines, "");
+
+  if (activePlan) {
+    parts.push(
+      "## Active plan",
+      "",
+      `The thread's approved plan is at: ${activePlan.path} (readiness: ${activePlan.readiness}). Re-read it as needed.`,
+      "",
+    );
+  }
+  if (anchor) {
+    parts.push(
+      "## Workspace anchor",
+      "",
+      `HEAD ${anchor.headSha ?? "(unborn)"} · ${anchor.dirtyCount} file(s) with uncommitted changes at the start of this turn.`,
+      "",
+    );
+  }
+  return {
+    body:
+      parts
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trimEnd() + "\n",
+    summarized,
+  };
+}
+
+/** Compute the continuity disclosure + packet body for a resolved lane. */
+export function buildContinuation(req: ContinuityRequest): ContinuityResult {
+  const laneSwitchedFrom =
+    req.priorHeadLane &&
+    (req.priorHeadLane.harness !== req.lane.harness ||
+      (req.priorHeadLane.profileId ?? null) !== (req.lane.profileId ?? null))
+      ? req.priorHeadLane
+      : null;
+
+  // Nothing before this turn → the thread's first move on any lane.
+  if (req.priorTurns.length === 0) {
+    return {
+      disclosure: { kind: "fresh", packetTurns: 0, summarized: false, laneSwitchedFrom: null },
+      packetMarkdown: null,
+    };
+  }
+
+  const delta = deltaTurns(req);
+  if (delta.length === 0) {
+    // The lane's own native session already holds everything up to the head.
+    return {
+      disclosure: {
+        kind: "native_resume",
+        packetTurns: 0,
+        summarized: false,
+        laneSwitchedFrom: null,
+      },
+      packetMarkdown: null,
+    };
+  }
+
+  const { body, summarized } = renderPacket(delta, req.activePlan, req.anchor);
+  return {
+    disclosure: {
+      kind: "packet",
+      packetTurns: delta.length,
+      summarized,
+      laneSwitchedFrom,
+    },
+    packetMarkdown: body,
+  };
+}

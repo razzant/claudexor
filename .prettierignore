@@ -5,3 +5,5 @@ coverage
 pnpm-lock.yaml
 packages/*/generated
 *.md
+# Generated Swift wire fixtures (hash-checked by fixtures:swift:check, not prettier-shaped)
+apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/wire/

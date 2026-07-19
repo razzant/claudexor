@@ -1,0 +1,16 @@
+{
+  "schema": "ControlThreadTurn",
+  "value": {
+    "id": "tn-1",
+    "threadId": "th-1",
+    "runId": null,
+    "parentRunId": null,
+    "planRunId": null,
+    "kind": "initial",
+    "prompt": "add a multiply feature",
+    "run": null,
+    "enqueueError": null,
+    "continuity": null,
+    "createdAt": "2026-07-19T12:00:00.000Z"
+  }
+}
