@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectRuntimeDir } from "@claudexor/util";
+import { ensureLaneHomeEnv } from "@claudexor/workspace";
 import { controlServices } from "./control-services.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import { updateGlobalConfig } from "@claudexor/config";
@@ -135,5 +137,44 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
     if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
     else process.env.CLAUDEXOR_CONFIG_DIR = previous;
     rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("purgeThread sweeps the thread's DURABLE per-lane read-only homes (INV-034 owner a)", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-thread-purge-"));
+    const previous = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-purge-repo-"));
+    const rt = projectRuntimeDir(repo);
+    ensureLaneHomeEnv(rt, "th-1", "claude", "work");
+    ensureLaneHomeEnv(rt, "th-1", "codex", null);
+    ensureLaneHomeEnv(rt, "th-2", "claude", "work");
+
+    const threads = {
+      getThread: () => ({ repo: { root: repo }, workspace: { mode: "in_place" } }),
+      purgeThread: (id: string) => ({ id, state: "purged" }),
+    };
+    const services = controlServices(
+      undefined as never,
+      undefined as never,
+      threads as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      async () => [],
+    );
+
+    await services.purgeThread("th-1");
+
+    // Every lane of the purged thread is gone regardless of workspace mode.
+    expect(existsSync(join(rt, "lanes", "th-1"))).toBe(false);
+    // Another thread's lanes are untouched.
+    expect(existsSync(join(rt, "lanes", "th-2"))).toBe(true);
+
+    if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previous;
+    rmSync(configDir, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true });
   });
 });

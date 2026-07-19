@@ -6,6 +6,7 @@ import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/s
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
 import { runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
+import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
 import {
   branchDelete,
   diffStaged,
@@ -273,6 +274,18 @@ export class WorkspaceManager {
         }
       },
     };
+  }
+
+  /**
+   * Provision the DURABLE per-lane read-only home for a THREAD turn (INV-034).
+   * Unlike `readOnlyHomeEnv`, this base is PERSISTENT under the project runtime
+   * namespace and keyed by (thread, harness, profile): the next read-only turn
+   * of the same lane reuses it, so the harness's recorded native session is
+   * reachable for `codex exec resume` / `claude --resume`. Never disposed with
+   * the run — the thread-purge / profile-deletion / retention owners remove it.
+   */
+  laneHomeEnv(threadId: string, harnessId: string, profileId: string | null): LaneHomeEnv {
+    return ensureLaneHomeEnv(this.runtimeRoot, threadId, harnessId, profileId);
   }
 
   /**

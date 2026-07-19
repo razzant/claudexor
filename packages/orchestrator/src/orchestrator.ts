@@ -835,6 +835,24 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * The DURABLE per-lane read-only HOME env for a THREAD turn (INV-034), or
+   * null for a non-thread one-shot (which keeps the disposable route-context
+   * home). Anchored to the PROJECT partition (`input.repoRoot`), not the
+   * per-turn execution root, so the home is the SAME across turns of the same
+   * lane and the lifecycle owners (which key off `thread.repo.root`) reach it.
+   * Keyed by the run's REQUESTED credential profile — the same key the daemon's
+   * `resumeMap` lookup uses (INV-135), so record and resume land in one home.
+   */
+  private laneHomeEnvFor(input: RunInput, harnessId: string): Record<string, string> | null {
+    if (!input.threadId) return null;
+    return new WorkspaceManager(input.repoRoot).laneHomeEnv(
+      input.threadId,
+      harnessId,
+      input.credentialProfileId ?? null,
+    ).env;
+  }
+
   private resolveCredentialProfile(input: RunInput, harnessId: string): CredentialProfile | null {
     if (!input.credentialProfileId) return null;
     const registry = this.config(input.repoRoot)?.global.credential_profiles ?? [];
@@ -4688,8 +4706,15 @@ export class Orchestrator {
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
 
     // W3.3: ONE resolved read-only context — the routing point-probe and every
-    // planner spawn consume the SAME scoped env (see routeContext.ts).
+    // planner spawn consume the SAME scoped env (see routeContext.ts). The
+    // probe home stays a disposable throwaway even for a thread lane turn (auth
+    // truth is home-independent); only the planner spawn swaps in the durable
+    // per-lane home below so its recorded native session survives.
     const roHome = resolveReadOnlyRouteContext(this.execRootOf(input));
+    // A thread PLAN turn is a chat turn (INV-034): plan candidates are distinct
+    // harnesses run sequentially, so each records its own lane's native session
+    // and the next lane turn resumes it via `sessionSpecFields.resume_session_id`.
+    const laneRun = Boolean(input.threadId);
     let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters(
@@ -4834,7 +4859,10 @@ export class Orchestrator {
           ...this.sessionSpecFields(input, adapter.id, log),
           ...this.harnessSpecKnobs(contract, knobs, "plan"),
           env_inheritance: envInheritance(this.config(input.repoRoot)),
-          env: roHome.env,
+          // A thread plan turn spawns in its DURABLE per-lane home so its native
+          // session is reachable for resume next turn (INV-034); a non-thread
+          // plan keeps the disposable route-context home.
+          env: (laneRun ? this.laneHomeEnvFor(input, adapter.id) : null) ?? roHome.env,
         });
         const plannerAbort = new AbortController();
         spec.extra["abortSignal"] = input.signal
@@ -4894,10 +4922,11 @@ export class Orchestrator {
               if (input.signal?.aborted) break;
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);
-              // NOT observed for resume: a read-only planner is not a chat turn,
-              // and attaching its session id would poison thread continuity (and
-              // race parallel planner/reviewer sessions), regardless of whether
-              // the vendor stored that session in the scoped or native store.
+              // A thread PLAN turn IS a chat turn now (INV-034): its native
+              // session lives in the DURABLE per-lane home, so record it for the
+              // next lane turn's resume. Plan candidates are distinct harnesses
+              // run sequentially, so there is no parallel same-lane race.
+              if (laneRun) observeNativeSessionEvent(input, adapter.id, safeEv);
               observeAuthSwitch(log, adapter.id, attemptId, safeEv);
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));
@@ -5478,7 +5507,17 @@ export class Orchestrator {
         : Math.min(Math.max(input.n ?? 2, 1), 3);
     // W3.3: ONE resolved read-only context — the routing point-probe and every
     // read-only attempt spawn consume the SAME scoped env (see routeContext.ts).
+    // The point-probe home is a disposable throwaway even for a thread lane
+    // turn: readiness auth truth is home-INDEPENDENT (credentials come from the
+    // profile/keychain/default store, never the scoped home), so the probe and
+    // the run share the same auth source; only the ACTUAL spawn swaps in the
+    // durable per-lane home below so the recorded native session survives.
     const roHome = resolveReadOnlyRouteContext(this.execRootOf(input));
+    // A thread ASK turn is a chat turn: its native session is recorded per lane
+    // and the next lane turn resumes it (INV-034). Deep-scan (multi-scout
+    // research) and orchestrate (tool-belt planner, not the user's chat) are
+    // NOT lane chat turns — they keep the disposable home and record nothing.
+    const laneRun = Boolean(input.threadId) && opts.mode === "ask" && !opts.deepScan;
     let adapters: RoutedAdapter[];
     try {
       adapters = await this.resolveCandidateAdapters(
@@ -5612,7 +5651,10 @@ export class Orchestrator {
         resume_session_id: grantResume ? sessionFields.resume_session_id : null,
         ...this.harnessSpecKnobs(contract, knobs, opts.intent),
         env_inheritance: envInheritance(this.config(input.repoRoot)),
-        env: roHome.env,
+        // A thread lane turn spawns in its DURABLE per-lane home so the native
+        // session it records is reachable for resume next turn; everything else
+        // uses the disposable route-context home.
+        env: (laneRun ? this.laneHomeEnvFor(input, adapter.id) : null) ?? roHome.env,
         // Structured output: the orchestrate PLANNER's deliverable IS the
         // typed plan — constrain schema-capable routes to it. Capability-gated:
         // routes without json_schema_output keep fenced-JSON parsing. ALSO
@@ -5701,9 +5743,13 @@ export class Orchestrator {
               if (input.signal?.aborted) break;
               const safeEv = redactHarnessEvent(ev);
               safeInvoke(input.onHarnessEvent, safeEv);
-              // NOT observed for resume: this read-only attempt is not a chat
-              // turn. Recording its id would poison thread continuity and can
-              // race parallel read-only sessions, regardless of storage route.
+              // A thread ASK turn IS a chat turn now (INV-034): its native
+              // session lives in the DURABLE per-lane home, so record it for the
+              // next lane turn's resume. The read-only fallback chain is
+              // sequential (never the parallel deep-scan swarm, which is
+              // excluded from `laneRun`), so recordSession's upsert keeps the
+              // latest lane session without a race.
+              if (laneRun) observeNativeSessionEvent(input, adapter.id, safeEv);
               observeAuthSwitch(log, adapter.id, attemptId, safeEv);
               log.emit("harness.event", harnessEventPayload(adapter.id, attemptId, safeEv));
               appendLine(attemptEventsPath, JSON.stringify(safeEv));

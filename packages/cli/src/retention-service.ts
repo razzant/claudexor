@@ -12,6 +12,7 @@ import { ArtifactStore } from "@claudexor/artifact-store";
 import { runRetentionPass, type RetentionProject } from "@claudexor/control-api";
 import { loadConfig } from "@claudexor/config";
 import { noProjectRepoRoot } from "@claudexor/util";
+import { sweepOrphanLanes } from "@claudexor/workspace";
 import { logLine } from "./daemon-lifecycle.js";
 
 export interface RetentionRunnerDeps {
@@ -78,6 +79,27 @@ export function createRetentionRunner(deps: RetentionRunnerDeps): RetentionRunne
       // no-project root has none.
       reviewsDir: root === noProjectRoot ? null : join(root, ".claudexor", "reviews"),
     }));
+    // INV-034 lifecycle owner (c): remove durable per-lane read-only homes whose
+    // thread no longer exists. Bounded to HEALTHY roots only (same fail-closed
+    // set as the run GC): a quarantined partition contributes no live thread
+    // ids, so its lanes are left untouched until it recovers rather than swept
+    // as false orphans. Skip in dry-run — a GC preview must not delete bytes.
+    if (!request.dry_run) {
+      const liveThreadsByRoot = new Map<string, Set<string>>();
+      for (const thread of deps.threads.listThreads()) {
+        const root = thread.repo?.root ?? noProjectRoot;
+        (liveThreadsByRoot.get(root) ?? liveThreadsByRoot.set(root, new Set()).get(root)!).add(
+          thread.id,
+        );
+      }
+      for (const root of roots) {
+        try {
+          sweepOrphanLanes(root, liveThreadsByRoot.get(root) ?? new Set());
+        } catch {
+          /* best-effort: orphan lane dirs are harmless and re-sweepable */
+        }
+      }
+    }
     return runRetentionPass(
       {
         runsMaxAgeDays: retention.runs_max_age_days,

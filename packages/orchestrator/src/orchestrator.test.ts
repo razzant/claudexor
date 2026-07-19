@@ -1757,6 +1757,102 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("read-only THREAD ask records its native session per lane and the NEXT lane turn resumes it in the SAME durable home (INV-034)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-lane-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const spawns: Array<{ resume: string | null; home?: string; codexHome?: string }> = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: sessionId,
+          ts,
+          payload: { native_session_id: "nat-asker-1" },
+        };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const askerRun = asker.run.bind(asker);
+      asker.run = (spec) => {
+        spawns.push({
+          resume: spec.resume_session_id,
+          home: spec.env?.["HOME"],
+          codexHome: spec.env?.["CODEX_HOME"],
+        });
+        return askerRun(spec);
+      };
+      // A minimal in-memory stand-in for the daemon's per-lane session store.
+      const store: Record<string, { sessionId: string; profileId: string | null }> = {};
+      const onSessionObserved = (
+        harnessId: string,
+        nativeSessionId: string,
+        _model?: string | null,
+        profileId?: string | null,
+      ) => {
+        store[harnessId] = { sessionId: nativeSessionId, profileId: profileId ?? null };
+      };
+      const resumeMap = (profileId: string | null) => {
+        const out: Record<string, { sessionId: string; profileId: string | null }> = {};
+        for (const [h, s] of Object.entries(store)) {
+          if ((s.profileId ?? null) === profileId) out[h] = s;
+        }
+        return out;
+      };
+      const orch = () => new Orchestrator({ registry: new Map([["asker", asker]]), reviewers: [] });
+
+      // Turn 1: nothing to resume; records nat-asker-1 under the null-default lane.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q1",
+        mode: "ask",
+        harnesses: ["asker"],
+        threadId: "th-lane",
+        resumeSessions: resumeMap(null),
+        onSessionObserved,
+      });
+      // Turn 2: the same lane resumes the recorded native session id.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q2",
+        mode: "ask",
+        harnesses: ["asker"],
+        threadId: "th-lane",
+        resumeSessions: resumeMap(null),
+        onSessionObserved,
+      });
+
+      expect(spawns[0]?.resume).toBeNull();
+      expect(spawns[1]?.resume).toBe("nat-asker-1");
+      // Both turns spawned in the SAME durable per-lane home.
+      const laneHome = join(projectRuntimeDir(repo), "lanes", "th-lane", "asker-default", "home");
+      expect(spawns[0]?.home).toBe(laneHome);
+      expect(spawns[1]?.home).toBe(laneHome);
+      expect(spawns[0]?.codexHome).toBe(join(laneHome, ".codex"));
+      // The lane home PERSISTS after the run (never disposed with it).
+      expect(existsSync(laneHome)).toBe(true);
+
+      // A NON-thread read-only ask still gets a DISPOSABLE throwaway home that
+      // is deleted after the run.
+      await orch().run({
+        repoRoot: repo,
+        prompt: "q3",
+        mode: "ask",
+        harnesses: ["asker"],
+      });
+      const oneShotHome = spawns[2]?.home;
+      expect(oneShotHome).toBeDefined();
+      expect(oneShotHome).not.toBe(laneHome);
+      expect(oneShotHome?.includes("claudexor-ro-")).toBe(true);
+      expect(existsSync(oneShotHome as string)).toBe(false);
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("an IMPLICIT pool with --profile routes to the PROFILE's harness even when its default store is logged out (round-18 BLOCK)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-implicit-pool-config-"));

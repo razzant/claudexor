@@ -17,7 +17,7 @@ import {
 import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { listTrustService, updateTrustService } from "./trust-services.js";
 import { SecretStore, isManagedSecretName } from "@claudexor/secrets";
-import { purgeThreadWorktree } from "@claudexor/workspace";
+import { purgeProfileLanes, purgeThreadLanes, purgeThreadWorktree } from "@claudexor/workspace";
 import { claudexorOwnedRoot, noProjectRepoRoot } from "@claudexor/util";
 import {
   type ResourceAttachmentRef,
@@ -219,6 +219,10 @@ export function controlServices(
       if (thread.repo && thread.workspace.mode === "isolated") {
         await purgeThreadWorktree(thread.repo.root, id);
       }
+      // Durable per-lane read-only homes exist regardless of workspace mode
+      // (in_place threads have them too), so sweep them for EVERY purged thread
+      // (INV-034 lifecycle owner (a)).
+      purgeThreadLanes(thread.repo?.root ?? NO_PROJECT_ROOT, id);
       return purged;
     },
     applyThread: async (id: string, opts: ThreadApplyOptions) => applyThreadDiff(threads, id, opts),
@@ -357,6 +361,14 @@ export function controlServices(
         profileId,
       );
       threads.invalidateCredentialProfile(harnessId, profileId);
+      // INV-034 lifecycle owner (b): the deleted account's durable per-lane
+      // read-only homes must not survive to be resumed. Sweep them across every
+      // project a live thread anchors to (plus the no-project partition).
+      const laneRoots = new Set<string>([NO_PROJECT_ROOT]);
+      for (const thread of threads.listThreads()) {
+        if (thread.repo?.root) laneRoots.add(thread.repo.root);
+      }
+      for (const root of laneRoots) purgeProfileLanes(root, harnessId, profileId);
       quotaRegistry().removeSubject(harnessId, profileId);
       const entry = removeProfileFromRegistry(harnessId, profileId);
       let credentialCleanup: "config_dir_removed" | "secret_deleted" | "none" = "none";

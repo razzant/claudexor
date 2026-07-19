@@ -143,10 +143,14 @@ Unknown modes fail loudly. The retired mode ids (`audit`, `best_of_n`,
 `agent --create`; old WIRE mode ids hard-error at every API/DTO boundary.
 
 Chat is the normal loop: `claudexor` with no arguments opens a REPL over a
-thread. Read-only turns (ask/plan, and orchestrate with the default
-`suggest` autonomy) RESUME the routed
-harness's own native CLI session (codex `exec resume`, claude `--resume`) —
-plan first, then keep asking, in ONE conversation. Write (agent) turns run
+thread. Read-only ask/plan turns RESUME the routed harness's own native CLI
+session (codex `exec resume`, claude `--resume`) — plan first, then keep
+asking, in ONE conversation. Each such turn runs in a DURABLE per-lane scoped
+home (a lane is a thread + harness + credential profile), so the native
+session it records survives the run and the next lane turn actually reaches
+it; a one-shot ask/plan with no thread keeps a disposable throwaway home, and
+orchestrate's planner runs fresh (it speaks its own tool-belt framing, not the
+user's chat). Write (agent) turns run
 IN-PLACE: a single-candidate turn mutates the thread's live execution tree
 directly (the project for an `in_place` thread, or the thread's persistent git
 worktree for an `isolated` thread) and resumes the native vendor session, so

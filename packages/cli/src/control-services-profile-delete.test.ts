@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@claudexor/config";
-import { noProjectRepoRoot } from "@claudexor/util";
+import { noProjectRepoRoot, projectRuntimeDir } from "@claudexor/util";
+import { ensureLaneHomeEnv } from "@claudexor/workspace";
 import { controlServices } from "./control-services.js";
 import { registerConfigDirProfile } from "./profile-registration.js";
 
@@ -23,6 +24,7 @@ function servicesWithJobs(
       if (invalidationError) throw invalidationError;
       return { clearedThreads: 0, invalidatedSessions: 0 };
     },
+    listThreads: () => [] as unknown[],
   };
   const quota = { removeSubject: () => 0 };
   return controlServices(
@@ -131,5 +133,40 @@ describe("deleteCredentialProfile (INV-135 delete service)", () => {
     await expect(
       servicesWithJobs([]).deleteCredentialProfile({ harnessId: "claude", profileId: "ghost" }),
     ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("sweeps the deleted profile's DURABLE per-lane read-only homes (INV-034 owner b)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-lane-repo-"));
+    registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
+    const rt = projectRuntimeDir(repo);
+    // Two lanes for the doomed (claude, work) account, plus a survivor lane.
+    ensureLaneHomeEnv(rt, "th-1", "claude", "work");
+    ensureLaneHomeEnv(rt, "th-2", "claude", "work");
+    ensureLaneHomeEnv(rt, "th-1", "codex", "work");
+
+    const threads = {
+      invalidateCredentialProfile: () => ({ clearedThreads: 0, invalidatedSessions: 0 }),
+      listThreads: () => [{ id: "th-1", repo: { root: repo } }] as unknown[],
+    };
+    const quota = { removeSubject: () => 0 };
+    const svc = controlServices(
+      undefined as never,
+      undefined as never,
+      threads as never,
+      { current: () => ({ list: () => [] }) } as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      (() => quota) as never,
+      async () => [],
+    );
+
+    await svc.deleteCredentialProfile({ harnessId: "claude", profileId: "work" });
+
+    expect(existsSync(join(rt, "lanes", "th-1", "claude-work"))).toBe(false);
+    expect(existsSync(join(rt, "lanes", "th-2", "claude-work"))).toBe(false);
+    // A different harness's lane under the same thread is untouched.
+    expect(existsSync(join(rt, "lanes", "th-1", "codex-work"))).toBe(true);
+    rmSync(repo, { recursive: true, force: true });
   });
 });

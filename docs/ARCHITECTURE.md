@@ -519,6 +519,17 @@ a refusal (comparator: Codex CLI refuses outside git; Claudexor creates the
 boundary itself), never a silent mutation. Read-only modes and `--in-place`
 stateful targets are untouched.
 
+Read-only turns provision a scoped harness HOME (no worktree) so native state —
+plan files, session rollouts, transcripts — never lands in the operator's real
+home. A one-shot ask/plan gets a DISPOSABLE throwaway home deleted after the
+run. A read-only turn of a THREAD instead gets a DURABLE per-lane home under
+`projects/<project-sha256>/lanes/<threadId>/<harness>-<profileOrDefault>/home`
+(a lane = thread + harness + credential profile), a sibling of `workspaces/`
+and outside every worktree (INV-063). The lane home persists across turns so
+the harness's recorded native session is reachable for `codex exec resume` /
+`claude --resume` on the next lane turn (INV-034); it is removed only by thread
+purge, credential-profile deletion, or the orphan-lane retention sweep.
+
 Convergence modes also default to isolated envelopes. The CLI-only `--in-place`
 is reserved for explicit stateful external adapters, such as Terminal-Bench
 containers where runtime state is the deliverable and cannot be merged from a

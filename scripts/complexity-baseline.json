@@ -20,7 +20,7 @@
   "packages/harness-cursor/src/index.ts": 795,
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 702,
-  "packages/orchestrator/src/orchestrator.ts": 6685,
+  "packages/orchestrator/src/orchestrator.ts": 6731,
   "packages/review/src/reviewEngine.ts": 1396,
   "packages/schema/src/control.ts": 1557,
   "packages/schema/src/harness.ts": 929,

@@ -164,7 +164,12 @@ invariant or owner decision before proceeding.
   `[INV-033:verbs-renamed]`.
 - **INV-034** A thread is the Claudexor-owned conversation (runs are its
   turns); the vendor CLI session is a re-hostable cache that later turns
-  resume natively. Thread, turn, and session mutations are fsync-before-ACK
+  resume natively. Read-only thread turns (ask/plan) keep DURABLE per-lane
+  native sessions — a lane is a (thread, harness, profile) triple with a
+  persistent scoped home under the project runtime namespace — and never
+  dispose them with the run; the next turn of the same lane resumes that
+  session, and only thread purge, credential-profile deletion, or orphan
+  retention removes a lane home. Thread, turn, and session mutations are fsync-before-ACK
   journal records; create and Exact Retry bind `Idempotency-Key` to the
   original request and never duplicate a turn. Exact Retry is a fresh linked
   command with fresh preflight; Run Again is an editable draft with explicit
