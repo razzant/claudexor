@@ -99,6 +99,10 @@ final class AppModel {
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// bottom-left accounts popover (list + guided add + per-account login).
     var credentialProfiles: [CredentialProfileEntry] = []
+    /// Per-harness accounts authority projection (INV-135 / V11b): native
+    /// CLI-login state + the server-computed Active identity. The accounts
+    /// surface reads Enabled/Active from HERE so nothing re-derives the symmetry.
+    var harnessAccounts: [HarnessAccounts] = []
     /// M5c update-chip shell: the latest availability read from the local
     /// override (nil = nothing to advertise). Populated by refreshUpdateAvailability().
     var updateAvailability: UpdateAvailability?

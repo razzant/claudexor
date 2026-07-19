@@ -11,168 +11,6 @@ import ClaudexorKit
 // auto-balance. Registered profiles come from GET /v2/credential-profiles;
 // default logins from the same doctor/quota models the old footer used.
 
-/// Readiness verdict for one account row (the worst wins for the trigger dot).
-enum AccountReadiness: Int, Comparable {
-    case unavailable = 0, unknown = 1, ready = 2
-    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
-    var color: Color {
-        switch self {
-        case .ready: return Theme.status(.positive)
-        case .unknown: return Theme.status(.caution)
-        case .unavailable: return Theme.status(.negative)
-        }
-    }
-}
-
-/// One row in the accounts popover — a registered profile or a default login.
-struct AccountRowModel: Identifiable {
-    let id: String
-    let displayName: String
-    let harnessId: String
-    let family: HarnessFamily
-    let readiness: AccountReadiness
-    let verified: Bool
-    /// nil => the engine-default login for `family` (the "CLI login" row); else
-    /// the credential profile.
-    let profileId: String?
-    let detail: String?
-    let quotaGroups: [QuotaPresentation.Group]
-    /// D25 Enabled: participates in pickers + the auto-rotation pool. Sourced
-    /// from the wire (`profile.enabled`); the CLI login is always enabled (a
-    /// vendor login is never disable-able from here). READ-ONLY — the daemon
-    /// exposes no enabled-mutation route yet (reported gap), so the toggle
-    /// reflects wire truth and never fakes a client-side flip.
-    let enabled: Bool
-
-    var isProfile: Bool { profileId != nil }
-    /// The native vendor login row (not one of Claudexor's credential profiles).
-    var isCliLogin: Bool { profileId == nil }
-
-    /// The single worst usage window across the account's quota groups; drives
-    /// the ONE compact quota line the popover shows per account.
-    var worstWindow: QuotaPresentation.Window? {
-        quotaGroups.flatMap(\.windows).max { ($0.usedRatio ?? -1) < ($1.usedRatio ?? -1) }
-    }
-    var worstPercent: Int? {
-        worstWindow?.usedRatio.map { Int(($0 * 100).rounded()) }
-    }
-}
-
-/// Pure assembly of account rows from the model's profile + readiness + quota
-/// state, plus the trigger's worst-of aggregates.
-enum AccountsPresentation {
-    @MainActor
-    static func rows(model: AppModel) -> [AccountRowModel] {
-        let groups = QuotaPresentation.groups(from: model.quotaResponse?.snapshots ?? [])
-        var rows: [AccountRowModel] = []
-
-        // Default logins: one per native-login family the doctor knows.
-        for info in model.liveHarnesses
-        where info.family.defaultAuthReadinessRequest?.source == .nativeSession {
-            let family = info.family
-            let source = model.authSource(for: family, source: .nativeSession)
-            rows.append(AccountRowModel(
-                id: "default/\(family.rawValue)",
-                displayName: family.label,
-                harnessId: family.rawValue,
-                family: family,
-                readiness: readiness(
-                    availability: source?.availability, verification: source?.verification),
-                verified: source?.isVerifiedNativeSession == true,
-                profileId: nil,
-                detail: source?.detail,
-                quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue },
-                // A native vendor login is never disabled from here (login/logout
-                // happen via the vendor CLI) — it is symmetrically "enabled".
-                enabled: true
-            ))
-        }
-
-        // Registered profiles (additive; the default login is never touched).
-        for entry in model.credentialProfiles {
-            let availability = entry.status.availability
-            let verification = entry.status.verification
-            rows.append(AccountRowModel(
-                id: "profile/\(entry.profile.harnessId)/\(entry.profile.profileId)",
-                displayName: entry.profile.displayName,
-                harnessId: entry.profile.harnessId,
-                family: HarnessFamily(rawValue: entry.profile.harnessId),
-                readiness: readiness(availability: availability, verification: verification),
-                verified: availability == "available" && verification == "passed",
-                profileId: entry.profile.profileId,
-                detail: entry.status.detail,
-                quotaGroups: groups.filter {
-                    $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
-                },
-                enabled: entry.profile.enabled
-            ))
-        }
-        return rows
-    }
-
-    private static func readiness(
-        availability: String?, verification: String?
-    ) -> AccountReadiness {
-        if availability == "available" && verification == "passed" { return .ready }
-        if availability == nil || availability == "unknown"
-            || verification == nil || verification == "not_run" || verification == "unknown" {
-            return .unknown
-        }
-        return .unavailable
-    }
-
-    /// Worst readiness across every account — the trigger dot.
-    static func worstReadiness(_ rows: [AccountRowModel]) -> AccountReadiness? {
-        rows.map(\.readiness).min()
-    }
-
-    /// Highest used-% across every account — the trigger's quota summary.
-    static func worstPercent(_ rows: [AccountRowModel]) -> Int? {
-        rows.compactMap(\.worstPercent).max()
-    }
-
-    /// The trigger's label: a single account's name, else "N accounts".
-    static func triggerTitle(_ rows: [AccountRowModel]) -> String {
-        switch rows.count {
-        case 0: return "Accounts"
-        case 1: return rows[0].displayName
-        default: return "\(rows.count) accounts"
-        }
-    }
-
-    /// Derive the internal profile id the user never types (owner dogfood):
-    /// slugified display name when it survives the slug rules, else "acct";
-    /// numeric suffixes guarantee uniqueness against the harness's registry.
-    static func generatedProfileId(displayName: String, existing: Set<String>) -> String {
-        var slug = ""
-        for ch in displayName.lowercased() {
-            if ch == " " || ch == "." { slug.append("-") }
-            else if ch.isASCII && (ch.isLowercase || ch.isNumber || ch == "-" || ch == "_") {
-                slug.append(ch)
-            }
-        }
-        while let first = slug.first, first == "-" || first == "_" { slug.removeFirst() }
-        slug = String(slug.prefix(60))
-        let base = isValidSlug(slug) ? slug : "acct"
-        if !existing.contains(base), isValidSlug(base) { return base }
-        for n in 2...999 {
-            let candidate = "\(base)-\(n)"
-            if !existing.contains(candidate) { return candidate }
-        }
-        return "\(base)-\(existing.count + 1)"
-    }
-
-    /// Client-side credential-profile slug check — `^[a-z0-9][a-z0-9_-]{0,63}$`
-    /// validated WITHOUT a regex (house no-regex rule). The server re-validates.
-    static func isValidSlug(_ s: String) -> Bool {
-        guard (1...64).contains(s.count) else { return false }
-        let head = Set("abcdefghijklmnopqrstuvwxyz0123456789")
-        let tail = head.union("-_")
-        guard let first = s.first, head.contains(first) else { return false }
-        return s.dropFirst().allSatisfy { tail.contains($0) }
-    }
-}
-
 /// The sidebar footer (bottom-left): a quiet update chip (M5c shell), the active
 /// credential-profile line, and the accounts trigger. Composed so the footer is
 /// ONE ordered stack rather than three ad-hoc rows scattered in the thread list.
@@ -464,11 +302,13 @@ struct AccountsSurface: View {
         }
     }
 
-    /// The D25 Active marker, symmetric across profile rows AND the CLI login:
-    /// a profile is active when the thread/draft is pinned to it; the CLI login
-    /// is active when NO profile is pinned for its harness (the vendor login is
-    /// what the harness authenticates as). Truth from the wire only.
+    /// The D25 Active marker, symmetric across profile rows AND the CLI login.
+    /// V11b: the SERVER computes the Active identity per harness (the account a
+    /// new run defaults to), so the marker binds to that projection verbatim.
+    /// Only when the projection is absent (pre-V11b daemon) does it fall back to
+    /// the client-derived thread/draft pin state.
     private func isActive(_ row: AccountRowModel) -> Bool {
+        if let serverActive = row.serverActive { return serverActive }
         if row.isProfile {
             return row.profileId == selectedProfileId
                 && (selectedHarnessId == nil || selectedHarnessId == row.harnessId)
@@ -476,6 +316,24 @@ struct AccountsSurface: View {
         // CLI login row: active when its harness is the thread/draft primary and
         // no profile is pinned.
         return selectedProfileId == nil && selectedHarnessId == row.harnessId
+    }
+
+    /// The Enabled-toggle action for a row (V11b — LIVE). A profile row PATCHes
+    /// its own `enabled`; the CLI-login row drives the harness's
+    /// `native_credentials_enabled` via the settings surface. Both reload the
+    /// projection after (the popover's reload-after-PATCH pattern).
+    private func enabledAction(_ row: AccountRowModel) -> (Bool) -> Void {
+        { enabled in
+            Task {
+                if let profileId = row.profileId {
+                    await model.setProfileEnabled(
+                        harnessId: row.harnessId, profileId: profileId, enabled: enabled)
+                } else {
+                    await model.setNativeCredentialsEnabled(
+                        harnessId: row.harnessId, enabled: enabled)
+                }
+            }
+        }
     }
 
     /// The "Use" action for a row, or nil when it is already active / cannot be
@@ -510,6 +368,10 @@ struct AccountsSurface: View {
                         login: { login(row) },
                         loginDisabled: loginDisabled(row),
                         active: isActive(row),
+                        // V11b: the Enabled toggle is LIVE — a profile row PATCHes
+                        // its own `enabled`; the CLI-login row drives the harness's
+                        // `native_credentials_enabled` via the settings surface.
+                        setEnabled: enabledAction(row),
                         // "Use" makes a row the thread's active account (wire-backed
                         // PATCH of thread.credentialProfileId). Offered for a verified
                         // profile, and for the CLI login (nil profile = clear the pin
@@ -586,7 +448,8 @@ struct AccountsSurface: View {
             profileId: id,
             detail: nil,
             quotaGroups: [],
-            enabled: true
+            enabled: true,
+            serverActive: nil
         ))
     }
 
@@ -610,6 +473,9 @@ private struct AccountRowView: View {
     var loginDisabled = false
     /// The active account for the current thread/draft (the D25 Active marker).
     var active = false
+    /// V11b: live Enabled toggle action — PATCHes the profile / native setting.
+    /// nil renders a read-only toggle (defensive; the surface always supplies it).
+    var setEnabled: ((Bool) -> Void)? = nil
     var use: (() -> Void)? = nil
     /// Present when the account can be removed (registered profiles only —
     /// default vendor logins are not Claudexor's to delete).
@@ -637,20 +503,26 @@ private struct AccountRowView: View {
                 }
             }
             Spacer()
-            // D25 Enabled: symmetric on every row. READ-ONLY — the daemon exposes
-            // `profile.enabled` but no mutation route, so the toggle reflects wire
-            // truth and cannot be flipped from here (no faked client-side state).
-            Toggle("", isOn: .constant(row.enabled))
+            // D25 Enabled: symmetric on every row and LIVE (V11b). A profile row
+            // PATCHes its own `enabled`; the CLI-login row drives the harness's
+            // `native_credentials_enabled`. The toggle reads wire truth and the
+            // set fires the PATCH (reload-after-PATCH — no faked client state).
+            Toggle("", isOn: Binding(
+                get: { row.enabled },
+                set: { setEnabled?($0) }
+            ))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
                 .tint(Theme.accent)
-                .disabled(true)
+                .disabled(setEnabled == nil)
                 .help(row.isCliLogin
-                    ? "The CLI login always participates (enable/disable happens via the vendor CLI)."
-                    : row.enabled
-                        ? "Enabled — participates in account pickers and the auto-rotation pool (read-only: the engine owns this state)."
-                        : "Disabled on the engine — excluded from pickers and rotation (read-only here).")
+                    ? (row.enabled
+                        ? "Enabled — the native/CLI login participates in this harness's credential ladder. Turn off to exclude it."
+                        : "Disabled — the native/CLI login is excluded from this harness's credential ladder.")
+                    : (row.enabled
+                        ? "Enabled — participates in account pickers and the auto-rotation pool. Turn off to exclude it."
+                        : "Disabled — excluded from account pickers and the auto-rotation pool."))
             Button(row.verified ? "Manage" : "Log in", action: login)
                 .buttonStyle(.bordered)
                 .controlSize(.small)

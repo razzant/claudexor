@@ -46,6 +46,13 @@ public struct RuntimeTransientRetrySettings: Codable, Sendable, Equatable {
 
 public struct HarnessSettings: Codable, Sendable, Equatable {
     public let enabled: Bool
+    /// The harness's ACTIVE account (INV-135 / V11b): the credential profile a
+    /// new run/turn defaults to; nil = the native/CLI login. Optional — pre-V11b
+    /// daemons omit it.
+    public let activeProfileId: String?
+    /// Whether the native/CLI login participates in this harness's credential
+    /// ladder (INV-135 / V11b). Optional — pre-V11b daemons omit it.
+    public let nativeCredentialsEnabled: Bool?
     public let defaultModel: String?
     public let effort: String?
     public let maxTurns: Int?
@@ -65,6 +72,11 @@ public struct HarnessSettings: Codable, Sendable, Equatable {
 /// Partial per-harness settings patch; absent fields keep their stored value.
 public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     public var enabled: Bool?
+    /// Set the harness's ACTIVE account (INV-135 / V11b). Double-optional:
+    /// `.some(nil)` encodes an explicit JSON null = clear back to the CLI login.
+    public var activeProfileId: String??
+    /// Toggle the native/CLI login in this harness's credential ladder (V11b).
+    public var nativeCredentialsEnabled: Bool?
     public var defaultModel: String??
     public var effort: String??
     public var web: String?
@@ -78,11 +90,15 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     /// Auto-balance action at a profile quota limit: "fail" | "ask" | "rotate".
     public var profileLimitAction: String?
 
-    public init(enabled: Bool? = nil, defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil,
+    public init(enabled: Bool? = nil, activeProfileId: String?? = nil,
+                nativeCredentialsEnabled: Bool? = nil,
+                defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil,
                 maxUsd: Double?? = nil, toolsAllow: [String]? = nil, toolsDeny: [String]? = nil,
                 fallbackModel: String?? = nil, maxTurns: Int?? = nil, maxRounds: Int?? = nil,
                 authPreference: String? = nil, profileLimitAction: String? = nil) {
         self.enabled = enabled
+        self.activeProfileId = activeProfileId
+        self.nativeCredentialsEnabled = nativeCredentialsEnabled
         self.defaultModel = defaultModel
         self.effort = effort
         self.web = web
@@ -97,13 +113,15 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case enabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference, profileLimitAction
+        case enabled, activeProfileId, nativeCredentialsEnabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference, profileLimitAction
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(enabled, forKey: .enabled)
         // Double-optional: .some(nil) encodes an explicit JSON null (= clear override).
+        if let activeProfileId { try c.encode(activeProfileId, forKey: .activeProfileId) }
+        try c.encodeIfPresent(nativeCredentialsEnabled, forKey: .nativeCredentialsEnabled)
         if let defaultModel { try c.encode(defaultModel, forKey: .defaultModel) }
         if let effort { try c.encode(effort, forKey: .effort) }
         try c.encodeIfPresent(web, forKey: .web)

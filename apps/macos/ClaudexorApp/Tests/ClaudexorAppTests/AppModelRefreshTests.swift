@@ -975,6 +975,89 @@ struct AppModelRefreshTests {
         let blocked = try candidate(reviewVerified: true, finalReviewClean: false, blockers: 1)
         #expect(RunDetailMapping.winnerEvidenceText(blocked).contains("blocked or not clean"))
     }
+
+    // MARK: - V11b accounts binding (toggle → PATCH mapping)
+
+    @MainActor
+    @Test func setProfileEnabledPatchesTheCredentialProfileRoute() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+
+        let patched = AppRefreshCallCounter()
+        // The handler runs off the main actor (CFNetwork queue); keep body
+        // decoding inline (no nested closure literal that would inherit the
+        // test's @MainActor isolation and trap).
+        AppRequestStubURLProtocol.handler = { request in
+            if request.httpMethod == "PATCH",
+               request.url?.path == "/v2/credential-profiles/claude/work" {
+                guard let body = appTestRequestBody(request),
+                      let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                      object["enabled"] as? Bool == false else {
+                    throw AppRefreshTestError.badRequest
+                }
+                patched.increment()
+                let json = #"{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","enabled":false},"status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}"#
+                return (appResponse(for: request), Data(json.utf8))
+            }
+            // The reload-after-PATCH re-reads the projection.
+            if request.url?.path == "/v2/credential-profiles" {
+                return (appResponse(for: request), Data(#"{"profiles":[],"harnessAccounts":[]}"#.utf8))
+            }
+            throw AppRefreshTestError.badRequest
+        }
+
+        let error = await model.setProfileEnabled(harnessId: "claude", profileId: "work", enabled: false)
+        #expect(error == nil)
+        #expect(patched.count == 1)
+    }
+
+    @MainActor
+    @Test func setNativeCredentialsEnabledPatchesTheHarnessSettingsSurface() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+
+        let patched = AppRefreshCallCounter()
+        let snapshot = #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":900000}"#
+        AppRequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v2/settings"):
+                // The CLI-login toggle drives the per-harness native_credentials
+                // setting via the settings PATCH surface — never the profile route.
+                // Inline decode (no nested closure — the handler runs off-main).
+                guard let body = appTestRequestBody(request),
+                      let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                      let harnesses = obj["harnesses"] as? [String: Any],
+                      let claude = harnesses["claude"] as? [String: Any],
+                      claude["nativeCredentialsEnabled"] as? Bool == false else {
+                    throw AppRefreshTestError.badRequest
+                }
+                patched.increment()
+                return (appResponse(for: request), Data(#"{"path":"~/.claudexor/v3/settings.json"}"#.utf8))
+            case ("GET", "/v2/settings"):
+                return (appResponse(for: request), Data(snapshot.utf8))
+            case (_, "/v2/harnesses"):
+                return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
+            case (_, "/v2/credential-profiles"):
+                return (appResponse(for: request), Data(#"{"profiles":[],"harnessAccounts":[]}"#.utf8))
+            default:
+                throw AppRefreshTestError.badRequest
+            }
+        }
+
+        let error = await model.setNativeCredentialsEnabled(harnessId: "claude", enabled: false)
+        #expect(error == nil)
+        #expect(patched.count == 1)
+    }
 }
 
 private func appSetupJob(

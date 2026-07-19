@@ -69,8 +69,9 @@ import Testing
 
     @MainActor
     @Test func profileEnabledIsSourcedFromTheWireNotFaked() throws {
-        // D25 accounts symmetry: the Enabled state is wire truth (profile.enabled),
-        // rendered read-only. A disabled profile must read as disabled.
+        // D25 accounts symmetry: the Enabled state is wire truth (profile.enabled).
+        // V11b makes the toggle LIVE (reload-after-PATCH), so it still reflects the
+        // wire — a disabled profile must read as disabled.
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         let json = """
         {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
@@ -87,9 +88,10 @@ import Testing
     }
 
     @MainActor
-    @Test func cliLoginRowIsAlwaysEnabledAndNotDeletable() throws {
-        // The native vendor login is a symmetric row: always enabled, never a
-        // credential profile (so never Claudexor's to delete).
+    @Test func cliLoginRowDefaultsEnabledWithoutProjectionAndIsNotDeletable() throws {
+        // The native vendor login is a symmetric row: never a credential profile
+        // (so never Claudexor's to delete). With no V11b projection present it
+        // defaults to enabled, and serverActive is nil (client-fallback path).
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         model.liveHarnesses = [HarnessInfo(
             family: .claude, health: .ok, version: "1", auth: "session ready",
@@ -100,8 +102,82 @@ import Testing
         ]
         let row = try #require(AccountsPresentation.rows(model: model).first { $0.isCliLogin })
         #expect(row.enabled)
+        #expect(row.serverActive == nil)
         #expect(!row.isProfile)
         #expect(row.profileId == nil)
+    }
+
+    @MainActor
+    @Test func activeMarkerAndCliEnabledBindToServerProjection() throws {
+        // V11b: the Active marker and the CLI-login Enabled state come from the
+        // server accounts projection, not client-derived pin state.
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "session ready",
+            intents: ["implement"])]
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available", verification: "passed"),
+        ]
+        let profilesJSON = """
+        [{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}},
+         {"profile":{"profile_id":"spare","harness_id":"claude","display_name":"Spare",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]
+        """
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self, from: Data(profilesJSON.utf8))
+        // Projection: profile "work" is Active; the native login is DISABLED.
+        let accountsJSON = """
+        [{"harness_id":"claude","active_profile_id":"work","native_credentials_enabled":false,
+          "native_login_detected":true,"active_identity":{"kind":"profile","profileId":"work"}}]
+        """
+        model.harnessAccounts = try JSONDecoder().decode(
+            [HarnessAccounts].self, from: Data(accountsJSON.utf8))
+
+        let rows = AccountsPresentation.rows(model: model)
+        let cli = try #require(rows.first { $0.isCliLogin })
+        #expect(cli.enabled == false)          // driven by native_credentials_enabled
+        #expect(cli.serverActive == false)     // a profile is Active, not the native login
+        let work = try #require(rows.first { $0.profileId == "work" })
+        #expect(work.serverActive == true)
+        let spare = try #require(rows.first { $0.profileId == "spare" })
+        #expect(spare.serverActive == false)
+    }
+
+    @MainActor
+    @Test func nativeActiveIdentityMarksTheCliLoginRowActive() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "session ready",
+            intents: ["implement"])]
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available", verification: "passed"),
+        ]
+        let profilesJSON = """
+        [{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]
+        """
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self, from: Data(profilesJSON.utf8))
+        // Projection: no Active profile — the native/CLI login is Active.
+        let accountsJSON = """
+        [{"harness_id":"claude","active_profile_id":null,"native_credentials_enabled":true,
+          "native_login_detected":true,"active_identity":{"kind":"native"}}]
+        """
+        model.harnessAccounts = try JSONDecoder().decode(
+            [HarnessAccounts].self, from: Data(accountsJSON.utf8))
+
+        let rows = AccountsPresentation.rows(model: model)
+        let cli = try #require(rows.first { $0.isCliLogin })
+        #expect(cli.enabled == true)
+        #expect(cli.serverActive == true)
+        let work = try #require(rows.first { $0.profileId == "work" })
+        #expect(work.serverActive == false)
     }
 
     @Test func generatedIdSlugifiesTheDisplayName() {

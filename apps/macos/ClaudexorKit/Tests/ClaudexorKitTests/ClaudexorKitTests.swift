@@ -1821,6 +1821,85 @@ import Testing
         }
     }
 
+    // MARK: - V11b accounts authority
+
+    @Test func credentialProfilesResponseDecodesHarnessAccountsProjection() throws {
+        let json = #"""
+        {
+          "profiles": [
+            {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","enabled":true},
+             "status":{"availability":"available","verification":"passed","detail":"ok","last_verified_at":null}},
+            {"profile":{"profile_id":"spare","harness_id":"claude","display_name":"Spare","credential_kind":"config_dir_login","enabled":false},
+             "status":{"availability":"unknown","verification":"not_run","detail":null,"last_verified_at":null}}
+          ],
+          "harnessAccounts": [
+            {"harness_id":"claude","active_profile_id":"work","native_credentials_enabled":true,"native_login_detected":true,"active_identity":{"kind":"profile","profileId":"work"}},
+            {"harness_id":"codex","active_profile_id":null,"native_credentials_enabled":false,"native_login_detected":false,"active_identity":{"kind":"none","reason":"CLI login disabled"}},
+            {"harness_id":"cursor","active_profile_id":null,"native_credentials_enabled":true,"native_login_detected":true,"active_identity":{"kind":"native"}}
+          ]
+        }
+        """#
+        let response = try JSONDecoder().decode(CredentialProfilesResponse.self, from: Data(json.utf8))
+        #expect(response.profiles.count == 2)
+        #expect(response.profiles[1].profile.enabled == false)
+        #expect(response.harnessAccounts.count == 3)
+
+        let claude = response.harnessAccounts.first { $0.harnessId == "claude" }
+        #expect(claude?.activeProfileId == "work")
+        #expect(claude?.nativeCredentialsEnabled == true)
+        #expect(claude?.activeIdentity.isProfile("work") == true)
+        #expect(claude?.activeIdentity.isProfile("spare") == false)
+        #expect(claude?.activeIdentity.isNative == false)
+
+        let codex = response.harnessAccounts.first { $0.harnessId == "codex" }
+        #expect(codex?.nativeCredentialsEnabled == false)
+        #expect(codex?.nativeLoginDetected == false)
+        if case .some(.none(let reason)) = codex?.activeIdentity {
+            #expect(reason == "CLI login disabled")
+        } else {
+            Issue.record("expected codex active identity to be .none")
+        }
+
+        let cursor = response.harnessAccounts.first { $0.harnessId == "cursor" }
+        #expect(cursor?.activeIdentity.isNative == true)
+    }
+
+    @Test func credentialProfilesResponseDefaultsHarnessAccountsWhenAbsent() throws {
+        // A pre-V11b daemon omits the projection entirely — it must still decode.
+        let response = try JSONDecoder().decode(
+            CredentialProfilesResponse.self, from: Data(#"{"profiles":[]}"#.utf8))
+        #expect(response.profiles.isEmpty)
+        #expect(response.harnessAccounts.isEmpty)
+    }
+
+    @Test func gatewayPatchesCredentialProfileEnabled() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config))
+
+        RequestStubURLProtocol.handler = { request in
+            guard request.httpMethod == "PATCH",
+                  request.url?.path == "/v2/credential-profiles/claude/work" else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            let body = testRequestBody(request)
+                .flatMap { try? JSONDecoder().decode([String: Bool].self, from: $0) }
+            guard body?["enabled"] == false else {
+                throw TestTransportError.badRequest("unexpected patch body")
+            }
+            let json = #"{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","enabled":false},"status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}"#
+            return (Self.response(for: request), Data(json.utf8))
+        }
+
+        let entry = try await client.updateCredentialProfile(
+            harnessId: "claude", profileId: "work", enabled: false)
+        #expect(entry.profile.enabled == false)
+        #expect(entry.id == "claude/work")
+    }
+
     private static func response(for request: URLRequest) -> HTTPURLResponse {
         HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type":"application/json"])!
     }

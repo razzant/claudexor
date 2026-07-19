@@ -324,44 +324,12 @@ struct ThreadsScreen: View {
         }
     }
 
-    private var emptyConversation: some View {
-        VStack(spacing: Theme.Spacing.md) {
-            Image(systemName: "bubble.left.and.text.bubble.right")
-                .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(.secondary)
-            Text("Start a thread")
-                .font(.title2.weight(.bold))
-                .foregroundStyle(.primary)
-            Text("Type below to begin. Turns run in-place so the next turn sees the work — plan, then implement, in one conversation.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 440)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
     /// The conversation's window title/subtitle — the thread title lives in the
     /// ONE system toolbar (no second custom header strip). Empty in the draft state.
     var navTitle: String { model.currentThread?.title ?? "Claudexor" }
     var navSubtitle: String {
         guard let t = model.currentThread else { return "" }
         return threadSubtitle(t) + " · " + (t.workspaceMode == "isolated" ? "isolated" : "in-place")
-    }
-
-    private func sessionsFooter(_ sessions: [ThreadSessionInfo]) -> some View {
-        HStack(spacing: Theme.Spacing.sm) {
-            Image(systemName: "link").foregroundStyle(.secondary)
-            ForEach(sessions) { session in
-                Text("\(session.harnessId)\(session.nativeSessionId != nil ? " · live session" : "")")
-                    .font(.caption)
-                    .padding(.horizontal, Theme.Spacing.sm)
-                    .padding(.vertical, Theme.Spacing.xxs)
-                    .background(Capsule().fill(.quaternary))
-                    .help(session.nativeSessionId.map { "Native session \($0) resumes on the next turn" } ?? "No native session yet")
-            }
-            Spacer()
-        }
     }
 
     /// The persistent composer — ONE floating Liquid-Glass panel (pointer-driven

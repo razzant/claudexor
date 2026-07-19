@@ -40,9 +40,50 @@ extension AppModel {
     /// accounts popover; a failing fetch leaves the last snapshot in place.
     func refreshCredentialProfiles() async {
         guard let client else { return }
-        do { credentialProfiles = try await client.credentialProfiles().profiles } catch {
+        do {
+            let response = try await client.credentialProfiles()
+            credentialProfiles = response.profiles
+            harnessAccounts = response.harnessAccounts
+        } catch {
             /* endpoint absent (older daemon) or offline — keep last snapshot */
         }
+    }
+
+    /// The V11b per-harness accounts authority for `harnessId` (native CLI-login
+    /// state + server-computed Active identity), or nil when the projection is
+    /// absent (pre-V11b daemon) — callers then fall back to client-derived state.
+    func harnessAccounts(for harnessId: String) -> HarnessAccounts? {
+        harnessAccounts.first { $0.harnessId == harnessId }
+    }
+
+    /// Toggle a credential profile's Enabled (V11b — the Enabled row of the
+    /// accounts symmetry). PATCHes the profile route, then reloads the projection
+    /// so Enabled/Active reflect wire truth. Returns a refusal string on failure.
+    @discardableResult
+    func setProfileEnabled(harnessId: String, profileId: String, enabled: Bool) async -> String? {
+        guard let client else { return "Engine offline — reconnect to change the account." }
+        do {
+            _ = try await client.updateCredentialProfile(
+                harnessId: harnessId, profileId: profileId, enabled: enabled)
+            await refreshCredentialProfiles()
+            return nil
+        } catch {
+            await refreshCredentialProfiles()
+            return userMessage(for: error)
+        }
+    }
+
+    /// Toggle the native/CLI login's participation in a harness's credential
+    /// ladder (V11b — the CLI-login row's Enabled). Drives the per-harness
+    /// `native_credentials_enabled` via the settings PATCH surface, then reloads
+    /// settings + the accounts projection. Returns nil on success.
+    @discardableResult
+    func setNativeCredentialsEnabled(harnessId: String, enabled: Bool) async -> String? {
+        let ok = await saveSettings(SettingsUpdateRequest(
+            harnesses: [harnessId: HarnessSettingsPatch(nativeCredentialsEnabled: enabled)]))
+        await refreshSettings()
+        await refreshCredentialProfiles()
+        return ok ? nil : (settingsStatus ?? "Could not update the native login setting.")
     }
 
     /// Register a new credential profile (INV-135). On success the registry is
