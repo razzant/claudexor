@@ -34,21 +34,6 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-reviewer-without-evidence",
 ];
 
-/**
- * A minimal, schema-valid orchestration plan the `fake-implement` kind emits for
- * the `orchestrate` intent, so the orchestrate planner -> plan-extraction ->
- * (with autonomy) executor path is exercisable offline/deterministically. The
- * fenced ```json block is what `extractOrchestratePlan` parses.
- */
-const FAKE_ORCHESTRATE_PLAN = [
-  "## Orchestration plan",
-  "1. start_run — kick off a single agent run for the goal.",
-  "",
-  "```json",
-  '{"tool_calls":[{"tool":"start_run","prompt":"deterministic fake-implement plan","mode":"agent","why":"offline orchestration fixture"}]}',
-  "```",
-].join("\n");
-
 /** Producing intents write a real file so the run->apply->deliver chain has a diff. */
 const PRODUCING_INTENTS = new Set<Intent>(["implement", "create_from_scratch", "repair"]);
 
@@ -81,6 +66,11 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       },
       access_control: { readonly_mechanism: "none" },
       isolation: { supported_containment: ["env_or_file_injection"] },
+      // The offline fixture declares MCP injection so the engine's delegate-belt
+      // path (agent --delegate) is exercisable deterministically; the fake spawns
+      // no subprocess, so it simply ignores the injected belt descriptor (as it
+      // ignores the browser wiring), like it ignores every other transport knob.
+      mcp_injection: true,
       attachment_inputs: [],
     },
     capabilities: {
@@ -98,7 +88,6 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       tool_lists: false,
       interactive: false,
       json_schema_output: false,
-      orchestrate: true,
       // Partial ladder: a deliberate clamp fixture for the effort normalizer
       // (requests for xhigh/max clamp down to high).
       effort_levels: ["low", "medium", "high"],
@@ -130,16 +119,9 @@ async function* runFake(
       return;
     case "fake-implement":
       // Unlike fake-success (which only emits a file_change EVENT and stays a
-      // no_op fixture), fake-implement makes the engine's write/apply/orchestrate
-      // chains testable offline:
-      //  - orchestrate intent -> a schema-valid fenced plan (orchestrate coverage);
-      //  - producing intents   -> a REAL file written into the worktree so
-      //    `git add -A && git diff` yields a patch (apply/commit/branch chain).
-      if (spec.intent === "orchestrate") {
-        yield ev(s, "message", { text: FAKE_ORCHESTRATE_PLAN });
-        yield ev(s, "completed", { observed_model: observedModel });
-        return;
-      }
+      // no_op fixture), fake-implement makes the engine's write/apply chains
+      // testable offline: producing intents write a REAL file into the worktree
+      // so `git add -A && git diff` yields a patch (apply/commit/branch chain).
       yield ev(s, "message", { text: "Implemented by the fake harness." });
       // Only WRITE for producing intents AND when the run is not read-only (a fake
       // must not mutate a readonly envelope, mirroring real access enforcement).
@@ -230,9 +212,9 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
     },
     async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
       const degraded = kind === "fake-invalid-json";
-      // fake-implement is the deterministic offline fixture for the create,
-      // orchestrate, and write->apply chains, so it enables those intents; the
-      // other ok fakes keep the original read-only-ish set.
+      // fake-implement is the deterministic offline fixture for the create
+      // and write->apply chains, so it enables those intents; the other ok
+      // fakes keep the original read-only-ish set.
       const enabledIntents: Intent[] = degraded
         ? ["implement"]
         : kind === "fake-implement"
@@ -246,7 +228,6 @@ export function createFakeHarness(kind: FakeKind, opts: FakeOptions = {}): Harne
               "synthesize",
               "explain",
               "audit",
-              "orchestrate",
             ]
           : ["plan", "implement", "review", "verify", "explain", "audit"];
       return {

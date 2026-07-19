@@ -1545,14 +1545,21 @@ function runPlanPhase() {
     });
 }
 
-function runOrchestratePhase() {
+function runDelegationPhase() {
+  // D32: `orchestrate` is gone; `agent --delegate` injects the scoped Claudexor
+  // belt into a claude/codex sandbox so the harness can spawn bounded isolated
+  // sub-runs. Positive: a delegate agent run on an mcp_injection harness still
+  // produces a work product (the belt injection doesn't break the run).
+  // Negative: `--delegate` on cursor (no mcp_injection) fails loud with the
+  // belt refusal, never silently drops the belt.
   const phase = "phase9";
-  const candidates = available(requestedHarnesses).filter((h) => harnessIntent(h, "orchestrate"));
+  const candidates = available(requestedHarnesses).filter((h) => h === "claude" || h === "codex");
   for (const h of candidates) {
     const out = runCliJson(
       [
-        "orchestrate",
-        "Plan how to fix add() and verify with node --test in this repo. Suggest only.",
+        "agent",
+        "Fix add() in this repo and verify with node --test; delegate exploratory sub-questions.",
+        "--delegate",
         "--harness",
         h,
         "--effort",
@@ -1560,39 +1567,28 @@ function runOrchestratePhase() {
         "--max-usd",
         maxUsd,
       ],
-      { cwd: repos.readonly, name: `${phase}-${h}-orchestrate` },
+      { cwd: repos.write, name: `${phase}-${h}-delegate` },
     );
-    const detail = assertPrimaryOutput(phase, `${h} orchestrate`, out, "orchestration.md");
-    if (detail?.runDir && artifactExists(detail.runDir, "final/orchestration.yaml"))
-      pass(phase, `${h} orchestration.yaml`, { runId: out.json?.runId });
+    if (out.code === 0 && out.json?.runId)
+      pass(phase, `${h} agent --delegate produced a durable run`, {
+        runId: out.json?.runId,
+        status: out.json?.status,
+      });
     else
-      fail(phase, `${h} orchestration.yaml`, { runId: out.json?.runId, status: out.json?.status });
+      fail(phase, `${h} agent --delegate`, {
+        exit: out.code,
+        status: out.json?.status,
+        log: rel(out.log),
+      });
   }
-  if (candidates.length >= 2) {
+  if (candidates.length === 0)
+    skip(phase, "agent --delegate", { reason: "need a doctor-ok claude/codex harness" });
+  if (harnessOk("cursor")) {
     const out = runCliJson(
       [
-        "orchestrate",
-        "Plan how to fix add() and verify with node --test in this repo. Suggest only.",
-        "--harness",
-        candidates.join(","),
-        "--effort",
-        "low",
-        "--max-usd",
-        maxUsd,
-      ],
-      { cwd: repos.readonly, name: `${phase}-multi-orchestrate` },
-    );
-    const detail = assertPrimaryOutput(phase, "multi orchestrate", out, "orchestration.md");
-    if (detail?.runDir && artifactExists(detail.runDir, "final/orchestration.yaml"))
-      pass(phase, "multi orchestration.yaml", { runId: out.json?.runId });
-    else
-      fail(phase, "multi orchestration.yaml", { runId: out.json?.runId, status: out.json?.status });
-  } else skip(phase, "multi orchestrate", { reason: "need >=2 doctor-ok harnesses" });
-  if (harnessOk("cursor") && !harnessIntent("cursor", "orchestrate")) {
-    const out = runCliJson(
-      [
-        "orchestrate",
-        "Plan how to fix add() and verify with node --test in this repo. Suggest only.",
+        "agent",
+        "Fix add() and verify with node --test in this repo.",
+        "--delegate",
         "--harness",
         "cursor",
         "--effort",
@@ -1600,18 +1596,20 @@ function runOrchestratePhase() {
         "--max-usd",
         maxUsd,
       ],
-      { cwd: repos.readonly, name: `${phase}-cursor-orchestrate-negative` },
+      { cwd: repos.write, name: `${phase}-cursor-delegate-negative` },
     );
     if (
       out.code !== 0 &&
-      /cannot orchestrate/.test(JSON.stringify(out.json ?? {}) + out.stdout + out.stderr)
+      /delegation belt|mcp_injection|cannot inject/.test(
+        JSON.stringify(out.json ?? {}) + out.stdout + out.stderr,
+      )
     )
-      pass(phase, "cursor orchestrate fail-loud", {
+      pass(phase, "cursor --delegate fail-loud", {
         status: out.json?.status,
         error: out.json?.error ?? out.json?.summary,
       });
     else
-      fail(phase, "cursor orchestrate fail-loud", {
+      fail(phase, "cursor --delegate fail-loud", {
         exit: out.code,
         json: out.json,
         log: rel(out.log),
@@ -1895,6 +1893,8 @@ function phase0(harnessPhasesRequested = true) {
 
 const repos = {
   readonly: makeMathRepo("readonly", { addBug: true, multiplyBug: true, testMultiply: false }),
+  // A writable clone for agent (write) phases, e.g. the delegation phase.
+  write: makeMathRepo("write", { addBug: true, multiplyBug: true, testMultiply: false }),
 };
 const state = { verifiedRuns: [], multiRace: null };
 
@@ -1921,7 +1921,7 @@ async function main() {
     if (phaseEnabled("phase6")) runVisionPhase();
     if (phaseEnabled("phase7")) runWebPhase();
     if (phaseEnabled("phase8")) runPlanPhase();
-    if (phaseEnabled("phase9")) runOrchestratePhase();
+    if (phaseEnabled("phase9")) runDelegationPhase();
     if (phaseEnabled("phase10")) await runMcpServePhase();
     if (phaseEnabled("phase11")) await runAcpServePhase();
   }

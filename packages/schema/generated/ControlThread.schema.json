@@ -30,8 +30,7 @@
           "enum": [
             "ask",
             "plan",
-            "agent",
-            "orchestrate"
+            "agent"
           ],
           "description": "Default mode for new turns."
         },

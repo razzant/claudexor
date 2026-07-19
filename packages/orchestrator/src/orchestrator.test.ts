@@ -5872,439 +5872,6 @@ describe("Orchestrator", () => {
   });
 });
 
-/** A planner adapter that doctor-OKs the orchestrate intent and emits a fenced
- * JSON plan in its message (the typed plan the executor consumes). */
-function plannerAdapter(
-  id: string,
-  plan: unknown,
-  family: ProviderFamily = "anthropic",
-  usageCostUsd?: number,
-): HarnessAdapter {
-  return {
-    id,
-    async discover() {
-      return HarnessManifest.parse({
-        id,
-        display_name: id,
-        kind: "local_cli",
-        provider_family: family,
-        capabilities: {
-          orchestrate: true,
-          plan: true,
-          review: true,
-          read_files: true,
-        },
-        access_profiles_supported: ["readonly"],
-      });
-    },
-    async doctor() {
-      return ConformanceReport.parse({
-        harness_id: id,
-        status: "ok",
-        enabled_intents: ["orchestrate", "plan", "review"],
-      });
-    },
-    async *run(spec) {
-      const ts = new Date().toISOString();
-      yield {
-        type: "started",
-        session_id: spec.session_id,
-        ts,
-        observed_model: `${id}-model`,
-        credential_route: "managed_api_key",
-      };
-      yield {
-        type: "message",
-        session_id: spec.session_id,
-        ts,
-        text: "Plan:\n\n```json\n" + JSON.stringify(plan) + "\n```\n",
-      };
-      if (usageCostUsd !== undefined) {
-        yield {
-          type: "usage",
-          session_id: spec.session_id,
-          ts,
-          credential_route: "managed_api_key",
-          usage: { cost_usd: usageCostUsd },
-        };
-      }
-      yield { type: "completed", session_id: spec.session_id, ts };
-    },
-  };
-}
-
-describe("Orchestrate executor (auto_safe / auto_full)", () => {
-  it("FAIL-CLOSED risk: an apply step blocks an auto_safe run and is NOT executed", async () => {
-    const repo = await initRepo();
-    // Plan = a single risky apply step referencing some run. Under auto_safe the
-    // executor must STOP at it (blocked terminal), never deliver it.
-    const plan = { tool_calls: [{ tool: "apply", run_id: "run-nonexistent", why: "ship it" }] };
-    const orch = new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "do the thing",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_safe",
-    });
-    expect(legacyOutcome(res)).toBe("blocked");
-    // The plan was still produced (suggest artifact), and progress records the block.
-    expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
-    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
-    expect(progress).toContain("autonomy: auto_safe");
-    expect(progress).toContain("status: blocked");
-    expect(progress).toContain("risk: risky");
-    // Terminal: a NEEDS_HUMAN-style block awaiting an operator decision.
-    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("risky step");
-    const types = readRunEvents(res.runDir).map((e) => e.type);
-    expect(types).toContain("orchestrate.step.blocked");
-    expect(types).toContain("run.blocked");
-    // The live tree was NEVER mutated (no apply happened): the only working-tree
-    // change is the engine's own .claudexor/ artifacts, never user source.
-    const status = await runCapture("git", [
-      "-C",
-      repo,
-      "status",
-      "--porcelain",
-      "--",
-      ".",
-      ":(exclude).claudexor",
-    ]);
-    expect(status.stdout.trim()).toBe("");
-  });
-
-  it("SAFE step runs as an isolated ENVELOPE sub-run (inPlace=false), never the live tree", async () => {
-    const repo = await initRepo();
-    // The plan asks for one safe start_run. The sub-run's implementer writes a
-    // file; because it runs in an isolated envelope, the LIVE repo tree is NOT
-    // mutated by the sub-run (the envelope is disposed; nothing adopted).
-    const plan = {
-      tool_calls: [
-        { tool: "start_run", prompt: "edit something", mode: "agent", why: "kick it off" },
-      ],
-    };
-    const registry = new Map<string, HarnessAdapter>([
-      ["planner", plannerAdapter("planner", plan)],
-      ["impl", diffImplementer("impl", "local")],
-    ]);
-    const orch = new Orchestrator({ registry, reviewers: reviewers() });
-    const res = await orch.run({
-      // harnesses pins the planner; the sub-run auto-resolves the impl harness.
-      repoRoot: repo,
-      prompt: "go",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_safe",
-    });
-    // The executor ran the safe step and the orchestrate run succeeded.
-    expect(legacyOutcome(res)).toBe("success");
-    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
-    expect(progress).toContain("tool: start_run");
-    expect(progress).toContain("risk: safe");
-    expect(progress).toContain("status: done");
-    const types = readRunEvents(res.runDir).map((e) => e.type);
-    expect(types).toContain("orchestrate.subrun.started");
-    // SAFETY: the live repo tree was NOT mutated by the safe envelope sub-run.
-    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
-  });
-
-  it("does not launder a skipped required step into parent success", async () => {
-    const repo = await initRepo();
-    const plan = {
-      tool_calls: [{ tool: "status", run_id: "run-missing", why: "required evidence" }],
-    };
-    const res = await new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    }).run({
-      repoRoot: repo,
-      prompt: "inspect required run",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_safe",
-    });
-    expect(legacyOutcome(res)).toBe("blocked");
-    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
-    expect(progress).toContain("required: true");
-    expect(progress).toContain("status: skipped");
-  });
-
-  it("allows a skipped optional step without degrading required success", async () => {
-    const repo = await initRepo();
-    const plan = {
-      tool_calls: [
-        {
-          tool: "status",
-          run_id: "run-missing",
-          why: "best-effort context",
-          required: false,
-        },
-      ],
-    };
-    const res = await new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    }).run({
-      repoRoot: repo,
-      prompt: "inspect optional run",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_safe",
-    });
-    expect(legacyOutcome(res)).toBe("success");
-  });
-
-  it("ENVELOPE ENFORCEMENT: a start_run sub-run executes in an isolated worktree, not the live repo root", async () => {
-    const repo = await initRepo();
-    // Capture the cwd the sub-run's implementer actually executes in. A safe
-    // Envelope sub-run runs in an isolated worktree under the external project runtime,
-    // NEVER the live repo root (inPlace=false enforced by assertEnvelopeSubRun).
-    let subCwd: string | null = null;
-    const recordingImpl: HarnessAdapter = {
-      id: "rec",
-      async discover() {
-        return HarnessManifest.parse({
-          id: "rec",
-          display_name: "rec",
-          kind: "local_cli",
-          provider_family: "local",
-          capabilities: { implement: true },
-          access_profiles_supported: ["workspace_write"],
-        });
-      },
-      async doctor() {
-        return ConformanceReport.parse({
-          harness_id: "rec",
-          status: "ok",
-          enabled_intents: ["implement"],
-        });
-      },
-      async *run(spec) {
-        subCwd = spec.cwd;
-        const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts, observed_model: "rec-model" };
-        yield { type: "completed", session_id: spec.session_id, ts };
-      },
-    };
-    const plan = {
-      tool_calls: [{ tool: "start_run", prompt: "do it", mode: "agent", why: "spawn" }],
-    };
-    const registry = new Map<string, HarnessAdapter>([
-      ["planner", plannerAdapter("planner", plan)],
-      ["rec", recordingImpl],
-    ]);
-    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
-      repoRoot: repo,
-      prompt: "go",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_safe",
-    });
-    expect(legacyOutcome(res)).toBe("success");
-    expect(subCwd).not.toBeNull();
-    // The sub-run executed in an ISOLATED envelope worktree, not the live tree.
-    expect(subCwd).not.toBe(repo);
-    expect((subCwd as unknown as string).startsWith(projectRuntimeDir(repo))).toBe(true);
-  });
-
-  it("auto_full applies a referenced run's clean patch through the single apply gate", async () => {
-    const repo = await initRepo();
-    // First, produce a real clean patch via a normal envelope race (n=1 -> single
-    // candidate); the resulting run's final/patch.diff + work_product feed apply.
-    const seed = await new Orchestrator({
-      registry: new Map([["impl", diffImplementer("impl", "local")]]),
-      reviewers: reviewers(),
-    }).run({
-      repoRoot: repo,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["impl"],
-      n: 1,
-      tests: [shellGate("true")],
-    });
-    expect(existsSync(join(seed.runDir, "final", "patch.diff"))).toBe(true);
-    const seedRunId = seed.runId;
-
-    // Now an orchestrate auto_full run whose plan applies that referenced run.
-    const plan = {
-      tool_calls: [{ tool: "apply", run_id: seedRunId, mode: "apply", why: "land it" }],
-    };
-    const orch = new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "land the work",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_full",
-    });
-    expect(legacyOutcome(res)).toBe("success");
-    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
-    expect(progress).toContain("tool: apply");
-    expect(progress).toContain("status: done");
-    expect(progress).toContain("terminal_source: delivery");
-    expect(progress).toContain("delivery_receipt");
-    const workProduct = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
-    expect(workProduct).toContain("read_only: false");
-    expect(workProduct).toContain("delivery_receipt");
-    // The referenced patch wrote CHANGED.txt into the LIVE tree (auto_full applied).
-    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
-  });
-
-  it("auto_full reruns the referenced run's deterministic gates immediately before apply", async () => {
-    const repo = await initRepo();
-    const seed = await new Orchestrator({
-      registry: new Map([["impl", diffImplementer("impl", "local")]]),
-      reviewers: reviewers(),
-    }).run({
-      repoRoot: repo,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["impl"],
-      n: 1,
-      tests: [shellGate("test ! -e BLOCK_APPLY")],
-    });
-    expect(legacyOutcome(seed)).toBe("success");
-    writeFileSync(join(repo, "BLOCK_APPLY"), "fresh gate must observe this\n");
-    const plan = {
-      tool_calls: [{ tool: "apply", run_id: seed.runId, mode: "apply", why: "land it" }],
-    };
-    const res = await new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    }).run({
-      repoRoot: repo,
-      prompt: "land the work",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_full",
-    });
-    expect(legacyOutcome(res)).toBe("failed");
-    expect(
-      readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
-    ).toContain("final verify: deterministic gates failed");
-    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
-  });
-
-  it("auto_full refuses a frozen task artifact whose gate authority was omitted", async () => {
-    const repo = await initRepo();
-    const seed = await new Orchestrator({
-      registry: new Map([["impl", diffImplementer("impl", "local")]]),
-      reviewers: reviewers(),
-    }).run({
-      repoRoot: repo,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["impl"],
-      n: 1,
-      tests: [shellGate("true")],
-    });
-    const taskPath = join(seed.runDir, "context", "task.yaml");
-    const store = new ArtifactStore(repo);
-    const task = store.readYaml<Record<string, unknown>>(taskPath);
-    expect(task).not.toBeNull();
-    if (!task) throw new Error("seed task contract is missing");
-    delete task["tests"];
-    store.writeYaml(taskPath, task);
-    const plan = {
-      tool_calls: [{ tool: "apply", run_id: seed.runId, mode: "apply", why: "land it" }],
-    };
-    const res = await new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    }).run({
-      repoRoot: repo,
-      prompt: "land the work",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_full",
-    });
-    expect(legacyOutcome(res)).toBe("failed");
-    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
-    expect(
-      readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
-    ).toContain("fresh verification contract is missing");
-  });
-
-  it("suggest autonomy never executes: the plan is the work product (read-only)", async () => {
-    const repo = await initRepo();
-    const plan = { tool_calls: [{ tool: "apply", run_id: "run-x", why: "would mutate" }] };
-    const orch = new Orchestrator({
-      registry: new Map([["planner", plannerAdapter("planner", plan)]]),
-      reviewers: [],
-    });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "plan only",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-    });
-    expect(legacyOutcome(res)).toBe("success");
-    // No executor ran under suggest: no progress artifact, no apply.
-    expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
-    expect(existsSync(join(res.runDir, "final", "orchestration_progress.yaml"))).toBe(false);
-    expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
-  });
-
-  it("emits a failure-shaped terminal (run.failed{not_converged} + failure.yaml) when the planner yields no typed plan", async () => {
-    const repo = await initRepo();
-    // A planner that talks prose without a fenced JSON plan: the typed-plan
-    // contract fails, so the terminal must be failure-shaped, never
-    // run.completed (command projection and events.jsonl must agree).
-    const proseBrain: HarnessAdapter = {
-      ...plannerAdapter("planner", {}),
-      async *run(spec) {
-        const ts = new Date().toISOString();
-        yield { type: "started", session_id: spec.session_id, ts };
-        yield {
-          type: "message",
-          session_id: spec.session_id,
-          ts,
-          text: "I would suggest refactoring things.",
-        };
-        yield { type: "completed", session_id: spec.session_id, ts };
-      },
-    };
-    const orch = new Orchestrator({ registry: new Map([["planner", proseBrain]]), reviewers: [] });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "goal",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-    });
-    expect(legacyOutcome(res)).toBe("not_converged");
-    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
-    expect(events).toContain('"run.failed"');
-    expect(events).not.toContain('"run.completed"');
-    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
-    expect(failure).toContain("no valid typed plan");
-  });
-
-  it("forbids orchestrate-within-orchestrate (recursion guard)", async () => {
-    const repo = await initRepo();
-    const orch = new Orchestrator({
-      registry: new Map([
-        ["planner", plannerAdapter("planner", { tool_calls: [{ tool: "status", run_id: "r" }] })],
-      ]),
-      reviewers: [],
-    });
-    await expect(
-      orch.run({
-        repoRoot: repo,
-        prompt: "x",
-        mode: "orchestrate",
-        harnesses: ["planner"],
-        orchestrateDepth: 1,
-      }),
-    ).rejects.toThrow(/orchestrate-within-orchestrate is forbidden/);
-  });
-});
-
 function readRunEvents(
   runDir: string,
 ): { seq?: number; type: string; payload: Record<string, unknown> }[] {
@@ -7100,7 +6667,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
     expect(rec.reason).toBeTruthy();
   });
 
-  it("ask/plan/report results carry spendUsd so the orchestrate aggregate budget can charge them", async () => {
+  it("ask results carry spendUsd so the aggregate budget can charge them", async () => {
     const repo = await initRepo();
     const adapter = askAdapter("spender", function* (sessionId) {
       const ts = new Date().toISOString();
@@ -7120,51 +6687,6 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
     });
     expect(legacyOutcome(res)).toBe("success");
     expect(res.spendUsd).toBeCloseTo(0.01, 5);
-  });
-
-  it("orchestrate aggregate budget charges ask sub-runs and exhausts instead of overspending N times", async () => {
-    const repo = await initRepo();
-    const plan = {
-      tool_calls: [
-        { tool: "start_run", prompt: "q1", mode: "ask", harness: "spender", why: "" },
-        { tool: "start_run", prompt: "q2", mode: "ask", harness: "spender", why: "" },
-        { tool: "start_run", prompt: "q3", mode: "ask", harness: "spender", why: "" },
-      ],
-    };
-    const spender = askAdapter("spender", function* (sessionId) {
-      const ts = new Date().toISOString();
-      yield { type: "started", session_id: sessionId, ts };
-      yield { type: "message", session_id: sessionId, ts, text: "answered" };
-      yield { type: "usage", session_id: sessionId, ts, usage: { cost_usd: 0.01 } };
-      yield { type: "completed", session_id: sessionId, ts };
-    });
-    const registry = new Map<string, HarnessAdapter>([
-      ["planner", plannerAdapter("planner", plan, "anthropic", 0.001)],
-      ["spender", spender],
-    ]);
-    const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "answer three questions",
-      mode: "orchestrate",
-      harnesses: ["planner"],
-      autonomy: "auto_safe",
-      paidBudget: { kind: "finite", maxUsd: 0.015 },
-    });
-    // Steps 1+2 spend 0.02 > 0.015 -> step 3 must be skipped and the late
-    // exact charge is preserved as exhausted_overshoot.
-    expect(legacyOutcome(res)).toBe("exhausted_overshoot");
-    const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
-    expect(progress).toContain("root paid budget stopped");
-    expect((progress.match(/status: skipped/g) ?? []).length).toBeGreaterThanOrEqual(1);
-    // Failure-shaped terminal (a cut-short plan is not a clean success):
-    // failure.yaml lands and the event log ends in run.failed, so `follow`
-    // exits non-zero and the command projection agrees.
-    expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
-    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain("budget");
-    const evTypes = readRunEvents(res.runDir).map((e) => e.type);
-    expect(evTypes).toContain("run.failed");
-    expect(evTypes).not.toContain("run.completed");
   });
 
   it("watchdog re-arms while a question is awaiting the user (isSuspended) instead of killing the run", async () => {
@@ -7244,56 +6766,6 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
     expect(decision).toContain("final_verify:");
     expect(decision).toContain("attempted: true");
     expect(decision).toContain("applied_cleanly: true");
-  });
-});
-
-describe("structured-first plan parsing", () => {
-  it("accepts a BARE JSON final message (schema-constrained route) and falls back to fenced JSON", async () => {
-    const { extractOrchestratePlan } = await import("./orchestratePlanner.js");
-    const plan = { tool_calls: [{ tool: "status", run_id: "run-1", why: "check" }] };
-    const bare = extractOrchestratePlan(JSON.stringify(plan));
-    expect(bare.plan).not.toBeNull();
-    expect(bare.plan!.tool_calls[0]!.tool).toBe("status");
-    const fenced = extractOrchestratePlan(
-      "Report:\n\n```json\n" + JSON.stringify(plan) + "\n```\n",
-    );
-    expect(fenced.plan).not.toBeNull();
-    const neither = extractOrchestratePlan("no plan here");
-    expect(neither.plan).toBeNull();
-    expect(neither.error).toContain("no fenced json");
-  });
-});
-
-describe("strict structured-output schema (critic findings)", () => {
-  it("optional fields become NULLABLE (never force-required) and explicit nulls parse back", async () => {
-    const { orchestratePlanJsonSchema } = await import("@claudexor/schema");
-    const schema = orchestratePlanJsonSchema() as {
-      properties?: {
-        tool_calls?: {
-          items?: {
-            anyOf?: Array<{ properties?: Record<string, { type?: unknown }>; required?: string[] }>;
-          };
-        };
-      };
-    };
-    const variants = schema.properties?.tool_calls?.items?.anyOf ?? [];
-    const startRun = variants.find((v) => v.properties && "harness" in v.properties)!;
-    expect(startRun.required).toContain("harness"); // strict mode: listed...
-    const harnessType = startRun.properties!["harness"]!.type;
-    expect(Array.isArray(harnessType) ? harnessType : [harnessType]).toContain("null"); // ...but nullable
-    const { extractOrchestratePlan } = await import("./orchestratePlanner.js");
-    const withNulls = extractOrchestratePlan(
-      JSON.stringify({
-        tool_calls: [{ tool: "start_run", prompt: "p", mode: "agent", harness: null, why: "w" }],
-      }),
-    );
-    expect(withNulls.plan).not.toBeNull();
-    expect(withNulls.plan!.tool_calls[0]).not.toHaveProperty("harness", null);
-    // Null ARRAY ELEMENTS are NOT the nullable-optional recipe — a malformed
-    // plan must fail the parse loudly, never be silently truncated.
-    const nullElement = extractOrchestratePlan(JSON.stringify({ tool_calls: [null] }));
-    expect(nullElement.plan).toBeNull();
-    expect(nullElement.error).not.toBe("");
   });
 });
 
@@ -7402,5 +6874,104 @@ describe("stall rotation (pacing + coverage)", () => {
     const flat = { bindingPaceSlack: () => 1, cooldownActive: () => false };
     expect(pickStallRotationIdx(pool, 1, flat)).toBe(2);
     expect(pickStallRotationIdx(pool, 2, flat)).toBe(0);
+  });
+});
+
+describe("delegation belt injection (D32)", () => {
+  /** An implement adapter that DECLARES mcp_injection and records the last spec
+   * it received, so we can assert what the engine injected. */
+  function delegatingAdapter(
+    id: string,
+    mcpInjection: boolean,
+    observe?: (spec: { extra_mcp_servers?: unknown }) => void,
+  ): HarnessAdapter {
+    return {
+      id,
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: "anthropic",
+          capabilities: { implement: true },
+          capability_profile: { mcp_injection: mcpInjection },
+          access_profiles_supported: ["workspace_write", "external_sandbox_full"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: id,
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        observe?.(spec as { extra_mcp_servers?: unknown });
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        writeFileSync(join(spec.cwd, "CHANGED.txt"), "change\n");
+        yield { type: "message", session_id: spec.session_id, ts, text: "Implemented." };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+  }
+
+  const belt = {
+    name: "claudexor",
+    command: "/usr/bin/node",
+    args: ["/cli", "mcp", "serve-belt"],
+    env: { CLAUDEXOR_DELEGATION_DEPTH: "0" },
+  };
+
+  it("injects the belt descriptor into an agent lane whose adapter can host MCP servers", async () => {
+    const repo = await initRepo();
+    let injected: unknown;
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
+      ]),
+      reviewers: [],
+    });
+    await orch.run({
+      repoRoot: repo,
+      prompt: "do the thing",
+      mode: "agent",
+      harnesses: ["deleg"],
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(injected).toEqual([belt]);
+  });
+
+  it("does NOT inject the belt when delegate is off", async () => {
+    const repo = await initRepo();
+    let injected: unknown;
+    const orch = new Orchestrator({
+      registry: new Map([
+        ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
+      ]),
+      reviewers: [],
+    });
+    await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["deleg"] });
+    expect(injected).toEqual([]);
+  });
+
+  it("REFUSES --delegate (typed, naming the harness) on a lane that cannot inject MCP servers", async () => {
+    const repo = await initRepo();
+    const orch = new Orchestrator({
+      registry: new Map([["nocap", delegatingAdapter("nocap", false)]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["nocap"],
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(res.lifecycle).toBe("failed");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toMatch(/delegation belt|mcp_injection|nocap/);
   });
 });

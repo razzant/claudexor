@@ -123,24 +123,33 @@ Canonical mode ids (engine strategies are FLAGS, not modes):
   race with isolated candidates, review, synthesis, arbitration),
   `--attempts N` (repair loop with a hard cap), `--until-clean` (repair loop
   until gates/review converge, budget/quota exhausts, cancellation happens, or
-  the run stalls), `--create` (create-from-scratch intent).
-- `orchestrate` - the orchestrator: routed like reviewers, produces a typed
-  orchestration plan over the six-tool vocabulary (start_run / race / status /
-  answer_question / apply / review); the default tool belt is five —
-  `answer_question` is deliberately not offered by default.
-  `--autonomy suggest|auto_safe|auto_full`
-  controls how much the executor runs: `suggest` (default) plans only;
-  `auto_safe` runs the safe steps (isolated envelope sub-runs / pure reads) and
-  blocks at the risky `apply` step for a human decision; `auto_full` also
-  applies through the single shared delivery gate, so it can mutate the live
-  project.
+  the run stalls), `--create` (create-from-scratch intent), `--delegate` (the
+  delegation belt — see below).
+
+### Delegation (`agent --delegate`)
+
+`--delegate` (agent-only) injects a SCOPED Claudexor MCP belt into the harness
+sandbox so the harness itself decides when to spawn bounded, isolated sub-runs
+(the industry pattern: Claude Code's Task tool, Cursor subagents, Codex spawn).
+The belt exposes only `claudexor_ask` / `claudexor_plan` / `claudexor_run`
+(isolated sub-run) / `claudexor_best_of` / `claudexor_run_status` /
+`claudexor_run_result` — there is NO apply/decision/thread/settings tool, so the
+PARENT integrates results in its own workspace. Policy is enforced server-side
+at the tool boundary: nesting depth is 1 (a sub-run cannot itself delegate),
+sub-runs are capped per parent (default 8), and each sub-run draws from the
+parent budget ledger's headroom. Only harnesses whose adapter declares
+`capability_profile.mcp_injection` (claude, codex) can host the belt; requesting
+`--delegate` on any other harness is a typed preflight refusal. This replaces the
+former `orchestrate` mode (retired in v3): "suggest"-style planning is ordinary
+`claudexor plan`.
 
 Unknown modes fail loudly. The retired mode ids (`audit`, `best_of_n`,
 `max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`, `daily`,
 `until_convergence`, `readonly_swarm`) are NOT aliases, and the retired
 `audit`/`map`/`explore` verbs hard-error pointing at `claudexor ask
---deep-scan`. `claudexor create` remains a CLI convenience VERB mapping onto
-`agent --create`; old WIRE mode ids hard-error at every API/DTO boundary.
+--deep-scan`. The retired `orchestrate` verb hard-errors pointing at `claudexor
+agent --delegate`. `claudexor create` remains a CLI convenience VERB mapping
+onto `agent --create`; old WIRE mode ids hard-error at every API/DTO boundary.
 
 Chat is the normal loop: `claudexor` with no arguments opens a REPL over a
 thread. Read-only ask/plan turns RESUME the routed harness's own native CLI
@@ -148,9 +157,8 @@ session (codex `exec resume`, claude `--resume`) — plan first, then keep
 asking, in ONE conversation. Each such turn runs in a DURABLE per-lane scoped
 home (a lane is a thread + harness + credential profile), so the native
 session it records survives the run and the next lane turn actually reaches
-it; a one-shot ask/plan with no thread keeps a disposable throwaway home, and
-orchestrate's planner runs fresh (it speaks its own tool-belt framing, not the
-user's chat). Write (agent) turns run
+it; a one-shot ask/plan with no thread keeps a disposable throwaway home.
+Write (agent) turns run
 IN-PLACE: a single-candidate turn mutates the thread's live execution tree
 directly (the project for an `in_place` thread, or the thread's persistent git
 worktree for an `isolated` thread) and resumes the native vendor session, so
@@ -202,8 +210,8 @@ claudexor best-of "fix add() in src/math.js and keep the patch minimal" --harnes
 claudexor agent "repair the parser test" --attempts 3
 claudexor agent "fix the bug and keep repairing until clean" --until-clean
 claudexor plan "design a config-to-gates implementation"
-claudexor audit "map artifact writers and secret risk"
-claudexor orchestrate "ship the v2 parser refactor across this repo"
+claudexor ask --deep-scan "map artifact writers and secret risk"
+claudexor agent --delegate "ship the v2 parser refactor across this repo"
 ```
 
 ## Credential Profiles And Quota
@@ -338,10 +346,6 @@ final/explore-findings.yaml?
 final/omissions.md?
 final/report.md?
 final/plan.md?
-final/orchestration.md?            # human-readable orchestration summary (orchestrate)
-final/orchestration.yaml?          # the typed orchestration plan (orchestrate)
-final/orchestration_progress.yaml? # per-step executor progress (auto_safe/auto_full)
-final/orchestration_delivery_receipt_N.yaml? # immutable mutating-step receipt
 context/context_error.md?
 ```
 
@@ -445,9 +449,9 @@ Important boundaries:
 - `packages/schema` owns contracts and generated JSON Schema.
 - `packages/harness-*` adapters translate native tool I/O into typed events.
 - `packages/workspace` owns worktree envelopes and scoped harness homes.
-- `packages/orchestrator` owns the five canonical mode pipelines (ask, plan,
-  audit, agent, orchestrate) and their strategy flags (race width, attempt
-  caps, until-clean, swarm, create).
+- `packages/orchestrator` owns the canonical mode pipelines (ask, plan, agent)
+  and their strategy flags (race width, attempt caps, until-clean, deep-scan,
+  create, delegate).
 - `packages/review`, `arbitration`, `synthesis`, and `budget` own selection and
   validation logic.
 - CLI, daemon, control API, MCP, ACP, plugins, and macOS are thin surfaces.

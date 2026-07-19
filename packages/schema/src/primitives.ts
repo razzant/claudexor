@@ -75,14 +75,14 @@ export type ProviderFamily = z.infer<typeof ProviderFamily>;
  * / `until_clean` (agent convergence), `create` (agent from-scratch),
  * `deep_scan` (ask sweep). Retired ids (`audit`, `explore`,
  * `readonly_audit`, `best_of_n`, …) hard-error at every wire boundary
- * (Bible: modes are canonical and breaking, never silent aliases).
- * `orchestrate` survives only until its delegation replacement lands in
- * this same release; it is scheduled for deletion, not a stable mode.
+ * (Bible: modes are canonical and breaking, never silent aliases). The former
+ * `orchestrate` mode was deleted once its delegation replacement landed
+ * (`agent --delegate`, INV-030); the retired verb hard-errors naming it.
  */
 export const ModeKind = z
-  .enum(["ask", "plan", "agent", "orchestrate"])
+  .enum(["ask", "plan", "agent"])
   .describe(
-    "Canonical run mode: ask and plan are read-only, agent writes; orchestrate is retained only until delegation replaces it. Engine strategies (race width, attempts, deep_scan, create) are flags on a mode, not modes.",
+    "Canonical run mode: ask and plan are read-only, agent writes. Engine strategies (race width, attempts, deep_scan, create, delegate) are flags on a mode, not modes.",
   );
 export type ModeKind = z.infer<typeof ModeKind>;
 
@@ -102,7 +102,6 @@ export const Intent = z
     "synthesize",
     "explain",
     "audit",
-    "orchestrate",
   ])
   .describe(
     "Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes).",
@@ -124,7 +123,7 @@ export const DirtyPolicy = z
 export type DirtyPolicy = z.infer<typeof DirtyPolicy>;
 
 /**
- * A user's preferred auth route for a harness, thread, or the orchestrate planner.
+ * A user's preferred auth route for a harness or thread.
  * `subscription` = native/OAuth session; `api_key` = a stored API key; `auto`
  * lets the engine pick subscription-first and fall back per policy. This is a
  * preference, not a secret — the actual key refs live in global/trust config.

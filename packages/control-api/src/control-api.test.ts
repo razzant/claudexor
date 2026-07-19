@@ -5699,24 +5699,24 @@ describe("DaemonControlApiServer", () => {
     });
     rmSync(nonGit, { recursive: true, force: true });
   });
-  it("refuses maxToolCalls on non-orchestrate modes and accepts it for orchestrate (INV-023)", () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-mtc-"));
+  it("refuses delegate on non-agent modes and accepts it for agent (INV-023 / D32)", () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-delegate-"));
     try {
       expect(() =>
         normalizeRunStartRequest({
           prompt: "x",
-          mode: "agent",
+          mode: "ask",
           scope: { kind: "project", root },
-          maxToolCalls: 3,
+          delegate: true,
         }),
-      ).toThrow(/orchestrate knob/);
+      ).toThrow(/delegate is an agent strategy/);
       const ok = normalizeRunStartRequest({
         prompt: "x",
-        mode: "orchestrate",
+        mode: "agent",
         scope: { kind: "project", root },
-        maxToolCalls: 3,
+        delegate: true,
       });
-      expect(ok.maxToolCalls).toBe(3);
+      expect(ok.delegate).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

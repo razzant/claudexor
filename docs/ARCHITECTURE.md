@@ -17,7 +17,7 @@ Claudexor is a local-first control plane over external coding harnesses:
 Codex CLI, Claude Code, Cursor CLI, OpenCode, raw APIs, and future adapters.
 A harness is not a role. Roles are intents (`explain`, `plan`, `spec`,
 `implement`, `create_from_scratch`, `repair`, `review`, `verify`,
-`synthesize`, `audit`, `orchestrate`).
+`synthesize`, `audit`).
 
 ```text
 surface -> schema/control DTO -> orchestrator/core -> gateway -> harness adapter -> native tool/API
@@ -43,37 +43,29 @@ strategies became flags, not modes:
   candidate envelopes, review, synthesis, arbitration), `--attempts N`
   (convergence loop with an explicit cap), `--until-clean` (convergence loop
   with no fixed cap; stops on clean review/gates, budget/quota exhaustion,
-  cancellation, or no-progress stall), `--create` (create-from-scratch intent).
-- `orchestrate` - the autonomous orchestrator: routed like reviewers (doctor-ok +
-  `orchestrate` capability + quota headroom), it produces a typed orchestration
-  plan over the six-tool vocabulary (`start_run`, `race`, `status`,
-  `answer_question`, `apply`, `review`) — the DEFAULT tool belt is five:
-  `answer_question` is deliberately not offered by default (safe sub-runs are
-  non-interactive; a caller can add it to a custom `tool_belt`) — and writes
-  `final/orchestration.md`. With one verified
-  harness it plans single-route; with two or more it may plan cross-family
-  race/review. `--autonomy suggest|auto_safe|auto_full` controls how much of
-  that plan the executor runs without confirmation. Risk is data-driven (the
-  `TOOL_RISK` SSOT, fail-closed): SAFE steps (`start_run`/`race`/`status`/
-  `answer_question`/`review`) provably never mutate the live tree — they run as
-  isolated envelope sub-runs (asserted `inPlace=false`) or pure reads; `apply`
-  is the only RISKY (mutating) step.
-  - `suggest` (default) plans only; the human executes the plan.
-  - `auto_safe` runs the SAFE steps and then BLOCKS at the first risky `apply`
-    step (terminal `blocked`), awaiting a human decision.
-  - `auto_full` also applies, sending the risky step through the single shared
-    delivery gate (`validateApplyGate` + `deliver`) — it can mutate the live
-    project. Per-step progress is persisted to
-    `final/orchestration_progress.yaml`.
-  The executor uses the same root paid-budget ledger as planner, candidates,
-  synthesis, sub-runs, and review panels. There are no nested ledgers or scalar
-  spend rollups. Exhausted headroom ends the run with a failure-shaped
-  `exhausted`, `exhausted_overshoot`, or `cost_unverifiable` terminal
-  (`failure.yaml` + `run.failed`, never a clean success), and
-  `--max-tool-calls` (control-api `maxToolCalls`) caps the plan
-  steps. Both knobs apply only to `orchestrate` — any other mode refuses them
-  loudly (CLI usage error / control-api 400) rather than carrying a silent
-  no-op knob.
+  cancellation, or no-progress stall), `--create` (create-from-scratch intent),
+  `--delegate` (the delegation belt — see below).
+
+### Delegation belt (`agent --delegate`, D32)
+
+`--delegate` (agent-only) injects a SCOPED Claudexor MCP belt into the harness
+sandbox — the generalized `HarnessRunSpec.extra_mcp_servers` seam translated per
+adapter (claude `--mcp-config` inline JSON, codex `-c mcp_servers.<name>.*`).
+The harness decides when to spawn bounded, isolated sub-runs; the belt exposes
+ONLY `claudexor_ask`, `claudexor_plan`, `claudexor_run` (isolated envelope
+sub-run — forced envelope, forced no-thread), `claudexor_best_of`,
+`claudexor_run_status`, `claudexor_run_result`. There is NO
+apply/decision/thread/settings tool: the PARENT integrates results in its own
+workspace. Policy is enforced SERVER-SIDE at the tool boundary (never trusting
+the harness): nesting depth is 1 (the sub-runs a belt spawns carry no belt of
+their own, so nesting cannot exceed 1 — the belt also refuses when observed at
+depth>0), a max sub-run count per parent (default 8), and each sub-run draws a
+paid budget bounded by the parent ledger's headroom snapshot (finite headroom,
+or a typed refusal when exhausted — never a silent unlimited run). Only adapters
+whose `capability_profile.mcp_injection` is true (claude, codex) can host the
+belt; `--delegate` on any other harness is a typed preflight refusal naming the
+harness. This replaces the former `orchestrate` mode (retired in v3); ordinary
+`claudexor plan` covers the "suggest"-style use-case.
 
 Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
 `readonly_audit`, plus the older `daily`/`until_convergence`/`readonly_swarm`)
@@ -88,17 +80,17 @@ are NOT aliases: they hard-error at every wire boundary.
 - `packages/core`: adapter interface, shared CLI run loop, process helpers,
   doctor runner, typed errors. Default write modes are orchestrator/envelope
   paths, not direct live-tree execution.
-- `packages/orchestrator`: the five canonical mode pipelines (ask, plan, audit,
-  agent, orchestrate) with strategy flags (race width, attempt caps,
-  until-clean, swarm, create); owns run telemetry and policy gates (trust,
-  risk, protected paths), typed transient retry policy, and no-progress outcomes.
+- `packages/orchestrator`: the canonical mode pipelines (ask, plan, agent) with
+  strategy flags (race width, attempt caps, until-clean, deep-scan, create,
+  delegate); owns run telemetry and policy gates (trust, risk, protected paths),
+  typed transient retry policy, and no-progress outcomes.
 - `packages/gateway`: harness discovery and capability/intent gating (route
   selection itself lives in the budget router and orchestrator routing).
 - `packages/harness-codex|claude|cursor|opencode|raw-api|fake`: adapters that
   translate native CLI/API streams into typed `HarnessEvent`s. The `fake-*` kinds
   are deterministic offline test fixtures (incl. `fake-implement`, which writes a
-  real worktree file and emits an orchestrate plan); they are explicit-`--harness`
-  only and never enter auto/reviewer/orchestrate pools.
+  real worktree file); they are explicit-`--harness` only and never enter
+  auto/reviewer pools.
 - `packages/workspace`: git worktree envelopes and scoped harness homes/config
   dirs for write envelopes and read-only routes via `readOnlyHomeEnv`; these keep
   relocatable, route-local state outside both the worktree and the operator's
@@ -454,7 +446,7 @@ headroom keep their stored values.
 
 ## 6. Main Execution Paths
 
-Every public CLI mode (`ask`, `plan`, `audit`, `agent`, `orchestrate`) and the
+Every public CLI mode (`ask`, `plan`, `agent`) and the
 interactive REPL enters through the managed daemon and `/v2`; the CLI starts it
 when needed and fails loudly if it cannot. There is no second in-process CLI
 run/thread authority. The daemon remains the single scheduler and journal
@@ -1051,17 +1043,13 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    `claudexor apply` both go through the delivery-owned `verifyAndDeliver`:
    the shared apply gate authorizes the run, a fresh verifier checks the exact
    patch, and an unchanged target preimage is required before mutation.
-2. **Orchestrate `auto_full` apply step** — the executor's only RISKY tool call
-   sends the referenced run's patch through the SAME `verifyAndDeliver` path
-   (plus a secret-like-token scan on the patch); the gate
-   refusing means no mutation.
-3. **In-place thread turns** — a write turn executes directly in the thread's
+2. **In-place thread turns** — a write turn executes directly in the thread's
    execution tree. Fences: a pre-turn snapshot is taken at turn start and a
    post-turn snapshot at turn end (the per-turn diff base, so prior dirty state
    is never attributed to the turn), and the server-owned `revert_run` decision
    uses an external content-addressed pre/post anchor (overlapping later user
    edits are refused, below).
-4. **Best-of winner adoption** — a best-of-N thread race runs candidates in
+3. **Best-of winner adoption** — a best-of-N thread race runs candidates in
    isolated envelopes and applies the winner's patch to the execution tree only
    on a fully verified `success`; `ungated`, `review_not_run`, blocked,
    and failed results remain inspectable artifacts and never auto-adopt. Adoption
@@ -1069,7 +1057,7 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    all-or-nothing apply). A stale or concurrent target is refused and no
    destructive rollback is attempted; `adopted:false` reports whether the
    observed target remained unchanged (INV-114).
-5. **Thread apply** — `POST /v2/threads/:id/apply` delivers an isolated thread's
+4. **Thread apply** — `POST /v2/threads/:id/apply` delivers an isolated thread's
    accumulated worktree diff. Fences: one per-thread mutation queue refuses
    apply as `thread_busy` while a mutating turn is queued/running; every run
    after the durable delivered-prefix watermark must be applyable (a later
@@ -1077,11 +1065,11 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    scan refuses the patch; delivery reuses `verifyAndDeliver` with a fresh
    verifier and exact target preimage. Success advances the persistent thread
    branch and watermark with journaled thread state.
-6. **Automatic git init** — a NON-GIT project folder is initialized before any
+5. **Automatic git init** — a NON-GIT project folder is initialized before any
    write candidate spawns (`git init`,
    deterministic baseline commit). Fence: the mutation is announced via a typed
    `project.git.initialized` run event — never silent.
-7. **`revert_run`** — the server-owned in-place revert reads the immutable
+6. **`revert_run`** — the server-owned in-place revert reads the immutable
    external patch anchor and reverses only bytes still equal to the recorded
    Claudexor postimage; a conflicting user edit is refused and left untouched.
 
@@ -1115,7 +1103,7 @@ Paid budgets use an explicit tagged contract: `{kind: unlimited}` or
 `{kind: finite, maxUsd >= 0}`. CLI `--max-usd N` is syntax sugar for the finite
 form, including `--max-usd 0`; zero and null never mean unlimited. The default
 comes from `budget.paid_budget_per_run`. A single root ledger grants leases to
-planner, candidates, synthesis, nested orchestrate runs, and review, and settles
+planner, candidates, synthesis, and review, and settles
 observed spend even when work errors. Every route carries cost knowledge
 (`exact | estimated | unknown`), billing knowledge, source, and provenance.
 Subscription token valuation is telemetry, not a cash debit — estimated OR
@@ -1146,8 +1134,9 @@ limits create cooldowns; unknown quota remains eligible and is never rendered
 as full headroom.
 
 Structured output: routes whose manifest declares `json_schema_output`
-receive `HarnessRunSpec.output_schema` — today the orchestrate PLANNER passes
-the OrchestratePlan JSON Schema computed from the live Zod shape, strictified
+receive `HarnessRunSpec.output_schema` — a CALLER-supplied per-run schema the
+run's final answer must conform to (agent race / ask answers), normalized and
+strictified
 for vendor strict modes (every object: `required` = all keys,
 `additionalProperties: false`; inline root — both live-verified: codex
 `--output-schema <FILE>` written into the scoped CODEX_HOME, claude
@@ -1239,23 +1228,9 @@ final/explore-findings.yaml?
 final/omissions.md?
 final/report.md?
 final/plan.md?
-final/orchestration.md?            (orchestrate: human-readable orchestration summary)
-final/orchestration.yaml?          (orchestrate: the typed orchestration plan)
-final/orchestration_parse_error.md? (orchestrate: plan-block extraction failure detail)
-final/orchestration_progress.yaml? (orchestrate: per-step executor progress, auto_safe/auto_full)
 plans/<harness>.md?           (plan mode)
 attempts/aNN/events.jsonl?    (read-only modes)
 ```
-
-`final/orchestration.yaml` is the TYPED `OrchestratePlan` artifact: it is
-extracted from the fenced JSON block in the orchestrator's report and validated
-against the tool belt. A missing or invalid block writes
-`final/orchestration_parse_error.md` and is disclosed in the summary.
-Executed plans also persist required/optional, actual terminal source, and
-evidence references per step. The parent reducer applies one fixed precedence
-and reports success only when every required step succeeded; skipped optional
-steps do not become a generic partial terminal. Delivery receipts, rather than
-requested autonomy, determine the report WorkProduct's `read_only` value.
 
 `final/telemetry.yaml` (`RunTelemetry` in the schema) is the single engine-owned
 record of per-attempt web evidence (requested/effective mode, attempted,
@@ -1352,10 +1327,11 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
 Deliberate engine-level boundaries. Each is a designed limit (not a defect):
 code touching one of these areas must honor it or change it explicitly here.
 
-- orchestrate's `answer_question` tool stays out of the default tool belt
-  (safe sub-runs are non-interactive); it executes only where a live
-  interaction registry is injected (daemon-tracked runs) and otherwise SKIPs
-  honestly.
+- The delegation belt (`agent --delegate`) has NO apply/decision/thread/settings
+  tool: the parent integrates sub-run results in its own workspace, so a
+  delegated sub-run adds no new live-tree mutation path. Sub-runs are isolated
+  envelopes (forced no-thread), depth is capped at 1, and each draws from the
+  parent budget headroom.
 - Spec-interview grounding runs execute in-process in the daemon (synchronous
   request/response); they persist a normal run dir but are not daemon jobs —
   they do not appear in `GET /v2/runs` and cannot be cancelled via the run

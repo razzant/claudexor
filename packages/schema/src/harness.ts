@@ -139,17 +139,6 @@ export const HarnessCapabilities = z
         "The adapter can surface interactive user questions (interaction_requested events) and deliver typed answers back into the live session.",
       ),
     /**
-     * The harness can play the autonomous `orchestrate` planner intent: plan
-     * multi-harness work over the typed tool belt. NOT a privileged role — routed
-     * like reviewers via doctor + capability + quota headroom.
-     */
-    orchestrate: z
-      .boolean()
-      .default(false)
-      .describe(
-        "The harness can play the autonomous orchestrate planner intent, planning multi-harness work over the typed tool belt; not a privileged role.",
-      ),
-    /**
      * The harness can constrain its FINAL message to a caller-supplied JSON
      * Schema (codex `--output-schema <file>`, claude `--json-schema <json>`).
      * Consumer: the engine passes HarnessRunSpec.output_schema only to routes
@@ -335,10 +324,24 @@ export const HarnessCapabilityProfile = z
     isolation: IsolationCapabilities,
     /** Every accepted media class has a finite MIME/size/count/transport declaration. */
     attachment_inputs: z.array(AttachmentInputClass).default([]),
+    /**
+     * The adapter can inject engine-owned MCP servers into the harness sandbox
+     * (the generalized browser-MCP seam): claude via `--mcp-config` inline JSON,
+     * codex via `-c mcp_servers.<name>.*` overrides. Consumers: the browser-tool
+     * wiring and the delegation belt. When false, `HarnessRunSpec.extra_mcp_servers`
+     * is refused at preflight (never silently dropped) and the Agent `delegate`
+     * toggle is a typed refusal naming the harness.
+     */
+    mcp_injection: z
+      .boolean()
+      .default(false)
+      .describe(
+        "The adapter can inject engine-owned MCP servers into the harness sandbox (browser tool, delegation belt); false = extra_mcp_servers and the delegate toggle are refused.",
+      ),
   })
   .default({})
   .describe(
-    "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and finite attachment inputs.",
+    "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, finite attachment inputs, and MCP injection.",
   );
 export type HarnessCapabilityProfile = z.infer<typeof HarnessCapabilityProfile>;
 
@@ -471,6 +474,37 @@ export const BrowserToolSpec = z
   );
 export type BrowserToolSpec = z.infer<typeof BrowserToolSpec>;
 
+/**
+ * One extra MCP server the adapter injects into the harness sandbox (generalized
+ * from the browser-MCP seam). The engine names them, supplies the exact local
+ * command + args + env, and each adapter translates the list into its native
+ * MCP-injection transport (claude `--mcp-config` inline JSON, codex
+ * `-c mcp_servers.<name>.*` overrides). Only injected on adapters whose
+ * `capability_profile.mcp_injection` is true. `name` is the server key the
+ * harness exposes its tools under (`mcp__<name>__*`).
+ */
+export const ExtraMcpServer = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .regex(
+        /^[a-z0-9_]+$/,
+        "MCP server name must be lowercase alphanumeric/underscore (it becomes the mcp__<name>__* tool prefix)",
+      )
+      .describe("Server key the harness exposes the injected tools under (mcp__<name>__*)."),
+    command: z.string().min(1).describe("Absolute executable for the MCP server process."),
+    args: z.array(z.string()).default([]).describe("Argv for the MCP server process."),
+    env: z
+      .record(z.string(), z.string())
+      .default({})
+      .describe("Extra environment variables for the MCP server process."),
+  })
+  .describe(
+    "One extra MCP server the adapter injects into the harness sandbox; translated per adapter alongside the browser one.",
+  );
+export type ExtraMcpServer = z.infer<typeof ExtraMcpServer>;
+
 /** Spec passed to a harness adapter's run(). */
 export const HarnessRunSpec = z
   .object({
@@ -479,8 +513,8 @@ export const HarnessRunSpec = z
     prompt: z.string().describe("Prompt text delivered to the harness."),
     /**
      * Optional caller-supplied system-level instructions layered on top of the
-     * prompt for TASK-PRODUCING lanes (primary, candidate, planner, explorer,
-     * orchestrate-planner) — never reviewers, synthesis, or the auth smoke.
+     * prompt for TASK-PRODUCING lanes (primary, candidate, planner, explorer)
+     * — never reviewers, synthesis, or the auth smoke.
      * Adapters deliver it natively (claude `--append-system-prompt`, codex
      * `developer_instructions`) or as a delimited prompt prefix.
      */
@@ -597,9 +631,20 @@ export const HarnessRunSpec = z
       .default(null)
       .describe("Agent-driven browser wiring; null = no browser tool this run (the common case)."),
     /**
-     * JSON Schema constraining the harness's FINAL message. Producer:
-     * the orchestrate planner (OrchestratePlan schema). Passed only to routes
-     * whose manifest declares `json_schema_output`; consumers add the native CLI flag.
+     * Extra MCP servers to inject into the harness sandbox (the delegation belt,
+     * and any future engine-owned server). Empty by default. Only honored by
+     * adapters whose `capability_profile.mcp_injection` is true; the engine
+     * refuses `delegate` on an adapter that cannot inject rather than silently
+     * dropping the belt.
+     */
+    extra_mcp_servers: z
+      .array(ExtraMcpServer)
+      .default([])
+      .describe("Extra MCP servers injected into the harness sandbox; adapter-translated."),
+    /**
+     * JSON Schema constraining the harness's FINAL message (a caller-supplied
+     * per-run output schema on agent/ask answers). Passed only to routes whose
+     * manifest declares `json_schema_output`; consumers add the native CLI flag.
      */
     output_schema: z
       .unknown()

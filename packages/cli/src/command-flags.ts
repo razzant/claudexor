@@ -13,7 +13,7 @@ export interface CliFlagSpec {
   readonly help: string | null;
 }
 
-/** Flags shared by every run-shaped verb (they funnel into orchestrate()). */
+/** Flags shared by every run-shaped verb (they funnel into the run entrypoint). */
 export const RUN_FLAGS: readonly string[] = [
   "harness",
   "primary-harness",
@@ -21,6 +21,7 @@ export const RUN_FLAGS: readonly string[] = [
   "attempts",
   "until-clean",
   "create",
+  "delegate",
   "synthesis",
   "test",
   "allow-protected-path",
@@ -88,7 +89,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag(
     "mode",
     "<mode>",
-    "agent verb: ask | plan | audit | agent | orchestrate (strategies are flags, not modes);\n                           apply verb: delivery mode apply | commit | branch | pr",
+    "agent verb: ask | plan | agent (strategies are flags, not modes);\n                           apply verb: delivery mode apply | commit | branch | pr",
   ),
   valueFlag("n", "<N>", "Best-of-N width (agent): N isolated candidates + cross-review"),
   valueFlag("synthesis", "<mode>", "Best-of-N synthesis: auto (default, only n>=3)|always|never"),
@@ -101,10 +102,9 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "NDJSON machine surface: early runId frame, one line per run event, terminal object last (--json stays exactly one object)",
   ),
   booleanFlag("create", "Create-from-scratch intent (agent)"),
-  valueFlag(
-    "autonomy",
-    "<level>",
-    "Orchestrate: how much the orchestrator may act without confirmation:\n                           suggest (default, read-only plan) | auto_safe | auto_full",
+  booleanFlag(
+    "delegate",
+    "Delegation belt (agent): inject the Claudexor belt so the harness can spawn bounded isolated sub-runs (claude/codex only)",
   ),
   valueFlag("test", "'<json-argv>'", 'Deterministic gate argv; repeat, e.g. \'["pnpm","test"]\''),
   valueFlag(
@@ -131,7 +131,6 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("max-turns", "<n>", "Per-run turn cap (beats per-harness settings)"),
   valueFlag("prompt-file", "<file>", "Read the prompt from a file (or pass `-` to read stdin)"),
   valueFlag("thread", "<id>", "Continue an existing thread (runs land as its next turn)"),
-  valueFlag("max-tool-calls", "<n>", "Orchestrate executor: cap on plan tool calls"),
   valueFlag("diff", "<file>", "Diff file for the review verb (per-commit gate)"),
   valueFlag("intent", '"<text>"', "Review intent context for the review verb"),
   valueFlag("tests", '"<evidence>"', "Test evidence text for the review verb"),

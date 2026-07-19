@@ -11,8 +11,7 @@ export function runStartStrategyViolations(value: {
   attempts?: number | null;
   create?: boolean;
   n?: number;
-  autonomy?: unknown;
-  maxToolCalls?: number;
+  delegate?: boolean;
   reviewerPanel?: unknown;
 }): string[] {
   const mode = value.mode ?? "agent";
@@ -34,11 +33,8 @@ export function runStartStrategyViolations(value: {
       `n sets the best-of race width (agent) or deep-scan width (ask); mode is '${mode}'`,
     );
   }
-  if (value.autonomy !== undefined && mode !== "orchestrate") {
-    violations.push(`autonomy is an orchestrate knob; mode is '${mode}'`);
-  }
-  if (value.maxToolCalls !== undefined && mode !== "orchestrate") {
-    violations.push(`maxToolCalls is an orchestrate knob; mode is '${mode}'`);
+  if (value.delegate === true && mode !== "agent") {
+    violations.push(`delegate is an agent strategy; mode is '${mode}'`);
   }
   if (value.reviewerPanel !== undefined && mode !== "agent") {
     violations.push(

@@ -11,12 +11,7 @@ export function findActiveMutatingThreadRun(
       record.params && typeof record.params === "object"
         ? (record.params as Record<string, unknown>)
         : {};
-    return (
-      params["threadId"] === threadId &&
-      (params["mode"] === "agent" ||
-        (params["mode"] === "orchestrate" &&
-          (params["autonomy"] === "auto_safe" || params["autonomy"] === "auto_full")))
-    );
+    return params["threadId"] === threadId && params["mode"] === "agent";
   });
 }
 

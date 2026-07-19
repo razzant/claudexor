@@ -25,10 +25,9 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
   if (parsed.prompt.trim().length === 0) {
     throw Object.assign(new Error("prompt must not be empty"), { status: 400 });
   }
-  // maxToolCalls caps the orchestrate EXECUTOR's plan steps; accepting it on
-  // any other mode would create a silent no-op knob (INV-023). The shared
-  // mode/strategy coherence owner (D11) covers that class wholesale: every
-  // strategy flag is refused on a mode it does not belong to.
+  // The shared mode/strategy coherence owner (D11) refuses every strategy flag
+  // on a mode it does not belong to (e.g. `delegate` on a non-agent mode),
+  // rather than accepting a silent no-op knob (INV-023).
   const strategyViolations = runStartStrategyViolations(parsed);
   if (strategyViolations.length > 0) {
     throw Object.assign(new Error(strategyViolations.join("; ")), { status: 400 });

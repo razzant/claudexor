@@ -17,6 +17,7 @@ export const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile =
     isolation: {
       supported_containment: ["scoped_home_keychain_bridge", "env_or_file_injection"],
     },
+    mcp_injection: true,
     attachment_inputs: [
       {
         kind: "image",

@@ -10,7 +10,7 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent, best-of, plan, spec, create, orchestrate), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, plugin, daemon, gc, auth, secrets, profiles, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent — `--delegate` for the delegation belt — best-of, plan, create), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, plugin, daemon, gc, auth, secrets, profiles, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
@@ -196,7 +196,7 @@ MCP Tasks remain experimental and are not advertised. Run tools return a
 daemon-bound durable handle instead of holding a tool call open until terminal.
 The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
-`claudexor_orchestrate`, `claudexor_status`, `claudexor_capabilities`
+`claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,
 the mutability matrix, run-control keys), and the read-only recovery tools
 `claudexor_runs`, `claudexor_inspect`, `claudexor_run_status`,
@@ -209,7 +209,7 @@ explicit `quarantine_and_start_fresh` confirmation. MCP does not claim live
 thread parity.
 
 Tools declare MCP behavior annotations (readOnlyHint for every non-agent
-route — MCP orchestrate is suggest-autonomy only) and, for run tools and
+route — ask/plan are read-only) and, for run tools and
 the capability catalog, an outputSchema with a structuredContent mirror of
 the text result: `{summary, runId, runDir, status, applyEligibility}` —
 `applyEligibility` is the derived apply-gate verdict `{eligible, state,
@@ -217,9 +217,9 @@ reason, requiredAction}` the control API serves on `GET /v2/runs/:id`.
 
 Current operational behavior:
 
-- All five run modes are daemon-tracked through `/v2`; the server auto-starts
+- Every run mode is daemon-tracked through `/v2`; the server auto-starts
   the local daemon and enqueues through the control API. `GET /v2/runs` lists
-  every MCP-started run, including ask/plan/audit/orchestrate, while mutating
+  every MCP-started run, including ask/plan/agent, while mutating
   runs remain cancellable and operator-unblockable through the same authority.
 - Every run start returns a `runId:`/`artifacts:`/`status:` trailer. Status,
   terminal result, cancellation, pending questions, and answers are separate
@@ -567,6 +567,7 @@ always preferred.
 | `CLAUDEXOR_CLI_PATH` / `CLAUDEXOR_NODE_PATH` | plugins | Paths baked into generated host-plugin MCP configs (set by the installer, rarely by hand). |
 | `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by generated host configs; a mismatch with the CLI version prints the plugin-repair warning. |
 | `CLAUDEXOR_MANAGED` | plugins | Ownership marker the installer writes into generated host MCP configs (never set by hand). |
+| `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the parent paid-budget headroom snapshot. Never set by hand. |
 | `CLAUDEXOR_REVIEWER_TIMEOUT_MS` | config | Per-reviewer timeout override for review panels. |
 | `CLAUDEXOR_REVIEW_WAVE_ID` | release review | Operator-generated UUID shared by native and triad/scope reviewer processes; sealed release attestation refuses mixed or sequential wave artifacts. |
 | `CLAUDEXOR_HARNESS_INACTIVITY_TIMEOUT_MS` | config | Inactivity window before a silent harness stream is failed (not a wall-clock cap). |

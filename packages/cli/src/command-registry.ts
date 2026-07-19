@@ -60,7 +60,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     id: "agent",
     usageArgs: '"<prompt>" [opts]',
     summary: "Run a task (default mode: agent)",
-    flags: [...RUN_FLAGS, "mode", "autonomy", "max-tool-calls"],
+    flags: [...RUN_FLAGS, "mode"],
     mutability: "write",
     stability: "stable",
     hostFallbackExample: 'claudexor agent "..."',
@@ -82,14 +82,6 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     mutability: "read",
     stability: "stable",
     hostFallbackExample: 'claudexor plan "..."',
-  },
-  {
-    id: "orchestrate",
-    usageArgs: '"<goal>"',
-    summary: "Typed orchestration plan over the tool belt",
-    flags: [...RUN_FLAGS, "autonomy", "max-tool-calls"],
-    mutability: "write",
-    stability: "stable",
   },
   {
     id: "create",
@@ -312,7 +304,6 @@ export const REPL_COMMANDS: readonly {
   { name: "/ask", args: "<q>", help: "read-only answer turn" },
   { name: "/plan", args: "<prompt>", help: "read-only planning turn" },
   { name: "/best-of", args: "<prompt>", help: "best-of-2 turn (cross-family review)" },
-  { name: "/orchestrate", args: "<g>", help: "typed orchestration plan over the tool belt" },
   { name: "/thread", help: "show the current thread (turns + native sessions)" },
   { name: "/new", args: "[title]", help: "start a new thread" },
   {

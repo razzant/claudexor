@@ -75,8 +75,7 @@
               "verify",
               "synthesize",
               "explain",
-              "audit",
-              "orchestrate"
+              "audit"
             ]
           },
           "default": {},

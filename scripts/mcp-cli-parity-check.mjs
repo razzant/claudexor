@@ -90,6 +90,11 @@ const BOOLEAN_FLAG_MAP = {
   "deep-scan": { mcp: "deepScan", reason: "ask deep-scan strategy; same arg on every run tool" },
   "until-clean": { mcp: null, reason: "convergence strategy; not exposed one-shot (CLI/app only)" },
   create: { mcp: null, reason: "encoded in the claudexor_create TOOL NAME" },
+  delegate: {
+    mcp: null,
+    reason:
+      "delegation belt (D32) is injected into a harness sandbox by the engine; the PUBLIC MCP surface has no delegate flag (the belt IS the scoped MCP surface)",
+  },
   "in-place": {
     mcp: null,
     reason: "live-tree mutation is a CLI-only explicit opt-in (never a remote-ish surface default)",
@@ -143,8 +148,6 @@ const CLI_ONLY_EXEMPT = {
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",
   attempts: "convergence knob; MCP one-shot surface exposes race width (n) only today",
   synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",
-  "max-tool-calls": "orchestrate executor cap; MCP orchestrate is suggest-mode (plan only)",
-  autonomy: "orchestrate executor autonomy; MCP orchestrate is suggest-mode (plan only)",
   portfolio: "removed v2 flag retained only to emit a hard error",
   "routing-goal": "MCP callers currently use the daemon default routing goal",
   attach:
@@ -243,7 +246,7 @@ for (const arg of mcpArgs) {
 // v2: tool-surface contract parity.
 // 1. Every tool declares MCP behavior annotations; a tool's read-only hint
 //    must match its actual nature (agent-mode run tools and explicitly
-//    destructive recovery are mutating; MCP orchestrate is suggest-only).
+//    destructive recovery are mutating; ask/plan are read-only).
 // 2. Every prompt-taking run tool declares the structured outputSchema.
 // 3. The recovery tool set exists (hosts recover lost run handles).
 const MUTATING_TOOLS = new Set([

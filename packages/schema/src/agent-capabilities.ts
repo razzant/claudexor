@@ -38,16 +38,15 @@ export const RUN_START_CLIENT_REJECTED_KEYS = [
 ] as const;
 
 /**
- * Mode -> tree mutability. ask/plan/audit are read-only BY CONSTRUCTION
- * (Bible invariant); agent writes; orchestrate may write above suggest
- * autonomy. The catalog derives its readOnlyModes/writeModes split from this
- * single map instead of re-encoding the split at each consumer.
+ * Mode -> tree mutability. ask/plan are read-only BY CONSTRUCTION
+ * (Bible invariant); agent writes. The catalog derives its
+ * readOnlyModes/writeModes split from this single map instead of re-encoding
+ * the split at each consumer.
  */
 export const MODE_MUTABILITY: Record<z.infer<typeof ModeKind>, "read" | "write"> = {
   ask: "read",
   plan: "read",
   agent: "write",
-  orchestrate: "write",
 };
 
 export const CatalogModelSummary = z
@@ -148,14 +147,8 @@ export const CatalogMutabilityMatrix = z
   .object({
     readOnlyModes: z
       .array(ModeKind)
-      .describe(
-        "Canonical modes that never mutate the project tree (ask/plan/audit; orchestrate in suggest autonomy is also read-only).",
-      ),
-    writeModes: z
-      .array(ModeKind)
-      .describe(
-        "Canonical modes that may mutate a tree (agent always; orchestrate only above suggest autonomy).",
-      ),
+      .describe("Canonical modes that never mutate the project tree (ask/plan)."),
+    writeModes: z.array(ModeKind).describe("Canonical modes that may mutate a tree (agent)."),
     isolationKinds: z
       .array(z.enum(["envelope", "live"]))
       .describe(

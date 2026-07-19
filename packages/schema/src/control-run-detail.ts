@@ -4,7 +4,6 @@ import { ApplyEligibility } from "./apply-eligibility.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
-import { OrchestratePlanProgress } from "./orchestrate.js";
 import {
   ControlArtifactInfo,
   ControlBudgetSnapshot,
@@ -169,14 +168,6 @@ export const ControlRunDetail = z
       .array(ControlPendingInteraction)
       .default([])
       .describe("Interactive questions currently awaiting answers."),
-    /** Typed executor progress for an orchestrate run (auto_safe/auto_full);
-     * null for non-orchestrate runs or suggest autonomy. Projected from
-     * final/orchestration_progress.yaml. */
-    orchestrate: OrchestratePlanProgress.nullable()
-      .default(null)
-      .describe(
-        "Typed executor progress for an orchestrate run; null for non-orchestrate runs or suggest autonomy.",
-      ),
     /** Per-candidate evidence cards. Present for EVERY envelope-producing
      * mode (races show N lanes; single-candidate turns and convergence
      * refinements project their attempts too); empty only when no attempt

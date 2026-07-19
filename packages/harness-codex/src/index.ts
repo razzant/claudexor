@@ -188,19 +188,44 @@ function codexNativeReadiness(login: CodexLoginProbe): AuthSourceReadiness {
 export function codexBrowserArgs(
   browser: HarnessRunSpec["browser"],
   externalContextPolicy?: HarnessRunSpec["external_context_policy"],
+  extraMcpServers: HarnessRunSpec["extra_mcp_servers"] = [],
 ): string[] {
-  if (!browser || externalContextPolicy === "off") return [];
-  const mcp = browserMcpCommand(browser);
-  return [
-    "-c",
-    `mcp_servers.browser.command=${JSON.stringify(mcp.command)}`,
-    "-c",
-    `mcp_servers.browser.args=${JSON.stringify(mcp.args)}`,
-    "-c",
-    "mcp_servers.browser.startup_timeout_sec=90",
-    "-c",
-    "mcp_servers.browser.tool_timeout_sec=120",
-  ];
+  const args: string[] = [];
+  // The browser is live egress and rides `external_context_policy` (dropped
+  // under `off`); it is stateless `-c` overrides — the user's config.toml is
+  // never touched.
+  if (browser && externalContextPolicy !== "off") {
+    const mcp = browserMcpCommand(browser);
+    args.push(
+      "-c",
+      `mcp_servers.browser.command=${JSON.stringify(mcp.command)}`,
+      "-c",
+      `mcp_servers.browser.args=${JSON.stringify(mcp.args)}`,
+      "-c",
+      "mcp_servers.browser.startup_timeout_sec=90",
+      "-c",
+      "mcp_servers.browser.tool_timeout_sec=120",
+    );
+  }
+  // Extra engine-owned MCP servers (the delegation belt, etc.) are local
+  // processes, not web egress, so they inject regardless of web policy. Same
+  // stateless `-c` override transport as the browser; env rides as a JSON table.
+  for (const server of extraMcpServers) {
+    args.push(
+      "-c",
+      `mcp_servers.${server.name}.command=${JSON.stringify(server.command)}`,
+      "-c",
+      `mcp_servers.${server.name}.args=${JSON.stringify(server.args)}`,
+      "-c",
+      `mcp_servers.${server.name}.startup_timeout_sec=90`,
+      "-c",
+      `mcp_servers.${server.name}.tool_timeout_sec=120`,
+    );
+    if (Object.keys(server.env).length > 0) {
+      args.push("-c", `mcp_servers.${server.name}.env=${JSON.stringify(server.env)}`);
+    }
+  }
+  return args;
 }
 
 /**
@@ -233,6 +258,7 @@ export function codexExecArgs(
     | "browser"
   > & {
     resume_session_id?: string | null;
+    extra_mcp_servers?: HarnessRunSpec["extra_mcp_servers"];
   },
   opts: { suppressNodeRepl?: boolean; outputSchemaPath?: string | null } = {},
 ): string[] {
@@ -268,7 +294,9 @@ export function codexExecArgs(
     args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
     // ALL `-c` config overrides go BEFORE `-i` so the variadic `-i/--image
     // <FILE>...` can't swallow them as image paths.
-    args.push(...codexBrowserArgs(spec.browser, spec.external_context_policy));
+    args.push(
+      ...codexBrowserArgs(spec.browser, spec.external_context_policy, spec.extra_mcp_servers),
+    );
     args.push(...nodeReplArgs);
     const imageArgs = codexImageArgs(spec.attachments);
     args.push(...imageArgs);
@@ -290,7 +318,9 @@ export function codexExecArgs(
   args.push(...codexWebArgs(spec.external_context_policy ?? "auto"));
   // ALL `-c` config overrides BEFORE `-i` (variadic) so they can't be eaten as
   // image paths; then images, then `--`, then the prompt. See resume branch.
-  args.push(...codexBrowserArgs(spec.browser, spec.external_context_policy));
+  args.push(
+    ...codexBrowserArgs(spec.browser, spec.external_context_policy, spec.extra_mcp_servers),
+  );
   args.push(...nodeReplArgs);
   const imageArgs = codexImageArgs(spec.attachments);
   args.push(...imageArgs);
@@ -383,7 +413,6 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           review: true,
           verify: true,
           synthesize: true,
-          orchestrate: true,
           read_files: true,
           // mcp_servers.browser.*` overrides (live-verified) — gated on web policy.
           browser_tool: true,
@@ -424,6 +453,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           },
           access_control: { readonly_mechanism: "fs_sandbox" },
           isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
+          mcp_injection: true,
           attachment_inputs: [
             {
               kind: "image",
@@ -495,7 +525,6 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
         "synthesize",
         "explain",
         "audit",
-        "orchestrate",
       ];
       const binPath = resolveHarnessBinary(BIN);
       const apiSource: AuthSourceReadiness = {

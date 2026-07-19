@@ -79,6 +79,16 @@ describe("canary golden stories", () => {
     expect(oldRace.stdout + oldRace.stderr).toContain("claudexor best-of");
   });
 
+  it("[INV-030:orchestrate-retired] the retired 'orchestrate' verb hard-errors and names agent --delegate, never silently runs", () => {
+    // D32: orchestrate mode + its typed-step executor were deleted; delegation
+    // (`agent --delegate`) replaces it. The old verb must fail loudly and point
+    // at the replacement, not alias to a run.
+    const r = cli(sb, ["orchestrate", "coordinate the work", "--json"]);
+    expect(r.code).toBe(2);
+    expect(r.stdout + r.stderr).toMatch(/retired/);
+    expect(r.stdout + r.stderr).toContain("agent --delegate");
+  });
+
   it("[INV-035:cli-all-modes-daemon-owned] every product mode returns a durable daemon handle", () => {
     const commands: Array<{ args: string[]; mode: string; harness?: string }> = [
       { args: ["ask", "answer"], mode: "ask" },
@@ -86,8 +96,12 @@ describe("canary golden stories", () => {
       { args: ["ask", "inspect", "--deep-scan"], mode: "ask" },
       { args: ["agent", "change"], mode: "agent" },
       {
-        args: ["agent", "coordinate", "--mode", "orchestrate"],
-        mode: "orchestrate",
+        // D32: the `orchestrate` mode was replaced by `agent --delegate`; the
+        // delegate flag still enqueues a durable agent run (the belt-injection
+        // refusal for a non-injecting harness is an execution-time preflight,
+        // not an enqueue rejection).
+        args: ["agent", "coordinate", "--delegate"],
+        mode: "agent",
         harness: "fake-implement",
       },
     ];

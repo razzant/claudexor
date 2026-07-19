@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
 import { checkName } from "./release.js";
-import { serveAcpBridge, serveMcpBridge } from "./bridge-serve.js";
+import { serveAcpBridge, serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
@@ -16,7 +16,6 @@ import {
   type ProtectedPathApproval,
   type ControlReviewerPanelEntry,
   ModeKind as ModeKindSchema,
-  type OrchestrateAutonomy,
   type PaidBudget,
   RoutingGoal,
   type ModeKind,
@@ -83,7 +82,6 @@ import { settingsCommand } from "./settings-command.js";
 import { quotaCommand } from "./quota-command.js";
 import { trustCommand } from "./trust-command.js";
 import { projectCommand } from "./project-command.js";
-import { parseAutonomy } from "./orchestrate-options.js";
 import { runRepl } from "./repl.js";
 import {
   parseProtectedPathApprovalFlags,
@@ -97,7 +95,7 @@ const CLI_VERSION = CLAUDEXOR_VERSION;
 
 const HELP = renderHelp(CLI_VERSION);
 
-const MODES = new Set<ModeKind>(["ask", "plan", "agent", "orchestrate"]);
+const MODES = new Set<ModeKind>(["ask", "plan", "agent"]);
 
 function normalizeMode(s: string): ModeKind {
   const trimmed = s.trim();
@@ -364,10 +362,9 @@ async function orchestrate(
   let resolvedAccess: ReturnType<typeof accessProfile> = undefined;
   let resolvedEffort: EffortHint | undefined;
   let paidBudget: PaidBudget | undefined;
-  let maxToolCalls: number | undefined;
   let nFlag: number | undefined;
   let attemptsFlag: number | undefined;
-  let autonomy: OrchestrateAutonomy | undefined;
+  let delegate: boolean | undefined;
   let resolvedSynthesis: ReturnType<typeof synthesisMode> = undefined;
   let resolvedHarnesses: string[] | undefined;
   let resolvedPrimaryHarness: string | undefined;
@@ -391,10 +388,9 @@ async function orchestrate(
     resolvedModel = flagStr(args, "model");
     const maxUsd = floatFlag(args, "max-usd");
     paidBudget = maxUsd === undefined ? undefined : { kind: "finite", maxUsd };
-    maxToolCalls = intFlag(args, "max-tool-calls");
     nFlag = intFlag(args, "n");
     attemptsFlag = intFlag(args, "attempts");
-    autonomy = parseAutonomy(flagStr(args, "autonomy"));
+    delegate = flagBool(args, "delegate") ? true : undefined;
     resolvedSynthesis = synthesisMode(args);
     attachmentRequest = attachmentInputs(args);
     resolvedProtectedPathApprovals = protectedPathApprovals(args);
@@ -450,24 +446,17 @@ async function orchestrate(
       web: resolvedWebPolicy,
       externalContextPolicy: resolvedWebPolicy,
       synthesis: resolvedSynthesis,
-      autonomy,
     });
   } catch (err) {
     return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  if (autonomy !== undefined && mode !== "orchestrate") {
-    return printUsageError(
-      json,
-      `claudexor: --autonomy only applies to 'orchestrate' (got mode '${mode}')`,
-    );
-  }
-  if (maxToolCalls !== undefined && mode !== "orchestrate") {
-    return printUsageError(json, "claudexor: --max-tool-calls only applies to orchestrate runs");
+  if (delegate && mode !== "agent") {
+    return printUsageError(json, `claudexor: --delegate is an agent strategy (got mode '${mode}')`);
   }
   return daemonRun(args, json, {
     mode,
-    autonomy,
+    delegate,
     prompt: prompt || "audit this repository",
     instructions: resolvedInstructions,
     maxSeconds: resolvedMaxSeconds,
@@ -478,7 +467,6 @@ async function orchestrate(
     paidBudget,
     routingGoal: routingGoal?.success ? routingGoal.data : undefined,
     credentialProfileId,
-    maxToolCalls,
     reviewerPanel: resolvedReviewerPanel,
     reviewerModels: resolvedReviewerModels,
     reviewerEfforts: reviewerEffortOverrides,
@@ -499,7 +487,7 @@ async function orchestrate(
 
 interface DaemonRunParams {
   mode: ModeKind;
-  autonomy: OrchestrateAutonomy | undefined;
+  delegate: boolean | undefined;
   prompt: string;
   instructions: string | undefined;
   maxSeconds: number | undefined;
@@ -510,7 +498,6 @@ interface DaemonRunParams {
   paidBudget: PaidBudget | undefined;
   routingGoal: ReturnType<typeof RoutingGoal.parse> | undefined;
   credentialProfileId: string | undefined;
-  maxToolCalls?: number;
   reviewerPanel: ControlReviewerPanelEntry[] | undefined;
   reviewerModels: Partial<Record<ProviderFamily, string>> | undefined;
   reviewerEfforts: Partial<Record<ProviderFamily, EffortHint>> | undefined;
@@ -619,7 +606,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(attachmentRefs ? { attachments: attachmentRefs } : {}),
     mode: p.mode,
     ...(threadId ? { threadId } : {}),
-    ...(p.mode === "orchestrate" && p.autonomy ? { autonomy: p.autonomy } : {}),
+    ...(p.delegate ? { delegate: true } : {}),
     scope: { kind: "project", root: process.cwd() },
     execution: { isolation: inPlace ? "live" : "envelope" },
     ...(p.resolvedHarnesses ? { harnesses: p.resolvedHarnesses } : {}),
@@ -635,9 +622,6 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.tests ? { tests: p.tests } : {}),
     ...(p.protectedPathApprovals ? { protectedPathApprovals: p.protectedPathApprovals } : {}),
     ...(p.paidBudget !== undefined ? { paidBudget: p.paidBudget } : {}),
-    ...(p.mode === "orchestrate" && p.maxToolCalls !== undefined
-      ? { maxToolCalls: p.maxToolCalls }
-      : {}),
     ...(p.resolvedAccess ? { access: p.resolvedAccess } : {}),
     ...(p.resolvedWebPolicy ? { web: p.resolvedWebPolicy } : {}),
     ...(p.resolvedModel ? { model: p.resolvedModel } : {}),
@@ -1020,24 +1004,24 @@ async function main(): Promise<number> {
     case "audit":
     case "map":
     case "explore":
+    case "orchestrate":
     case "spec": {
       const replacement =
         cmd === "run"
           ? "claudexor agent (same flags)"
           : cmd === "race"
             ? "claudexor best-of (same flags)"
-            : cmd === "spec"
-              ? "claudexor plan <prompt> then Implement (the plan lifecycle surfaces open questions and freezes the plan on implement)"
-              : "claudexor ask --deep-scan <prompt>";
+            : cmd === "orchestrate"
+              ? "claudexor agent --delegate <prompt> (the harness spawns bounded isolated sub-runs; suggest-only planning is ordinary claudexor plan)"
+              : cmd === "spec"
+                ? "claudexor plan <prompt> then Implement (the plan lifecycle surfaces open questions and freezes the plan on implement)"
+                : "claudexor ask --deep-scan <prompt>";
       return printPreflightError(
         args,
         json,
         `claudexor: the '${cmd}' verb was retired; use ${replacement}`,
       );
     }
-
-    case "orchestrate":
-      return orchestrate(args, "orchestrate", json);
 
     case "plan":
       return orchestrate(args, "plan", json);
@@ -1056,6 +1040,9 @@ async function main(): Promise<number> {
 
     case "mcp": {
       if (args._[1] === "serve") return serveMcpBridge();
+      // Internal: the scoped delegation belt injected into a delegate agent
+      // run's sandbox (D32). Not a user-facing verb.
+      if (args._[1] === "serve-belt") return serveBeltBridge();
       return printUsageError(json, "usage: claudexor mcp serve");
     }
 

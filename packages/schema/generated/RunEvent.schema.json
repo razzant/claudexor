@@ -76,9 +76,6 @@
             "arbitration.completed",
             "work_product.emitted",
             "work_product.adopted",
-            "orchestrate.subrun.started",
-            "orchestrate.step.done",
-            "orchestrate.step.blocked",
             "control.requested",
             "control.applied",
             "control.rejected",
@@ -86,7 +83,7 @@
             "run.completed",
             "run.failed"
           ],
-          "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, orchestrate steps, and control verbs."
+          "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs."
         },
         "payload": {
           "type": "object",

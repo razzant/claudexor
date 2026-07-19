@@ -76,15 +76,11 @@ export function primaryOutput(
         ]
       : mode === "plan"
         ? [{ kind: "plan" as const, path: "final/plan.md" }]
-        : mode === "orchestrate"
-          ? // summary.md lost its primary-output authority (V8/PLAN addendum 2);
-            // it stays a diagnostic Evidence artifact only.
-            [{ kind: "report" as const, path: "final/orchestration.md" }]
-          : [
-              { kind: "structured_output" as const, path: "final/output.json" },
-              { kind: "answer" as const, path: "final/answer.md" },
-              { kind: "patch" as const, path: "final/patch.diff" },
-            ];
+        : [
+            { kind: "structured_output" as const, path: "final/output.json" },
+            { kind: "answer" as const, path: "final/answer.md" },
+            { kind: "patch" as const, path: "final/patch.diff" },
+          ];
   for (const candidate of candidates) {
     const output = preview(rec, candidate.path);
     if (output?.text.trim()) return ControlPrimaryOutput.parse({ ...candidate, ...output });

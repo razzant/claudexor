@@ -37,10 +37,9 @@
           "enum": [
             "ask",
             "plan",
-            "agent",
-            "orchestrate"
+            "agent"
           ],
-          "description": "Canonical run mode: ask and plan are read-only, agent writes; orchestrate is retained only until delegation replaces it. Engine strategies (race width, attempts, deep_scan, create) are flags on a mode, not modes.",
+          "description": "Canonical run mode: ask and plan are read-only, agent writes. Engine strategies (race width, attempts, deep_scan, create, delegate) are flags on a mode, not modes.",
           "default": "agent"
         },
         "harnesses": {
@@ -375,19 +374,9 @@
           ],
           "description": "Explicit per-run credential profile id; null FORCES the engine-default ladder past a thread-sticky profile; unknown/disabled ids refuse, never default."
         },
-        "autonomy": {
-          "type": "string",
-          "enum": [
-            "suggest",
-            "auto_safe",
-            "auto_full"
-          ],
-          "description": "Autonomy level for the orchestrate planner; only meaningful for mode=orchestrate."
-        },
-        "maxToolCalls": {
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "description": "Cap on orchestrate plan tool calls; only meaningful for mode=orchestrate."
+        "delegate": {
+          "type": "boolean",
+          "description": "Agent-only: inject the Claudexor delegation belt so the harness can spawn bounded isolated sub-runs; refused on non-agent modes or harnesses without mcp_injection."
         },
         "maxSeconds": {
           "type": "integer",

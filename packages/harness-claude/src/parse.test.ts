@@ -641,7 +641,7 @@ describe("structured output flag", () => {
     const { HarnessRunSpec } = await import("@claudexor/schema");
     const spec = HarnessRunSpec.parse({
       session_id: "s1",
-      intent: "orchestrate",
+      intent: "explain",
       prompt: "plan",
       cwd: "/tmp",
       access: "readonly",

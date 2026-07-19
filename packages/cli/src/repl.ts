@@ -33,8 +33,6 @@ function parseReplLine(line: string): ReplTurnSpec | ReplCommand | null {
       return { mode: "plan", prompt: arg };
     case "best-of":
       return { mode: "agent", prompt: arg, race: true };
-    case "orchestrate":
-      return { mode: "orchestrate", prompt: arg };
     case "thread":
       return { command: "thread" };
     case "new":

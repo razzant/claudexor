@@ -435,7 +435,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     required: ["prompt"],
   });
   // Behavior hints derive from the tool's MODE (data, not per-name hardcode):
-  // ask/plan and suggest-only orchestrate are read-only; agent tools mutate.
+  // ask/plan are read-only; agent tools mutate.
   const annotationsFor = (params: Record<string, unknown>): McpToolAnnotations =>
     params["mode"] === "agent"
       ? { readOnlyHint: false, destructiveHint: false }
@@ -520,9 +520,6 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     mk("claudexor_create", "One-shot create-from-scratch Claudexor run.", {
       mode: "agent",
       create: true,
-    }),
-    mk("claudexor_orchestrate", "One-shot typed Claudexor orchestration plan over the tool belt.", {
-      mode: "orchestrate",
     }),
     {
       name: "claudexor_status",
@@ -699,3 +696,5 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     ...journalRecoveryTools(runner, formatRunResult),
   ];
 }
+
+export * from "./delegation-belt.js";

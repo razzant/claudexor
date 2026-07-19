@@ -47,7 +47,7 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 18 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 17 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -84,7 +84,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(18);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(17);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
@@ -131,11 +131,11 @@ describe("Claudexor MCP server (SDK v2)", () => {
       generatedAt: new Date().toISOString(),
       harnesses: [],
       availableHarnesses: [],
-      modes: ["ask", "plan", "agent", "orchestrate"],
+      modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
       mutability: {
         readOnlyModes: ["ask", "plan"],
-        writeModes: ["agent", "orchestrate"],
+        writeModes: ["agent"],
         isolationKinds: ["envelope", "live"],
         workspaceModes: ["in_place", "isolated"],
         accessProfiles: [
@@ -337,7 +337,6 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const list = w2.responses.find((r) => r.id === 2)?.result?.tools as Array<Record<string, any>>;
     const byName = Object.fromEntries(list.map((t) => [t.name, t]));
     expect(byName["claudexor_ask"]?.annotations?.readOnlyHint).toBe(true);
-    expect(byName["claudexor_orchestrate"]?.annotations?.readOnlyHint).toBe(true); // MCP orchestrate is suggest-only
     expect(byName["claudexor_run"]?.annotations?.readOnlyHint).toBe(false);
     expect(byName["claudexor_apply_check"]?.annotations?.readOnlyHint).toBe(true);
     expect(byName["claudexor_run_status"]?.annotations?.readOnlyHint).toBe(true);

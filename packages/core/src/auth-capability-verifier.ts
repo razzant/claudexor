@@ -205,6 +205,7 @@ export class AuthCapabilityVerifier {
           env: {},
           attachments: [],
           browser: null,
+          extra_mcp_servers: [],
           stream_deltas: false,
           extra: request.abortSignal ? { abortSignal: request.abortSignal } : {},
         } satisfies HarnessRunSpec);

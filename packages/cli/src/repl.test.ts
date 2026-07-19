@@ -14,7 +14,6 @@ describe("parseReplLine", () => {
   it("maps read-only commands to their read-only modes", () => {
     expect(parseReplLine("/ask why")).toMatchObject({ mode: "ask" });
     expect(parseReplLine("/plan do x")).toMatchObject({ mode: "plan" });
-    expect(parseReplLine("/orchestrate ship it")).toMatchObject({ mode: "orchestrate" });
   });
 
   it("parses /harness and /profile sticky-preference commands with their id arg", () => {

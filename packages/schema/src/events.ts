@@ -92,14 +92,6 @@ export const RunEventType = z
     /** A race/agent winner's patch was auto-applied to the live in-place tree
      * (or the apply was attempted and failed). Payload: {applied, patch_sha256, detail}. */
     "work_product.adopted",
-    /** Orchestrate executor (auto_safe/auto_full): a SAFE plan step spawned an
-     * isolated envelope sub-run. Payload: {tool, mode, n}. */
-    "orchestrate.subrun.started",
-    /** Orchestrate executor: a plan step completed. Payload: {index, tool, status/ok, run_id}. */
-    "orchestrate.step.done",
-    /** Orchestrate executor: a RISKY plan step (apply) was blocked under auto_safe
-     * (not executed; awaiting a human decision). Payload: {index, tool, autonomy}. */
-    "orchestrate.step.blocked",
     "control.requested",
     "control.applied",
     "control.rejected",
@@ -108,7 +100,7 @@ export const RunEventType = z
     "run.failed",
   ])
   .describe(
-    "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, orchestrate steps, and control verbs.",
+    "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs.",
   );
 export type RunEventType = z.infer<typeof RunEventType>;
 

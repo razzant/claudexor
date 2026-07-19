@@ -31,8 +31,7 @@
             "verify",
             "synthesize",
             "explain",
-            "audit",
-            "orchestrate"
+            "audit"
           ],
           "description": "Canonical intent a harness can be assigned for a session (roles are intents, never fixed classes)."
         },

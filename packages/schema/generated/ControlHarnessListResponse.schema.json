@@ -250,11 +250,16 @@
                               "description": "Finite MIME, size, count and transport limits declared by one adapter."
                             },
                             "default": []
+                          },
+                          "mcp_injection": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "The adapter can inject engine-owned MCP servers into the harness sandbox (browser tool, delegation belt); false = extra_mcp_servers and the delegate toggle are refused."
                           }
                         },
                         "additionalProperties": false,
                         "default": {},
-                        "description": "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, and finite attachment inputs."
+                        "description": "Structured per-harness facts the engine consumes: auth routing, isolation containment, readonly mechanism, finite attachment inputs, and MCP injection."
                       },
                       "capabilities": {
                         "type": "object",
@@ -333,11 +338,6 @@
                             "type": "boolean",
                             "default": false,
                             "description": "The adapter can surface interactive user questions (interaction_requested events) and deliver typed answers back into the live session."
-                          },
-                          "orchestrate": {
-                            "type": "boolean",
-                            "default": false,
-                            "description": "The harness can play the autonomous orchestrate planner intent, planning multi-harness work over the typed tool belt; not a privileged role."
                           },
                           "json_schema_output": {
                             "type": "boolean",

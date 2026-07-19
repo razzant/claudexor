@@ -118,7 +118,6 @@ import {
   ControlTurnRunCard,
   DecisionRecord,
   ModeKind,
-  OrchestratePlanProgress,
   RoutingGoal,
   ReviewFinding,
   RunDeliveryState,
@@ -2095,13 +2094,6 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     mtime("final/explore.md"),
     mtime("final/report.md"),
     mtime("final/patch.diff"),
-    // Orchestrate output is the prose plan + the typed plan; a summary cached
-    // before they land (or after a revert re-stamps work_product) must invalidate.
-    mtime("final/orchestration.md"),
-    mtime("final/orchestration.yaml"),
-    // Executor progress (auto_safe/auto_full) lands after the plan; a detail
-    // cached before steps ran (or as they advance) must invalidate.
-    mtime("final/orchestration_progress.yaml"),
     // The honest outcome (result kind / diffstat / adopted / apply_state) is
     // projected from work_product.yaml; a summary cached before it landed (or
     // before a revert flipped apply_state) must invalidate.
@@ -2428,13 +2420,6 @@ function detailFor(
     applyEligibility: applyEligibilityFor(rec, operator),
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
-    // Typed executor progress for an orchestrate auto_safe/auto_full run; null
-    // for suggest / non-orchestrate runs. Thin projection of the engine artifact.
-    orchestrate: safeReadStructuredArtifact(
-      rec,
-      "final/orchestration_progress.yaml",
-      OrchestratePlanProgress,
-    ),
     // Per-candidate evidence cards: projected from the run's attempt/
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],

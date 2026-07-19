@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import {
   observeNativeSessionEvent,
   preflightCredentialProfile,
@@ -58,21 +58,14 @@ import { PlanQuestionsArtifact, derivePlanReadiness } from "@claudexor/schema";
 import { extractPlanQuestions } from "./planQuestions.js";
 import {
   HarnessRunSpec,
-  OrchestrateContract as OrchestrateContractSchema,
-  type OrchestrateContract as OrchestrateContractT,
-  type OrchestrateAutonomy,
-  type OrchestratePlan as OrchestratePlanT,
-  type OrchestratePlanCall as OrchestratePlanCallT,
-  DecisionRecord as DecisionRecordSchema,
+  type ExtraMcpServer,
   FinalVerifyRecord,
-  WorkProduct as WorkProductSchema,
   ModeKind as ModeKindSchema,
   SCHEMA_VERSION,
   TRUST_FULL_ACCESS_CODE,
   FrozenTaskContractArtifact as TaskContractSchema,
   isBlocking,
   makeOutcomeFacts,
-  orchestratePlanJsonSchema,
   normalizeUserOutputSchema,
   strictifyOutputSchema,
   estimateEffectiveAuthRoute,
@@ -103,12 +96,9 @@ import {
   harnessEventPayload,
   formatFindings,
   renderSummary,
-  readRunPatch,
   observeBudgetSignals,
   rotateOnStall,
   recordCleanAttemptMetrics,
-  buildEnvelopeSubInput,
-  deliverPlanAnswer,
   envInheritance,
   transientRetryPolicy,
   reviewerTimeoutMs,
@@ -123,13 +113,6 @@ import {
   type ResolvedRouteContext,
 } from "./routeContext.js";
 import { resolveAutoReviewerPanel, resolveExplicitReviewerPanel } from "./reviewerPanel.js";
-import { buildOrchestratePlannerPrompt, extractOrchestratePlan } from "./orchestratePlanner.js";
-import { orchestrateFailureFor, readRunStatus } from "./outcomeReducer.js";
-import {
-  executeOrchestratePlan,
-  type OrchestrateApplyStepResult,
-  type OrchestrateSafeStepResult,
-} from "./orchestrateExecutor.js";
 import {
   buildContinuation,
   type ContinuityDisclosureResult,
@@ -181,7 +164,6 @@ import {
   blockedDecisionOverride,
   finalVerifyBlocks,
   finalVerifyPatch,
-  validateApplyGate,
   verifyAndDeliver,
 } from "@claudexor/delivery";
 import { HarnessGateway } from "@claudexor/gateway";
@@ -303,15 +285,21 @@ export interface RunInput {
   planRef?: { runId: string; sha256: string; path: string };
   /** agent flag: create-from-scratch intent (the old `create` mode). */
   create?: boolean;
+  /** agent flag (D32): the harness may spawn bounded isolated sub-runs through
+   * the injected delegation belt. Requires a lane with
+   * `capability_profile.mcp_injection`; else a typed preflight refusal. */
+  delegate?: boolean;
+  /** The daemon-built delegation belt MCP server descriptor (carries the
+   * delegation env: parent run id, depth, sub-run cap, budget snapshot). Injected
+   * into agent lanes when `delegate` is on and the lane supports mcp_injection.
+   * Null when the embedder cannot build one (delegate then refuses). */
+  delegationBelt?: ExtraMcpServer | null;
   synthesis?: SynthesisMode;
   /** Explicit typed-argv deterministic gates from caller-provided run configuration. */
   tests?: TestCommandInvocation[];
   /** Typed per-run approval for changing auto-protected gate/test paths. */
   protectedPathApprovals?: ProtectedPathApproval[];
   paidBudget?: PaidBudget;
-  budgetLedger?: BudgetLedger;
-  /** Orchestrate executor: cap on plan tool calls. */
-  maxToolCalls?: number | null;
   /** Access profile; e.g. `full` for autonomous terminal tasks (agent and in-place convergence). */
   access?: AccessProfile;
   /** External/web context policy. Separate from shell/network sandboxing. */
@@ -412,33 +400,6 @@ export interface RunInput {
    * ignored knob instead of silently dropping it.
    */
   maxTurns?: number | null;
-  /**
-   * How much the orchestrate planner may act without confirmation
-   * (suggest/auto_safe/auto_full). Honored ONLY by mode=orchestrate; the
-   * executor over the typed plan classifies each tool_call via toolRisk and
-   * runs safe steps as isolated sub-runs / reads, blocking risky steps under
-   * auto_safe. Defaults to `suggest` (plan-only) when unset.
-   */
-  autonomy?: OrchestrateAutonomy;
-  /**
-   * Recursion-depth guard for orchestrate. The executor spawns sub-runs via
-   * `this.run`; a sub-run must NOT itself orchestrate (orchestrate-within-
-   * orchestrate throws). The top-level orchestrate run is depth 0; sub-runs it
-   * spawns inherit depth+1 and are forbidden from mode=orchestrate.
-   */
-  orchestrateDepth?: number;
-  /**
-   * Optional live answer-delivery service for the executor's `answer_question`
-   * step (the daemon owns the InteractionRegistry; the engine does not). When
-   * absent, an answer_question step is honestly SKIPPED (no live interaction
-   * surface in this context) rather than silently claimed done. Read-only
-   * w.r.t. the tree. Returns true when the answer was delivered.
-   */
-  answerInteraction?: (
-    runId: string,
-    interactionId: string,
-    answers: InteractionAnswerSet,
-  ) => Promise<boolean>;
 }
 
 /** Context handed to RunInput.onInteraction for one pending question. */
@@ -513,6 +474,10 @@ interface RoutedAdapter {
   /** Manifest `json_schema_output`: only such routes receive
    * HarnessRunSpec.output_schema (gate); others keep fenced-JSON parsing. */
   supportsJsonSchemaOutput: boolean;
+  /** Manifest `capability_profile.mcp_injection`: only such routes can receive
+   * engine-injected MCP servers (browser, delegation belt). Delegate on a lane
+   * without it is a typed preflight refusal. */
+  supportsMcpInjection: boolean;
   implementationTransport: ImplementationTransport;
   settings: HarnessRouteSettings | null;
 }
@@ -522,27 +487,6 @@ const NO_PROJECT_ROOT = noProjectRepoRoot();
 const MAX_PARALLEL_CANDIDATES = 4;
 /** Default wait for one interactive answer before a benign decline. */
 const DEFAULT_INTERACTION_TIMEOUT_MS = 900_000;
-
-/**
- * SAFETY INVARIANT 1 (asserted, not convention): a sub-run spawned by the
- * orchestrate executor for a SAFE step (start_run/race) MUST run as an isolated
- * ENVELOPE — never a live in-place turn on a thread. Throws loudly if a caller
- * ever constructs a safe sub-run that could mutate the live tree.
- */
-function assertEnvelopeSubRun(sub: RunInput): void {
-  if (sub.inPlace === true) {
-    throw new Error(
-      "orchestrate safe sub-run must be an isolated envelope (inPlace must be false), refusing live-tree mutation",
-    );
-  }
-  if (sub.threadId !== undefined || sub.executionRoot !== undefined) {
-    throw new Error(
-      "orchestrate safe sub-run must not bind a thread or in-place execution root (isolation envelope only)",
-    );
-  }
-}
-
-/** Changed paths and +/- line counts parsed from a unified git diff. */
 
 /** Run `work` over `items` with bounded concurrency, preserving item order via index. */
 async function runBounded<T>(
@@ -609,19 +553,6 @@ export class Orchestrator {
       throw new Error(`unknown mode: ${String(resolved.mode)}`);
     }
     const mode: ModeKind = parsedMode.data;
-    // INV-023 at the ENGINE boundary too: maxToolCalls caps the orchestrate
-    // executor's plan steps — on any other mode it would be a silent no-op
-    // knob. The CLI and control API validate this already; a direct embedder
-    // must get the same loud refusal, not quiet acceptance.
-    if (
-      resolved.maxToolCalls !== undefined &&
-      resolved.maxToolCalls !== null &&
-      mode !== "orchestrate"
-    ) {
-      throw new Error(
-        `maxToolCalls caps the orchestrate EXECUTOR's plan steps and only applies to mode=orchestrate (got mode=${mode}); drop the knob or switch modes`,
-      );
-    }
     // denyPaths is enforced by the post-diff policy gate BEFORE delivery, which
     // only exists on envelope/isolated runs — an in-place run mutates the live
     // tree directly, so the gate could not contain a violation. Refuse loudly
@@ -693,16 +624,6 @@ export class Orchestrator {
           return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announce);
         case "plan":
           return this.runPlan(resolved, announce);
-        case "orchestrate":
-          // Recursion guard: a sub-run spawned by the orchestrate executor carries
-          // orchestrateDepth>0 and must NOT itself orchestrate (no infinite planner
-          // recursion). Fail loudly rather than silently degrade.
-          if ((resolved.orchestrateDepth ?? 0) > 0) {
-            throw new Error(
-              "orchestrate-within-orchestrate is forbidden: a sub-run spawned by the orchestrate executor cannot itself orchestrate",
-            );
-          }
-          return this.runOrchestrate(resolved, announce);
       }
     });
   }
@@ -1182,11 +1103,7 @@ export class Orchestrator {
         continue;
       }
       const readOnlyIntent =
-        intent === "plan" ||
-        intent === "spec" ||
-        intent === "explain" ||
-        intent === "audit" ||
-        intent === "orchestrate";
+        intent === "plan" || intent === "spec" || intent === "explain" || intent === "audit";
       const requiredAccess = this.requestRequirements.adapterAccess(
         intent,
         manifest.capabilities.implementation_transport,
@@ -1259,6 +1176,7 @@ export class Orchestrator {
             ),
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
+          supportsMcpInjection: manifest.capability_profile.mcp_injection,
           implementationTransport: manifest.capabilities.implementation_transport,
           settings: cfgEntry
             ? {
@@ -1296,6 +1214,15 @@ export class Orchestrator {
       input.browser === true,
       out.map((lane) => lane.browserRequirement),
     );
+    // Delegation belt (D32): agent-only, and only on a lane whose adapter can
+    // inject MCP servers. A requested delegate with NO injecting lane is a typed
+    // preflight refusal naming the harness(es) — never a silently dropped belt.
+    if (input.delegate === true && !out.some((lane) => lane.supportsMcpInjection)) {
+      const names = [...new Set(out.map((lane) => lane.adapter.id))].join(", ");
+      throw new HarnessUnavailableError(
+        `--delegate requires a harness that can host the Claudexor delegation belt (capability_profile.mcp_injection); the routed harness(es) [${names}] cannot inject MCP servers — choose claude or codex, or drop --delegate`,
+      );
+    }
     // outputSchema is MANDATORY (Quiz-6a): a selected lane that cannot
     // natively constrain its final message would deliver best-effort text —
     // that is a typed preflight refusal, never silent degradation. The
@@ -1516,7 +1443,7 @@ export class Orchestrator {
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
     const cfg = resolvedCfg.project;
-    const readOnlyMode = mode === "ask" || mode === "plan" || mode === "orchestrate";
+    const readOnlyMode = mode === "ask" || mode === "plan";
     const requestedAccess =
       input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
     // Effective access is COMPUTED by the engine, never echoed from a client:
@@ -1633,6 +1560,21 @@ export class Orchestrator {
    * execution — owner Quiz-5a); reviewers and the auth smoke build their own
    * specs and never call this.
    */
+  /** The extra MCP servers injected into one agent lane's sandbox. Today only
+   * the delegation belt (D32): present when `--delegate` is on, the daemon built
+   * a belt descriptor, the lane's adapter can inject MCP servers, and the lane is
+   * a WRITING agent intent (the delegator integrates results in its workspace;
+   * read lanes and reviewers have nothing to delegate). */
+  private delegationBeltFor(
+    input: RunInput | undefined,
+    intent: Intent,
+    routed: RoutedAdapter,
+  ): ExtraMcpServer[] {
+    if (!input?.delegate || !input.delegationBelt || !routed.supportsMcpInjection) return [];
+    const writingIntents: Intent[] = ["implement", "create_from_scratch", "repair"];
+    return writingIntents.includes(intent) ? [input.delegationBelt] : [];
+  }
+
   private harnessSpecKnobs(
     contract: TaskContract,
     knobs: {
@@ -1666,11 +1608,10 @@ export class Orchestrator {
       max_turns: knobs.maxTurns,
       ...(intent === "synthesize" ? {} : { instructions: contract.instructions }),
       // The user's answer contract rides every answer-producing lane INCLUDING
-      // synthesis (its answer can become the final one); the orchestrate
-      // planner owns its own plan schema instead (set at its spec site). The
-      // adapter gets the vendor-STRICT transport form; the engine validator
-      // keeps the ORIGINAL contract as the conformance authority.
-      ...(intent !== "orchestrate" && contract.output_schema
+      // synthesis (its answer can become the final one). The adapter gets the
+      // vendor-STRICT transport form; the engine validator keeps the ORIGINAL
+      // contract as the conformance authority.
+      ...(contract.output_schema
         ? { output_schema: strictifyOutputSchema(contract.output_schema) }
         : {}),
     };
@@ -1902,6 +1843,7 @@ export class Orchestrator {
         routed.browserRequirement,
         join(paths.root, "browser"),
       ),
+      extra_mcp_servers: this.delegationBeltFor(runInput, intent, routed),
       cwd: envelope.worktree_path,
       access: routed.adapterAccess,
       ...this.harnessSpecKnobs(contract, knobs, intent),
@@ -5465,22 +5407,18 @@ export class Orchestrator {
     return inputBudget ?? this.deps.paidBudget ?? cfg.global.budget.paid_budget_per_run;
   }
 
-  private rootLedger(input: RunInput, contract: TaskContract, log: EventLog): BudgetLedger {
-    // A passed-in ledger (orchestrate sub-runs) keeps its OWNER's cash
-    // disclosure — the parent run owns the budget, so its event log gets the
-    // budget.cash events. A fresh root ledger discloses into THIS run's log:
-    // the ledger is the one owner of the cash fact (subscription-entitled
-    // work settles to 0 there), and the UI renders `budget.cash` verbatim —
-    // never inferring money from route labels (W4.3 sol #15).
-    const ledger =
-      input.budgetLedger ??
-      new BudgetLedger(contract.budget.paid_budget, undefined, {
-        onCashSettled: (cashSpendUsd, valuationUsd) =>
-          log.emit("budget.cash", {
-            cash_spend_usd: cashSpendUsd,
-            valuation_usd: valuationUsd,
-          }),
-      });
+  private rootLedger(_input: RunInput, contract: TaskContract, log: EventLog): BudgetLedger {
+    // The root ledger discloses into THIS run's log: the ledger is the one
+    // owner of the cash fact (subscription-entitled work settles to 0 there),
+    // and the UI renders `budget.cash` verbatim — never inferring money from
+    // route labels (W4.3 sol #15).
+    const ledger = new BudgetLedger(contract.budget.paid_budget, undefined, {
+      onCashSettled: (cashSpendUsd, valuationUsd) =>
+        log.emit("budget.cash", {
+          cash_spend_usd: cashSpendUsd,
+          valuation_usd: valuationUsd,
+        }),
+    });
     for (const snapshot of this.deps.quotaSnapshots?.() ?? []) {
       ledger.observeQuotaSnapshot(snapshot);
     }
@@ -5498,71 +5436,16 @@ export class Orchestrator {
       : "unknown";
   }
 
-  private async runOrchestrate(
-    input: RunInput,
-    announce?: (a: AnnouncedRunContext) => void,
-  ): Promise<OrchestratorResult> {
-    // "Doctor-verified" must mean status ok — degraded key-present routes are
-    // excluded from the pool the planner plans over (readiness honesty).
-    const pool = await this.gateway.doctorOkReal({ cwd: input.repoRoot }, "orchestrate");
-    const crossFamily = pool.length >= 2;
-    const goal = input.prompt || "Plan the next move for this repository.";
-    // The typed orchestration contract is a REAL persisted artifact (producer
-    // here, consumers: the planner prompt below + the plan validator).
-    // Autonomy is producer-supplied (control-api/CLI -> daemon -> RunInput);
-    // the executor below is its consumer. Default `suggest` (plan-only) preserves
-    // the read-only contract when no autonomy is requested.
-    const autonomy: OrchestrateAutonomy = input.autonomy ?? "suggest";
-    const paidBudget = this.resolvePaidBudget(input.paidBudget, this.config(input.repoRoot));
-    const orchestrateContract = OrchestrateContractSchema.parse({
-      thread_id: input.threadId ?? newId("th"),
-      goal,
-      budget: { paid_budget: paidBudget, max_tool_calls: input.maxToolCalls ?? null },
-      autonomy,
-    });
-    const plannerPrompt = buildOrchestratePlannerPrompt(
-      goal,
-      pool,
-      crossFamily,
-      orchestrateContract,
-    );
-    return this.runReadOnlyReport(
-      // The executed pool is pinned to the PLANNED pool (no double doctor
-      // resolution drift between the prompt's claims and the actual route).
-      // The planner must NOT resume or overwrite the thread's conversational
-      // session — it speaks its own tool-belt framing, not the user's chat.
-      {
-        ...input,
-        resumeSessions: undefined,
-        onSessionObserved: undefined,
-        harnesses: input.harnesses ?? (pool.length > 0 ? pool : undefined),
-        prompt: plannerPrompt,
-      },
-      {
-        mode: "orchestrate",
-        deepScan: false,
-        intent: "orchestrate",
-        title: "Orchestration plan",
-        artifactName: "orchestration.md",
-        defaultPrompt: plannerPrompt,
-        contractIntent: goal,
-        orchestrateContract,
-      },
-      announce,
-    );
-  }
-
   private async runReadOnlyReport(
     input: RunInput,
     opts: {
-      mode: "ask" | "orchestrate";
+      mode: "ask";
       deepScan: boolean;
-      intent: "explain" | "audit" | "orchestrate";
+      intent: "explain" | "audit";
       title: string;
       artifactName: string;
       defaultPrompt: string;
       contractIntent?: string;
-      orchestrateContract?: OrchestrateContractT;
     },
     announce?: (a: AnnouncedRunContext) => void,
   ): Promise<OrchestratorResult> {
@@ -5570,8 +5453,7 @@ export class Orchestrator {
     const runId = input.runId ?? newId("run");
     const prompt = input.prompt || opts.defaultPrompt;
     // Contract validation BEFORE the run is announced (see runRace). The
-    // recorded user intent is the CALLER's goal, not a synthesized wrapper
-    // prompt (orchestrate wraps the goal in a planner prompt).
+    // recorded user intent is the CALLER's goal.
     const contract = this.buildContract(
       { ...input, prompt: opts.contractIntent ?? prompt },
       taskId,
@@ -5596,60 +5478,10 @@ export class Orchestrator {
 
     store.writeYaml(join(paths.contextDir, "task.yaml"), contract);
     log.emit("task.contract.created", { task_contract_hash: hashJson(contract) });
-    if (opts.orchestrateContract) {
-      store.writeYaml(
-        join(paths.contextDir, "orchestrate_contract.yaml"),
-        opts.orchestrateContract,
-      );
-    }
 
-    // Lazy ContextPack: explore/audit attach the compact scope atlas; ask stays bare.
-    let contextSection = "";
-    if (opts.mode !== "ask") {
-      try {
-        contextSection = await this.lazyContextSection(input, contract, store, paths, log);
-      } catch (err) {
-        const message = safeErrorMessage(err);
-        store.writeText(
-          join(paths.contextDir, "context_error.md"),
-          `# Context Error\n\n${message}\n`,
-        );
-        writeFailure(store, paths, {
-          phase: "context",
-          category: "project",
-          safeMessage: message,
-          runDir: paths.root,
-        });
-        store.writeText(
-          join(paths.finalDir, "summary.md"),
-          `# Run ${runId} (${opts.mode})\n\n- Lifecycle: failed\n- Phase: context\n\n${message}\n`,
-        );
-        log.emit("output.ready", {
-          kind: "summary",
-          path: "final/summary.md",
-          state: "diagnostic",
-        });
-        log.emit("run.failed", {
-          lifecycle: "failed",
-          facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
-          reason: "harness_failed",
-          phase: "context",
-          error: message,
-          failure_ref: "final/failure.yaml",
-        });
-        return {
-          runId,
-          taskId,
-          mode: opts.mode,
-          lifecycle: "failed",
-          facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
-          winner: null,
-          runDir: paths.root,
-          summary: `context failed: ${message}`,
-          candidates: [],
-        };
-      }
-    }
+    // The ask/deep-scan report stays bare (its scouts read the tree themselves);
+    // no lazy ContextPack section is attached here.
+    const contextSection = "";
 
     const externalContextPolicy = contract.external_context.policy;
     const width = opts.deepScan
@@ -5825,18 +5657,6 @@ export class Orchestrator {
         // session it records is reachable for resume next turn; everything else
         // uses the disposable route-context home.
         env: (laneRun ? this.laneHomeEnvFor(input, adapter.id) : null) ?? roHome.env,
-        // Structured output: the orchestrate PLANNER's deliverable IS the
-        // typed plan — constrain schema-capable routes to it. Capability-gated:
-        // routes without json_schema_output keep fenced-JSON parsing. ALSO
-        // gated off when this spec will ride the INTERACTIVE stream-json
-        // transport (an interaction channel will be offered): --json-schema x
-        // interactive is an unverified vendor combination — fenced parsing
-        // carries those runs until it is live-verified.
-        ...(opts.intent === "orchestrate" &&
-        routed.supportsJsonSchemaOutput &&
-        !(Boolean(input.onInteraction) && routed.supportsInteractive)
-          ? { output_schema: orchestratePlanJsonSchema() }
-          : {}),
       });
       const reportAbort = new AbortController();
       spec.extra["abortSignal"] = input.signal
@@ -6426,32 +6246,6 @@ export class Orchestrator {
         answerText: succeeded[0]?.report ?? "",
       });
     }
-    // orchestrate: the planner's plan is a TYPED artifact, not just prose. Extract
-    // the required fenced JSON block, validate it against the tool belt, and
-    // persist final/orchestration.yaml; a missing/invalid block is disclosed in
-    // the summary and events (suggest autonomy: the plan is the work product).
-    let typedPlanNote = "";
-    let orchestratePlan: OrchestratePlanT | null = null;
-    if (opts.mode === "orchestrate") {
-      const extracted = extractOrchestratePlan(report);
-      if (extracted.plan) {
-        orchestratePlan = extracted.plan;
-        store.writeYaml(join(paths.finalDir, "orchestration.yaml"), extracted.plan);
-        log.emit("output.ready", { kind: "report", path: "final/orchestration.yaml" });
-        typedPlanNote = `\n- Typed plan: final/orchestration.yaml (${extracted.plan.tool_calls.length} tool call(s))`;
-      } else {
-        store.writeText(
-          join(paths.finalDir, "orchestration_parse_error.md"),
-          `# Typed plan missing\n\n${extracted.error}\n`,
-        );
-        log.emit("output.ready", {
-          kind: "report",
-          path: "final/orchestration_parse_error.md",
-          state: "diagnostic",
-        });
-        typedPlanNote = `\n- Typed plan: MISSING (${extracted.error}); the markdown plan above is the only artifact`;
-      }
-    }
     this.writeRunTelemetry(
       store,
       paths,
@@ -6491,114 +6285,47 @@ export class Orchestrator {
         `# Omissions\n\n${unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} (${a.status}): ${a.error}`).join("\n") || "- None recorded by the runner. Synthesis claims still require evidence checks."}\n`,
       );
     }
-    // orchestrate executor (auto_safe/auto_full): the plan is no longer just a
-    // suggestion — run its tool_calls in order, classifying each via toolRisk
-    // (fail-closed). SAFE steps run as isolated envelope sub-runs / pure reads;
-    // a RISKY step (apply) blocks under auto_safe (awaiting a human decision) and
-    // applies through the single existing gate under auto_full. The executor's
-    // terminal outcome (success / blocked / failed) becomes the run's terminal.
-    const autonomy: OrchestrateAutonomy =
-      opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
+    // A read-only report (ask / deep-scan) has no live-tree work; the only
+    // non-clean terminal is an aggregate paid-budget stop.
     let terminalFacts: RunOutcomeFacts = makeOutcomeFacts("succeeded");
-    let orchestrateReadOnly = true;
-    let orchestrateReceiptRefs: string[] = [];
-    const orchestrateBudgetTerminal = ledger.terminal();
-    if (orchestrateBudgetTerminal)
-      terminalFacts = makeOutcomeFacts("failed", { reason: orchestrateBudgetTerminal });
-    // orchestrate's contract output IS the typed plan. If the planner failed to
-    // produce a valid one, the run is NOT a clean success — disclose it honestly
-    // (the markdown plan stays as a diagnostic artifact) rather than reporting
-    // success alongside an orchestration_parse_error.md.
-    if (opts.mode === "orchestrate" && !orchestratePlan)
-      terminalFacts = makeOutcomeFacts("failed", { reason: "not_converged" });
-    if (opts.mode === "orchestrate" && autonomy !== "suggest" && orchestratePlan) {
-      // Thread the GENERATED runId onto input so the executor's answer_question
-      // step keys the interaction registry by this orchestrate run's id (callers
-      // often invoke run() without a preassigned runId).
-      const executionInput = { ...input, runId };
-      const exec = await executeOrchestratePlan({
-        plan: orchestratePlan,
-        autonomy,
-        maxToolCalls: opts.orchestrateContract?.budget.max_tool_calls ?? null,
-        signal: input.signal,
-        store,
-        paths,
-        log,
-        ledger,
-        executeSafeStep: (call) =>
-          this.executeSafeStep(executionInput, call, log, store, paths, ledger),
-        executeApplyStep: (call) => this.executeApplyStep(executionInput, call, log),
-      });
-      terminalFacts = exec.terminal;
-      orchestrateReadOnly = exec.readOnly;
-      orchestrateReceiptRefs = exec.receiptRefs;
-      typedPlanNote += `\n- Executor (${autonomy}): ${exec.note}`;
-    }
+    const reportBudgetTerminal = ledger.terminal();
+    if (reportBudgetTerminal)
+      terminalFacts = makeOutcomeFacts("failed", { reason: reportBudgetTerminal });
     const harnessLabel = attempts
       .map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`)
       .join(", ");
     store.writeText(
       join(paths.finalDir, "summary.md"),
-      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}${typedPlanNote}\n\n${report}\n`,
+      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${report}\n`,
     );
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
       kind: "report",
       source_task_id: taskId,
       producer_attempt_id: succeeded[0]?.attemptId ?? "a01",
-      files: Object.fromEntries([
-        [opts.artifactName, join(paths.finalDir, opts.artifactName)],
-        ...orchestrateReceiptRefs.map((ref, index) => [`delivery_receipt_${index + 1}`, ref]),
-      ]),
+      files: Object.fromEntries([[opts.artifactName, join(paths.finalDir, opts.artifactName)]]),
       meta: {
         harnesses: attempts.map((a) => a.harnessId),
         mode: opts.mode,
         intent: opts.intent,
-        read_only: orchestrateReadOnly,
+        read_only: true,
       },
     });
     log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
-    const orchestrateNeedsDecision =
-      terminalFacts.lifecycle === "succeeded" &&
-      (terminalFacts.review === "blocked" || terminalFacts.checks === "failed");
-    const orchestrateFailure = orchestrateFailureFor(terminalFacts);
-    if (orchestrateNeedsDecision) {
-      // A needs-decision terminal: a required step blocked awaiting a human
-      // (review blocked / checks failed). Fires run.blocked, not run.failed.
+    if (terminalFacts.lifecycle === "failed") {
       writeFailure(store, paths, {
         phase: "executor",
-        category: "policy",
-        safeMessage:
-          "orchestrate has required work that did not succeed (including skipped, not-verified, missing-review, or risky steps); inspect the typed progress record",
+        category: "budget",
+        safeMessage: `read-only report ended ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason.replaceAll("_", " ")})` : ""}`,
         runDir: paths.root,
-        nextActions: [
-          "Inspect final/orchestration_progress.yaml",
-          "Resolve or retry the blocked step",
-        ],
+        nextActions: ["Inspect the report artifacts", "Adjust the budget and retry"],
       });
-      log.emit("run.blocked", {
+      log.emit("run.failed", {
         lifecycle: terminalFacts.lifecycle,
         facts: terminalFacts,
+        reason: terminalFacts.reason,
         phase: "executor",
         failure_ref: "final/failure.yaml",
-      });
-    } else if (orchestrateFailure) {
-      writeFailure(store, paths, { ...orchestrateFailure, runDir: paths.root });
-      log.emit("run.failed", {
-        lifecycle: terminalFacts.lifecycle,
-        facts: terminalFacts,
-        reason: terminalFacts.reason,
-        phase: orchestrateFailure.phase,
-        failure_ref: "final/failure.yaml",
-      });
-    } else if (terminalFacts.lifecycle === "cancelled") {
-      // Cancel is failure-shaped (parity with every other mode's cancel
-      // terminal): tailers waiting for run.completed-as-success must not
-      // mistake an operator abort for a clean report.
-      log.emit("run.failed", {
-        lifecycle: terminalFacts.lifecycle,
-        facts: terminalFacts,
-        reason: terminalFacts.reason,
       });
     } else {
       log.emit("run.completed", {
@@ -6623,268 +6350,6 @@ export class Orchestrator {
         harnessId: a.harnessId,
         status: a.status,
       })),
-    };
-  }
-
-  /**
-   * Run one SAFE plan step. start_run/race spawn ISOLATED ENVELOPE sub-runs
-   * (inPlace=false, ASSERTED); review/status/answer_question are pure reads /
-   * answer delivery that never mutate the live tree.
-   */
-  private async executeSafeStep(
-    input: RunInput,
-    call: OrchestratePlanCallT,
-    log: EventLog,
-    store: ArtifactStore,
-    paths: ReturnType<ArtifactStore["runPaths"]>,
-    ledger: BudgetLedger,
-  ): Promise<OrchestrateSafeStepResult> {
-    switch (call.tool) {
-      case "start_run":
-      case "race": {
-        // Isolated envelope sub-run (construction owned by runSupport);
-        // recursion guard via orchestrateDepth+1, may NOT orchestrate.
-        const subInput: RunInput = {
-          ...buildEnvelopeSubInput(input, call, ledger),
-        } as RunInput;
-        // SAFETY INVARIANT 1 (asserted, not convention): a safe sub-run is an
-        // isolated envelope — never a live in-place turn.
-        assertEnvelopeSubRun(subInput);
-        log.emit("orchestrate.subrun.started", {
-          tool: call.tool,
-          mode: subInput.mode,
-          n: subInput.n ?? null,
-        });
-        const res = await this.run(subInput);
-        return {
-          status: res.lifecycle === "failed" || res.lifecycle === "cancelled" ? "failed" : "done",
-          terminalFacts: res.facts,
-          terminalSource: "subrun",
-          evidenceRefs: [`run:${res.runId}`],
-          runId: res.runId,
-          spendUsd: res.spendUsd ?? null,
-          detail: `${call.tool} sub-run ${res.runId} -> ${res.lifecycle}`,
-        };
-      }
-      case "status": {
-        // Pure read of the referenced run's decision/work_product artifacts.
-        const read = readRunStatus(input.repoRoot, call.run_id);
-        return {
-          status: read ? "done" : "skipped",
-          terminalFacts: read?.facts ?? null,
-          terminalSource: "subrun",
-          evidenceRefs: read?.evidenceRefs ?? [],
-          runId: call.run_id,
-          detail: read?.detail ?? `run ${call.run_id} has no readable status artifacts`,
-        };
-      }
-      case "review": {
-        // Read-only review over the referenced run's recorded patch diff. The
-        // step ACTUALLY runs the reviewer panel (evidence beats summaries — a
-        // "done" review must mean a review happened), persists its artifacts, and
-        // reports the real outcome; eligibility alone is never reported as done.
-        const diff = readRunPatch(input.repoRoot, call.run_id);
-        if (diff === null)
-          return {
-            status: "skipped",
-            terminalFacts: null,
-            terminalSource: "review",
-            evidenceRefs: [],
-            runId: call.run_id,
-            detail: `run ${call.run_id} has no patch.diff to review`,
-          };
-        // Aggregate honesty: reviewer panels spend real money on
-        // API-keyed routes and the spend is charged AFTER the fact — with no
-        // remaining headroom the review must not start at all.
-        if (ledger.terminal() !== null) {
-          return {
-            status: "skipped",
-            terminalFacts: null,
-            terminalSource: "review",
-            evidenceRefs: [],
-            runId: call.run_id,
-            detail: "aggregate budget exhausted before the review step",
-          };
-        }
-        const reviewers = await this.resolveReviewers(input.repoRoot, input.authPreference);
-        if (reviewers.length === 0)
-          return {
-            status: "skipped",
-            terminalFacts: null,
-            terminalSource: "review",
-            evidenceRefs: [],
-            runId: call.run_id,
-            detail: "no doctor-OK reviewers available",
-          };
-        const reviewLease = ledger.reserve({
-          taskId: input.taskId ?? "orchestrate",
-          attemptId: `review-${call.run_id}`,
-          intent: "review",
-          harnessId: "review-panel",
-          cost: attemptCostEvidence("review-panel", `review-${call.run_id}`),
-        });
-        if (!reviewLease.granted)
-          return {
-            status: "skipped",
-            terminalFacts: (() => {
-              const t = ledger.terminal();
-              return t ? makeOutcomeFacts("failed", { reason: t }) : null;
-            })(),
-            terminalSource: "review",
-            evidenceRefs: [],
-            runId: call.run_id,
-            detail: reviewLease.reason ?? "root paid budget refused the review step",
-          };
-        const evidenceDir = join(paths.reviewsDir, `orchestrate-${call.run_id}`, "evidence");
-        writeEvidencePacket(evidenceDir, {
-          userIntent: redactSecrets(input.prompt),
-          planAccepted: `orchestrate review tool requested a read-only review of run ${call.run_id}.`,
-          diff,
-          tests: input.tests?.join("\n") || "(no test commands configured)",
-          decidedTradeoffs:
-            "This review is scoped to the referenced run patch and must use typed reviewer artifacts, not summary-only evidence.",
-        });
-        const result = await this.reviewScoped({
-          candidateLabel: `Run ${call.run_id}`,
-          diff,
-          evidenceDir,
-          artifactsDir: join(paths.reviewsDir, `orchestrate-${call.run_id}`),
-          cwd: input.repoRoot,
-          reviewers,
-          envInheritance: envInheritance(this.config(input.repoRoot)),
-          signal: input.signal,
-          onReviewerEvent: (event) => log.emit(event.type, { ...event }),
-        }).catch((error: unknown) => {
-          ledger.settle(reviewLease.lease?.lease_id ?? "", unknownCostSettlement("review-error"));
-          throw error;
-        });
-        ledger.settle(
-          reviewLease.lease?.lease_id ?? "",
-          reviewUsageCostSettlement(
-            result.reviewCashUsd,
-            result.reviewValuationUsd,
-            result.reviewSpendEstimated,
-            [`orchestrate:review:${call.run_id}`],
-            result.reviewUnknownUsd,
-          ),
-        );
-        const revalidated = await revalidateFindings(result.findings, {
-          candidateRoot: input.repoRoot,
-          evidenceDir,
-        });
-        store.writeYaml(join(paths.reviewsDir, `orchestrate-${call.run_id}.yaml`), {
-          target_run_id: call.run_id,
-          cross_family_healthy: result.crossFamilyHealthy,
-          cross_family_verified: result.crossFamilyVerified,
-          findings: revalidated,
-          route_proofs: result.routeProofs,
-        });
-        const blockers = revalidated.filter((f) => isBlocking(f)).length;
-        return {
-          status: "done",
-          terminalFacts:
-            result.crossFamilyVerified && blockers === 0
-              ? makeOutcomeFacts("succeeded", { review: "approved" })
-              : makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" }),
-          terminalSource: "review",
-          evidenceRefs: [`reviews/orchestrate-${call.run_id}.yaml`],
-          runId: call.run_id,
-          detail: `reviewed ${call.run_id}: ${result.distinctProviders.length} family(ies), ${revalidated.length} finding(s), ${blockers} blocker(s)`,
-          // Reviewer panels can spend real money on API-keyed routes; the
-          // aggregate cap must charge it like any other step.
-          spendUsd: result.reviewCashUsd,
-        };
-      }
-      case "answer_question": {
-        // Delivery + registry-keying rationale owned by runSupport.
-        const answer = await deliverPlanAnswer(input, call);
-        return {
-          ...answer,
-          terminalFacts: answer.status === "done" ? makeOutcomeFacts("succeeded") : null,
-          terminalSource: "executor",
-          evidenceRefs: [],
-        };
-      }
-      default: {
-        // FAIL-CLOSED: a risky tool (apply) must never reach the safe executor;
-        // the caller routes risky steps to executeApplyStep / the auto_safe block.
-        throw new Error(
-          `executeSafeStep refused a non-safe tool '${(call as { tool: string }).tool}' (risky tools must not run as safe steps)`,
-        );
-      }
-    }
-  }
-
-  /** Execute an auto_full apply through the shared fresh-verification gate. */
-  private async executeApplyStep(
-    input: RunInput,
-    call: Extract<OrchestratePlanCallT, { tool: "apply" }>,
-    log: EventLog,
-  ): Promise<OrchestrateApplyStepResult> {
-    const store = new ArtifactStore(input.repoRoot);
-    const sub = store.runPaths(call.run_id);
-    const patchPath = join(sub.finalDir, "patch.diff");
-    const patchText = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : null;
-    if (patchText === null)
-      return {
-        ok: false,
-        runId: call.run_id,
-        detail: `run ${call.run_id} has no patch.diff`,
-        receipt: null,
-      };
-    if (containsSecretLikeToken(patchText))
-      return {
-        ok: false,
-        runId: call.run_id,
-        detail: "patch contains a secret-like token; refusing apply",
-        receipt: null,
-      };
-    const decision = store.readYaml(join(sub.arbitrationDir, "decision.yaml"));
-    const workProduct = store.readYaml(join(sub.finalDir, "work_product.yaml"));
-    const taskContract = TaskContractSchema.safeParse(
-      store.readYaml(join(sub.contextDir, "task.yaml")),
-    );
-    const parsedDecision = decision ? DecisionRecordSchema.safeParse(decision) : null;
-    const parsedWp = workProduct ? WorkProductSchema.safeParse(workProduct) : null;
-    if (!taskContract.success)
-      return {
-        ok: false,
-        runId: call.run_id,
-        detail: "fresh verification contract is missing",
-        receipt: null,
-      };
-    const applyGateInput = {
-      state: null,
-      decision: parsedDecision?.success ? parsedDecision.data : null,
-      workProduct: parsedWp?.success ? parsedWp.data : null,
-      patch: patchText,
-      originalRepoRoot: input.repoRoot,
-      targetRepoRoot: input.repoRoot,
-      operatorDecision: null,
-    };
-    const gateError = validateApplyGate(applyGateInput);
-    if (gateError)
-      return {
-        ok: false,
-        runId: call.run_id,
-        detail: `apply gate refused: ${gateError}`,
-        receipt: null,
-      };
-    const delivered = await verifyAndDeliver(
-      input.repoRoot,
-      patchText,
-      { mode: call.mode },
-      gateSpecsFromContract(taskContract.data),
-      (finalVerify) => validateApplyGate({ ...applyGateInput, finalVerify }),
-      log,
-    );
-    return {
-      ok: delivered.applied,
-      runId: call.run_id,
-      detail: delivered.applied
-        ? `applied (${call.mode})`
-        : `deliver failed: ${delivered.detail ?? "unknown"}`,
-      receipt: delivered,
     };
   }
 }

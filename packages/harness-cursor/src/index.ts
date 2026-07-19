@@ -562,7 +562,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
         "explain",
         "audit",
       ];
-      const allIntents = [...routeableIntents, "orchestrate"];
+      const allIntents = [...routeableIntents];
       const route = selectCursorAuthRoute({
         authPreference,
         hasKey: apiKey,

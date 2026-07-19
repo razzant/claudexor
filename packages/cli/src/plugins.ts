@@ -208,7 +208,6 @@ function skillText(host: PluginHost): string {
     "- MCP tool `claudexor_run` for a single agent run.",
     "- MCP tool `claudexor_best_of` for best-of-N attempts.",
     "- MCP tool `claudexor_create` for create-from-scratch runs.",
-    "- MCP tool `claudexor_orchestrate` for a typed orchestration plan (SUGGEST autonomy over MCP: it plans, it does not execute).",
     "- MCP tools `claudexor_runs` / `claudexor_inspect` / `claudexor_apply_check` to recover a lost run handle (read-only).",
     "",
     "When the host cannot call MCP tools, ask the user to run the local CLI explicitly:",

@@ -93,7 +93,7 @@ invariant or owner decision before proceeding.
 - **INV-010** Codex, Claude Code, Cursor, OpenCode, raw APIs, and future
   adapters are harnesses. Roles are intents (`explain`, `plan`, `spec`,
   `implement`, `create_from_scratch`, `repair`, `review`, `verify`,
-  `synthesize`, `audit`, `orchestrate` — the canonical `Intent` enum in
+  `synthesize`, `audit` — the canonical `Intent` enum in
   `packages/schema`). No harness is privileged and no semantic role is
   hardcoded to a harness id. verify: grep for harness-id conditionals in
   orchestration logic; review question.
@@ -141,15 +141,25 @@ invariant or owner decision before proceeding.
 
 ## 4. Modes Are Canonical And Breaking
 
-- **INV-030** The canonical modes are exactly `ask`, `plan`, `agent` —
-  three conversation intents — plus `orchestrate` only until its delegation
-  replacement lands inside this same release (it is scheduled for deletion,
-  never a stable mode). verify: `ModeKind` in schema; docs-truth mode-id
-  check.
+- **INV-030** The canonical modes are exactly `ask`, `plan`, `agent` — three
+  conversation intents. There is NO `orchestrate` mode: it was deleted once its
+  delegation replacement landed (`agent --delegate`, D32) and the retired verb
+  hard-errors naming the replacement. Delegation is a STRATEGY FLAG (see
+  INV-031), not a mode: `--delegate` injects a scoped Claudexor MCP belt (the
+  generalized `HarnessRunSpec.extra_mcp_servers` seam, adapter-translated) into
+  the harness sandbox so the harness spawns bounded, isolated sub-runs
+  (ask/plan/run/best-of + status/result — NO apply/decision/thread/settings);
+  server-side policy at the tool boundary caps nesting depth at 1, sub-run count
+  per parent (default 8), and the paid-budget draw from the parent ledger
+  headroom. Only adapters declaring `capability_profile.mcp_injection` (claude,
+  codex) can host the belt; `--delegate` elsewhere is a typed preflight refusal.
+  verify: `ModeKind` in schema; docs-truth mode-id check; canary
+  `[INV-030:orchestrate-retired]`.
 - **INV-031** Engine strategies are FLAGS on a mode, never modes of their
   own: best-of-N (`--n`), capped repair (`--attempts`), repair-to-clean
   (`--until-clean`), research sweep (`ask --deep-scan`), create-from-scratch
-  (`agent --create`). verify: CLI help + docs-truth flag check.
+  (`agent --create`), delegation belt (`agent --delegate`). verify: CLI help +
+  docs-truth flag check.
 - **INV-032** Old mode ids are not compatibility aliases; they hard-error at
   every wire boundary unless explicitly reintroduced in schema and docs.
   verify: canary `[INV-032:modes-canonical]`; CLI mode validation tests.

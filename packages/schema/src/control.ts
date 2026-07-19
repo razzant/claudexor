@@ -15,7 +15,6 @@ import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RunOutcomeFacts } from "./decision.js";
 import { EffortHint, HarnessModel, InteractionQuestion } from "./harness.js";
 import { ContinuityKind, ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
-import { OrchestrateAutonomy } from "./orchestrate.js";
 import { ResourceAttachmentRef } from "./attachment.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
 import { ProtectedPathApproval, TestCommandInvocation } from "./task.js";
@@ -60,8 +59,8 @@ export const ControlRunStartRequest = z
   .object({
     prompt: z.string().default("").describe("The user's prompt for the run."),
     /** Caller-supplied system-level instructions layered onto every
-     * task-producing lane (primary, candidate, planner, explorer,
-     * orchestrate-planner) — never reviewers, synthesis, or the auth smoke.
+     * task-producing lane (primary, candidate, planner, explorer) — never
+     * reviewers, synthesis, or the auth smoke.
      * Scanned by the inline-secret fence like the prompt (INV-062). */
     instructions: z
       .string()
@@ -237,20 +236,18 @@ export const ControlRunStartRequest = z
       .describe(
         "Explicit per-run credential profile id; null FORCES the engine-default ladder past a thread-sticky profile; unknown/disabled ids refuse, never default.",
       ),
-    /** How much the orchestrate planner may act without confirmation
-     * (suggest/auto_safe/auto_full). Only meaningful for mode=orchestrate;
-     * consumed by the executor in runOrchestrate. */
-    autonomy: OrchestrateAutonomy.optional().describe(
-      "Autonomy level for the orchestrate planner; only meaningful for mode=orchestrate.",
-    ),
-    /** Orchestrate executor: cap on plan tool calls. Only meaningful for
-     * mode=orchestrate; consumed by executeOrchestratePlan. */
-    maxToolCalls: z
-      .number()
-      .int()
-      .positive()
+    /** Agent delegation belt toggle (D32). Agent-only: when true and the
+     * routed harness declares `capability_profile.mcp_injection`, the engine
+     * injects the scoped Claudexor delegation belt (ask/plan/isolated sub-run/
+     * best-of/status/result) into the harness sandbox so the harness can spawn
+     * bounded isolated sub-runs. Refused (typed preflight) on a non-agent mode
+     * or a harness that cannot inject. Default off. */
+    delegate: z
+      .boolean()
       .optional()
-      .describe("Cap on orchestrate plan tool calls; only meaningful for mode=orchestrate."),
+      .describe(
+        "Agent-only: inject the Claudexor delegation belt so the harness can spawn bounded isolated sub-runs; refused on non-agent modes or harnesses without mcp_injection.",
+      ),
     /** Hard wall-clock deadline for the WHOLE run, measured from scheduler
      * start. On expiry the run is cooperatively cancelled (hard-kill fallback)
      * and ends `cancelled` with reason `wall_clock_exceeded`, preserving partial

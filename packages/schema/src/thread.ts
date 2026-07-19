@@ -127,7 +127,7 @@ export const Thread = z
       .describe(
         "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
       ),
-    /** Sticky orchestrate/primary harness for the thread (re-routable). A bias /
+    /** Sticky primary harness for the thread (re-routable). A bias /
      * ordering hint, NOT a privileged role — orderPool just pins it first. */
     primary_harness: z
       .string()

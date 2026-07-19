@@ -22,10 +22,8 @@ import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
 import { redactSecrets } from "@claudexor/util";
-import { observationsFromEvent, recordHarnessMetric, type BudgetLedger } from "@claudexor/budget";
-import type { BudgetObservation, InteractionAnswerSet } from "@claudexor/schema";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { observationsFromEvent, recordHarnessMetric } from "@claudexor/budget";
+import type { BudgetObservation } from "@claudexor/schema";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { blockedDecisionOverride } from "@claudexor/delivery";
 
@@ -277,14 +275,6 @@ export function renderSummary(
   );
 }
 
-/** Pure read: a referenced run's recorded patch diff, or null. */
-export function readRunPatch(repoRoot: string, runId: string): string | null {
-  const store = new ArtifactStore(repoRoot);
-  const sub = store.runPaths(runId);
-  const path = join(sub.finalDir, "patch.diff");
-  return existsSync(path) ? readFileSync(path, "utf8") : null;
-}
-
 /** Config-derived runtime knobs (pure projections of ResolvedConfig). */
 export interface ResolvedConfigLike {
   global: {
@@ -454,103 +444,4 @@ export function recordCleanAttemptMetrics(
     durationMs: sample.streamMs,
     authMode: sample.authMode ?? null,
   });
-}
-
-/** Build the ISOLATED-ENVELOPE sub-run input for an orchestrate SAFE step
- * (start_run/race): inPlace forced false, no thread binding, no nested
- * autonomy, recursion depth incremented. Pure construction; the caller
- * asserts the envelope invariant. */
-export function buildEnvelopeSubInput<
-  T extends {
-    repoRoot: string;
-    routingGoal?: unknown;
-    web?: unknown;
-    externalContextPolicy?: unknown;
-    signal?: AbortSignal;
-    orchestrateDepth?: number;
-  },
->(
-  input: T,
-  call: {
-    tool: "start_run" | "race";
-    prompt: string;
-    mode?: string;
-    n?: number;
-    harness?: string | null;
-  },
-  budgetLedger: BudgetLedger,
-) {
-  return {
-    repoRoot: input.repoRoot,
-    prompt: call.prompt,
-    mode: (call.tool === "start_run" ? (call.mode ?? "agent") : "agent") as
-      "agent" | "ask" | "plan" | "orchestrate",
-    n: call.tool === "race" ? call.n : undefined,
-    harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
-    routingGoal: input.routingGoal,
-    budgetLedger,
-    web: input.web,
-    externalContextPolicy: input.externalContextPolicy,
-    signal: input.signal,
-    // SAFETY: isolated envelope, never the live in-place thread tree.
-    inPlace: false,
-    threadId: undefined,
-    executionRoot: undefined,
-    autonomy: undefined,
-    resumeSessions: undefined,
-    onSessionObserved: undefined,
-    orchestrateDepth: (input.orchestrateDepth ?? 0) + 1,
-  };
-}
-
-/**
- * Deliver typed answers to a referenced pending interaction for the
- * orchestrate `answer_question` SAFE step (read-only w.r.t. the tree). The
- * daemon owns the live registry; without an injected service this context
- * cannot reach it, so SKIP honestly.
- *
- * INVARIANT: safe sub-runs are NON-interactive (their sub-input omits
- * onInteraction, so a start_run/race sub-run never raises an interaction and
- * nothing registers under its run id). The only pending interactions
- * therefore belong to the ORCHESTRATE run itself, so `input.runId` is the
- * correct registry key. If sub-runs are ever made interactive, the
- * answer_question plan call MUST carry the target sub-run id instead (the
- * registry is keyed by runId+interactionId).
- */
-export async function deliverPlanAnswer(
-  input: {
-    runId?: string;
-    answerInteraction?: (
-      runId: string,
-      interactionId: string,
-      answers: InteractionAnswerSet,
-    ) => Promise<boolean> | boolean;
-  },
-  call: {
-    interaction_id: string;
-    answers: Array<{ question_id: string; selected_labels: string[]; free_text: string | null }>;
-  },
-): Promise<{ status: "done" | "skipped"; runId: null; detail: string }> {
-  if (!input.answerInteraction) {
-    return {
-      status: "skipped",
-      runId: null,
-      detail: "no live interaction surface in this context",
-    };
-  }
-  const delivered = await input.answerInteraction(input.runId ?? "", call.interaction_id, {
-    interaction_id: call.interaction_id,
-    answers: call.answers.map((a) => ({
-      question_id: a.question_id,
-      selected_labels: a.selected_labels,
-      free_text: a.free_text,
-    })),
-  });
-  return {
-    status: delivered ? "done" : "skipped",
-    runId: null,
-    detail: delivered
-      ? `delivered answers to ${call.interaction_id}`
-      : `interaction ${call.interaction_id} not found / already resolved`,
-  };
 }

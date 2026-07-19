@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runDoctor } from "@claudexor/core";
-import { HarnessRunSpec, OrchestratePlan, type HarnessEvent } from "@claudexor/schema";
+import { HarnessRunSpec, type HarnessEvent } from "@claudexor/schema";
 import { createFakeHarness, FAKE_KINDS } from "./index.js";
 
 function registry() {
@@ -96,37 +96,10 @@ describe("fake harness adapters", () => {
     }
   });
 
-  it("fake-implement emits a fenced tool_calls plan (and writes nothing) for the orchestrate intent", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "fake-orch-"));
-    try {
-      const s = HarnessRunSpec.parse({
-        session_id: "ses-orch",
-        intent: "orchestrate",
-        prompt: "ship",
-        cwd: dir,
-      });
-      const events = await collect(createFakeHarness("fake-implement").run(s));
-      const text = events
-        .filter((e) => e.type === "message")
-        .map((e) => e.text ?? "")
-        .join("\n");
-      // The fenced JSON must be a SCHEMA-VALID OrchestratePlan (matches the doc claim),
-      // not just a string that happens to contain "tool_calls".
-      const m = /```json\s*\n([\s\S]*?)\n```/.exec(text);
-      expect(m).not.toBeNull();
-      const parsed = OrchestratePlan.safeParse(JSON.parse(m![1]!));
-      expect(parsed.success).toBe(true);
-      expect(existsSync(join(dir, "FAKE_CHANGE.txt"))).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("fake-implement doctor enables create_from_scratch and orchestrate", async () => {
+  it("fake-implement doctor enables create_from_scratch", async () => {
     const reports = await runDoctor(registry(), { cwd: "/tmp" });
     const impl = reports.find((r) => r.harness_id === "fake-implement");
     expect(impl?.status).toBe("ok");
     expect(impl?.enabled_intents).toContain("create_from_scratch");
-    expect(impl?.enabled_intents).toContain("orchestrate");
   });
 });

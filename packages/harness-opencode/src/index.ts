@@ -165,14 +165,7 @@ const OPENCODE_ENABLED_INTENTS = [
   "verify",
   "synthesize",
 ] as const;
-const OPENCODE_DISABLED_INTENTS = [
-  "explain",
-  "audit",
-  "plan",
-  "spec",
-  "review",
-  "orchestrate",
-] as const;
+const OPENCODE_DISABLED_INTENTS = ["explain", "audit", "plan", "spec", "review"] as const;
 const ALL_OPENCODE_INTENTS = [...OPENCODE_ENABLED_INTENTS, ...OPENCODE_DISABLED_INTENTS] as const;
 
 export function createOpenCodeAdapter(): HarnessAdapter {

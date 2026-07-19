@@ -41,7 +41,6 @@ const RAW_API_ENABLED_INTENTS = [
   "review",
   "synthesize",
   "explain",
-  "orchestrate",
 ] as const;
 const RAW_API_DISABLED_INTENTS = ["create_from_scratch", "repair", "verify", "audit"] as const;
 const ALL_RAW_API_INTENTS = [...RAW_API_ENABLED_INTENTS, ...RAW_API_DISABLED_INTENTS] as const;
@@ -181,7 +180,6 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           review: true,
           verify: false,
           synthesize: true,
-          orchestrate: true,
           read_files: false,
           browser_tool: false,
           web_policy: "none",

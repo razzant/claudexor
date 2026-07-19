@@ -388,7 +388,6 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
           max_turns: true,
           tool_lists: true,
           interactive: true,
-          orchestrate: true,
           // claude --effort accepts low|medium|high|xhigh|max (verified against
           // the installed CLI's --help). Single source for the run-time normalizer.
           effort_levels: [...CLAUDE_EFFORT_LEVELS],
@@ -521,7 +520,6 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
         "synthesize",
         "explain",
         "audit",
-        "orchestrate",
       ];
       const binPath = resolveHarnessBinary(BIN);
       const producedSources = claudeAuthSourceReadiness({
@@ -716,7 +714,7 @@ export function claudeArgsForSpec(
   }
   // Resume a native Claude session as a follow-up turn of the same conversation.
   if (spec.resume_session_id) args.push("--resume", spec.resume_session_id);
-  args.push(...claudeBrowserArgs(spec));
+  args.push(...claudeMcpArgs(spec));
   args.push(...toolPermissionArgs(spec));
   // `--bare` disables OAuth/keychain auth, so it is mutually exclusive with the
   // subscription (native session) route — suppress it there or the run 401s.
@@ -770,25 +768,42 @@ function toolPermissionSets(spec: HarnessRunSpec): { allow: Set<string>; deny: S
   }
   // A browser-tool run allows the injected MCP server's tools (claude names them
   // `mcp__browser__*`; the server prefix `mcp__browser` allows the whole set).
-  // Gated on policy: under `off` the MCP is never injected (claudeBrowserArgs is
-  // empty), so this allow has no tool to match anyway.
+  // Gated on policy: under `off` the MCP is never injected (claudeMcpArgs is
+  // empty for browser), so this allow has no tool to match anyway.
   if (spec.browser && policy !== "off") allow.add("mcp__browser");
+  // Every engine-injected extra MCP server (the delegation belt, etc.) gets its
+  // tool set allowed by server prefix. Extra servers are NOT web egress, so they
+  // are injected regardless of web policy (unlike the browser).
+  for (const server of spec.extra_mcp_servers ?? []) allow.add(`mcp__${server.name}`);
   return { allow, deny };
 }
 
 /**
- * Inject the Playwright browser MCP via `--mcp-config` inline JSON (no disk
- * write — fits the scoped HOME and works under `--bare`). Empty when no browser
- * this run OR when web policy is `off` (the browser is live egress and must ride
- * `external_context_policy`, mirroring web-tool gating).
+ * Inject engine-owned MCP servers via `--mcp-config` inline JSON (no disk
+ * write — fits the scoped HOME and works under `--bare`): the Playwright
+ * browser MCP and every `extra_mcp_servers` entry (the delegation belt, etc.)
+ * merged into one `mcpServers` map. The browser rides `external_context_policy`
+ * (live egress, dropped under `off`); extra servers are engine-owned local
+ * processes, not web egress, so they inject regardless of web policy. Empty
+ * when nothing is to be injected.
  */
-function claudeBrowserArgs(spec: HarnessRunSpec): string[] {
-  if (!spec.browser || spec.external_context_policy === "off") return [];
-  const mcp = browserMcpCommand(spec.browser);
-  const cfg = JSON.stringify({
-    mcpServers: { browser: mcp },
-  });
-  return ["--mcp-config", cfg];
+function claudeMcpArgs(spec: HarnessRunSpec): string[] {
+  const mcpServers: Record<
+    string,
+    { command: string; args: string[]; env?: Record<string, string> }
+  > = {};
+  if (spec.browser && spec.external_context_policy !== "off") {
+    mcpServers["browser"] = browserMcpCommand(spec.browser);
+  }
+  for (const server of spec.extra_mcp_servers ?? []) {
+    mcpServers[server.name] = {
+      command: server.command,
+      args: server.args,
+      ...(Object.keys(server.env).length > 0 ? { env: server.env } : {}),
+    };
+  }
+  if (Object.keys(mcpServers).length === 0) return [];
+  return ["--mcp-config", JSON.stringify({ mcpServers })];
 }
 
 async function* runClaude(

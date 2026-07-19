@@ -6,6 +6,7 @@
  * (see scripts/gen-jsonschema.ts).
  */
 export * from "./primitives.js";
+export * from "./output-schema.js";
 export * from "./auth.js";
 export * from "./credential-profile.js";
 export * from "./tool-ref.js";
@@ -35,7 +36,6 @@ export * from "./config.js";
 export * from "./workspace.js";
 export * from "./thread.js";
 export * from "./project.js";
-export * from "./orchestrate.js";
 export * from "./control.js";
 export * from "./run-strategy.js";
 export * from "./plan.js";

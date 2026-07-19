@@ -732,8 +732,6 @@ describe("cursor adapter auth route wiring", () => {
 
       expect(report.status).toBe("ok");
       expect(report.enabled_intents).toContain("implement");
-      expect(report.enabled_intents).not.toContain("orchestrate");
-      expect(report.disabled_intents).toContain("orchestrate");
       expect(smokedKeys).toEqual(["scoped-key"]);
       expect(probedEnvs[0]?.["HOME"]).toBe("/tmp/scoped-home");
       expect(probedEnvs[0]?.["CURSOR_API_KEY"]).toBeNull();
@@ -783,7 +781,6 @@ describe("cursor adapter auth route wiring", () => {
       "explain",
       "audit",
     ]);
-    expect(report.disabled_intents).toContain("orchestrate");
   });
 
   it.each([
