@@ -29,7 +29,7 @@ import {
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { armDaemonLifecycle, logLine, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { Orchestrator } from "@claudexor/orchestrator";
-import { DEFAULT_MAX_SUBRUNS, delegationEnv } from "@claudexor/mcp-server";
+import { buildDelegationBeltDescriptor } from "./delegation-belt-descriptor.js";
 import { loadConfig } from "@claudexor/config";
 import { ensureThreadWorktree } from "@claudexor/workspace";
 import { noProjectRepoRoot, redactSecrets } from "@claudexor/util";
@@ -46,31 +46,6 @@ import { refreshCodexQuota } from "./codex-quota-source.js";
 import { refreshClaudeStatuslineQuota } from "./claude-statusline.js";
 import { refreshClaudeOauthUsageQuota } from "./claude-oauth-usage.js";
 const NO_PROJECT_ROOT = noProjectRepoRoot();
-
-/**
- * Build the delegation belt MCP-server descriptor injected into a delegate
- * agent run's sandbox (D32). The child harness spawns `claudexor mcp serve-belt`
- * (which discovers this same daemon and starts bounded isolated sub-runs). The
- * belt process reads its policy from the injected env: depth 0 (top-level — the
- * sub-runs it starts carry no belt, so nesting cannot exceed 1), the sub-run
- * cap, and a snapshot of the parent's paid-budget headroom for the budget draw.
- */
-function buildDelegationBeltDescriptor(
-  paidBudget: import("@claudexor/schema").PaidBudget | undefined,
-) {
-  const cliEntry = process.argv[1] ?? "";
-  return {
-    name: "claudexor",
-    command: process.execPath,
-    args: [cliEntry, "mcp", "serve-belt"],
-    env: delegationEnv({
-      parentRunId: "",
-      depth: 0,
-      maxSubRuns: DEFAULT_MAX_SUBRUNS,
-      parentBudget: paidBudget ?? { kind: "unlimited" },
-    }),
-  };
-}
 
 /** The registered quota-subject UNIVERSE (release cut V11a): for each harness,
  * the engine-default credential (subject null) plus one subject per enabled

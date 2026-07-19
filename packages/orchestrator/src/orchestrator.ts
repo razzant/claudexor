@@ -457,6 +457,13 @@ interface HarnessRouteSettings {
 }
 
 /** A routed candidate adapter plus its manifest capabilities and user settings. */
+/** The two access profiles that map to codex `danger-full-access` / an
+ * unsandboxed lane — the only ones under which a full-access-requiring MCP
+ * injection (the belt on codex) can reach the daemon. */
+export function isFullAccess(access: AccessProfile): boolean {
+  return access === "full" || access === "external_sandbox_full";
+}
+
 export interface RoutedAdapter {
   adapter: HarnessAdapter;
   adapterAccess: AccessProfile;
@@ -486,6 +493,11 @@ export interface RoutedAdapter {
    * engine-injected MCP servers (browser, delegation belt). Delegate on a lane
    * without it is a typed preflight refusal. */
   supportsMcpInjection: boolean;
+  /** Manifest `capability_profile.mcp_injection_requires_full_access`: the
+   * injected belt can only reach the daemon at full access (codex's sandbox
+   * cancels it below full). A delegate lane below full access on such a harness
+   * is a typed preflight refusal, never a silently non-delegating belt. */
+  mcpInjectionRequiresFullAccess: boolean;
   implementationTransport: ImplementationTransport;
   settings: HarnessRouteSettings | null;
 }
@@ -1273,6 +1285,8 @@ export class Orchestrator {
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
           supportsMcpInjection: manifest.capability_profile.mcp_injection,
+          mcpInjectionRequiresFullAccess:
+            manifest.capability_profile.mcp_injection_requires_full_access,
           implementationTransport: manifest.capabilities.implementation_transport,
           settings: cfgEntry
             ? {
@@ -1318,6 +1332,24 @@ export class Orchestrator {
       throw new HarnessUnavailableError(
         `--delegate requires a harness that can host the Claudexor delegation belt (capability_profile.mcp_injection); the routed harness(es) [${names}] cannot inject MCP servers — choose claude or codex, or drop --delegate`,
       );
+    }
+    // A belt-injecting lane may still be UNABLE to reach the daemon at its
+    // access: codex's workspace-write seatbelt cancels the belt's daemon-crossing
+    // MCP call, so codex only hosts the belt at FULL access (same as its browser
+    // MCP). If EVERY injecting lane requires full access but runs below it, the
+    // belt would be injected only to be silently cancelled by the sandbox — the
+    // exact non-delegation this guard prevents. Refuse with the real remedy.
+    if (input.delegate === true) {
+      const injecting = out.filter((lane) => lane.supportsMcpInjection);
+      const canHostBelt = injecting.some(
+        (lane) => !lane.mcpInjectionRequiresFullAccess || isFullAccess(lane.adapterAccess),
+      );
+      if (!canHostBelt) {
+        const names = [...new Set(injecting.map((lane) => lane.adapter.id))].join(", ");
+        throw new HarnessUnavailableError(
+          `--delegate needs a belt-hosting lane at full access: [${names}] can inject MCP servers but sandbox-cancel the delegation belt below full access (capability_profile.mcp_injection_requires_full_access) — re-run with --access full, or route a lane (e.g. claude) that hosts the belt at workspace_write`,
+        );
+      }
     }
     // outputSchema is MANDATORY (Quiz-6a): a selected lane that cannot
     // natively constrain its final message would deliver best-effort text —
@@ -1667,6 +1699,12 @@ export class Orchestrator {
     routed: RoutedAdapter,
   ): ExtraMcpServer[] {
     if (!input?.delegate || !input.delegationBelt || !routed.supportsMcpInjection) return [];
+    // A lane that sandbox-cancels the belt below full access (codex) must NOT
+    // receive a belt it cannot use — that is the silent non-delegation. The
+    // preflight already refused a run whose ONLY injecting lanes are such lanes
+    // below full access; here we simply skip injecting into an individual lane
+    // that cannot host it, so a mixed pool keeps the belt on the lanes that can.
+    if (routed.mcpInjectionRequiresFullAccess && !isFullAccess(routed.adapterAccess)) return [];
     const writingIntents: Intent[] = ["implement", "create_from_scratch", "repair"];
     return writingIntents.includes(intent) ? [input.delegationBelt] : [];
   }

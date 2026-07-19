@@ -86,6 +86,41 @@ describe("codexBrowserArgs", () => {
     expect(args.join(" ")).toContain("mcp_servers.browser.args=");
   });
 
+  it("injects an env-bearing extra MCP server (the belt) with PER-KEY env overrides, never a single JSON-object env string", () => {
+    const args = codexBrowserArgs(null, "auto", [
+      {
+        name: "claudexor",
+        command: "/node",
+        args: ["/cli.js", "mcp", "serve-belt"],
+        env: {
+          CLAUDEXOR_DELEGATION_DEPTH: "0",
+          CLAUDEXOR_DELEGATION_MAX_SUBRUNS: "8",
+        },
+      },
+    ]);
+    const joined = args.join(" ");
+    // command + args of the belt still ride.
+    expect(joined).toContain("mcp_servers.claudexor.command=");
+    expect(joined).toContain("mcp_servers.claudexor.args=");
+    // Each env entry is its own dotted `-c` override with a TOML-quoted value.
+    expect(joined).toContain('mcp_servers.claudexor.env.CLAUDEXOR_DELEGATION_DEPTH="0"');
+    expect(joined).toContain('mcp_servers.claudexor.env.CLAUDEXOR_DELEGATION_MAX_SUBRUNS="8"');
+    // The crash form — a single `env=<JSON object string>` — must NEVER appear:
+    // codex's `-c` parser rejects a string where it expects a map and dies at startup.
+    expect(joined).not.toContain("mcp_servers.claudexor.env=");
+    expect(joined).not.toContain("env={");
+    // One `-c` flag per env key (no merged object), asserted structurally.
+    const envFlags = args.filter((a) => a.startsWith("mcp_servers.claudexor.env."));
+    expect(envFlags).toHaveLength(2);
+  });
+
+  it("omits env overrides entirely for an extra MCP server with no env", () => {
+    const args = codexBrowserArgs(null, "auto", [
+      { name: "browserless", command: "/node", args: ["/x.js"], env: {} },
+    ]);
+    expect(args.join(" ")).not.toContain(".env");
+  });
+
   it("codexExecArgs omits browser overrides when browser is null", () => {
     const args = codexExecArgs({
       access: "workspace_write",

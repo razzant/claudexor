@@ -18,6 +18,9 @@ export const CLAUDE_CAPABILITY_PROFILE: HarnessCapabilityProfile =
       supported_containment: ["scoped_home_keychain_bridge", "env_or_file_injection"],
     },
     mcp_injection: true,
+    // Claude does not sandbox its MCP servers, so the belt reaches the daemon at
+    // workspace_write — no full-access requirement (contrast codex).
+    mcp_injection_requires_full_access: false,
     attachment_inputs: [
       {
         kind: "image",

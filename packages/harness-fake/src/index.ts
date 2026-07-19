@@ -71,6 +71,9 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       // no subprocess, so it simply ignores the injected belt descriptor (as it
       // ignores the browser wiring), like it ignores every other transport knob.
       mcp_injection: true,
+      // The fake spawns no sandbox, so its belt is reachable at any access —
+      // keep delegate exercisable at the default write access deterministically.
+      mcp_injection_requires_full_access: false,
       attachment_inputs: [],
     },
     capabilities: {

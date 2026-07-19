@@ -338,6 +338,20 @@ export const HarnessCapabilityProfile = z
       .describe(
         "The adapter can inject engine-owned MCP servers into the harness sandbox (browser tool, delegation belt); false = extra_mcp_servers and the delegate toggle are refused.",
       ),
+    /**
+     * The injected belt can only reach the daemon (socket + control API, OUTSIDE
+     * the run sandbox) at FULL access. Codex's workspace-write seatbelt cancels
+     * that escalation-requiring MCP call in headless exec; only danger-full-access
+     * lets it through — the browser MCP already rides this. Claude does not
+     * sandbox its MCP servers (false). true => a --delegate lane below full
+     * access is a typed preflight refusal, never a silent non-delegation.
+     */
+    mcp_injection_requires_full_access: z
+      .boolean()
+      .default(false)
+      .describe(
+        "An injected MCP server can only reach the daemon (belt) at full access; below it the harness sandbox cancels the call. true => --delegate below full access is refused for this harness.",
+      ),
   })
   .default({})
   .describe(

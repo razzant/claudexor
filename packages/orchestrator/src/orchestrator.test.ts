@@ -7272,6 +7272,7 @@ describe("delegation belt injection (D32)", () => {
     id: string,
     mcpInjection: boolean,
     observe?: (spec: { extra_mcp_servers?: unknown }) => void,
+    requiresFullAccess = false,
   ): HarnessAdapter {
     return {
       id,
@@ -7282,7 +7283,10 @@ describe("delegation belt injection (D32)", () => {
           kind: "local_cli",
           provider_family: "anthropic",
           capabilities: { implement: true },
-          capability_profile: { mcp_injection: mcpInjection },
+          capability_profile: {
+            mcp_injection: mcpInjection,
+            mcp_injection_requires_full_access: requiresFullAccess,
+          },
           access_profiles_supported: ["workspace_write", "external_sandbox_full"],
         });
       },
@@ -7342,6 +7346,58 @@ describe("delegation belt injection (D32)", () => {
     });
     await orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["deleg"] });
     expect(injected).toEqual([]);
+  });
+
+  it("REFUSES --delegate below full access on a harness whose belt needs full access (codex sandbox), naming the remedy", async () => {
+    const repo = await initRepo();
+    let injected: unknown = "unset";
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "fullonly",
+          delegatingAdapter("fullonly", true, (s) => (injected = s.extra_mcp_servers), true),
+        ],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fullonly"],
+      delegate: true,
+      delegationBelt: belt,
+      // default write access (workspace_write) — below full
+    });
+    expect(res.lifecycle).toBe("failed");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toMatch(/full access|mcp_injection_requires_full_access|--access full/);
+    // The belt was never injected into a lane that would sandbox-cancel it.
+    expect(injected).toBe("unset");
+  });
+
+  it("injects the belt on a full-access-requiring harness WHEN the lane runs at full access", async () => {
+    const repo = await initRepo();
+    let injected: unknown;
+    const orch = new Orchestrator({
+      registry: new Map([
+        [
+          "fullonly",
+          delegatingAdapter("fullonly", true, (s) => (injected = s.extra_mcp_servers), true),
+        ],
+      ]),
+      reviewers: [],
+    });
+    await orch.run({
+      repoRoot: repo,
+      prompt: "do the thing",
+      mode: "agent",
+      harnesses: ["fullonly"],
+      access: "external_sandbox_full",
+      delegate: true,
+      delegationBelt: belt,
+    });
+    expect(injected).toEqual([belt]);
   });
 
   it("REFUSES --delegate (typed, naming the harness) on a lane that cannot inject MCP servers", async () => {

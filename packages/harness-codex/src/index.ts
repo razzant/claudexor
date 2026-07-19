@@ -209,7 +209,7 @@ export function codexBrowserArgs(
   }
   // Extra engine-owned MCP servers (the delegation belt, etc.) are local
   // processes, not web egress, so they inject regardless of web policy. Same
-  // stateless `-c` override transport as the browser; env rides as a JSON table.
+  // stateless `-c` override transport as the browser.
   for (const server of extraMcpServers) {
     args.push(
       "-c",
@@ -221,8 +221,15 @@ export function codexBrowserArgs(
       "-c",
       `mcp_servers.${server.name}.tool_timeout_sec=120`,
     );
-    if (Object.keys(server.env).length > 0) {
-      args.push("-c", `mcp_servers.${server.name}.env=${JSON.stringify(server.env)}`);
+    // Env rides as PER-KEY dotted `-c` overrides, one flag per entry. codex's
+    // `-c` parser wants a TOML value; a single `env=${JSON.stringify(map)}`
+    // hands it a whole JSON-object STRING, which it rejects ("invalid type:
+    // string ... expected a map in mcp_servers.<name>.env") and the codex
+    // process dies at startup. Per-key `env.<KEY>=<toml-string-value>` sets each
+    // entry into the map the parser expects. JSON.stringify on the value yields
+    // a double-quoted, TOML-valid string literal.
+    for (const [envKey, envValue] of Object.entries(server.env)) {
+      args.push("-c", `mcp_servers.${server.name}.env.${envKey}=${JSON.stringify(envValue)}`);
     }
   }
   return args;
@@ -454,6 +461,10 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           access_control: { readonly_mechanism: "fs_sandbox" },
           isolation: { supported_containment: ["host_user_context", "env_or_file_injection"] },
           mcp_injection: true,
+          // Codex's workspace-write seatbelt cancels the belt's daemon-crossing
+          // MCP call in headless exec; only danger-full-access (full) lets it
+          // through — same constraint the browser MCP already rides.
+          mcp_injection_requires_full_access: true,
           attachment_inputs: [
             {
               kind: "image",

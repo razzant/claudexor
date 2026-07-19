@@ -232,6 +232,11 @@
               "type": "boolean",
               "default": false,
               "description": "The adapter can inject engine-owned MCP servers into the harness sandbox (browser tool, delegation belt); false = extra_mcp_servers and the delegate toggle are refused."
+            },
+            "mcp_injection_requires_full_access": {
+              "type": "boolean",
+              "default": false,
+              "description": "An injected MCP server can only reach the daemon (belt) at full access; below it the harness sandbox cancels the call. true => --delegate below full access is refused for this harness."
             }
           },
           "additionalProperties": false,
