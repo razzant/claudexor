@@ -379,8 +379,9 @@ struct ThreadsScreen: View {
                 PrimaryHarnessChip(current: primaryFamily, pool: resolvedPoolFamilies) { picked in
                     Task { await model.setPrimaryHarness(picked?.rawValue) }
                 }
-                // W19: the per-turn write scope is a first-class chip
-                // (moved out of "⋯"); " · Browser" appends while armed.
+                // D26: the write scope is STICKY per thread — the chip reflects
+                // the thread's server-side `access` and a switch PATCHes it
+                // (persists across turns/reload). " · Browser" appends while armed.
                 AccessChip(access: $access, browserArmed: browser,
                            writeDisabled: composerMode.isReadOnly)
             }
@@ -413,12 +414,24 @@ struct ThreadsScreen: View {
         .onChange(of: model.selectedThreadId) {
             if !threadHasProject { composerMode = .ask }
             // Per-turn knobs are not sticky — don't carry one thread's budget
-            // cap / access / web / repair flags / model into the next thread.
-            capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
+            // cap / web / repair flags / model into the next thread. Access is
+            // the exception (D26): it's sticky per thread, so SEED it from the
+            // thread's server-side value (nil => the trust default = workspace).
+            capUsdText = ""; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
+            access = model.effectiveThreadAccess.flatMap(AccessProfile.init(wire:)) ?? .workspaceWrite
             maxAttempts = 3; showOptions = false; browser = false
             agentStrategy = .single; delegate = false; councilEnabled = false; councilMembers = 2
             reviewerPanelText = ""; protectedApprovalsText = ""
             composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)
+        }
+        // D26: a write-scope switch is STICKY — PATCH the thread (or the draft
+        // value) so it persists. Guarded so re-seeding on thread switch, and
+        // picking the value that already equals the trust default (nil sticky),
+        // never fire a redundant PATCH.
+        .onChange(of: access) { _, picked in
+            let stickyOrDefault = model.effectiveThreadAccess ?? AccessProfile.workspaceWrite.wire
+            guard picked.wire != stickyOrDefault else { return }
+            Task { await model.setThreadAccess(picked.wire) }
         }
         // The no-project gate also fires when the project changes under a draft
         // (clearing it from Settings, etc.) — fall back to read-only Ask.

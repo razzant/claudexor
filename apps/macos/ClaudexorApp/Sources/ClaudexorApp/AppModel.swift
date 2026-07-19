@@ -92,6 +92,10 @@ final class AppModel {
     /// Sticky credential profile selected from the ONE AccountsSurface before
     /// a draft materializes; real threads persist the same field server-side.
     var draftCredentialProfileId: String?
+    /// DRAFT-thread sticky write scope (D26): the wire `access` value the first
+    /// turn's thread inherits. nil => the repo trust default. Once a thread
+    /// exists this is sticky server-side (PATCHed via setThreadAccess).
+    var draftThreadAccess: String?
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// bottom-left accounts popover (list + guided add + per-account login).
     var credentialProfiles: [CredentialProfileEntry] = []
@@ -904,6 +908,28 @@ final class AppModel {
         } catch { threadStatus = userMessage(for: error) }
     }
 
+    /// The thread's sticky write scope (D26): the open thread's server-side
+    /// `access`, or the draft value before a thread exists. nil => the repo
+    /// trust default (the composer chip shows Workspace write as that default).
+    var effectiveThreadAccess: String? {
+        if selectedThreadId == nil { return draftThreadAccess }
+        return currentThread?.access
+    }
+
+    /// Switch the thread's sticky write scope (D26). On a real thread this
+    /// PATCHes `access` (persists, survives reload); on a draft it updates the
+    /// local draft value the first turn's thread will inherit. Passing nil
+    /// clears the scope back to the repo trust default. Mirrors
+    /// setPrimaryHarness — the engine still owns the trust gate at run time.
+    func setThreadAccess(_ access: String?) async {
+        guard let id = selectedThreadId else { draftThreadAccess = access; return }
+        guard let client else { threadStatus = "Engine offline — reconnect to change the write scope."; return }
+        do {
+            let updated = try await client.updateThread(id: id, body: UpdateThreadRequest(access: .some(access)))
+            applyThreadUpdate(updated)
+        } catch { threadStatus = userMessage(for: error) }
+    }
+
     // Credential-profile registry + auto-balance actions live in
     // AppModel+CredentialProfiles.swift (INV-135).
 
@@ -996,7 +1022,10 @@ final class AppModel {
                 eligibleHarnesses: draftEligiblePool.isEmpty ? nil : draftEligiblePool,
                 // Per-thread account pinning UI was removed (INV-135): runs use the
                 // default account unless engine auto-balance rotates at a quota limit.
-                credentialProfileId: draftCredentialProfileId
+                credentialProfileId: draftCredentialProfileId,
+                // D26: carry the draft's sticky write scope onto the thread from
+                // turn one (nil => the engine applies the repo trust default).
+                access: draftThreadAccess
             ))
             threads.insert(thread, at: 0)
             await openThread(thread.id)

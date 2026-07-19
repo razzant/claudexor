@@ -483,6 +483,37 @@ import Testing
         #expect(s.contains("\"workspace\":\"isolated\""))
     }
 
+    /// D26: the sticky write scope rides thread creation and PATCH. Create omits
+    /// `access` when nil (engine applies the trust default); PATCH distinguishes
+    /// .some(value) (set), .some(nil) (clear to trust default = explicit JSON
+    /// null), and .none (leave unchanged) — the same double-optional contract as
+    /// primaryHarness/credentialProfileId.
+    @Test func threadAccessStickyEncodesForCreateAndPatch() throws {
+        let create = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(CreateThreadRequest(scope: .project(root: "/p"), access: "full"))
+        ) as? [String: Any]
+        #expect(create?["access"] as? String == "full")
+        let createDefault = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(CreateThreadRequest(scope: .project(root: "/p")))
+        ) as? [String: Any]
+        #expect(createDefault?.keys.contains("access") == false)
+
+        let setObj = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(UpdateThreadRequest(access: .some("readonly")))
+        ) as? [String: Any]
+        #expect(setObj?["access"] as? String == "readonly")
+
+        let clearData = try JSONEncoder().encode(UpdateThreadRequest(access: .some(nil)))
+        let clearObj = try JSONSerialization.jsonObject(with: clearData) as? [String: Any]
+        #expect(clearObj?.keys.contains("access") == true)
+        #expect(clearObj?["access"] is NSNull)
+
+        let untouchedObj = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(UpdateThreadRequest(title: "x"))
+        ) as? [String: Any]
+        #expect(untouchedObj?.keys.contains("access") == false)
+    }
+
     @Test func projectRegistryDTOsMatchV2WireShape() throws {
         let json = #"{"projects":[{"schemaVersion":2,"id":"prj-1","root":"/p","createdAt":"t","updatedAt":"t"}]}"#
         let list = try JSONDecoder().decode(ProjectListResponse.self, from: Data(json.utf8))

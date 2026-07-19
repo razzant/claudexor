@@ -59,6 +59,21 @@ struct AppModelRefreshTests {
         #expect(model.appearance == preservedAppearance)
     }
 
+    /// D26: with no thread selected, the sticky write scope is a DRAFT value the
+    /// composer edits and `newThread` carries onto the created thread; clearing
+    /// it (nil) falls back to the repo trust default (composer shows Workspace).
+    @MainActor
+    @Test func draftThreadAccessPersistsAndClearsWithoutAThread() async {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        #expect(model.effectiveThreadAccess == nil)
+        await model.setThreadAccess("full")
+        #expect(model.draftThreadAccess == "full")
+        #expect(model.effectiveThreadAccess == "full")
+        await model.setThreadAccess(nil)
+        #expect(model.draftThreadAccess == nil)
+        #expect(model.effectiveThreadAccess == nil)
+    }
+
     @MainActor
     @Test func runlessGlobalQuotaEventRefreshesQuotaProjection() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }

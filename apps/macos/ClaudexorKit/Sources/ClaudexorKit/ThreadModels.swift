@@ -287,10 +287,14 @@ public struct CreateThreadRequest: Codable, Sendable {
     public var eligibleHarnesses: [String]?
     /// Sticky credential profile for the thread (INV-135); per-turn wins.
     public var credentialProfileId: String?
+    /// Sticky write scope for the new thread's write turns (D26); nil => the
+    /// repo trust default. Same five-value `access` enum as a run start.
+    public var access: String?
 
     public init(title: String? = nil, scope: RunScope = .none, mode: String? = nil,
                 workspace: String? = nil, authPreference: String? = nil, primaryHarness: String? = nil,
-                eligibleHarnesses: [String]? = nil, credentialProfileId: String? = nil) {
+                eligibleHarnesses: [String]? = nil, credentialProfileId: String? = nil,
+                access: String? = nil) {
         self.title = title
         self.scope = scope
         self.mode = mode
@@ -299,6 +303,7 @@ public struct CreateThreadRequest: Codable, Sendable {
         self.primaryHarness = primaryHarness
         self.eligibleHarnesses = eligibleHarnesses
         self.credentialProfileId = credentialProfileId
+        self.access = access
     }
 }
 
@@ -313,18 +318,25 @@ public struct UpdateThreadRequest: Encodable, Sendable {
     /// Double-optional (INV-135): .some(nil) clears the sticky profile back to
     /// engine-default credentials; .none leaves it unchanged.
     public var credentialProfileId: String??
+    /// Double-optional (D26): sticky write scope for the thread's write turns.
+    /// .some("full"|"workspace_write"|…) sets it; .some(nil) clears back to the
+    /// repo trust default; .none leaves it unchanged. The wire PATCH accepts the
+    /// same five-value `access` enum as a run start (verified in
+    /// packages/schema/generated/ControlThreadUpdateRequest.schema.json).
+    public var access: String??
     public init(title: String? = nil, state: String? = nil,
                 primaryHarness: String?? = nil, eligibleHarnesses: [String]? = nil,
-                credentialProfileId: String?? = nil) {
+                credentialProfileId: String?? = nil, access: String?? = nil) {
         self.title = title
         self.state = state
         self.primaryHarness = primaryHarness
         self.eligibleHarnesses = eligibleHarnesses
         self.credentialProfileId = credentialProfileId
+        self.access = access
     }
 
     enum CodingKeys: String, CodingKey {
-        case title, state, primaryHarness, eligibleHarnesses, credentialProfileId
+        case title, state, primaryHarness, eligibleHarnesses, credentialProfileId, access
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -335,6 +347,8 @@ public struct UpdateThreadRequest: Encodable, Sendable {
         if let primaryHarness { try c.encode(primaryHarness, forKey: .primaryHarness) }
         try c.encodeIfPresent(eligibleHarnesses, forKey: .eligibleHarnesses)
         if let credentialProfileId { try c.encode(credentialProfileId, forKey: .credentialProfileId) }
+        // .some(nil) encodes an explicit JSON null (= clear access to the trust default).
+        if let access { try c.encode(access, forKey: .access) }
     }
 }
 
