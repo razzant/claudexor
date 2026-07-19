@@ -46,6 +46,15 @@ export const ControlOperationDescriptor = z
     id: z.string().min(1),
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
     path: z.string().startsWith("/v2/"),
+    /** One-line human summary of the operation (code-first route descriptor
+     * field). Feeds the generated operation catalog + endpoints doc. */
+    summary: z.string().min(1).describe("One-line human summary of the operation."),
+    /** Auth boundary for the route. Every product route is loopback + bearer
+     * token; only the unversioned GET /healthz probe is loopback-only (and it
+     * is not in this catalog). */
+    auth: z
+      .enum(["loopback_bearer", "loopback_only"])
+      .describe("Auth boundary: loopback + bearer token, or loopback-only."),
     requestSchema: z.string().min(1).nullable(),
     responseSchema: z.string().min(1).nullable(),
     errorSchema: z.literal("ControlProblem"),

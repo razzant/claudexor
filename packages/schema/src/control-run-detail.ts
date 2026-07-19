@@ -103,6 +103,20 @@ export const ControlRunDetail = z
   .object({
     summary: ControlRunSummary,
     /**
+     * Server-owned outcome banner (D18): the ONE honest headline for this run,
+     * derived by the single projection owner (status-projection.outcomeBanner)
+     * from the terminal outcome facts + delivery state — e.g. "Candidate ready
+     * — NOT APPLIED", "Applied", "Needs review". Surfaces render this verbatim
+     * above any model prose; null while the run is not terminal.
+     */
+    outcomeBanner: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Server-owned outcome headline (status-projection.outcomeBanner); null while the run is not terminal.",
+      ),
+    /**
      * Highest event seq included in this snapshot. Clients subscribe to the
      * event stream from this cursor; events with seq <= lastSeq are already
      * reflected in the snapshot (snapshot-then-subscribe, no gaps, no dupes).

@@ -36,8 +36,9 @@ if (next !== text) {
   console.log("gen-endpoints-doc: inventory already current");
 }
 
-// The machine-readable endpoint map for external agents (schema refs included).
-const json = renderEndpointsJson(endpointDetails());
+// The machine-readable endpoint map for external agents (schema refs included),
+// derived from the code-first route descriptors in the built operation catalog.
+const json = renderEndpointsJson(await endpointDetails());
 let current = null;
 try {
   current = readFileSync(JSON_ARTIFACT, "utf8");

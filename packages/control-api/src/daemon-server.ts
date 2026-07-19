@@ -58,7 +58,11 @@ import { handleRecoveryRoute } from "./recovery-routes.js";
 import { handleJournalEventRoute } from "./journal-event-routes.js";
 import { handleMaintenanceRoute, type MaintenanceRouteServices } from "./maintenance-routes.js";
 import { handleResourceRoute, type ResourceRouteServices } from "./resource-routes.js";
-import { handleArtifactServeRoute, listArtifacts } from "./artifact-serve-routes.js";
+import {
+  handleArtifactServeRoute,
+  listArtifacts,
+  resolveProjectRoot,
+} from "./artifact-serve-routes.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
 import { controlProblemError } from "./problem-response.js";
@@ -132,6 +136,7 @@ import {
   type RunOutcomeFacts,
   isTerminalLifecycle,
   needsDecision,
+  outcomeBanner,
   outcomeFactsFromFailure,
   TestCommandInvocation,
   WorkProduct,
@@ -1013,6 +1018,7 @@ export class DaemonControlApiServer {
       await handleArtifactServeRoute(
         {
           findRun: (id) => this.findRun(id),
+          resolveProjectRoot: (id) => resolveProjectRoot(this.opts.services?.listProjects, id),
           json: (response, status, body) => this.json(response, status, body),
         },
         method,
@@ -2244,7 +2250,10 @@ function runOutcomeFacts(
   return outcomeFactsFromFailure(lifecycle, failure?.category);
 }
 
-function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
+function summarizeRun(
+  rec: DaemonRunRecord,
+  eventsSnapshot?: Record<string, unknown>[],
+): ControlRunSummary {
   const p = paramsRecord(rec);
   // safeParse everywhere: one malformed job record (e.g. an old/foreign mode id)
   // must degrade to an unknown field, never 500 the whole run list forever.
@@ -2266,7 +2275,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
   const externalContextPolicy = telemetry?.external_context_policy ?? task?.external_context.policy;
   const webEvidence = controlWebEvidence(telemetry, task);
   const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-  const budget = budgetSnapshot(rec, decision);
+  const budget = budgetSnapshot(rec, decision, eventsSnapshot);
   const parsedReviewerPanel = Array.isArray(p["reviewerPanel"])
     ? ControlReviewerPanelEntry.array().safeParse(p["reviewerPanel"])
     : null;
@@ -2403,14 +2412,28 @@ function detailFor(
   const operatorDecisionRaw = operator
     ? { action: operator.action, decidedAt: operator.decidedAt }
     : null;
-  const summary = summarizeRun(rec);
+  // RunDetail perf (D15): parse events.jsonl ONCE per detail request and thread
+  // the snapshot through every event-consuming projection (timeline, budget
+  // fallback, plan progress) — before this each field re-parsed the whole log.
+  const events = rec.runDir ? readRunEvents(rec) : [];
+  const summary = summarizeRun(rec, events);
+  // Non-null exactly when the run has an applyable patch — the authoritative
+  // "something to apply" banner signal (a convergence patch may carry kind:patch
+  // with no meta.result_kind, so result.kind alone would miss it).
+  const applyEligibility = applyEligibilityFor(rec, operator);
   return ControlRunDetail.parse({
     summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
+    // Server-owned outcome headline (D18), from the single projection owner —
+    // surfaces render it verbatim above model prose, never re-derive it.
+    outcomeBanner: outcomeBanner(summary.outcomeFacts ?? null, {
+      applyState: summary.result.applyState,
+      hasApplyableChange: applyEligibility !== null,
+    }),
     lastSeq,
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
     primaryOutput: primaryOutput(rec, summary.mode, failure),
-    timeline: timelineEvents(rec),
-    budget: budgetSnapshot(rec, decision),
+    timeline: timelineEvents(rec, events),
+    budget: budgetSnapshot(rec, decision, events),
     finalSummary: boundedArtifactText(rec, "final/summary.md"),
     decision,
     operatorDecision: operatorDecisionRaw,
@@ -2419,14 +2442,14 @@ function detailFor(
     // deriveApplyEligibility) — null when the run has no patch artifact.
     planReadiness: planReadinessFor(rec, summary.mode),
     council: councilFor(rec, summary.mode),
-    applyEligibility: applyEligibilityFor(rec, operator),
+    applyEligibility,
     reviewFindings: readReviewFindings(rec),
     pendingInteractions,
     // Per-candidate evidence cards: projected from the run's attempt/
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
     // Live plan checklist: the winner's (else last) plan.progress items.
-    planProgress: latestPlanProgress(rec, decision?.winner ?? null),
+    planProgress: latestPlanProgress(rec, decision?.winner ?? null, events),
     failure,
   });
 }
@@ -2455,6 +2478,7 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
 function budgetSnapshot(
   rec: DaemonRunRecord,
   decision: DecisionRecord | null,
+  eventsSnapshot?: Record<string, unknown>[],
 ): ControlBudgetSnapshot {
   const p = paramsRecord(rec);
   // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
@@ -2484,7 +2508,7 @@ function budgetSnapshot(
     let eventSpend = 0;
     let sawCost = false;
     let sawUsage = false;
-    for (const ev of readRunEvents(rec)) {
+    for (const ev of eventsSnapshot ?? readRunEvents(rec)) {
       const payload = eventPayload(ev);
       if (ev["type"] === "budget.cash") {
         const cash = payload["cash_spend_usd"];

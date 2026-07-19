@@ -1016,6 +1016,14 @@
           "additionalProperties": false,
           "description": "Run summary row served by GET /runs and embedded in run detail: state, routing, budget, policies, and honest outcome."
         },
+        "outcomeBanner": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Server-owned outcome headline (status-projection.outcomeBanner); null while the run is not terminal."
+        },
         "lastSeq": {
           "type": "integer",
           "minimum": 0,

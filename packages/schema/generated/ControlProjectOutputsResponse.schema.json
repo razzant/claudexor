@@ -1,0 +1,57 @@
+{
+  "$ref": "#/definitions/ControlProjectOutputsResponse",
+  "definitions": {
+    "ControlProjectOutputsResponse": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Non-empty identifier string."
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Artifact path relative to the run directory."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "file",
+                  "directory"
+                ],
+                "description": "Whether the artifact is a file or a directory."
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Size in bytes; absent for directories."
+              },
+              "mime": {
+                "type": "string",
+                "description": "MIME type derived from the extension; absent for directories."
+              }
+            },
+            "required": [
+              "path",
+              "kind"
+            ],
+            "additionalProperties": false,
+            "description": "One artifact in the run's artifact tree."
+          },
+          "default": []
+        }
+      },
+      "required": [
+        "projectId"
+      ],
+      "additionalProperties": false,
+      "description": "Project-keyed durable outputs listing (GET /projects/:id/outputs): the files under the project's artifacts/ directory, server-owned and path-traversal-safe."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

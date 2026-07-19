@@ -8,6 +8,8 @@ import {
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
 import { producedRepoRoot } from "./artifact-serve-routes.js";
+import { OPERATION_CATALOG } from "./operation-catalog.js";
+import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
 import {
   appendFileSync,
   mkdtempSync,
@@ -818,6 +820,114 @@ describe("DaemonControlApiServer", () => {
       });
       expect(esc.status).toBe(404);
     });
+  });
+
+  it("GET /projects/:id/outputs lists the project's durable outputs, serves files, and blocks traversal", async () => {
+    const { daemon } = fakeDaemon();
+    const projectRoot = mkdtempSync(join(tmpdir(), "claudexor-project-outputs-"));
+    mkdirSync(join(projectRoot, "artifacts", "reports"), { recursive: true });
+    writeFileSync(join(projectRoot, "artifacts", "reports", "summary.md"), "# durable output\n");
+    writeFileSync(
+      join(projectRoot, "artifacts", "logo.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+    // A secret the project root holds OUTSIDE artifacts/ — traversal must never reach it.
+    writeFileSync(join(projectRoot, "secret.txt"), "TOP SECRET\n");
+    const now = new Date().toISOString();
+    const services: DaemonControlApiOptions["services"] = {
+      listProjects: async () => ({
+        projects: [
+          { schema_version: 2, id: "prj-out", root: projectRoot, created_at: now, updated_at: now },
+        ],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const list = (await (
+          await apiFetch(`${base}/projects/prj-out/outputs`, {
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json()) as { projectId: string; artifacts: { path: string; mime?: string }[] };
+        expect(list.projectId).toBe("prj-out");
+        expect(list.artifacts.some((a) => a.path === "logo.png" && a.mime === "image/png")).toBe(
+          true,
+        );
+        expect(list.artifacts.some((a) => a.path === "reports/summary.md")).toBe(true);
+        // The secret above the artifacts/ dir must NOT be listed.
+        expect(list.artifacts.some((a) => a.path.includes("secret.txt"))).toBe(false);
+
+        const png = await apiFetch(`${base}/projects/prj-out/outputs/logo.png`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(png.status).toBe(200);
+        expect(png.headers.get("content-type")).toBe("image/png");
+
+        // Nested path fetch resolves inside artifacts/.
+        const md = await apiFetch(`${base}/projects/prj-out/outputs/reports/summary.md`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(md.status).toBe(200);
+        expect(await md.text()).toContain("durable output");
+
+        // Traversal out of <projectRoot>/artifacts is refused by safeArtifactPath.
+        for (const escape of [
+          "..%2f..%2fsecret.txt",
+          "..%2fsecret.txt",
+          "%2fetc%2fpasswd", // absolute
+        ]) {
+          const esc = await apiFetch(`${base}/projects/prj-out/outputs/${escape}`, {
+            headers: { authorization: `Bearer ${token}` },
+          });
+          expect(esc.status).toBe(404);
+        }
+
+        // An unknown project id is a clean 404, never a 500 or a home-dir leak.
+        const unknown = await apiFetch(`${base}/projects/nope/outputs`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(unknown.status).toBe(404);
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("GET /projects/:id/outputs blocks a symlink that escapes the artifacts dir", async () => {
+    const { daemon } = fakeDaemon();
+    const projectRoot = mkdtempSync(join(tmpdir(), "claudexor-project-symlink-"));
+    mkdirSync(join(projectRoot, "artifacts"), { recursive: true });
+    const secretDir = mkdtempSync(join(tmpdir(), "claudexor-project-secret-"));
+    writeFileSync(join(secretDir, "creds"), "SECRET\n");
+    // A symlink inside artifacts/ pointing OUT of the project must not be served.
+    symlinkSync(secretDir, join(projectRoot, "artifacts", "escape"));
+    const now = new Date().toISOString();
+    const services: DaemonControlApiOptions["services"] = {
+      listProjects: async () => ({
+        projects: [
+          { schema_version: 2, id: "prj-sym", root: projectRoot, created_at: now, updated_at: now },
+        ],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        // The symlink is skipped in the listing (listArtifacts drops symlinks).
+        const list = (await (
+          await apiFetch(`${base}/projects/prj-sym/outputs`, {
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json()) as { artifacts: { path: string }[] };
+        expect(list.artifacts.some((a) => a.path.startsWith("escape"))).toBe(false);
+        // Fetching through the symlink is refused.
+        const esc = await apiFetch(`${base}/projects/prj-sym/outputs/escape/creds`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(esc.status).toBe(404);
+      },
+      undefined,
+      services,
+    );
   });
 
   it("projects: registration requires idempotency, lists the durable handle, and relinks it", async () => {
@@ -4789,6 +4899,53 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("carries the server-owned outcome banner on the run detail (D18)", async () => {
+    // fakeDaemon builds a succeeded run with a clean decision (review approved,
+    // checks passed) + a patch work product that has NOT been applied.
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(200);
+      const body = (await detail.json()) as { outcomeBanner: string | null };
+      // Server-owned headline, derived by status-projection.outcomeBanner — the
+      // client renders THIS verbatim above any model prose, never re-derives it.
+      expect(body.outcomeBanner).toBe("Candidate ready — NOT APPLIED");
+    });
+  });
+
+  it("parses a large events.jsonl EXACTLY ONCE per detail request (D15 perf)", async () => {
+    const { daemon, record } = fakeDaemon();
+    // 10k synthetic events: before the single-snapshot fix, timeline + the
+    // budget fallback + plan progress each re-read and re-parsed the whole log.
+    const lines: string[] = [];
+    for (let i = 0; i < 10_000; i++) {
+      lines.push(
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          run_id: "run-d1",
+          task_id: "task-d1",
+          type: "harness.event",
+          payload: { harness_id: "codex", text: `event ${i}` },
+        }),
+      );
+    }
+    lines.push("");
+    appendFileSync(join(record.runDir as string, "events.jsonl"), lines.join("\n"));
+    await withDaemonServer(daemon, async (base) => {
+      resetEventsParseCountForTests();
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(detail.status).toBe(200);
+      // One detail GET, one full parse of events.jsonl — no matter how many
+      // fields consume events. lastSeqInFile does a cheap byte-tail read, not a
+      // full parse, so it never counts.
+      expect(eventsParseCountForTests()).toBe(1);
+    });
+  });
+
   it("keeps readiness-preferred auth disclosures informational in the timeline", async () => {
     const { daemon, record } = fakeDaemon();
     appendFileSync(
@@ -5810,5 +5967,28 @@ describe("DaemonControlApiServer", () => {
       await server.stop();
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+});
+
+describe("operation catalog route descriptors (V12)", () => {
+  it("every descriptor carries a summary + auth boundary (code-first, no gaps)", () => {
+    expect(OPERATION_CATALOG.operations.length).toBeGreaterThan(0);
+    for (const op of OPERATION_CATALOG.operations) {
+      expect(op.summary.length, `${op.method} ${op.path} summary`).toBeGreaterThan(0);
+      expect(op.auth).toBe("loopback_bearer");
+      expect(op.errorSchema).toBe("ControlProblem");
+      // JSON operations must declare a response schema (enforced by the DTO too).
+      if (op.responseKind === "json") expect(op.responseSchema).not.toBeNull();
+    }
+  });
+
+  it("advertises the project-scoped Outputs routes with the project response DTO", () => {
+    const byKey = new Map(
+      OPERATION_CATALOG.operations.map((op) => [`${op.method} ${op.path}`, op]),
+    );
+    const list = byKey.get("GET /v2/projects/:id/outputs");
+    expect(list?.responseSchema).toBe("ControlProjectOutputsResponse");
+    expect(list?.mutability).toBe("read_only");
+    expect(byKey.has("GET /v2/projects/:id/outputs/<path>")).toBe(true);
   });
 });

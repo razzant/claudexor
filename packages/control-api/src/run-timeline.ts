@@ -4,7 +4,7 @@
  * bounded output with an EXPLICIT truncation marker, and the shared
  * event-reading helpers the budget snapshot reuses.
  */
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import {
   ControlTimelineEvent,
   ControlWebEvidence,
@@ -17,6 +17,29 @@ import { safeArtifactPath } from "./artifact-paths.js";
 
 const TIMELINE_EVENTS_MAX = 500;
 
+/**
+ * Anti-OOM read cap for a run's events.jsonl (D15 "bounded tails for large
+ * logs"): files at or under the cap are read whole (every projection stays
+ * exact); a pathologically large log is read from its TAIL only — the last
+ * partial line is dropped so JSON.parse never sees a torn record. 24 MiB holds
+ * far more than any realistic run, so normal correctness is never affected.
+ */
+const EVENTS_READ_TAIL_BYTES = 24 * 1024 * 1024;
+
+/**
+ * Observability counter: how many times a run's events.jsonl was actually read
+ * + parsed from disk. Detail requests thread ONE parsed snapshot through every
+ * projection (D15 RunDetail perf), so this must stay at 1 per detail GET no
+ * matter how many fields consume events — the single-parse test asserts it.
+ */
+let eventsParseCount = 0;
+export function eventsParseCountForTests(): number {
+  return eventsParseCount;
+}
+export function resetEventsParseCountForTests(): void {
+  eventsParseCount = 0;
+}
+
 /** Structural dependency: anything carrying an optional runDir works. */
 export interface RunDirCarrier {
   runDir?: string;
@@ -27,15 +50,33 @@ export function readRunEvents(rec: RunDirCarrier): Record<string, unknown>[] {
   const path = safeArtifactPath(rec.runDir, "events.jsonl");
   if (!path) return [];
   let raw: string;
+  let tailed = false;
   try {
     const st = lstatSync(path);
     if (st.isSymbolicLink() || st.isDirectory()) return [];
-    raw = readFileSync(path, "utf8");
+    if (st.size > EVENTS_READ_TAIL_BYTES) {
+      // Bounded tail: read only the final window; drop the first (partial) line.
+      const fd = openSync(path, "r");
+      try {
+        const buf = Buffer.allocUnsafe(EVENTS_READ_TAIL_BYTES);
+        const read = readSync(fd, buf, 0, EVENTS_READ_TAIL_BYTES, st.size - EVENTS_READ_TAIL_BYTES);
+        raw = buf.toString("utf8", 0, read);
+      } finally {
+        closeSync(fd);
+      }
+      tailed = true;
+    } else {
+      raw = readFileSync(path, "utf8");
+    }
   } catch {
     return [];
   }
+  eventsParseCount++;
   const out: Record<string, unknown>[] = [];
-  for (const line of raw.split(/\r?\n/)) {
+  const lines = raw.split(/\r?\n/);
+  // A tailed read almost certainly starts mid-record; drop that torn first line.
+  for (let i = tailed ? 1 : 0; i < lines.length; i++) {
+    const line = lines[i] as string;
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line);
@@ -119,9 +160,12 @@ function timelineSeverity(
   return "info";
 }
 
-export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
+export function timelineEvents(
+  rec: RunDirCarrier,
+  events?: Record<string, unknown>[],
+): ControlTimelineEvent[] {
   const out: ControlTimelineEvent[] = [];
-  for (const ev of readRunEvents(rec)) {
+  for (const ev of events ?? readRunEvents(rec)) {
     const payload = eventPayload(ev);
     const type = String(ev["type"] ?? "event");
     // Typed tool info travels on the normalized HarnessEvent `tool` field.
@@ -189,10 +233,11 @@ export function timelineEvents(rec: RunDirCarrier): ControlTimelineEvent[] {
 export function latestPlanProgress(
   rec: RunDirCarrier,
   winnerAttemptId?: string | null,
+  eventsSnapshot?: Record<string, unknown>[],
 ): {
   items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }>;
 } | null {
-  const events = readRunEvents(rec);
+  const events = eventsSnapshot ?? readRunEvents(rec);
   const pick = (matchWinner: boolean): Record<string, unknown> | null => {
     for (let i = events.length - 1; i >= 0; i--) {
       const ev = events[i];

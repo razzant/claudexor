@@ -26,6 +26,14 @@ export const ControlArtifactListResponse = z
   .describe("Run-keyed technical artifact or produced-output listing.");
 export type ControlArtifactListResponse = z.infer<typeof ControlArtifactListResponse>;
 
+export const ControlProjectOutputsResponse = z
+  .object({ projectId: Id, artifacts: z.array(ControlArtifactInfo).default([]) })
+  .strict()
+  .describe(
+    "Project-keyed durable outputs listing (GET /projects/:id/outputs): the files under the project's artifacts/ directory, server-owned and path-traversal-safe.",
+  );
+export type ControlProjectOutputsResponse = z.infer<typeof ControlProjectOutputsResponse>;
+
 export const ControlApplyCheckResponse = z
   .object({ ok: z.boolean(), code: z.number().int().nullable(), stderr: z.string() })
   .strict()

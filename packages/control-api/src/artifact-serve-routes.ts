@@ -8,7 +8,11 @@
 import type { ServerResponse } from "node:http";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
-import { ControlArtifactListResponse, type ControlArtifactInfo } from "@claudexor/schema";
+import {
+  ControlArtifactListResponse,
+  ControlProjectOutputsResponse,
+  type ControlArtifactInfo,
+} from "@claudexor/schema";
 import { containsSecretLikeToken, redactSecrets } from "@claudexor/util";
 import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 import { readRunTombstone } from "./retention.js";
@@ -19,6 +23,9 @@ const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
 
 export interface ArtifactServeContext {
   findRun(id: string): Promise<DaemonRunRecord | null | undefined>;
+  /** Resolve a registered project id to its canonical repo root (null when the
+   *  project is unknown or the build has no project registry). */
+  resolveProjectRoot?(id: string): Promise<string | null>;
   json(res: ServerResponse, status: number, body: unknown): void;
 }
 
@@ -28,6 +35,38 @@ export async function handleArtifactServeRoute(
   path: string,
   res: ServerResponse,
 ): Promise<boolean> {
+  // Project-scoped durable outputs (D15/Block B): the same store the run-scoped
+  // /produced route serves (<projectRoot>/artifacts), keyed by the durable
+  // project id instead of a run id. Server-owned + path-traversal-safe.
+  const projectOutputsRootMatch = /^\/projects\/([^/]+)\/outputs$/.exec(path);
+  if (method === "GET" && projectOutputsRootMatch) {
+    const projectId = decodeURIComponent(projectOutputsRootMatch[1] as string);
+    const root = ctx.resolveProjectRoot ? await ctx.resolveProjectRoot(projectId) : null;
+    if (!root) return (ctx.json(res, 404, { error: "no such project" }), true);
+    ctx.json(
+      res,
+      200,
+      ControlProjectOutputsResponse.parse({
+        projectId,
+        artifacts: listArtifacts(join(root, "artifacts")),
+      }),
+    );
+    return true;
+  }
+
+  const projectOutputsFetchMatch = /^\/projects\/([^/]+)\/outputs\/(.+)$/.exec(path);
+  if (method === "GET" && projectOutputsFetchMatch) {
+    const projectId = decodeURIComponent(projectOutputsFetchMatch[1] as string);
+    const root = ctx.resolveProjectRoot ? await ctx.resolveProjectRoot(projectId) : null;
+    if (!root) return (ctx.json(res, 404, { error: "no such project" }), true);
+    const target = safeArtifactPath(
+      join(root, "artifacts"),
+      decodeURIComponent(projectOutputsFetchMatch[2] as string),
+    );
+    serveArtifactFile(ctx, res, target);
+    return true;
+  }
+
   const artifactsRootMatch = /^\/runs\/([^/]+)\/artifacts$/.exec(path);
   if (method === "GET" && artifactsRootMatch) {
     const rec = await ctx.findRun(decodeURIComponent(artifactsRootMatch[1] as string));
@@ -88,6 +127,28 @@ export async function handleArtifactServeRoute(
   }
 
   return false;
+}
+
+/** Resolve a registered project id to its canonical repo root via the durable
+ *  project registry (the same handle listProjects exposes). Null when unknown or
+ *  the build has no project service — feeds the project-scoped Outputs routes
+ *  (D15/Block B). An unavailable registry answers "no such project", never 500. */
+export async function resolveProjectRoot(
+  listProjects: (() => Promise<{ projects: unknown[] }>) | undefined,
+  id: string,
+): Promise<string | null> {
+  if (!listProjects) return null;
+  try {
+    const { projects } = await listProjects();
+    for (const raw of projects) {
+      const project = raw as Record<string, unknown>;
+      if (project["id"] === id && typeof project["root"] === "string" && project["root"].trim())
+        return project["root"];
+    }
+  } catch {
+    /* an unavailable registry answers "no such project", never a 500 */
+  }
+  return null;
 }
 
 /** Shared artifact-file body: caps, patch secret fence, text redaction. */

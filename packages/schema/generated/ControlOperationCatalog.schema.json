@@ -31,6 +31,19 @@
                 "type": "string",
                 "pattern": "^\\/v2\\/"
               },
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "description": "One-line human summary of the operation."
+              },
+              "auth": {
+                "type": "string",
+                "enum": [
+                  "loopback_bearer",
+                  "loopback_only"
+                ],
+                "description": "Auth boundary: loopback + bearer token, or loopback-only."
+              },
               "requestSchema": {
                 "anyOf": [
                   {
@@ -102,6 +115,8 @@
               "id",
               "method",
               "path",
+              "summary",
+              "auth",
               "requestSchema",
               "responseSchema",
               "errorSchema",

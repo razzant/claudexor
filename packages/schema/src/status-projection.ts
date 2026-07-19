@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { RunApplyState } from "./control.js";
 import type { RunOutcomeFacts, RunReason } from "./decision.js";
 
 /**
@@ -55,6 +56,50 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
     return "Done · not verified";
   }
   return "Done";
+}
+
+/**
+ * THE single owner of the server-owned OUTCOME BANNER (D18): the one honest
+ * headline a surface shows above any model prose, so free-text from the harness
+ * can never outrank the arbitrated truth. It folds the terminal outcome quality
+ * (runOutcomeLabel) together with the delivery/apply state (RunApplyState) into
+ * one line — e.g. "Candidate ready — NOT APPLIED", "Applied", "Needs review".
+ *
+ * The delivery suffix ("— NOT APPLIED") is only appended when there is actually
+ * something to apply (`hasApplyableChange` — an unapplied patch candidate);
+ * answer/plan/report runs carry no apply affordance, so their banner is the
+ * outcome quality alone. Null while the run is not terminal (no honest headline
+ * yet). Every surface — CLI print, control-api ControlRunDetail, macOS Outcome
+ * tab — renders THIS, never its own.
+ */
+export function outcomeBanner(
+  facts: RunOutcomeFacts | null,
+  delivery: { applyState: RunApplyState; hasApplyableChange: boolean },
+): string | null {
+  if (!facts) return null; // not terminal — no honest headline yet
+  if (facts.lifecycle !== "succeeded") return runOutcomeLabel(facts);
+  switch (delivery.applyState) {
+    case "applied":
+      return "Applied";
+    case "applied_review_blocked":
+      return "Applied · review blocked";
+    case "reverted":
+      return "Reverted — changes rolled back";
+    case "not_applied":
+      break;
+  }
+  const needsReview = facts.review === "blocked" || facts.checks === "failed";
+  const unverified = facts.review === "not_run" || facts.checks === "not_configured";
+  // Nothing to apply (answer / plan / report / no changes): the quality alone.
+  if (!delivery.hasApplyableChange) {
+    if (needsReview) return "Needs review";
+    if (unverified) return "Done · not verified";
+    return "Done";
+  }
+  // A patch candidate exists but has NOT been applied — always disclose that.
+  if (needsReview) return "Needs review — NOT APPLIED";
+  if (unverified) return "Candidate ready · not verified — NOT APPLIED";
+  return "Candidate ready — NOT APPLIED";
 }
 
 /**

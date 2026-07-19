@@ -441,6 +441,30 @@ export async function fetchApplyEligibility(
 }
 
 /**
+ * The server-owned outcome banner for a run (D18): the single honest headline,
+ * derived by the control-plane projection owner. The CLI PRINTS it verbatim —
+ * it never re-derives a headline of its own, so model prose can never outrank
+ * the arbitrated truth. Null while the run is not terminal or unavailable.
+ */
+export async function fetchOutcomeBanner(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<string | null> {
+  if (!runId) return null;
+  try {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
+    if (!res.ok) return null;
+    const detail = (await res.json()) as Record<string, unknown>;
+    const banner = detail["outcomeBanner"];
+    return typeof banner === "string" && banner.length > 0 ? banner : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Machine-readable reason for a non-clean DAEMON terminal (P2, D8). A
  * needs-decision run (review blocked / checks failed) has a SUCCEEDED lifecycle
  * and no `error`, so key the actionable decision hint on the run FACTS, not on

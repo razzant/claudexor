@@ -588,14 +588,20 @@ Runs one selected compatible harness read-only with `intent: audit` and writes
 
 The daemon is the durable scheduler. `DaemonServer` requires an injected durable
 command authority and has no in-memory command-record fallback. The HTTP control API is a live viewport and
-artifact/delivery facade. The canonical endpoint inventory below is generated
-from the control-api server source (`node scripts/gen-endpoints-doc.mjs`);
-README and INTEGRATIONS link here instead of maintaining duplicates. The same
-generator emits the machine-readable endpoint map for external agents at
-`docs/reference/endpoints.json` — method, path, mutating flag, and
-request/response/error schema names referencing the generated JSON Schemas in
-`packages/schema/generated/` (null when a handler hand-builds its JSON).
-Field-level semantics live in the schemas themselves: every control DTO
+artifact/delivery facade. Every implemented operation is declared once as a
+code-first **route descriptor** — a plain entry in the control-api operation
+catalog (`packages/control-api/src/operation-catalog.ts`) carrying method, path,
+one-line summary, mutability, auth boundary, and request/response schema names.
+That catalog is the single source of truth (Zen #4): the daemon serves it at
+`GET /v2/operations`, and `node scripts/gen-endpoints-doc.mjs` derives BOTH the
+canonical inventory below and the machine-readable endpoint map for external
+agents at `docs/reference/endpoints.json` (method, path, mutating flag, summary,
+auth, and request/response/error schema names referencing the generated JSON
+Schemas in `packages/schema/generated/`). README and INTEGRATIONS link here
+instead of maintaining duplicates. A freshness gate (`scripts/docs-truth-check`)
+fails when the descriptors and the actual wired route guards drift apart in
+either direction, so an added or removed handler cannot silently escape the
+catalog. Field-level semantics live in the schemas themselves: every control DTO
 carries `.describe()` documentation that lands in the generated JSON Schema
 files.
 
@@ -615,6 +621,8 @@ files.
 - `GET /v2/projects`
 - `POST /v2/projects`
 - `GET /v2/projects/:id/events`
+- `GET /v2/projects/:id/outputs`
+- `GET /v2/projects/:id/outputs/<path>`
 - `POST /v2/projects/:id/relink`
 - `GET /v2/quota`
 - `POST /v2/quota`

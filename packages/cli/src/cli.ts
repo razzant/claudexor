@@ -65,6 +65,7 @@ import {
   exitCodeForState,
   fetchApplyEligibility,
   fetchCouncil,
+  fetchOutcomeBanner,
   fetchPlanReadiness,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
@@ -681,6 +682,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       };
       const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
       const applyEligibility = await fetchApplyEligibility(addr, started.runId);
+      const outcomeBanner = await fetchOutcomeBanner(addr, started.runId);
       printJsonLine({
         frame: "run.terminal",
         runId: out.runId,
@@ -690,6 +692,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
         ...(reason ? { summary: reason } : {}),
+        ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
       });
       return exitCodeForState(status);
@@ -703,6 +706,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // apply-gate verdict, so machine callers act on truth instead of
       // re-implying eligibility from status.
       const applyEligibility = await fetchApplyEligibility(addr, out.runId);
+      const outcomeBanner = await fetchOutcomeBanner(addr, out.runId);
       printJson({
         runId: out.runId,
         runDir: out.runDir,
@@ -711,6 +715,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
         ...(reason ? { summary: reason } : {}),
+        ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
       });
       return exitCodeForState(out.status);
@@ -729,6 +734,9 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     const publicStatus = status;
     print("");
     print(`run ${started.runId} [${publicStatus}]`);
+    // Server-owned outcome headline (D18), printed verbatim above any output.
+    const terminalBanner = await fetchOutcomeBanner(addr, started.runId);
+    if (terminalBanner) print(`  ${terminalBanner}`);
     print(`  artifacts: ${final?.runDir ?? started.runDir}`);
     // A succeeded lifecycle exits 0 — INCLUDING a "Done · needs review" run
     // (review blocked / checks failed). The apply-eligibility verdict (state

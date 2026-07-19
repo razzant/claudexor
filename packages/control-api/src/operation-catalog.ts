@@ -88,9 +88,11 @@ export async function resolveControlProtocol(input: {
 
 type Draft = Omit<
   ControlOperationDescriptor,
-  "id" | "applicability" | "idempotency" | "completion" | "errorSchema"
+  "id" | "applicability" | "idempotency" | "completion" | "errorSchema" | "summary" | "auth"
 > &
-  Partial<Pick<ControlOperationDescriptor, "applicability" | "idempotency" | "completion">>;
+  Partial<
+    Pick<ControlOperationDescriptor, "applicability" | "idempotency" | "completion" | "summary">
+  >;
 
 function descriptor(input: Draft): ControlOperationDescriptor {
   const applicability =
@@ -99,8 +101,19 @@ function descriptor(input: Draft): ControlOperationDescriptor {
       : input.path.includes("/runs/") || input.path === "/v2/runs"
         ? "run"
         : "global";
+  const key = `${input.method} ${input.path}`;
+  const summary = input.summary ?? OPERATION_SUMMARIES[key];
+  if (!summary) {
+    // Fail loudly at construction: a new route without a human summary can
+    // never ship a blank descriptor (INV-122 SSOT — no silent gaps).
+    throw new Error(`operation catalog: missing summary for '${key}'`);
+  }
   return {
     ...input,
+    summary,
+    // Every product route is loopback + bearer; the loopback-only health probe
+    // is unversioned and never enters this catalog.
+    auth: "loopback_bearer",
     errorSchema: "ControlProblem",
     id: `${input.method.toLowerCase()}:${input.path.slice(4).replaceAll(/[:/<>]+/g, ".")}`,
     applicability: input.applicability ?? applicability,
@@ -109,6 +122,83 @@ function descriptor(input: Draft): ControlOperationDescriptor {
       input.completion ?? (input.responseKind === "stream" ? "terminal_stream" : "immediate"),
   };
 }
+
+/**
+ * Human one-line summaries, keyed by `${method} ${path}`, co-located with the
+ * descriptors they annotate. This IS the descriptor summary data (not a shadow
+ * of another table) — descriptor() throws if a route has no entry, so the map
+ * can never silently drift from the operations array.
+ */
+const OPERATION_SUMMARIES: Record<string, string> = {
+  "POST /v2/uploads": "Begin a resumable upload session for a large attachment.",
+  "PUT /v2/uploads/:id/bytes": "Append a byte range to an in-progress upload.",
+  "GET /v2/uploads/:id": "Read an upload session's status and received byte count.",
+  "DELETE /v2/uploads/:id": "Abort and discard an in-progress upload session.",
+  "POST /v2/uploads/:id/finalize": "Finalize an upload into a durable attachment resource.",
+  "POST /v2/handshake": "Negotiate the control protocol major before product calls.",
+  "GET /v2/operations": "List the implemented operations (this catalog).",
+  "POST /v2/maintenance/gc": "Run retention garbage collection over expired run trees.",
+  "GET /v2/agent-capabilities": "List the agent capability catalog this engine advertises.",
+  "GET /v2/global/events": "Subscribe to the global cross-project event stream (SSE).",
+  "GET /v2/quota": "Read cached per-profile harness quota snapshots.",
+  "POST /v2/quota": "Refresh and read per-profile harness quota snapshots.",
+  "GET /v2/credential-profiles": "List credential profiles per harness.",
+  "POST /v2/credential-profiles": "Create a credential profile for a harness.",
+  "DELETE /v2/credential-profiles/:harness/:profileId": "Delete a harness credential profile.",
+  "GET /v2/harnesses": "List installed harnesses and their availability.",
+  "GET /v2/projects": "List registered projects (durable handles).",
+  "POST /v2/projects": "Register a project root as a durable handle.",
+  "POST /v2/projects/:id/relink": "Relink a registered project to a new root.",
+  "GET /v2/projects/:id/events": "Subscribe to a project's event stream (SSE).",
+  "GET /v2/projects/:id/outputs": "List a project's durable outputs (artifacts/).",
+  "GET /v2/projects/:id/outputs/<path>": "Fetch one durable output file from a project.",
+  "GET /v2/harnesses/:id/models": "List a harness's selectable models.",
+  "POST /v2/harnesses/:id/auth-readiness": "Re-check a harness's auth readiness (dry).",
+  "GET /v2/runs": "List durable run summaries visible to the daemon.",
+  "POST /v2/runs": "Start a run and return its durable handle.",
+  "GET /v2/runs/:id": "Read a run's full detail snapshot.",
+  "POST /v2/runs/:id/retry": "Retry a run, returning a new durable handle.",
+  "GET /v2/runs/:id/run-again": "Draft a run-again request from a prior run.",
+  "POST /v2/runs/:id/apply": "Apply a run's work product to the live tree.",
+  "POST /v2/runs/:id/apply/check": "Dry-check whether a run's patch would apply.",
+  "GET /v2/runs/:id/artifacts": "List a run tree's technical artifacts.",
+  "GET /v2/runs/:id/artifacts/<path>": "Fetch one artifact file from a run tree.",
+  "POST /v2/runs/:id/control": "Send a control signal (cancel/pause) to a run.",
+  "POST /v2/runs/:id/decision": "Record an operator unblock/rerun decision on a run.",
+  "GET /v2/runs/:id/events": "Replay + tail a run's event stream (SSE).",
+  "POST /v2/runs/:id/interactions/:id/answer": "Answer a run's pending interactive question.",
+  "GET /v2/runs/:id/produced": "List a run's produced project outputs.",
+  "GET /v2/runs/:id/produced/<path>": "Fetch one produced project-output file from a run.",
+  "GET /v2/threads": "List conversation threads.",
+  "POST /v2/threads": "Create a conversation thread.",
+  "GET /v2/threads/:id": "Read a thread's detail (turns + head).",
+  "PATCH /v2/threads/:id": "Update a thread's sticky settings (harness/profile/access).",
+  "POST /v2/threads/:id/trash": "Move a thread to trash.",
+  "POST /v2/threads/:id/restore": "Restore a thread from trash.",
+  "POST /v2/threads/:id/purge": "Permanently purge a trashed thread.",
+  "POST /v2/threads/:id/apply": "Apply the thread's latest run work product.",
+  "POST /v2/threads/:id/turns": "Enqueue a new turn on a thread.",
+  "POST /v2/threads/:id/turns/:id/retry": "Retry a thread turn.",
+  "GET /v2/trust": "List protected-path trust state.",
+  "POST /v2/trust": "Update protected-path trust state.",
+  "GET /v2/settings": "Read the settings snapshot.",
+  "POST /v2/settings": "Update settings.",
+  "GET /v2/secrets": "List stored secret handles (values never returned).",
+  "POST /v2/secrets": "Set a stored secret value.",
+  "DELETE /v2/secrets/:id": "Delete a stored secret.",
+  "GET /v2/setup/jobs": "List harness setup/login jobs.",
+  "POST /v2/setup/jobs": "Start a harness setup/login job.",
+  "GET /v2/setup/jobs/:id": "Read a setup job's status.",
+  "GET /v2/setup/jobs/:id/snapshot": "Read a setup job's terminal snapshot.",
+  "GET /v2/setup/jobs/:id/events": "Tail a setup job's event stream (SSE).",
+  "POST /v2/setup/jobs/:id/cancel": "Cancel a setup job.",
+  "POST /v2/setup/jobs/:id/reconcile": "Reconcile a setup job's state.",
+  "POST /v2/setup/jobs/:id/extend": "Extend a setup job's deadline.",
+  "GET /v2/recovery/partitions/:id": "Inspect a journal partition for recovery.",
+  "POST /v2/recovery/partitions/:id/validate": "Validate a journal partition (dry).",
+  "POST /v2/recovery/partitions/:id/export": "Export a journal partition (dry).",
+  "POST /v2/recovery/partitions/:id/quarantine": "Quarantine a corrupt journal partition.",
+};
 
 const j = (
   method: Draft["method"],
@@ -185,6 +275,15 @@ const operations: ControlOperationDescriptor[] = [
     { idempotency: "natural" },
   ),
   j("GET", "/v2/projects/:id/events", "read_only", null, null, { responseKind: "stream" }),
+  j("GET", "/v2/projects/:id/outputs", "read_only", null, "ControlProjectOutputsResponse"),
+  descriptor({
+    method: "GET",
+    path: "/v2/projects/:id/outputs/<path>",
+    requestSchema: null,
+    responseSchema: null,
+    mutability: "read_only",
+    responseKind: "binary",
+  }),
   j("GET", "/v2/harnesses/:id/models", "read_only", null, "ControlHarnessModelsResponse"),
   j(
     "POST",

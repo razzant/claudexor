@@ -1,15 +1,17 @@
 /**
- * Shared endpoint extraction for the docs-truth gate and the generated
- * endpoint inventory (single producer — INV-122). Parses the literal and
- * regex route guards in daemon-server.ts; the extractor self-checks that
- * every declared regex route is bound to a method guard so refactors cannot
- * silently shrink the implemented set.
+ * Shared endpoint tooling for the docs-truth gate and the generated endpoint
+ * inventory (single producer — INV-122). Two independent halves:
  *
- * v2 also extracts, per route, the REQUEST schema (the `X.parse(...)` guard
- * on the body) and the RESPONSE schema (the zod DTO passed to the service()
- * helper) when the handler declares them — a machine-readable endpoint map
- * (docs/reference/endpoints.json) for external agents, referencing the
- * generated JSON Schemas in packages/schema/generated/.
+ *  - `implementedEndpoints()` scrapes the literal + regex route guards actually
+ *    wired in daemon-server.ts and the `*-routes.ts` modules; it self-checks
+ *    that every declared regex route is bound to a method guard so refactors
+ *    cannot silently shrink the implemented set. This is the DRIFT DETECTOR the
+ *    freshness gate runs against the descriptors.
+ *  - `endpointDetails()` DERIVES the machine-readable endpoint map
+ *    (docs/reference/endpoints.json) from the code-first route descriptors — the
+ *    runtime OPERATION_CATALOG — so schema names, mutability, summary and auth
+ *    all come from one source (Zen #4). No handler-flow scraping, no override
+ *    maps; a descriptor without a wired guard (or vice versa) fails docs-truth.
  */
 import { readdirSync, readFileSync } from "node:fs";
 
@@ -73,164 +75,55 @@ export function implementedEndpoints(input) {
 }
 
 /**
- * Endpoint detail map: [{method, path, mutating, requestSchema, responseSchema,
- * errorSchema}]. Every product route has the same generated ControlProblem
- * error envelope; only the unversioned health probe has no product error body.
- * Schema names are extracted from the handler slice between this guard and the
- * next one: `<Name>.parse(` on the body (request) and `this.service(res, "...",
- * ..., <Name>)` (response). Handlers that hand-build JSON have null schema
- * refs — honest absence, never a guessed shape.
+ * Endpoint detail map: [{method, path, mutating, summary, auth, requestSchema,
+ * responseSchema, errorSchema}]. This is now DERIVED from the code-first route
+ * descriptors — the runtime OPERATION_CATALOG (packages/control-api/src/
+ * operation-catalog.ts) — instead of scraping handler control-flow. The
+ * descriptors ARE the single source of truth (Zen #4); schema names, mutability
+ * and summaries come straight from them, so the fragile regex scrape + hand-kept
+ * override maps are gone. `implementedEndpoints()` still scrapes the daemon
+ * route guards independently, as the drift detector that fails when a descriptor
+ * and its wired handler disagree.
+ *
+ * The built dist must exist (docs:check builds control-api first). Async because
+ * it dynamically imports the compiled catalog module.
  */
-// Non-GET routes that are READ-ONLY by contract (dry checks): the method is
-// POST for body transport, not for mutation. Keep in lockstep with the
-// handler docs — a new dry-check route must be added here or agents will see
-// a false mutating flag.
-const READ_ONLY_NON_GET = new Set([
-  "POST /v2/runs/:id/apply/check",
-  "POST /v2/harnesses/:id/auth-readiness",
-  "POST /v2/recovery/partitions/:id/export",
-  "POST /v2/recovery/partitions/:id/validate",
-]);
-
-// Responses produced through HELPERS the slice-scan cannot see into (e.g.
-// `this.json(res, 200, detailFor(...))` where detailFor zod-parses the DTO).
-// docs-truth self-checks every named schema exists in generated/, so a rename
-// fails loudly instead of shipping a dangling ref.
-const ROUTE_RESPONSE_OVERRIDES = new Map([
-  ["GET /v2/operations", "ControlOperationCatalog"],
-  ["POST /v2/maintenance/gc", "ControlGcReceipt"],
-  ["GET /v2/projects", "ControlProjectListResponse"],
-  ["POST /v2/projects", "ControlProject"],
-  ["POST /v2/projects/:id/relink", "ControlProject"],
-  ["GET /v2/runs/:id", "ControlRunDetail"],
-  ["GET /v2/runs", "ControlRunListResponse"],
-  ["POST /v2/runs", "ControlRunStartResponse"],
-  ["POST /v2/uploads", "ControlUploadStatus"],
-  ["PUT /v2/uploads/:id/bytes", "ControlUploadStatus"],
-  ["GET /v2/uploads/:id", "ControlUploadStatus"],
-  ["DELETE /v2/uploads/:id", "ControlUploadStatus"],
-  ["POST /v2/uploads/:id/finalize", "ControlResource"],
-  ["POST /v2/runs/:id/apply", "ControlDeliveryResponse"],
-  ["POST /v2/runs/:id/apply/check", "ControlApplyCheckResponse"],
-  ["GET /v2/runs/:id/artifacts", "ControlArtifactListResponse"],
-  ["POST /v2/runs/:id/control", "ControlRunControlResponse"],
-  ["POST /v2/runs/:id/decision", "ControlRunDecisionResponse"],
-  ["POST /v2/runs/:id/interactions/:id/answer", "ControlInteractionAnswerResponse"],
-  ["POST /v2/runs/:id/retry", "ControlRunRetryResponse"],
-  ["GET /v2/runs/:id/run-again", "ControlRunAgainDraft"],
-  ["GET /v2/runs/:id/produced", "ControlArtifactListResponse"],
-  ["GET /v2/threads", "ControlThreadListResponse"],
-  ["POST /v2/threads", "ControlThread"],
-  ["GET /v2/threads/:id", "ControlThreadDetail"],
-  ["PATCH /v2/threads/:id", "ControlThread"],
-  ["POST /v2/threads/:id/turns", "ControlThreadTurnResponse"],
-  ["POST /v2/threads/:id/turns/:id/retry", "ControlThreadTurnResponse"],
-  ["POST /v2/threads/:id/apply", "ControlThreadApplyResponse"],
-  ["POST /v2/threads/:id/trash", "ControlThread"],
-  ["POST /v2/threads/:id/restore", "ControlThread"],
-  ["POST /v2/threads/:id/purge", "ControlThread"],
-  ["GET /v2/secrets", "ControlSecretListResponse"],
-  ["POST /v2/secrets", "ControlSecretMutationResponse"],
-  ["DELETE /v2/secrets/:id", "ControlSecretMutationResponse"],
-  ["GET /v2/trust", "ControlTrustListResponse"],
-  ["POST /v2/trust", "ControlTrustState"],
-  ["GET /v2/recovery/partitions/:id", "ControlJournalInspection"],
-  ["POST /v2/recovery/partitions/:id/validate", "ControlJournalValidation"],
-  ["POST /v2/recovery/partitions/:id/export", "ControlJournalExportReceipt"],
-  ["POST /v2/recovery/partitions/:id/quarantine", "ControlJournalQuarantineReceipt"],
-]);
-
-const ROUTE_REQUEST_OVERRIDES = new Map([
-  ["POST /v2/runs", "ControlRunStartRequest"],
-  ["POST /v2/uploads", "ControlUploadCreateRequest"],
-  ["PUT /v2/uploads/:id/bytes", null],
-  ["GET /v2/uploads/:id", null],
-  ["DELETE /v2/uploads/:id", null],
-  ["POST /v2/uploads/:id/finalize", "ControlUploadFinalizeRequest"],
-  ["POST /v2/runs/:id/retry", null],
-  ["GET /v2/runs/:id/run-again", null],
-  ["POST /v2/projects", "ControlProjectRegisterRequest"],
-  ["POST /v2/projects/:id/relink", "ControlProjectRelinkRequest"],
-  ["POST /v2/recovery/partitions/:id/quarantine", "ControlJournalQuarantineRequest"],
-]);
-
-export function endpointDetails(input) {
-  const details = sourcePaths(input).flatMap((srcPath) => {
-    const src = readFileSync(srcPath, "utf8");
-    const sites = routeSites(src).sort((a, b) => a.index - b.index);
-    return sites.map((site, i) => {
-      // The handler slice is bounded by the NEXT route guard (or a hard cap for
-      // the last route) — no formatting-sensitive sentinels.
-      const sliceEnd =
-        i + 1 < sites.length ? sites[i + 1].index : Math.min(site.index + 4000, src.length);
-      const body = src.slice(site.index, sliceEnd);
-      // Request schema: any PascalCase *Request DTO parsed in the handler; the
-      // `body = X.parse(` form is preferred when both appear.
-      const requestMatch =
-        /body = ([A-Z]\w+)\.parse\(/.exec(body) ?? /\b([A-Z]\w*Request)\.parse\(/.exec(body);
-      // Response schema, two validated forms (both zod-parse the wire value):
-      //  - the service() helper's schema argument (last arg, tolerant of commas
-      //    inside the input argument);
-      //  - direct `this.json(res, <code>, Schema.parse(...))` responses.
-      // Schema DTOs are PascalCase exports; a lowercase arg (err, body, ...) is
-      // not a schema reference. Hand-built JSON stays null — honest absence.
-      const serviceMatch =
-        /this\.service\(\s*res,\s*"\w+",[\s\S]*?,\s*([A-Z]\w+)\s*,?\s*\);/.exec(body) ??
-        /this\.json\(res, \w+, (?:await )?([A-Z]\w+)\.parse\(/.exec(body);
-      const key = `${site.method} ${site.path}`;
-      return {
-        method: site.method,
-        path: site.path,
-        mutating: site.method !== "GET" && !READ_ONLY_NON_GET.has(key),
-        requestSchema: ROUTE_REQUEST_OVERRIDES.has(key)
-          ? ROUTE_REQUEST_OVERRIDES.get(key)
-          : requestMatch
-            ? requestMatch[1]
-            : null,
-        responseSchema: ROUTE_RESPONSE_OVERRIDES.has(key)
-          ? ROUTE_RESPONSE_OVERRIDES.get(key)
-          : serviceMatch
-            ? serviceMatch[1]
-            : null,
-        errorSchema: "ControlProblem",
-      };
-    });
-  });
-  details.push({
-    method: "POST",
-    path: "/v2/handshake",
-    mutating: false,
-    requestSchema: "ControlHandshakeRequest",
-    responseSchema: "ControlHandshakeResponse",
-    errorSchema: "ControlProblem",
-  });
-  details.push({
-    method: "GET",
-    path: "/v2/operations",
-    mutating: false,
-    requestSchema: null,
-    responseSchema: "ControlOperationCatalog",
-    errorSchema: "ControlProblem",
-  });
+export async function endpointDetails() {
+  let OPERATION_CATALOG;
+  try {
+    ({ OPERATION_CATALOG } = await import("../packages/control-api/dist/operation-catalog.js"));
+  } catch (error) {
+    throw new Error(
+      `endpoint descriptors: cannot load the built operation catalog (run \`pnpm --filter @claudexor/control-api build\` first): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const details = OPERATION_CATALOG.operations.map((op) => ({
+    method: op.method,
+    path: op.path,
+    mutating: op.mutability === "mutating",
+    summary: op.summary,
+    auth: op.auth,
+    requestSchema: op.requestSchema,
+    responseSchema: op.responseSchema,
+    errorSchema: op.errorSchema,
+  }));
+  // The unversioned loopback health probe is not a product operation, but the
+  // machine map documents it (no product error body, loopback-only).
   details.push({
     method: "GET",
     path: "/healthz",
     mutating: false,
+    summary: "Loopback liveness probe (pre-auth).",
+    auth: "loopback_only",
     requestSchema: null,
     responseSchema: null,
     errorSchema: null,
   });
-  const seen = new Set();
-  return details
-    .filter((d) => {
-      const key = `${d.method} ${d.path}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a, b) =>
-      a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path),
-    );
+  return details.sort((a, b) =>
+    a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path),
+  );
 }
 
 /** Deterministic machine artifact for external agents (docs/reference/endpoints.json). */
@@ -239,11 +132,13 @@ export function renderEndpointsJson(details) {
     JSON.stringify(
       {
         $comment:
-          "Generated by scripts/gen-endpoints-doc.mjs — do not edit. Schema names reference packages/schema/generated/<Name>.schema.json. Loopback + bearer-token auth applies to every route except GET /healthz.",
+          "Generated by scripts/gen-endpoints-doc.mjs from the code-first route descriptors (packages/control-api operation catalog) — do not edit. Schema names reference packages/schema/generated/<Name>.schema.json. Loopback + bearer-token auth applies to every route except GET /healthz.",
         endpoints: details.map((d) => ({
           method: d.method,
           path: d.path,
           mutating: d.mutating,
+          summary: d.summary,
+          auth: d.auth,
           request_schema: d.requestSchema,
           response_schema: d.responseSchema,
           error_schema: d.errorSchema,

@@ -1,6 +1,7 @@
 import {
   ControlProject,
   ControlProjectListResponse,
+  ControlProjectOutputsResponse,
   type ControlProject as ControlProjectType,
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
@@ -43,7 +44,42 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
       }
       return mutateProject(json, `/projects/${encodeURIComponent(id)}/relink`, { root });
     }
-    return printUsageError(json, "usage: claudexor project list|register|relink");
+    if (action === "outputs") {
+      const id = args._[2];
+      if (!id || args._.length > 4) {
+        return printUsageError(json, "usage: claudexor project outputs <project-id> [output-path]");
+      }
+      const outputPath = args._[3];
+      const { addr } = await ensureDaemon();
+      const base = `/projects/${encodeURIComponent(id)}/outputs`;
+      if (outputPath === undefined) {
+        // List the project's durable outputs.
+        const response = await controlApiFetch(addr, base);
+        const data = await responseJson(response);
+        if (!response.ok) return failure(json, response.status, data);
+        const result = ControlProjectOutputsResponse.parse(data);
+        if (json) printJson(result);
+        else if (result.artifacts.length === 0) print("No durable outputs.");
+        else
+          for (const artifact of result.artifacts)
+            print(
+              `${artifact.path}${artifact.kind === "directory" ? "/" : ""}${
+                typeof artifact.bytes === "number" ? `  ${artifact.bytes}B` : ""
+              }`,
+            );
+        return 0;
+      }
+      // Fetch a single durable output file; stream its bytes to stdout.
+      const response = await controlApiFetch(addr, `${base}/${encodeURIComponentPath(outputPath)}`);
+      if (!response.ok) {
+        const data = await responseJson(response);
+        return failure(json, response.status, data);
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      process.stdout.write(bytes);
+      return 0;
+    }
+    return printUsageError(json, "usage: claudexor project list|register|relink|outputs");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (json) printJson({ ok: false, error: message });
@@ -69,6 +105,12 @@ async function mutateProject(json: boolean, path: string, body: unknown): Promis
 
 function printProject(project: ControlProjectType): void {
   print(`${project.id}  ${project.root}`);
+}
+
+/** Percent-encode each path segment while preserving the `/` separators the
+ *  server splits on (it decodeURIComponent's the whole remainder). */
+function encodeURIComponentPath(relPath: string): string {
+  return relPath.split("/").map(encodeURIComponent).join("/");
 }
 
 async function responseJson(response: Response): Promise<unknown> {

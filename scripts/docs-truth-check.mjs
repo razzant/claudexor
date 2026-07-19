@@ -114,7 +114,7 @@ try {
   // 1a-ii. The machine-readable endpoint map (docs/reference/endpoints.json)
   // is fresh, and every schema name it references has a generated JSON Schema.
   {
-    const details = endpointDetails();
+    const details = await endpointDetails();
     const expectedJson = renderEndpointsJson(details);
     let currentJson = null;
     try {
