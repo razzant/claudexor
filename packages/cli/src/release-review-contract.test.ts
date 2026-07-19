@@ -36,8 +36,16 @@ function cleanRows() {
   }));
 }
 
+type ChecklistFinding = ReturnType<typeof validateChecklistResponse>["findings"][number];
+type SlotRecord = {
+  model_id?: string;
+  status: string;
+  duration_ms?: number;
+  findings?: ChecklistFinding[];
+};
+
 /** A full live triad panel: three responded slots with plausible durations. */
-function liveTriad(findings: unknown[]): Array<Record<string, unknown>> {
+function liveTriad(findings: ChecklistFinding[]): SlotRecord[] {
   return REQUIRED_TRIAD_MODELS.map((model) => ({
     model_id: model,
     status: "responded",
@@ -46,7 +54,7 @@ function liveTriad(findings: unknown[]): Array<Record<string, unknown>> {
   }));
 }
 
-function liveScope(findings: unknown[] = []): Record<string, unknown> {
+function liveScope(findings: ChecklistFinding[] = []): SlotRecord {
   return { status: "responded", duration_ms: 120_000, findings };
 }
 

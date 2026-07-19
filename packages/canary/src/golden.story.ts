@@ -22,6 +22,7 @@ import {
 
 let sb: Sandbox;
 const PASS_GATE = JSON.stringify([process.execPath, "-e", "process.exit(0)"]);
+const FAIL_GATE = JSON.stringify([process.execPath, "-e", "process.exit(1)"]);
 const SLOW_GATE = JSON.stringify(["sleep", "60"]);
 beforeEach(() => {
   sb = makeSandbox();
@@ -276,6 +277,38 @@ describe("canary golden stories", () => {
     expect(out.status, JSON.stringify(events)).toBe("cancelled");
     expect(runFileExists(runDir as string, "final/telemetry.yaml")).toBe(true);
   }, 90_000);
+
+  it("[INV-116:blockers-visible] a needs-decision terminal (blocking checks fact) is a SUCCEEDED lifecycle with the blocker visible — never masked as failure or silent green", () => {
+    // D8 axes: the PROCESS finished (lifecycle succeeded, exit 0) while the
+    // work carries a blocking fact (checks failed). The blocker must be
+    // VISIBLE on every surface — apply-eligibility says needs_review with the
+    // unblock remedy, and the decision record prints the honest axes — and
+    // the run must never be dressed up as a failure OR as an applyable green.
+    const r = cli(sb, [
+      "agent",
+      "change something",
+      "--harness",
+      "fake-implement",
+      "--test",
+      FAIL_GATE,
+      "--json",
+    ]);
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    const out = r.json() as {
+      runId: string;
+      runDir: string;
+      status: string;
+      applyEligibility?: { state?: string } | null;
+    };
+    expect(out.status).toBe("succeeded");
+    expect(out.applyEligibility?.state).toBe("needs_review");
+    const inspect = cli(sb, ["inspect", out.runId]);
+    expect(inspect.code, inspect.stdout + inspect.stderr).toBe(0);
+    expect(inspect.stdout).toMatch(/lifecycle=succeeded/);
+    expect(inspect.stdout).toMatch(/checks=failed/);
+    // The failing gate is inspectable evidence, not a swallowed detail.
+    expect(runFileExists(out.runDir, "final/patch.diff")).toBe(true);
+  });
 
   it("[INV-041:crlf-diff-fidelity] a candidate patch over CRLF content survives byte-faithfully and applies onto the live tree", () => {
     // The repo holds a COMMITTED CRLF file; fake-implement overwrites it with
