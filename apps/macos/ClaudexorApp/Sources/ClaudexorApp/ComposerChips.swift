@@ -156,15 +156,16 @@ extension ThreadsScreen {
 }
 
 /// The intent picker, styled to the design system with a visible selection.
-/// "Spec" starts the grounding flow; "Best-of" runs the eligible pool (engine
-/// `agent` + race strategy).
+/// "Best-of" runs the eligible pool (engine `agent` + race strategy).
 /// Strategies (until-clean, max-attempts) live in the composer's "⋯" panel.
 struct IntentMenu: View {
     @Binding var selection: RunMode
     let projectScoped: Bool
 
     private var options: [RunMode] {
-        projectScoped ? [.ask, .agent, .plan, .spec, .readOnlyAudit, .bestOfN] : [.ask]
+        // M5b: `.spec` was dropped from the intent picker with the dead spec flow; the
+        // plan lifecycle's intent(s) replace it in a later cut.
+        projectScoped ? [.ask, .agent, .plan, .readOnlyAudit, .bestOfN] : [.ask]
     }
     private func label(_ m: RunMode) -> String { m == .bestOfN ? "Best-of" : m.label }
 

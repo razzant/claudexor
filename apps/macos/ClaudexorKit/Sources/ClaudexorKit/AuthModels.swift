@@ -126,20 +126,24 @@ public struct ControlProblem: Codable, Sendable, Equatable {
     public let fieldErrors: [String: [String]]
     public let requiredActions: [String]
     public let evidenceRefs: [String]
+    /// Typed route-specific recovery context (v3, INV-067); never a duplicate
+    /// of the error message. Empty when the route carries no context.
+    public let context: [String: JSONValue]
 
     private enum CodingKeys: String, CodingKey, CaseIterable, StrictCodingKey {
-        case code, message, retryable, fieldErrors, requiredActions, evidenceRefs
+        case code, message, retryable, fieldErrors, requiredActions, evidenceRefs, context
     }
 
     public init(code: String, message: String, retryable: Bool,
                 fieldErrors: [String: [String]] = [:], requiredActions: [String] = [],
-                evidenceRefs: [String] = []) {
+                evidenceRefs: [String] = [], context: [String: JSONValue] = [:]) {
         self.code = code
         self.message = message
         self.retryable = retryable
         self.fieldErrors = fieldErrors
         self.requiredActions = requiredActions
         self.evidenceRefs = evidenceRefs
+        self.context = context
     }
 
     public init(from decoder: Decoder) throws {
@@ -154,6 +158,8 @@ public struct ControlProblem: Codable, Sendable, Equatable {
             ? try container.decode([String].self, forKey: .requiredActions) : []
         evidenceRefs = container.contains(.evidenceRefs)
             ? try container.decode([String].self, forKey: .evidenceRefs) : []
+        context = container.contains(.context)
+            ? try container.decode([String: JSONValue].self, forKey: .context) : [:]
         try require(!code.isEmpty && requiredActions.allSatisfy({ !$0.isEmpty })
                     && evidenceRefs.allSatisfy({ !$0.isEmpty }), decoder: decoder,
                     "Control problem code, actions, and evidence references must be non-empty")

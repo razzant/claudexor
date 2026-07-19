@@ -299,10 +299,9 @@ struct ThreadsScreen: View {
                     .padding(.vertical, Theme.Spacing.xs)
             }
 
-            // SPEC-FLOW: the interview / frozen-spec card sits just above the
-            // composer (same placement as the pending-interaction answer surface),
-            // so the parked-on-user question is always visible.
-            specFlowSection
+            // M5b: the SPEC-FLOW section (interview / frozen-spec card above the
+            // composer) was removed with the dead spec flow; the plan lifecycle's
+            // pre-composer surface is a later cut.
 
             // Isolated threads accumulate in a worktree; deliver the diff to the
             // project on demand. In-place threads write the live tree directly and
@@ -331,8 +330,6 @@ struct ThreadsScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-    private var specFlowSection: some View { SpecFlowSection() }
 
     /// The conversation's window title/subtitle — the thread title lives in the
     /// ONE system toolbar (no second custom header strip). Empty in the draft state.
@@ -541,31 +538,10 @@ struct ThreadsScreen: View {
         let atts = composerAttachments
         composerText = ""
         composerAttachments = []
-        // Spec is NOT a normal turn: it drives a durable server-owned session
-        // (create → answers → freeze). The flow renders
-        // its own cards above the composer once accepted. But startSpec can fail HARD
-        // before any durable card exists (engine offline / no project / transport
-        // error) — restore the prompt in that case, mirroring composerSend below
-        // (and only when the user hasn't typed a replacement in the meantime).
-        if mode == .spec {
-            // Spec drives the server-owned interview — there is no turn to carry
-            // attachment bytes, so they'd be silently dropped here. Be honest:
-            // restore the staged chips + prompt and surface a visible status
-            // instead of pretending the attachment went along for the ride.
-            if !atts.isEmpty {
-                composerAttachments = atts
-                composerText = text
-                model.threadStatus = "Spec interview can't take attachments — remove them or switch out of Spec mode."
-                return
-            }
-            Task {
-                // Carry the per-turn model + options so the eventual Implement turn
-                // honors the visible composer controls (not silently dropped).
-                let accepted = await model.startSpec(prompt: text, model: chosenModel, options: options)
-                if !accepted && composerText.isEmpty { composerText = text }
-            }
-            return
-        }
+        // M5b: `.spec` used to branch here into the client-side spec-interview driver
+        // (startSpec) instead of sending a turn; the plan lifecycle replaces that
+        // entry point. `.spec` is no longer selectable in the composer, so send()
+        // falls through to composerSend below (which rejects a leaked `.spec` loudly).
         Task {
             let sent = await model.composerSend(prompt: text, mode: mode, model: chosenModel, attachments: atts, options: options)
             // Restore ONLY if the engine rejected it AND the user hasn't started

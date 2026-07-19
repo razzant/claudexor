@@ -306,7 +306,7 @@ import Testing
           "summary": {"runId":"run-1","state":"succeeded","spendUsd":0.12,"spendEstimated":true,"tests":[{"program":"pnpm","args":["test"],"envAllowlist":[]}]},
           "primaryOutput": {"kind":"answer","path":"final/answer.md","text":"4","bytes":1},
           "timeline": [{"type":"harness.event","title":"Codex answered","detail":"done","rawRef":"events.jsonl"}],
-          "budget": {"maxUsd":0.50,"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events"},
+          "budget": {"paidBudget":{"kind":"finite","maxUsd":0.50},"spendUsd":0.12,"remainingUsd":0.38,"estimated":true,"source":"events"},
           "reviewFindings": []
         }
         """
@@ -630,93 +630,6 @@ import Testing
         let old = try JSONDecoder().decode(ThreadSummary.self, from: Data(legacy.utf8))
         #expect(old.eligibleHarnesses == nil)
     }
-
-    // MARK: - SPEC-FLOW DTOs
-
-    @Test func specQuestionsResponseDecodesInterview() throws {
-        // Durable spec session: tier, snake_case allow_text, options[{id,label}], rationale.
-        let json = """
-        {
-          "planRunId": "run-plan-1",
-          "planDir": "/runs/run-plan-1",
-          "questions": [
-            {"id":"q1","tier":0,"prompt":"Which storage?","kind":"single",
-             "options":[{"id":"opt-sqlite","label":"SQLite"},{"id":"opt-pg","label":"Postgres"}],
-             "allow_text":true,"rationale":"Surfaced by plan review."},
-            {"id":"q2","tier":1,"prompt":"Anything else?","kind":"text","options":[],"allow_text":true},
-            {"id":"q3","prompt":"Pick targets","kind":"multi",
-             "options":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"allow_text":false}
-          ]
-        }
-        """
-        let res = try JSONDecoder().decode(SpecQuestionsResponse.self, from: Data(json.utf8))
-        #expect(res.planRunId == "run-plan-1")
-        #expect(res.planDir == "/runs/run-plan-1")
-        #expect(res.questions.count == 3)
-        let q1 = res.questions[0]
-        #expect(q1.id == "q1")
-        #expect(q1.tier == 0)
-        #expect(q1.kind == "single")
-        #expect(q1.allowText == true)                       // allow_text mapped
-        #expect(q1.options == [SpecOption(id: "opt-sqlite", label: "SQLite"),
-                               SpecOption(id: "opt-pg", label: "Postgres")])
-        #expect(q1.rationale == "Surfaced by plan review.")
-        #expect(res.questions[1].kind == "text")
-        #expect(res.questions[2].kind == "multi")
-        #expect(res.questions[2].allowText == false)
-        // Tolerate omitted defaulted fields (tier defaults 0).
-        let bare = #"{"planRunId":"r","planDir":"/d","questions":[{"id":"q","prompt":"?"}]}"#
-        let leniant = try JSONDecoder().decode(SpecQuestionsResponse.self, from: Data(bare.utf8))
-        #expect(leniant.questions.first?.tier == 0)
-        #expect(leniant.questions.first?.kind == "single")
-        #expect(leniant.questions.first?.allowText == false)
-    }
-
-    @Test func specFreezeResponseDecodesSpecPath() throws {
-        // Frozen session: specPath is the FILE an Implement run reads (must decode).
-        let json = """
-        {
-          "specId": "spec-7f3a",
-          "specDir": "/repo/.claudexor/specs/spec-7f3a",
-          "specPath": "/repo/.claudexor/specs/spec-7f3a/spec.json",
-          "specHash": "sha256:abc123",
-          "changes": [{"section":"success_criteria","kind":"added"},{"section":"tests","kind":"added"}]
-        }
-        """
-        let res = try JSONDecoder().decode(SpecFreezeResponse.self, from: Data(json.utf8))
-        #expect(res.specId == "spec-7f3a")
-        #expect(res.specPath == "/repo/.claudexor/specs/spec-7f3a/spec.json")
-        #expect(res.specHash == "sha256:abc123")
-        #expect(res.changes.count == 2)
-        #expect(res.changes.first?["section"]?.stringValue == "success_criteria")
-        // Missing `changes` defaults to [] (not a throw).
-        let noChanges = #"{"specId":"s","specDir":"/d","specPath":"/d/spec.json","specHash":"h"}"#
-        let lean = try JSONDecoder().decode(SpecFreezeResponse.self, from: Data(noChanges.utf8))
-        #expect(lean.changes.isEmpty)
-    }
-
-    @Test func specAnswerEncodesSnakeCaseKeysWithOptionIds() throws {
-        // An answer carries option IDs (not labels) — snake_case wire keys.
-        let answer = SpecAnswer(questionId: "q1", optionIds: ["opt-sqlite"], text: "and a cache")
-        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(answer)) as? [String: Any]
-        #expect(obj?["question_id"] as? String == "q1")
-        #expect(obj?["option_ids"] as? [String] == ["opt-sqlite"])
-        #expect(obj?["text"] as? String == "and a cache")
-    }
-
-    @Test func threadTurnRequestEncodesSpecPath() throws {
-        // An Implement-spec turn carries the server-returned spec FILE path.
-        let req = ThreadTurnRequest(prompt: "Implement the frozen spec.", mode: "agent",
-                                    specPath: "/repo/.claudexor/specs/spec-7f3a/spec.json")
-        let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(req)) as? [String: Any]
-        #expect(obj?["specPath"] as? String == "/repo/.claudexor/specs/spec-7f3a/spec.json")
-        #expect(obj?["mode"] as? String == "agent")
-        // Absent on a normal turn (the endpoint is .strict() — no stray key).
-        let plain = ThreadTurnRequest(prompt: "hi")
-        let plainObj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(plain)) as? [String: Any]
-        #expect(plainObj?["specPath"] == nil)
-    }
-
     @Test func threadTurnRequestEncodesPerTurnModel() throws {
         // A per-turn model override forwards under the same key the run-start request
         // uses (the turn endpoint .strict()-parses it).
@@ -1769,7 +1682,7 @@ import Testing
         #expect(step == 3)
     }
 
-    @Test func gatewayHealthNegotiatesV2BeforeReportingReady() async throws {
+    @Test func gatewayHealthNegotiatesV3BeforeReportingReady() async throws {
         defer { RequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RequestStubURLProtocol.self]
@@ -1782,14 +1695,16 @@ import Testing
             case ("GET", "/healthz"):
                 return (Self.response(for: request), Data(#"{"ok":true}"#.utf8))
             case ("POST", "/v2/handshake"):
-                guard request.value(forHTTPHeaderField: "X-Claudexor-Protocol-Major") == "2",
+                // The negotiated major moved to 3 (v3.0.0 broke the contracts);
+                // the /v2 URL prefix is a frozen path spelling, not the contract.
+                guard request.value(forHTTPHeaderField: "X-Claudexor-Protocol-Major") == "3",
                       let body = testRequestBody(request),
-                      String(decoding: body, as: UTF8.self).contains(#""protocolMajor":2"#) else {
+                      String(decoding: body, as: UTF8.self).contains(#""protocolMajor":3"#) else {
                     throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
                 }
                 return (
                     Self.response(for: request),
-                    Data(#"{"protocolMajor":2,"compatible":true,"operationsPath":"/v2/operations"}"#.utf8)
+                    Data(#"{"protocolMajor":3,"compatible":true,"operationsPath":"/v2/operations","engine":{"version":"3.0.0","sha":"unknown","entry":"/opt/claudexor/daemon.js"}}"#.utf8)
                 )
             default:
                 throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")

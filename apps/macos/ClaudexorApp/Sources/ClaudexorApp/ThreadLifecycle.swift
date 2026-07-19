@@ -15,7 +15,9 @@ extension AppModel {
             let detail = try await client.threadDetail(id: id)
             guard selectedThreadId == id, threadLoadGeneration == generation else { return }
             selectedThreadDetail = detail
-            await recoverSpecFlow(threadId: id, repoRoot: detail.thread.repoRoot)
+            // M5b: opening a thread used to recover any durable spec session
+            // (recoverSpecFlow) into its per-thread card; the plan lifecycle's
+            // recovery is a later cut.
             guard selectedThreadId == id, threadLoadGeneration == generation else { return }
             evictBackgroundRunData()
             for turn in detail.turns.suffix(5) {

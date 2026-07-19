@@ -26,7 +26,7 @@ public final class GatewayClient: Sendable {
         req.httpMethod = method
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if externalPath != "healthz" {
-            req.setValue("2", forHTTPHeaderField: "X-Claudexor-Protocol-Major")
+            req.setValue("3", forHTTPHeaderField: "X-Claudexor-Protocol-Major")
         }
         if method == "POST" { req.setValue(UUID().uuidString, forHTTPHeaderField: "Idempotency-Key") }
         if let timeout { req.timeoutInterval = timeout }

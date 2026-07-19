@@ -106,12 +106,47 @@ public struct QuotaSnapshot: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// A registered subject's typed missing-snapshot (D29): absence is STATED,
+/// never inferred from empty snapshots (zen: absence ≠ empty).
+public struct QuotaAbsence: Codable, Sendable, Equatable, Identifiable {
+    public let subject: QuotaSubject
+    /// not_logged_in | transport_unavailable | platform_unsupported |
+    /// refresh_failed | no_source
+    public let reason: String
+    public let detail: String?
+    public let observedAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case subject, reason, detail
+        case observedAt = "observed_at"
+    }
+
+    public var id: String {
+        [subject.harness, subject.credentialRoute, subject.subjectId ?? "", reason].joined(separator: ":")
+    }
+}
+
 public struct ControlQuotaResponse: Codable, Sendable, Equatable {
     public let snapshots: [QuotaSnapshot]
+    /// Every registered subject reports either a snapshot or a typed absence.
+    public let absences: [QuotaAbsence]
     public let refreshedAt: String?
 
     private enum CodingKeys: String, CodingKey {
-        case snapshots
+        case snapshots, absences
         case refreshedAt = "refreshed_at"
+    }
+
+    public init(snapshots: [QuotaSnapshot], absences: [QuotaAbsence] = [], refreshedAt: String?) {
+        self.snapshots = snapshots
+        self.absences = absences
+        self.refreshedAt = refreshedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        snapshots = try c.decode([QuotaSnapshot].self, forKey: .snapshots)
+        absences = try c.decodeIfPresent([QuotaAbsence].self, forKey: .absences) ?? []
+        refreshedAt = try c.decodeIfPresent(String.self, forKey: .refreshedAt)
     }
 }

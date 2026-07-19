@@ -20,6 +20,8 @@ public struct ThreadSummary: Codable, Sendable, Identifiable, Equatable {
     public let primaryHarness: String?
     /// Sticky eligible pool for the thread (absent on legacy payloads => nil).
     public let eligibleHarnesses: [String]?
+    /// Sticky write scope for write turns (D26); nil = repo trust default.
+    public let access: String?
     public let state: String?
     public let trashedAt: String?
     public let purgeAfter: String?
@@ -98,6 +100,8 @@ public struct TurnRunCard: Codable, Sendable, Equatable {
     public let strategy: String?
     public let n: Int?
     public let result: RunResult?
+    /// D8 terminal outcome axes (checks/review/reason/noChanges); nil while non-terminal.
+    public let outcomeFacts: RunOutcomeFacts?
     public let spendUsd: Double?
     public let outputReadyState: String?
     public let waitingOnUser: Bool?
@@ -139,6 +143,39 @@ public struct TurnEnqueueErrorInfo: Codable, Sendable, Equatable {
     }
 }
 
+/// The lane a turn switched AWAY from (INV-137); null for an in-lane continuation.
+public struct LaneSwitchedFrom: Codable, Sendable, Equatable {
+    public let harness: String
+    /// Profile of the lane switched away from; nil = engine default.
+    public let profileId: String?
+
+    public init(harness: String, profileId: String?) {
+        self.harness = harness
+        self.profileId = profileId
+    }
+}
+
+/// How a turn's lane was continued (INV-137): native resume, a continuation
+/// packet (with the delta-turn count + whether the older prefix was collapsed),
+/// or a fresh start. Surfaces render a one-line disclosure from this; nil until
+/// the engine stamps the lane.
+public struct ThreadTurnContinuity: Codable, Sendable, Equatable {
+    /// native_resume | packet | fresh
+    public let kind: String
+    /// Delta turns carried in the continuation packet (0 for native_resume/fresh).
+    public let packetTurns: Int
+    /// True when the packet collapsed an older prefix (mechanical fallback).
+    public let summarized: Bool
+    public let laneSwitchedFrom: LaneSwitchedFrom?
+
+    public init(kind: String, packetTurns: Int, summarized: Bool, laneSwitchedFrom: LaneSwitchedFrom?) {
+        self.kind = kind
+        self.packetTurns = packetTurns
+        self.summarized = summarized
+        self.laneSwitchedFrom = laneSwitchedFrom
+    }
+}
+
 public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
     public let id: String
     public let threadId: String
@@ -153,11 +190,14 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
     /// Present when the turn's run could not be enqueued (refusal reason);
     /// nil once a run binds (retry clears it server-side).
     public let enqueueError: TurnEnqueueErrorInfo?
+    /// How this turn's lane was continued (INV-137); nil until stamped.
+    public let continuity: ThreadTurnContinuity?
     public let createdAt: String
 
     public init(id: String, threadId: String, runId: String?, parentRunId: String?,
                 planRunId: String?, kind: String?, prompt: String, run: TurnRunCard?,
-                enqueueError: TurnEnqueueErrorInfo? = nil, createdAt: String) {
+                enqueueError: TurnEnqueueErrorInfo? = nil,
+                continuity: ThreadTurnContinuity? = nil, createdAt: String) {
         self.id = id
         self.threadId = threadId
         self.runId = runId
@@ -167,6 +207,7 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
         self.prompt = prompt
         self.run = run
         self.enqueueError = enqueueError
+        self.continuity = continuity
         self.createdAt = createdAt
     }
 }
@@ -347,9 +388,9 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var browser: Bool?
     /// Implement an approved plan from an earlier turn (forces agent mode).
     public var planRunId: String?
-    /// Implement a FROZEN spec: the path to the SpecPack file the orchestrator
-    /// reads (fails loudly if unreadable). Carried by an Implement-spec turn.
-    public var specPath: String?
+    /// Implement-plan only: explicitly proceed although the plan still has open
+    /// questions (D17); recorded on the turn for provenance. nil = default gate.
+    public var overridePlanReadiness: Bool?
     /// Files/images attached to this turn by immutable daemon resource id.
     public var attachments: [ResourceAttachmentRef]?
     /// Optional per-turn gate/test command list; mirrors ControlRunStartRequest.
@@ -368,7 +409,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
                 reviewerModels: [String: String]? = nil, reviewerEfforts: [String: String]? = nil,
                 access: String? = nil, web: String? = nil, browser: Bool? = nil, planRunId: String? = nil,
-                specPath: String? = nil, attachments: [ResourceAttachmentRef]? = nil,
+                overridePlanReadiness: Bool? = nil, attachments: [ResourceAttachmentRef]? = nil,
                 tests: [TestCommandInvocation]? = nil, protectedPathApprovals: [ProtectedPathApproval]? = nil,
                 authPreference: String? = nil, effort: String? = nil) {
         self.prompt = prompt
@@ -390,7 +431,7 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.web = web
         self.browser = browser
         self.planRunId = planRunId
-        self.specPath = specPath
+        self.overridePlanReadiness = overridePlanReadiness
         self.attachments = attachments
         self.tests = tests
         self.protectedPathApprovals = protectedPathApprovals

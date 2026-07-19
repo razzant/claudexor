@@ -82,65 +82,6 @@ struct ApplyThreadBar: View {
     }
 }
 
-/// Renders a turn's live transcript: reasoning (collapsible), tool calls (compact
-/// mono rows with a status glyph), and assistant messages. Built from the
-/// `TranscriptReducer` fold of the SSE stream.
-/// The frozen-spec card: the SpecPack is sealed (id + hash + change count) and an
-/// Implement button (styled like "Implement plan") sends an agent turn that reads
-/// the spec FILE. The path is server-returned (never composed in Swift).
-struct SpecFrozenCard: View {
-    @Environment(AppModel.self) private var model
-    /// The OWNING thread (captured at render) so Implement targets it, not selection.
-    let threadId: String
-    let sessionId: String
-    let specId: String
-    let specPath: String
-    let specHash: String
-    let changes: Int
-    let recovered: Bool
-    @State private var implementing = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack(spacing: Theme.Spacing.sm) {
-                Image(systemName: "snowflake").foregroundStyle(Theme.accent)
-                Text("Spec frozen").font(.subheadline.weight(.semibold))
-                Spacer()
-                // Dismiss the frozen card without implementing (otherwise the card is
-                // a dead-end — the user froze a spec but chose not to run it).
-                Button("Dismiss") { model.cancelSpec(threadId: threadId) }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(implementing)
-                    .help("Clear this frozen spec without implementing it")
-                Button(implementing ? "Implementing…" : recovered ? "Implement with defaults" : "Implement") {
-                    implementing = true
-                    Task {
-                        await model.implementSpec(
-                            threadId: threadId, sessionId: sessionId, specPath: specPath)
-                        implementing = false
-                    }
-                }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-                // Can't start an Implement turn over a live head run (composerSend
-                // also rejects it; the button reflects the invariant).
-                .disabled(implementing || model.selectedThreadBusy)
-                .help("Run an agent turn that implements this frozen spec")
-            }
-            HStack(spacing: Theme.Spacing.md) {
-                Label(specId, systemImage: "doc.badge.gearshape")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                Label(String(specHash.prefix(12)), systemImage: "number")
-                    .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-                    .help("Spec hash \(specHash)")
-                Label("\(changes) change\(changes == 1 ? "" : "s")", systemImage: "plusminus")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if recovered {
-                Text("Run options from before restart are unavailable. Implement uses the thread's current defaults.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(Theme.Spacing.lg)
-        .cardSurface(stroke: true, strokeColor: Theme.accent.opacity(0.5))
-    }
-}
+// M5b: the frozen-spec turn card (SpecFrozenCard — id/hash/change badges + an
+// Implement affordance that sent an agent turn over the spec file) was removed with
+// the dead spec flow; the plan lifecycle's implement affordance is a later cut.

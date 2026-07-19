@@ -88,59 +88,10 @@ struct AppModelRefreshTests {
         #expect(model.quotaStatus == nil)
     }
 
-    @MainActor
-    @Test func durableSpecSessionRestoresItsOwningThreadAfterRestart() async {
-        defer { AppRequestStubURLProtocol.handler = nil }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [AppRequestStubURLProtocol.self]
-        let model = AppModel(client: GatewayClient(
-            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
-            session: URLSession(configuration: config)
-        ), requestNotificationAuthorization: false)
-        AppRequestStubURLProtocol.handler = { request in
-            guard request.url?.path == "/v2/spec/sessions" else {
-                throw AppRefreshTestError.badRequest
-            }
-            let json = #"{"sessions":[{"sessionId":"spec-1","threadId":"th-1","prompt":"improve it","scope":{"kind":"project","root":"/tmp/project","context":"auto"},"state":"questions","planRunId":"plan-1","questions":[{"id":"q1","tier":0,"prompt":"Style?","kind":"single","options":[{"id":"o1","label":"Neon"}],"allow_text":false,"rationale":null}],"answers":[],"priorDecisions":[],"specId":null,"specPath":null,"specHash":null,"error":null,"updatedAt":"2026-07-18T00:00:00Z"}]}"#
-            return (appResponse(for: request), Data(json.utf8))
-        }
-
-        await model.recoverSpecFlow(threadId: "th-1", repoRoot: "/tmp/project")
-
-        guard case .askingQuestions(let prompt, let questions, let planDir, _, _, _)
-            = model.specFlowByThread["th-1"] else {
-            Issue.record("expected restored askingQuestions state")
-            return
-        }
-        #expect(prompt == "improve it")
-        #expect(questions.map(\.id) == ["q1"])
-        #expect(planDir == "spec-1")
-    }
-
-    @MainActor
-    @Test func interruptedSpecRestoresWithExplicitResumeInsteadOfBlankChat() async {
-        defer { AppRequestStubURLProtocol.handler = nil }
-        let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [AppRequestStubURLProtocol.self]
-        let model = AppModel(client: GatewayClient(
-            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
-            session: URLSession(configuration: config)
-        ), requestNotificationAuthorization: false)
-        AppRequestStubURLProtocol.handler = { request in
-            let json = #"{"sessions":[{"sessionId":"spec-interrupted","threadId":"th-1","prompt":"improve it","scope":{"kind":"project","root":"/tmp/project","context":"auto"},"state":"interrupted_unknown","planRunId":null,"questions":[],"answers":[],"priorDecisions":[],"specId":null,"specPath":null,"specHash":null,"error":"daemon restarted","updatedAt":"2026-07-18T00:00:00Z"}]}"#
-            return (appResponse(for: request), Data(json.utf8))
-        }
-
-        await model.recoverSpecFlow(threadId: "th-1", repoRoot: "/tmp/project")
-
-        guard case .interrupted(let sessionId, let message)
-            = model.specFlowByThread["th-1"] else {
-            Issue.record("expected an explicit interrupted state")
-            return
-        }
-        #expect(sessionId == "spec-interrupted")
-        #expect(message == "daemon restarted")
-    }
+    // M5b: durableSpecSessionRestoresItsOwningThreadAfterRestart and
+    // interruptedSpecRestoresWithExplicitResumeInsteadOfBlankChat were removed with
+    // the dead spec flow (recoverSpecFlow / specFlowByThread no longer exist); the
+    // plan lifecycle's recovery gets its own coverage in a later cut.
 
     @MainActor
     @Test func runListRefreshDoesNotNPlusOneHydrateEmptyReviewFindings() async {

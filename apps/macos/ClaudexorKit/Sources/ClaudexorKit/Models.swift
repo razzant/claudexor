@@ -109,174 +109,6 @@ public struct StartRunRequest: Codable, Sendable {
     }
 }
 
-// MARK: - SPEC-FLOW (server-owned interview: questions -> answers -> freeze)
-
-/// Body for POST /spec/sessions — create a durable grounding session and
-/// extract the open-questions interview. Mirrors ControlSpecQuestionsRequest.
-/// One already-answered decision carried into a deeper interview tier so the
-/// server asks the NEXT layer instead of re-asking. Mirrors control priorDecisions.
-public struct SpecPriorDecision: Codable, Sendable, Equatable {
-    public let question: String
-    public let answer: String
-    public init(question: String, answer: String) {
-        self.question = question
-        self.answer = answer
-    }
-}
-
-public struct SpecQuestionsRequest: Codable, Sendable {
-    public var prompt: String
-    public var threadId: String?
-    public var scope: RunScope
-    public var harnesses: [String]?
-    /// Accumulated prior-tier decisions → the interview goes deeper each round.
-    public var priorDecisions: [SpecPriorDecision]?
-
-    public init(prompt: String, threadId: String? = nil, scope: RunScope,
-                harnesses: [String]? = nil, priorDecisions: [SpecPriorDecision]? = nil) {
-        self.prompt = prompt
-        self.threadId = threadId
-        self.scope = scope
-        self.harnesses = harnesses
-        self.priorDecisions = priorDecisions
-    }
-}
-
-/// One option of an interview question (id is the wire value an answer carries,
-/// label is the human text shown on the chip). Mirrors InterviewOption.
-public struct SpecOption: Codable, Sendable, Equatable, Hashable {
-    public let id: String
-    public let label: String
-
-    public init(id: String, label: String) {
-        self.id = id
-        self.label = label
-    }
-}
-
-/// One interview "quiz card". `tier` is hierarchical depth (0 = foundational;
-/// v1 is single-tier). `kind` is single | multi | text; `allowText` permits a
-/// free-text answer in addition to / instead of the options. Mirrors
-/// InterviewQuestion (snake_case `allow_text`).
-public struct SpecQuestion: Codable, Sendable, Identifiable, Equatable, Hashable {
-    public let id: String
-    public let tier: Int
-    public let prompt: String
-    public let kind: String
-    public let options: [SpecOption]
-    public let allowText: Bool
-    public let rationale: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, tier, prompt, kind, options, rationale
-        case allowText = "allow_text"
-    }
-
-    public init(id: String, tier: Int = 0, prompt: String, kind: String = "single",
-                options: [SpecOption] = [], allowText: Bool = false, rationale: String? = nil) {
-        self.id = id
-        self.tier = tier
-        self.prompt = prompt
-        self.kind = kind
-        self.options = options
-        self.allowText = allowText
-        self.rationale = rationale
-    }
-
-    /// Tolerate payloads that omit defaulted fields (tier/kind/options/allow_text).
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        tier = try c.decodeIfPresent(Int.self, forKey: .tier) ?? 0
-        prompt = try c.decode(String.self, forKey: .prompt)
-        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "single"
-        options = try c.decodeIfPresent([SpecOption].self, forKey: .options) ?? []
-        allowText = try c.decodeIfPresent(Bool.self, forKey: .allowText) ?? false
-        rationale = try c.decodeIfPresent(String.self, forKey: .rationale)
-    }
-}
-
-/// App-facing projection of a durable spec session after grounding. Empty
-/// `questions` means there is nothing to ask and the session can freeze directly.
-public struct SpecQuestionsResponse: Codable, Sendable {
-    public let planRunId: String
-    public let planDir: String
-    public let questions: [SpecQuestion]
-}
-
-/// One answer to an interview question: option ids selected (NOT labels) and/or
-/// free text. Mirrors InterviewAnswer (snake_case keys).
-public struct SpecAnswer: Codable, Sendable, Equatable {
-    public let questionId: String
-    public let optionIds: [String]
-    public let text: String?
-
-    enum CodingKeys: String, CodingKey {
-        case questionId = "question_id"
-        case optionIds = "option_ids"
-        case text
-    }
-
-    public init(questionId: String, optionIds: [String] = [], text: String? = nil) {
-        self.questionId = questionId
-        self.optionIds = optionIds
-        self.text = text
-    }
-}
-
-/// App-facing freeze input. The gateway first journals answers on the durable
-/// session and then asks that session to freeze. Unresolved clarifications fail.
-public struct SpecFreezeRequest: Codable, Sendable {
-    public var prompt: String
-    public var scope: RunScope
-    public var planDir: String?
-    public var plan: String?
-    public var answers: [SpecAnswer]?
-    /// Accumulated prior-tier interview decisions, folded into the frozen
-    /// SpecPack's decided_tradeoffs so a multi-tier spec keeps every tier.
-    public var priorDecisions: [SpecPriorDecision]?
-
-    public init(prompt: String, scope: RunScope, planDir: String? = nil,
-                plan: String? = nil, answers: [SpecAnswer]? = nil, priorDecisions: [SpecPriorDecision]? = nil) {
-        self.prompt = prompt
-        self.scope = scope
-        self.planDir = planDir
-        self.plan = plan
-        self.answers = answers
-        self.priorDecisions = priorDecisions
-    }
-}
-
-/// Projection of a frozen durable spec session. `specPath` is the file an
-/// Implement run reads (a bare specId does not load content). `changes` is a
-/// section-level diff vs the prior revision (opaque to the UI — count it).
-public struct SpecFreezeResponse: Codable, Sendable {
-    public let specId: String
-    public let specDir: String
-    public let specPath: String
-    public let specHash: String
-    public let changes: [JSONValue]
-
-    enum CodingKeys: String, CodingKey { case specId, specDir, specPath, specHash, changes }
-
-    public init(specId: String, specDir: String, specPath: String, specHash: String, changes: [JSONValue] = []) {
-        self.specId = specId
-        self.specDir = specDir
-        self.specPath = specPath
-        self.specHash = specHash
-        self.changes = changes
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        specId = try c.decode(String.self, forKey: .specId)
-        specDir = try c.decode(String.self, forKey: .specDir)
-        specPath = try c.decode(String.self, forKey: .specPath)
-        specHash = try c.decode(String.self, forKey: .specHash)
-        changes = try c.decodeIfPresent([JSONValue].self, forKey: .changes) ?? []
-    }
-}
-
 // MARK: - Operator decisions (review queue actions)
 
 public struct RunDecisionRequest: Codable, Sendable {
@@ -453,8 +285,6 @@ public struct RunSummary: Codable, Sendable, Identifiable, Equatable {
     /// Auth route receipt incl. requested-vs-observed model mismatch (W10/W20).
     public let authRoute: RunAuthRoute?
     public let tests: [TestCommandInvocation]?
-    public let specId: String?
-    public let specHash: String?
     public let createdAt: String?
     public let startedAt: String?
     public let finishedAt: String?
@@ -522,12 +352,30 @@ public struct TimelineEvent: Codable, Sendable, Identifiable, Equatable {
     public let rawRef: String?
 }
 
+/// Budget snapshot for a run (v3): the tagged cash cap, spend, and provenance.
+/// `paidBudget` replaces the old flat `maxUsd` — the cap is `.finite`/`.unlimited`.
 public struct BudgetSnapshot: Codable, Sendable, Equatable {
-    public let maxUsd: Double?
+    public let paidBudget: PaidBudget
+    /// CASH spend so far in USD; null when unknown.
     public let spendUsd: Double?
+    /// Remaining budget in USD; null when no cap or unknown spend.
     public let remainingUsd: Double?
+    /// True when spend is token-derived rather than natively reported.
     public let estimated: Bool
+    /// Where the snapshot came from: decision | events | settings | unknown.
     public let source: String
+
+    /// Convenience projection: the finite USD cap when capped, nil when unlimited.
+    public var maxUsd: Double? { paidBudget.finiteMaxUsd }
+
+    public init(paidBudget: PaidBudget, spendUsd: Double?, remainingUsd: Double?,
+                estimated: Bool, source: String) {
+        self.paidBudget = paidBudget
+        self.spendUsd = spendUsd
+        self.remainingUsd = remainingUsd
+        self.estimated = estimated
+        self.source = source
+    }
 }
 
 /// One option of a pending interactive question.

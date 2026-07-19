@@ -30,40 +30,9 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - SPEC-FLOW state
-
-/// The client-side state of the SPEC-FLOW for the CURRENT thread (questions →
-/// answers → deeper questions → freeze → implement). The interview is multi-tier
-/// via `priorDecisions`; the frozen SpecPack remains one immutable contract
-/// commit. The flow is keyed to a thread id so switching threads never shows a
-/// stale spec card.
-enum SpecFlowState: Equatable {
-    /// The grounding plan is running (pre-questions): session creation is in flight,
-    /// reading the repo to derive the interview. NOTHING is frozen yet — this is a
-    /// distinct phase from `.freezing` so the spinner doesn't claim "freezing the
-    /// SpecPack" while only the grounding plan runs (it can take minutes).
-    case grounding
-    /// The grounding plan ran; these questions await the user. `prompt` is the
-    /// user's ORIGINAL spec intent — carried so the freeze call posts the exact same
-    /// prompt the grounding plan ran on (not a stale head-turn prompt). `planDir`/
-    /// `planRunId` thread back into the freeze call; `answers` are accumulated
-    /// client-side. `error` is non-nil after an unresolved-clarifications 400 re-opens
-    /// this card.
-    case askingQuestions(prompt: String, questions: [SpecQuestion], planDir: String, planRunId: String, answers: [SpecAnswer], error: String?)
-    /// The freeze call is in flight (assembling + persisting the SpecPack).
-    case freezing(sessionId: String)
-    /// A server-owned grounding/freezing job recovered after app restart.
-    case recovering(sessionId: String, phase: String)
-    /// An interrupted/failed durable session requiring an explicit resume.
-    case interrupted(sessionId: String, message: String)
-    /// The SpecPack is frozen and ready to implement (carries the file path an
-    /// Implement turn reads).
-    case frozen(sessionId: String, specId: String, specPath: String, specHash: String,
-                changes: Int, recovered: Bool)
-    /// An honest, surfaced failure (e.g. unresolved-clarifications 400) — the
-    /// question card stays open and shows this message.
-    case error(String)
-}
+// M5b: the client-side SPEC-FLOW state machine (grounding → questions → freeze →
+// implement) was removed with the v3 wire contract; the plan lifecycle replaces it
+// and its composer/turn UI is a later cut.
 
 // MARK: - App model
 
@@ -118,35 +87,9 @@ final class AppModel {
     var selectedThreadId: String?
     var selectedThreadDetail: ThreadDetailResponse?
     var threadStatus: String?
-    /// SPEC-FLOW state (questions → freeze → implement) keyed PER THREAD. Keyed —
-    /// not a single slot — so a long spec create or freeze await that
-    /// returns AFTER the user switched threads still records its result on the
-    /// OWNING thread (never stranding that thread's card at `.grounding`/`.freezing`),
-    /// and a concurrent spec on another thread is never clobbered. `specFlow` reads
-    /// only the selected thread's entry, so a switch hides a non-current card.
-    var specFlowByThread: [String: SpecFlowState] = [:]
-    /// Per-thread SPEC-FLOW generation. Spec grounding/freeze are NOT thread turns,
-    /// so `selectedThreadBusy` can't block a second Spec on the same thread — two
-    /// in-flight spec create (or a cancel mid-grounding) would otherwise race
-    /// and the LAST response would clobber the newest interview. Each start / submit
-    /// / cancel bumps the generation; an await that returns stale (its gen is no
-    /// longer current) drops its write instead of overwriting fresher state.
-    var specFlowGen: [String: Int] = [:]
-    /// Per-turn model + options the user set in the composer when they STARTED a
-    /// spec, kept per thread so the eventual Implement turn honors them (the visible
-    /// composer controls would otherwise be silently ignored by the spec flow). The
-    /// grounding plan / freeze run read-only on harness defaults; these apply to the
-    /// write turn that implements the frozen spec.
-    var specPendingModel: [String: String] = [:]
-    var specPendingOptions: [String: TurnOptions] = [:]
-    /// Accumulated decisions across interview tiers (per thread) — each "Ask deeper"
-    /// round carries them so the server surfaces the NEXT layer instead of re-asking.
-    var specPrior: [String: [SpecPriorDecision]] = [:]
-    /// The active SPEC-FLOW state — scoped to the selected thread (nil otherwise).
-    var specFlow: SpecFlowState? {
-        guard let tid = selectedThreadId else { return nil }
-        return specFlowByThread[tid]
-    }
+    // M5b: per-thread SPEC-FLOW state (specFlowByThread/specFlowGen/specPendingModel/
+    // specPendingOptions/specPrior + the `specFlow` accessor) was removed with the
+    // dead spec flow; the plan lifecycle's per-thread state is a later cut.
     /// DRAFT-thread routing (before the first message materializes a thread): the
     /// composer edits these; once a thread exists, primary/pool are sticky on the
     /// thread (PATCHed via setPrimaryHarness/setEligiblePool). nil/[] => inherit
@@ -333,11 +276,6 @@ final class AppModel {
         selectedThreadDetail = nil
         threadStatus = nil
         threadLoadGeneration += 1
-        specFlowByThread.removeAll()
-        specFlowGen.removeAll()
-        specPendingModel.removeAll()
-        specPendingOptions.removeAll()
-        specPrior.removeAll()
 
         liveHarnesses.removeAll()
         exactAuthSources.removeAll()
@@ -1089,7 +1027,7 @@ final class AppModel {
     /// Binding the target removes the thread-selection race: an action begun on one
     /// thread can't be re-pointed at a different thread the user switched to during
     /// the async send.
-    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [PendingAttachment] = [], options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
+    func composerSend(prompt: String, mode: RunMode, planRunId: String? = nil, model: String? = nil, attachments: [PendingAttachment] = [], options: TurnOptions = .init(), onThread explicitThreadId: String? = nil) async -> Bool {
         let targetId = explicitThreadId ?? selectedThreadId
         // Single busy gate for EVERY turn-start path (composer, Implement-plan,
         // Implement-spec all funnel through here), so none can start a turn over a
@@ -1111,7 +1049,7 @@ final class AppModel {
             guard threadId != nil else { return false } // newThread set threadStatus on failure
         }
         guard let tid = threadId else { return false }
-        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, specPath: specPath, model: model, attachments: attachments, options: options)
+        return await sendTurn(threadId: tid, prompt: prompt, mode: mode, planRunId: planRunId, model: model, attachments: attachments, options: options)
     }
 
     /// Trim + drop empty entries; nil when nothing remains (key omitted on the wire).
@@ -1126,14 +1064,14 @@ final class AppModel {
     /// Send a follow-up turn; returns true if the engine ACCEPTED it. The native
     /// session resumes (plan -> implement is one conversation).
     @discardableResult
-    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, specPath: String? = nil, model: String? = nil, attachments: [PendingAttachment] = [], options: TurnOptions = .init()) async -> Bool {
+    func sendTurn(threadId: String, prompt: String, mode: RunMode, planRunId: String? = nil, model: String? = nil, attachments: [PendingAttachment] = [], options: TurnOptions = .init()) async -> Bool {
         guard let client else {
             threadStatus = "Engine offline — reconnect before sending."
             return false
         }
-        // `.spec` is NOT a wire turn — it is driven client-side via startSpec
-        // (questions) + implementSpec (which sends an .agent turn with specPath).
-        // Reject both the sentinel mode and a leaked spec mode loudly here.
+        // M5b: `.spec` has no wire turn and its client-side driver was removed; reject
+        // the sentinel mode (and any leaked spec mode) loudly until the plan lifecycle
+        // composer lands.
         guard mode != .unknown, mode != .spec else {
             threadStatus = "Unknown mode — pick an intent from the composer."
             return false
@@ -1192,7 +1130,6 @@ final class AppModel {
                 web: options.web,
                 browser: options.browser ? true : nil,
                 planRunId: planRunId,
-                specPath: specPath,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
                 protectedPathApprovals: options.protectedPathApprovals,
                 authPreference: options.authRoute,
