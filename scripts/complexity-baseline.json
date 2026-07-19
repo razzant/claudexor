@@ -12,7 +12,7 @@
   "packages/cli/src/command-registry.ts": 501,
   "packages/cli/src/plugins.ts": 1860,
   "packages/cli/src/setup-jobs.ts": 1221,
-  "packages/control-api/src/daemon-server.ts": 2688,
+  "packages/control-api/src/daemon-server.ts": 2744,
   "packages/daemon/src/journal-manager.ts": 582,
   "packages/daemon/src/server.ts": 643,
   "packages/harness-claude/src/index.ts": 953,
@@ -22,6 +22,6 @@
   "packages/mcp-server/src/index.ts": 699,
   "packages/orchestrator/src/orchestrator.ts": 6613,
   "packages/review/src/reviewEngine.ts": 1396,
-  "packages/schema/src/control.ts": 1509,
+  "packages/schema/src/control.ts": 1523,
   "packages/schema/src/harness.ts": 929
 }
