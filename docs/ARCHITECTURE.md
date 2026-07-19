@@ -770,6 +770,21 @@ questions remain), or `unverified` (no parseable block) — and every surface
 consumes the projection; nothing re-parses plan text. Answers are ordinary
 turns in the same conversation, not a separate session identity.
 
+The open questions themselves ride the SAME projection: `ControlRunDetail`
+carries `planQuestions` (the parsed `PlanQuestion[]`) beside `planReadiness`,
+from one artifact read — so surfaces RENDER questions without re-parsing.
+The interactive CLI (a TTY plan turn on a thread) offers to answer inline
+(numbered pick for `single`, comma-separated for `multi`, free line for `text`,
+blank to skip) and submits the composed answers as an ordinary follow-up plan
+turn through `POST /v2/threads/:id/turns` — the same lane, no separate answer
+channel; non-TTY/`--json` prints readiness + guidance only. The ACP surface
+(chat-first, Zed) renders the question set as TURN TEXT (numbered, options
+inline, marked which accept multiple picks or free text) and ends the turn
+normally; the user's next prompt is an ordinary follow-up plan turn. ACP's
+`session/requestPermission` bridge stays reserved for single-choice RUN-TIME
+interactions (the SDK 1.2.x has no multi-select/free-text typed input, so the
+end-of-turn question batch is rendered as text rather than a faked typed form).
+
 Implement is a normal agent thread turn that carries `planRunId`
 (`POST /v2/threads/:id/turns`). The server FREEZES the referenced plan: it reads
 the plan artifact, records its `sha256` on the turn (`plan_hash`), and hands the

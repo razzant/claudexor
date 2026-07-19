@@ -375,6 +375,27 @@ export async function fetchPlanReadiness(
   }
 }
 
+/** The plan run's open questions (D17), projected from GET /runs/:id — the
+ * SAME server artifact readiness derives from, never a client re-parse. Empty
+ * for ready/unverified plans and every non-plan run. */
+export async function fetchPlanQuestions(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<import("@claudexor/schema").PlanQuestion[]> {
+  if (!runId) return [];
+  try {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
+    if (!res.ok) return [];
+    const detail = (await res.json()) as Record<string, unknown>;
+    const v = detail["planQuestions"];
+    return Array.isArray(v) ? (v as import("@claudexor/schema").PlanQuestion[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Council membership + merge disclosure (INV-031) for a --council plan run;
  * null for solo plans and non-plan runs. Server-projected — the CLI never
  * re-derives membership. */

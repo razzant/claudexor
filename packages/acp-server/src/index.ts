@@ -8,7 +8,12 @@ import {
 } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import { acpStopReason } from "@claudexor/schema";
-import { extractPromptText, summarizeResult } from "./prompt.js";
+import {
+  extractPromptText,
+  renderPlanQuestions,
+  summarizeResult,
+  type AcpPlanQuestion,
+} from "./prompt.js";
 import { validateRunControls } from "./validate.js";
 
 export const ACP_PROTOCOL_VERSION = acp.PROTOCOL_VERSION;
@@ -147,6 +152,20 @@ export class AcpServer {
           )) as Record<string, unknown>;
           const summary = summarizeResult(result);
           if (summary) await this.agentMessage(client, params.sessionId, summary);
+          // Plan lifecycle (D14/D17): a plan turn that ends needs_answers renders
+          // its ENGINE-parsed open questions as TURN TEXT and ends the turn — the
+          // user's next prompt is an ordinary follow-up plan turn on this same
+          // session (POST /threads/:id/turns), the same path every surface uses.
+          // Single-choice RUN-TIME interactions keep the requestPermission bridge
+          // (requestAnswers); this is the end-of-turn typed-question batch.
+          const planReadiness = result.planReadiness as { state?: string } | null | undefined;
+          if (planReadiness?.state === "needs_answers") {
+            const questions = Array.isArray(result.planQuestions)
+              ? (result.planQuestions as AcpPlanQuestion[])
+              : [];
+            const rendered = renderPlanQuestions(questions);
+            if (rendered) await this.agentMessage(client, params.sessionId, rendered);
+          }
           // `result.status` is the run LIFECYCLE (D8); the ACP stop reason is
           // projected through the ONE owner (acpStopReason).
           const status = typeof result.status === "string" ? result.status : "unknown";

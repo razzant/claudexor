@@ -9,8 +9,50 @@ import { print, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 
+/**
+ * CLI global setting key -> the ControlSettingsUpdateRequest field it writes.
+ * The settings-coverage sweep test asserts every settable global field the
+ * daemon honors is reachable here — a NEW schema field with no CLI key FAILS
+ * the test (self-enforcing), so the surface can never silently lag the daemon.
+ */
+export const GLOBAL_SETTING_FIELDS = {
+  routing_goal: "routingGoal",
+  paid_fallback: "paidFallback",
+  quality_tiers: "qualityTiers",
+  interaction_timeout_ms: "interactionTimeoutMs",
+  primary_harness: "primaryHarness",
+  eligible_harnesses: "eligibleHarnesses",
+  env_inheritance: "envInheritance",
+  paid_budget_per_run: "paidBudgetPerRun",
+  auth_preference: "authPreference",
+} as const;
+
+/**
+ * CLI harness.<id>.<field> -> the ControlHarnessSettingsPatch field it writes.
+ * Same self-enforcing contract as the global map.
+ */
+export const HARNESS_SETTING_FIELDS = {
+  enabled: "enabled",
+  default_model: "defaultModel",
+  fallback_model: "fallbackModel",
+  effort: "effort",
+  max_turns: "maxTurns",
+  max_rounds: "maxRounds",
+  tools_allow: "toolsAllow",
+  tools_deny: "toolsDeny",
+  web: "web",
+  auth_preference: "authPreference",
+  profile_limit_action: "profileLimitAction",
+} as const;
+
+const HARNESS_KEY_RE = new RegExp(
+  `^harness\\.([^.]+)\\.(${Object.keys(HARNESS_SETTING_FIELDS).join("|")})$`,
+);
+
 const USAGE =
-  "usage: claudexor settings set routing_goal|paid_fallback|quality_tiers|primary_harness|eligible_harnesses|harness.<id>.default_model|harness.<id>.fallback_model|harness.<id>.effort|env_inheritance|routing_policy|paid_budget_per_run|interaction_timeout_ms <value>";
+  "usage: claudexor settings set <key> <value>\n" +
+  `  global keys: ${Object.keys(GLOBAL_SETTING_FIELDS).join(", ")}\n` +
+  `  harness keys: harness.<id>.{${Object.keys(HARNESS_SETTING_FIELDS).join(",")}}`;
 
 export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "show";
@@ -72,26 +114,64 @@ async function settingsRequest(
   return ControlSettingsSnapshot.parse(value);
 }
 
-function settingPatch(key: string, value: string): SettingsPatch {
+/** Parse one harness.<id>.<field> value into a ControlHarnessSettingsPatch
+ * partial. Enum/model values pass through to zod validation; typed fields
+ * (boolean/number/array) convert first. `none` clears nullable/list fields. */
+function harnessFieldPatch(field: keyof typeof HARNESS_SETTING_FIELDS, value: string): unknown {
+  const cleared = value === "none";
+  switch (field) {
+    case "enabled": {
+      if (value !== "true" && value !== "false")
+        throw new Error("harness enabled must be true or false");
+      return { enabled: value === "true" };
+    }
+    case "default_model":
+      return { defaultModel: cleared ? null : value };
+    case "fallback_model":
+      return { fallbackModel: cleared ? null : value };
+    case "effort":
+      return { effort: cleared ? null : value };
+    case "max_turns":
+    case "max_rounds": {
+      const patchKey = field === "max_turns" ? "maxTurns" : "maxRounds";
+      if (cleared) return { [patchKey]: null };
+      const n = Number(value.trim());
+      if (!Number.isInteger(n) || n <= 0)
+        throw new Error(`harness ${field} must be a positive integer or none`);
+      return { [patchKey]: n };
+    }
+    case "tools_allow":
+    case "tools_deny": {
+      const patchKey = field === "tools_allow" ? "toolsAllow" : "toolsDeny";
+      const list = cleared
+        ? []
+        : value
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean);
+      return { [patchKey]: list };
+    }
+    case "web":
+      return { web: value };
+    case "auth_preference":
+      return { authPreference: value };
+    case "profile_limit_action":
+      return { profileLimitAction: value };
+  }
+}
+
+export function settingPatch(key: string, value: string): SettingsPatch {
   if (key === "default_model") {
     throw new Error(
       "the global default_model setting was removed (model choice is harness-scoped, INV-103); use `claudexor settings set harness.<id>.default_model <model>`",
     );
   }
-  const harness = /^harness\.([^.]+)\.(default_model|fallback_model|effort)$/.exec(key);
+  const harness = HARNESS_KEY_RE.exec(key);
   if (harness) {
     const id = harness[1] as string;
-    const field = harness[2] as "default_model" | "fallback_model" | "effort";
-    const cleared = value === "none";
+    const field = harness[2] as keyof typeof HARNESS_SETTING_FIELDS;
     return ControlSettingsUpdateRequest.parse({
-      harnesses: {
-        [id]:
-          field === "default_model"
-            ? { defaultModel: cleared ? null : value }
-            : field === "fallback_model"
-              ? { fallbackModel: cleared ? null : value }
-              : { effort: cleared ? null : value },
-      },
+      harnesses: { [id]: harnessFieldPatch(field, value) },
     });
   }
   if (key === "default_portfolio") {
@@ -99,6 +179,8 @@ function settingPatch(key: string, value: string): SettingsPatch {
   }
   if (key === "routing_goal") return ControlSettingsUpdateRequest.parse({ routingGoal: value });
   if (key === "paid_fallback") return ControlSettingsUpdateRequest.parse({ paidFallback: value });
+  if (key === "auth_preference")
+    return ControlSettingsUpdateRequest.parse({ authPreference: value });
   if (key === "quality_tiers") {
     let qualityTiers: unknown;
     try {
@@ -148,6 +230,7 @@ function printSettings(settings: ReturnType<typeof ControlSettingsSnapshot.parse
     `routing.eligible_harnesses: ${settings.routing.eligibleHarnesses.length ? settings.routing.eligibleHarnesses.join(", ") : "(auto)"}`,
   );
   print(`routing.env_inheritance: ${settings.routing.envInheritance}`);
+  print(`routing.auth_preference: ${settings.routing.authPreference}`);
   print(
     `budget.paid_budget_per_run: ${settings.budget.paidBudgetPerRun.kind === "unlimited" ? "unlimited" : settings.budget.paidBudgetPerRun.maxUsd}`,
   );
@@ -163,7 +246,7 @@ function printSettings(settings: ReturnType<typeof ControlSettingsSnapshot.parse
   print("harnesses:");
   for (const [id, harness] of harnesses) {
     print(
-      `  ${id}: enabled=${harness.enabled} model=${harness.defaultModel ?? "(native)"} effort=${harness.effort ?? "(native)"} web=${harness.web} max_turns=${harness.maxTurns ?? "(none)"}`,
+      `  ${id}: enabled=${harness.enabled} model=${harness.defaultModel ?? "(native)"} fallback=${harness.fallbackModel ?? "(none)"} effort=${harness.effort ?? "(native)"} web=${harness.web} max_turns=${harness.maxTurns ?? "(none)"} max_rounds=${harness.maxRounds ?? "(default)"} auth=${harness.authPreference} limit_action=${harness.profileLimitAction}`,
     );
   }
 }

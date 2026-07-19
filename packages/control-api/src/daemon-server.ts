@@ -2421,6 +2421,7 @@ function detailFor(
   // "something to apply" banner signal (a convergence patch may carry kind:patch
   // with no meta.result_kind, so result.kind alone would miss it).
   const applyEligibility = applyEligibilityFor(rec, operator);
+  const planProjection = planProjectionFor(rec, summary.mode);
   return ControlRunDetail.parse({
     summary: { ...summary, waitingOnUser: pendingInteractions.length > 0 },
     // Server-owned outcome headline (D18), from the single projection owner —
@@ -2440,7 +2441,8 @@ function detailFor(
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     // Derived apply-gate verdict (single producer: delivery's
     // deriveApplyEligibility) — null when the run has no patch artifact.
-    planReadiness: planReadinessFor(rec, summary.mode),
+    planReadiness: planProjection.readiness,
+    planQuestions: planProjection.questions,
     council: councilFor(rec, summary.mode),
     applyEligibility,
     reviewFindings: readReviewFindings(rec),
@@ -2651,10 +2653,13 @@ function applyGateInputFor(
  * the run's own original project root.
  */
 
-function planReadinessFor(rec: DaemonRunRecord, mode: string | null | undefined) {
-  if (mode !== "plan" || !rec.runDir) return null;
-  const artifact = safeReadStructuredArtifact(rec, "final/questions.json", PlanQuestionsArtifact);
-  return artifact ? derivePlanReadiness(artifact) : null;
+/** Readiness AND open questions of a plan run, from ONE read of the same
+ * final/questions.json artifact (D17) — no plan-text re-parse, no double read. */
+function planProjectionFor(rec: DaemonRunRecord, mode: string | null | undefined) {
+  const empty = { readiness: null, questions: [] };
+  if (mode !== "plan" || !rec.runDir) return empty;
+  const a = safeReadStructuredArtifact(rec, "final/questions.json", PlanQuestionsArtifact);
+  return a ? { readiness: derivePlanReadiness(a), questions: a.questions } : empty;
 }
 
 /** Council membership + merge disclosure (INV-031), projected from

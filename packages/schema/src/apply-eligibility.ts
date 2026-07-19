@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RunOutcomeFacts } from "./decision.js";
+import { PlanReadiness } from "./plan.js";
 
 /**
  * ApplyEligibility — the derived "can this run's WorkProduct be applied RIGHT
@@ -67,6 +68,66 @@ export const McpRunToolResult = z
     applyEligibility: ApplyEligibility.nullable().describe(
       "Apply-gate verdict for mutating runs; null for read-only routes or when no patch exists.",
     ),
+    outcomeBanner: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Server-owned outcome headline (D18); the single honest one-line verdict, null while non-terminal or unavailable.",
+      ),
+    planReadiness: PlanReadiness.nullable()
+      .default(null)
+      .describe("Derived plan readiness for plan tools (D17); null for non-plan tools."),
   })
   .describe("Structured MCP tool result for Claudexor run tools.");
 export type McpRunToolResult = z.infer<typeof McpRunToolResult>;
+
+/**
+ * The structured result shape the MCP READ tools (claudexor_inspect /
+ * claudexor_run_status / claudexor_run_result) return: a durable run handle
+ * projected from GET /runs/:id through the SAME axes every surface reads.
+ * Strict — the read tools emit exactly these keys so hosts can branch on a
+ * declared shape instead of a free-text blob (v3: no legacy extra fields).
+ */
+export const McpRunHandleResult = z
+  .object({
+    summary: z
+      .string()
+      .describe("Human-readable outcome/status text (same as the tool's text content)."),
+    runId: z.string().nullable().default(null).describe("The daemon run id, when known."),
+    runDir: z.string().nullable().default(null).describe("Artifact directory; null when absent."),
+    status: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("The run's terminal or in-flight lifecycle state, when known."),
+    decisionStatus: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("The arbitration decision status, when the run reached arbitration."),
+    pendingInteractions: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .default(null)
+      .describe("Count of questions still awaiting answers, when known."),
+    outcomeFacts: RunOutcomeFacts.nullable()
+      .default(null)
+      .describe("The D8 terminal outcome axes (checks/review/reason/noChanges), when terminal."),
+    outcomeBanner: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Server-owned outcome headline (D18); null while non-terminal."),
+    applyEligibility: ApplyEligibility.nullable()
+      .default(null)
+      .describe("Derived apply-gate verdict; null for read-only runs or when no patch exists."),
+    planReadiness: PlanReadiness.nullable()
+      .default(null)
+      .describe("Derived plan readiness (plan runs only, D17); null otherwise."),
+  })
+  .strict()
+  .describe("Structured MCP result for Claudexor durable-run read tools (inspect/status/result).");
+export type McpRunHandleResult = z.infer<typeof McpRunHandleResult>;

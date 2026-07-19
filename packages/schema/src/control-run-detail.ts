@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CouncilProjection, PlanReadiness } from "./plan.js";
+import { CouncilProjection, PlanQuestion, PlanReadiness } from "./plan.js";
 import { ApplyEligibility } from "./apply-eligibility.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
@@ -169,6 +169,18 @@ export const ControlRunDetail = z
     planReadiness: PlanReadiness.nullable()
       .default(null)
       .describe("Derived readiness of a plan run; null for non-plan runs."),
+    /** The plan run's OPEN questions, projected from the same
+     * final/questions.json the readiness derives from (D17). Empty for a ready
+     * plan, an unverified plan, and every non-plan run. Surfaces render these
+     * as a question set (CLI TTY answer loop / ACP turn text) and answer them
+     * as an ordinary follow-up plan turn — the questions are never re-parsed
+     * from plan text on any surface. */
+    planQuestions: z
+      .array(PlanQuestion)
+      .default([])
+      .describe(
+        "Open questions of a plan run (projected from final/questions.json); empty otherwise.",
+      ),
     /** Council membership + merge disclosure (INV-031); null for solo plans
      * and every non-plan run. Purely additive — the plan artifacts themselves
      * are shape-identical to a solo plan. */

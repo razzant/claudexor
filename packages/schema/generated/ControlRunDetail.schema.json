@@ -1605,6 +1605,73 @@
           "description": "Derived readiness of a plan run; null for non-plan runs.",
           "default": null
         },
+        "planQuestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Stable question id within the plan revision."
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "single",
+                  "multi",
+                  "text"
+                ],
+                "description": "Question kind: pick exactly one, pick one or more, or free text."
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The question text."
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Stable option id within the question."
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Option label shown to the user."
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label"
+                  ],
+                  "additionalProperties": false,
+                  "description": "One selectable option of a plan question."
+                },
+                "default": [],
+                "description": "Options for single/multi questions; empty for free text."
+              },
+              "allow_text": {
+                "type": "boolean",
+                "default": false,
+                "description": "True when a free-text answer is accepted (text questions)."
+              }
+            },
+            "required": [
+              "id",
+              "kind",
+              "prompt"
+            ],
+            "additionalProperties": false,
+            "description": "One open question surfaced by a plan revision."
+          },
+          "default": [],
+          "description": "Open questions of a plan run (projected from final/questions.json); empty otherwise."
+        },
         "council": {
           "anyOf": [
             {

@@ -349,6 +349,77 @@ describe("Claudexor MCP server (SDK v2)", () => {
     expect(byName["claudexor_run"]?.outputSchema).toBeTruthy();
   });
 
+  it("plan run tools carry the outcome banner + plan readiness in structuredContent", async () => {
+    const tools = defaultClaudexorTools(async () => ({
+      runId: "r-plan",
+      runDir: "/tmp/r-plan",
+      status: "succeeded",
+      summary: "Drafted a plan.",
+      outcomeBanner: "Plan drafted — 2 open questions",
+      planReadiness: { state: "needs_answers", questionCount: 2 },
+    }));
+    const w = wire(tools);
+    await w.initialize();
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "claudexor_plan", arguments: { prompt: "plan it" } },
+    });
+    await sleep(150);
+    await w.close();
+    const res = w.responses.find((r) => r.id === 1)?.result;
+    // The SDK validates structuredContent against the DECLARED outputSchema;
+    // isError:true here would mean the new fields drifted from the schema.
+    expect(res?.isError).not.toBe(true);
+    const sc = res?.structuredContent as Record<string, any>;
+    expect(sc?.outcomeBanner).toBe("Plan drafted — 2 open questions");
+    expect(sc?.planReadiness?.state).toBe("needs_answers");
+    expect(sc?.planReadiness?.questionCount).toBe(2);
+  });
+
+  it("read tools (inspect/status/result) declare a typed outputSchema and validate their result", async () => {
+    // A schema-valid McpRunHandleResult passes; the SDK strictly validates
+    // structuredContent against the declared outputSchema, so conformance is
+    // enforced by the wire itself.
+    const handle = {
+      summary: "run r-h1: succeeded",
+      runId: "r-h1",
+      runDir: "/tmp/r-h1",
+      status: "succeeded",
+      decisionStatus: "approved",
+      pendingInteractions: 0,
+      outcomeFacts: null,
+      outcomeBanner: "Applied",
+      applyEligibility: { eligible: true, state: "verified", reason: null, requiredAction: null },
+      planReadiness: null,
+    };
+    const tools = defaultClaudexorTools(async () => handle);
+    const list = tools.filter((t) =>
+      ["claudexor_inspect", "claudexor_run_status", "claudexor_run_result"].includes(t.name),
+    );
+    expect(list).toHaveLength(3);
+    for (const tool of list) expect(tool.outputSchema).toBeTruthy();
+
+    for (const name of ["claudexor_inspect", "claudexor_run_status", "claudexor_run_result"]) {
+      const w = wire(tools);
+      await w.initialize();
+      w.send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: { runId: "r-h1" } },
+      });
+      await sleep(120);
+      await w.close();
+      const res = w.responses.find((r) => r.id === 1)?.result;
+      expect(res?.isError, `${name} result should conform to its outputSchema`).not.toBe(true);
+      const sc = res?.structuredContent as Record<string, any>;
+      expect(sc?.runId).toBe("r-h1");
+      expect(sc?.applyEligibility?.eligible).toBe(true);
+    }
+  });
+
   it("host notifications/cancelled aborts the runner's signal (typed cancel, like Ctrl-C)", async () => {
     let sawAbort = false;
     const runner: RunnerFn = async (_p, hooks) =>

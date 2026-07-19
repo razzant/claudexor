@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import agentCapabilityCatalogSchemaRaw from "@claudexor/schema/generated/AgentCapabilityCatalog.schema.json" with { type: "json" };
 import mcpRunToolResultSchemaRaw from "@claudexor/schema/generated/McpRunToolResult.schema.json" with { type: "json" };
+import mcpRunHandleResultSchemaRaw from "@claudexor/schema/generated/McpRunHandleResult.schema.json" with { type: "json" };
 import paidBudgetSchemaRaw from "@claudexor/schema/generated/PaidBudget.schema.json" with { type: "json" };
 import testCommandInvocationSchemaRaw from "@claudexor/schema/generated/TestCommandInvocation.schema.json" with { type: "json" };
 import type { Readable, Writable } from "node:stream";
@@ -61,6 +62,9 @@ function inlineJsonSchemaRefs(schema: Record<string, unknown>): Record<string, u
 
 const mcpRunToolResultSchema = inlineJsonSchemaRefs(
   mcpRunToolResultSchemaRaw as Record<string, unknown>,
+);
+const mcpRunHandleResultSchema = inlineJsonSchemaRefs(
+  mcpRunHandleResultSchemaRaw as Record<string, unknown>,
 );
 const testCommandInvocationSchema = inlineJsonSchemaRefs(testCommandInvocationSchemaRaw);
 const paidBudgetSchema = inlineJsonSchemaRefs(paidBudgetSchemaRaw);
@@ -315,6 +319,12 @@ function structuredRunResult(result: unknown): Record<string, unknown> {
       r["applyEligibility"] && typeof r["applyEligibility"] === "object"
         ? r["applyEligibility"]
         : null,
+    // The server-owned outcome headline (D18) and derived plan readiness (D17)
+    // ride the same structured result as the axes — null on a deferred handle
+    // (the run is still live; read them later via claudexor_run_result).
+    outcomeBanner: typeof r["outcomeBanner"] === "string" ? r["outcomeBanner"] : null,
+    planReadiness:
+      r["planReadiness"] && typeof r["planReadiness"] === "object" ? r["planReadiness"] : null,
   };
 }
 
@@ -583,6 +593,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       description:
         "Inspect a daemon-tracked run: status, summary, decision verdict, and the derived applyEligibility (what unblocks apply).",
       inputSchema: runIdSchema,
+      outputSchema: mcpRunHandleResultSchema,
       annotations: { readOnlyHint: true },
       handler: async (args) => {
         const result = await runner({ mode: "__run_inspect", runId: String(args?.runId ?? "") });
@@ -599,6 +610,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       name: "claudexor_run_status",
       description: "Read the current daemon-acknowledged state of a durable Claudexor run.",
       inputSchema: runIdSchema,
+      outputSchema: mcpRunHandleResultSchema,
       annotations: { readOnlyHint: true },
       handler: async (args) => {
         const result = await runner({ mode: "__run_status", runId: String(args?.runId ?? "") });
@@ -616,6 +628,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       description:
         "Read a durable run's terminal result and apply eligibility; non-terminal runs report their current state without pretending to be complete.",
       inputSchema: runIdSchema,
+      outputSchema: mcpRunHandleResultSchema,
       annotations: { readOnlyHint: true },
       handler: async (args) => {
         const result = await runner({ mode: "__run_result", runId: String(args?.runId ?? "") });

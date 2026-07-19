@@ -155,6 +155,91 @@ describe("AcpServer official SDK projection", () => {
     });
   });
 
+  it("renders a plan turn's open questions as TURN TEXT when readiness is needs_answers (D14/D17)", async () => {
+    const cwd = project();
+    await withClient(
+      async (params) => {
+        if (params.mode === "__acp_session_new") return { sessionId: "thread-plan", cwd };
+        return {
+          runId: "plan-run-1",
+          status: "succeeded",
+          summary: "Drafted a plan.",
+          applyEligibility: null,
+          planReadiness: { state: "needs_answers", questionCount: 2 },
+          planQuestions: [
+            {
+              id: "db",
+              kind: "single",
+              prompt: "Which database?",
+              options: [
+                { id: "pg", label: "Postgres" },
+                { id: "sqlite", label: "SQLite" },
+              ],
+              allow_text: false,
+            },
+            {
+              id: "notes",
+              kind: "text",
+              prompt: "Any constraints?",
+              options: [],
+              allow_text: true,
+            },
+          ],
+        };
+      },
+      async (agent, updates) => {
+        const session = await agent.request(acp.methods.agent.session.new, {
+          cwd,
+          mcpServers: [],
+        });
+        const response = await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "plan the migration" }],
+          _meta: { claudexor: { mode: "plan" } },
+        });
+        // A plan turn that needs answers still ENDS the turn normally; the user's
+        // next prompt is an ordinary follow-up plan turn.
+        expect(response.stopReason).toBe("end_turn");
+        const rendered = JSON.stringify(updates);
+        expect(rendered).toContain("2 open questions");
+        expect(rendered).toContain("Which database?");
+        expect(rendered).toContain("Postgres");
+        expect(rendered).toContain("(choose one)");
+        expect(rendered).toContain("Any constraints?");
+        expect(rendered).toContain("(free text)");
+      },
+    );
+  });
+
+  it("does NOT render a question block for a ready plan turn", async () => {
+    const cwd = project();
+    await withClient(
+      async (params) => {
+        if (params.mode === "__acp_session_new") return { sessionId: "thread-ready", cwd };
+        return {
+          runId: "plan-run-2",
+          status: "succeeded",
+          summary: "Plan ready.",
+          applyEligibility: null,
+          planReadiness: { state: "ready", questionCount: 0 },
+          planQuestions: [],
+        };
+      },
+      async (agent, updates) => {
+        const session = await agent.request(acp.methods.agent.session.new, {
+          cwd,
+          mcpServers: [],
+        });
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "plan it" }],
+          _meta: { claudexor: { mode: "plan" } },
+        });
+        expect(JSON.stringify(updates)).not.toContain("open question");
+      },
+    );
+  });
+
   it("maps a FAILED daemon lifecycle to refusal instead of a false normal end_turn", async () => {
     // D8: a needs-review run has a SUCCEEDED lifecycle and ends end_turn (the
     // process completed); only failed/interrupted lifecycles are a refusal.

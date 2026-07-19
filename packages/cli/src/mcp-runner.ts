@@ -199,7 +199,32 @@ async function recoveryQuery(
     const detail = await get(`/runs/${encodeURIComponent(runId)}`);
     const summary = (detail["summary"] ?? {}) as Record<string, unknown>;
     const decision = (detail["decision"] ?? null) as Record<string, unknown> | null;
-    const status = summary["status"] ?? summary["state"] ?? null;
+    // ControlRunSummary carries the lifecycle in `state` (D8); `status` kept as
+    // a defensive fallback for older projections.
+    const status =
+      (typeof summary["state"] === "string" ? summary["state"] : null) ??
+      (typeof summary["status"] === "string" ? summary["status"] : null) ??
+      null;
+    // The read tools project the SAME axes GET /runs/:id owns — one shared shape
+    // (McpRunHandleResult), never a re-derivation. Only the human `summary` text
+    // differs per tool (result shows the primary output; inspect/status the
+    // final summary line).
+    const base = {
+      runId,
+      runDir: typeof summary["runDir"] === "string" ? summary["runDir"] : null,
+      status,
+      decisionStatus: decision ? ((decision["status"] as string | null) ?? null) : null,
+      pendingInteractions: Array.isArray(detail["pendingInteractions"])
+        ? (detail["pendingInteractions"] as unknown[]).length
+        : null,
+      outcomeFacts:
+        summary["outcomeFacts"] && typeof summary["outcomeFacts"] === "object"
+          ? summary["outcomeFacts"]
+          : null,
+      outcomeBanner: typeof detail["outcomeBanner"] === "string" ? detail["outcomeBanner"] : null,
+      applyEligibility: detail["applyEligibility"] ?? null,
+      planReadiness: detail["planReadiness"] ?? null,
+    };
     if (mode === "__run_result") {
       const primaryOutput =
         detail["primaryOutput"] && typeof detail["primaryOutput"] === "object"
@@ -221,30 +246,14 @@ async function recoveryQuery(
             : primaryKind === "patch"
               ? "patch produced (see artifact handles)"
               : `run ${runId}: ${String(status ?? "unknown")}`;
-      return {
-        summary: terminalSummary,
-        runId,
-        runDir: typeof summary["runDir"] === "string" ? summary["runDir"] : null,
-        status,
-        primaryOutput,
-        artifacts: Array.isArray(detail["artifacts"]) ? detail["artifacts"] : [],
-        result:
-          summary["result"] && typeof summary["result"] === "object" ? summary["result"] : null,
-        applyEligibility: detail["applyEligibility"] ?? null,
-      };
+      return { summary: terminalSummary, ...base };
     }
     return {
       summary:
         typeof detail["finalSummary"] === "string" && detail["finalSummary"]
           ? detail["finalSummary"]
           : `run ${runId}: ${String(status ?? "unknown")}`,
-      runId,
-      status,
-      decisionStatus: decision ? (decision["status"] ?? null) : null,
-      applyEligibility: detail["applyEligibility"] ?? null,
-      pendingInteractions: Array.isArray(detail["pendingInteractions"])
-        ? (detail["pendingInteractions"] as unknown[]).length
-        : 0,
+      ...base,
     };
   }
   if (mode === "__run_cancel") {

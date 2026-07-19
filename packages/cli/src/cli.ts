@@ -66,8 +66,8 @@ import {
   fetchApplyEligibility,
   fetchCouncil,
   fetchOutcomeBanner,
-  fetchPlanReadiness,
 } from "./daemon-run.js";
+import { runPlanQuestionLoop } from "./plan-question-loop.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import {
@@ -566,11 +566,13 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // Parse through the typed DTO — the field is camelCase `updatedAt`, and a
       // hand-rolled `updated_at` read silently sorts undefined and throws.
       const list = ControlThreadListResponse.parse(await res.json());
-      const newest = pickResumableThread(list.threads);
+      // Scope to the current project (D28): --resume must never cross into
+      // another project's threads.
+      const newest = pickResumableThread(list.threads, process.cwd());
       if (!newest) {
         // Stay valid on the active output surface: NDJSON stream keeps compact
         // lines; --json prints its one object; text goes to stderr.
-        const message = "claudexor: --resume found no threads to continue";
+        const message = "claudexor: --resume found no threads to continue in this project";
         if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
         else if (json) printJson({ ok: false, exitCode: 1, error: message });
         else process.stderr.write(`${message}\n`);
@@ -741,9 +743,10 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     // A succeeded lifecycle exits 0 — INCLUDING a "Done · needs review" run
     // (review blocked / checks failed). The apply-eligibility verdict (state
     // needs_review) is the ONE source for the unblock guidance (D8).
+    // The plan question loop advances this past each answered follow-up turn.
+    let effectiveRunId = started.runId;
     if (exitCodeForState(status) === 0) {
-      // Plan runs surface their derived readiness (D17): the server's ONE
-      // derivation over final/questions.json, never a client re-parse.
+      // Plan runs: server-derived readiness (D17) + interactive answer loop.
       if (p.mode === "plan") {
         // Council disclosure (INV-031): membership + merge, projected by the
         // server (never a client re-derivation).
@@ -759,29 +762,26 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
             }
           }
         }
-        const readiness = await fetchPlanReadiness(addr, started.runId);
-        if (readiness?.state === "needs_answers") {
-          print(
-            `  plan needs answers: ${readiness.questionCount} open question(s) — answer in a follow-up plan turn, then implement`,
-          );
-        } else if (readiness?.state === "unverified") {
-          print(`  plan questions unverified: the planner emitted no tagged Open Questions block`);
-        } else if (readiness?.state === "ready") {
-          print(`  plan ready: no open questions`);
-        }
+        effectiveRunId = await runPlanQuestionLoop({
+          client,
+          addr,
+          threadId,
+          runId: started.runId,
+          interactive: !json && !jsonStream, // TTY plan turns answer inline
+        });
       }
       // Offer apply only after a positive gate; otherwise print inspect/unblock guidance.
-      const eligibility = await fetchApplyEligibility(addr, started.runId);
+      const eligibility = await fetchApplyEligibility(addr, effectiveRunId);
       if (eligibility?.eligible) {
-        print(`  apply with: claudexor apply ${started.runId}`);
+        print(`  apply with: claudexor apply ${effectiveRunId}`);
       } else if (eligibility?.state === "needs_review") {
         print(
-          `  needs review: unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
+          `  needs review: unblock with \`claudexor decision ${effectiveRunId} --accept-risk\` or rerun with \`claudexor decision ${effectiveRunId} --rerun --feedback "..."\``,
         );
       } else if (eligibility?.requiredAction) {
         print(`  not applyable yet: ${eligibility.requiredAction}`);
       } else {
-        print(`  inspect with: claudexor inspect ${started.runId}`);
+        print(`  inspect with: claudexor inspect ${effectiveRunId}`);
       }
     }
     return exitCodeForState(status);

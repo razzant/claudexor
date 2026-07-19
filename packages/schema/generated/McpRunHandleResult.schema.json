@@ -1,33 +1,57 @@
 {
-  "$ref": "#/definitions/McpRunToolResult",
+  "$ref": "#/definitions/McpRunHandleResult",
   "definitions": {
-    "McpRunToolResult": {
+    "McpRunHandleResult": {
       "type": "object",
       "properties": {
         "summary": {
           "type": "string",
-          "description": "Human-readable outcome summary (same text as the tool's text content)."
+          "description": "Human-readable outcome/status text (same as the tool's text content)."
         },
         "runId": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Daemon run id (recovery handle for inspect/follow/apply/decision); null for in-process read-only runs."
+          "default": null,
+          "description": "The daemon run id, when known."
         },
         "runDir": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Artifact directory of the run; null when not persisted."
+          "default": null,
+          "description": "Artifact directory; null when absent."
         },
         "status": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Terminal run LIFECYCLE (succeeded | failed | cancelled | interrupted)."
+          "default": null,
+          "description": "The run's terminal or in-flight lifecycle state, when known."
+        },
+        "decisionStatus": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "The arbitration decision status, when the run reached arbitration."
+        },
+        "pendingInteractions": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Count of questions still awaiting answers, when known."
         },
         "outcomeFacts": {
           "anyOf": [
@@ -107,8 +131,16 @@
               "type": "null"
             }
           ],
-          "description": "The D8 terminal outcome axes (checks/review/reason/noChanges); null for non-terminal or read-only routes.",
+          "description": "The D8 terminal outcome axes (checks/review/reason/noChanges), when terminal.",
           "default": null
+        },
+        "outcomeBanner": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Server-owned outcome headline (D18); null while non-terminal."
         },
         "applyEligibility": {
           "anyOf": [
@@ -154,15 +186,8 @@
               "type": "null"
             }
           ],
-          "description": "Apply-gate verdict for mutating runs; null for read-only routes or when no patch exists."
-        },
-        "outcomeBanner": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null,
-          "description": "Server-owned outcome headline (D18); the single honest one-line verdict, null while non-terminal or unavailable."
+          "description": "Derived apply-gate verdict; null for read-only runs or when no patch exists.",
+          "default": null
         },
         "planReadiness": {
           "anyOf": [
@@ -194,19 +219,15 @@
               "type": "null"
             }
           ],
-          "description": "Derived plan readiness for plan tools (D17); null for non-plan tools.",
+          "description": "Derived plan readiness (plan runs only, D17); null otherwise.",
           "default": null
         }
       },
       "required": [
-        "summary",
-        "runId",
-        "runDir",
-        "status",
-        "applyEligibility"
+        "summary"
       ],
       "additionalProperties": false,
-      "description": "Structured MCP tool result for Claudexor run tools."
+      "description": "Structured MCP result for Claudexor durable-run read tools (inspect/status/result)."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

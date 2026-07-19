@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
-import { daemonOutcomeSummary, ensureDaemon, fetchApplyEligibility } from "./daemon-run.js";
+import {
+  daemonOutcomeSummary,
+  ensureDaemon,
+  fetchApplyEligibility,
+  fetchPlanQuestions,
+  fetchPlanReadiness,
+} from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import { primaryOutputForCli } from "./primary-output.js";
 
@@ -143,12 +149,19 @@ export async function acpSessionQuery(
           ? primary.text.trim()
           : (daemonOutcomeSummary({ runId, status: record.state, error: record.error }) ??
             `run ${record.state}`);
+      // Plan lifecycle (D17): a plan turn that ends needs_answers carries its
+      // derived readiness + the ENGINE-parsed open questions so the ACP surface
+      // renders them as TURN TEXT (the user answers in an ordinary follow-up
+      // plan turn — the same server path, no typed-form faking the protocol
+      // lacks). Empty/null for non-plan turns and ready plans.
       return {
         runId,
         runDir,
         status: record.state,
         summary,
         applyEligibility: runId ? await fetchApplyEligibility(addr, runId) : null,
+        planReadiness: runId ? await fetchPlanReadiness(addr, runId) : null,
+        planQuestions: runId ? await fetchPlanQuestions(addr, runId) : [],
       };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));

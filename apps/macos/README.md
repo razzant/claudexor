@@ -123,10 +123,9 @@ mini-browser read the project's PRODUCED outputs via `GET /runs/:id/produced`
 attachments (file picker + the `screencapture`-backed Capture button) as
 attachment DTOs on turn creation, gated by an available vision-capable route;
 the per-turn browser toggle arms the engine's agent-driven browser (offered
-only when a pooled harness reports `browser_tool`); and the Spec intent drives
-the server-owned durable interview lifecycle (`POST /spec/sessions` → answers →
-freeze) and then sends a normal agent turn carrying the returned
-`specPath`.
+only when a pooled harness reports `browser_tool`). Ambiguity is handled by
+the plan lifecycle: a plan turn surfaces typed open questions, answers ride
+follow-up plan turns, and Implement freezes the plan (readiness-gated).
 
 There is no sample/demo data mode: surfaces the engine does not fully expose
 yet use honest empty states instead of pretending to be live.

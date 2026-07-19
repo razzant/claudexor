@@ -267,19 +267,19 @@ describe("mcp daemon body mapping", () => {
         mode: "__run_result",
         runId: "run-result",
       })) as Record<string, any>;
+      // v3: the read tools project the typed McpRunHandleResult shape — the
+      // human `summary` still shows the primary output text, but the structured
+      // fields are the D8 axes, not the raw primaryOutput/artifacts/result blob.
       expect(result).toMatchObject({
         summary: "# Actual plan\n\nShip it.",
         runId: "run-result",
         runDir: "/tmp/run-result",
         status: "succeeded",
-        primaryOutput: { kind: "plan", path: "final/plan.md" },
-        artifacts: [
-          { path: "final/plan.md", kind: "file" },
-          { path: "final/telemetry.yaml", kind: "file" },
-        ],
-        result: { kind: "plan" },
         applyEligibility: { eligible: false, state: "no_op" },
       });
+      expect(result).not.toHaveProperty("primaryOutput");
+      expect(result).not.toHaveProperty("artifacts");
+      expect(result).not.toHaveProperty("result");
       const inspect = (await runner({
         mode: "__run_inspect",
         runId: "run-result",

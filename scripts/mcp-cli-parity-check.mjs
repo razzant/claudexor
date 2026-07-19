@@ -280,6 +280,22 @@ for (const tool of tools) {
     );
   }
 }
+// The durable-run READ tools (inspect/status/result) project the same D8 axes
+// as GET /runs/:id and MUST declare a typed outputSchema (McpRunHandleResult),
+// so a new read tool without one fails here rather than silently shipping a
+// free-text-only result.
+for (const readTool of ["claudexor_inspect", "claudexor_run_status", "claudexor_run_result"]) {
+  const tool = tools.find((t) => t.name === readTool);
+  if (!tool) {
+    failures.push(`typed read tool '${readTool}' is missing from defaultClaudexorTools`);
+    continue;
+  }
+  if (!tool.outputSchema) {
+    failures.push(
+      `MCP read tool '${readTool}' declares no outputSchema (typed run-handle results contract)`,
+    );
+  }
+}
 for (const recovery of [
   "claudexor_runs",
   "claudexor_inspect",

@@ -39,6 +39,48 @@ export function extractPromptText(prompt: unknown): string {
 }
 
 /**
+ * One engine-parsed plan question (mirror of schema PlanQuestion — the ACP
+ * package stays schema-light, so the shape is declared locally rather than
+ * imported to avoid a dependency edge for one projection helper).
+ */
+export interface AcpPlanQuestion {
+  id: string;
+  kind: "single" | "multi" | "text";
+  prompt: string;
+  options?: Array<{ id: string; label: string }>;
+  allow_text?: boolean;
+}
+
+/**
+ * Render a plan turn's OPEN questions as ACP turn text (D14 design; SDK 1.2.1
+ * has no multi-select/free-text typed input). Numbered, options inline, each
+ * marked which accept multiple picks or free text. The user answers in an
+ * ordinary follow-up plan turn — no ACP-side parsing into typed answers, no
+ * separate answer channel. Returns "" when there are no questions to render.
+ */
+export function renderPlanQuestions(questions: readonly AcpPlanQuestion[]): string {
+  if (questions.length === 0) return "";
+  const lines: string[] = [
+    `This plan has ${questions.length} open question${questions.length === 1 ? "" : "s"}. ` +
+      `Answer ${questions.length === 1 ? "it" : "them"} in your next message and I'll revise the plan:`,
+    "",
+  ];
+  questions.forEach((q, index) => {
+    const tag =
+      q.kind === "multi"
+        ? " (choose one or more)"
+        : q.kind === "text" || (q.options ?? []).length === 0
+          ? " (free text)"
+          : " (choose one)";
+    lines.push(`${index + 1}. ${q.prompt}${tag}`);
+    (q.options ?? []).forEach((option, optionIndex) => {
+      lines.push(`   ${String.fromCharCode(97 + optionIndex)}) ${option.label}`);
+    });
+  });
+  return lines.join("\n");
+}
+
+/**
  * Reduce a run result to the human-readable text the editor should show. The
  * orchestrator returns an OrchestratorResult whose `summary` is the primary
  * output; prefer it over dumping the whole internal object. Falls back to a
