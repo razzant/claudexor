@@ -6,6 +6,7 @@ import {
   ControlProblem,
   type ControlOperationDescriptor,
 } from "@claudexor/schema";
+import { engineBuildIdentity } from "@claudexor/util";
 
 export type ControlProtocolBoundary =
   | { kind: "route"; path: string }
@@ -50,6 +51,7 @@ export async function resolveControlProtocol(input: {
         protocolMajor: CONTROL_PROTOCOL_MAJOR,
         compatible: true,
         operationsPath: "/v2/operations",
+        engine: engineBuildIdentity(),
       }),
     };
   }

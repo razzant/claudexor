@@ -884,7 +884,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
  * Resolve the ArtifactStore that owns a given run, regardless of the cwd the
  * CLI is invoked from. Order:
  *   1. the project store rooted at the current cwd (the common case);
- *   2. the v2 user store (~/.claudexor/v2/runs) used by no-project Ask runs;
+ *   2. the user store (~/.claudexor/v3/runs) used by no-project Ask runs;
  *   3. a daemon-tracked run that started in ANOTHER project — agent/race/create
  *      runs live under that project's external runtime namespace, so we ask
  *      the daemon for the run's absolute runDir (GET /runs/:id ->

@@ -1,6 +1,11 @@
 import { z } from "zod";
 
-export const CONTROL_PROTOCOL_MAJOR = 2 as const;
+// v3.0.0 broke run/thread/status/mode contracts wholesale, so the negotiated
+// major moved to 3. The URL prefix stays the frozen literal `/v2/` — a path
+// spelling, not the compatibility contract; the negotiated protocolMajor is
+// the ONLY compatibility signal (renaming every route for cosmetic symmetry
+// was rejected as churn).
+export const CONTROL_PROTOCOL_MAJOR = 3 as const;
 
 export const ControlHandshakeRequest = z
   .object({
@@ -16,9 +21,24 @@ export const ControlHandshakeResponse = z
     protocolMajor: z.literal(CONTROL_PROTOCOL_MAJOR),
     compatible: z.literal(true),
     operationsPath: z.literal("/v2/operations"),
+    /** Build identity of the serving engine (D20/INV-116 spirit): stale-
+     * daemon skew is visible at the handshake instead of guessed later. */
+    engine: z
+      .object({
+        version: z.string().min(1).describe("Lockstep workspace version."),
+        sha: z
+          .string()
+          .min(1)
+          .describe(
+            "Git commit SHA of the build; 'unknown' outside a stamped package or git checkout.",
+          ),
+        entry: z.string().min(1).describe("Resolved entry path of the serving process."),
+      })
+      .strict()
+      .describe("Build identity of the serving engine."),
   })
   .strict()
-  .describe("Successful v2 control-plane negotiation.");
+  .describe("Successful control-plane negotiation.");
 export type ControlHandshakeResponse = z.infer<typeof ControlHandshakeResponse>;
 
 export const ControlOperationDescriptor = z

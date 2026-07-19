@@ -139,7 +139,7 @@ describe("daemon recovery composition", () => {
     const base = `http://${host}:${port}`;
     const auth = {
       authorization: `Bearer ${token}`,
-      "x-claudexor-protocol-major": "2",
+      "x-claudexor-protocol-major": "3",
     };
     const jsonHeaders = { ...auth, "content-type": "application/json" };
 

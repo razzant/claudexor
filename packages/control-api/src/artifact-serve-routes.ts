@@ -156,7 +156,7 @@ export function listArtifacts(root: string): ControlArtifactInfo[] {
 
 /** A run's project root, taken from its TYPED scope — NOT by path-slicing the
  *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
- *  is `~/.claudexor/v2/runs/<id>`) to the user's HOME and let /produced list
+ *  is `~/.claudexor/v3/runs/<id>`) to the user's HOME and let /produced list
  *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs. */
 export function producedRepoRoot(rec: DaemonRunRecord): string | null {
   const scope = (rec.params as { scope?: { kind?: string; root?: string } } | undefined)?.scope;

@@ -6,7 +6,7 @@
       "properties": {
         "protocolMajor": {
           "type": "number",
-          "const": 2
+          "const": 3
         },
         "operations": {
           "type": "array",

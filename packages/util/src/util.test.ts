@@ -123,11 +123,11 @@ describe("util", () => {
     }
   });
 
-  it("uses an empty v2 namespace without probing the legacy root", () => {
+  it("uses an empty v3 namespace without probing the legacy roots", () => {
     const config = process.env.CLAUDEXOR_CONFIG_DIR;
     try {
       delete process.env.CLAUDEXOR_CONFIG_DIR;
-      expect(userConfigDir()).toMatch(/\.claudexor\/v2$/);
+      expect(userConfigDir()).toMatch(/\.claudexor\/v3$/);
     } finally {
       if (config === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = config;

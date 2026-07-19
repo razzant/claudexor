@@ -201,7 +201,10 @@ export interface ControlApiAddress {
   token: string;
 }
 
-export const CONTROL_PROTOCOL_MAJOR = 2;
+// SSOT: the negotiated major lives in the schema; the re-export keeps the
+// existing CLI/MCP/ACP import path stable.
+import { CONTROL_PROTOCOL_MAJOR } from "@claudexor/schema";
+export { CONTROL_PROTOCOL_MAJOR };
 
 export function controlApiAddress(): ControlApiAddress {
   const info = JSON.parse(readFileSync(join(daemonDir(), "control-api.json"), "utf8")) as {

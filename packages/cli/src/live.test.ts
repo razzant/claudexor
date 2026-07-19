@@ -19,12 +19,12 @@ function sseServer(
       if (req.method === "POST" && req.url === "/v2/handshake") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
-          JSON.stringify({ protocolMajor: 2, compatible: true, operationsPath: "/v2/operations" }),
+          JSON.stringify({ protocolMajor: 3, compatible: true, operationsPath: "/v2/operations", engine: { version: "0.0.0-test", sha: "unknown", entry: "/test" } }),
         );
         return;
       }
       expect(req.url).toBe("/v2/runs/run-f/events");
-      expect(req.headers["x-claudexor-protocol-major"]).toBe("2");
+      expect(req.headers["x-claudexor-protocol-major"]).toBe("3");
       const lastEventId = Number(req.headers["last-event-id"] ?? 0);
       res.writeHead(200, { "content-type": "text/event-stream" });
       handler(lastEventId, res);

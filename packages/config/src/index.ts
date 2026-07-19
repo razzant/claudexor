@@ -346,7 +346,7 @@ function withConfigLock<T>(path: string, fn: () => T): T {
 }
 
 /**
- * Update ~/.claudexor/v2/config.yaml with validated global settings. Sensitive
+ * Update ~/.claudexor/v3/config.yaml with validated global settings. Sensitive
  * values are not accepted here. Locked + atomic (see withConfigLock).
  */
 export function updateGlobalConfig(mutator: (config: GlobalConfig) => GlobalConfig): {
@@ -387,7 +387,7 @@ export function initProjectConfig(repoRoot: string): InitResult {
   const header =
     "# Claudexor project config (versioned). Safe settings only.\n" +
     "# Sensitive settings (full access, secrets, budget-above-cap, plugin install,\n" +
-    "# MCP trust) live in ~/.claudexor/v2/config.yaml or ~/.claudexor/v2/trust/<hash>.yaml.\n" +
+    "# MCP trust) live in ~/.claudexor/v3/config.yaml or ~/.claudexor/v3/trust/<hash>.yaml.\n" +
     "#\n" +
     "# Optional: require files as mandatory run context (fail-closed if missing,\n" +
     "# enforced uniformly across every mode). Empty by default; uncomment to opt in:\n" +

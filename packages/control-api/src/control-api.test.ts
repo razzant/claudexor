@@ -33,7 +33,7 @@ function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promis
   }
   const headers = new Headers(init.headers);
   if (url.pathname !== "/healthz" && url.pathname !== "/v2/handshake") {
-    headers.set("X-Claudexor-Protocol-Major", "2");
+    headers.set("X-Claudexor-Protocol-Major", "3");
   }
   if (
     (init.method ?? "GET").toUpperCase() === "POST" &&
@@ -530,13 +530,14 @@ describe("DaemonControlApiServer", () => {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ protocolMajor: 2, client: "test" }),
+        body: JSON.stringify({ protocolMajor: 3, client: "test" }),
       });
       expect(handshake.status).toBe(200);
       expect(await handshake.json()).toMatchObject({
-        protocolMajor: 2,
+        protocolMajor: 3,
         compatible: true,
         operationsPath: "/v2/operations",
+        engine: { version: expect.any(String), sha: expect.any(String), entry: expect.any(String) },
       });
 
       const missingMajor = await globalThis.fetch(`${base}/v2/operations`, {
@@ -559,7 +560,7 @@ describe("DaemonControlApiServer", () => {
           errorSchema: string;
         }[];
       };
-      expect(body.protocolMajor).toBe(2);
+      expect(body.protocolMajor).toBe(3);
       expect(body.operations.every((operation) => operation.path.startsWith("/v2/"))).toBe(true);
       expect(new Set(body.operations.map((operation) => operation.id)).size).toBe(
         body.operations.length,
@@ -584,7 +585,7 @@ describe("DaemonControlApiServer", () => {
         headers: {
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
-          "X-Claudexor-Protocol-Major": "2",
+          "X-Claudexor-Protocol-Major": "3",
         },
         body: startAgentBody(),
       });
@@ -824,7 +825,7 @@ describe("DaemonControlApiServer", () => {
           headers: {
             authorization: `Bearer ${token}`,
             "content-type": "application/json",
-            "X-Claudexor-Protocol-Major": "2",
+            "X-Claudexor-Protocol-Major": "3",
           },
           body: JSON.stringify({ root: firstRoot }),
         });
@@ -937,7 +938,7 @@ describe("DaemonControlApiServer", () => {
           headers: {
             authorization: `Bearer ${token}`,
             "content-type": "application/json",
-            "X-Claudexor-Protocol-Major": "2",
+            "X-Claudexor-Protocol-Major": "3",
           },
           body: JSON.stringify({ title: "test thread", scope: { kind: "project", root: repo } }),
         });
@@ -949,7 +950,7 @@ describe("DaemonControlApiServer", () => {
           headers: {
             authorization: `Bearer ${token}`,
             "content-type": "application/json",
-            "X-Claudexor-Protocol-Major": "2",
+            "X-Claudexor-Protocol-Major": "3",
           },
           body: JSON.stringify({ prompt: "continue the plan" }),
         });

@@ -480,7 +480,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Claudexor v2 global user config (~/.claudexor/v2/config.yaml): routing, budget, runtime, and per-harness settings."
+      "description": "Claudexor v3 global user config (~/.claudexor/v3/config.yaml): routing, budget, runtime, and per-harness settings."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

@@ -6,7 +6,7 @@
       "properties": {
         "protocolMajor": {
           "type": "number",
-          "const": 2
+          "const": 3
         },
         "compatible": {
           "type": "boolean",
@@ -15,15 +15,43 @@
         "operationsPath": {
           "type": "string",
           "const": "/v2/operations"
+        },
+        "engine": {
+          "type": "object",
+          "properties": {
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Lockstep workspace version."
+            },
+            "sha": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Git commit SHA of the build; 'unknown' outside a stamped package or git checkout."
+            },
+            "entry": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Resolved entry path of the serving process."
+            }
+          },
+          "required": [
+            "version",
+            "sha",
+            "entry"
+          ],
+          "additionalProperties": false,
+          "description": "Build identity of the serving engine."
         }
       },
       "required": [
         "protocolMajor",
         "compatible",
-        "operationsPath"
+        "operationsPath",
+        "engine"
       ],
       "additionalProperties": false,
-      "description": "Successful v2 control-plane negotiation."
+      "description": "Successful control-plane negotiation."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

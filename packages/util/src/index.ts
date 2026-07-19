@@ -18,8 +18,11 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { CLAUDEXOR_VERSION } from "./version.js";
 
 /** Generate a short unique id, optionally prefixed (e.g. "run-3f2a...."). */
 export function newId(prefix = ""): string {
@@ -211,12 +214,14 @@ export function userConfigDir(): string {
     if (!safe) throw new Error("CLAUDEXOR_CONFIG_DIR must be a safe absolute path");
     return safe;
   }
-  // v2 is an intentionally empty, non-migrating namespace. Keeping the
-  // version boundary in the default root prevents the daemon from even
-  // probing v1 config, trust, secret, token, or journal bytes. An explicit
-  // CLAUDEXOR_CONFIG_DIR remains the hermetic test/operator override and is
-  // already treated as the complete v2 root.
-  return join(userHomeDir(), ".claudexor", "v2");
+  // v3 is an intentionally empty, non-migrating namespace: the untouched
+  // older roots (v2, v1) ARE the archive (owner decision, v3.0.0 plan).
+  // Keeping the version boundary in the default root prevents the daemon
+  // from even probing older config, trust, secret, token, or journal bytes
+  // whose contracts this generation deleted. An explicit CLAUDEXOR_CONFIG_DIR
+  // remains the hermetic test/operator override and is already treated as
+  // the complete root.
+  return join(userHomeDir(), ".claudexor", "v3");
 }
 
 /**
@@ -374,4 +379,46 @@ export function safeInvoke<T>(fn: ((arg: T) => void) | undefined, arg: T): void 
   } catch {
     /* observer errors are isolated from control-plane state */
   }
+}
+
+/* ---- Engine build identity (D20) ---- */
+
+export interface EngineBuildIdentity {
+  /** Lockstep workspace version (generated CLAUDEXOR_VERSION). */
+  version: string;
+  /** Git commit SHA of the build: CLAUDEXOR_BUILD_SHA (stamped by packaging),
+   * else `git rev-parse HEAD` of the module checkout, else "unknown". */
+  sha: string;
+  /** Resolved entry path of the running process — an unforgeable origin hint
+   * (bundled app vs npm global vs dev checkout) without guessing an enum. */
+  entry: string;
+}
+
+let cachedBuildIdentity: EngineBuildIdentity | null = null;
+
+/** The serving engine's build identity: version + SHA + entry path. Cached.
+ * Stale-daemon skew becomes visible in the handshake instead of guessed. */
+export function engineBuildIdentity(): EngineBuildIdentity {
+  if (cachedBuildIdentity) return cachedBuildIdentity;
+  let sha = process.env.CLAUDEXOR_BUILD_SHA?.trim() ?? "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) {
+    try {
+      sha = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: dirname(fileURLToPath(import.meta.url)),
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      sha = "";
+    }
+  }
+  if (!/^[0-9a-f]{40}$/.test(sha)) sha = "unknown";
+  let entry = process.execPath;
+  try {
+    entry = resolve(process.argv[1] ?? process.execPath);
+  } catch {
+    /* keep execPath */
+  }
+  cachedBuildIdentity = { version: CLAUDEXOR_VERSION, sha, entry };
+  return cachedBuildIdentity;
 }

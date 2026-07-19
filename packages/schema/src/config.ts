@@ -88,7 +88,7 @@ export const TrustConfig = z
   );
 export type TrustConfig = z.infer<typeof TrustConfig>;
 
-/** Claudexor v2 global user config (~/.claudexor/v2/config.yaml). */
+/** Claudexor v3 global user config (~/.claudexor/v3/config.yaml). */
 export const GlobalConfig = z
   .object({
     version: z.literal(1).default(1).describe("Config format version."),
@@ -365,7 +365,7 @@ export const GlobalConfig = z
   })
   .strict()
   .describe(
-    "Claudexor v2 global user config (~/.claudexor/v2/config.yaml): routing, budget, runtime, and per-harness settings.",
+    "Claudexor v3 global user config (~/.claudexor/v3/config.yaml): routing, budget, runtime, and per-harness settings.",
   );
 export type GlobalConfig = z.infer<typeof GlobalConfig>;
 
