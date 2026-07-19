@@ -386,13 +386,22 @@ export function validateChecklistResponse(items, model, requiredItems) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       return invalidRow(index, requiredItems, "row is not an object");
     }
-    const keys = Object.keys(entry).sort();
-    const expectedKeys = ["item", "reason", "severity", "verdict"];
+    const requiredKeys = ["item", "reason", "severity", "verdict"];
+    // Blocker-contract fields [INV-139]: a critical FAIL should cite the
+    // violated invariant/criterion and state default-config reachability.
+    const optionalKeys = ["invariant", "reachable"];
+    const keys = Object.keys(entry);
     if (
-      keys.length !== expectedKeys.length ||
-      keys.some((key, keyIndex) => key !== expectedKeys[keyIndex])
+      keys.some((key) => !requiredKeys.includes(key) && !optionalKeys.includes(key)) ||
+      requiredKeys.some((key) => !keys.includes(key))
     ) {
-      return invalidRow(index, requiredItems, "row has unsupported fields");
+      return invalidRow(index, requiredItems, "row has unsupported or missing fields");
+    }
+    if ("invariant" in entry && (typeof entry.invariant !== "string" || !entry.invariant.trim())) {
+      return invalidRow(index, requiredItems, "invariant must be a non-empty string when present");
+    }
+    if ("reachable" in entry && typeof entry.reachable !== "boolean") {
+      return invalidRow(index, requiredItems, "reachable must be a boolean when present");
     }
     const item = String(entry.item ?? "");
     const verdict = String(entry.verdict ?? "").toUpperCase();
@@ -410,7 +419,15 @@ export function validateChecklistResponse(items, model, requiredItems) {
     if (!reason) {
       return invalidRow(index, requiredItems, "reason is empty");
     }
-    findings.push({ item, verdict, severity, reason, model });
+    findings.push({
+      item,
+      verdict,
+      severity,
+      reason,
+      model,
+      ...("invariant" in entry ? { invariant: entry.invariant.trim() } : {}),
+      ...("reachable" in entry ? { reachable: entry.reachable } : {}),
+    });
   }
 
   const covered = new Set(findings.map((finding) => finding.item));
@@ -438,29 +455,91 @@ export function blockingFindings(findings) {
   );
 }
 
-export function releaseReviewDecision({ triadActors, scope, quorum = 2 }) {
-  const responsiveTriad = triadActors.filter((actor) => actor.status === "responded");
-  const allFindings = [
-    ...responsiveTriad.flatMap((actor) => actor.findings ?? []),
-    ...(scope?.status === "responded" ? (scope.findings ?? []) : []),
-  ];
-  const failures = blockingFindings(allFindings);
+/**
+ * Blocker-contract accounting [INV-139]: a blocking finding must cite a
+ * violated invariant/owner criterion and be reachable in the default
+ * configuration. Gaps never soften the machine decision (a critical FAIL
+ * still blocks — fail-closed); they are surfaced for the adjudication step,
+ * where an uncited or unreachable blocker is ledgered rather than fixed.
+ */
+export function blockerContractGaps(findings) {
+  return blockingFindings(findings).flatMap((finding) => {
+    const gaps = [];
+    if (!finding.invariant) gaps.push("no invariant/criterion cited");
+    if (finding.reachable === false) gaps.push("reviewer marked it unreachable in default config");
+    return gaps.length > 0 ? [{ finding, gaps }] : [];
+  });
+}
+
+/**
+ * Liveness floor [INV-125/CHECKLISTS]: a slot counts only with a parsed typed
+ * verdict AND a plausible duration. A multi-megabyte review prompt cannot be
+ * genuinely reviewed in seconds — an instant "responded" is an infrastructure
+ * or cache artifact, treated exactly like a failed slot.
+ */
+export const REVIEWER_MIN_PLAUSIBLE_MS = 30_000;
+
+export function reviewerLiveness(actor, minPlausibleMs = REVIEWER_MIN_PLAUSIBLE_MS) {
+  if (actor?.status !== "responded") {
+    return { live: false, reason: `status is ${actor?.status ?? "(missing)"}` };
+  }
+  const duration = actor.duration_ms ?? actor.durationMs;
+  if (!Number.isFinite(duration)) {
+    return { live: false, reason: "duration is missing from the slot record" };
+  }
+  if (duration < minPlausibleMs) {
+    return {
+      live: false,
+      reason: `implausible duration ${duration}ms (< ${minPlausibleMs}ms floor)`,
+    };
+  }
+  return { live: true, reason: null };
+}
+
+/**
+ * v3 protocol: EVERY required slot (all three triad reviewers + scope) must be
+ * live — a failed required slot blocks sealing (CHECKLISTS "Reviewer
+ * liveness"; the transport gets one same-SHA retry before a slot is final).
+ * `responsiveTriad` stays as accounting, but partial panels never pass.
+ */
+export function releaseReviewDecision({ triadActors, scope, minPlausibleMs }) {
   const reasons = [];
-  if (responsiveTriad.length < quorum) {
-    reasons.push(`triad quorum not met: ${responsiveTriad.length}/${quorum}`);
+  const liveTriad = [];
+  for (const actor of triadActors) {
+    const liveness = reviewerLiveness(actor, minPlausibleMs);
+    if (liveness.live) liveTriad.push(actor);
+    else
+      reasons.push(
+        `required reviewer slot ${actor.model_id ?? "(unknown)"} is not live: ${liveness.reason}`,
+      );
+  }
+  if (triadActors.length !== REQUIRED_TRIAD_MODELS.length) {
+    reasons.push(
+      `triad has ${triadActors.length} slot(s); the exact panel requires ${REQUIRED_TRIAD_MODELS.length}`,
+    );
   }
   if (!scope) {
     reasons.push("scope reviewer is missing");
-  } else if (scope.status !== "responded") {
-    reasons.push(`scope reviewer status is ${scope.status}`);
+  } else {
+    const liveness = reviewerLiveness(
+      { ...scope, duration_ms: scope.metadata?.duration_ms ?? scope.duration_ms },
+      minPlausibleMs,
+    );
+    if (!liveness.live) reasons.push(`scope reviewer is not live: ${liveness.reason}`);
   }
+  const allFindings = [
+    ...liveTriad.flatMap((actor) => actor.findings ?? []),
+    ...(scope?.status === "responded" ? (scope.findings ?? []) : []),
+  ];
+  const failures = blockingFindings(allFindings);
   if (failures.length > 0) {
     reasons.push(`reviewers returned ${failures.length} critical FAIL verdict(s)`);
   }
   return {
     passed: reasons.length === 0,
-    responsiveTriad: responsiveTriad.length,
+    responsiveTriad: liveTriad.length,
     blockingFindings: failures,
+    blockerContractGaps: blockerContractGaps(allFindings),
     reasons,
   };
 }

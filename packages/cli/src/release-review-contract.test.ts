@@ -15,8 +15,10 @@ import {
   parseChecklistJson,
   pathIsWithin,
   panelLockText,
+  blockerContractGaps,
   releaseReviewDecision,
   releaseAttestationSigningBytes,
+  reviewerLiveness,
   validateFrozenReviewBinding,
   validateNewReviewOutput,
   validatePanelLock,
@@ -32,6 +34,20 @@ function cleanRows() {
     severity: "advisory",
     reason: `${item} checked`,
   }));
+}
+
+/** A full live triad panel: three responded slots with plausible durations. */
+function liveTriad(findings: unknown[]): Array<Record<string, unknown>> {
+  return REQUIRED_TRIAD_MODELS.map((model) => ({
+    model_id: model,
+    status: "responded",
+    duration_ms: 120_000,
+    findings,
+  }));
+}
+
+function liveScope(findings: unknown[] = []): Record<string, unknown> {
+  return { status: "responded", duration_ms: 120_000, findings };
 }
 
 describe("release review fail-closed contract", () => {
@@ -206,11 +222,8 @@ describe("release review fail-closed contract", () => {
     // FAIL among the repeats still blocks.
     expect(
       releaseReviewDecision({
-        triadActors: [
-          { status: "responded", findings: result.findings },
-          { status: "responded", findings: result.findings },
-        ],
-        scope: { status: "responded", findings: [] },
+        triadActors: liveTriad(result.findings),
+        scope: liveScope(),
       }).passed,
     ).toBe(false);
   });
@@ -231,18 +244,81 @@ describe("release review fail-closed contract", () => {
     expect(result.missingItems).toEqual(["security_and_secrets"]);
   });
 
-  it("passes only complete PASS responses from quorum plus scope", () => {
+  it("passes only a FULLY live panel — a failed required slot blocks sealing (v3, no quorum fallback)", () => {
     const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
     expect(
-      releaseReviewDecision({
-        triadActors: [
-          { status: "responded", findings },
-          { status: "responded", findings },
-          { status: "timed_out" },
-        ],
-        scope: { status: "responded", findings: [] },
-      }).passed,
+      releaseReviewDecision({ triadActors: liveTriad(findings), scope: liveScope() }).passed,
     ).toBe(true);
+    const [first, second] = liveTriad(findings);
+    const decision = releaseReviewDecision({
+      triadActors: [first!, second!, { model_id: REQUIRED_TRIAD_MODELS[2], status: "timed_out" }],
+      scope: liveScope(),
+    });
+    expect(decision.passed).toBe(false);
+    expect(decision.reasons.join(" ")).toContain("not live");
+  });
+
+  it("treats an implausibly fast slot as failed — the liveness floor", () => {
+    expect(reviewerLiveness({ status: "responded", duration_ms: 120_000 }).live).toBe(true);
+    expect(reviewerLiveness({ status: "responded", duration_ms: 900 }).live).toBe(false);
+    expect(reviewerLiveness({ status: "responded" }).live).toBe(false);
+    const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
+    const triad = liveTriad(findings);
+    triad[1] = { ...triad[1]!, duration_ms: 500 };
+    const decision = releaseReviewDecision({ triadActors: triad, scope: liveScope() });
+    expect(decision.passed).toBe(false);
+    expect(decision.reasons.join(" ")).toContain("implausible duration");
+  });
+
+  it("accepts blocker-contract fields (invariant, reachable) and rejects malformed ones [INV-139]", () => {
+    const rows = cleanRows();
+    rows[0] = {
+      ...rows[0]!,
+      verdict: "FAIL",
+      severity: "critical",
+      reason: "concrete defect",
+      invariant: "INV-042",
+      reachable: true,
+    } as never;
+    const result = validateChecklistResponse(rows, "model", TRIAD_ITEMS);
+    expect(result.status).toBe("responded");
+    expect(result.findings[0]).toMatchObject({ invariant: "INV-042", reachable: true });
+    expect(
+      validateChecklistResponse(
+        rows.map((row, i) => (i === 0 ? { ...row, invariant: "  " } : row)),
+        "model",
+        TRIAD_ITEMS,
+      ).status,
+    ).toBe("parse_failure");
+    expect(
+      validateChecklistResponse(
+        rows.map((row, i) => (i === 0 ? { ...row, reachable: "yes" } : row)),
+        "model",
+        TRIAD_ITEMS,
+      ).status,
+    ).toBe("parse_failure");
+  });
+
+  it("surfaces blocker-contract gaps for adjudication without softening the block", () => {
+    const rows = cleanRows();
+    rows[0] = {
+      ...rows[0]!,
+      verdict: "FAIL",
+      severity: "critical",
+      reason: "uncited blocker",
+    };
+    const findings = validateChecklistResponse(rows, "model", TRIAD_ITEMS).findings;
+    expect(blockerContractGaps(findings)).toEqual([
+      expect.objectContaining({ gaps: ["no invariant/criterion cited"] }),
+    ]);
+    const clean = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
+    const triad = liveTriad(clean);
+    triad[0] = { ...triad[0]!, findings };
+    const decision = releaseReviewDecision({ triadActors: triad, scope: liveScope() });
+    // Fail-closed: an uncited critical FAIL still blocks the machine decision;
+    // the gap is adjudication input (ledger vs fix), never an auto-downgrade.
+    expect(decision.passed).toBe(false);
+    expect(decision.blockerContractGaps).toHaveLength(1);
   });
 
   it("preserves advisory FAIL verdicts without blocking a healthy panel", () => {
@@ -250,14 +326,8 @@ describe("release review fail-closed contract", () => {
     rows[1] = { ...rows[1]!, verdict: "FAIL", severity: "advisory", reason: "concrete issue" };
     const findings = validateChecklistResponse(rows, "model", TRIAD_ITEMS).findings;
     const decision = releaseReviewDecision({
-      triadActors: [
-        { status: "responded", findings },
-        {
-          status: "responded",
-          findings: validateChecklistResponse(cleanRows(), "other", TRIAD_ITEMS).findings,
-        },
-      ],
-      scope: { status: "responded", findings: [] },
+      triadActors: liveTriad(findings),
+      scope: liveScope(),
     });
     expect(findings).toContainEqual(
       expect.objectContaining({ verdict: "FAIL", severity: "advisory" }),
@@ -271,16 +341,10 @@ describe("release review fail-closed contract", () => {
     const rows = cleanRows();
     rows[1] = { ...rows[1]!, verdict: "FAIL", severity: "critical", reason: "release blocker" };
     const findings = validateChecklistResponse(rows, "model", TRIAD_ITEMS).findings;
-    const decision = releaseReviewDecision({
-      triadActors: [
-        { status: "responded", findings },
-        {
-          status: "responded",
-          findings: validateChecklistResponse(cleanRows(), "other", TRIAD_ITEMS).findings,
-        },
-      ],
-      scope: { status: "responded", findings: [] },
-    });
+    const clean = validateChecklistResponse(cleanRows(), "other", TRIAD_ITEMS).findings;
+    const triad = liveTriad(clean);
+    triad[0] = { ...triad[0]!, findings };
+    const decision = releaseReviewDecision({ triadActors: triad, scope: liveScope() });
     expect(decision.passed).toBe(false);
     expect(decision.blockingFindings).toEqual([
       expect.objectContaining({ verdict: "FAIL", severity: "critical" }),
@@ -288,32 +352,28 @@ describe("release review fail-closed contract", () => {
     expect(decision.reasons[0]).toContain("critical FAIL");
   });
 
-  it("fails closed when malformed output prevents quorum", () => {
+  it("fails closed when malformed output kills a required slot", () => {
     const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
     const malformed = validateChecklistResponse([], "malformed", TRIAD_ITEMS);
-    const decision = releaseReviewDecision({
-      triadActors: [
-        { status: "responded", findings },
-        { status: malformed.status, findings: malformed.findings },
-      ],
-      scope: { status: "responded", findings: [] },
-    });
+    const triad = liveTriad(findings);
+    triad[1] = { ...triad[1]!, status: malformed.status, findings: malformed.findings };
+    const decision = releaseReviewDecision({ triadActors: triad, scope: liveScope() });
     expect(decision.passed).toBe(false);
-    expect(decision.responsiveTriad).toBe(1);
-    expect(decision.reasons).toContain("triad quorum not met: 1/2");
+    expect(decision.responsiveTriad).toBe(2);
+    expect(decision.reasons.join(" ")).toContain("not live");
   });
 
-  it("fails closed when the required scope slot is missing", () => {
+  it("fails closed when the required scope slot is missing or partial", () => {
     const findings = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
-    const decision = releaseReviewDecision({
-      triadActors: [
-        { status: "responded", findings },
-        { status: "responded", findings },
-      ],
-      scope: null,
-    });
+    const decision = releaseReviewDecision({ triadActors: liveTriad(findings), scope: null });
     expect(decision.passed).toBe(false);
     expect(decision.reasons).toContain("scope reviewer is missing");
+    expect(
+      releaseReviewDecision({
+        triadActors: liveTriad(findings),
+        scope: { status: "partial", duration_ms: 120_000, findings: [] },
+      }).passed,
+    ).toBe(false);
   });
 });
 

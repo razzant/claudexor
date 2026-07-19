@@ -401,7 +401,9 @@ itself). The v3 protocol bounds the loop mechanically.
 - **One adjudication → one batched fix commit.** Only findings passing the
   blocker contract earn fixes; everything else becomes a `docs/FEATURES.md`
   row, a BACKLOG entry, or a DECLINED ledger row in the same commit. No
-  "while I'm here" fixes inside the batch.
+  "while I'm here" fixes inside the batch. EVERY finding gets exactly one
+  row in `docs/reference/review-ledger.md` (the findings ledger); its
+  declined rows are the next wave's `DECLINED_FINDINGS.md`.
 - **One confirmation wave on the delta** (the fix diff + every file a fix
   touched; the full diff is reviewed exactly once, in wave 1). A
   confirmation blocker on UNCHANGED code without new evidence is invalid.

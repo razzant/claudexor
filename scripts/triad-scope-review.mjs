@@ -4,7 +4,8 @@
  *
  * Two independent review passes over one release diff:
  *   - triad: 3 reviewer models from distinct vendors, JSON-array findings
- *     contract, quorum >= 2 responsive models, degraded accounting, NO
+ *     contract with blocker-contract fields (INV-139), liveness floor + one
+ *     same-SHA retry per slot, EVERY required slot must be live, NO
  *     output truncation;
  *   - scope: one large-context reviewer covering the 8 fixed scope items
  *     against a compact repository atlas.
@@ -38,9 +39,11 @@
  *   TRIAD_MAX_PACK_BYTES=3000000
  *
  * Outputs (per round): raw per-model responses (NEVER truncated), parsed
- * findings JSON, and a markdown summary table. Exit code 1 when quorum/scope
- * fails, a response is malformed/truncated/incomplete, or any reviewer emits
- * a FAIL verdict. Exit 0 means the exact panel returned complete PASS coverage.
+ * findings JSON, and a markdown summary table. Exit code 1 when any required
+ * slot (triad or scope) is not live after its one retry, a response is
+ * malformed/truncated/implausibly fast, or any reviewer emits a critical FAIL.
+ * Exit 0 means the exact panel returned complete live coverage with no
+ * critical FAIL verdicts.
  */
 
 import { execFileSync } from "node:child_process";
@@ -68,6 +71,7 @@ import {
   buildTouchedFilePack,
   completionTermination,
   parseChecklistJson,
+  reviewerLiveness,
   pathIsWithin,
   panelLockText,
   releaseReviewDecision,
@@ -260,6 +264,17 @@ const JSON_CONTRACT = `Return ONLY a JSON array. Each element:
 One row per DISTINCT problem: repeat the same "item" id for each additional
 finding on that item — multiple rows per item are expected on a deep review,
 and one PASS row suffices for an item with no findings.
+
+Blocker contract (INV-139) — applies to every critical FAIL row:
+- Add "invariant": "<the violated invariant id (e.g. INV-042) or the exact
+  owner-accepted criterion>" — a blocking finding MUST cite what it violates.
+- Add "reachable": true|false — whether the defect is reachable in the
+  DEFAULT configuration (no exotic env, no hypothetical plugin). If it is
+  not reachable by default, severity is capped at advisory.
+- A critical FAIL without a citation, or one that re-litigates a recorded
+  owner decision from the packet's decision registry, will be adjudicated to
+  the declined ledger instead of fixed — cite or downgrade yourself first.
+Both fields are optional on PASS and advisory rows.
 The array must parse with JSON.parse: use only standard JSON string escapes
 inside "reason" (a backslash before a backtick is NOT valid JSON — write the
 backtick bare), no trailing commas, no comments, no text outside the array.`;
@@ -712,8 +727,44 @@ async function main() {
     model: SCOPE_MODEL,
     role: "scope",
   });
+  // Liveness + one same-SHA retry (CHECKLISTS "Reviewer liveness"): an
+  // empty, instant, errored, or unparseable response is an infrastructure
+  // failure — retry the slot exactly once, then report it failed. A
+  // "responded" result that is implausibly fast or carries no parseable JSON
+  // array is downgraded before the retry decision so cache/transport
+  // artifacts can never occupy a required slot.
+  const withLiveness = (result) => {
+    if (result.status !== "responded") return result;
+    const liveness = reviewerLiveness({ status: result.status, duration_ms: result.ms });
+    if (!liveness.live) {
+      return { ...result, status: "implausible", error: liveness.reason };
+    }
+    if (parseChecklistJson(result.raw) === null) {
+      return { ...result, status: "parse_failure", error: "no_parseable_json_array" };
+    }
+    return result;
+  };
+  const callSlotOnce = (model, prompt) => callModel(model, prompt).then(withLiveness);
+  const callSlotWithRetry = async (model, prompt, role) => {
+    const first = await callSlotOnce(model, prompt);
+    if (first.status === "responded") return first;
+    progress({
+      ts: new Date().toISOString(),
+      type: "reviewer.retry",
+      model,
+      first_status: first.status,
+      first_error: first.error ?? null,
+      ...(role ? { role } : {}),
+    });
+    const second = await callSlotOnce(model, prompt);
+    return {
+      ...second,
+      retried: true,
+      firstAttempt: { status: first.status, error: first.error ?? null, ms: first.ms },
+    };
+  };
   const runSlot = (model, prompt, role) =>
-    callModel(model, prompt).then(
+    callSlotWithRetry(model, prompt, role).then(
       (result) => {
         if (result.firstEventAt) {
           progress({
@@ -821,6 +872,8 @@ async function main() {
       finish_reason: result.finishReason ?? null,
       status,
       slot: idx + 1,
+      retried: result.retried ?? false,
+      first_attempt: result.firstAttempt ?? null,
       parsed_count: parsed.length,
       missing_items: missingItems,
       usage: result.usage ?? null,
@@ -842,7 +895,6 @@ async function main() {
     findings.push(...parsed);
   }
   const responsive = actorRecords.filter((r) => r.status === "responded");
-  const quorumMet = responsive.length >= 2;
   const degraded = actorRecords
     .filter((r) => r.status !== "responded")
     .map((r) => `${r.model_id}=${r.status}`);
@@ -872,6 +924,8 @@ async function main() {
       response_id: scopeResult.responseId ?? null,
       finish_reason: scopeResult.finishReason ?? null,
       status: scopeStatus,
+      retried: scopeResult.retried ?? false,
+      first_attempt: scopeResult.firstAttempt ?? null,
       usage: scopeResult.usage ?? null,
       started_at: scopeResult.startedAt ?? null,
       first_event_at: scopeResult.firstEventAt ?? null,
@@ -937,7 +991,7 @@ async function main() {
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
   }
 
-  const decision = releaseReviewDecision({ triadActors: actorRecords, scope, quorum: 2 });
+  const decision = releaseReviewDecision({ triadActors: actorRecords, scope });
   const summary = {
     reviewRunId,
     reviewWaveId,
@@ -954,11 +1008,13 @@ async function main() {
     panel_override_active: false,
     triad: {
       models: TRIAD_MODELS,
-      quorum_met: quorumMet,
+      // v3: every required slot must be live — partial panels never pass.
+      required_slots_live: decision.responsiveTriad === TRIAD_MODELS.length,
       degraded,
       actors: actorRecords,
       findings,
     },
+    blocker_contract_gaps: decision.blockerContractGaps,
     scope,
     decision,
   };
@@ -975,7 +1031,7 @@ async function main() {
     `# Triad + Scope review — round ${round}`,
     "",
     `- base: ${base}`,
-    `- quorum: ${quorumMet ? "met" : "NOT MET"} (${responsive.length}/${TRIAD_MODELS.length} responded${degraded.length ? `; degraded: ${degraded.join(", ")}` : ""})`,
+    `- required slots: ${decision.responsiveTriad}/${TRIAD_MODELS.length} live${degraded.length ? ` (failed: ${degraded.join(", ")})` : ""}`,
     `- scope: ${scope ? scope.status : "skipped"}`,
     "",
     "| model | item | verdict | severity | reason |",

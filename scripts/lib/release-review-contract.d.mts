@@ -1,17 +1,9 @@
 export const REQUIRED_TRIAD_MODELS: readonly string[];
 export const REQUIRED_SCOPE_MODEL: string;
-export const REQUIRED_RELEASE_REVIEW_SLOTS: ReadonlyArray<{
-  slot: string;
-  route: string;
-  model: string;
-  effort: string | null;
-}>;
-export const RELEASE_NATIVE_CHECKLIST_ITEMS: readonly string[];
-export const MAX_RELEASE_REVIEW_START_SKEW_MS: 10000;
 export const TRIAD_ITEMS: readonly string[];
 export const SCOPE_ITEMS: readonly string[];
-export const RELEASE_REVIEW_ATTESTATION_SCHEMA_VERSION: 2;
 export const RELEASE_REVIEW_ATTESTATION_ALGORITHM: "Ed25519";
+export const REVIEWER_MIN_PLAUSIBLE_MS: number;
 export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION: 3;
 export const OWNER_REVIEW_PROTOCOL: "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS: 2;
@@ -24,6 +16,10 @@ export interface ChecklistFinding {
   severity: "critical" | "advisory";
   reason: string;
   model: string;
+  /** Blocker contract [INV-139]: violated invariant/criterion citation. */
+  invariant?: string;
+  /** Blocker contract [INV-139]: reachable in the default configuration. */
+  reachable?: boolean;
 }
 
 export interface ChecklistValidation {
@@ -57,7 +53,6 @@ export function validateReleaseInput(
 ): { ok: boolean; reasons: string[] };
 export function canonicalJson(value: any): string;
 export function releaseAttestationSigningBytes(attestation: any): Buffer;
-export function releaseReviewConcurrencyDigest(concurrency: any): string;
 export function verifyReleaseAttestationSignature(
   attestation: any,
   authority: any,
@@ -68,10 +63,6 @@ export function validateFullGateEvidence(
   expected: { candidateSha: string; candidateTree: string },
 ): string[];
 export function validateOwnerReviewAttestationPayload(
-  payload: any,
-  expected: { candidateSha: string; candidateTree: string },
-): { ok: boolean; reasons: string[] };
-export function validateReleaseAttestationPayload(
   payload: any,
   expected: { candidateSha: string; candidateTree: string },
 ): { ok: boolean; reasons: string[] };
@@ -111,13 +102,27 @@ export function validateChecklistResponse(
   requiredItems: readonly string[],
 ): ChecklistValidation;
 export function blockingFindings(findings: readonly ChecklistFinding[]): ChecklistFinding[];
+export function blockerContractGaps(
+  findings: readonly ChecklistFinding[],
+): Array<{ finding: ChecklistFinding; gaps: string[] }>;
+export interface ReviewerSlotRecord {
+  status: string;
+  model_id?: string;
+  duration_ms?: number;
+  findings?: ChecklistFinding[];
+}
+export function reviewerLiveness(
+  actor: ReviewerSlotRecord | null | undefined,
+  minPlausibleMs?: number,
+): { live: boolean; reason: string | null };
 export function releaseReviewDecision(input: {
-  triadActors: Array<{ status: string; findings?: ChecklistFinding[] }>;
-  scope: { status: string; findings?: ChecklistFinding[] } | null;
-  quorum?: number;
+  triadActors: ReviewerSlotRecord[];
+  scope: (ReviewerSlotRecord & { metadata?: { duration_ms?: number } }) | null;
+  minPlausibleMs?: number;
 }): {
   passed: boolean;
   responsiveTriad: number;
   blockingFindings: ChecklistFinding[];
+  blockerContractGaps: Array<{ finding: ChecklistFinding; gaps: string[] }>;
   reasons: string[];
 };
