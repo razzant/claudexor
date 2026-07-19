@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/daemon",
-  "version": "2.1.3",
+  "version": "3.0.0",
   "license": "MIT",
   "description": "Optional local daemon: Unix-socket JSON-RPC, token auth, task queue. Runner injected (no second scheduler).",
   "type": "module",

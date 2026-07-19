@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/workspace",
-  "version": "2.1.3",
+  "version": "3.0.0",
   "license": "MIT",
   "description": "WorkspaceEnvelope manager: git worktree + scoped HOME/harness-config isolation + dirty policy.",
   "type": "module",

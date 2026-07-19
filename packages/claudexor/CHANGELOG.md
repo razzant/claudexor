@@ -1,5 +1,29 @@
 # claudexor
 
+## 3.0.0
+
+### Major Changes
+
+- v3.0.0 — the chat-first control plane, rebuilt on honest server truth.
+
+  Modes collapse to ask | plan | agent (orchestrate dies; delegation is
+  `agent --delegate` with a scoped six-tool MCP belt). Plan absorbs Spec:
+  native vendor plan modes, typed open questions, answer turns,
+  freeze-on-implement, and the Council strategy. Continuity is the
+  flagship: durable per-lane native sessions, lane checkpoints, bounded
+  continuation packets with cached LLM summaries, and visible typed
+  disclosure. Status is independent axes (lifecycle / checks / review /
+  noChanges / reason) with a server-owned outcome banner that model prose
+  can never outrank. Accounts are fully symmetric (Enabled + Active,
+  native CLI login is just a row). Fresh v3 data root; protocol major 3;
+  runtime-closure updater + zero-telemetry install counter; the immune
+  system (staged-field v3, INV→verify link gate, concept gate, reviewer
+  liveness, findings ledger) guards all of it.
+
+### Patch Changes
+
+- @claudexor/cli@3.0.0
+
 ## 2.1.3
 
 ### Patch Changes

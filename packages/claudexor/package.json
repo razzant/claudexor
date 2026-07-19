@@ -1,6 +1,6 @@
 {
   "name": "claudexor",
-  "version": "2.1.3",
+  "version": "3.0.0",
   "description": "Harness-agnostic AI coding control plane — one CLI over Codex, Claude Code, Cursor, and OpenCode with cross-family review, best-of-N runs, and typed apply gates.",
   "type": "module",
   "bin": {

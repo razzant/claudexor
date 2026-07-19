@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-fake",
-  "version": "2.1.3",
+  "version": "3.0.0",
   "license": "MIT",
   "description": "Deterministic fake harnesses for tests and pipeline bring-up.",
   "type": "module",
