@@ -174,6 +174,15 @@ import ClaudexorKit
             blocksReplacement: blocksReplacement)
     }
 
+    @Test func namedProfileNeverExposesTheGlobalFallbackKeyPanel() {
+        #expect(AuthSheetPresentation.showsGlobalApiKeyPanel(
+            profileId: nil, secretName: "anthropic"))
+        #expect(!AuthSheetPresentation.showsGlobalApiKeyPanel(
+            profileId: "work", secretName: "anthropic"))
+        #expect(!AuthSheetPresentation.showsGlobalApiKeyPanel(
+            profileId: nil, secretName: nil))
+    }
+
     @Test func primaryCTAFollowsTheCauseLadder() {
         // Unknown process state resolves before anything else.
         #expect(cta(streamLost: true) == .reconnect)

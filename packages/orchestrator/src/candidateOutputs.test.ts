@@ -76,6 +76,14 @@ describe("candidate produced-output persistence", () => {
     expect(readFileSync(outside, "utf8")).toBe("host sentinel");
   });
 
+  it("refuses a dangling synthesis symlink without creating its outside target", () => {
+    const worktree = root("claudexor-synthesis-dangling-");
+    const outside = join(root("claudexor-synthesis-missing-host-"), "missing.md");
+    symlinkSync(outside, join(worktree, ".claudexor-synthesis-input.md"));
+    expect(() => stageFileBackedContext(worktree, "must not escape")).toThrow(/not a regular file/);
+    expect(existsSync(outside)).toBe(false);
+  });
+
   it("preserves raster outputs only and materializes winner-relative links", () => {
     const worktree = root("claudexor-output-tree-");
     const runRoot = root("claudexor-output-run-");

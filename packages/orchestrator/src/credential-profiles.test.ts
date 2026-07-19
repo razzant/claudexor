@@ -8,6 +8,7 @@ import {
   resolveCredentialProfile,
   rotateSpecOnTypedLimit,
   rotationRetryEligible,
+  selectedProfileAvailability,
 } from "./credential-profiles.js";
 import { HarnessRunSpec as HarnessRunSpecSchema } from "@claudexor/schema";
 import type { QuotaSnapshot } from "@claudexor/schema";
@@ -40,6 +41,33 @@ describe("resolveCredentialProfile (INV-135, the one resolve owner)", () => {
     expect(() => resolveCredentialProfile([{ ...work, enabled: false }], "work", "claude")).toThrow(
       /disabled/,
     );
+  });
+});
+
+describe("selectedProfileAvailability", () => {
+  it("rejects available-but-failed verification while preserving presence-only not_run", async () => {
+    const failed = await selectedProfileAvailability({
+      registry: [work],
+      profileId: "work",
+      harnessId: "claude",
+      probe: async () => ({
+        availability: "available",
+        verification: "failed",
+        detail: "wrong credential route",
+      }),
+    });
+    expect(failed).toBe("wrong credential route");
+    const presenceOnly = await selectedProfileAvailability({
+      registry: [work],
+      profileId: "work",
+      harnessId: "claude",
+      probe: async () => ({
+        availability: "available",
+        verification: "not_run",
+        detail: "secret present",
+      }),
+    });
+    expect(presenceOnly).toBe("available");
   });
 });
 

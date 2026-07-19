@@ -1,13 +1,17 @@
 import {
   chmodSync,
+  closeSync,
+  constants,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import type { Stats } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import { summarizeDiffPaths } from "@claudexor/core";
@@ -16,25 +20,48 @@ const RASTER_OUTPUT_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gi
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
 
+function lstatIfPresent(path: string): Stats | null {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function writeNoFollow(path: string, data: string | Buffer, mode: number, replace: boolean): void {
+  const flags =
+    constants.O_WRONLY |
+    constants.O_CREAT |
+    constants.O_NOFOLLOW |
+    (replace ? constants.O_TRUNC : constants.O_EXCL);
+  const fd = openSync(path, flags, mode);
+  try {
+    writeFileSync(fd, data);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Stage large synthesis evidence in the envelope, returning an idempotent
  * cleanup that callers run before any diff/gate/review. */
 export function stageFileBackedContext(worktreePath: string, content?: string): () => void {
   if (content === undefined) return () => {};
   const path = join(worktreePath, ".claudexor-synthesis-input.md");
-  const existed = existsSync(path);
   let original: { bytes: Buffer; mode: number } | null = null;
-  if (existed) {
-    const stat = lstatSync(path);
+  const existing = lstatIfPresent(path);
+  if (existing) {
+    const stat = existing;
     if (!stat.isFile() || stat.isSymbolicLink()) {
       throw new Error("synthesis input path already exists and is not a regular file");
     }
     original = { bytes: readFileSync(path), mode: stat.mode & 0o777 };
   }
-  writeFileSync(path, content, { mode: 0o600 });
+  writeNoFollow(path, content, 0o600, existing !== null);
   return () => {
     rmSync(path, { recursive: true, force: true });
     if (original) {
-      writeFileSync(path, original.bytes, { mode: original.mode });
+      writeNoFollow(path, original.bytes, original.mode, false);
       chmodSync(path, original.mode);
     }
   };

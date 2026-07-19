@@ -36,6 +36,7 @@ interface SessionBinding {
 
 interface SessionMutation {
   record: SpecSessionRecord;
+  superseded?: SpecSessionRecord[];
   binding?: SessionBinding;
 }
 
@@ -104,8 +105,22 @@ export class SpecSessionStore {
       changes: [],
       interruptedFrom: null,
     };
+    const superseded = request.threadId
+      ? [...this.sessions.values()]
+          .filter(
+            (session) => session.threadId === request.threadId && session.state !== "cancelled",
+          )
+          .map((session) => ({
+            ...session,
+            state: "cancelled" as const,
+            error: null,
+            interruptedFrom: null,
+            updatedAt: createdAt,
+          }))
+      : [];
     this.commit({
       record,
+      ...(superseded.length > 0 ? { superseded } : {}),
       binding: { keyDigest, requestDigest, sessionId: record.sessionId },
     });
     return { session: publicSession(record), reused: false };
@@ -293,6 +308,9 @@ export class SpecSessionStore {
   }
 
   private apply(mutation: SessionMutation): void {
+    for (const record of mutation.superseded ?? []) {
+      this.sessions.set(record.sessionId, structuredClone(record));
+    }
     this.sessions.set(mutation.record.sessionId, structuredClone(mutation.record));
     if (!mutation.binding) return;
     const prior = this.sessionByKey.get(mutation.binding.keyDigest);
@@ -360,6 +378,10 @@ function parseMutation(value: unknown): SessionMutation {
     throw new Error("invalid spec session mutation");
   const input = value as SessionMutation;
   validateRecord(input.record);
+  if (input.superseded && !Array.isArray(input.superseded)) {
+    throw new Error("invalid superseded spec sessions");
+  }
+  for (const record of input.superseded ?? []) validateRecord(record);
   if (
     input.binding &&
     (!input.binding.keyDigest || !input.binding.requestDigest || !input.binding.sessionId)

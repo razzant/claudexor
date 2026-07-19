@@ -103,8 +103,9 @@ are NOT aliases: they hard-error at every wire boundary.
   dirs for write envelopes and read-only routes via `readOnlyHomeEnv`; these keep
   relocatable, route-local state outside both the worktree and the operator's
   home. A selected native Codex route uses its Claudexor-owned file-only profile;
-  native Claude re-points only its vendor config/session store at the host-user
-  location described in §5. The package also owns diff capture and path-safe disposal.
+  native Claude also uses a Claudexor-owned config dir and exposes only the
+  narrow host Keychain bridge described in §5. The package also owns diff
+  capture and path-safe disposal.
 - `packages/review`: deterministic gates, review, revalidation, convergence
   predicate, readiness ledger.
 - `packages/arbitration`, `packages/synthesis`, `packages/budget`: evidence
@@ -408,7 +409,9 @@ refuses with a typed 409 while a login job for that account is active. The same
 daemon mutation clears every legacy scalar thread pin carrying that profile
 id, marks matching harness/profile native-session caches stale, and removes
 profile quota snapshots, so deletion cannot leave a route that fails on the
-next turn or resurrect a session if the id is recreated.
+next turn or resurrect a session if the id is recreated. Dependent journal
+invalidation happens before registry removal; any unhealthy project partition
+returns typed 409/recovery-required, leaving the profile retryable.
 
 Selection precedence is turn > thread-sticky > engine default: a turn's
 explicit `credentialProfileId` (CLI `--profile`) beats the thread's durable
@@ -417,7 +420,10 @@ credential ladder. The app's Use action atomically makes the profile's harness
 the primary and sole eligible pool member; external thread create/PATCH calls
 with an explicit pool are rejected unless the profile id exists for every pool
 lane. Run preflight probes the selected profile for every lane even when the
-default harness doctor is already OK, before any adapter starts. Each harness
+default harness doctor is already OK, before any adapter starts:
+`verification: failed` refuses even with `availability: available`, while an
+intentional presence-only API-key probe may remain `not_run` (shown unknown,
+then adapter-enforced). Each harness
 may declare ONE typed `profile_policy`
 (`limit_action: fail|ask|rotate`, priority-ordered `rotation_eligible`,
 `headroom_threshold`). Two separated signals drive it (never prose, never
@@ -766,7 +772,9 @@ after restart. An Implement run is then a normal
 agent thread turn: `POST /v2/threads/:id/turns` carrying that `specPath`, so the
 agent runs against the frozen SpecPack contract rather than a bare prompt. The
 interview is multi-tier (`priorDecisions` carries earlier answers into the next
-question round), while the frozen SpecPack remains single-commit in v1 — one
+question round); creating the successor tier atomically marks every older
+active session for that thread cancelled in the same journal mutation, so only
+one tier is ever recoverable. The frozen SpecPack remains single-commit in v1 — one
 freeze, no post-freeze spec-version ladder.
 
 ### Event streaming contract (snapshot-then-subscribe)

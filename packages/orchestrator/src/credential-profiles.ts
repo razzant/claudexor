@@ -46,7 +46,7 @@ export async function selectedProfileAvailability(input: {
   }
   if (!input.probe) return `harness "${input.harnessId}" has no profile probe`;
   const result = await input.probe(profile);
-  return result.availability === "available"
+  return result.availability === "available" && result.verification !== "failed"
     ? "available"
     : (result.detail ?? `${result.availability}/${result.verification}`);
 }

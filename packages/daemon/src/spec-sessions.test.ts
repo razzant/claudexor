@@ -90,6 +90,44 @@ describe("SpecSessionStore", () => {
     second.journal.close();
   });
 
+  it("atomically supersedes prior active tiers for the same owning thread", () => {
+    const f = fixture();
+    const first = f.store.create({
+      request,
+      idempotencyKey: "tier-1",
+      clientId: "test",
+    }).session;
+    f.store.completeGrounding(first.sessionId, {
+      planRunId: "plan-1",
+      planText: "## Open Questions\n- [text] First?",
+      questions: [
+        {
+          id: "q1",
+          tier: 0,
+          prompt: "First?",
+          kind: "text",
+          options: [],
+          allow_text: true,
+        },
+      ],
+    });
+    const second = f.store.create({
+      request: { ...request, priorDecisions: [{ question: "First?", answer: "A" }] },
+      idempotencyKey: "tier-2",
+      clientId: "test",
+    }).session;
+
+    expect(f.store.get(first.sessionId)?.state).toBe("cancelled");
+    expect(f.store.get(second.sessionId)?.state).toBe("grounding");
+    expect(f.store.list().filter((session) => session.state !== "cancelled")).toHaveLength(1);
+    f.store.cancel(second.sessionId);
+    f.journal.close();
+
+    const restarted = fixture(f.dir);
+    expect(restarted.store.list().filter((session) => session.state !== "cancelled")).toEqual([]);
+    restarted.journal.close();
+  });
+
   it("resumes an interrupted freeze without discarding journaled interview state", () => {
     const first = fixture();
     const created = first.store.create({

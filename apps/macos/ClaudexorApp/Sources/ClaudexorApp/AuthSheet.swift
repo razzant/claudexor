@@ -122,7 +122,8 @@ struct AuthSheet: View {
                     if job == nil, lifecycle.connection == .recovering || lifecycle.connection == .streamLost {
                         setupConnectionPanel
                     }
-                    if let secretName { apiKeyPanel(secretName) }
+                    if AuthSheetPresentation.showsGlobalApiKeyPanel(profileId: profileId, secretName: secretName),
+                       let secretName { apiKeyPanel(secretName) }
                     if !status.isEmpty {
                         Text(status)
                             .font(.caption)

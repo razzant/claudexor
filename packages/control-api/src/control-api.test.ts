@@ -5122,19 +5122,35 @@ describe("DaemonControlApiServer", () => {
 
   it("bounds primary output inline text while preserving full artifact bytes", async () => {
     const { daemon, record } = fakeDaemon();
-    const full = "x".repeat(300 * 1024);
-    writeFileSync(join(record.runDir!, "final", "answer.md"), full);
     await withDaemonServer(daemon, async (base) => {
-      const response = await apiFetch(`${base}/runs/run-d1`, {
+      for (const [size, truncated] of [
+        [256 * 1024, false],
+        [256 * 1024 + 1, true],
+        [257 * 1024, true],
+      ] as const) {
+        const full = "x".repeat(size);
+        writeFileSync(join(record.runDir!, "final", "answer.md"), full);
+        const response = await apiFetch(`${base}/runs/run-d1`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          primaryOutput: { text: string; bytes: number; truncated: boolean };
+        };
+        expect(body.primaryOutput.truncated).toBe(truncated);
+        expect(body.primaryOutput.bytes).toBe(size);
+        expect(Buffer.byteLength(body.primaryOutput.text)).toBeLessThanOrEqual(256 * 1024);
+      }
+      const utf = "x".repeat(256 * 1024 - 1) + "é";
+      writeFileSync(join(record.runDir!, "final", "answer.md"), utf);
+      const utfResponse = await apiFetch(`${base}/runs/run-d1`, {
         headers: { authorization: `Bearer ${token}` },
       });
-      expect(response.status).toBe(200);
-      const body = (await response.json()) as {
-        primaryOutput: { text: string; bytes: number; truncated: boolean };
+      const utfBody = (await utfResponse.json()) as {
+        primaryOutput: { text: string; truncated: boolean };
       };
-      expect(body.primaryOutput.truncated).toBe(true);
-      expect(body.primaryOutput.bytes).toBe(Buffer.byteLength(full));
-      expect(Buffer.byteLength(body.primaryOutput.text)).toBeLessThanOrEqual(256 * 1024);
+      expect(utfBody.primaryOutput.truncated).toBe(true);
+      expect(utfBody.primaryOutput.text).not.toContain("\uFFFD");
     });
   });
 

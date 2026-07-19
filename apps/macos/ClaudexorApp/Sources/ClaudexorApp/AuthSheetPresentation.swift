@@ -5,6 +5,10 @@ import ClaudexorKit
 /// from the cause, and ONE merged human status line per setup job — never
 /// contradictory combos like "Failed + Completed + exit 0". Unit-tested.
 enum AuthSheetPresentation {
+    static func showsGlobalApiKeyPanel(profileId: String?, secretName: String?) -> Bool {
+        profileId == nil && secretName != nil
+    }
+
     enum PrimaryCTA: Equatable {
         /// Start the native login flow (no verified session yet).
         case login

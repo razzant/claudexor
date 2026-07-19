@@ -390,7 +390,9 @@ frequency and volume are. The contracts:
     family — account control is never forked per surface. In that sheet the
     implicit default login is simply the first account row; named profiles
     follow, and "Add another account" is the only add flow. There is no
-    parallel "Native setup" card competing with "Additional accounts". "Use
+    parallel "Native setup" card competing with "Additional accounts"; a named
+    profile drill-in never exposes the default/global API-key fallback panel.
+    "Use
     automatic account routing" clears a manual pin; selection persists through
     the thread DTO, never local-only UI state.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned

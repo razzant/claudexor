@@ -144,7 +144,8 @@ pnpm test
   terminal server disposition (including frozen sessions); restart during
   grounding/freezing shows live follow or explicit Resume/Dismiss, never a
   resurrected or blank card. Recovered frozen work must disclose/reconfirm
-  lost unsent run options.
+  lost unsent run options. Ask Deeper must supersede older active tiers in the
+  same journal mutation; exactly one session per thread remains recoverable.
 - Check the inline per-turn review/diff surfaces and other dense content (in the
   run inspector and on turn cards) do not force the whole app window to a wide
   fixed minimum.
@@ -339,14 +340,21 @@ pnpm test
   atomically selects the profile harness/pool; incompatible explicit pools
   start zero adapters; delete clears all thread pins, matching native-session
   caches, draft selection, and quota snapshots.
+  `available + failed` must start zero attempts. A named-profile Manage sheet
+  must never expose or mutate the default/global API-key fallback slot.
+  Deletion must refuse before registry removal if any project partition cannot
+  durably invalidate dependencies.
 - Retry accounting: fixtures must switch native→API-key within one candidate
   and one reviewer; each usage event settles by its own/current typed route,
   never the attempt's first route.
 - Synthesis staging must restore a pre-existing sentinel byte/mode-identically
-  and refuse symlinks; success/retry/failure must leave no staging diff.
+  and refuse live or dangling symlinks using no-follow creation; success/retry/
+  failure must leave no staging diff or host-side target.
 - Diff demand loading: controls derive patch availability from metadata, a tab
   opened before metadata retriggers, and 413/network/non-text failures show
   reason + path + Retry rather than spinning forever.
+- Bounded primary output: test exactly 256 KiB, +1 byte, the redaction overlap
+  boundary, and split UTF-8; every omitted byte sets `truncated=true`.
 - Persist local/redacted per-reviewer telemetry: requested model/effort, observed
   model/source, route proof, start/first-event/completion-or-timeout timestamps,
   duration, raw normalized stream or transcript, parsed JSON blocks, and parse

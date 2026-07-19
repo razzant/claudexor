@@ -26,3 +26,18 @@ export function assertCredentialProfileCompatibility(
     );
   }
 }
+
+export function assertCredentialProfileRegistered(
+  registry: readonly CredentialProfile[],
+  harnessId: string,
+  profileId: string,
+): void {
+  if (
+    registry.some((profile) => profile.harness_id === harnessId && profile.profile_id === profileId)
+  )
+    return;
+  throw Object.assign(
+    new Error(`credential profile "${profileId}" is not registered for harness "${harnessId}"`),
+    { status: 404 },
+  );
+}

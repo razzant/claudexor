@@ -53,7 +53,10 @@ import { ACTIVE_SETUP_STATES, SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
 import { createRunRequirementsPreflight } from "./request-preflight.js";
 import { applyThreadDiff, type ThreadApplyOptions } from "./thread-delivery.js";
-import { assertCredentialProfileCompatibility } from "./profile-compatibility.js";
+import {
+  assertCredentialProfileCompatibility,
+  assertCredentialProfileRegistered,
+} from "./profile-compatibility.js";
 import { assertSpecThreadScope } from "./spec-thread-scope.js";
 import {
   buildGroundingPrompt,
@@ -425,19 +428,16 @@ export function controlServices(
           { status: 409 },
         );
       }
+      assertCredentialProfileRegistered(
+        loadConfig(NO_PROJECT_ROOT).global.credential_profiles,
+        harnessId,
+        profileId,
+      );
+      threads.invalidateCredentialProfile(harnessId, profileId);
+      quotaRegistry().removeSubject(harnessId, profileId);
       const entry = removeProfileFromRegistry(harnessId, profileId);
       let credentialCleanup: "config_dir_removed" | "secret_deleted" | "none" = "none";
       const cleanupWarnings: string[] = [];
-      try {
-        threads.invalidateCredentialProfile(harnessId, profileId);
-        quotaRegistry().removeSubject(harnessId, profileId);
-      } catch (err) {
-        cleanupWarnings.push(
-          `registry entry removed, but dependent thread/quota state cleanup failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
       try {
         if (entry.credential_kind === "config_dir_login" && entry.isolation_locator) {
           const dir =

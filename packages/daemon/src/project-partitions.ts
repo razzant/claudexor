@@ -222,6 +222,7 @@ export class ProjectPartitions implements CommandAuthority {
   }
 
   invalidateCredentialProfile(harnessId: string, profileId: string) {
+    this.assertCredentialProfileInvalidationReady();
     return this.threadStores().reduce(
       (total, store) => {
         const result = store.invalidateCredentialProfile(harnessId, profileId);
@@ -232,6 +233,21 @@ export class ProjectPartitions implements CommandAuthority {
       },
       { clearedThreads: 0, invalidatedSessions: 0 },
     );
+  }
+
+  assertCredentialProfileInvalidationReady(): void {
+    this.sync();
+    const unavailable = [...this.partitions.entries()]
+      .filter(([, entry]) => !entry.manager.ready())
+      .map(([id]) => id);
+    if (unavailable.length > 0) {
+      throw Object.assign(
+        new Error(
+          `credential profile deletion requires recovery of project partition(s): ${unavailable.join(", ")}`,
+        ),
+        { status: 409, code: "journal_recovery_required" },
+      );
+    }
   }
 
   trashThread(id: string): Thread {

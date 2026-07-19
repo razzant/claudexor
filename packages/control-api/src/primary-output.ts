@@ -46,7 +46,7 @@ function preview(
   return {
     text: truncateUtf8(redactSecrets(decodeValidUtf8(data)), PRIMARY_OUTPUT_PREVIEW_BYTES),
     bytes: st.size,
-    truncated: st.size > length,
+    truncated: st.size > PRIMARY_OUTPUT_PREVIEW_BYTES,
   };
 }
 

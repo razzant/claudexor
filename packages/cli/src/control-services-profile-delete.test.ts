@@ -13,10 +13,16 @@ import { registerConfigDirProfile } from "./profile-registration.js";
 // (stricter than the creation-grade confinement, which accepts the owned root
 // itself), honest cleanup reporting, and warning disclosure over silence.
 
-function servicesWithJobs(jobs: Array<Record<string, unknown>>) {
+function servicesWithJobs(
+  jobs: Array<Record<string, unknown>>,
+  invalidationError?: Error & { status?: number },
+) {
   const setupBinding = { current: () => ({ list: () => jobs }) };
   const threads = {
-    invalidateCredentialProfile: () => ({ clearedThreads: 0, invalidatedSessions: 0 }),
+    invalidateCredentialProfile: () => {
+      if (invalidationError) throw invalidationError;
+      return { clearedThreads: 0, invalidatedSessions: 0 };
+    },
   };
   const quota = { removeSubject: () => 0 };
   return controlServices(
@@ -82,6 +88,18 @@ describe("deleteCredentialProfile (INV-135 delete service)", () => {
       services.deleteCredentialProfile({ harnessId: "claude", profileId: "work" }),
     ).rejects.toMatchObject({ status: 409 });
     // The registry must be untouched after the refusal.
+    expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(1);
+  });
+
+  it("refuses before registry removal when dependent partitions need recovery", async () => {
+    registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
+    const error = Object.assign(new Error("project partition requires recovery"), { status: 409 });
+    await expect(
+      servicesWithJobs([], error).deleteCredentialProfile({
+        harnessId: "claude",
+        profileId: "work",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
     expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(1);
   });
 
