@@ -1,0 +1,12 @@
+{
+  "schema": "ControlProblem",
+  "value": {
+    "code": "plan_not_ready",
+    "message": "plan run-x is not ready: 2 open question(s)",
+    "retryable": false,
+    "fieldErrors": {},
+    "requiredActions": [],
+    "evidenceRefs": [],
+    "context": {}
+  }
+}

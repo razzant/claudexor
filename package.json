@@ -33,7 +33,9 @@
     "release:verify:swift": "(cd apps/macos/ClaudexorKit && PATH=\"$HOME/.swiftly/bin:$PATH\" swift test) && (cd apps/macos/ClaudexorApp && PATH=\"$HOME/.swiftly/bin:$PATH\" swift test && PATH=\"$HOME/.swiftly/bin:$PATH\" swift build)",
     "release:verify:app": "PATH=\"$HOME/.swiftly/bin:$HOME/.claudexor/node/bin:$PATH\" MAKE_DMG=1 apps/macos/scripts/build-app.sh",
     "release:verify": "pnpm release:verify:node && pnpm release:verify:swift && pnpm release:verify:app",
-    "release": "pnpm release:verify"
+    "release": "pnpm release:verify",
+    "fixtures:swift": "node scripts/gen-swift-fixtures.mjs",
+    "fixtures:swift:check": "node scripts/gen-swift-fixtures.mjs --check"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.10",

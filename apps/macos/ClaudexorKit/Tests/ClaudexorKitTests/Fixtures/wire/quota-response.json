@@ -1,0 +1,42 @@
+{
+  "schema": "ControlQuotaResponse",
+  "value": {
+    "snapshots": [
+      {
+        "subject": {
+          "harness": "codex",
+          "credential_route": "vendor_native",
+          "plan_label": "pro",
+          "subject_id": "work"
+        },
+        "constraints": [
+          {
+            "id": "primary",
+            "label": "5h window",
+            "used_ratio": 0.42,
+            "window_seconds": 18000,
+            "resets_at": "2026-07-19T12:00:00.000Z",
+            "cooldown_until": null
+          }
+        ],
+        "source": "codex_app_server",
+        "observed_at": "2026-07-19T12:00:00.000Z",
+        "freshness": "fresh"
+      }
+    ],
+    "absences": [
+      {
+        "subject": {
+          "harness": "claude",
+          "credential_route": "vendor_native",
+          "plan_label": null,
+          "subject_id": "koshak"
+        },
+        "reason": "not_logged_in",
+        "detail": null,
+        "observed_at": "2026-07-19T12:00:00.000Z"
+      }
+    ],
+    "refreshed_at": "2026-07-19T12:00:00.000Z"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema": "ControlThread",
+  "value": {
+    "id": "th-2",
+    "title": "Fix the parser",
+    "repoRoot": "/tmp/proj",
+    "mode": "agent",
+    "workspaceMode": "isolated",
+    "authPreference": "subscription",
+    "primaryHarness": "claude",
+    "eligibleHarnesses": [
+      "claude",
+      "codex"
+    ],
+    "credentialProfileId": "exp-a",
+    "access": "full",
+    "state": "closed",
+    "trashedAt": null,
+    "purgeAfter": null,
+    "runIds": [
+      "run-1",
+      "run-2"
+    ],
+    "headRunId": "run-2",
+    "needsHuman": true,
+    "createdAt": "2026-07-19T12:00:00.000Z",
+    "updatedAt": "2026-07-19T12:00:00.000Z"
+  }
+}

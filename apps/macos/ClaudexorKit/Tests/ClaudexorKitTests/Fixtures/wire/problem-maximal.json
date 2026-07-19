@@ -1,0 +1,23 @@
+{
+  "schema": "ControlProblem",
+  "value": {
+    "code": "trust_full_access_required",
+    "message": "unsandboxed full access requires a per-repo grant",
+    "retryable": false,
+    "fieldErrors": {
+      "access": [
+        "full access is not allowed for this repo"
+      ]
+    },
+    "requiredActions": [
+      "grant full access in Settings"
+    ],
+    "evidenceRefs": [
+      "run:run-1/events.jsonl"
+    ],
+    "context": {
+      "turnId": "turn-abc",
+      "repoRoot": "/tmp/proj"
+    }
+  }
+}

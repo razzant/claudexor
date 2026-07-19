@@ -1,0 +1,9 @@
+{
+  "schema": "ApplyEligibility",
+  "value": {
+    "eligible": true,
+    "state": "succeeded",
+    "reason": null,
+    "requiredAction": null
+  }
+}

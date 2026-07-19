@@ -1,0 +1,10 @@
+{
+  "schema": "RunOutcomeFacts",
+  "value": {
+    "lifecycle": "succeeded",
+    "noChanges": false,
+    "checks": "passed",
+    "review": "approved",
+    "reason": null
+  }
+}

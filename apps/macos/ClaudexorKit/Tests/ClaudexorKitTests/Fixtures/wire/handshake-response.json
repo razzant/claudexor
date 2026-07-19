@@ -1,0 +1,13 @@
+{
+  "schema": "ControlHandshakeResponse",
+  "value": {
+    "protocolMajor": 3,
+    "compatible": true,
+    "operationsPath": "/v2/operations",
+    "engine": {
+      "version": "3.0.0",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "entry": "/opt/claudexor/daemon.js"
+    }
+  }
+}

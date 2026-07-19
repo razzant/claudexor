@@ -1,0 +1,7 @@
+{
+  "schema": "PlanReadiness",
+  "value": {
+    "state": "needs_answers",
+    "questionCount": 3
+  }
+}

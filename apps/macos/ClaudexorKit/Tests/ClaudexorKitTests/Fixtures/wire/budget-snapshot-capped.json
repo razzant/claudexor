@@ -1,0 +1,13 @@
+{
+  "schema": "ControlBudgetSnapshot",
+  "value": {
+    "paidBudget": {
+      "kind": "finite",
+      "maxUsd": 2.5
+    },
+    "spendUsd": 1.25,
+    "remainingUsd": 1.25,
+    "estimated": true,
+    "source": "decision"
+  }
+}

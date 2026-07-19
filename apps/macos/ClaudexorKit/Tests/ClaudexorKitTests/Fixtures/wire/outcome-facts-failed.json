@@ -1,0 +1,10 @@
+{
+  "schema": "RunOutcomeFacts",
+  "value": {
+    "lifecycle": "failed",
+    "noChanges": true,
+    "checks": "not_configured",
+    "review": "not_run",
+    "reason": "budget_exhausted"
+  }
+}

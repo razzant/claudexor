@@ -1,0 +1,9 @@
+{
+  "schema": "ApplyEligibility",
+  "value": {
+    "eligible": false,
+    "state": "succeeded",
+    "reason": "review blocked: 2 open finding(s)",
+    "requiredAction": "decision"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema": "ControlBudgetSnapshot",
+  "value": {
+    "paidBudget": {
+      "kind": "unlimited"
+    },
+    "spendUsd": null,
+    "remainingUsd": null,
+    "estimated": false,
+    "source": "unknown"
+  }
+}

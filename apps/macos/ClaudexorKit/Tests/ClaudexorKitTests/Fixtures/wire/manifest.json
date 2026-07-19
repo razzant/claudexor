@@ -1,0 +1,18 @@
+{
+  "handshake-response": "ControlHandshakeResponse",
+  "problem-minimal": "ControlProblem",
+  "problem-maximal": "ControlProblem",
+  "thread-minimal": "ControlThread",
+  "thread-maximal": "ControlThread",
+  "outcome-facts-clean": "RunOutcomeFacts",
+  "outcome-facts-needs-decision": "RunOutcomeFacts",
+  "outcome-facts-failed": "RunOutcomeFacts",
+  "budget-snapshot-unlimited": "ControlBudgetSnapshot",
+  "budget-snapshot-capped": "ControlBudgetSnapshot",
+  "plan-readiness-ready": "PlanReadiness",
+  "plan-readiness-needs-answers": "PlanReadiness",
+  "plan-questions": "PlanQuestionsArtifact",
+  "apply-eligibility-yes": "ApplyEligibility",
+  "apply-eligibility-no": "ApplyEligibility",
+  "quota-response": "ControlQuotaResponse"
+}

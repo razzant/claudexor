@@ -1,0 +1,31 @@
+{
+  "schema": "PlanQuestionsArtifact",
+  "value": {
+    "parse": "found",
+    "questions": [
+      {
+        "id": "q1",
+        "kind": "single",
+        "prompt": "Which store?",
+        "options": [
+          {
+            "id": "o1",
+            "label": "sqlite"
+          },
+          {
+            "id": "o2",
+            "label": "json"
+          }
+        ],
+        "allow_text": false
+      },
+      {
+        "id": "q2",
+        "kind": "text",
+        "prompt": "Anything else?",
+        "options": [],
+        "allow_text": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "ControlThread",
+  "value": {
+    "id": "th-1",
+    "title": null,
+    "repoRoot": null,
+    "workspaceMode": "in_place",
+    "authPreference": "auto",
+    "primaryHarness": null,
+    "eligibleHarnesses": [],
+    "credentialProfileId": null,
+    "access": null,
+    "state": "active",
+    "trashedAt": null,
+    "purgeAfter": null,
+    "runIds": [],
+    "headRunId": null,
+    "needsHuman": false,
+    "createdAt": "2026-07-19T12:00:00.000Z",
+    "updatedAt": "2026-07-19T12:00:00.000Z"
+  }
+}
