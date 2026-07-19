@@ -275,7 +275,7 @@ describe("BudgetLedger", () => {
       cost: metered(0.05),
     });
     ledger.settle(lease.lease?.lease_id ?? "", exactSettlement(0.12));
-    expect(ledger.terminal()).toBe("exhausted_overshoot");
+    expect(ledger.terminal()).toBe("budget_overshoot");
     expect(
       ledger.reserve({ taskId: "t", intent: "implement", harnessId: "next", cost: metered() })
         .granted,

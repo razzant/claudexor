@@ -18,26 +18,68 @@ export const PairwiseComparison = z
   .describe("Pairwise comparison of two race candidates across named criteria.");
 export type PairwiseComparison = z.infer<typeof PairwiseComparison>;
 
-export const RunStatus = z
+/** Deterministic-checks axis (D18: "Checks", the ex-"gates" vocabulary).
+ * not_configured is a NAMED state — the old "ungated" collapse (which hid
+ * accepted review blockers behind one word) is unrepresentable now. */
+export const ChecksState = z
+  .enum(["passed", "failed", "not_configured"])
+  .describe(
+    "Deterministic checks axis: configured project checks passed, failed, or none are configured (a named state, never a stand-in for review results).",
+  );
+export type ChecksState = z.infer<typeof ChecksState>;
+
+/** Review axis (D18): the cross-family review's verdict, independent of
+ * checks and lifecycle. Accepted blockers are ALWAYS `blocked` here. */
+export const ReviewState = z
+  .enum(["approved", "blocked", "not_run"])
+  .describe(
+    "Review axis: approved (clean cross-family verified review), blocked (open accepted findings), or not_run.",
+  );
+export type ReviewState = z.infer<typeof ReviewState>;
+
+/** Typed reason on non-clean terminals (replaces the old reason-as-status
+ * values exhausted/not_converged/stuck_no_progress/...). Null on a clean
+ * success. */
+export const RunReason = z
   .enum([
-    "success",
-    "no_op",
-    "ungated",
-    "review_not_run",
-    "blocked",
-    "failed",
-    "interrupted_unknown",
+    "harness_failed",
+    "no_changes",
+    "review_blocked",
+    "checks_failed",
+    "budget_exhausted",
+    "budget_overshoot",
     "cost_unverifiable",
-    "exhausted_overshoot",
-    "exhausted",
     "not_converged",
     "stuck_no_progress",
-    "cancelled",
+    "wall_clock_exceeded",
+    "user_cancelled",
+    "crash_interrupted",
   ])
-  .describe(
-    "Terminal status of a run, including truthful blocked, interrupted-unknown, cost-unverifiable, overshoot, exhaustion, non-convergence, failure, and cancellation outcomes.",
-  );
-export type RunStatus = z.infer<typeof RunStatus>;
+  .describe("Typed reason qualifying a non-clean terminal; null on a clean success.");
+export type RunReason = z.infer<typeof RunReason>;
+
+/** The v3 terminal truth (D8): independent axes instead of one mixed enum.
+ * lifecycle says how far the PROCESS got; noChanges/checks/review say what
+ * the work amounted to; reason qualifies; delivery lives separately on
+ * RunApplyState. Every surface projects these through status-projection.ts. */
+export const RunOutcomeFacts = z
+  .object({
+    lifecycle: z
+      .enum(["succeeded", "failed", "cancelled", "interrupted"])
+      .describe("Terminal lifecycle of the run."),
+    noChanges: z
+      .boolean()
+      .default(false)
+      .describe("True when the run finished without changing any files (the ex no_op fact)."),
+    checks: ChecksState.default("not_configured"),
+    review: ReviewState.default("not_run"),
+    reason: RunReason.nullable()
+      .default(null)
+      .describe("Typed reason qualifying a non-clean terminal; null on a clean success."),
+  })
+  .strict()
+  .describe("Independent terminal outcome axes of a run (D8/D18).");
+export type RunOutcomeFacts = z.infer<typeof RunOutcomeFacts>;
 
 export const ApplyRecommendation = z
   .enum(["apply", "inspect", "continue", "human_review"])
@@ -45,13 +87,6 @@ export const ApplyRecommendation = z
     "Recommended next action for the run's work product: apply it, inspect first, continue working, or get human review.",
   );
 export type ApplyRecommendation = z.infer<typeof ApplyRecommendation>;
-
-export const DecisionOutcome = z
-  .enum(["ready", "no_op", "ungated", "review_not_run", "blocked"])
-  .describe(
-    "Arbitration outcome for the winning candidate: ready (verified applyable), no_op (no changes), ungated (no gates configured), review_not_run, or blocked.",
-  );
-export type DecisionOutcome = z.infer<typeof DecisionOutcome>;
 
 // What backed a `ready`/applyable outcome: a clean cross-family verified review,
 // or both deterministic gates AND that review. `none` for non-applyable outcomes.
@@ -126,8 +161,10 @@ export type FinalVerifyRecord = z.infer<typeof FinalVerifyRecord>;
 export const DecisionRecord = z
   .object({
     winner: Id.nullable().describe("Winning attempt/candidate id; null when nothing won."),
-    status: RunStatus,
-    outcome: DecisionOutcome.default("blocked"),
+    /** The independent terminal axes (D8) — replaces the old mixed
+     * status/outcome pair; the collapse classes (`ungated`, gate failures
+     * masked by `review_not_run`) are unrepresentable. */
+    facts: RunOutcomeFacts,
     why_winner: z.string().default("").describe("Why the winner was chosen."),
     why_not_others: z
       .record(z.string(), z.string())
@@ -174,6 +211,6 @@ export const DecisionRecord = z
       ),
   })
   .describe(
-    "The arbitration decision for a run: winner, status/outcome, reasons, spend, and the verification that backs applyability.",
+    "The arbitration decision for a run: winner, outcome axes, reasons, spend, and the verification that backs applyability.",
   );
 export type DecisionRecord = z.infer<typeof DecisionRecord>;

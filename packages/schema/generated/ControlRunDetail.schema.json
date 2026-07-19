@@ -24,21 +24,12 @@
               "enum": [
                 "queued",
                 "running",
-                "blocked",
                 "succeeded",
-                "no_op",
-                "ungated",
-                "review_not_run",
                 "failed",
                 "cancelled",
-                "interrupted_unknown",
-                "cost_unverifiable",
-                "exhausted_overshoot",
-                "exhausted",
-                "not_converged",
-                "stuck_no_progress"
+                "interrupted"
               ],
-              "description": "Control-plane run state: queued/running while live, then an honest success, block, failure, interruption, cost, exhaustion, non-convergence, or cancellation terminal."
+              "description": "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts."
             },
             "runDir": {
               "type": "string",
@@ -834,6 +825,87 @@
               "description": "Honest terminal outcome of a run (what the turn actually did), projected from the work product and answer artifacts.",
               "default": {}
             },
+            "outcomeFacts": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "lifecycle": {
+                      "type": "string",
+                      "enum": [
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "interrupted"
+                      ],
+                      "description": "Terminal lifecycle of the run."
+                    },
+                    "noChanges": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "True when the run finished without changing any files (the ex no_op fact)."
+                    },
+                    "checks": {
+                      "type": "string",
+                      "enum": [
+                        "passed",
+                        "failed",
+                        "not_configured"
+                      ],
+                      "description": "Deterministic checks axis: configured project checks passed, failed, or none are configured (a named state, never a stand-in for review results).",
+                      "default": "not_configured"
+                    },
+                    "review": {
+                      "type": "string",
+                      "enum": [
+                        "approved",
+                        "blocked",
+                        "not_run"
+                      ],
+                      "description": "Review axis: approved (clean cross-family verified review), blocked (open accepted findings), or not_run.",
+                      "default": "not_run"
+                    },
+                    "reason": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "harness_failed",
+                            "no_changes",
+                            "review_blocked",
+                            "checks_failed",
+                            "budget_exhausted",
+                            "budget_overshoot",
+                            "cost_unverifiable",
+                            "not_converged",
+                            "stuck_no_progress",
+                            "wall_clock_exceeded",
+                            "user_cancelled",
+                            "crash_interrupted"
+                          ],
+                          "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Typed reason qualifying a non-clean terminal; null on a clean success.",
+                      "default": null
+                    }
+                  },
+                  "required": [
+                    "lifecycle"
+                  ],
+                  "additionalProperties": false,
+                  "description": "Independent terminal outcome axes of a run (D8/D18)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "D8 terminal outcome axes (checks/review/reason/noChanges) projected from decision.facts or derived from the failure; null while non-terminal.",
+              "default": null
+            },
             "waitingOnUser": {
               "type": "boolean",
               "default": false,
@@ -1210,36 +1282,8 @@
                   ],
                   "description": "Winning attempt/candidate id; null when nothing won."
                 },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "success",
-                    "no_op",
-                    "ungated",
-                    "review_not_run",
-                    "blocked",
-                    "failed",
-                    "interrupted_unknown",
-                    "cost_unverifiable",
-                    "exhausted_overshoot",
-                    "exhausted",
-                    "not_converged",
-                    "stuck_no_progress",
-                    "cancelled"
-                  ],
-                  "description": "Terminal status of a run, including truthful blocked, interrupted-unknown, cost-unverifiable, overshoot, exhaustion, non-convergence, failure, and cancellation outcomes."
-                },
-                "outcome": {
-                  "type": "string",
-                  "enum": [
-                    "ready",
-                    "no_op",
-                    "ungated",
-                    "review_not_run",
-                    "blocked"
-                  ],
-                  "description": "Arbitration outcome for the winning candidate: ready (verified applyable), no_op (no changes), ungated (no gates configured), review_not_run, or blocked.",
-                  "default": "blocked"
+                "facts": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/outcomeFacts/anyOf/0"
                 },
                 "why_winner": {
                   "type": "string",
@@ -1417,10 +1461,10 @@
               },
               "required": [
                 "winner",
-                "status"
+                "facts"
               ],
               "additionalProperties": false,
-              "description": "The arbitration decision for a run: winner, status/outcome, reasons, spend, and the verification that backs applyability."
+              "description": "The arbitration decision for a run: winner, outcome axes, reasons, spend, and the verification that backs applyability."
             },
             {
               "type": "null"
@@ -1568,7 +1612,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "The gate's state classification (e.g. blocked | ungated | review_not_run | no_op | ok) when known."
+                  "description": "The gate's apply-eligibility classification (e.g. needs_review | not_verified | no_changes | ok) when known."
                 },
                 "reason": {
                   "type": [
@@ -2003,16 +2047,16 @@
                         "type": "boolean",
                         "default": true
                       },
-                      "terminal_status": {
+                      "terminal_facts": {
                         "anyOf": [
                           {
-                            "$ref": "#/definitions/ControlRunDetail/properties/decision/anyOf/0/properties/status"
+                            "$ref": "#/definitions/ControlRunDetail/properties/summary/properties/outcomeFacts/anyOf/0"
                           },
                           {
                             "type": "null"
                           }
                         ],
-                        "description": "Actual child/delivery terminal used by the parent outcome reducer.",
+                        "description": "Actual child/delivery terminal outcome axes (D8) used by the parent outcome reducer.",
                         "default": null
                       },
                       "terminal_source": {

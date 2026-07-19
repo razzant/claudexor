@@ -29,10 +29,9 @@ describe("primaryOutputForCli", () => {
     });
   });
 
-  it("keeps answer first in the default write-mode candidate order", () => {
+  it("keeps answer first in the default write-mode candidate order (summary.md retired, V8)", () => {
     expect(primaryOutputCandidatesForCli("agent").map((candidate) => candidate.path)).toEqual([
       "final/answer.md",
-      "final/summary.md",
       "final/patch.diff",
     ]);
   });

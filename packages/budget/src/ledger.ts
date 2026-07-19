@@ -16,7 +16,10 @@ import {
 import { newId, nowIso, sha256 } from "@claudexor/util";
 
 export type CircuitTier = "ok" | "soft" | "downgrade" | "hard";
-export type BudgetTerminal = "exhausted" | "exhausted_overshoot" | "cost_unverifiable" | null;
+/** Budget terminal REASON (D8 axes vocabulary): a subset of RunReason. A
+ * budget stop always maps the run lifecycle to `failed` with one of these
+ * reasons — the old status words exhausted/exhausted_overshoot are gone. */
+export type BudgetTerminal = "budget_exhausted" | "budget_overshoot" | "cost_unverifiable" | null;
 
 export interface CircuitThresholds {
   soft: number;
@@ -217,9 +220,9 @@ export class BudgetLedger {
   }
 
   terminal(): BudgetTerminal {
-    if (this.overshot) return "exhausted_overshoot";
+    if (this.overshot) return "budget_overshoot";
     if (this.unverifiable) return "cost_unverifiable";
-    return this.tier() === "hard" ? "exhausted" : null;
+    return this.tier() === "hard" ? "budget_exhausted" : null;
   }
 
   observe(observation: BudgetObservation): void {
@@ -500,8 +503,8 @@ export function unknownCostSettlement(source: string, cashUsd?: number): BudgetS
   };
 }
 
-export function isBudgetTerminal(status: string | null): status is Exclude<BudgetTerminal, null> {
+export function isBudgetTerminal(reason: string | null): reason is Exclude<BudgetTerminal, null> {
   return (
-    status === "exhausted" || status === "exhausted_overshoot" || status === "cost_unverifiable"
+    reason === "budget_exhausted" || reason === "budget_overshoot" || reason === "cost_unverifiable"
   );
 }

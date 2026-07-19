@@ -42,21 +42,12 @@
               "enum": [
                 "queued",
                 "running",
-                "blocked",
                 "succeeded",
-                "no_op",
-                "ungated",
-                "review_not_run",
                 "failed",
                 "cancelled",
-                "interrupted_unknown",
-                "cost_unverifiable",
-                "exhausted_overshoot",
-                "exhausted",
-                "not_converged",
-                "stuck_no_progress"
+                "interrupted"
               ],
-              "description": "Control-plane run state: queued/running while live, then an honest success, block, failure, interruption, cost, exhaustion, non-convergence, or cancellation terminal."
+              "description": "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts."
             },
             "error": {
               "type": "string",

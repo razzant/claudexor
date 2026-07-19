@@ -27,7 +27,88 @@
             "string",
             "null"
           ],
-          "description": "Terminal run status (success | blocked | failed | cancelled | ...)."
+          "description": "Terminal run LIFECYCLE (succeeded | failed | cancelled | interrupted)."
+        },
+        "outcomeFacts": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "lifecycle": {
+                  "type": "string",
+                  "enum": [
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "interrupted"
+                  ],
+                  "description": "Terminal lifecycle of the run."
+                },
+                "noChanges": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True when the run finished without changing any files (the ex no_op fact)."
+                },
+                "checks": {
+                  "type": "string",
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "not_configured"
+                  ],
+                  "description": "Deterministic checks axis: configured project checks passed, failed, or none are configured (a named state, never a stand-in for review results).",
+                  "default": "not_configured"
+                },
+                "review": {
+                  "type": "string",
+                  "enum": [
+                    "approved",
+                    "blocked",
+                    "not_run"
+                  ],
+                  "description": "Review axis: approved (clean cross-family verified review), blocked (open accepted findings), or not_run.",
+                  "default": "not_run"
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "harness_failed",
+                        "no_changes",
+                        "review_blocked",
+                        "checks_failed",
+                        "budget_exhausted",
+                        "budget_overshoot",
+                        "cost_unverifiable",
+                        "not_converged",
+                        "stuck_no_progress",
+                        "wall_clock_exceeded",
+                        "user_cancelled",
+                        "crash_interrupted"
+                      ],
+                      "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Typed reason qualifying a non-clean terminal; null on a clean success.",
+                  "default": null
+                }
+              },
+              "required": [
+                "lifecycle"
+              ],
+              "additionalProperties": false,
+              "description": "Independent terminal outcome axes of a run (D8/D18)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The D8 terminal outcome axes (checks/review/reason/noChanges); null for non-terminal or read-only routes.",
+          "default": null
         },
         "applyEligibility": {
           "anyOf": [
@@ -43,7 +124,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "The gate's state classification (e.g. blocked | ungated | review_not_run | no_op | ok) when known."
+                  "description": "The gate's apply-eligibility classification (e.g. needs_review | not_verified | no_changes | ok) when known."
                 },
                 "reason": {
                   "type": [

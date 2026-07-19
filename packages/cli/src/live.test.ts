@@ -105,7 +105,7 @@ describe("claudexor follow", () => {
       }
       // Reconnect must carry the resume cursor.
       expect(lastEventId).toBe(2);
-      res.write(frame(3, "run.completed", { status: "success" }));
+      res.write(frame(3, "run.completed", { lifecycle: "succeeded" }));
       res.write("event: end\ndata: {}\n\n");
       res.end();
     });
@@ -119,11 +119,13 @@ describe("claudexor follow", () => {
     }
   }, 20_000);
 
-  it.each(["ungated", "review_not_run"])(
-    "exits 1 when a completed stream ends as %s",
-    async (status) => {
+  it.each(["failed", "cancelled", "interrupted"])(
+    "exits 1 when the stream ends on a non-succeeded lifecycle (%s)",
+    async (lifecycle) => {
+      const eventType =
+        lifecycle === "cancelled" || lifecycle === "failed" ? "run.failed" : "run.failed";
       const { server, port } = await sseServer((_last, res) => {
-        res.write(frame(1, "run.completed", { status }));
+        res.write(frame(1, eventType, { lifecycle }));
         res.write("event: end\ndata: {}\n\n");
         res.end();
       });
@@ -135,6 +137,21 @@ describe("claudexor follow", () => {
       }
     },
   );
+
+  it("exits 0 when a run.blocked stream ends on a succeeded lifecycle (Done · needs review)", async () => {
+    // D8: run.blocked fires on a SUCCEEDED lifecycle (needs review) → exit 0.
+    const { server, port } = await sseServer((_last, res) => {
+      res.write(frame(1, "run.blocked", { lifecycle: "succeeded" }));
+      res.write("event: end\ndata: {}\n\n");
+      res.end();
+    });
+    writeControlApiInfo(port);
+    try {
+      expect(await followRun("run-f", true)).toBe(0);
+    } finally {
+      server.close();
+    }
+  });
 
   it("exits 1 with 'stream lost' when the stream keeps ending without a terminal event", async () => {
     const { server, port } = await sseServer((_last, res) => {
@@ -227,8 +244,8 @@ describe("live formatter typed-final dedup", () => {
 
   it("leaves non-message events untouched", () => {
     const format = createRunEventLineFormatter();
-    expect(format({ type: "run.completed", payload: { status: "success" } })).toBe(
-      "run completed: success",
+    expect(format({ type: "run.completed", payload: { lifecycle: "succeeded" } })).toBe(
+      "run completed: succeeded",
     );
   });
 
@@ -301,7 +318,7 @@ describe("claudexor follow text mode", () => {
           final_source: "codex_last_agent_message",
         }),
       );
-      res.write(frame(3, "run.completed", { status: "success" }));
+      res.write(frame(3, "run.completed", { lifecycle: "succeeded" }));
       res.write("event: end\ndata: {}\n\n");
       res.end();
     });

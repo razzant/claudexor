@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FinalVerifyRecord } from "@claudexor/schema";
+import { FinalVerifyRecord, makeOutcomeFacts, type RunOutcomeFacts } from "@claudexor/schema";
 import { type GateSpec, gatesPassed, runGates } from "@claudexor/review";
 import {
   applyPatchProtected,
@@ -29,24 +29,32 @@ export function finalVerifyBlocks(finalVerify: FinalVerifyRecord | null): boolea
   );
 }
 
+/** The D8 facts override a persisted decision adopts when its terminal is a
+ * needs-decision block: a final-verify failure lands on the CHECKS axis
+ * (checks=failed, reason checks_failed); a NEEDS_HUMAN review escalation lands
+ * on the REVIEW axis (review=blocked, reason review_blocked). Lifecycle stays
+ * succeeded — the process finished; a human decision is what is pending. */
 export function blockedDecisionOverride(
   evidenceFacts: string[],
   finalVerify: FinalVerifyRecord | null,
 ): {
-  status: "blocked";
-  outcome: "blocked";
+  facts: RunOutcomeFacts;
   apply_recommendation: "human_review";
+  verification_basis: "none";
   evidence_facts: string[];
 } {
-  const fact = finalVerifyBlocks(finalVerify)
+  const verifyBlocked = finalVerifyBlocks(finalVerify);
+  const fact = verifyBlocked
     ? finalVerify?.applied_cleanly !== true
       ? `final verify failed: ${finalVerify?.reason ?? "patch did not survive a fresh tree at its base"}`
       : "final verify failed: deterministic gates failed on the fresh verify tree"
     : "reviewer escalated blocking NEEDS_HUMAN findings; a typed operator decision is required";
   return {
-    status: "blocked",
-    outcome: "blocked",
+    facts: verifyBlocked
+      ? makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" })
+      : makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" }),
     apply_recommendation: "human_review",
+    verification_basis: "none",
     evidence_facts: [...evidenceFacts, fact],
   };
 }

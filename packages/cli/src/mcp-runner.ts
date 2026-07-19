@@ -120,7 +120,14 @@ export function mcpSurfaceRunner() {
     // delay the durable handle on a result that cannot be actionable yet.
     const applyEligibility =
       p?.deferred === true ? null : await fetchApplyEligibility(addr, out.runId);
-    return { runId: out.runId, runDir: out.runDir, status: out.status, summary, applyEligibility };
+    return {
+      runId: out.runId,
+      runDir: out.runDir,
+      status: out.status,
+      outcomeFacts: (out as { outcomeFacts?: unknown }).outcomeFacts ?? null,
+      summary,
+      applyEligibility,
+    };
   };
 }
 

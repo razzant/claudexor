@@ -27,6 +27,7 @@ import {
   TaskContract,
   type TestCommandInvocation,
   type ResourceAttachmentRef,
+  runOutcomeLabel,
 } from "@claudexor/schema";
 import {
   flagBool,
@@ -65,7 +66,6 @@ import {
   exitCodeForState,
   fetchApplyEligibility,
   fetchPlanReadiness,
-  runStatusForCli,
 } from "./daemon-run.js";
 import { resolveDecisionBody } from "./decision.js";
 import { primaryOutputForCli } from "./primary-output.js";
@@ -659,7 +659,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
           frame: "run.terminal",
           runId: "",
           runDir: started.runDir,
-          status: runStatusForCli(started.status),
+          status: started.status,
           jobId: started.jobId,
           mode: p.mode,
           ...(started.error ? { error: started.error } : {}),
@@ -681,7 +681,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const out = {
         runId: started.runId,
         runDir: final?.runDir ?? started.runDir,
-        status: runStatusForCli(status),
+        status: status,
         jobId: started.jobId,
         error: final?.error ?? started.error,
       };
@@ -712,7 +712,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       printJson({
         runId: out.runId,
         runDir: out.runDir,
-        status: runStatusForCli(out.status),
+        status: out.status,
         jobId: out.jobId,
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
@@ -732,15 +732,14 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     await followRun(started.runId, false);
     const final = started.jobId ? await client.status(started.jobId) : null;
     const status = final?.state ?? started.status;
-    const publicStatus = runStatusForCli(status);
+    const publicStatus = status;
     print("");
     print(`run ${started.runId} [${publicStatus}]`);
     print(`  artifacts: ${final?.runDir ?? started.runDir}`);
-    if (status === "blocked") {
-      print(
-        `  blocked (needs human): unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
-      );
-    } else if (exitCodeForState(status) === 0) {
+    // A succeeded lifecycle exits 0 — INCLUDING a "Done · needs review" run
+    // (review blocked / checks failed). The apply-eligibility verdict (state
+    // needs_review) is the ONE source for the unblock guidance (D8).
+    if (exitCodeForState(status) === 0) {
       // Plan runs surface their derived readiness (D17): the server's ONE
       // derivation over final/questions.json, never a client re-parse.
       if (p.mode === "plan") {
@@ -759,6 +758,10 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const eligibility = await fetchApplyEligibility(addr, started.runId);
       if (eligibility?.eligible) {
         print(`  apply with: claudexor apply ${started.runId}`);
+      } else if (eligibility?.state === "needs_review") {
+        print(
+          `  needs review: unblock with \`claudexor decision ${started.runId} --accept-risk\` or rerun with \`claudexor decision ${started.runId} --rerun --feedback "..."\``,
+        );
       } else if (eligibility?.requiredAction) {
         print(`  not applyable yet: ${eligibility.requiredAction}`);
       } else {
@@ -1194,8 +1197,9 @@ async function main(): Promise<number> {
       }
       if (parsedDecision.success) {
         const vb = parsedDecision.data.verification_basis;
+        const f = parsedDecision.data.facts;
         print(
-          `decision: ${parsedDecision.data.status} outcome=${parsedDecision.data.outcome} apply=${parsedDecision.data.apply_recommendation}${vb !== "none" ? ` verified_by=${vb}` : ""}`,
+          `decision: ${runOutcomeLabel(f)} (lifecycle=${f.lifecycle} checks=${f.checks} review=${f.review}${f.reason ? ` reason=${f.reason}` : ""}) apply=${parsedDecision.data.apply_recommendation}${vb !== "none" ? ` verified_by=${vb}` : ""}`,
         );
         const budget = parsedDecision.data.budget_summary;
         print(

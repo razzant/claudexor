@@ -1,22 +1,11 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { redactSecrets } from "@claudexor/util";
+import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 
-/** Daemon job states that end a stream/wait (shared by both SSE surfaces). */
-export const TERMINAL_STATES = new Set([
-  "succeeded",
-  "no_op",
-  "ungated",
-  "review_not_run",
-  "blocked",
-  "failed",
-  "cancelled",
-  "interrupted_unknown",
-  "cost_unverifiable",
-  "exhausted_overshoot",
-  "exhausted",
-  "not_converged",
-  "stuck_no_progress",
-]);
+/** Daemon job states that end a stream/wait (shared by both SSE surfaces).
+ * The daemon job state IS the run lifecycle (D8), so the terminal set is the
+ * ONE projection-owned TERMINAL_LIFECYCLES — no local copy re-derives it. */
+export const TERMINAL_STATES: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
 /** One SSE data line: secrets redacted, JSON re-minified when parseable. */
 export function redactedSseLine(raw: string): string {

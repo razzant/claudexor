@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { runCapture } from "@claudexor/core";
 import { sha256 } from "@claudexor/util";
-import { DecisionRecord } from "@claudexor/schema";
+import { DecisionRecord, makeOutcomeFacts } from "@claudexor/schema";
 import { checkPatch, deliver, validateApplyGate, verifyAndDeliver } from "./index.js";
 
 async function git(repo: string, args: string[]) {
@@ -269,21 +269,27 @@ describe("delivery", () => {
   // into this gate, so a recorded non-succeeded terminal state is refused even
   // when decision.status=success — the convergence stale-diff + required-review case
   // where decision is success but the run terminal stayed not_converged.
-  it("refuses apply for a non-succeeded recorded terminal state despite a success decision", () => {
-    const decision = DecisionRecord.parse({ winner: "a01", status: "success", outcome: "ready" });
+  it("refuses apply for a non-succeeded recorded lifecycle despite an applyable decision", () => {
+    const decision = DecisionRecord.parse({
+      winner: "a01",
+      facts: makeOutcomeFacts("succeeded", { review: "approved" }),
+    });
     const err = validateApplyGate({
-      state: "not_converged",
+      state: "failed",
       decision,
       workProduct: null,
       patch: "diff --git a/x b/x\n",
       originalRepoRoot: "/x",
       targetRepoRoot: "/x",
     });
-    expect(err).toContain("not applyable while state is not_converged");
+    expect(err).toContain("not applyable while lifecycle is failed");
   });
 
-  it("a succeeded state with a success decision is NOT refused by the state/decision checks", () => {
-    const decision = DecisionRecord.parse({ winner: "a01", status: "success", outcome: "ready" });
+  it("a succeeded lifecycle with an approved decision is NOT refused by the lifecycle/decision checks", () => {
+    const decision = DecisionRecord.parse({
+      winner: "a01",
+      facts: makeOutcomeFacts("succeeded", { review: "approved" }),
+    });
     // workProduct null trips a LATER check, not the state/decision gates — proving
     // those two gates pass for a succeeded+success run (parity with the daemon).
     const err = validateApplyGate({
@@ -399,8 +405,7 @@ describe("protected apply path", () => {
 describe("final_verify apply-gate consumer (INV-115)", () => {
   const baseDecision = {
     winner: "a01",
-    status: "success" as const,
-    outcome: "ready" as const,
+    facts: makeOutcomeFacts("succeeded", { review: "approved" }),
   };
   const wp = { kind: "patch", meta: { patch_sha256: "" } };
   const patch = "diff --git a/x b/x\n";
@@ -449,12 +454,11 @@ describe("final_verify apply-gate consumer (INV-115)", () => {
     // are unreachable and the gate refuses them).
     const blockedDecision = DecisionRecord.parse({
       ...baseDecision,
-      status: "blocked",
-      outcome: "blocked",
+      facts: makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" }),
       final_verify: errored,
     });
     const overridden = validateApplyGate({
-      state: "blocked",
+      state: "succeeded",
       decision: blockedDecision,
       workProduct: { ...wp, meta: { patch_sha256: sha256(patch) } } as never,
       patch,

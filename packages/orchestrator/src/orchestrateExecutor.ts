@@ -3,6 +3,8 @@ import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import type { BudgetLedger } from "@claudexor/budget";
 import {
+  makeOutcomeFacts,
+  runOutcomeLabel,
   toolRisk,
   type DeliveryReceipt,
   type OrchestrateAutonomy,
@@ -10,7 +12,7 @@ import {
   type OrchestratePlanCall,
   type OrchestratePlanProgress,
   type OrchestrateStepStatus,
-  type RunStatus,
+  type RunOutcomeFacts,
 } from "@claudexor/schema";
 import {
   deliveryReceiptMutated,
@@ -20,7 +22,7 @@ import {
 
 export interface OrchestrateSafeStepResult {
   status: OrchestrateStepStatus;
-  terminalStatus: RunStatus | null;
+  terminalFacts: RunOutcomeFacts | null;
   terminalSource: "subrun" | "review" | "executor";
   evidenceRefs: string[];
   runId: string | null;
@@ -51,7 +53,7 @@ interface ExecuteOrchestratePlanInput {
 }
 
 export interface OrchestrateExecutionResult {
-  terminal: RunStatus;
+  terminal: RunOutcomeFacts;
   note: string;
   readOnly: boolean;
   receiptRefs: string[];
@@ -67,14 +69,14 @@ export async function executeOrchestratePlan(
     risk: toolRisk(call.tool),
     status: "pending",
     required: call.required,
-    terminal_status: null,
+    terminal_facts: null,
     terminal_source: null,
     evidence_refs: [],
     run_id: null,
     detail: null,
   }));
   let stoppedReason: string | null = null;
-  let forcedTerminal: RunStatus | null = null;
+  let forcedTerminal: RunOutcomeFacts | null = null;
   let readOnly = true;
   const receiptRefs: string[] = [];
   const persist = (): void => {
@@ -94,37 +96,39 @@ export async function executeOrchestratePlan(
     if (input.signal?.aborted) {
       Object.assign(step, {
         status: "skipped",
-        terminal_status: "cancelled",
+        terminal_facts: makeOutcomeFacts("cancelled", { reason: "user_cancelled" }),
         terminal_source: "executor",
         detail: "run cancelled before this step",
       } satisfies Partial<typeof step>);
       stoppedReason = "cancelled";
-      forcedTerminal = "cancelled";
+      forcedTerminal = makeOutcomeFacts("cancelled", { reason: "user_cancelled" });
       persist();
       break;
     }
     const budgetTerminal = input.ledger.terminal();
     if (budgetTerminal) {
+      const budgetFacts = makeOutcomeFacts("failed", { reason: budgetTerminal });
       Object.assign(step, {
         status: "skipped",
-        terminal_status: budgetTerminal,
+        terminal_facts: budgetFacts,
         terminal_source: "budget",
         detail: `root paid budget stopped execution (${budgetTerminal})`,
       } satisfies Partial<typeof step>);
       stoppedReason = `root paid budget stopped after ${executed} step(s)`;
-      forcedTerminal = budgetTerminal;
+      forcedTerminal = budgetFacts;
       persist();
       break;
     }
     if (input.maxToolCalls !== null && executed >= input.maxToolCalls) {
+      const exhaustedFacts = makeOutcomeFacts("failed", { reason: "budget_exhausted" });
       Object.assign(step, {
         status: "skipped",
-        terminal_status: "exhausted",
+        terminal_facts: exhaustedFacts,
         terminal_source: "budget",
         detail: `budget max_tool_calls=${input.maxToolCalls} reached`,
       } satisfies Partial<typeof step>);
       stoppedReason = `budget max_tool_calls=${input.maxToolCalls} reached after ${executed} step(s)`;
-      forcedTerminal = "exhausted";
+      forcedTerminal = exhaustedFacts;
       persist();
       break;
     }
@@ -132,7 +136,9 @@ export async function executeOrchestratePlan(
     if (toolRisk(call.tool) === "risky") {
       if (input.autonomy === "auto_safe") {
         step.status = step.required ? "blocked" : "skipped";
-        step.terminal_status = step.required ? "blocked" : null;
+        step.terminal_facts = step.required
+          ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
+          : null;
         step.terminal_source = "policy";
         step.detail = "risky step requires human approval (auto_safe)";
         if (step.required)
@@ -154,7 +160,9 @@ export async function executeOrchestratePlan(
           call as Extract<OrchestratePlanCall, { tool: "apply" }>,
         );
         step.status = result.ok ? "done" : "failed";
-        step.terminal_status = result.ok ? "success" : "failed";
+        step.terminal_facts = result.ok
+          ? makeOutcomeFacts("succeeded")
+          : makeOutcomeFacts("failed", { reason: "harness_failed" });
         step.terminal_source = "delivery";
         step.run_id = result.runId;
         step.detail = result.detail;
@@ -179,7 +187,7 @@ export async function executeOrchestratePlan(
         }
       } catch (error) {
         step.status = "failed";
-        step.terminal_status = "failed";
+        step.terminal_facts = makeOutcomeFacts("failed", { reason: "harness_failed" });
         step.terminal_source = "delivery";
         step.detail = error instanceof Error ? error.message : String(error);
         if (step.required) stoppedReason = `apply step #${i} threw: ${step.detail}`;
@@ -197,7 +205,7 @@ export async function executeOrchestratePlan(
     try {
       const result = await input.executeSafeStep(call);
       step.status = result.status;
-      step.terminal_status = result.terminalStatus;
+      step.terminal_facts = result.terminalFacts;
       step.terminal_source = result.terminalSource;
       step.evidence_refs = result.evidenceRefs;
       step.run_id = result.runId;
@@ -210,7 +218,7 @@ export async function executeOrchestratePlan(
       });
       if (
         step.required &&
-        (result.status !== "done" || !isSuccessfulOrchestrateTerminal(result.terminalStatus))
+        (result.status !== "done" || !isSuccessfulOrchestrateTerminal(result.terminalFacts))
       ) {
         stoppedReason = `required safe step #${i} (${call.tool}) did not succeed: ${result.detail}`;
         persist();
@@ -218,7 +226,7 @@ export async function executeOrchestratePlan(
       }
     } catch (error) {
       step.status = "failed";
-      step.terminal_status = "failed";
+      step.terminal_facts = makeOutcomeFacts("failed", { reason: "harness_failed" });
       step.terminal_source = "executor";
       step.detail = error instanceof Error ? error.message : String(error);
       if (step.required) stoppedReason = `safe step #${i} (${call.tool}) threw: ${step.detail}`;
@@ -231,12 +239,13 @@ export async function executeOrchestratePlan(
 
   const finalBudgetTerminal = input.ledger.terminal();
   if (!forcedTerminal && finalBudgetTerminal) {
-    forcedTerminal = finalBudgetTerminal;
+    const finalBudgetFacts = makeOutcomeFacts("failed", { reason: finalBudgetTerminal });
+    forcedTerminal = finalBudgetFacts;
     for (const step of steps) {
       if (step.status !== "pending") continue;
       Object.assign(step, {
         status: "skipped",
-        terminal_status: finalBudgetTerminal,
+        terminal_facts: finalBudgetFacts,
         terminal_source: "budget",
         detail: `root paid budget stopped execution (${finalBudgetTerminal})`,
       } satisfies Partial<typeof step>);
@@ -244,19 +253,26 @@ export async function executeOrchestratePlan(
     stoppedReason = `root paid budget stopped after ${executed} step(s)`;
   }
   persist();
+  const capturedForcedTerminal = forcedTerminal;
   const terminal = reduceOrchestrateOutcome([
     ...steps
-      .filter((step) => !forcedTerminal || step.status !== "pending")
+      .filter((step) => !capturedForcedTerminal || step.status !== "pending")
       .map((step) => ({
         required: step.required,
         executionStatus: step.status,
-        terminalStatus: step.terminal_status,
+        terminalFacts: step.terminal_facts,
       })),
-    ...(forcedTerminal
-      ? [{ required: true, executionStatus: "done" as const, terminalStatus: forcedTerminal }]
+    ...(capturedForcedTerminal
+      ? [
+          {
+            required: true,
+            executionStatus: "done" as const,
+            terminalFacts: capturedForcedTerminal,
+          },
+        ]
       : []),
   ]);
   const done = steps.filter((step) => step.status === "done").length;
-  const note = `${terminal} (${done}/${steps.length} steps done${stoppedReason ? `; ${stoppedReason}` : ""})`;
+  const note = `${runOutcomeLabel(terminal)} (${done}/${steps.length} steps done${stoppedReason ? `; ${stoppedReason}` : ""})`;
   return { terminal, note, readOnly, receiptRefs };
 }

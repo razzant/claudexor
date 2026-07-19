@@ -53,22 +53,16 @@ export interface DaemonOptions {
   ) => void | Promise<void>;
 }
 
+// Daemon job state is EXACTLY the run LIFECYCLE (D8): outcome quality
+// (checks/review/reason) lives on the run's facts, projected by the control
+// plane — the job state machine never re-encodes it.
 export const JOB_STATES = [
   "queued",
   "running",
-  "blocked",
   "succeeded",
-  "no_op",
-  "ungated",
-  "review_not_run",
   "failed",
   "cancelled",
-  "interrupted_unknown",
-  "cost_unverifiable",
-  "exhausted_overshoot",
-  "exhausted",
-  "not_converged",
-  "stuck_no_progress",
+  "interrupted",
 ] as const;
 
 export type JobState = (typeof JOB_STATES)[number];
@@ -487,18 +481,12 @@ export class DaemonServer {
         },
       });
       const state = jobStateFromResult(result, controller.signal.aborted);
-      if (
-        state === "failed" ||
-        state === "cost_unverifiable" ||
-        state === "exhausted_overshoot" ||
-        state === "exhausted" ||
-        state === "not_converged" ||
-        state === "stuck_no_progress"
-      ) {
+      if (state === "failed" || state === "interrupted") {
+        const reason = resultReason(result);
         rec = this.updateRecord(rec, {
           state,
           result,
-          error: resultSummary(result) ?? `run ended with status ${state}`,
+          error: resultSummary(result) ?? `run ended ${state}${reason ? ` (${reason})` : ""}`,
           finishedAt: nowIso(),
         });
       } else {
@@ -554,35 +542,21 @@ export class DaemonServer {
 
 function jobStateFromResult(result: unknown, aborted: boolean): JobState {
   if (aborted) return "cancelled";
-  const status = resultStatus(result);
-  switch (status) {
-    case "success":
-      return "succeeded";
-    case "no_op":
-      return "no_op";
-    case "ungated":
-      return "ungated";
-    case "review_not_run":
-      return "review_not_run";
-    case "blocked":
-      return "blocked";
-    case "cancelled":
-      return "cancelled";
-    case "exhausted":
-    case "exhausted_overshoot":
-    case "cost_unverifiable":
-      return status;
-    case "not_converged":
-      return "not_converged";
-    case "stuck_no_progress":
-      return "stuck_no_progress";
-    case "failed":
-      return "failed";
-    default:
-      // Fail loudly: a runner result without a recognizable status is NOT a
-      // success — success-by-default would mask malformed results forever.
-      return "failed";
+  // The daemon job state IS the run lifecycle (D8), mapped 1:1 from the
+  // engine result's facts.lifecycle. Outcome quality is projected from facts
+  // by the control plane — never re-encoded into the job state here.
+  const lifecycle = resultLifecycle(result);
+  if (
+    lifecycle === "succeeded" ||
+    lifecycle === "failed" ||
+    lifecycle === "cancelled" ||
+    lifecycle === "interrupted"
+  ) {
+    return lifecycle;
   }
+  // Fail loudly: a runner result without a recognizable lifecycle is NOT a
+  // success — success-by-default would mask malformed results forever.
+  return "failed";
 }
 
 /** Constant-time token comparison (parity with the HTTP control facade). */
@@ -609,10 +583,18 @@ export function socketAlive(socketPath: string): Promise<boolean> {
   });
 }
 
-function resultStatus(result: unknown): string | null {
+function resultLifecycle(result: unknown): string | null {
   if (!result || typeof result !== "object" || Array.isArray(result)) return null;
-  const status = (result as Record<string, unknown>)["status"];
-  return typeof status === "string" ? status : null;
+  const lifecycle = (result as Record<string, unknown>)["lifecycle"];
+  return typeof lifecycle === "string" ? lifecycle : null;
+}
+
+function resultReason(result: unknown): string | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+  const facts = (result as Record<string, unknown>)["facts"];
+  if (!facts || typeof facts !== "object") return null;
+  const reason = (facts as Record<string, unknown>)["reason"];
+  return typeof reason === "string" ? reason : null;
 }
 
 function resultSummary(result: unknown): string | null {

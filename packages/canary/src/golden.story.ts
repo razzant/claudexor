@@ -164,7 +164,7 @@ describe("canary golden stories", () => {
     });
     expect(r.code).toBe(0);
     const out = r.json() as { runDir: string; status: string };
-    expect(out.status).toBe("success");
+    expect(out.status).toBe("succeeded");
     expect(realpathSync(out.runDir).startsWith(realpathSync(sb.home))).toBe(true);
     expect(readRunFile(out.runDir, "final/answer.md").length).toBeGreaterThan(0);
   });
@@ -181,14 +181,20 @@ describe("canary golden stories", () => {
       PASS_GATE,
       "--json",
     ]);
-    expect(r.code).toBe(1);
-    const out = r.json() as { runId: string; runDir: string; status: string };
-    // Offline fakes cannot produce a cross-family verified review; the honest
-    // terminal and process status are review_not_run/nonzero — never a green
-    // "succeeded" or exit 0 over an
-    // unreviewed patch (Bible: verification basis is disclosed, gates alone
-    // do not make a patch applyable).
-    expect(out.status).toBe("review_not_run");
+    // D8: the process FINISHED (a succeeded lifecycle → exit 0, "Done · needs
+    // review"); applyability is the apply gate's answer, never the exit code.
+    expect(r.code).toBe(0);
+    const out = r.json() as {
+      runId: string;
+      runDir: string;
+      status: string;
+      outcomeFacts?: { review?: string } | null;
+    };
+    // Offline fakes cannot produce a cross-family verified review; the run is
+    // succeeded but NOT-VERIFIED (review not_run) — never applyable over an
+    // unreviewed patch (Bible: verification basis is disclosed, gates alone do
+    // not make a patch applyable).
+    expect(out.status).toBe("succeeded");
     expect(readRunFile(out.runDir, "final/patch.diff").length).toBeGreaterThan(0);
     const check = cli(sb, ["apply", out.runId, "--dry-run"]);
     expect(check.code).toBe(1);

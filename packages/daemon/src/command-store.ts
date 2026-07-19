@@ -1,6 +1,6 @@
 import type { DurableJournal } from "@claudexor/journal";
 import { hashJson } from "@claudexor/util";
-import type { JobRecord, JobState } from "./server.js";
+import { JOB_STATES, type JobRecord } from "./server.js";
 
 interface AcceptedCommand {
   record: JobRecord;
@@ -144,7 +144,9 @@ export class CommandStore {
     for (const record of this.recordsById.values()) {
       if (record.state !== "queued" && record.state !== "running") continue;
       this.update(record.id, {
-        state: "interrupted_unknown",
+        // A job still queued/running when the daemon restarted was interrupted
+        // (D8 crash lifecycle) — its terminal was never durably observed.
+        state: "interrupted",
         error: "daemon restarted before command completion was durably observed",
         finishedAt: this.now().toISOString(),
       });
@@ -176,23 +178,8 @@ function validateRecord(record: JobRecord): void {
   if (!record || typeof record !== "object" || !record.id || !record.createdAt) {
     throw new Error("invalid command record");
   }
-  const states: readonly string[] = [
-    "queued",
-    "running",
-    "blocked",
-    "succeeded",
-    "no_op",
-    "ungated",
-    "review_not_run",
-    "failed",
-    "cancelled",
-    "interrupted_unknown",
-    "cost_unverifiable",
-    "exhausted_overshoot",
-    "exhausted",
-    "not_converged",
-    "stuck_no_progress",
-  ] satisfies readonly JobState[];
+  // One SSOT for the valid job states (the run lifecycle set, D8).
+  const states: readonly string[] = JOB_STATES;
   if (!states.includes(record.state)) throw new Error(`invalid command state '${record.state}'`);
 }
 

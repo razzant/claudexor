@@ -1,23 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
+import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 import { daemonOutcomeSummary, ensureDaemon, fetchApplyEligibility } from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import { primaryOutputForCli } from "./primary-output.js";
 
-const TERMINALS = new Set([
-  "succeeded",
-  "no_op",
-  "ungated",
-  "review_not_run",
-  "blocked",
-  "failed",
-  "cancelled",
-  "interrupted_unknown",
-  "cost_unverifiable",
-  "exhausted_overshoot",
-  "exhausted",
-  "not_converged",
-  "stuck_no_progress",
-]);
+// Daemon job state IS the run lifecycle (D8): terminal set = the ONE
+// projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.
+const TERMINALS: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
 type Hooks = {
   onInteraction?: (ctx: any) => Promise<any | null>;

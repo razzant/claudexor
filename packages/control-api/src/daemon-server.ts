@@ -121,6 +121,7 @@ import {
   OrchestratePlanProgress,
   RoutingGoal,
   ReviewFinding,
+  RunDeliveryState,
   RunEventType,
   RunFailure,
   RunTelemetry,
@@ -128,6 +129,10 @@ import {
   TaskContract,
   ProtectedPathApproval,
   type FinalVerifyRecord,
+  type RunOutcomeFacts,
+  isTerminalLifecycle,
+  needsDecision,
+  outcomeFactsFromFailure,
   TestCommandInvocation,
   WorkProduct,
 } from "@claudexor/schema";
@@ -902,9 +907,7 @@ export class DaemonControlApiServer {
       const { threads } = await svc();
       const runs = await this.opts.daemon.list();
       const blocked = new Set(
-        runs
-          .filter((r) => r.state === "blocked" && this.validOperatorDecisionFor(r) === null)
-          .map((r) => r.runId ?? r.id),
+        runs.filter((r) => this.runNeedsDecision(r)).map((r) => r.runId ?? r.id),
       );
       return this.json(
         res,
@@ -936,8 +939,7 @@ export class DaemonControlApiServer {
           }
         }
         const headRec = byRun.get(thread.head_run_id ?? "");
-        const headNeedsHuman =
-          headRec?.state === "blocked" && this.validOperatorDecisionFor(headRec) === null;
+        const headNeedsHuman = headRec ? this.runNeedsDecision(headRec) : false;
         return this.json(
           res,
           200,
@@ -1047,14 +1049,15 @@ export class DaemonControlApiServer {
         const decisionAction: "accept_risk" | "override_needs_human" = body.action;
         try {
           return await this.chainRunMutation(rec, async () => {
-            // The override unblocks a BLOCKED run; recording one elsewhere would claim an
-            // apply permission that does not exist.
-            if (rec.state !== "blocked") {
+            // The override unblocks a NEEDS-DECISION run (review blocked /
+            // checks failed, D8); recording one elsewhere would claim an apply
+            // permission that does not exist.
+            if (!this.runNeedsDecision(rec)) {
               return this.json(res, 409, {
                 error:
                   rec.state === "succeeded"
-                    ? "run already succeeded; apply it directly (no risk override needed)"
-                    : `run is ${rec.state}; risk overrides only unblock blocked runs (use rerun_with_feedback instead)`,
+                    ? "run does not need a decision; apply it directly if its review is clean (no risk override needed)"
+                    : `run is ${rec.state}; risk overrides only unblock needs-decision runs (use rerun_with_feedback instead)`,
               });
             }
             const patch = readPatch(rec);
@@ -1806,6 +1809,16 @@ export class DaemonControlApiServer {
     return patch !== null && decision.patchSha256 === sha256(patch) ? decision : null;
   }
 
+  /** The needs-me / inbox signal (D8), via the ONE projection owner: a terminal
+   * run whose review is blocked or checks failed, with no valid operator
+   * decision recorded — the axes replacement for the ex state==="blocked". */
+  private runNeedsDecision(rec: DaemonRunRecord): boolean {
+    const arb = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+    const facts = runOutcomeFacts(rec, arb, readFailure(rec));
+    if (!facts) return false;
+    return needsDecision(facts, this.validOperatorDecisionFor(rec) !== null);
+  }
+
   private recordOperatorDecision(
     rec: DaemonRunRecord,
     decision: ControlOperatorDecisionRecord,
@@ -2146,7 +2159,12 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
           deletions: typeof ds.deletions === "number" ? ds.deletions : 0,
         }
       : null;
-  const applyStateRaw = meta["apply_state"];
+  // Delivery/apply state is MUTABLE and lives in its own artifact
+  // (final/delivery_state.yaml, V8/PLAN addendum 2); work_product.yaml is the
+  // immutable run snapshot. Prefer the delivery-state overlay when present,
+  // else fall back to the initial snapshot the orchestrator stamped.
+  const delivery = readDeliveryState(rec);
+  const applyStateRaw = delivery?.applyState ?? meta["apply_state"];
   const applyState =
     applyStateRaw === "applied" ||
     applyStateRaw === "applied_review_blocked" ||
@@ -2154,9 +2172,12 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
       ? applyStateRaw
       : "not_applied";
   const preTurnSha = typeof meta["pre_turn_sha"] === "string" ? meta["pre_turn_sha"] : null;
-  const postTurnSha = typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null;
+  const postTurnSha =
+    delivery?.postTurnSha ??
+    (typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null);
   const revertAnchorId =
-    typeof meta["revert_anchor_id"] === "string" ? meta["revert_anchor_id"] : null;
+    delivery?.revertAnchorId ??
+    (typeof meta["revert_anchor_id"] === "string" ? meta["revert_anchor_id"] : null);
   const revertable =
     (applyState === "applied" || applyState === "applied_review_blocked") &&
     revertAnchorId !== null;
@@ -2173,34 +2194,66 @@ function controlRunResult(rec: DaemonRunRecord): ControlRunResult {
   });
 }
 
-/** Flip the persisted work_product apply_state after a successful apply or
+/** Read the MUTABLE delivery/apply state overlay (final/delivery_state.yaml);
+ * null when the run never delivered/reverted (its state is the immutable
+ * work_product snapshot). */
+function readDeliveryState(rec: DaemonRunRecord): RunDeliveryState | null {
+  return safeReadStructuredArtifact(rec, "final/delivery_state.yaml", RunDeliveryState);
+}
+
+/** Flip the run's MUTABLE delivery/apply state after a successful apply or
  * revert — ONE owner of the durable outcome fact that controlRunResult
  * projects AND retention's hasActionableWorkProduct consumes (round-15 #2: an
  * applied-but-unmarked patch would read as actionable forever and pin the run
- * against GC). Idempotent and best-effort: the delivery/revert already
- * happened; a metadata write failure must not 500 the response. */
+ * against GC). Writes final/delivery_state.yaml (V8/PLAN addendum 2), leaving
+ * work_product.yaml immutable. Idempotent and best-effort: the delivery/revert
+ * already happened; a metadata write failure must not 500 the response. */
 function markRunApplyState(rec: DaemonRunRecord, state: "applied" | "reverted"): void {
   try {
     if (!rec.runDir) return;
     const root = safeArtifactRoot(rec.runDir);
     if (!root) return;
-    const wpPath = join(root, "final", "work_product.yaml");
-    if (!existsSync(wpPath)) return;
-    const doc = (parseYaml(readFileSync(wpPath, "utf8")) ?? {}) as Record<string, unknown>;
-    const meta = (doc["meta"] && typeof doc["meta"] === "object" ? doc["meta"] : {}) as Record<
-      string,
-      unknown
-    >;
-    meta["apply_state"] = state;
-    doc["meta"] = meta;
-    // Atomic tmp+rename: a crash mid-write must never leave work_product.yaml
-    // half-written (it would degrade the run projection to kind: none).
-    const tmp = `${wpPath}.tmp-${process.pid}`;
-    writeFileSync(tmp, stringifyYaml(doc), "utf8");
-    renameSync(tmp, wpPath);
+    const dsPath = join(root, "final", "delivery_state.yaml");
+    const prev = existsSync(dsPath)
+      ? (RunDeliveryState.safeParse(parseYaml(readFileSync(dsPath, "utf8"))).data ?? null)
+      : null;
+    // Carry the revert anchor / post-turn sha from the work_product snapshot
+    // when this is the first delivery-state write.
+    const wp = safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct);
+    const meta = (wp?.meta ?? {}) as Record<string, unknown>;
+    const next = RunDeliveryState.parse({
+      applyState: state,
+      deliveredAt: state === "applied" ? nowIso() : (prev?.deliveredAt ?? null),
+      revertAnchorId:
+        prev?.revertAnchorId ??
+        (typeof meta["revert_anchor_id"] === "string" ? meta["revert_anchor_id"] : null),
+      postTurnSha:
+        prev?.postTurnSha ??
+        (typeof meta["post_turn_sha"] === "string" ? meta["post_turn_sha"] : null),
+    });
+    // Atomic tmp+rename: a crash mid-write must never leave the file half-written.
+    const tmp = `${dsPath}.tmp-${process.pid}`;
+    writeFileSync(tmp, stringifyYaml(next), "utf8");
+    renameSync(tmp, dsPath);
   } catch {
     /* best-effort: the revert succeeded regardless of this metadata flip */
   }
+}
+
+/** Project the D8 terminal outcome AXES for a run: decision.facts when present
+ * (the arbitrated truth), else derived from the typed failure category + the
+ * lifecycle (a decision-less plan/readonly/crash terminal). Null while the run
+ * is not terminal. Lives here as the ONE control-plane projection; surfaces
+ * read `outcomeFacts`, never re-derive. */
+function runOutcomeFacts(
+  rec: DaemonRunRecord,
+  decision: DecisionRecord | null,
+  failure: RunFailure | null,
+): RunOutcomeFacts | null {
+  if (!isTerminalLifecycle(rec.state)) return null;
+  if (decision) return decision.facts;
+  const lifecycle = rec.state as RunOutcomeFacts["lifecycle"];
+  return outcomeFactsFromFailure(lifecycle, failure?.category);
 }
 
 function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
@@ -2303,6 +2356,7 @@ function summarizeRun(rec: DaemonRunRecord): ControlRunSummary {
     ),
     toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
     result: controlRunResult(rec),
+    outcomeFacts: runOutcomeFacts(rec, decision, readFailure(rec)),
     route: controlRoute(telemetry, p),
     tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
     createdAt: rec.createdAt,

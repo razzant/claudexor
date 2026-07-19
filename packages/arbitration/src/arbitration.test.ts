@@ -41,7 +41,9 @@ describe("arbitrate", () => {
     const res = arbitrate([b, a]);
     expect(res.ranking[0]?.label).toBe("A");
     expect(res.decision.winner).toBe("A");
-    expect(res.decision.status).toBe("success");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.review).toBe("approved");
+    expect(res.decision.facts.checks).toBe("passed");
     expect(res.decision.apply_recommendation).toBe("apply");
     expect(res.decision.verification_basis).toBe("both");
   });
@@ -80,18 +82,22 @@ describe("arbitrate", () => {
     expect(res.decision.winner).toBe("clean");
   });
 
-  it("returns not_converged when the winner still has issues", () => {
+  it("surfaces a failed required gate on the CHECKS axis (never masked)", () => {
+    // D18: a failed real gate yields checks=failed on a succeeded lifecycle (a
+    // needs-decision terminal) — the old lattice masked it as not_converged.
     const a = candidate("A", { gates: [gate(false)] });
     const res = arbitrate([a]);
-    expect(res.decision.status).toBe("not_converged");
-    expect(res.decision.outcome).toBe("blocked");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.checks).toBe("failed");
+    expect(res.decision.facts.reason).toBe("checks_failed");
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
-  it("marks empty diffs as no_op instead of success", () => {
+  it("marks empty diffs as no_changes on a succeeded lifecycle instead of a clean apply", () => {
     const res = arbitrate([candidate("A", { diffBytes: 0, diffSize: 0 })]);
-    expect(res.decision.status).toBe("no_op");
-    expect(res.decision.outcome).toBe("no_op");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.noChanges).toBe(true);
+    expect(res.decision.facts.reason).toBe("no_changes");
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
@@ -118,8 +124,8 @@ describe("arbitrate", () => {
         finalReviewClean: false,
       }),
     ]);
-    expect(res.decision.status).toBe("failed");
-    expect(res.decision.outcome).toBe("blocked");
+    expect(res.decision.facts.lifecycle).toBe("failed");
+    expect(res.decision.facts.reason).toBe("harness_failed");
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
@@ -127,8 +133,8 @@ describe("arbitrate", () => {
     // No deterministic test gate, but the cross-family review is route-proof
     // verified and clean → applyable, recorded honestly as review-based.
     const res = arbitrate([candidate("A", { gates: [], testsPassed: 0, testsTotal: 0 })]);
-    expect(res.decision.status).toBe("success");
-    expect(res.decision.outcome).toBe("ready");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.review).toBe("approved");
     expect(res.decision.apply_recommendation).toBe("apply");
     expect(res.decision.verification_basis).toBe("cross_family_review");
   });
@@ -155,31 +161,63 @@ describe("arbitrate", () => {
         ],
       }),
     ]);
-    expect(res.decision.status).toBe("success");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
     expect(res.decision.verification_basis).toBe("cross_family_review");
   });
 
-  it("keeps a no-gate run ungated when the review is NOT verified (no observed evidence)", () => {
+  it("keeps a no-gate run NOT-VERIFIED (checks not_configured, review not_run) when the review is not verified", () => {
     const res = arbitrate([
       candidate("A", { gates: [], testsPassed: 0, testsTotal: 0, reviewVerified: false }),
     ]);
-    expect(res.decision.status).toBe("ungated");
-    expect(res.decision.outcome).toBe("ungated");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.checks).toBe("not_configured");
+    expect(res.decision.facts.review).toBe("not_run");
     expect(res.decision.apply_recommendation).toBe("human_review");
     expect(res.decision.verification_basis).toBe("none");
   });
 
-  it("marks missing verified review as review_not_run instead of success", () => {
+  it("marks a missing verified review as review not_run (checks stay honest) instead of a clean apply", () => {
     const res = arbitrate([candidate("A", { reviewVerified: false })]);
-    expect(res.decision.status).toBe("review_not_run");
-    expect(res.decision.outcome).toBe("review_not_run");
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.review).toBe("not_run");
+    // The configured gates still passed — checks are reported honestly, never
+    // masked behind the review axis (D18 lattice fix).
+    expect(res.decision.facts.checks).toBe("passed");
     expect(res.decision.apply_recommendation).toBe("human_review");
+  });
+
+  it("[INV-116:blockers-visible / D18] accepted blockers with NO gates always surface review=blocked (never invisible)", () => {
+    // The ex-"ungated" collapse dies: accepted review blockers must ALWAYS be
+    // visible on the review axis, even from an unverified panel with no checks.
+    const res = arbitrate([
+      candidate("A", {
+        gates: [],
+        testsPassed: 0,
+        testsTotal: 0,
+        reviewVerified: false,
+        findings: [
+          {
+            id: "f1",
+            severity: "BLOCK",
+            status: "accepted",
+            claim: "an accepted blocking risk",
+            evidence: { files: [{ path: "src/x.ts" }], diff_hunks: [], commands: [], logs: [] },
+          } as unknown as CandidateEvidence["findings"][number],
+        ],
+      }),
+    ]);
+    expect(res.decision.facts.lifecycle).toBe("succeeded");
+    expect(res.decision.facts.review).toBe("blocked");
+    expect(res.decision.facts.checks).toBe("not_configured");
+    expect(res.decision.facts.reason).toBe("review_blocked");
+    expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
   it("handles no candidates", () => {
     const res = arbitrate([]);
     expect(res.decision.winner).toBeNull();
-    expect(res.decision.status).toBe("failed");
+    expect(res.decision.facts.lifecycle).toBe("failed");
+    expect(res.decision.facts.reason).toBe("harness_failed");
   });
 
   it("records spend honestly and never labels estimated spend as exact", () => {

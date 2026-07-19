@@ -12,6 +12,7 @@ import {
 import { AuthMode, PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 export { ControlQuotaResponse } from "./quota.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
+import { RunOutcomeFacts } from "./decision.js";
 import { EffortHint, HarnessModel, InteractionQuestion } from "./harness.js";
 import { ThreadState, ThreadTurnKind, WorkspaceMode } from "./thread.js";
 import { OrchestrateAutonomy } from "./orchestrate.js";
@@ -315,25 +316,9 @@ export const ControlRunRetryResponse = RunRetrySchemas.response;
 export const ControlRunAgainDraft = RunRetrySchemas.draft;
 
 export const ControlRunState = z
-  .enum([
-    "queued",
-    "running",
-    "blocked",
-    "succeeded",
-    "no_op",
-    "ungated",
-    "review_not_run",
-    "failed",
-    "cancelled",
-    "interrupted_unknown",
-    "cost_unverifiable",
-    "exhausted_overshoot",
-    "exhausted",
-    "not_converged",
-    "stuck_no_progress",
-  ])
+  .enum(["queued", "running", "succeeded", "failed", "cancelled", "interrupted"])
   .describe(
-    "Control-plane run state: queued/running while live, then an honest success, block, failure, interruption, cost, exhaustion, non-convergence, or cancellation terminal.",
+    "Control-plane run state = the run LIFECYCLE (D8): queued/running while live, then exactly one of succeeded / failed / cancelled / interrupted. Outcome quality (checks/review/delivery) is orthogonal — see outcomeFacts.",
   );
 export type ControlRunState = z.infer<typeof ControlRunState>;
 
@@ -517,6 +502,37 @@ export const RunApplyState = z
     "Honest application state of a run's changes: not_applied (no in-place mutation), applied (applied and review clean), applied_review_blocked (applied but review blocked/unconverged), or reverted.",
   );
 export type RunApplyState = z.infer<typeof RunApplyState>;
+
+/**
+ * The run's MUTABLE delivery/apply state, persisted as its own typed artifact
+ * `final/delivery_state.yaml` (V8/PLAN addendum 2). work_product.yaml is
+ * immutable after the run; the operator apply/revert lifecycle mutates ONLY
+ * this record. Writer: control-api daemon-server (markRunApplyState). Readers:
+ * retention GC and the summarizeRun result projection.
+ */
+export const RunDeliveryState = z
+  .object({
+    applyState: RunApplyState.default("not_applied"),
+    deliveredAt: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("When the work product was delivered/applied in place; null until delivered."),
+    revertAnchorId: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("GC-independent revert anchor recorded at apply time; null when none."),
+    postTurnSha: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Tree SHA right after the operator apply; revert refuses if the tree diverged."),
+  })
+  .describe(
+    "Mutable delivery/apply state of a run (final/delivery_state.yaml); the only run record that changes after the run terminates.",
+  );
+export type RunDeliveryState = z.infer<typeof RunDeliveryState>;
 
 export const ControlRunResult = z
   .object({
@@ -718,6 +734,14 @@ export const ControlRunSummary = z
       .describe("Non-blocking tool warnings projected from the telemetry artifact."),
     /** Honest terminal outcome (what the turn did): patch/answer/plan/report/none. */
     result: ControlRunResult.default({}),
+    /** The D8 terminal outcome AXES (lifecycle mirrors `state`; plus noChanges,
+     * checks, review, reason) projected from decision.facts, else derived from
+     * the typed failure. Null while the run is not terminal / has no facts. */
+    outcomeFacts: RunOutcomeFacts.nullable()
+      .default(null)
+      .describe(
+        "D8 terminal outcome axes (checks/review/reason/noChanges) projected from decision.facts or derived from the failure; null while non-terminal.",
+      ),
     /** True while at least one interaction.requested has no answered/timeout. */
     waitingOnUser: z
       .boolean()
@@ -1120,6 +1144,11 @@ export const ControlTurnRunCard = z
       .describe("Engine strategy flag on the mode, when any."),
     n: z.number().int().optional().describe("Race width, when the run was a race."),
     result: ControlRunResult.default({}),
+    outcomeFacts: RunOutcomeFacts.nullable()
+      .default(null)
+      .describe(
+        "D8 terminal outcome axes (checks/review/reason/noChanges) for the turn; null while non-terminal.",
+      ),
     spendUsd: z.number().nullable().optional().describe("Settled cash in USD; null when unknown."),
     outputReadyState: OutputReadyState.default("pending"),
     waitingOnUser: z

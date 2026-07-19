@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunOutcomeFacts } from "./decision.js";
 
 /**
  * ApplyEligibility — the derived "can this run's WorkProduct be applied RIGHT
@@ -17,7 +18,7 @@ export const ApplyEligibility = z
       .string()
       .nullable()
       .describe(
-        "The gate's state classification (e.g. blocked | ungated | review_not_run | no_op | ok) when known.",
+        "The gate's apply-eligibility classification (e.g. needs_review | not_verified | no_changes | ok) when known.",
       ),
     reason: z
       .string()
@@ -57,7 +58,12 @@ export const McpRunToolResult = z
     status: z
       .string()
       .nullable()
-      .describe("Terminal run status (success | blocked | failed | cancelled | ...)."),
+      .describe("Terminal run LIFECYCLE (succeeded | failed | cancelled | interrupted)."),
+    outcomeFacts: RunOutcomeFacts.nullable()
+      .default(null)
+      .describe(
+        "The D8 terminal outcome axes (checks/review/reason/noChanges); null for non-terminal or read-only routes.",
+      ),
     applyEligibility: ApplyEligibility.nullable().describe(
       "Apply-gate verdict for mutating runs; null for read-only routes or when no patch exists.",
     ),

@@ -217,8 +217,13 @@ export function arbitrate(
       ranking: [],
       decision: DecisionRecordSchema.parse({
         winner: null,
-        status: "failed",
-        outcome: "blocked",
+        facts: {
+          lifecycle: "failed",
+          noChanges: true,
+          checks: "not_configured",
+          review: "not_run",
+          reason: "harness_failed",
+        },
         why_winner: "no candidates",
         evidence_facts: ["no candidates were produced"],
         apply_recommendation: "continue",
@@ -238,53 +243,52 @@ export function arbitrate(
 
   const requiredOk = requiredGatesPassed(winner);
   const blockerCount = openBlockerCount(winner);
-  const winnerOk = requiredOk && winner.finalReviewClean && blockerCount === 0;
-  const noOpOk = requiredOk && blockerCount === 0;
   const hasDiff = (winner.diffBytes ?? winner.diffSize ?? 0) > 0;
-  const hasGates = winner.testsTotal > 0 || winner.gates.length > 0;
-  const reviewRan = winner.reviewVerified === true;
-  // A clean, route-proof-VERIFIED cross-family review is real verification even
-  // when no deterministic test gate is configured. `reviewRan` already
-  // requires crossFamilyVerified (observed route proofs, §5), so this never
-  // adopts an unobserved/argv-echo review. The patch-hash binding is enforced
-  // separately by the apply gate.
-  const reviewCleanVerified = reviewRan && winner.finalReviewClean && blockerCount === 0;
   const harnessFailed = winner.gates.some((g) => g.id === "harness" && g.status === "failed");
-  const outcome = harnessFailed
-    ? "blocked"
-    : !hasDiff
-      ? noOpOk
-        ? "no_op"
-        : "blocked"
-      : !hasGates
-        ? reviewCleanVerified
-          ? "ready"
-          : "ungated"
-        : !reviewRan
-          ? "review_not_run"
-          : winnerOk
-            ? "ready"
-            : "blocked";
+  // v3 AXES (D8/D18): the harness pseudo-gate row is process evidence, not a
+  // configured deterministic check — it feeds lifecycle, never the checks
+  // axis (the old lattice let it flip hasGates and reroute the whole tree).
+  const realGates = winner.gates.filter((g) => g.id !== "harness");
+  const checksConfigured = winner.testsTotal > 0 || realGates.length > 0;
+  const checksPassed =
+    checksConfigured &&
+    requiredOk &&
+    (winner.testsTotal === 0 || winner.testsPassed === winner.testsTotal);
+  const checks = checksConfigured ? (checksPassed ? "passed" : "failed") : "not_configured";
+  const reviewRan = winner.reviewVerified === true;
+  // Accepted blockers ALWAYS surface as review=blocked — even from an
+  // unverified panel (the old lattice masked them behind "ungated"/
+  // "review_not_run"; that collapse class is the D18 fix). A clean verdict
+  // still requires the VERIFIED cross-family review (observed route proofs).
+  const review =
+    blockerCount > 0
+      ? "blocked"
+      : reviewRan
+        ? winner.finalReviewClean
+          ? "approved"
+          : "blocked"
+        : "not_run";
+  const lifecycle = harnessFailed ? "failed" : "succeeded";
+  const noChanges = !hasDiff;
+  const reason = harnessFailed
+    ? "harness_failed"
+    : review === "blocked"
+      ? "review_blocked"
+      : checks === "failed"
+        ? "checks_failed"
+        : noChanges
+          ? "no_changes"
+          : null;
+  const facts = { lifecycle, noChanges, checks, review, reason } as const;
   // Honest disclosure of WHAT verified an applyable run. "both" requires a
-  // DETERMINISTIC gate — a real test count or a REQUIRED gate that passed — not
-  // mere gate presence (a non-required/diagnostic gate must not read as "tests
-  // passed"). A no-gate run adopted on review evidence is cross_family_review.
+  // DETERMINISTIC check — a real test count or a REQUIRED gate that passed —
+  // not mere presence. A no-check run adopted on review evidence is
+  // cross_family_review. Only an APPROVED review is applyable-quality.
   const gateVerified =
     (winner.testsTotal > 0 && winner.testsPassed === winner.testsTotal) ||
-    winner.gates.some((g) => g.required && g.status === "passed");
-  const verificationBasis =
-    outcome === "ready" ? (gateVerified ? "both" : "cross_family_review") : "none";
-  const status = harnessFailed
-    ? "failed"
-    : outcome === "ready"
-      ? "success"
-      : outcome === "no_op"
-        ? "no_op"
-        : outcome === "ungated"
-          ? "ungated"
-          : outcome === "review_not_run"
-            ? "review_not_run"
-            : "not_converged";
+    realGates.some((g) => g.required && g.status === "passed");
+  const applyable = lifecycle === "succeeded" && review === "approved" && checks !== "failed";
+  const verificationBasis = applyable ? (gateVerified ? "both" : "cross_family_review") : "none";
 
   const whyNot: Record<string, string> = {};
   for (const c of ranking.slice(1)) {
@@ -305,8 +309,7 @@ export function arbitrate(
 
   const decision = DecisionRecordSchema.parse({
     winner: winner.attemptId,
-    status,
-    outcome,
+    facts,
     why_winner: `${winner.label}: gates=${requiredGateLabel(winner)}, gates_coverage=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
     why_not_others: whyNot,
     accepted_risks: acceptedRisks,
@@ -321,24 +324,23 @@ export function arbitrate(
     ],
     evidence_facts: [
       `diff ${hasDiff ? "non-empty" : "empty"}`,
-      `gates ${hasGates ? "configured" : "not configured"}`,
-      `review ${reviewRan ? "verified" : "not verified"}`,
+      `checks ${checks}`,
+      `review ${review}${reviewRan ? " (verified)" : ""}`,
       `blockers ${openBlockerCount(winner)}`,
     ],
     budget_summary: {
       spend_usd: opts.spendUsd ?? winner.costUsd ?? null,
       estimated: opts.estimatedSpend ?? false,
     },
-    apply_recommendation:
-      outcome === "ready"
-        ? "apply"
-        : outcome === "no_op"
-          ? "inspect"
-          : outcome === "ungated" || outcome === "review_not_run"
-            ? "human_review"
-            : openBlockerCount(winner) > 0
-              ? "human_review"
-              : "continue",
+    apply_recommendation: applyable
+      ? noChanges
+        ? "inspect"
+        : "apply"
+      : noChanges && review !== "blocked" && checks !== "failed"
+        ? "inspect"
+        : review === "blocked" || checks === "failed" || review === "not_run"
+          ? "human_review"
+          : "continue",
     verification_basis: verificationBasis,
   });
 

@@ -45,7 +45,7 @@ describe("DaemonServer", () => {
       socketPath,
       token: "token",
       commands: authority.slot,
-      runner: async () => ({ status: "success" }),
+      runner: async () => ({ lifecycle: "succeeded" }),
     });
     try {
       await expect(server.start()).rejects.toThrow(/refusing to replace/);
@@ -102,7 +102,7 @@ describe("DaemonServer", () => {
       commands: authority.slot,
       runner: async (params) => {
         ran += 1;
-        return { status: "success", echoed: (params as { value: number }).value * 2 };
+        return { lifecycle: "succeeded", echoed: (params as { value: number }).value * 2 };
       },
     });
     await server.start();
@@ -134,7 +134,7 @@ describe("DaemonServer", () => {
       commands: authority.slot,
       runner: async () => {
         calls += 1;
-        return { status: "success" };
+        return { lifecycle: "succeeded" };
       },
     });
     await server.start();
@@ -163,7 +163,7 @@ describe("DaemonServer", () => {
       token: "token",
       commands: authority.slot,
       maxHistory: 1,
-      runner: async (params) => ({ status: "success", echoed: params }),
+      runner: async (params) => ({ lifecycle: "succeeded", echoed: params }),
     });
     await server.start();
     const client = new DaemonClient(socketPath, "token");
@@ -178,7 +178,7 @@ describe("DaemonServer", () => {
     const reopened = commandAuthority(dir);
     expect(reopened.store.get(first.id)).toMatchObject({
       state: "succeeded",
-      result: { status: "success", echoed: { value: 1 } },
+      result: { lifecycle: "succeeded", echoed: { value: 1 } },
     });
     expect(
       reopened.store.find({
@@ -190,7 +190,7 @@ describe("DaemonServer", () => {
     reopened.journal.close();
   });
 
-  it("recovers queued and running commands as interrupted_unknown without replay", async () => {
+  it("recovers queued and running commands as interrupted without replay", async () => {
     const dir = tempDir("restart");
     const first = commandAuthority(dir);
     first.store.accept({
@@ -211,8 +211,8 @@ describe("DaemonServer", () => {
     const recovered = commandAuthority(dir);
     expect(recovered.store.records()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "job-queued", state: "interrupted_unknown" }),
-        expect.objectContaining({ id: "job-running", state: "interrupted_unknown" }),
+        expect.objectContaining({ id: "job-queued", state: "interrupted" }),
+        expect.objectContaining({ id: "job-running", state: "interrupted" }),
       ]),
     );
     let calls = 0;
@@ -222,7 +222,7 @@ describe("DaemonServer", () => {
       commands: recovered.slot,
       runner: async () => {
         calls += 1;
-        return { status: "success" };
+        return { lifecycle: "succeeded" };
       },
     });
     await server.start();
@@ -262,7 +262,7 @@ describe("DaemonServer", () => {
           });
         });
         active -= 1;
-        return { status: "success" };
+        return { lifecycle: "succeeded" };
       },
     });
     await server.start();
@@ -293,7 +293,7 @@ describe("DaemonServer", () => {
       runner: async (_params, ctx) => {
         starts += 1;
         await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve()));
-        return { status: "cancelled" };
+        return { lifecycle: "cancelled" };
       },
     });
     await server.start();
@@ -322,7 +322,7 @@ describe("DaemonServer", () => {
         if ((params as { fail?: boolean }).fail) {
           throw Object.assign(new Error("preflight refused"), { code: "trust_required" });
         }
-        return { status: "success" };
+        return { lifecycle: "succeeded" };
       },
     });
     await server.start();
@@ -344,19 +344,11 @@ describe("DaemonServer", () => {
     }
   });
 
-  it("maps every non-success result to its honest terminal state", async () => {
-    const statuses = [
-      "no_op",
-      "ungated",
-      "review_not_run",
-      "blocked",
-      "cost_unverifiable",
-      "exhausted_overshoot",
-      "exhausted",
-      "not_converged",
-      "stuck_no_progress",
-      "failed",
-    ];
+  it("maps every result lifecycle to its job state 1:1 (D8)", async () => {
+    // The daemon job state IS the run lifecycle; jobStateFromResult reads
+    // result.facts.lifecycle. Outcome quality (checks/review/reason) lives on
+    // the facts and is projected by the control plane, never re-encoded here.
+    const lifecycles = ["succeeded", "failed", "cancelled", "interrupted"];
     const dir = tempDir("outcomes");
     const authority = commandAuthority(dir);
     const socketPath = join(dir, "daemon.sock");
@@ -364,14 +356,14 @@ describe("DaemonServer", () => {
       socketPath,
       token: "token",
       commands: authority.slot,
-      runner: async (params) => ({ status: (params as { status: string }).status }),
+      runner: async (params) => ({ lifecycle: (params as { lifecycle: string }).lifecycle }),
     });
     await server.start();
     try {
       const client = new DaemonClient(socketPath, "token");
-      for (const status of statuses) {
-        const job = await client.enqueue({ status });
-        expect((await terminal(client, job.id)).state).toBe(status);
+      for (const lifecycle of lifecycles) {
+        const job = await client.enqueue({ lifecycle });
+        expect((await terminal(client, job.id)).state).toBe(lifecycle);
       }
     } finally {
       await server.stop();
@@ -387,7 +379,7 @@ describe("DaemonServer", () => {
       socketPath,
       token: "token",
       commands: authority.slot,
-      runner: async () => ({ status: "success" }),
+      runner: async () => ({ lifecycle: "succeeded" }),
     });
     const starting = server.start();
     await server.stop();

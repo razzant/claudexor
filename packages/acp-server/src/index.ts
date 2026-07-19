@@ -7,6 +7,7 @@ import {
   type Writable as NodeWritableStream,
 } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { acpStopReason } from "@claudexor/schema";
 import { extractPromptText, summarizeResult } from "./prompt.js";
 import { validateRunControls } from "./validate.js";
 
@@ -146,13 +147,12 @@ export class AcpServer {
           )) as Record<string, unknown>;
           const summary = summarizeResult(result);
           if (summary) await this.agentMessage(client, params.sessionId, summary);
+          // `result.status` is the run LIFECYCLE (D8); the ACP stop reason is
+          // projected through the ONE owner (acpStopReason).
           const status = typeof result.status === "string" ? result.status : "unknown";
-          const stopReason: acp.StopReason =
-            status === "cancelled" || controller.signal.aborted
-              ? "cancelled"
-              : status === "blocked" || status === "failed" || status === "interrupted_unknown"
-                ? "refusal"
-                : "end_turn";
+          const stopReason: acp.StopReason = controller.signal.aborted
+            ? "cancelled"
+            : acpStopReason(status);
           return {
             stopReason,
             _meta: {

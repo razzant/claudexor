@@ -29,6 +29,36 @@ import { noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
+import type { OrchestratorResult } from "./orchestrator.js";
+
+/**
+ * Project a run's D8 axes (lifecycle + facts) back to the LEGACY status word
+ * these assertions were written against — the v8-design mapping table applied
+ * mechanically. Keeps the existing behavioral coverage intact while the run
+ * result speaks the axes vocabulary. New tests should assert `.facts` directly.
+ */
+function legacyOutcome(r: OrchestratorResult): string {
+  const f = r.facts;
+  if (r.lifecycle === "cancelled") return "cancelled";
+  if (r.lifecycle === "interrupted") return "interrupted_unknown";
+  if (r.lifecycle === "failed") {
+    const byReason: Record<string, string> = {
+      budget_exhausted: "exhausted",
+      budget_overshoot: "exhausted_overshoot",
+      cost_unverifiable: "cost_unverifiable",
+      not_converged: "not_converged",
+      stuck_no_progress: "stuck_no_progress",
+    };
+    return f.reason && byReason[f.reason] ? byReason[f.reason] : "failed";
+  }
+  // succeeded lifecycle: only a needs-decision block (review blocked / checks
+  // failed) is distinct; every other clean succeeded terminal (verified
+  // success, empty-diff no_op, or a not-verified read-only/plan run) reads as
+  // the legacy "success" these behavioral assertions were written against.
+  // Tests that must distinguish no_changes / not-verified assert `.facts`.
+  if (f.review === "blocked" || f.checks === "failed") return "blocked";
+  return "success";
+}
 
 async function initRepo(): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), "claudexor-orch-"));
@@ -504,7 +534,7 @@ describe("Orchestrator", () => {
       n: 1,
     });
 
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
     expect(failure).toContain("phase: review");
     expect(failure).toContain("forced review evidence failure");
@@ -529,7 +559,7 @@ describe("Orchestrator", () => {
     });
     expect(res.mode).toBe("agent");
     expect(res.candidates.length).toBeGreaterThanOrEqual(2);
-    expect(res.status).toBe("no_op");
+    expect(res.facts.noChanges).toBe(true);
     // the winner is always present in the returned candidates (incl. a synthesis candidate)
     expect(res.winner && res.candidates.some((c) => c.attemptId === res.winner)).toBeTruthy();
     expect(res.decisionPath && existsSync(res.decisionPath)).toBe(true);
@@ -549,7 +579,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       attempts: 3,
     });
-    expect(res.status).toBe("no_op");
+    expect(res.facts.noChanges).toBe(true);
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(true);
@@ -570,7 +600,7 @@ describe("Orchestrator", () => {
     });
     // The identical-repair-prompt loop detector stops the run as exhausted
     // (3rd identical prompt) before the slower stall detector can mark it failed.
-    expect(res.status).toBe("exhausted");
+    expect(legacyOutcome(res)).toBe("exhausted");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain("loop_detected");
   }, 20000);
@@ -589,7 +619,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-implement"],
       tests: [shellGate("false")],
     });
-    expect(res.status).toBe("stuck_no_progress");
+    expect(legacyOutcome(res)).toBe("stuck_no_progress");
     const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
     expect(summary).toContain("No-progress reason");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
@@ -609,7 +639,7 @@ describe("Orchestrator", () => {
       n: 1,
     });
     expect(transient.calls()).toBe(2);
-    expect(res.status).not.toBe("failed");
+    expect(legacyOutcome(res)).not.toBe("failed");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain("route.transient.retry_scheduled");
     const attempt = readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8");
@@ -639,7 +669,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-implement"],
       n: 1,
     });
-    expect(res.status).not.toBe("failed");
+    expect(legacyOutcome(res)).not.toBe("failed");
     // The candidate (task-producing) lane received the caller's instructions;
     // synthesis (intent === "synthesize") and reviewers build their own specs
     // and are excluded by harnessSpecKnobs / the review engine.
@@ -703,7 +733,7 @@ describe("Orchestrator", () => {
       mode: "plan",
       harnesses: ["fake-success"],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
   });
 
@@ -772,7 +802,7 @@ describe("Orchestrator", () => {
     );
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
     expect(primary.length).toBe(2);
-    expect(res.status).not.toBe("exhausted_overshoot");
+    expect(legacyOutcome(res)).not.toBe("exhausted_overshoot");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain("insufficient headroom for estimated cost");
   });
@@ -839,7 +869,7 @@ describe("Orchestrator", () => {
         n: 2,
       });
     });
-    expect(res.status).not.toBe("failed");
+    expect(legacyOutcome(res)).not.toBe("failed");
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     // INV-103: the scalar model expands to the RESOLVED PRIMARY only. The
     // other pool member must NOT be poisoned by the primary's model id (the
@@ -874,7 +904,7 @@ describe("Orchestrator", () => {
         n: 1,
       });
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(spawned).toBe(false);
     const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
     expect(failure).toContain("gpt-nonexistent");
@@ -964,7 +994,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
       n: 1,
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("level: critical");
     expect(review).toContain("candidate changed protected path");
@@ -1019,7 +1049,7 @@ describe("Orchestrator", () => {
       protectedPathApprovals: [{ path: "test/**", reason: "test authoring requested" }],
       n: 1,
     });
-    expect(res.status).not.toBe("blocked");
+    expect(legacyOutcome(res)).not.toBe("blocked");
     const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
     expect(taskYaml).toContain("protected_path_approvals");
     expect(taskYaml).toContain("test/**");
@@ -1079,7 +1109,7 @@ describe("Orchestrator", () => {
       ],
       n: 1,
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("protected-path change requires human approval");
     expect(review).toContain(".github/workflows/release.yml");
@@ -1138,7 +1168,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
       n: 1,
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("protected-path change requires human approval");
     expect(review).toContain(".github/workflows/release.yml");
@@ -1179,7 +1209,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
       n: 1,
     });
-    expect(res.status).not.toBe("blocked");
+    expect(legacyOutcome(res)).not.toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).not.toContain("candidate changed protected gate/test path");
   });
@@ -1229,7 +1259,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
       n: 1,
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("test/math.test.js");
     expect(review).toContain("severity: BLOCK");
@@ -1291,7 +1321,7 @@ describe("Orchestrator", () => {
     // The leaky candidate is refused before any artifact persists; with zero
     // working candidates the run fails with the ROOT CAUSE (no corpse review,
     // no empty final patch pretending to be a work product).
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toContain("secret-like token");
     expect(existsSync(join(res.runDir, "final", "patch.diff"))).toBe(false);
     expect(existsSync(join(res.runDir, "attempts", "a01", "patch.diff"))).toBe(false);
@@ -1310,7 +1340,7 @@ describe("Orchestrator", () => {
       harnesses: ["raw-ish"],
       n: 1,
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toMatch(/perform 'implement'/);
     expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(
       /perform 'implement'/,
@@ -1327,11 +1357,11 @@ describe("Orchestrator", () => {
       mode: "ask",
       harnesses: ["raw-ish"],
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toMatch(/perform 'explain'/);
     expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain(
-      "Status: failed",
+      "Lifecycle: failed",
     );
   });
 
@@ -1397,7 +1427,7 @@ describe("Orchestrator", () => {
       harnesses: ["asker"],
       attachments: [attachment],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(observedAttachments).toEqual([attachment]);
   });
 
@@ -1436,7 +1466,7 @@ describe("Orchestrator", () => {
         mode: "ask",
         credentialProfileId: "ghost",
       });
-      expect(ghost.status).toBe("failed");
+      expect(legacyOutcome(ghost)).toBe("failed");
       expect(ghost.summary).toMatch(/credential profile "ghost" is not registered/);
       const off = await orchestrator.run({
         repoRoot: repo,
@@ -1444,7 +1474,7 @@ describe("Orchestrator", () => {
         mode: "ask",
         credentialProfileId: "off",
       });
-      expect(off.status).toBe("failed");
+      expect(legacyOutcome(off)).toBe("failed");
       expect(off.summary).toMatch(/credential profile "off" is disabled/);
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
@@ -1497,7 +1527,7 @@ describe("Orchestrator", () => {
         harnesses: ["asker"],
         credentialProfileId: "work",
       });
-      expect(askRes.status).toBe("success");
+      expect(legacyOutcome(askRes)).toBe("success");
       expect(askSeen).toHaveLength(1);
       expect(askSeen[0]).toMatchObject({ profile_id: "work", credential_kind: "api_key" });
 
@@ -1519,7 +1549,7 @@ describe("Orchestrator", () => {
         n: 1,
         credentialProfileId: "work",
       });
-      expect(agentRes.status).not.toBe("failed");
+      expect(legacyOutcome(agentRes)).not.toBe("failed");
       expect(implSeen.length).toBeGreaterThan(0);
       expect(implSeen[0]).toMatchObject({ profile_id: "work", credential_kind: "api_key" });
     } finally {
@@ -1636,7 +1666,7 @@ describe("Orchestrator", () => {
         credentialProfileId: "a",
         onEvent: (event) => events.push(event.type),
       });
-      expect(res.status).not.toBe("failed");
+      expect(legacyOutcome(res)).not.toBe("failed");
       expect(spawns.map((s) => s.profile)).toEqual(["a", "b"]);
       // Failover is a NEW vendor session under the new credential.
       expect(new Set(spawns.map((s) => s.session)).size).toBe(2);
@@ -1788,7 +1818,7 @@ describe("Orchestrator", () => {
         credentialProfileId: "b",
         // NO harnesses: the implicit pool must be derived FROM the profile.
       });
-      expect(res.status, res.summary).toBe("success");
+      expect(legacyOutcome(res), res.summary).toBe("success");
       expect(answered).toEqual(["asker"]);
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
@@ -1855,7 +1885,7 @@ describe("Orchestrator", () => {
       // The api_key profile IS the route: the route-annotated model is valid
       // under it. A stale default-route classification (local_session from
       // auth_modes) would refuse the model against the manifest truth.
-      expect(res.status, res.summary).toBe("success");
+      expect(legacyOutcome(res), res.summary).toBe("success");
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
@@ -1914,7 +1944,7 @@ describe("Orchestrator", () => {
       });
       // The profile's own probe is the auth verdict — the logged-out default
       // must not reject a valid isolated profile.
-      expect(res.status).toBe("success");
+      expect(legacyOutcome(res)).toBe("success");
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
@@ -1963,7 +1993,7 @@ describe("Orchestrator", () => {
         harnesses: ["asker"],
         credentialProfileId: "work",
       });
-      expect(result.status).toBe("failed");
+      expect(legacyOutcome(result)).toBe("failed");
       expect(result.summary).toContain("profile login expired");
       expect(starts).toBe(0);
     } finally {
@@ -2036,7 +2066,7 @@ describe("Orchestrator", () => {
         credentialProfileId: "a",
         onEvent: (event) => events.push(event.type),
       });
-      expect(res.status).toBe("success");
+      expect(legacyOutcome(res)).toBe("success");
       expect(profilesSeen).toEqual(["a", "b"]);
       expect(events).toContain("route.profile.rotated");
     } finally {
@@ -2137,7 +2167,7 @@ describe("Orchestrator", () => {
         credentialProfileId: "a",
         onEvent: (event) => events.push(event.type),
       });
-      expect(res.status).not.toBe("failed");
+      expect(legacyOutcome(res)).not.toBe("failed");
       // The transient retry stays on the SAME profile; rotation never fires.
       expect(profilesSeen).toEqual(["a", "a"]);
       expect(events).not.toContain("route.profile.rotated");
@@ -2221,7 +2251,7 @@ describe("Orchestrator", () => {
         credentialProfileId: "a",
         onEvent: (event) => events.push(event.type),
       });
-      expect(res.status).toBe("success");
+      expect(legacyOutcome(res)).toBe("success");
       expect(seen).toEqual(["b"]);
       expect(events).toContain("route.profile.headroom_exceeded");
       expect(events).toContain("route.profile.rotated");
@@ -2303,7 +2333,7 @@ describe("Orchestrator", () => {
       });
       // Default policy = fail FAILS (release wave tier1 #4): a FRESH breach
       // refuses before spawn with typed evidence; no adapter ever launches.
-      expect(res.status).toBe("failed");
+      expect(legacyOutcome(res)).toBe("failed");
       expect(seen).toEqual([]);
       expect(events).toContain("route.profile.headroom_exceeded");
       expect(events).not.toContain("route.profile.rotated");
@@ -2332,7 +2362,7 @@ describe("Orchestrator", () => {
       harnesses: ["asker"],
       credentialProfileId: "ghost",
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(launches).toBe(0);
   });
 
@@ -2374,7 +2404,7 @@ describe("Orchestrator", () => {
       registry: new Map([["asker", adapter]]),
       reviewers: [],
     }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     // The readiness truth that admitted the route was derived in the exact
     // env the run then received (TZ-1 §B: probe env === run env)…
     expect(probedEnv).toBeDefined();
@@ -2426,7 +2456,7 @@ describe("Orchestrator", () => {
       registry: new Map([["asker", adapter]]),
       reviewers: [],
     }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(ran).toBe(false);
     expect(res.summary).toMatch(/scoped run env/);
   });
@@ -2495,7 +2525,7 @@ describe("Orchestrator", () => {
       harnesses: ["blind"],
       attachments: [attachment],
     });
-    expect(explicit.status).toBe("failed");
+    expect(legacyOutcome(explicit)).toBe("failed");
     expect(explicit.summary).toMatch(/cannot receive every mandatory attachment/);
     // AUTO pool: the blind harness is silently-but-honestly DROPPED; the
     // sighted one carries the run.
@@ -2505,7 +2535,7 @@ describe("Orchestrator", () => {
       mode: "ask",
       attachments: [attachment],
     });
-    expect(auto.status).toBe("success");
+    expect(legacyOutcome(auto)).toBe("success");
     expect(auto.summary).toContain("answered by sighted");
   });
 
@@ -2551,7 +2581,7 @@ describe("Orchestrator", () => {
       web: "auto",
       n: 1,
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
       "web evidence unsatisfied",
     );
@@ -2589,7 +2619,7 @@ describe("Orchestrator", () => {
       web: "live",
       n: 1,
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
       "never attempted",
     );
@@ -2649,7 +2679,7 @@ describe("Orchestrator", () => {
       harnesses: ["recovers"],
       n: 1,
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
       "Recovered and finished.",
     );
@@ -2690,7 +2720,7 @@ describe("Orchestrator", () => {
       harnesses: ["warns"],
       n: 1,
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
       "Claimed done anyway.",
     );
@@ -2760,7 +2790,7 @@ describe("Orchestrator", () => {
       n: 2,
       tests: [shellGate("test -f CHANGED.txt")],
     });
-    expect(["success", "ungated"]).toContain(green.status);
+    expect(["success", "ungated"]).toContain(legacyOutcome(green));
     const greenDecision = readFileSync(join(green.runDir, "arbitration", "decision.yaml"), "utf8");
     expect(greenDecision).toContain("final_verify");
     expect(greenDecision).toContain("applied_cleanly: true");
@@ -2855,7 +2885,7 @@ describe("Orchestrator", () => {
         harnesses: ["wedged"],
       });
       expect(Date.now() - started).toBeLessThan(10_000);
-      expect(res.status).toBe("failed");
+      expect(legacyOutcome(res)).toBe("failed");
       expect(res.summary).toContain("inactivity watchdog");
       const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
       expect(events).toContain('"run.failed"');
@@ -2871,7 +2901,7 @@ describe("Orchestrator", () => {
     const guard = guardAnnouncedRun as unknown as (
       signal: AbortSignal | undefined,
       body: (announce: (a: unknown) => void) => Promise<unknown>,
-    ) => Promise<{ status: string; summary: string; runDir: string }>;
+    ) => Promise<OrchestratorResult>;
     const { ArtifactStore } = await import("@claudexor/artifact-store");
     const { EventLog } = await import("@claudexor/event-log");
 
@@ -2892,7 +2922,7 @@ describe("Orchestrator", () => {
       announce({ log, store, paths, runId, taskId: "task-netted", mode: "agent", phase: "race" });
       throw new Error("escaped mid-strategy");
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toContain("escaped mid-strategy");
     const events = readFileSync(paths.eventsPath, "utf8");
     expect(events).toContain("run.failed");
@@ -2918,8 +2948,8 @@ describe("Orchestrator", () => {
       });
       throw new Error("abort surfaced as throw");
     });
-    expect(res2.status).toBe("cancelled");
-    expect(readFileSync(paths2.eventsPath, "utf8")).toContain('"status":"cancelled"');
+    expect(res2.lifecycle).toBe("cancelled");
+    expect(readFileSync(paths2.eventsPath, "utf8")).toContain('"lifecycle":"cancelled"');
   });
 
   it("discloses a requested effort on a harness with no declared ladder via ignored_settings (INV-105)", async () => {
@@ -2981,7 +3011,7 @@ describe("Orchestrator", () => {
       harnesses: ["authy"],
       n: 1,
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const eventLog = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(eventLog).toContain("route.fallback.auth_switched");
     expect(eventLog).toContain("readiness_preferred");
@@ -3068,7 +3098,7 @@ describe("Orchestrator", () => {
       harnesses: ["web-bad", "web-good"],
       web: "auto",
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(readFileSync(join(res.runDir, "final", "answer.md"), "utf8")).toContain(
       "Web-backed answer.",
     );
@@ -3095,7 +3125,7 @@ describe("Orchestrator", () => {
         contextMode: "off",
         harnesses: ["fake-success"],
       });
-      expect(res.status).toBe("success");
+      expect(legacyOutcome(res)).toBe("success");
       expect(res.runDir.startsWith(join(configDir, "runs"))).toBe(true);
       expect(existsSync(join(res.runDir, "final", "answer.md"))).toBe(true);
       expect(existsSync(join(noProjectRoot, ".claudexor"))).toBe(false);
@@ -3136,7 +3166,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       n: 2,
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(res.candidates).toHaveLength(2);
     expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
     expect(existsSync(join(res.runDir, "findings", "a02.md"))).toBe(true);
@@ -3199,7 +3229,7 @@ describe("Orchestrator", () => {
       harnesses: ["warned", "clean"],
       n: 2,
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const explore = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
     expect(explore).toContain("Explorers succeeded: 2/2");
     expect(explore).toContain("Useful repository analysis.");
@@ -3267,7 +3297,7 @@ describe("Orchestrator", () => {
       harnesses: ["throwing"],
       n: 1,
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(existsSync(join(res.runDir, "final", "failure.yaml"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
       "attempts/a01/attempt.yaml",
@@ -3450,7 +3480,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-impl"],
       n: 1,
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(seen).toHaveLength(4);
     expect(seen).toEqual(
       expect.arrayContaining([
@@ -3511,7 +3541,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-impl"],
       n: 1,
     });
-    expect(effortRes.status).toBe("failed");
+    expect(legacyOutcome(effortRes)).toBe("failed");
     expect(effortRes.summary).toContain(
       "reviewer harness 'rev-cursor' does not support requested effort 'max' (harness declares no effort controls)",
     );
@@ -3575,7 +3605,7 @@ describe("Orchestrator", () => {
         harnesses: ["fake-impl"],
         n: 1,
       });
-      expect(res.status).toBe("ungated");
+      expect(res.facts.review).toBe("not_run");
       expect(seen).toEqual([{ model: "configured-review-model", effort: null }]);
       const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
       expect(reviewYaml).toContain("requested_model: configured-review-model");
@@ -3772,7 +3802,7 @@ describe("Orchestrator", () => {
         harnesses: ["fake-impl"],
         n: 1,
       });
-      expect(["success", "ungated", "review_not_run"]).toContain(res.status);
+      expect(["success", "ungated", "review_not_run"]).toContain(legacyOutcome(res));
       expect(doctorCalls).toBe(0);
     } finally {
       if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
@@ -3895,7 +3925,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-impl"],
       n: 1,
     });
-    expect(emptyRes.status).toBe("failed");
+    expect(legacyOutcome(emptyRes)).toBe("failed");
     expect(emptyRes.summary).toMatch(
       /model inventory call failed after retry: model inventory was empty/,
     );
@@ -3992,7 +4022,7 @@ describe("Orchestrator", () => {
           harnesses: ["fake-impl"],
           n: 1,
         });
-        expect(res.status).toBe("failed");
+        expect(legacyOutcome(res)).toBe("failed");
         expect(res.summary).toMatch(message);
         const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
         expect(failure).toContain("review_preflight");
@@ -4079,7 +4109,7 @@ describe("Orchestrator", () => {
       });
       await expect(
         orch.run({ repoRoot: repo, prompt: "x", mode: "agent", harnesses: ["fake-impl"], n: 1 }),
-      ).resolves.toMatchObject({ status: "ungated" });
+      ).resolves.toMatchObject({ lifecycle: "succeeded", facts: { review: "not_run" } });
     }
     await expectRejected(
       new Map([
@@ -4250,7 +4280,7 @@ describe("Orchestrator", () => {
       inPlace: true,
       tests: [shellGate('test "$(cat README.md)" = "# raw implemented"')],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(observedAccess).toBe("readonly");
     expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# raw implemented\n");
     expect(readFileSync(join(res.runDir, "context", "task.yaml"), "utf8")).toContain(
@@ -4285,7 +4315,7 @@ describe("Orchestrator", () => {
       n: 2,
       inPlace: true,
     });
-    expect(res.status).toBe("ungated");
+    expect(res.facts.review).toBe("not_run");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("adopted: null");
@@ -4309,7 +4339,7 @@ describe("Orchestrator", () => {
       inPlace: true,
       tests: [shellGate("true")],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("adopted: true");
@@ -4341,7 +4371,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
     });
 
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(readFileSync(join(repo, "USER.txt"))).toEqual(userBytes);
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
@@ -4381,7 +4411,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
     });
 
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     expect(readFileSync(join(repo, "CHANGED.txt"))).toEqual(userBytes);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("adopted: false");
@@ -4416,7 +4446,7 @@ describe("Orchestrator", () => {
       tests: [{ program: process.execPath, args: ["-e", gateScript], envAllowlist: [] }],
     });
 
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     expect(readFileSync(concurrentPath, "utf8")).toBe("concurrent user edit\n");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
     const receipt = readFileSync(join(res.runDir, "final", "delivery_receipt.yaml"), "utf8");
@@ -4424,7 +4454,8 @@ describe("Orchestrator", () => {
     expect(receipt).toContain("target changed after final verify");
     expect(receipt).toContain("gates_passed: true");
     const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
-    expect(decision).toContain("status: blocked");
+    // D8: a refused live delivery lands on the CHECKS axis (needs-decision).
+    expect(decision).toContain("checks: failed");
     expect(decision).toContain("delivery_receipt: final/delivery_receipt.yaml");
   });
 
@@ -4445,7 +4476,7 @@ describe("Orchestrator", () => {
       mode: "plan",
       harnesses: ["planner"],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     // PURE body: the wrapper (goal/status) lives in summary.md — implement
     // freezes and hashes plan.md, so it must be the plan and nothing else.
     const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
@@ -4480,7 +4511,7 @@ describe("Orchestrator", () => {
       mode: "plan",
       harnesses: ["planner"],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const questions = JSON.parse(
       readFileSync(join(res.runDir, "final", "questions.json"), "utf8"),
     ) as { parse: string };
@@ -4524,7 +4555,7 @@ describe("Orchestrator", () => {
       harnesses: ["planner-a", "planner-b"],
       onEvent: (event) => eventTypes.push(event.type),
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain("# Plan B");
     // Zero open questions with a FOUND tagged block => ready.
     const questions = JSON.parse(
@@ -4637,7 +4668,7 @@ describe("Orchestrator", () => {
       n: 1,
       tests: [shellGate("grep -qx OK README.md")],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const reviewYaml = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(reviewYaml).not.toContain("Reviewer did not see");
   });
@@ -4698,7 +4729,7 @@ describe("Orchestrator", () => {
       signal: ac.signal,
       onHarnessEvent: (e) => harnessEvents.push(e.type),
     });
-    expect(res.status).toBe("cancelled");
+    expect(legacyOutcome(res)).toBe("cancelled");
     expect(harnessEvents.length).toBe(0);
   });
 
@@ -4719,7 +4750,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       signal: ac.signal,
     });
-    expect(res.status).toBe("cancelled");
+    expect(legacyOutcome(res)).toBe("cancelled");
     expect(res.cancelReason).toBe("wall_clock_exceeded");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8")
       .trim()
@@ -4775,7 +4806,7 @@ describe("Orchestrator", () => {
       // violation (stricter than protected paths, which gate existing files).
       denyPaths: ["FAKE_*.txt"],
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("candidate touched denied path(s) (deny_paths): FAKE_CHANGE.txt");
     expect(review).toContain("severity: BLOCK");
@@ -4830,7 +4861,7 @@ describe("Orchestrator", () => {
       n: 1,
       denyPaths: ["secrets/**"],
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).toContain("secrets/key.txt");
     expect(review).toContain("severity: BLOCK");
@@ -4906,7 +4937,7 @@ describe("Orchestrator", () => {
       },
     });
     // An answer-only agent run (no diff) ends no_op with the answer delivered.
-    expect(res.status).toBe("no_op");
+    expect(res.facts.noChanges).toBe(true);
     // The lane received the NORMALIZED (strictified) schema.
     expect(seenSchema).toMatchObject({ type: "object", additionalProperties: false });
     const output = JSON.parse(readFileSync(join(res.runDir, "final", "output.json"), "utf8"));
@@ -4968,7 +4999,7 @@ describe("Orchestrator", () => {
     });
     // Non-conformant answer = the run TERMINAL is unaffected (the receipt is
     // the warning); an answer-only run stays no_op, never a hard fail.
-    expect(res.status).toBe("no_op");
+    expect(res.facts.noChanges).toBe(true);
     const receipt = readFileSync(join(res.runDir, "final", "structured_output.yaml"), "utf8");
     expect(receipt).toContain("status: failed");
     expect(receipt).toContain("/verdict");
@@ -5063,7 +5094,7 @@ describe("Orchestrator", () => {
       n: 1,
       outputSchema: { type: "object", properties: {} },
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toContain("cannot constrain output natively");
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
       "json_schema_output",
@@ -5249,7 +5280,7 @@ describe("Orchestrator", () => {
       models: { "route-scoped-lane": "sub-model" },
       n: 1,
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toContain("sub-model");
     expect(res.summary).toContain("route");
   });
@@ -5380,7 +5411,7 @@ describe("Orchestrator", () => {
         if (e.type === "started") ac.abort();
       },
     });
-    expect(res.status).toBe("cancelled");
+    expect(legacyOutcome(res)).toBe("cancelled");
     await new Promise((resolve) => setTimeout(resolve, 1800));
     expect(existsSync(marker)).toBe(false);
   }, 10000);
@@ -5400,7 +5431,7 @@ describe("Orchestrator", () => {
         throw new Error("observer boom");
       },
     });
-    expect(res.status).toBe("no_op");
+    expect(res.facts.noChanges).toBe(true);
   });
 
   it("isolates a throwing onHarnessEvent observer in best_of_n (candidate not failed by observer)", async () => {
@@ -5419,7 +5450,7 @@ describe("Orchestrator", () => {
         throw new Error("observer boom");
       },
     });
-    expect(res.status).toBe("no_op");
+    expect(res.facts.noChanges).toBe(true);
   });
 
   it("a pre-aborted signal yields a cancelled result (plan + best_of_n, no misleading errors)", async () => {
@@ -5437,7 +5468,7 @@ describe("Orchestrator", () => {
       harnesses: ["fake-success"],
       signal: ac.signal,
     });
-    expect(plan.status).toBe("cancelled");
+    expect(legacyOutcome(plan)).toBe("cancelled");
     const race = await orch.run({
       repoRoot: repo,
       prompt: "x",
@@ -5446,7 +5477,7 @@ describe("Orchestrator", () => {
       n: 2,
       signal: ac.signal,
     });
-    expect(race.status).toBe("cancelled");
+    expect(legacyOutcome(race)).toBe("cancelled");
   });
 
   it("cancels plan mode mid-planner instead of writing a success plan", async () => {
@@ -5483,7 +5514,7 @@ describe("Orchestrator", () => {
       },
     });
     expect(plannerStarted).toBe(true);
-    expect(res.status).toBe("cancelled");
+    expect(legacyOutcome(res)).toBe("cancelled");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(false);
   });
 
@@ -5551,10 +5582,10 @@ describe("Orchestrator", () => {
     expect(reviewerStarted).toBe(true);
     expect(eventTypes).toContain("reviewer.first_event");
     expect(eventTypes).not.toContain("arbitration.completed");
-    expect(res.status).toBe("cancelled");
+    expect(legacyOutcome(res)).toBe("cancelled");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain('"type":"run.failed"');
-    expect(events).toContain('"status":"cancelled"');
+    expect(events).toContain('"lifecycle":"cancelled"');
     expect(events).not.toContain('"type":"arbitration.completed"');
     expect(events).not.toContain('"type":"run.completed"');
   });
@@ -5584,7 +5615,7 @@ describe("Orchestrator", () => {
         inPlace: true,
         access: "full",
       });
-      expect(res.status).toBe("no_op");
+      expect(res.facts.noChanges).toBe(true);
       // The live dir and its file survive (dispose must not delete the tree in-place).
       expect(existsSync(dir)).toBe(true);
       expect(existsSync(join(dir, "task.txt"))).toBe(true);
@@ -5613,7 +5644,7 @@ describe("Orchestrator", () => {
       attempts: 2,
       inPlace: true,
     });
-    expect(["success", "ungated"]).toContain(res.status);
+    expect(["success", "ungated"]).toContain(legacyOutcome(res));
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(true);
     const wp = readFileSync(join(res.runDir, "final", "work_product.yaml"), "utf8");
     expect(wp).toContain("adopted: true");
@@ -5641,7 +5672,7 @@ describe("Orchestrator", () => {
       inPlace: true,
     });
 
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(runs).toBe(0);
     expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("# repo\n");
     expect(res.summary).toContain("in-place convergence is unavailable");
@@ -5694,7 +5725,7 @@ describe("Orchestrator", () => {
       harnesses: ["no-web"],
       web: "off",
     });
-    expect(ok.status).toBe("success");
+    expect(legacyOutcome(ok)).toBe("success");
     // `uncontrolled` (web exists, no switch) cannot enforce off: explicit selection fails loudly.
     const uncontrolled = new Map<string, HarnessAdapter>([
       ["wild-web", askAdapter("wild-web", answer, "openai", "uncontrolled")],
@@ -5706,7 +5737,7 @@ describe("Orchestrator", () => {
       harnesses: ["wild-web"],
       web: "off",
     });
-    expect(blocked.status).toBe("failed");
+    expect(legacyOutcome(blocked)).toBe("failed");
     expect(blocked.summary).toContain("cannot enforce web policy 'off'");
     expect(blocked.summary).toContain("choose a web-capable/enforceable harness");
   });
@@ -5823,7 +5854,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_safe",
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     // The plan was still produced (suggest artifact), and progress records the block.
     expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
@@ -5873,7 +5904,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       autonomy: "auto_safe",
     });
     // The executor ran the safe step and the orchestrate run succeeded.
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
     expect(progress).toContain("tool: start_run");
     expect(progress).toContain("risk: safe");
@@ -5899,7 +5930,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_safe",
     });
-    expect(res.status).toBe("blocked");
+    expect(legacyOutcome(res)).toBe("blocked");
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
     expect(progress).toContain("required: true");
     expect(progress).toContain("status: skipped");
@@ -5927,7 +5958,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_safe",
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
   });
 
   it("ENVELOPE ENFORCEMENT: a start_run sub-run executes in an isolated worktree, not the live repo root", async () => {
@@ -5976,7 +6007,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_safe",
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(subCwd).not.toBeNull();
     // The sub-run executed in an ISOLATED envelope worktree, not the live tree.
     expect(subCwd).not.toBe(repo);
@@ -6016,7 +6047,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_full",
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
     expect(progress).toContain("tool: apply");
     expect(progress).toContain("status: done");
@@ -6042,7 +6073,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       n: 1,
       tests: [shellGate("test ! -e BLOCK_APPLY")],
     });
-    expect(seed.status).toBe("success");
+    expect(legacyOutcome(seed)).toBe("success");
     writeFileSync(join(repo, "BLOCK_APPLY"), "fresh gate must observe this\n");
     const plan = {
       tool_calls: [{ tool: "apply", run_id: seed.runId, mode: "apply", why: "land it" }],
@@ -6057,7 +6088,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_full",
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(
       readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
     ).toContain("final verify: deterministic gates failed");
@@ -6097,7 +6128,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       harnesses: ["planner"],
       autonomy: "auto_full",
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
     expect(
       readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8"),
@@ -6117,7 +6148,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       mode: "orchestrate",
       harnesses: ["planner"],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     // No executor ran under suggest: no progress artifact, no apply.
     expect(existsSync(join(res.runDir, "final", "orchestration.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "orchestration_progress.yaml"))).toBe(false);
@@ -6150,7 +6181,7 @@ describe("Orchestrate executor (auto_safe / auto_full)", () => {
       mode: "orchestrate",
       harnesses: ["planner"],
     });
-    expect(res.status).toBe("not_converged");
+    expect(legacyOutcome(res)).toBe("not_converged");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain('"run.failed"');
     expect(events).not.toContain('"run.completed"');
@@ -6196,7 +6227,7 @@ function expectOutputReadyBeforeTerminal(runDir: string): void {
   );
   expect(terminalIdx).toBeGreaterThan(-1);
   const terminal = events[terminalIdx]!;
-  if (terminal.type === "run.failed" && terminal.payload["status"] === "cancelled") return; // cancelled runs promise no output
+  if (terminal.type === "run.failed" && terminal.payload["lifecycle"] === "cancelled") return; // cancelled runs promise no output
   const readyIdx = events.findIndex((e) => e.type === "output.ready");
   expect(readyIdx).toBeGreaterThan(-1);
   expect(readyIdx).toBeLessThan(terminalIdx);
@@ -6300,7 +6331,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       harnesses: ["crasher"],
       n: 2,
     });
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toContain("adapter exploded");
     const events = readRunEvents(res.runDir);
     const types = events.map((e) => e.type);
@@ -6401,7 +6432,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
         answers: [{ question_id: "q1", selected_labels: ["vanilla"], free_text: null }],
       }),
     });
-    expect(res.status).not.toBe("failed");
+    expect(legacyOutcome(res)).not.toBe("failed");
     expect(seen).toHaveLength(1);
     expect(JSON.stringify(seen[0])).toContain("vanilla");
     const types = readRunEvents(res.runDir).map((e) => e.type);
@@ -6460,7 +6491,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
       interactionTimeoutMs: 50,
       onInteraction: () => new Promise(() => {}), // never answers
     });
-    expect(res.status).not.toBe("failed");
+    expect(legacyOutcome(res)).not.toBe("failed");
     expect(seen).toEqual([null]);
     const types = readRunEvents(res.runDir).map((e) => e.type);
     expect(types).toContain("interaction.requested");
@@ -6776,7 +6807,7 @@ describe("durable quota projection routing (QP3)", () => {
         web: "off",
       });
 
-      expect(result.status, result.summary).toBe("success");
+      expect(legacyOutcome(result), result.summary).toBe("success");
       expect(result.candidates).toEqual([
         expect.objectContaining({ harnessId: "codex", status: "success" }),
       ]);
@@ -6836,7 +6867,7 @@ describe("durable quota projection routing (QP3)", () => {
           authPreference: "subscription",
           web: "off",
         });
-        expect(result.status).toBe("failed");
+        expect(legacyOutcome(result)).toBe("failed");
         expect(result.summary).toMatch(/no harness remains eligible.*budget and quota routing/);
         expect(result.candidates).toEqual([]);
       });
@@ -6991,7 +7022,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
       mode: "ask",
       harnesses: ["spender"],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(res.spendUsd).toBeCloseTo(0.01, 5);
   });
 
@@ -7026,7 +7057,7 @@ describe("final verify fail-closed + spend accounting (exit-gate criticals)", ()
     });
     // Steps 1+2 spend 0.02 > 0.015 -> step 3 must be skipped and the late
     // exact charge is preserved as exhausted_overshoot.
-    expect(res.status).toBe("exhausted_overshoot");
+    expect(legacyOutcome(res)).toBe("exhausted_overshoot");
     const progress = readFileSync(join(res.runDir, "final", "orchestration_progress.yaml"), "utf8");
     expect(progress).toContain("root paid budget stopped");
     expect((progress.match(/status: skipped/g) ?? []).length).toBeGreaterThanOrEqual(1);
@@ -7112,7 +7143,7 @@ describe("FinalVerifier scope (INV-115 completeness)", () => {
       attempts: 2,
       tests: [shellGate('node -e "process.exit(0)"')],
     });
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
     expect(decision).toContain("final_verify:");
     expect(decision).toContain("attempted: true");
@@ -7212,7 +7243,7 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
       tests: [shellGate("true")],
     });
 
-    expect(res.status).toBe("success");
+    expect(legacyOutcome(res)).toBe("success");
     expect(seen.get("capable")).toMatchObject({ headless: false });
     expect(seen.get("incapable")).toBeNull();
     const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
@@ -7244,7 +7275,7 @@ describe("browser preflight truth (INV-066 / P1-09)", () => {
     });
 
     expect(calls).toBe(0);
-    expect(res.status).toBe("failed");
+    expect(legacyOutcome(res)).toBe("failed");
     expect(res.summary).toMatch(/browser was requested.*manifest_unsupported/);
     expect(existsSync(join(repo, "CHANGED.txt"))).toBe(false);
     expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(

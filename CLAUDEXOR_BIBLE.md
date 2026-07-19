@@ -511,13 +511,19 @@ invariant or owner decision before proceeding.
   verify re-run to be meaningful.
   verify: FinalVerifier tests + the final_verify apply-gate consumer tests
   (locked owner decision).
-- **INV-116** Terminal run state and output readiness are separate
-  (`succeeded|blocked|failed|interrupted_unknown|cost_unverifiable|exhausted_overshoot|exhausted|not_converged|stuck_no_progress|cancelled` vs
-  `pending|finalizing|ready|diagnostic`), and every announced run reaches a
-  terminal event on every path — crash, cancel, pre-loop failure — so no
-  observer waits forever. CLI and UI show the distinction. verify: canaries
-  `[INV-116:output-ready-before-terminal]`, `[INV-116:cancel-fast]`,
-  `[INV-116:stream-watchdog]`; the whole-strategy terminal net and
+- **INV-116** CONCEPT-CHANGE(INV-116): the run's TERMINAL truth is the D8
+  independent axes — a lifecycle (`succeeded|failed|cancelled|interrupted`)
+  that says how far the PROCESS got, plus the orthogonal outcome FACTS
+  (`checks`, `review`, `noChanges`, `reason`) that say what the work amounted
+  to — and this is separate from output readiness
+  (`pending|finalizing|ready|diagnostic`). A needs-decision terminal (review
+  blocked or checks failed) is a SUCCEEDED lifecycle awaiting a human, not a
+  distinct state. Every announced run reaches a terminal event on every path —
+  crash, cancel, pre-loop failure — so no observer waits forever. CLI and UI
+  show the axes through the one projection owner (labels, exit code, needs
+  decision). verify: canaries `[INV-116:output-ready-before-terminal]`,
+  `[INV-116:cancel-fast]`, `[INV-116:stream-watchdog]`,
+  `[INV-116:blockers-visible]`; the whole-strategy terminal net and
   interrupt-stamping tests.
 
 ## 12. Keep The Codebase Small And Direct

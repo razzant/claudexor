@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { Id, ModeKind } from "./primitives.js";
-import { RunStatus } from "./decision.js";
+import { RunOutcomeFacts } from "./decision.js";
 import { PaidBudget } from "./budget.js";
 
 /**
@@ -245,9 +245,11 @@ export const OrchestratePlanProgress = z
             .describe("Risk class of the step: safe (no live-tree mutation) or risky."),
           status: OrchestrateStepStatus,
           required: z.boolean().default(true),
-          terminal_status: RunStatus.nullable()
+          terminal_facts: RunOutcomeFacts.nullable()
             .default(null)
-            .describe("Actual child/delivery terminal used by the parent outcome reducer."),
+            .describe(
+              "Actual child/delivery terminal outcome axes (D8) used by the parent outcome reducer.",
+            ),
           terminal_source: OrchestrateTerminalSource.nullable()
             .default(null)
             .describe("Authority that produced terminal_status."),

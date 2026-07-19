@@ -59,22 +59,9 @@ describe("resolveDecisionBody", () => {
   });
 });
 
-describe("exitCodeForState", () => {
-  it("treats success-shaped terminals as exit 0 and everything else as 1", () => {
-    for (const ok of ["succeeded", "no_op"]) expect(exitCodeForState(ok)).toBe(0);
-    for (const bad of [
-      "ungated",
-      "review_not_run",
-      "blocked",
-      "failed",
-      "cancelled",
-      "interrupted_unknown",
-      "cost_unverifiable",
-      "exhausted_overshoot",
-      "exhausted",
-      "not_converged",
-      "stuck_no_progress",
-    ])
-      expect(exitCodeForState(bad)).toBe(1);
+describe("exitCodeForState (D8: the lifecycle IS the exit code)", () => {
+  it("treats a succeeded lifecycle as exit 0 and every other lifecycle as 1", () => {
+    expect(exitCodeForState("succeeded")).toBe(0);
+    for (const bad of ["failed", "cancelled", "interrupted"]) expect(exitCodeForState(bad)).toBe(1);
   });
 });

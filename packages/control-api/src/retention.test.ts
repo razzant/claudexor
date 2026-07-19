@@ -36,13 +36,17 @@ function sandbox(): { project: RetentionProject; root: string } {
 function seedRun(
   runsDir: string,
   runId: string,
-  opts: { terminal?: boolean; workProduct?: string } = {},
+  opts: { terminal?: boolean; workProduct?: string; decision?: string } = {},
 ): string {
   const dir = join(runsDir, runId);
   mkdirSync(join(dir, "final"), { recursive: true });
   writeFileSync(join(dir, "attempt.log"), "x".repeat(1024));
   if (opts.terminal !== false) writeFileSync(join(dir, "final", "summary.md"), "# done\n");
   if (opts.workProduct) writeFileSync(join(dir, "final", "work_product.yaml"), opts.workProduct);
+  if (opts.decision) {
+    mkdirSync(join(dir, "arbitration"), { recursive: true });
+    writeFileSync(join(dir, "arbitration", "decision.yaml"), opts.decision);
+  }
   return dir;
 }
 
@@ -125,7 +129,12 @@ describe("runRetentionPass", () => {
     const { project } = sandbox();
     seedRun(project.runsDir, "run-running");
     seedRun(project.runsDir, "run-referenced");
-    seedRun(project.runsDir, "run-blocked");
+    // D8: a needs-decision run is a succeeded lifecycle whose decision.facts
+    // carry review=blocked — retention keeps it actionable via the facts.
+    seedRun(project.runsDir, "run-blocked", {
+      decision:
+        "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\n",
+    });
     seedRun(project.runsDir, "run-applyable", {
       workProduct: "meta:\n  result_kind: patch\n  apply_state: not_applied\n",
     });
@@ -143,7 +152,7 @@ describe("runRetentionPass", () => {
         records: () => [
           { runId: "run-running", state: "running" },
           { runId: "run-referenced", state: "succeeded", finishedAt: daysAgo(90) },
-          { runId: "run-blocked", state: "blocked", finishedAt: daysAgo(90) },
+          { runId: "run-blocked", state: "succeeded", finishedAt: daysAgo(90) },
           { runId: "run-applyable", state: "succeeded", finishedAt: daysAgo(90) },
           { runId: "run-convergence-patch", state: "succeeded", finishedAt: daysAgo(90) },
         ],

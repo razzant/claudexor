@@ -16,6 +16,7 @@ import {
   ControlGcRequest,
   type GcKeepCounts,
   type GcRunDeletion,
+  isTerminalLifecycle,
 } from "@claudexor/schema";
 import { readTextSafe, writeText } from "@claudexor/util";
 
@@ -62,20 +63,8 @@ const TOMBSTONE = "tombstone.yaml";
  * the "fail closed on unknown state" contract this service owes. Anything not
  * named here — live, unknown, or future — keeps its tree.
  */
-const TERMINAL_STATES = new Set([
-  "succeeded",
-  "no_op",
-  "ungated",
-  "review_not_run",
-  "failed",
-  "cancelled",
-  "interrupted_unknown",
-  "cost_unverifiable",
-  "exhausted_overshoot",
-  "exhausted",
-  "not_converged",
-  "stuck_no_progress",
-]);
+// Terminal set = the ONE projection-owned lifecycle terminals (D8). A
+// non-terminal (queued/running) or unrecognized state protects its tree.
 
 export async function runRetentionPass(
   policy: RetentionPolicy,
@@ -116,9 +105,10 @@ export async function runRetentionPass(
       examined += 1;
       const record = recordsById.get(runId);
       // A record that does not PROVE terminality protects its tree: live
-      // states, and anything this engine does not recognize as finished.
-      // `blocked` is terminal-but-actionable and keeps its own reason below.
-      if (record && record.state !== "blocked" && !TERMINAL_STATES.has(record.state)) {
+      // (queued/running) states, and anything this engine does not recognize
+      // as a finished lifecycle. Needs-decision runs have a SUCCEEDED (thus
+      // terminal) lifecycle and are kept by the actionable check below.
+      if (record && !isTerminalLifecycle(record.state)) {
         kept.active += 1;
         continue;
       }
@@ -126,11 +116,11 @@ export async function runRetentionPass(
         kept.referenced += 1;
         continue;
       }
-      // Blocked runs stay operator-visible; an undelivered/applyable patch
-      // (or a review-blocked delivery) is work the operator may still act
-      // on. The decision RECORDS themselves are journal-durable and survive
-      // independently of the tree.
-      if (record?.state === "blocked" || hasActionableWorkProduct(root)) {
+      // Needs-decision runs stay operator-visible; an undelivered/applyable
+      // patch (or a review-blocked / checks-failed delivery) is work the
+      // operator may still act on. The decision RECORDS themselves are
+      // journal-durable and survive independently of the tree.
+      if (hasActionableWorkProduct(root)) {
         kept.actionable += 1;
         continue;
       }
@@ -331,14 +321,37 @@ function listSubdirs(dir: string): string[] {
 }
 
 function hasTerminalEvidence(runRoot: string): boolean {
+  // Terminality is proven by TYPED terminal artifacts (D8/V8): the arbitration
+  // decision (carries facts), the typed failure record, or the work product —
+  // never the diagnostic summary.md (its authority role was retired).
   return (
-    existsSync(join(runRoot, "final", "summary.md")) ||
+    existsSync(join(runRoot, "arbitration", "decision.yaml")) ||
     existsSync(join(runRoot, "final", "failure.yaml")) ||
     existsSync(join(runRoot, "final", "work_product.yaml"))
   );
 }
 
+/** True when the run's tree is still the operator's to act on (D8): an
+ * undelivered/applyable patch, OR a needs-decision terminal (decision.facts
+ * review blocked / checks failed) with a work product present. */
 function hasActionableWorkProduct(runRoot: string): boolean {
+  // Needs-decision keep: a succeeded terminal whose review is blocked or checks
+  // failed is actionable regardless of apply state.
+  const decisionText = readTextSafe(join(runRoot, "arbitration", "decision.yaml"));
+  if (decisionText !== null) {
+    try {
+      const facts = ((yamlParse(decisionText) ?? {}) as { facts?: Record<string, unknown> }).facts;
+      if (
+        facts &&
+        facts["lifecycle"] === "succeeded" &&
+        (facts["review"] === "blocked" || facts["checks"] === "failed")
+      ) {
+        return true;
+      }
+    } catch {
+      return true; // unreadable decision: fail closed, keep the tree
+    }
+  }
   const text = readTextSafe(join(runRoot, "final", "work_product.yaml"));
   if (text === null) return false;
   try {
@@ -349,10 +362,19 @@ function hasActionableWorkProduct(runRoot: string): boolean {
     // deleting its unapplied tree would destroy actionable work.
     if (doc.kind !== "patch" && doc.kind !== "new_repo" && meta["result_kind"] !== "patch")
       return false;
-    const applyState = meta["apply_state"];
-    // Same value set controlRunResult projects: an undelivered patch or a
-    // review-blocked delivery is still the operator's to act on; applied and
-    // reverted patches have completed their lifecycle.
+    // Delivery/apply state is the mutable overlay (final/delivery_state.yaml);
+    // fall back to the immutable work_product snapshot. An undelivered patch is
+    // still the operator's to act on; applied and reverted have completed.
+    const deliveryText = readTextSafe(join(runRoot, "final", "delivery_state.yaml"));
+    let applyState: unknown = meta["apply_state"];
+    if (deliveryText !== null) {
+      try {
+        applyState =
+          ((yamlParse(deliveryText) ?? {}) as { applyState?: unknown }).applyState ?? applyState;
+      } catch {
+        return true;
+      }
+    }
     return applyState !== "applied" && applyState !== "reverted";
   } catch {
     return true; // unreadable work product: fail closed, keep the tree

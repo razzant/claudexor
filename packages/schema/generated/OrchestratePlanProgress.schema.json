@@ -50,32 +50,85 @@
                 "type": "boolean",
                 "default": true
               },
-              "terminal_status": {
+              "terminal_facts": {
                 "anyOf": [
                   {
-                    "type": "string",
-                    "enum": [
-                      "success",
-                      "no_op",
-                      "ungated",
-                      "review_not_run",
-                      "blocked",
-                      "failed",
-                      "interrupted_unknown",
-                      "cost_unverifiable",
-                      "exhausted_overshoot",
-                      "exhausted",
-                      "not_converged",
-                      "stuck_no_progress",
-                      "cancelled"
+                    "type": "object",
+                    "properties": {
+                      "lifecycle": {
+                        "type": "string",
+                        "enum": [
+                          "succeeded",
+                          "failed",
+                          "cancelled",
+                          "interrupted"
+                        ],
+                        "description": "Terminal lifecycle of the run."
+                      },
+                      "noChanges": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "True when the run finished without changing any files (the ex no_op fact)."
+                      },
+                      "checks": {
+                        "type": "string",
+                        "enum": [
+                          "passed",
+                          "failed",
+                          "not_configured"
+                        ],
+                        "description": "Deterministic checks axis: configured project checks passed, failed, or none are configured (a named state, never a stand-in for review results).",
+                        "default": "not_configured"
+                      },
+                      "review": {
+                        "type": "string",
+                        "enum": [
+                          "approved",
+                          "blocked",
+                          "not_run"
+                        ],
+                        "description": "Review axis: approved (clean cross-family verified review), blocked (open accepted findings), or not_run.",
+                        "default": "not_run"
+                      },
+                      "reason": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "harness_failed",
+                              "no_changes",
+                              "review_blocked",
+                              "checks_failed",
+                              "budget_exhausted",
+                              "budget_overshoot",
+                              "cost_unverifiable",
+                              "not_converged",
+                              "stuck_no_progress",
+                              "wall_clock_exceeded",
+                              "user_cancelled",
+                              "crash_interrupted"
+                            ],
+                            "description": "Typed reason qualifying a non-clean terminal; null on a clean success."
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Typed reason qualifying a non-clean terminal; null on a clean success.",
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "lifecycle"
                     ],
-                    "description": "Terminal status of a run, including truthful blocked, interrupted-unknown, cost-unverifiable, overshoot, exhaustion, non-convergence, failure, and cancellation outcomes."
+                    "additionalProperties": false,
+                    "description": "Independent terminal outcome axes of a run (D8/D18)."
                   },
                   {
                     "type": "null"
                   }
                 ],
-                "description": "Actual child/delivery terminal used by the parent outcome reducer.",
+                "description": "Actual child/delivery terminal outcome axes (D8) used by the parent outcome reducer.",
                 "default": null
               },
               "terminal_source": {

@@ -13,7 +13,7 @@
             "string",
             "null"
           ],
-          "description": "The gate's state classification (e.g. blocked | ungated | review_not_run | no_op | ok) when known."
+          "description": "The gate's apply-eligibility classification (e.g. needs_review | not_verified | no_changes | ok) when known."
         },
         "reason": {
           "type": [

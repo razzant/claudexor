@@ -19,6 +19,7 @@ import {
   processExitCodeForRunStatus,
   type ControlApiAddress,
 } from "./live.js";
+import { TERMINAL_LIFECYCLES, type RunOutcomeFacts } from "@claudexor/schema";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -151,21 +152,9 @@ export async function waitForDaemonReady(
   }
 }
 
-const TERMINAL_STATES = new Set([
-  "succeeded",
-  "no_op",
-  "ungated",
-  "review_not_run",
-  "blocked",
-  "failed",
-  "cancelled",
-  "interrupted_unknown",
-  "cost_unverifiable",
-  "exhausted_overshoot",
-  "exhausted",
-  "not_converged",
-  "stuck_no_progress",
-]);
+// The daemon job state IS the run lifecycle (D8): the terminal set is the ONE
+// projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.
+const TERMINAL_STATES: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
 export interface DaemonRunOutcome {
   runId: string;
@@ -325,14 +314,11 @@ async function ensureRunProject(
   }
 }
 
-/** Daemon job state -> CLI exit code (success terminals are 0; everything else 1). */
+/** Daemon job state (= run lifecycle, D8) -> CLI exit code via the ONE
+ * projection owner: a succeeded lifecycle is 0 (a "Done · needs review" run
+ * included); everything else is 1. */
 export function exitCodeForState(state: string): number {
   return processExitCodeForRunStatus(state);
-}
-
-/** Keep internal command-state spelling out of the public run-result envelope. */
-export function runStatusForCli(state: string): string {
-  return state === "succeeded" ? "success" : state;
 }
 
 /**
@@ -391,20 +377,27 @@ export async function fetchApplyEligibility(
 }
 
 /**
- * Machine-readable reason for a non-success DAEMON terminal (P2). `blocked` is a
- * needs-human terminal that carries no `error`, so surface the actionable decision
- * hint (mirrors text mode); other non-success terminals use the error or a state
- * label. Success terminals return undefined (no `summary` key emitted).
+ * Machine-readable reason for a non-clean DAEMON terminal (P2, D8). A
+ * needs-decision run (review blocked / checks failed) has a SUCCEEDED lifecycle
+ * and no `error`, so key the actionable decision hint on the run FACTS, not on
+ * the lifecycle; other non-succeeded lifecycles use the error or a reason
+ * label. A clean succeeded run returns undefined (no `summary` key emitted).
  */
 export function daemonOutcomeSummary(out: {
   runId: string;
   status: string;
   error?: string;
+  outcomeFacts?: RunOutcomeFacts | null;
 }): string | undefined {
+  const facts = out.outcomeFacts ?? null;
+  const needsDecision =
+    !!facts &&
+    facts.lifecycle === "succeeded" &&
+    (facts.review === "blocked" || facts.checks === "failed");
+  if (needsDecision) {
+    return `run needs a human decision — claudexor decision ${out.runId} --accept-risk | --rerun --feedback "..."`;
+  }
   if (out.error) return out.error;
   if (exitCodeForState(out.status) === 0) return undefined;
-  if (out.status === "blocked") {
-    return `run blocked: needs a human decision — claudexor decision ${out.runId} --accept-risk | --rerun --feedback "..."`;
-  }
-  return `run ${out.status}`;
+  return `run ${out.status}${facts?.reason ? ` (${facts.reason})` : ""}`;
 }

@@ -23,13 +23,11 @@ export function primaryOutputCandidatesForCli(mode?: ModeKind): CliPrimaryOutput
     : mode === "plan"
       ? [{ kind: "plan", path: "final/plan.md" }]
       : mode === "orchestrate"
-        ? [
-            { kind: "report", path: "final/orchestration.md" },
-            { kind: "summary", path: "final/summary.md" },
-          ]
+        ? // summary.md lost its primary-output authority (V8/PLAN addendum 2);
+          // it stays a diagnostic Evidence artifact only.
+          [{ kind: "report", path: "final/orchestration.md" }]
         : [
             { kind: "answer", path: "final/answer.md" },
-            { kind: "summary", path: "final/summary.md" },
             { kind: "patch", path: "final/patch.diff" },
           ];
 }

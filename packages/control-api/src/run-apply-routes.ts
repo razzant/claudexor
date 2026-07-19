@@ -63,16 +63,13 @@ export async function runIdempotentDelivery<T>(
     }
     throw Object.assign(
       new Error(
-        command.state === "interrupted_unknown"
+        command.state === "interrupted"
           ? "delivery outcome is unknown after daemon restart; inspect before retrying"
           : "delivery with this Idempotency-Key is already in progress",
       ),
       {
         status: 409,
-        code:
-          command.state === "interrupted_unknown"
-            ? "delivery_interrupted_unknown"
-            : "delivery_in_progress",
+        code: command.state === "interrupted" ? "delivery_interrupted" : "delivery_in_progress",
       },
     );
   }
@@ -87,7 +84,7 @@ export async function runIdempotentDelivery<T>(
     await complete(command.id, result);
   } catch (error) {
     // The target may already be mutated. Keep the command non-terminal so
-    // restart recovery reports interrupted_unknown and no caller re-applies it.
+    // restart recovery reports interrupted and no caller re-applies it.
     throw Object.assign(
       new Error("delivery completed but its durable receipt could not be saved"),
       {
@@ -120,8 +117,8 @@ export interface RunApplyRouteContext {
   gateSpecs(record: DaemonRunRecord): NonNullable<Parameters<typeof verifyAndDeliver>[3]>;
   chainMutation<T>(record: DaemonRunRecord, work: () => Promise<T>): Promise<T>;
   appendAudit(record: DaemonRunRecord, type: string, payload: Record<string, unknown>): void;
-  /** Persist apply_state=applied on the run's work product after a delivery
-   * reports applied=true (round-15 #2) — idempotent, best-effort. */
+  /** Persist applyState=applied on the run's delivery-state artifact after a
+   * delivery reports applied=true (round-15 #2) — idempotent, best-effort. */
   markApplied(record: DaemonRunRecord): void;
 }
 

@@ -4,15 +4,20 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { daemonDir, readToken } from "@claudexor/daemon";
 import type { InteractionAnswerSet, InteractionQuestion } from "@claudexor/schema";
-import { InteractionQuestion as InteractionQuestionSchema } from "@claudexor/schema";
+import {
+  InteractionQuestion as InteractionQuestionSchema,
+  processExitCode,
+} from "@claudexor/schema";
 
 const print = (s: string): void => {
   process.stdout.write(s + "\n");
 };
 
-/** One CLI process-status policy for direct runs and streamed terminals. */
+/** One CLI process-status policy for direct runs and streamed terminals — a
+ * thin re-export of the ONE projection owner (D8): the lifecycle IS the exit
+ * code (succeeded => 0; a "Done · needs review" run also exits 0). */
 export function processExitCodeForRunStatus(state: unknown): number {
-  return state === "success" || state === "succeeded" || state === "no_op" ? 0 : 1;
+  return processExitCode(typeof state === "string" ? state : "failed");
 }
 
 /**
@@ -68,7 +73,7 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
     case "budget.observation":
       return typeof p["usd"] === "number" ? `spend +$${(p["usd"] as number).toFixed(4)}` : null;
     case "run.completed":
-      return `run completed: ${String(p["status"] ?? "success")}`;
+      return `run completed: ${String(p["lifecycle"] ?? "succeeded")}`;
     case "run.failed":
       return `run failed: ${truncate(String(p["error"] ?? p["status"] ?? "failed"), 200)}`;
     case "run.blocked":
@@ -311,13 +316,12 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
       if (line) print(line);
     }
     const type = String(ev["type"] ?? "");
-    if (type === "run.completed" || type === "run.failed" || type === "run.blocked")
+    if (type === "run.completed" || type === "run.failed" || type === "run.blocked") {
       sawTerminal = true;
-    if (type === "run.completed") {
+      // The lifecycle IS the exit code (D8): run.blocked fires on a SUCCEEDED
+      // lifecycle (needs review) and therefore exits 0 — "Done · needs review".
       const payload = (ev["payload"] ?? {}) as Record<string, unknown>;
-      exitCode = processExitCodeForRunStatus(payload["status"]);
-    } else if (type === "run.failed" || type === "run.blocked") {
-      exitCode = 1;
+      exitCode = processExitCodeForRunStatus(payload["lifecycle"]);
     }
     if (type === "interaction.requested" && !json) {
       await answerInteractionFromTty(addr, runId, ev);

@@ -39,36 +39,46 @@ export interface ApplyGateInput {
 }
 
 /**
- * Honest, state-specific guidance for why a run is not applyable and what
- * actually unblocks it. The operator risk override (accept_risk /
- * override_needs_human) unblocks ONLY a `blocked` run (CLAUDEXOR_BIBLE §11) — so
- * never point an operator at a decision the daemon will refuse for this state
- * (a fixed contradiction: apply used to suggest accept_risk for ungated runs).
+ * Honest, axes-specific guidance for why a run is not applyable and what
+ * actually unblocks it (D8). The operator risk override (accept_risk /
+ * override_needs_human) unblocks ONLY a needs-decision run — review blocked or
+ * checks failed (CLAUDEXOR_BIBLE §11) — so never point an operator at a
+ * decision the daemon will refuse (a not-verified run needs a gate/review, not
+ * a risk override). Keyed on the decision facts when present.
  */
-function applyHint(state: string): string {
-  switch (state) {
-    case "blocked":
+function applyHint(decision: DecisionRecord | null, lifecycle: string | null): string {
+  const facts = decision?.facts ?? null;
+  if (facts) {
+    if (facts.review === "blocked" || facts.checks === "failed") {
       return "an operator accept_risk/override_needs_human decision (POST /runs/:id/decision) can unblock apply for this patch";
-    case "ungated":
-    case "review_not_run":
-      return "not verified-applyable — add a --test gate or obtain a clean cross-family review, then re-run (risk overrides apply only to blocked runs)";
-    case "no_op":
-      return "the run made no changes; nothing to apply";
-    default:
-      return "re-run to reach a successful, verified outcome";
+    }
+    if (facts.review === "not_run" || facts.checks === "not_configured") {
+      return "not verified-applyable — add a --test check or obtain a clean cross-family review, then re-run (risk overrides apply only to review-blocked/checks-failed runs)";
+    }
+    if (facts.noChanges) return "the run made no changes; nothing to apply";
   }
+  if (lifecycle && lifecycle !== "succeeded") {
+    return "re-run to reach a succeeded, verified outcome";
+  }
+  return "re-run to reach a succeeded, verified outcome";
+}
+
+/** A terminal is a needs-decision block (accepted review blockers or failed
+ * checks) when its axes say so — the axes replacement for state==="blocked". */
+function isNeedsDecision(decision: DecisionRecord | null): boolean {
+  const facts = decision?.facts;
+  return !!facts && (facts.review === "blocked" || facts.checks === "failed");
 }
 
 export function validateApplyGate(input: ApplyGateInput): string | null {
-  // An operator risk override is meaningful ONLY on a BLOCKED run (INV-111,
-  // Bible §11): the decision endpoint records decisions exclusively for
-  // blocked runs, so a succeeded-state override is an unreachable combination
-  // this gate must not honor either. Blocked evidence: the caller-known run
-  // state, or — on the artifact-only CLI path where live state is unknown —
-  // the persisted decision verdict (the orchestrator overrides decision.yaml
-  // to `blocked` whenever the run terminal is blocked).
-  const blockedEvidence =
-    input.state === "blocked" || (input.state == null && input.decision?.status === "blocked");
+  // An operator risk override is meaningful ONLY on a needs-decision run —
+  // review blocked or checks failed (INV-111, Bible §11): the decision
+  // endpoint records decisions exclusively for such runs, so any other
+  // combination this gate must not honor either. Evidence lives on the
+  // persisted decision facts (the orchestrator stamps review=blocked /
+  // checks=failed whenever the run terminal is a needs-decision block).
+  const facts = input.decision?.facts ?? null;
+  const blockedEvidence = isNeedsDecision(input.decision);
   const override =
     blockedEvidence &&
     input.operatorDecision &&
@@ -77,11 +87,15 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     typeof input.operatorDecision.patch_sha256 === "string" &&
     input.operatorDecision.patch_sha256 === sha256(input.patch);
   if (input.state && input.state !== "succeeded" && !override) {
-    return `run is not applyable while state is ${input.state}; ${applyHint(input.state)}`;
+    return `run is not applyable while lifecycle is ${input.state}; ${applyHint(input.decision, input.state)}`;
   }
   if (!input.decision) return "decision record is required before apply";
-  if (input.decision.status !== "success" && !override) {
-    return `decision status is ${input.decision.status}; refusing apply (${applyHint(input.decision.status)})`;
+  // Apply requires a succeeded lifecycle with an APPROVED review and checks
+  // not failed (INV-112 verification-basis rules unchanged).
+  const applyable =
+    facts?.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
+  if (!applyable && !override) {
+    return `decision is not applyable (lifecycle=${facts?.lifecycle ?? "unknown"}, review=${facts?.review ?? "unknown"}, checks=${facts?.checks ?? "unknown"}); refusing apply (${applyHint(input.decision, input.state ?? null)})`;
   }
   // FinalVerifier consumer (INV-115): a patch that FAILED to apply onto a
   // fresh tree at its own base is factually undeliverable — no operator
@@ -136,7 +150,18 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
  */
 export function deriveApplyEligibility(input: ApplyGateInput): ApplyEligibility {
   const reason = validateApplyGate(input);
-  const state = input.state ?? input.decision?.status ?? null;
+  // The eligibility `state` is a coarse apply classification (not a run state):
+  // ok / needs_review / not_verified / no_changes, projected from the axes.
+  const facts = input.decision?.facts ?? null;
+  const state = !facts
+    ? (input.state ?? null)
+    : facts.review === "blocked" || facts.checks === "failed"
+      ? "needs_review"
+      : facts.review === "not_run" || facts.checks === "not_configured"
+        ? "not_verified"
+        : facts.noChanges
+          ? "no_changes"
+          : "ok";
   if (reason === null) {
     return { eligible: true, state, reason: null, requiredAction: null };
   }
@@ -144,7 +169,7 @@ export function deriveApplyEligibility(input: ApplyGateInput): ApplyEligibility 
     eligible: false,
     state,
     reason,
-    requiredAction: applyHint(state ?? ""),
+    requiredAction: applyHint(input.decision, input.state ?? null),
   };
 }
 

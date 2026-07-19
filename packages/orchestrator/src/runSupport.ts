@@ -10,11 +10,13 @@ import type {
   ReviewFinding,
   DecisionRecord,
   FinalVerifyRecord,
-  RunStatus,
+  RunOutcomeFacts,
 } from "@claudexor/schema";
 import {
   FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
+  makeOutcomeFacts,
+  runOutcomeLabel,
 } from "@claudexor/schema";
 import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
@@ -27,11 +29,12 @@ import { join } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { blockedDecisionOverride } from "@claudexor/delivery";
 
-/** Typed terminal evidence for a fresh-verified race whose live delivery was refused. */
+/** Typed terminal evidence for a fresh-verified race whose live delivery was
+ * refused (D8): the process succeeded but the deterministic delivery gate
+ * refused — checks=failed, a needs-decision block that fires run.blocked. */
 export function deliveryRefusalDecisionFields(evidenceFacts: string[], reason: string) {
   return {
-    status: "blocked" as const,
-    outcome: "blocked" as const,
+    facts: makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" }),
     apply_recommendation: "inspect" as const,
     evidence_facts: [...evidenceFacts, `delivery refused: ${redactSecrets(reason)}`],
   };
@@ -56,20 +59,21 @@ export function writeRaceDeliveryDecision(
   path: string,
   input: {
     decision: DecisionRecord;
-    status: RunStatus;
+    facts: RunOutcomeFacts;
     reviewVerified: boolean;
     finalVerify: FinalVerifyRecord | null;
     deliveryFailureReason: string | null;
     deliveryReceiptPath: string | null;
   },
 ): void {
+  const needsDecision = input.facts.review === "blocked" || input.facts.checks === "failed";
   store.writeYaml(path, {
     ...input.decision,
     ...(input.deliveryFailureReason
       ? deliveryRefusalDecisionFields(input.decision.evidence_facts, input.deliveryFailureReason)
-      : input.status === "blocked"
+      : needsDecision
         ? blockedDecisionOverride(input.decision.evidence_facts, input.finalVerify)
-        : {}),
+        : { facts: input.facts }),
     review_verified: input.reviewVerified,
     final_verify: input.finalVerify,
     ...(input.deliveryReceiptPath ? { delivery_receipt: input.deliveryReceiptPath } : {}),
@@ -241,8 +245,7 @@ export function renderSummary(
   mode: ModeKind,
   decision: {
     winner: string | null;
-    status: string;
-    outcome?: string;
+    facts: RunOutcomeFacts;
     why_winner: string;
     apply_recommendation: string;
   },
@@ -254,8 +257,9 @@ export function renderSummary(
     [
       `# Run ${runId} (${mode})`,
       "",
-      `- Status: ${decision.status}`,
-      `- Outcome: ${decision.outcome ?? "unknown"}`,
+      `- Lifecycle: ${decision.facts.lifecycle}`,
+      `- Outcome: ${runOutcomeLabel(decision.facts)}`,
+      `- Checks: ${decision.facts.checks} · Review: ${decision.facts.review}${decision.facts.reason ? ` · Reason: ${decision.facts.reason}` : ""}`,
       `- Winner: ${decision.winner ?? "none"}`,
       `- Apply: ${decision.apply_recommendation}`,
       `- Review verified (cross-family): ${reviewVerified}`,

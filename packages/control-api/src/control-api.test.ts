@@ -221,7 +221,7 @@ describe("DaemonControlApiServer", () => {
     );
     writeFileSync(
       join(runDir, "arbitration", "decision.yaml"),
-      "winner: a01\nstatus: success\noutcome: ready\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: approved\n  checks: passed\n  noChanges: false\n  reason: null\nverification_basis: both\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
     );
     writeFileSync(
       join(runDir, "final", "telemetry.yaml"),
@@ -3944,9 +3944,15 @@ describe("DaemonControlApiServer", () => {
           "",
         ].join("\n"),
       );
+      // D8: a "blocked" seed is a succeeded lifecycle with review=blocked (a
+      // needs-decision terminal); a "success" seed is succeeded + review approved.
+      const factsYaml =
+        status === "success"
+          ? "  lifecycle: succeeded\n  review: approved\n  checks: passed\n  noChanges: false\n  reason: null\n"
+          : "  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\n";
       writeFileSync(
         join(runDir, "arbitration", "decision.yaml"),
-        `winner: a01\nstatus: ${status}\noutcome: ${status === "success" ? "ready" : "blocked"}\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n`,
+        `winner: a01\nfacts:\n${factsYaml}final_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n`,
       );
     };
     seedRun(blockedRunDir, "blocked");
@@ -4354,13 +4360,14 @@ describe("DaemonControlApiServer", () => {
           });
           expect(response.status).toBe(200);
           expect(readFileSync(join(project, "x"), "utf8")).toBe("new\n");
-          // Round-15 #2 pin: a successful apply durably flips the work
-          // product's apply_state, so retention stops classifying the
-          // delivered patch as actionable (and Revert becomes offerable).
-          const wp = parseYaml(
-            readFileSync(join(record.runDir as string, "final", "work_product.yaml"), "utf8"),
-          ) as { meta?: { apply_state?: string } };
-          expect(wp.meta?.apply_state).toBe("applied");
+          // Round-15 #2 pin (D8/V8): a successful apply durably flips the
+          // MUTABLE delivery state (final/delivery_state.yaml), so retention
+          // stops classifying the delivered patch as actionable (and Revert
+          // becomes offerable). work_product.yaml stays immutable.
+          const ds = parseYaml(
+            readFileSync(join(record.runDir as string, "final", "delivery_state.yaml"), "utf8"),
+          ) as { applyState?: string };
+          expect(ds.applyState).toBe("applied");
         },
         undefined,
         inMemoryDeliveryServices(),
@@ -5056,8 +5063,9 @@ describe("DaemonControlApiServer", () => {
       expect(body.summary.requestRequirements).toEqual([
         expect.objectContaining({ harness_id: "codex", effective: true, reason: "effective" }),
       ]);
-      expect(body.primaryOutput?.kind).toBe("summary");
-      expect(body.primaryOutput?.text).toContain("Done");
+      // summary.md lost its primary-output authority (V8/PLAN addendum 2); the
+      // patch is now the primary output for this write run.
+      expect(body.primaryOutput?.kind).toBe("patch");
       expect(body.timeline.some((e) => e.type === "harness.event" && e.harnessId === "codex")).toBe(
         true,
       );
@@ -5298,9 +5306,9 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("refuses apply for non-successful runs even when a patch exists", async () => {
+  it("refuses apply for a non-succeeded lifecycle even when a patch exists", async () => {
     const { daemon, record } = fakeDaemon();
-    record.state = "not_converged";
+    record.state = "failed";
     await withDaemonServer(daemon, async (base) => {
       const apply = await apiFetch(`${base}/runs/run-d1/apply/check`, {
         method: "POST",
@@ -5308,13 +5316,17 @@ describe("DaemonControlApiServer", () => {
         body: "{}",
       });
       expect(apply.status).toBe(409);
-      expect(await apply.text()).toContain("not_converged");
+      expect(await apply.text()).toContain("failed");
     });
   });
 
   it("operator decision unblocks a blocked run for apply (accept_risk), scoped to the exact patch", async () => {
     const { daemon, record } = fakeDaemon();
-    record.state = "blocked";
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
     await withDaemonServer(daemon, async (base) => {
       // Blocked: apply/check refuses before any operator decision.
       const before = await apiFetch(`${base}/runs/run-d1/apply/check`, {
@@ -5368,7 +5380,11 @@ describe("DaemonControlApiServer", () => {
 
   it("post-terminal audit appends keep the seq cursor strictly monotonic (SSE resume safety)", async () => {
     const { daemon, record } = fakeDaemon();
-    record.state = "blocked";
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
     await withDaemonServer(daemon, async (base) => {
       const before = (await (
         await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
@@ -5392,7 +5408,11 @@ describe("DaemonControlApiServer", () => {
 
   it("rerun_with_feedback enqueues a follow-up run carrying the operator feedback", async () => {
     const { daemon, record } = fakeDaemon();
-    record.state = "blocked";
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
     let enqueued: Record<string, unknown> | undefined;
     const wrapped: DaemonFacadeClient = {
       ...daemon,

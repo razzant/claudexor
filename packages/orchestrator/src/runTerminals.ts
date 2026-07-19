@@ -9,6 +9,7 @@
  */
 import { join } from "node:path";
 import type { ModeKind } from "@claudexor/schema";
+import { makeOutcomeFacts } from "@claudexor/schema";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
 import { redactSecrets } from "@claudexor/util";
@@ -104,7 +105,7 @@ export function cancelledResult(
     try {
       store.writeText(
         join(runDir, "final", "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: cancelled\n${cancelReason ? `- Reason: ${cancelReason}\n` : ""}\n${summaryText}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: cancelled\n${cancelReason ? `- Reason: ${cancelReason}\n` : ""}\n${summaryText}\n`,
       );
       summaryWritten = true;
     } catch {
@@ -117,15 +118,21 @@ export function cancelledResult(
   if (summaryWritten) {
     log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
   }
+  const cancelFacts = makeOutcomeFacts("cancelled", {
+    reason: cancelReason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+  });
   log.emit("run.failed", {
-    status: "cancelled",
-    ...(cancelReason ? { reason: cancelReason } : {}),
+    lifecycle: "cancelled",
+    facts: cancelFacts,
+    reason: cancelFacts.reason,
+    ...(cancelReason ? { cancel_reason: cancelReason } : {}),
   });
   return {
     runId,
     taskId,
     mode,
-    status: "cancelled",
+    lifecycle: "cancelled",
+    facts: cancelFacts,
     winner: null,
     runDir,
     summary: summaryText,
@@ -152,9 +159,10 @@ export function failTerminally(
   spendUsd?: number | null,
 ): OrchestratorResult {
   const message = redactSecrets(err instanceof Error ? err.message : String(err));
+  const failFacts = makeOutcomeFacts("failed", { reason: "harness_failed" });
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: ${phase}\n\n${message}\n`,
+    `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: ${phase}\n\n${message}\n`,
   );
   writeFailure(store, paths, {
     phase,
@@ -165,7 +173,9 @@ export function failTerminally(
   });
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
   log.emit("run.failed", {
-    status: "failed",
+    lifecycle: "failed",
+    facts: failFacts,
+    reason: failFacts.reason,
     phase,
     error: message,
     failure_ref: "final/failure.yaml",
@@ -174,7 +184,8 @@ export function failTerminally(
     runId,
     taskId,
     mode,
-    status: "failed",
+    lifecycle: "failed",
+    facts: failFacts,
     winner: null,
     runDir: paths.root,
     summary: message,

@@ -155,16 +155,18 @@ describe("AcpServer official SDK projection", () => {
     });
   });
 
-  it("maps blocked daemon outcomes to refusal instead of a false normal end_turn", async () => {
+  it("maps a FAILED daemon lifecycle to refusal instead of a false normal end_turn", async () => {
+    // D8: a needs-review run has a SUCCEEDED lifecycle and ends end_turn (the
+    // process completed); only failed/interrupted lifecycles are a refusal.
     const cwd = project();
     await withClient(
       async (params) =>
         params.mode === "__acp_session_new"
           ? { sessionId: "thread-blocked", cwd }
           : {
-              runId: "run-blocked",
-              status: "blocked",
-              summary: "human decision required",
+              runId: "run-failed",
+              status: "failed",
+              summary: "harness failed",
               applyEligibility: { eligible: false, requiredAction: "accept_risk" },
             },
       async (agent) => {
@@ -174,7 +176,7 @@ describe("AcpServer official SDK projection", () => {
           prompt: [{ type: "text", text: "go" }],
         });
         expect(response.stopReason).toBe("refusal");
-        expect(response._meta?.["claudexor"]).toMatchObject({ status: "blocked" });
+        expect(response._meta?.["claudexor"]).toMatchObject({ status: "failed" });
       },
     );
   });

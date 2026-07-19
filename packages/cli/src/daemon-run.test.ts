@@ -1,40 +1,37 @@
 import { describe, expect, it } from "vitest";
-import { daemonOutcomeSummary, exitCodeForState, runStatusForCli } from "./daemon-run.js";
+import { daemonOutcomeSummary, exitCodeForState } from "./daemon-run.js";
+import { makeOutcomeFacts } from "@claudexor/schema";
 
-describe("exitCodeForState", () => {
-  it("maps success terminals to 0 and everything else to 1", () => {
-    for (const ok of ["succeeded", "no_op"]) expect(exitCodeForState(ok)).toBe(0);
-    for (const bad of [
-      "ungated",
-      "review_not_run",
-      "blocked",
-      "failed",
-      "cancelled",
-      "interrupted_unknown",
-      "cost_unverifiable",
-      "exhausted_overshoot",
-      "exhausted",
-      "not_converged",
-      "stuck_no_progress",
-    ])
+describe("exitCodeForState (D8: the lifecycle IS the exit code)", () => {
+  it("maps a succeeded lifecycle to 0 and every other lifecycle to 1", () => {
+    // A succeeded lifecycle is 0 — a "Done · needs review" run is still
+    // succeeded and exits 0; applyability speaks through applyEligibility.
+    expect(exitCodeForState("succeeded")).toBe(0);
+    for (const bad of ["failed", "cancelled", "interrupted"]) {
       expect(exitCodeForState(bad)).toBe(1);
+    }
   });
 });
 
-it("normalizes the internal succeeded command state at the public CLI boundary", () => {
-  expect(runStatusForCli("succeeded")).toBe("success");
-  expect(runStatusForCli("blocked")).toBe("blocked");
-});
-
-describe("daemonOutcomeSummary (P2: a reason on every non-success daemon terminal)", () => {
-  it("returns undefined for success terminals (no summary key)", () => {
+describe("daemonOutcomeSummary (P2: a reason on every non-clean daemon terminal, D8)", () => {
+  it("returns undefined for a clean succeeded run (no summary key)", () => {
     expect(daemonOutcomeSummary({ runId: "r1", status: "succeeded" })).toBeUndefined();
-    expect(daemonOutcomeSummary({ runId: "r1", status: "no_op" })).toBeUndefined();
+    expect(
+      daemonOutcomeSummary({
+        runId: "r1",
+        status: "succeeded",
+        outcomeFacts: makeOutcomeFacts("succeeded", { noChanges: true }),
+      }),
+    ).toBeUndefined();
   });
 
-  it("surfaces the actionable decision hint for a blocked run (which carries no error)", () => {
-    const s = daemonOutcomeSummary({ runId: "run-abc", status: "blocked" });
-    expect(s).toContain("blocked");
+  it("surfaces the actionable decision hint for a needs-decision run (succeeded + review blocked)", () => {
+    const s = daemonOutcomeSummary({
+      runId: "run-abc",
+      status: "succeeded",
+      outcomeFacts: makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" }),
+    });
+    expect(s).toContain("decision");
     expect(s).toContain("claudexor decision run-abc");
   });
 
@@ -42,12 +39,20 @@ describe("daemonOutcomeSummary (P2: a reason on every non-success daemon termina
     expect(daemonOutcomeSummary({ runId: "r1", status: "failed", error: "boom" })).toBe("boom");
   });
 
-  it("falls back to a state label for other non-success terminals", () => {
-    expect(daemonOutcomeSummary({ runId: "r1", status: "not_converged" })).toBe(
-      "run not_converged",
-    );
-    expect(daemonOutcomeSummary({ runId: "r1", status: "stuck_no_progress" })).toBe(
-      "run stuck_no_progress",
-    );
+  it("falls back to a lifecycle+reason label for other non-succeeded terminals", () => {
+    expect(
+      daemonOutcomeSummary({
+        runId: "r1",
+        status: "failed",
+        outcomeFacts: makeOutcomeFacts("failed", { reason: "not_converged" }),
+      }),
+    ).toBe("run failed (not_converged)");
+    expect(
+      daemonOutcomeSummary({
+        runId: "r1",
+        status: "failed",
+        outcomeFacts: makeOutcomeFacts("failed", { reason: "stuck_no_progress" }),
+      }),
+    ).toBe("run failed (stuck_no_progress)");
   });
 });

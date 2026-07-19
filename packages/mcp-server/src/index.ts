@@ -307,7 +307,10 @@ function structuredRunResult(result: unknown): Record<string, unknown> {
     summary,
     runId: typeof r["runId"] === "string" && r["runId"] ? r["runId"] : null,
     runDir: typeof r["runDir"] === "string" && r["runDir"] ? r["runDir"] : null,
+    // `status` carries the run LIFECYCLE (D8); the axes ride alongside as facts.
     status: typeof r["status"] === "string" && r["status"] ? r["status"] : null,
+    outcomeFacts:
+      r["outcomeFacts"] && typeof r["outcomeFacts"] === "object" ? r["outcomeFacts"] : null,
     applyEligibility:
       r["applyEligibility"] && typeof r["applyEligibility"] === "object"
         ? r["applyEligibility"]

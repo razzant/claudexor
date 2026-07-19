@@ -42,7 +42,8 @@ import type {
   RequestRequirementResolution,
   ReviewFinding,
   RunEvent,
-  RunStatus,
+  RunLifecycle,
+  RunOutcomeFacts,
   TaskContract,
   TestCommandInvocation,
   ProviderFamily,
@@ -71,6 +72,7 @@ import {
   TRUST_FULL_ACCESS_CODE,
   FrozenTaskContractArtifact as TaskContractSchema,
   isBlocking,
+  makeOutcomeFacts,
   orchestratePlanJsonSchema,
   normalizeUserOutputSchema,
   strictifyOutputSchema,
@@ -418,7 +420,10 @@ export interface OrchestratorResult {
   runId: string;
   taskId: string;
   mode: ModeKind;
-  status: RunStatus;
+  /** Terminal run LIFECYCLE (D8) — how far the process got. */
+  lifecycle: RunLifecycle;
+  /** The terminal outcome AXES (checks/review/reason/noChanges). */
+  facts: RunOutcomeFacts;
   winner: string | null;
   runDir: string;
   summary: string;
@@ -720,11 +725,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: review preflight\n\n${message}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: review preflight\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "review_preflight",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -734,7 +741,8 @@ export class Orchestrator {
           runId,
           taskId,
           mode,
-          status: "failed",
+          lifecycle: "failed",
+          facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
           winner: null,
           runDir: paths.root,
           summary: message,
@@ -2165,11 +2173,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: workspace\n\n${message}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: workspace\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "workspace",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -2275,7 +2285,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: gitPreconditionError,
@@ -2322,11 +2333,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: routing\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "routing",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -2335,7 +2348,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -2657,14 +2671,17 @@ export class Orchestrator {
     }
 
     if (runs.length === 0) {
-      const status: RunStatus = ledger.terminal() ?? (budgetStopped ? "exhausted" : "failed");
+      const budgetReason = ledger.terminal();
+      const facts = makeOutcomeFacts("failed", {
+        reason: budgetReason ?? (budgetStopped ? "budget_exhausted" : "harness_failed"),
+        noChanges: true,
+      });
       const why = budgetStopped
         ? "budget exhausted before any candidate run"
         : "no candidates produced";
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
         winner: null,
-        status,
-        outcome: "blocked",
+        facts,
         why_winner: why,
         evidence_facts: ["no candidates were produced"],
         apply_recommendation: "continue",
@@ -2672,17 +2689,19 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: budget\n\n${why}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: budget\n\n${why}\n`,
       );
       writeFailure(store, paths, {
         phase: "budget",
-        category: isBudgetTerminal(status) ? "budget" : "internal",
+        category: isBudgetTerminal(facts.reason) ? "budget" : "internal",
         safeMessage: why,
         runDir: paths.root,
       });
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
+        reason: facts.reason,
         phase: "budget",
         error: why,
         failure_ref: "final/failure.yaml",
@@ -2691,7 +2710,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
         winner: null,
         runDir: paths.root,
         summary: why,
@@ -2715,11 +2735,10 @@ export class Orchestrator {
           (r) => `${r.attemptId}/${r.harnessId}: ${r.errors[0] ?? "failed before producing work"}`,
         )
         .join("; ");
-      const status: RunStatus = "failed";
+      const facts = makeOutcomeFacts("failed", { reason: "harness_failed", noChanges: true });
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
         winner: null,
-        status,
-        outcome: "blocked",
+        facts,
         why_winner: rootCause,
         evidence_facts: runs.map(
           (r) => `${r.attemptId} produced no work: ${r.errors[0] ?? "unknown"}`,
@@ -2743,7 +2762,7 @@ export class Orchestrator {
       );
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: ${phase}\n\n${rootCause}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}\n- Phase: ${phase}\n\n${rootCause}\n`,
       );
       const existingEventRefs = runs
         .map((r) => `attempts/${r.attemptId}/events.jsonl`)
@@ -2764,7 +2783,9 @@ export class Orchestrator {
       });
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
+        reason: facts.reason,
         phase,
         error: rootCause,
         failure_ref: "final/failure.yaml",
@@ -2773,7 +2794,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
         winner: null,
         runDir: paths.root,
         summary: rootCause,
@@ -3050,7 +3072,7 @@ export class Orchestrator {
     }
     log.emit("arbitration.completed", {
       winner: result.decision.winner,
-      status: result.decision.status,
+      lifecycle: result.decision.facts.lifecycle,
     });
 
     // Winner can only be a candidate that actually produced work; corpses are
@@ -3067,9 +3089,18 @@ export class Orchestrator {
     const actualReviewVerified = winnerRun
       ? (evidences.find((e) => e.attemptId === winnerRun.attemptId)?.reviewVerified ?? false)
       : evidences.length > 0 && evidences.every((e) => e.reviewVerified);
-    let status: RunStatus =
-      needsHuman && result.decision.status !== "success" ? "blocked" : result.decision.status;
-    if (status === "success" && ledger.terminal() !== null) status = ledger.terminal()!;
+    let facts: RunOutcomeFacts = result.decision.facts;
+    // A reviewer NEEDS_HUMAN escalation forces the REVIEW axis to blocked (a
+    // needs-decision terminal), unless the decision is already applyable-clean.
+    if (needsHuman && facts.lifecycle === "succeeded" && facts.review !== "blocked") {
+      facts = { ...facts, review: "blocked", reason: facts.reason ?? "review_blocked" };
+    }
+    // A budget terminal turns a succeeded lifecycle into a failed one (D8): the
+    // budget reason IS a RunReason.
+    const budgetTerminal = ledger.terminal();
+    if (facts.lifecycle === "succeeded" && budgetTerminal) {
+      facts = makeOutcomeFacts("failed", { reason: budgetTerminal, noChanges: facts.noChanges });
+    }
     // FinalVerifier blocks adoption until the patch and gates pass on a fresh base.
     let finalVerify: FinalVerifyRecord | null = null;
     let finalVerifyFailed = false;
@@ -3084,7 +3115,8 @@ export class Orchestrator {
       !inPlaceWinner &&
       !deferredRaceVerify &&
       winnerRun.diff.trim().length > 0 &&
-      (status === "success" || status === "ungated") &&
+      facts.lifecycle === "succeeded" &&
+      facts.review !== "blocked" &&
       !input.signal?.aborted
     ) {
       finalVerify = await finalVerifyPatch(
@@ -3094,15 +3126,18 @@ export class Orchestrator {
         log,
       );
       // Verify errors block like proven failures; accept_risk stays available.
+      // A failed fresh verify lands on the CHECKS axis (a needs-decision block).
       finalVerifyFailed = finalVerifyBlocks(finalVerify);
-      if (finalVerifyFailed) status = "blocked";
+      if (finalVerifyFailed) facts = { ...facts, checks: "failed", reason: "checks_failed" };
     }
+    // A needs-decision terminal (review blocked or checks failed) overrides the
+    // persisted green arbitration fields; otherwise the facts pass through.
+    const needsDec = facts.review === "blocked" || facts.checks === "failed";
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
-      // A blocked terminal overrides the persisted green arbitration fields.
-      ...(status === "blocked"
+      ...(needsDec
         ? blockedDecisionOverride(result.decision.evidence_facts, finalVerify)
-        : {}),
+        : { facts }),
       review_verified: actualReviewVerified,
       final_verify: finalVerify,
     });
@@ -3148,8 +3183,10 @@ export class Orchestrator {
           answerText: winnerAnswer,
         });
       }
-      // Only a fully verified success may auto-adopt; ungated remains an artifact.
-      const adoptable = status === "success";
+      // Only a fully verified, applyable success may auto-adopt; a not-verified
+      // or needs-decision terminal remains an inspectable artifact.
+      const adoptable =
+        facts.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
       let adopted: boolean | null = null;
       let applyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
         "not_applied";
@@ -3198,7 +3235,7 @@ export class Orchestrator {
             adopted = false;
             applyState = "not_applied";
             deliveryFailureReason = applied.detail ?? "race adoption delivery was refused";
-            status = "blocked";
+            facts = { ...facts, checks: "failed", reason: "checks_failed" };
             if (finalVerifyBlocks(finalVerify)) finalVerifyFailed = true;
             log.emit("work_product.adopted", {
               applied: false,
@@ -3211,7 +3248,7 @@ export class Orchestrator {
       }
       writeRaceDeliveryDecision(store, decisionPath, {
         decision: result.decision,
-        status,
+        facts,
         reviewVerified: actualReviewVerified,
         finalVerify,
         deliveryFailureReason,
@@ -3232,8 +3269,9 @@ export class Orchestrator {
           harness_id: winnerRun.harnessId,
           synthesis: synth,
           mode,
-          // Artifact-only apply reads the same terminal status as the daemon.
-          status,
+          // Artifact-only apply reads the same terminal axes as the daemon (D8).
+          lifecycle: facts.lifecycle,
+          outcome_facts: facts,
           review_verified: actualReviewVerified,
           budget_stopped: budgetStopped,
           patch_sha256: patchSha256,
@@ -3256,17 +3294,26 @@ export class Orchestrator {
         renderSummary(
           runId,
           mode,
-          { ...result.decision, status },
+          { ...result.decision, facts },
           evidences,
           synth.reason,
           actualReviewVerified,
         ),
       );
-      // A non-success run's summary/patch is diagnostic context, not an applyable green output.
+      // summary.md is a DIAGNOSTIC artifact only (V8/PLAN addendum 2): it no
+      // longer carries primary-output authority. A clean applyable success or a
+      // winner answer still marks it ready for legacy INV-116 ordering; any
+      // other terminal is diagnostic context.
       log.emit("output.ready", {
         kind: "summary",
         path: "final/summary.md",
-        state: status === "success" || winnerAnswer.length > 0 ? "ready" : "diagnostic",
+        state:
+          (facts.lifecycle === "succeeded" &&
+            facts.review === "approved" &&
+            facts.checks !== "failed") ||
+          winnerAnswer.length > 0
+            ? "ready"
+            : "diagnostic",
       });
     }
 
@@ -3278,13 +3325,17 @@ export class Orchestrator {
       taskId,
       mode,
       runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
-      result.decision.status === "success"
+      result.decision.facts.lifecycle === "succeeded"
         ? result.decision.winner
         : (winnerRun?.attemptId ?? null),
     );
 
-    const honestTerminal =
-      status === "no_op" || status === "ungated" || status === "review_not_run";
+    // A needs-decision terminal (review blocked or checks failed) OR a
+    // non-succeeded lifecycle writes a failure record and fires
+    // run.blocked/run.failed; a succeeded, non-needs-decision terminal
+    // (applyable, no_changes, or not-verified) is an honest completion.
+    const needsDecisionTerminal = facts.review === "blocked" || facts.checks === "failed";
+    const isFailureTerminal = facts.lifecycle !== "succeeded" || needsDecisionTerminal;
     if (deliveryFailureReason && !finalVerifyFailed) {
       writeFailure(store, paths, deliveryRefusalFailure(deliveryFailureReason, paths.root));
     } else if (finalVerifyFailed) {
@@ -3309,14 +3360,14 @@ export class Orchestrator {
                 "Re-run after fixing the base conflict or the failing gates",
               ],
       });
-    } else if (status !== "success" && !honestTerminal) {
+    } else if (isFailureTerminal) {
       writeFailure(store, paths, {
         phase: needsHuman ? "review" : "arbitration",
         category: needsHuman
           ? "policy"
           : winnerRun?.errored
             ? "harness_error"
-            : isBudgetTerminal(status)
+            : isBudgetTerminal(facts.reason)
               ? "budget"
               : "internal",
         harnessId: winnerRun?.errored ? winnerRun.harnessId : undefined,
@@ -3343,7 +3394,7 @@ export class Orchestrator {
       if (!winnerRun) {
         store.writeText(
           join(paths.finalDir, "summary.md"),
-          `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Phase: arbitration\n\n${result.decision.why_winner}\n`,
+          `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: arbitration\n\n${result.decision.why_winner}\n`,
         );
         log.emit("output.ready", {
           kind: "summary",
@@ -3354,13 +3405,14 @@ export class Orchestrator {
     }
 
     log.emit("work_product.emitted", { winner: result.decision.winner });
-    if (status === "success" || honestTerminal) {
-      log.emit("run.completed", { status, outcome: result.decision.outcome });
-    } else if (status === "blocked") {
-      // The event's phase must agree with failure.yaml (a verify block is
-      // phase "verification", not "review").
+    if (!isFailureTerminal) {
+      log.emit("run.completed", { lifecycle: facts.lifecycle, facts, reason: facts.reason });
+    } else if (facts.lifecycle === "succeeded") {
+      // needsDecision at terminal — the event's phase must agree with
+      // failure.yaml (a verify block is phase "verification", not "review").
       log.emit("run.blocked", {
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
         phase:
           deliveryFailureReason && !finalVerifyFailed
             ? "delivery"
@@ -3370,14 +3422,21 @@ export class Orchestrator {
         failure_ref: "final/failure.yaml",
       });
     } else {
-      log.emit("run.failed", { status, phase: "arbitration", failure_ref: "final/failure.yaml" });
+      log.emit("run.failed", {
+        lifecycle: facts.lifecycle,
+        facts,
+        reason: facts.reason,
+        phase: "arbitration",
+        failure_ref: "final/failure.yaml",
+      });
     }
 
     return {
       runId,
       taskId,
       mode,
-      status,
+      lifecycle: facts.lifecycle,
+      facts,
       winner: result.decision.winner,
       runDir: paths.root,
       summary: result.decision.why_winner,
@@ -3704,7 +3763,8 @@ export class Orchestrator {
           runId,
           taskId,
           mode,
-          status: "failed",
+          lifecycle: "failed",
+          facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
           winner: null,
           runDir: paths.root,
           summary: gitPreconditionError,
@@ -3755,11 +3815,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: routing\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "routing",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -3769,7 +3831,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -3799,11 +3862,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: failed\n- Phase: review preflight\n\n${message}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: failed\n- Phase: review preflight\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "review",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -3813,7 +3878,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -4294,16 +4360,18 @@ export class Orchestrator {
       if (envelope) await wsm.dispose(envelope);
     }
 
-    let status: RunStatus = input.signal?.aborted
-      ? "cancelled"
+    // Base terminal AXES (D8) from the convergence loop outcome. Attempts-cap
+    // exhaustion maps to budget_exhausted (an attempt budget); the give-up
+    // states map to their matching RunReason.
+    let facts: RunOutcomeFacts = input.signal?.aborted
+      ? makeOutcomeFacts("cancelled", { reason: "user_cancelled" })
       : converged
-        ? "success"
+        ? makeOutcomeFacts("succeeded")
         : stuckNoProgress
-          ? "stuck_no_progress"
+          ? makeOutcomeFacts("failed", { reason: "stuck_no_progress" })
           : exhausted
-            ? "exhausted"
-            : "not_converged";
-    if (status === "success" && ledger.terminal() !== null) status = ledger.terminal()!;
+            ? makeOutcomeFacts("failed", { reason: "budget_exhausted" })
+            : makeOutcomeFacts("failed", { reason: "not_converged" });
     let decision: ReturnType<typeof arbitrate>["decision"] | null = null;
     if (lastRun) {
       const arb = arbitrate(
@@ -4323,15 +4391,28 @@ export class Orchestrator {
       );
       decision = arb.decision;
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
-      if (converged && decision.status !== "not_converged") {
-        status = decision.status;
-      } else if (status === "not_converged" && decision.status !== "success") {
-        status = decision.status;
+      // A converged run adopts the arbitration axes (checks/review); an
+      // otherwise not-converged loop that nonetheless produced an applyable
+      // decision adopts it too.
+      if (converged) {
+        facts = decision.facts;
+      } else if (facts.reason === "not_converged" && decision.facts.lifecycle === "succeeded") {
+        facts = decision.facts;
       }
     }
-    // A reviewer escalation to a human is a BLOCKED terminal, not a silent risk note.
+    // A budget terminal turns a succeeded lifecycle into a failed one (D8).
+    const convBudgetTerminal = ledger.terminal();
+    if (facts.lifecycle === "succeeded" && convBudgetTerminal) {
+      facts = makeOutcomeFacts("failed", {
+        reason: convBudgetTerminal,
+        noChanges: facts.noChanges,
+      });
+    }
+    // A reviewer escalation to a human forces the REVIEW axis to blocked.
     const needsHuman = lastFindings.some((f) => f.severity === "NEEDS_HUMAN" && isBlocking(f));
-    if (needsHuman && status !== "success" && status !== "cancelled") status = "blocked";
+    if (needsHuman && facts.lifecycle === "succeeded" && facts.review !== "blocked") {
+      facts = { ...facts, review: "blocked", reason: facts.reason ?? "review_blocked" };
+    }
     // FinalVerifier (INV-115) applies to EVERY applyable envelope-mode patch,
     // not only race winners: a convergence run's delivered patch must also
     // survive a fresh tree at its own base + the deterministic gates there.
@@ -4343,7 +4424,8 @@ export class Orchestrator {
       input.inPlace !== true &&
       lastRun &&
       lastRun.diff.trim().length > 0 &&
-      (status === "success" || status === "ungated") &&
+      facts.lifecycle === "succeeded" &&
+      facts.review !== "blocked" &&
       !input.signal?.aborted
     ) {
       convFinalVerify = await finalVerifyPatch(
@@ -4352,16 +4434,18 @@ export class Orchestrator {
         gateSpecsFromContract(contract),
         log,
       );
-      if (finalVerifyBlocks(convFinalVerify)) status = "blocked";
+      if (finalVerifyBlocks(convFinalVerify))
+        facts = { ...facts, checks: "failed", reason: "checks_failed" };
     }
+    const convNeedsDecision = facts.review === "blocked" || facts.checks === "failed";
     if (decision) {
-      // Shared honesty owner (same as the race path): a blocked terminal
+      // Shared honesty owner (same as the race path): a needs-decision terminal
       // overrides the persisted decision; final_verify is recorded either way.
       decision = {
         ...decision,
-        ...(status === "blocked"
+        ...(convNeedsDecision
           ? blockedDecisionOverride(decision.evidence_facts, convFinalVerify)
-          : {}),
+          : { facts }),
         final_verify: convFinalVerify,
       };
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), decision);
@@ -4386,7 +4470,8 @@ export class Orchestrator {
       // convergence run with inPlace mutated the live tree directly across its
       // attempts, so it is "applied" even when review blocked (Revert offered).
       const convHasDiff = lastRun.diff.trim().length > 0;
-      const convAdoptable = status === "success" || status === "ungated";
+      const convAdoptable =
+        facts.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
       const convAdopted: boolean | null = input.inPlace === true && convHasDiff ? true : null;
       const convApplyState: "not_applied" | "applied" | "applied_review_blocked" | "reverted" =
         convAdopted === true
@@ -4408,7 +4493,8 @@ export class Orchestrator {
           result_kind: "patch",
           mode,
           attempts: attempt,
-          status,
+          lifecycle: facts.lifecycle,
+          outcome_facts: facts,
           review_verified: actualReviewVerified,
           patch_sha256: patchSha256,
           adopted: convAdopted,
@@ -4420,46 +4506,48 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n- Winner: ${lastRun.attemptId}\n- Review verified (cross-family): ${actualReviewVerified}\n- Apply recommendation: ${decision?.apply_recommendation ?? "inspect"}${stuckNoProgressReason ? `\n- No-progress reason: ${stuckNoProgressReason}` : ""}\n`,
       );
       // Lifecycle invariant (all modes): output.ready precedes the terminal
       // event so a client that applied the terminal event has the output.
       log.emit("output.ready", {
         kind: "summary",
         path: "final/summary.md",
-        ...(status === "success" ? {} : { state: "diagnostic" }),
+        ...(convAdoptable ? {} : { state: "diagnostic" }),
       });
     }
 
-    if (!converged) {
+    // A needs-decision terminal (review blocked / checks failed) writes a
+    // failure record + fires run.blocked even though the lifecycle succeeded.
+    const convIsFailureTerminal = facts.lifecycle !== "succeeded" || convNeedsDecision;
+    if (convIsFailureTerminal) {
       writeFailure(store, paths, {
-        phase: "convergence",
-        category: isBudgetTerminal(status)
+        phase: convNeedsDecision ? "review" : "convergence",
+        category: isBudgetTerminal(facts.reason)
           ? "budget"
-          : status === "cancelled"
+          : facts.lifecycle === "cancelled"
             ? "cancelled"
-            : status === "blocked"
+            : convNeedsDecision
               ? "policy"
               : "internal",
-        safeMessage:
-          status === "blocked"
-            ? `review escalated to a human decision after ${attempt} attempt(s)`
-            : status === "stuck_no_progress"
-              ? (stuckNoProgressReason ?? `stuck_no_progress after ${attempt} attempt(s)`)
-              : `${status} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`,
+        safeMessage: convNeedsDecision
+          ? `review escalated to a human decision after ${attempt} attempt(s)`
+          : facts.reason === "stuck_no_progress"
+            ? (stuckNoProgressReason ?? `stuck_no_progress after ${attempt} attempt(s)`)
+            : `${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""} after ${attempt} attempt(s)${lastDiffStable ? "" : " (diff changed after review; review is stale)"}`,
         harnessId: lastRun?.harnessId,
         attemptId: lastRun?.attemptId,
         runDir: paths.root,
         nextActions:
-          status === "cancelled"
+          facts.lifecycle === "cancelled"
             ? ["Retry if cancellation was accidental"]
-            : status === "blocked"
+            : convNeedsDecision
               ? [
                   "Open the review queue",
                   "Decide the NEEDS_HUMAN findings",
                   "Re-run after the decision",
                 ]
-              : status === "stuck_no_progress"
+              : facts.reason === "stuck_no_progress"
                 ? [
                     "Inspect the stable patch",
                     "Inspect the failing gate output",
@@ -4474,7 +4562,7 @@ export class Orchestrator {
       if (!lastRun) {
         store.writeText(
           join(paths.finalDir, "summary.md"),
-          `# Run ${runId} (${mode})\n\n- Status: ${status}\n- Attempts: ${attempt}\n`,
+          `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}\n- Attempts: ${attempt}\n`,
         );
         log.emit("output.ready", {
           kind: "summary",
@@ -4485,20 +4573,26 @@ export class Orchestrator {
     }
 
     log.emit("work_product.emitted", { winner: lastRun?.attemptId ?? null });
-    const completed =
-      converged || status === "no_op" || status === "ungated" || status === "review_not_run";
-    if (completed) {
-      log.emit("run.completed", { status, attempts: attempt });
-    } else if (status === "blocked") {
+    if (!convIsFailureTerminal) {
+      log.emit("run.completed", {
+        lifecycle: facts.lifecycle,
+        facts,
+        reason: facts.reason,
+        attempts: attempt,
+      });
+    } else if (facts.lifecycle === "succeeded") {
       log.emit("run.blocked", {
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
         attempts: attempt,
         phase: "review",
         failure_ref: "final/failure.yaml",
       });
     } else {
       log.emit("run.failed", {
-        status,
+        lifecycle: facts.lifecycle,
+        facts,
+        reason: facts.reason,
         attempts: attempt,
         phase: "convergence",
         failure_ref: "final/failure.yaml",
@@ -4509,14 +4603,21 @@ export class Orchestrator {
       runId,
       taskId,
       mode,
-      status,
+      lifecycle: facts.lifecycle,
+      facts,
       winner: lastRun?.attemptId ?? null,
       runDir: paths.root,
       summary: converged
         ? `converged in ${attempt} attempt(s)`
-        : `${status} after ${attempt} attempt(s)`,
+        : `${facts.lifecycle} after ${attempt} attempt(s)`,
       candidates: lastRun
-        ? [{ attemptId: lastRun.attemptId, harnessId: lastRun.harnessId, status }]
+        ? [
+            {
+              attemptId: lastRun.attemptId,
+              harnessId: lastRun.harnessId,
+              status: facts.lifecycle,
+            },
+          ]
         : [],
       reviewVerified: actualReviewVerified,
     };
@@ -4612,11 +4713,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+        `# Run ${runId} (plan)\n\n- Lifecycle: failed\n- Phase: routing\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "routing",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -4626,7 +4729,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode: "plan",
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -4652,11 +4756,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (plan)\n\n- Status: failed\n- Phase: context\n\n${message}\n`,
+        `# Run ${runId} (plan)\n\n- Lifecycle: failed\n- Phase: context\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "context",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -4666,7 +4772,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode: "plan",
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: `context failed: ${message}`,
@@ -4972,19 +5079,25 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (plan)\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`,
+        `# Run ${runId} (plan)\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : "failed"}\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+      const planFailFacts = blocked
+        ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
+        : makeOutcomeFacts("failed", { reason: "harness_failed" });
       if (blocked)
         log.emit("run.blocked", {
-          status: "blocked",
+          lifecycle: planFailFacts.lifecycle,
+          facts: planFailFacts,
           phase: "harness",
           error: message,
           failure_ref: "final/failure.yaml",
         });
       else
         log.emit("run.failed", {
-          status: "failed",
+          lifecycle: planFailFacts.lifecycle,
+          facts: planFailFacts,
+          reason: planFailFacts.reason,
           phase: "harness",
           error: message,
           failure_ref: "final/failure.yaml",
@@ -4994,7 +5107,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode: "plan",
-        status: blocked ? "blocked" : "failed",
+        lifecycle: planFailFacts.lifecycle,
+        facts: planFailFacts,
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -5071,7 +5185,7 @@ export class Orchestrator {
       [
         `# Run ${runId} (plan)`,
         "",
-        `- Status: success (plan only — no files changed)`,
+        `- Lifecycle: succeeded (plan only — no files changed)`,
         `- Planner: ${winnerAttempt?.harnessId ?? "(none)"}`,
         `- Plan: final/plan.md`,
         `- Open questions: ${readiness.questionCount}${parsedQuestions.parse === "none_found" ? " (no tagged block — unverified)" : ""}`,
@@ -5102,14 +5216,16 @@ export class Orchestrator {
       question_count: readiness.questionCount,
       readiness: readiness.state,
     });
-    log.emit("run.completed", { status: "success" });
+    const planFacts = makeOutcomeFacts("succeeded", { noChanges: true });
+    log.emit("run.completed", { lifecycle: planFacts.lifecycle, facts: planFacts, reason: null });
 
     return {
       spendUsd: ledger.spend(),
       runId,
       taskId,
       mode: "plan",
-      status: "success",
+      lifecycle: planFacts.lifecycle,
+      facts: planFacts,
       winner: null,
       runDir: paths.root,
       summary: `Plan by ${winnerAttempt?.harnessId ?? "(none)"}; ${readiness.questionCount} open question(s)${parsedQuestions.parse === "none_found" ? " (untagged plan — unverified)" : ""}.`,
@@ -5325,7 +5441,7 @@ export class Orchestrator {
         });
         store.writeText(
           join(paths.finalDir, "summary.md"),
-          `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: context\n\n${message}\n`,
+          `# Run ${runId} (${opts.mode})\n\n- Lifecycle: failed\n- Phase: context\n\n${message}\n`,
         );
         log.emit("output.ready", {
           kind: "summary",
@@ -5333,7 +5449,9 @@ export class Orchestrator {
           state: "diagnostic",
         });
         log.emit("run.failed", {
-          status: "failed",
+          lifecycle: "failed",
+          facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+          reason: "harness_failed",
           phase: "context",
           error: message,
           failure_ref: "final/failure.yaml",
@@ -5342,7 +5460,8 @@ export class Orchestrator {
           runId,
           taskId,
           mode: opts.mode,
-          status: "failed",
+          lifecycle: "failed",
+          facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
           winner: null,
           runDir: paths.root,
           summary: `context failed: ${message}`,
@@ -5391,11 +5510,13 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${opts.mode})\n\n- Status: failed\n- Phase: routing\n\n${message}\n`,
+        `# Run ${runId} (${opts.mode})\n\n- Lifecycle: failed\n- Phase: routing\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
+        reason: "harness_failed",
         phase: "routing",
         error: message,
         failure_ref: "final/failure.yaml",
@@ -5404,7 +5525,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode: opts.mode,
-        status: "failed",
+        lifecycle: "failed",
+        facts: makeOutcomeFacts("failed", { reason: "harness_failed" }),
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -5933,26 +6055,29 @@ export class Orchestrator {
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
       });
-      const terminal = webBlocked
-        ? "blocked"
+      const terminalFacts = webBlocked
+        ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
         : budgetStopped && attempts.length === 0
-          ? "exhausted"
-          : "failed";
+          ? makeOutcomeFacts("failed", { reason: "budget_exhausted" })
+          : makeOutcomeFacts("failed", { reason: "harness_failed" });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Status: ${terminal}\n\n${singleError}\n`,
+        `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${singleError}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      if (terminal === "blocked") {
+      if (terminalFacts.lifecycle === "succeeded") {
         log.emit("run.blocked", {
-          status: terminal,
+          lifecycle: terminalFacts.lifecycle,
+          facts: terminalFacts,
           harness_id: last?.harnessId,
           error: singleError,
           failure_ref: "final/failure.yaml",
         });
       } else {
         log.emit("run.failed", {
-          status: terminal,
+          lifecycle: terminalFacts.lifecycle,
+          facts: terminalFacts,
+          reason: terminalFacts.reason,
           harness_id: last?.harnessId,
           error: singleError,
           failure_ref: "final/failure.yaml",
@@ -5963,7 +6088,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode: opts.mode,
-        status: terminal,
+        lifecycle: terminalFacts.lifecycle,
+        facts: terminalFacts,
         winner: null,
         runDir: paths.root,
         summary: singleError,
@@ -6005,19 +6131,25 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${opts.mode})\n\n- Status: ${blocked ? "blocked" : "failed"}\n\n${message}\n`,
+        `# Run ${runId} (${opts.mode})\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : "failed"}\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
+      const scanFailFacts = blocked
+        ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
+        : makeOutcomeFacts("failed", { reason: "harness_failed" });
       if (blocked)
         log.emit("run.blocked", {
-          status: "blocked",
+          lifecycle: scanFailFacts.lifecycle,
+          facts: scanFailFacts,
           phase: "harness",
           error: message,
           failure_ref: "final/failure.yaml",
         });
       else
         log.emit("run.failed", {
-          status: "failed",
+          lifecycle: scanFailFacts.lifecycle,
+          facts: scanFailFacts,
+          reason: scanFailFacts.reason,
           phase: "harness",
           error: message,
           failure_ref: "final/failure.yaml",
@@ -6027,7 +6159,8 @@ export class Orchestrator {
         runId,
         taskId,
         mode: opts.mode,
-        status: blocked ? "blocked" : "failed",
+        lifecycle: scanFailFacts.lifecycle,
+        facts: scanFailFacts,
         winner: null,
         runDir: paths.root,
         summary: message,
@@ -6150,15 +6283,18 @@ export class Orchestrator {
     // terminal outcome (success / blocked / failed) becomes the run's terminal.
     const autonomy: OrchestrateAutonomy =
       opts.orchestrateContract?.autonomy ?? input.autonomy ?? "suggest";
-    let terminal: RunStatus = "success";
+    let terminalFacts: RunOutcomeFacts = makeOutcomeFacts("succeeded");
     let orchestrateReadOnly = true;
     let orchestrateReceiptRefs: string[] = [];
-    if (ledger.terminal() !== null) terminal = ledger.terminal()!;
+    const orchestrateBudgetTerminal = ledger.terminal();
+    if (orchestrateBudgetTerminal)
+      terminalFacts = makeOutcomeFacts("failed", { reason: orchestrateBudgetTerminal });
     // orchestrate's contract output IS the typed plan. If the planner failed to
     // produce a valid one, the run is NOT a clean success — disclose it honestly
     // (the markdown plan stays as a diagnostic artifact) rather than reporting
     // success alongside an orchestration_parse_error.md.
-    if (opts.mode === "orchestrate" && !orchestratePlan) terminal = "not_converged";
+    if (opts.mode === "orchestrate" && !orchestratePlan)
+      terminalFacts = makeOutcomeFacts("failed", { reason: "not_converged" });
     if (opts.mode === "orchestrate" && autonomy !== "suggest" && orchestratePlan) {
       // Thread the GENERATED runId onto input so the executor's answer_question
       // step keys the interaction registry by this orchestrate run's id (callers
@@ -6177,7 +6313,7 @@ export class Orchestrator {
           this.executeSafeStep(executionInput, call, log, store, paths, ledger),
         executeApplyStep: (call) => this.executeApplyStep(executionInput, call, log),
       });
-      terminal = exec.terminal;
+      terminalFacts = exec.terminal;
       orchestrateReadOnly = exec.readOnly;
       orchestrateReceiptRefs = exec.receiptRefs;
       typedPlanNote += `\n- Executor (${autonomy}): ${exec.note}`;
@@ -6187,7 +6323,7 @@ export class Orchestrator {
       .join(", ");
     store.writeText(
       join(paths.finalDir, "summary.md"),
-      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Status: ${terminal}${typedPlanNote}\n\n${report}\n`,
+      `# Run ${runId} (${opts.mode})\n\n- Harnesses: ${harnessLabel}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}${typedPlanNote}\n\n${report}\n`,
     );
     store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
       id: newId("wp"),
@@ -6206,28 +6342,54 @@ export class Orchestrator {
       },
     });
     log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
-    const orchestrateFailure = orchestrateFailureFor(terminal);
-    if (terminal === "blocked" && orchestrateFailure) {
-      writeFailure(store, paths, { ...orchestrateFailure, runDir: paths.root });
+    const orchestrateNeedsDecision =
+      terminalFacts.lifecycle === "succeeded" &&
+      (terminalFacts.review === "blocked" || terminalFacts.checks === "failed");
+    const orchestrateFailure = orchestrateFailureFor(terminalFacts);
+    if (orchestrateNeedsDecision) {
+      // A needs-decision terminal: a required step blocked awaiting a human
+      // (review blocked / checks failed). Fires run.blocked, not run.failed.
+      writeFailure(store, paths, {
+        phase: "executor",
+        category: "policy",
+        safeMessage:
+          "orchestrate has required work that did not succeed (including skipped, not-verified, missing-review, or risky steps); inspect the typed progress record",
+        runDir: paths.root,
+        nextActions: [
+          "Inspect final/orchestration_progress.yaml",
+          "Resolve or retry the blocked step",
+        ],
+      });
       log.emit("run.blocked", {
-        status: terminal,
-        phase: orchestrateFailure.phase,
+        lifecycle: terminalFacts.lifecycle,
+        facts: terminalFacts,
+        phase: "executor",
         failure_ref: "final/failure.yaml",
       });
     } else if (orchestrateFailure) {
       writeFailure(store, paths, { ...orchestrateFailure, runDir: paths.root });
       log.emit("run.failed", {
-        status: terminal,
+        lifecycle: terminalFacts.lifecycle,
+        facts: terminalFacts,
+        reason: terminalFacts.reason,
         phase: orchestrateFailure.phase,
         failure_ref: "final/failure.yaml",
       });
-    } else if (terminal === "cancelled") {
+    } else if (terminalFacts.lifecycle === "cancelled") {
       // Cancel is failure-shaped (parity with every other mode's cancel
       // terminal): tailers waiting for run.completed-as-success must not
       // mistake an operator abort for a clean report.
-      log.emit("run.failed", { status: terminal });
+      log.emit("run.failed", {
+        lifecycle: terminalFacts.lifecycle,
+        facts: terminalFacts,
+        reason: terminalFacts.reason,
+      });
     } else {
-      log.emit("run.completed", { status: terminal });
+      log.emit("run.completed", {
+        lifecycle: terminalFacts.lifecycle,
+        facts: terminalFacts,
+        reason: terminalFacts.reason,
+      });
     }
 
     return {
@@ -6235,7 +6397,8 @@ export class Orchestrator {
       runId,
       taskId,
       mode: opts.mode,
-      status: terminal,
+      lifecycle: terminalFacts.lifecycle,
+      facts: terminalFacts,
       winner: null,
       runDir: paths.root,
       summary: redactSecrets(report).slice(0, 400),
@@ -6278,13 +6441,13 @@ export class Orchestrator {
         });
         const res = await this.run(subInput);
         return {
-          status: res.status === "failed" || res.status === "cancelled" ? "failed" : "done",
-          terminalStatus: res.status,
+          status: res.lifecycle === "failed" || res.lifecycle === "cancelled" ? "failed" : "done",
+          terminalFacts: res.facts,
           terminalSource: "subrun",
           evidenceRefs: [`run:${res.runId}`],
           runId: res.runId,
           spendUsd: res.spendUsd ?? null,
-          detail: `${call.tool} sub-run ${res.runId} -> ${res.status}`,
+          detail: `${call.tool} sub-run ${res.runId} -> ${res.lifecycle}`,
         };
       }
       case "status": {
@@ -6292,7 +6455,7 @@ export class Orchestrator {
         const read = readRunStatus(input.repoRoot, call.run_id);
         return {
           status: read ? "done" : "skipped",
-          terminalStatus: read?.status ?? null,
+          terminalFacts: read?.facts ?? null,
           terminalSource: "subrun",
           evidenceRefs: read?.evidenceRefs ?? [],
           runId: call.run_id,
@@ -6308,7 +6471,7 @@ export class Orchestrator {
         if (diff === null)
           return {
             status: "skipped",
-            terminalStatus: null,
+            terminalFacts: null,
             terminalSource: "review",
             evidenceRefs: [],
             runId: call.run_id,
@@ -6320,7 +6483,7 @@ export class Orchestrator {
         if (ledger.terminal() !== null) {
           return {
             status: "skipped",
-            terminalStatus: null,
+            terminalFacts: null,
             terminalSource: "review",
             evidenceRefs: [],
             runId: call.run_id,
@@ -6331,7 +6494,7 @@ export class Orchestrator {
         if (reviewers.length === 0)
           return {
             status: "skipped",
-            terminalStatus: null,
+            terminalFacts: null,
             terminalSource: "review",
             evidenceRefs: [],
             runId: call.run_id,
@@ -6347,7 +6510,10 @@ export class Orchestrator {
         if (!reviewLease.granted)
           return {
             status: "skipped",
-            terminalStatus: ledger.terminal(),
+            terminalFacts: (() => {
+              const t = ledger.terminal();
+              return t ? makeOutcomeFacts("failed", { reason: t }) : null;
+            })(),
             terminalSource: "review",
             evidenceRefs: [],
             runId: call.run_id,
@@ -6400,7 +6566,10 @@ export class Orchestrator {
         const blockers = revalidated.filter((f) => isBlocking(f)).length;
         return {
           status: "done",
-          terminalStatus: result.crossFamilyVerified && blockers === 0 ? "success" : "blocked",
+          terminalFacts:
+            result.crossFamilyVerified && blockers === 0
+              ? makeOutcomeFacts("succeeded", { review: "approved" })
+              : makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" }),
           terminalSource: "review",
           evidenceRefs: [`reviews/orchestrate-${call.run_id}.yaml`],
           runId: call.run_id,
@@ -6415,7 +6584,7 @@ export class Orchestrator {
         const answer = await deliverPlanAnswer(input, call);
         return {
           ...answer,
-          terminalStatus: answer.status === "done" ? "success" : null,
+          terminalFacts: answer.status === "done" ? makeOutcomeFacts("succeeded") : null,
           terminalSource: "executor",
           evidenceRefs: [],
         };
