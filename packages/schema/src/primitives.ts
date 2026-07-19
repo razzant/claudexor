@@ -67,18 +67,22 @@ export const ProviderFamily = z
 export type ProviderFamily = z.infer<typeof ProviderFamily>;
 
 /**
- * Canonical modes (v0.9 collapse, BREAKING): the 9 v0.8 ids shrank to 5
- * intents-on-a-thread. The old engine strategies became FLAGS, not modes:
- * `best_of_n` -> agent + n, `max_attempts` -> agent + attempts,
- * `until_clean` -> agent + until_clean, `create` -> agent + create,
- * `explore` -> audit + swarm, `readonly_audit` -> audit. Old ids hard-error
- * at every wire boundary (Bible: modes are canonical and breaking, never
- * silent aliases). `orchestrate` is the autonomous coordinator intent.
+ * Canonical modes (v3.0.0 collapse, BREAKING): three conversation intents —
+ * ask (read-only answer; `deep_scan` widens it into the bounded multi-scout
+ * research sweep that used to be `audit --swarm`/`explore`), plan
+ * (read-only planning), agent (writes). Engine strategies remain FLAGS on a
+ * mode, never modes: `n` (best-of race width / deep-scan width), `attempts`
+ * / `until_clean` (agent convergence), `create` (agent from-scratch),
+ * `deep_scan` (ask sweep). Retired ids (`audit`, `explore`,
+ * `readonly_audit`, `best_of_n`, …) hard-error at every wire boundary
+ * (Bible: modes are canonical and breaking, never silent aliases).
+ * `orchestrate` survives only until its delegation replacement lands in
+ * this same release; it is scheduled for deletion, not a stable mode.
  */
 export const ModeKind = z
-  .enum(["ask", "plan", "audit", "agent", "orchestrate"])
+  .enum(["ask", "plan", "agent", "orchestrate"])
   .describe(
-    "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes.",
+    "Canonical run mode: ask and plan are read-only, agent writes; orchestrate is retained only until delegation replaces it. Engine strategies (race width, attempts, deep_scan, create) are flags on a mode, not modes.",
   );
 export type ModeKind = z.infer<typeof ModeKind>;
 

@@ -131,8 +131,12 @@ export const ControlRunStartRequest = z
       .boolean()
       .optional()
       .describe("Agent flag: iterate until the convergence predicate is clean (no fixed cap)."),
-    /** audit flag: bounded read-only research swarm (the old `explore`). */
-    swarm: z.boolean().optional().describe("Audit flag: bounded read-only research swarm."),
+    /** ask flag: widen the answer into a bounded multi-scout research sweep
+     * with synthesis (the old `audit --swarm` / `explore`). */
+    deepScan: z
+      .boolean()
+      .optional()
+      .describe("Ask flag: bounded multi-scout research sweep with synthesis."),
     /** agent flag: create-from-scratch intent (the old `create` mode). */
     create: z.boolean().optional().describe("Agent flag: create-from-scratch intent."),
     /** Best-of-N synthesis policy. `auto` (default) only synthesizes a 3rd
@@ -575,13 +579,13 @@ export const ControlRunSummary = z
       .describe("Typed failure record; null unless the run failed."),
     project: ControlProjectMetadata.default({}),
     mode: ModeKind.optional(),
-    /** v0.9 engine strategy on the mode (flags, not modes): race width / repair caps / swarm / create. */
+    /** v0.9 engine strategy on the mode (flags, not modes): race width / repair caps / deep-scan / create. */
     strategy: z
-      .enum(["race", "attempts", "until_clean", "swarm", "create"])
+      .enum(["race", "attempts", "until_clean", "deep_scan", "create"])
       .nullable()
       .optional()
       .describe(
-        "Engine strategy flag on the mode (race width / attempt caps / until-clean / swarm / create); flags, not modes.",
+        "Engine strategy flag on the mode (race width / attempt caps / until-clean / deep-scan / create); flags, not modes.",
       ),
     prompt: z.string().optional().describe("The user's prompt for the run."),
     harnesses: z.array(z.string()).optional().describe("Harness pool the run used."),
@@ -1098,7 +1102,7 @@ export const ControlTurnRunCard = z
     state: ControlRunState,
     mode: ModeKind.optional(),
     strategy: z
-      .enum(["race", "attempts", "until_clean", "swarm", "create"])
+      .enum(["race", "attempts", "until_clean", "deep_scan", "create"])
       .nullable()
       .optional()
       .describe("Engine strategy flag on the mode, when any."),

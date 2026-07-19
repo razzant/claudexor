@@ -71,26 +71,22 @@ export function primaryOutput(
       ? [
           { kind: "structured_output" as const, path: "final/output.json" },
           { kind: "answer" as const, path: "final/answer.md" },
+          // deep scan writes a synthesized research report instead of an answer
+          { kind: "report" as const, path: "final/report.md" },
         ]
       : mode === "plan"
         ? [{ kind: "plan" as const, path: "final/plan.md" }]
-        : mode === "audit"
+        : mode === "orchestrate"
           ? [
-              { kind: "report" as const, path: "final/report.md" },
-              { kind: "report" as const, path: "final/explore.md" },
+              { kind: "report" as const, path: "final/orchestration.md" },
               { kind: "summary" as const, path: "final/summary.md" },
             ]
-          : mode === "orchestrate"
-            ? [
-                { kind: "report" as const, path: "final/orchestration.md" },
-                { kind: "summary" as const, path: "final/summary.md" },
-              ]
-            : [
-                { kind: "structured_output" as const, path: "final/output.json" },
-                { kind: "answer" as const, path: "final/answer.md" },
-                { kind: "summary" as const, path: "final/summary.md" },
-                { kind: "patch" as const, path: "final/patch.diff" },
-              ];
+          : [
+              { kind: "structured_output" as const, path: "final/output.json" },
+              { kind: "answer" as const, path: "final/answer.md" },
+              { kind: "summary" as const, path: "final/summary.md" },
+              { kind: "patch" as const, path: "final/patch.diff" },
+            ];
   for (const candidate of candidates) {
     const output = preview(rec, candidate.path);
     if (output?.text.trim()) return ControlPrimaryOutput.parse({ ...candidate, ...output });

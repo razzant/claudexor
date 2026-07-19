@@ -700,10 +700,10 @@ describe("Orchestrator", () => {
       ["fake-success", createFakeHarness("fake-success")],
     ]);
     const orch = new Orchestrator({ registry, reviewers: [] });
-    // ask (skips ContextPack), audit (builds it), and agent (never built it) must
+    // ask (skips ContextPack), plan (builds it), and agent (never built it) must
     // now ALL fail the same way on a missing explicit mandatory file — the P1 bug
-    // was that audit failed while run/ask silently passed the same repo state.
-    for (const mode of ["ask", "audit", "agent"] as const) {
+    // was that one mode failed while others silently passed the same repo state.
+    for (const mode of ["ask", "plan", "agent"] as const) {
       await expect(
         orch.run({ repoRoot: repo, prompt: "x", mode, harnesses: ["fake-success"] }),
       ).rejects.toThrow(/mandatory context missing\/unreadable/);
@@ -3353,7 +3353,7 @@ describe("Orchestrator", () => {
     ).rejects.toThrow("contextMode 'off' is only supported for Ask without a repoRoot");
   });
 
-  it("runs explore as a bounded read-only swarm with synthesis and per-explorer artifacts", async () => {
+  it("runs deep scan as a bounded read-only scout sweep with synthesis and per-explorer artifacts", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
       ["fake-success", createFakeHarness("fake-success")],
@@ -3362,8 +3362,8 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "map auth and run storage",
-      mode: "audit",
-      swarm: true,
+      mode: "ask",
+      deepScan: true,
       harnesses: ["fake-success"],
       n: 2,
     });
@@ -3371,14 +3371,14 @@ describe("Orchestrator", () => {
     expect(res.candidates).toHaveLength(2);
     expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
     expect(existsSync(join(res.runDir, "findings", "a02.md"))).toBe(true);
-    expect(readFileSync(join(res.runDir, "final", "explore.md"), "utf8")).toContain(
+    expect(readFileSync(join(res.runDir, "final", "report.md"), "utf8")).toContain(
       "Explorers succeeded: 2/2",
     );
     expect(existsSync(join(res.runDir, "final", "explore-findings.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "omissions.md"))).toBe(true);
   });
 
-  it("keeps warning-bearing explorers in swarm synthesis when they produced a report", async () => {
+  it("keeps warning-bearing explorers in deep-scan synthesis when they produced a report", async () => {
     const repo = await initRepo();
     const warned = askAdapter("warned", function* (sessionId) {
       const ts = new Date().toISOString();
@@ -3425,13 +3425,13 @@ describe("Orchestrator", () => {
     const res = await orch.run({
       repoRoot: repo,
       prompt: "map auth and run storage",
-      mode: "audit",
-      swarm: true,
+      mode: "ask",
+      deepScan: true,
       harnesses: ["warned", "clean"],
       n: 2,
     });
     expect(res.status).toBe("success");
-    const explore = readFileSync(join(res.runDir, "final", "explore.md"), "utf8");
+    const explore = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
     expect(explore).toContain("Explorers succeeded: 2/2");
     expect(explore).toContain("Useful repository analysis.");
     expect(explore).toContain("Tool warnings");

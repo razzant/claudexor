@@ -16,10 +16,10 @@ describe("AgentCapabilityCatalog surfaces", () => {
       generatedAt: new Date().toISOString(),
       harnesses: [],
       availableHarnesses: [],
-      modes: ["ask", "plan", "audit", "agent", "orchestrate"],
+      modes: ["ask", "plan", "agent", "orchestrate"],
       runControlKeys: ["prompt"],
       mutability: {
-        readOnlyModes: ["ask", "plan", "audit"],
+        readOnlyModes: ["ask", "plan"],
         writeModes: ["agent", "orchestrate"],
         isolationKinds: ["envelope", "live"],
         workspaceModes: ["in_place", "isolated"],
@@ -56,13 +56,7 @@ describe("AgentCapabilityCatalog surfaces", () => {
   });
 
   it("MODE_MUTABILITY covers every canonical mode with a closed verdict", () => {
-    expect(Object.keys(MODE_MUTABILITY).sort()).toEqual([
-      "agent",
-      "ask",
-      "audit",
-      "orchestrate",
-      "plan",
-    ]);
+    expect(Object.keys(MODE_MUTABILITY).sort()).toEqual(["agent", "ask", "orchestrate", "plan"]);
     for (const v of Object.values(MODE_MUTABILITY)) expect(["read", "write"]).toContain(v);
   });
 

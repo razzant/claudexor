@@ -61,6 +61,7 @@ export function mcpSurfaceRunner() {
           ? { n: p.n }
           : {}),
       ...(p?.create === true ? { create: true } : {}),
+      ...(p?.deepScan === true ? { deepScan: true } : {}),
       ...(Array.isArray(p?.tests) ? { tests: p.tests } : {}),
       ...(p?.paidBudget ? { paidBudget: p.paidBudget } : {}),
       ...(p?.access ? { access: String(p.access) } : {}),

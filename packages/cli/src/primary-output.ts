@@ -15,25 +15,23 @@ interface CliPrimaryOutputCandidate {
 
 export function primaryOutputCandidatesForCli(mode?: ModeKind): CliPrimaryOutputCandidate[] {
   return mode === "ask"
-    ? [{ kind: "answer", path: "final/answer.md" }]
+    ? [
+        { kind: "answer", path: "final/answer.md" },
+        // deep scan writes a synthesized research report instead of an answer
+        { kind: "report", path: "final/report.md" },
+      ]
     : mode === "plan"
       ? [{ kind: "plan", path: "final/plan.md" }]
-      : mode === "audit"
+      : mode === "orchestrate"
         ? [
-            { kind: "report", path: "final/report.md" },
-            { kind: "report", path: "final/explore.md" },
+            { kind: "report", path: "final/orchestration.md" },
             { kind: "summary", path: "final/summary.md" },
           ]
-        : mode === "orchestrate"
-          ? [
-              { kind: "report", path: "final/orchestration.md" },
-              { kind: "summary", path: "final/summary.md" },
-            ]
-          : [
-              { kind: "answer", path: "final/answer.md" },
-              { kind: "summary", path: "final/summary.md" },
-              { kind: "patch", path: "final/patch.diff" },
-            ];
+        : [
+            { kind: "answer", path: "final/answer.md" },
+            { kind: "summary", path: "final/summary.md" },
+            { kind: "patch", path: "final/patch.diff" },
+          ];
 }
 
 export function primaryOutputForCli(root: string, mode?: ModeKind): CliPrimaryOutput | null {

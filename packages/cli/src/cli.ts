@@ -104,7 +104,7 @@ const CLI_VERSION = CLAUDEXOR_VERSION;
 
 const HELP = renderHelp(CLI_VERSION);
 
-const MODES = new Set<ModeKind>(["ask", "plan", "audit", "agent", "orchestrate"]);
+const MODES = new Set<ModeKind>(["ask", "plan", "agent", "orchestrate"]);
 
 function normalizeMode(s: string): ModeKind {
   const trimmed = s.trim();
@@ -319,7 +319,7 @@ async function orchestrate(
   args: ParsedArgs,
   mode: ModeKind,
   json: boolean,
-  forced: { swarm?: boolean; create?: boolean; race?: boolean } = {},
+  forced: { deepScan?: boolean; create?: boolean; race?: boolean } = {},
 ): Promise<number> {
   let rawPrompt = args._.slice(1).join(" ").trim();
   // Headless prompt sources (W13): `-` reads the prompt from stdin; a file
@@ -383,7 +383,7 @@ async function orchestrate(
       ].join("\n")
     : rawPrompt;
   const spec = loadedSpec?.spec ?? null;
-  if (!prompt && mode !== "audit") {
+  if (!prompt) {
     return printUsageError(json, "claudexor: missing prompt");
   }
   const portfolioRaw = flagStr(args, "portfolio");
@@ -576,7 +576,7 @@ interface DaemonRunParams {
   specHash: string | undefined;
   specPath: string | undefined;
   attachmentRequest: ReturnType<typeof attachmentInputs> | undefined;
-  forced: { swarm?: boolean; create?: boolean; race?: boolean };
+  forced: { deepScan?: boolean; create?: boolean; race?: boolean };
 }
 
 /**
@@ -679,7 +679,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     ...(p.forced.race === true ? { n: p.nFlag ?? 2 } : p.nFlag !== undefined ? { n: p.nFlag } : {}),
     ...(p.attemptsFlag !== undefined ? { attempts: p.attemptsFlag } : {}),
     ...(flagBool(args, "until-clean") ? { untilClean: true } : {}),
-    ...(p.forced.swarm === true || flagBool(args, "swarm") ? { swarm: true } : {}),
+    ...(p.forced.deepScan === true || flagBool(args, "deep-scan") ? { deepScan: true } : {}),
     ...(p.forced.create === true || flagBool(args, "create") ? { create: true } : {}),
     ...(p.resolvedSynthesis ? { synthesis: p.resolvedSynthesis } : {}),
     ...(p.tests ? { tests: p.tests } : {}),
@@ -1190,7 +1190,7 @@ async function main(): Promise<number> {
             `claudexor: unknown --mode '${modeStr}'. valid: ${[...MODES].join(", ")}`,
           );
         }
-        if ((mode === "ask" || mode === "audit") && flagStr(args, "spec")) {
+        if (mode === "ask" && flagStr(args, "spec")) {
           return printUsageError(json, specStrategyError);
         }
         if (mode === "agent") {
@@ -1207,26 +1207,28 @@ async function main(): Promise<number> {
     case "ask":
       return orchestrate(args, "ask", json);
 
-    case "explore":
-      return orchestrate(args, "audit", json, { swarm: true });
-
     case "best-of":
       return orchestrate(args, "agent", json, { race: true });
 
-    // RENAMED verbs hard-error with the new name — no silent aliases (the
-    // same doctrine as retired mode ids: a stale script must fail loudly).
+    // RETIRED verb spellings hard-error with the new spelling — no silent
+    // aliases (same doctrine as retired mode ids: stale scripts fail loudly).
     case "run":
-      return printPreflightError(
-        args,
-        json,
-        "claudexor: the 'run' verb was renamed; use 'claudexor agent' (same flags)",
-      );
     case "race":
+    case "audit":
+    case "map":
+    case "explore": {
+      const replacement =
+        cmd === "run"
+          ? "claudexor agent (same flags)"
+          : cmd === "race"
+            ? "claudexor best-of (same flags)"
+            : "claudexor ask --deep-scan <prompt>";
       return printPreflightError(
         args,
         json,
-        "claudexor: the 'race' verb was renamed; use 'claudexor best-of' (same flags)",
+        `claudexor: the '${cmd}' verb was retired; use ${replacement}`,
       );
+    }
 
     case "orchestrate":
       return orchestrate(args, "orchestrate", json);
@@ -1239,10 +1241,6 @@ async function main(): Promise<number> {
 
     case "create":
       return orchestrate(args, "agent", json, { create: true });
-
-    case "audit":
-    case "map":
-      return orchestrate(args, "audit", json);
 
     case "settings":
       return settingsCommand(args, json);

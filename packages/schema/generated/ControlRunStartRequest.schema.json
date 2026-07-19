@@ -37,11 +37,10 @@
           "enum": [
             "ask",
             "plan",
-            "audit",
             "agent",
             "orchestrate"
           ],
-          "description": "Canonical run mode: ask, plan, and audit are read-only; agent writes; orchestrate is the autonomous coordinator intent. Engine strategies (race, attempts, swarm, create) are flags on a mode, not modes.",
+          "description": "Canonical run mode: ask and plan are read-only, agent writes; orchestrate is retained only until delegation replaces it. Engine strategies (race width, attempts, deep_scan, create) are flags on a mode, not modes.",
           "default": "agent"
         },
         "scope": {
@@ -220,9 +219,9 @@
           "type": "boolean",
           "description": "Agent flag: iterate until the convergence predicate is clean (no fixed cap)."
         },
-        "swarm": {
+        "deepScan": {
           "type": "boolean",
-          "description": "Audit flag: bounded read-only research swarm."
+          "description": "Ask flag: bounded multi-scout research sweep with synthesis."
         },
         "create": {
           "type": "boolean",

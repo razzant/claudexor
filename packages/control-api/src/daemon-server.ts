@@ -2123,11 +2123,11 @@ function paramsFingerprint(rec: DaemonRunRecord): string {
 /** v0.9 strategy flags projected back so surfaces can tell a race from a repair loop. */
 function strategyFromParams(
   p: Record<string, unknown>,
-): "race" | "attempts" | "until_clean" | "swarm" | "create" | null {
+): "race" | "attempts" | "until_clean" | "deep_scan" | "create" | null {
   if (p["untilClean"] === true) return "until_clean";
   if (typeof p["attempts"] === "number" && p["attempts"] > 0) return "attempts";
   if (p["create"] === true) return "create";
-  if (p["swarm"] === true) return "swarm";
+  if (p["deepScan"] === true) return "deep_scan";
   if (typeof p["n"] === "number" && p["n"] > 1) return "race";
   return null;
 }

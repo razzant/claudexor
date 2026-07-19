@@ -141,12 +141,14 @@ invariant or owner decision before proceeding.
 
 ## 4. Modes Are Canonical And Breaking
 
-- **INV-030** The canonical modes are exactly `ask`, `plan`, `audit`,
-  `agent`, `orchestrate` — five intents-on-a-thread. verify: `ModeKind` in
-  schema; docs-truth mode-id check.
+- **INV-030** The canonical modes are exactly `ask`, `plan`, `agent` —
+  three conversation intents — plus `orchestrate` only until its delegation
+  replacement lands inside this same release (it is scheduled for deletion,
+  never a stable mode). verify: `ModeKind` in schema; docs-truth mode-id
+  check.
 - **INV-031** Engine strategies are FLAGS on a mode, never modes of their
   own: best-of-N (`--n`), capped repair (`--attempts`), repair-to-clean
-  (`--until-clean`), research swarm (`audit --swarm`), create-from-scratch
+  (`--until-clean`), research sweep (`ask --deep-scan`), create-from-scratch
   (`agent --create`). verify: CLI help + docs-truth flag check.
 - **INV-032** Old mode ids are not compatibility aliases; they hard-error at
   every wire boundary unless explicitly reintroduced in schema and docs.
@@ -154,10 +156,10 @@ invariant or owner decision before proceeding.
 - **INV-033** `Agent` is the default composer/`claudexor agent` route on a
   project thread — in Agent the harness itself decides whether to answer or
   edit the tree (Codex/Cursor/Claude Code semantics); a no-project thread
-  falls back to read-only `Ask`. `Orchestrate` is the orchestrator — an intent
-  routed like reviewers, never a privileged harness. The retired verb
-  spellings (`run`, `race`) hard-error with the new name (`agent`,
-  `best-of`) — no compatibility aliases, same doctrine as retired mode ids.
+  falls back to read-only `Ask`. The retired verb spellings (`run`, `race`,
+  `audit`, `map`, `explore`) hard-error with the new spelling (`agent`,
+  `best-of`, `ask --deep-scan`) — no compatibility aliases, same doctrine as
+  retired mode ids.
   verify: orchestrator default-mode tests; UI intent menu review; canary
   `[INV-033:verbs-renamed]`.
 - **INV-034** A thread is the Claudexor-owned conversation (runs are its

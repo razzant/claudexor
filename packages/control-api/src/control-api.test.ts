@@ -5343,8 +5343,7 @@ describe("DaemonControlApiServer", () => {
     const cases: { mode: string; path: string; kind: string; text: string }[] = [
       { mode: "ask", path: "final/answer.md", kind: "answer", text: "Answer: 4" },
       { mode: "plan", path: "final/plan.md", kind: "plan", text: "# Plan" },
-      { mode: "audit", path: "final/explore.md", kind: "report", text: "# Explore" },
-      { mode: "audit", path: "final/report.md", kind: "report", text: "# Audit" },
+      { mode: "ask", path: "final/report.md", kind: "report", text: "# Deep scan" },
     ];
     for (const c of cases) {
       const { daemon, record } = fakeDaemon();
@@ -6255,7 +6254,7 @@ describe("DaemonControlApiServer", () => {
           scope: { kind: "project", root },
           maxToolCalls: 3,
         }),
-      ).toThrow(/only applies to mode=orchestrate/);
+      ).toThrow(/orchestrate knob/);
       const ok = normalizeRunStartRequest({
         prompt: "x",
         mode: "orchestrate",

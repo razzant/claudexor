@@ -47,7 +47,7 @@ function wire(tools: McpTool[], opts: { version?: string } = {}) {
 }
 
 describe("Claudexor MCP server (SDK v2)", () => {
-  it("negotiates the client's 2025-06-18 era, lists 19 tools, and answers PING during a slow call", async () => {
+  it("negotiates the client's 2025-06-18 era, lists 18 tools, and answers PING during a slow call", async () => {
     const tools = defaultClaudexorTools(async (p) => {
       if (p.mode === "agent") {
         await sleep(500);
@@ -84,7 +84,7 @@ describe("Claudexor MCP server (SDK v2)", () => {
     const init = w.responses.find((r) => r.id === "init");
     expect(init?.result?.protocolVersion).toBe("2025-06-18");
     expect(init?.result?.serverInfo?.name).toBe("claudexor");
-    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(19);
+    expect(w.responses.find((r) => r.id === 2)?.result?.tools).toHaveLength(18);
     const call = w.responses.find((r) => r.id === 3);
     expect(call?.result?.content?.[0]?.text).toContain("slow done");
   });
@@ -131,10 +131,10 @@ describe("Claudexor MCP server (SDK v2)", () => {
       generatedAt: new Date().toISOString(),
       harnesses: [],
       availableHarnesses: [],
-      modes: ["ask", "plan", "audit", "agent", "orchestrate"],
+      modes: ["ask", "plan", "agent", "orchestrate"],
       runControlKeys: ["prompt"],
       mutability: {
-        readOnlyModes: ["ask", "plan", "audit"],
+        readOnlyModes: ["ask", "plan"],
         writeModes: ["agent", "orchestrate"],
         isolationKinds: ["envelope", "live"],
         workspaceModes: ["in_place", "isolated"],

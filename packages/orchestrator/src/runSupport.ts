@@ -497,7 +497,7 @@ export function buildEnvelopeSubInput<
     repoRoot: input.repoRoot,
     prompt: call.prompt,
     mode: (call.tool === "start_run" ? (call.mode ?? "agent") : "agent") as
-      "agent" | "ask" | "plan" | "audit" | "orchestrate",
+      "agent" | "ask" | "plan" | "orchestrate",
     n: call.tool === "race" ? call.n : undefined,
     harnesses: call.tool === "start_run" && call.harness ? [call.harness] : undefined,
     routingGoal: input.routingGoal,

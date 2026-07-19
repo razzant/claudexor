@@ -10,7 +10,6 @@ const modeIntent = {
   agent: "implement",
   ask: "explain",
   plan: "plan",
-  audit: "audit",
   orchestrate: "orchestrate",
 } as const satisfies Record<NonNullable<ControlRunStartRequest["mode"]>, Intent>;
 

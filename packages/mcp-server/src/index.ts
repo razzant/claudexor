@@ -366,7 +366,12 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
       n: {
         type: "integer",
         minimum: minN,
-        description: "Optional best-of-N width for candidate races.",
+        description: "Optional best-of-N width for candidate races (or deep-scan scout width).",
+      },
+      deepScan: {
+        type: "boolean",
+        description:
+          "Ask only: widen the answer into a bounded multi-scout research sweep with synthesis.",
       },
       repoPath: {
         type: "string",
@@ -427,7 +432,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
     required: ["prompt"],
   });
   // Behavior hints derive from the tool's MODE (data, not per-name hardcode):
-  // ask/audit/plan and suggest-only orchestrate are read-only; agent tools mutate.
+  // ask/plan and suggest-only orchestrate are read-only; agent tools mutate.
   const annotationsFor = (params: Record<string, unknown>): McpToolAnnotations =>
     params["mode"] === "agent"
       ? { readOnlyHint: false, destructiveHint: false }
@@ -494,13 +499,8 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
   return [
     mk(
       "claudexor_ask",
-      "One-shot read-only answer through Claudexor; returns final output, not a live thread.",
+      "One-shot read-only answer through Claudexor; pass deepScan:true for a bounded multi-scout research sweep with synthesis. Returns final output, not a live thread.",
       { mode: "ask" },
-    ),
-    mk(
-      "claudexor_explore",
-      "One-shot bounded read-only exploration and synthesis through Claudexor.",
-      { mode: "audit", swarm: true },
     ),
     mk(
       "claudexor_run",

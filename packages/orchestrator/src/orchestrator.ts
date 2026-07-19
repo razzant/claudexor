@@ -267,8 +267,8 @@ export interface RunInput {
   attempts?: number | null;
   /** agent flag: iterate until the convergence predicate is clean (no fixed cap). */
   untilClean?: boolean;
-  /** audit flag: bounded read-only research swarm (the old `explore` mode). */
-  swarm?: boolean;
+  /** ask flag: bounded multi-scout research sweep with synthesis. */
+  deepScan?: boolean;
   /** agent flag: create-from-scratch intent (the old `create` mode). */
   create?: boolean;
   synthesis?: SynthesisMode;
@@ -636,12 +636,11 @@ export class Orchestrator {
     return guardAnnouncedRun(resolved.signal, (announce) => {
       switch (mode) {
         case "ask":
-          return this.runAsk(resolved, announce);
-        case "audit":
-          // `--swarm` selects the bounded read-only research swarm (old `explore`).
-          return resolved.swarm
-            ? this.runExplore(resolved, announce)
-            : this.runAudit(resolved, announce);
+          // `--deep-scan` widens the answer into the bounded multi-scout
+          // research sweep with synthesis (the old `audit --swarm`/`explore`).
+          return resolved.deepScan
+            ? this.runDeepScan(resolved, announce)
+            : this.runAsk(resolved, announce);
         case "agent":
           // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
           // and `--attempts` select the convergence loop; `--n` selects the race
@@ -1455,8 +1454,7 @@ export class Orchestrator {
   private buildContract(input: RunInput, taskId: string, mode: ModeKind): TaskContract {
     const resolvedCfg = this.config(input.repoRoot);
     const cfg = resolvedCfg.project;
-    const readOnlyMode =
-      mode === "ask" || mode === "plan" || mode === "audit" || mode === "orchestrate";
+    const readOnlyMode = mode === "ask" || mode === "plan" || mode === "orchestrate";
     const requestedAccess =
       input.access ?? (readOnlyMode ? "readonly" : resolvedCfg.trust.access_default);
     // Effective access is COMPUTED by the engine, never echoed from a client:
@@ -5203,7 +5201,7 @@ export class Orchestrator {
       input,
       {
         mode: "ask",
-        swarm: false,
+        deepScan: false,
         intent: "explain",
         title: "Answer",
         artifactName: "answer.md",
@@ -5213,40 +5211,22 @@ export class Orchestrator {
     );
   }
 
-  /** audit --swarm: bounded read-only research swarm (the old `explore` mode). */
-  private async runExplore(
+  /** ask --deep-scan: bounded multi-scout research sweep with synthesis
+   * (the old `audit --swarm` / `explore`). */
+  private async runDeepScan(
     input: RunInput,
     announce?: (a: AnnouncedRunContext) => void,
   ): Promise<OrchestratorResult> {
     return this.runReadOnlyReport(
       input,
       {
-        mode: "audit",
-        swarm: true,
+        mode: "ask",
+        deepScan: true,
         intent: "audit",
-        title: "Explore synthesis",
-        artifactName: "explore.md",
+        title: "Deep scan synthesis",
+        artifactName: "report.md",
         defaultPrompt:
           "Explore this repository and synthesize evidence-cited findings, omissions, and follow-up questions.",
-      },
-      announce,
-    );
-  }
-
-  /** audit: single read-only audit/map report. */
-  private async runAudit(
-    input: RunInput,
-    announce?: (a: AnnouncedRunContext) => void,
-  ): Promise<OrchestratorResult> {
-    return this.runReadOnlyReport(
-      input,
-      {
-        mode: "audit",
-        swarm: false,
-        intent: "audit",
-        title: "Audit report",
-        artifactName: "report.md",
-        defaultPrompt: "audit this repository",
       },
       announce,
     );
@@ -5334,7 +5314,7 @@ export class Orchestrator {
       },
       {
         mode: "orchestrate",
-        swarm: false,
+        deepScan: false,
         intent: "orchestrate",
         title: "Orchestration plan",
         artifactName: "orchestration.md",
@@ -5349,8 +5329,8 @@ export class Orchestrator {
   private async runReadOnlyReport(
     input: RunInput,
     opts: {
-      mode: "ask" | "audit" | "orchestrate";
-      swarm: boolean;
+      mode: "ask" | "orchestrate";
+      deepScan: boolean;
       intent: "explain" | "audit" | "orchestrate";
       title: string;
       artifactName: string;
@@ -5443,7 +5423,7 @@ export class Orchestrator {
     }
 
     const externalContextPolicy = contract.external_context.policy;
-    const width = opts.swarm
+    const width = opts.deepScan
       ? Math.min(Math.max(input.n ?? 4, 1), 8)
       : externalContextPolicy === "off"
         ? 1
@@ -5459,7 +5439,7 @@ export class Orchestrator {
         ledger,
         roHome,
       );
-      if (!opts.swarm) {
+      if (!opts.deepScan) {
         const seen = new Set<string>();
         adapters = adapters.filter((routed) => {
           if (seen.has(routed.adapter.id)) return false;
@@ -5559,7 +5539,7 @@ export class Orchestrator {
       const knobs = this.routeSpecKnobs(routed, contract, modelOverride, input.effort);
       const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
       const explorerPrompt =
-        (opts.swarm
+        (opts.deepScan
           ? `${prompt}\n\nExplorer ${idx + 1}/${adapters.length}: focus on a distinct slice. Emit evidence-cited findings, explicit unknowns/omissions, and follow-up questions. Do not edit files.`
           : prompt) + contextSection;
       const sessionFields = this.sessionSpecFields(input, adapter.id, log);
@@ -5823,7 +5803,7 @@ export class Orchestrator {
           error: harnessError,
           telemetry,
         });
-        if (opts.swarm) {
+        if (opts.deepScan) {
           store.writeText(
             join(paths.findingsDir, `${attemptId}-error.md`),
             `# Explorer ${attemptId} failed\n\n${harnessError}\n`,
@@ -5845,7 +5825,7 @@ export class Orchestrator {
         error: null,
         telemetry,
       });
-      if (opts.swarm) {
+      if (opts.deepScan) {
         const warningNote = toolWarnings(telemetry).length
           ? `\n\n> Tool warnings: ${toolWarnings(telemetry)
               .map((e) => `${e.tool}: ${e.summary}`)
@@ -5859,7 +5839,7 @@ export class Orchestrator {
     };
 
     try {
-      if (opts.swarm) {
+      if (opts.deepScan) {
         // Explorer swarm runs in parallel (bounded), mirroring parallel candidates.
         await runBounded(
           adapters,
@@ -5974,7 +5954,7 @@ export class Orchestrator {
     }
 
     const succeededReadonly = attempts.filter((a) => a.status === "success");
-    if (!opts.swarm && succeededReadonly.length === 0) {
+    if (!opts.deepScan && succeededReadonly.length === 0) {
       const last = attempts[attempts.length - 1];
       const webBlocked = attempts.some((a) => a.status === "blocked");
       const singleError =
@@ -6066,7 +6046,7 @@ export class Orchestrator {
       };
     }
     const succeeded = succeededReadonly;
-    if (opts.swarm && succeeded.length === 0) {
+    if (opts.deepScan && succeeded.length === 0) {
       const message = attempts
         .map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`)
         .join("\n");
@@ -6130,7 +6110,7 @@ export class Orchestrator {
       };
     }
     const unsuccessful = attempts.filter((a) => a.status !== "success");
-    const report = opts.swarm
+    const report = opts.deepScan
       ? [
           `Explorers succeeded: ${succeeded.length}/${attempts.length}.`,
           "",
@@ -6202,13 +6182,13 @@ export class Orchestrator {
       taskId,
       opts.mode,
       attemptTelemetries,
-      opts.swarm ? null : (succeeded[0]?.attemptId ?? null),
+      opts.deepScan ? null : (succeeded[0]?.attemptId ?? null),
     );
     log.emit("output.ready", {
       kind: opts.mode === "ask" ? "answer" : "report",
       path: `final/${opts.artifactName}`,
     });
-    if (opts.swarm) {
+    if (opts.deepScan) {
       store.writeYaml(join(paths.finalDir, "explore-findings.yaml"), {
         mode: "explore",
         width,

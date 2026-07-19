@@ -10,7 +10,7 @@ changing Claudexor.
 
 | Surface | Current role | Stability |
 |---|---|---|
-| CLI | Human and automation entrypoint: run verbs (init, ask, explore, agent, best-of, plan, spec, create, audit — `map` is its alias — orchestrate), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, plugin, daemon, gc, auth, secrets, profiles, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
+| CLI | Human and automation entrypoint: run verbs (init, ask — `--deep-scan` for the research sweep — agent, best-of, plan, spec, create, orchestrate), run inspection/recovery (inspect, follow, retry, run-again, apply, decision, review), ops (project, models, harness, doctor, quota, plugin, daemon, gc, auth, secrets, profiles, settings, trust, release), and agent introspection (capabilities, `help --json`). | Stable contract: the verb/flag surface (`help --json`) and `--json` output keys on run paths (add-only). JSON support exists on primary machine-readable paths, not every subcommand. |
 | Daemon and control API | Local durable queue, run list/detail, artifacts, SSE events, settings, harness status, secrets metadata, apply, and run control. | Stable contract: endpoints and DTOs per `docs/reference/endpoints.json` + generated schemas (add-only fields). Loopback + bearer token only. |
 | MCP server | Exposes Claudexor tools to MCP clients. | Stable contract: the tool set with input/output schemas. Tool list follows the implementation, not old docs. |
 | ACP server | Lets compatible editors or agents talk to Claudexor as a local agent surface. | Experimental (may change in minors, disclosed in the CHANGELOG). |
@@ -24,7 +24,7 @@ artifact directory.
 ```bash
 claudexor ask "explain the auth flow" --json
 claudexor ask "google the latest release notes" --web auto --json
-claudexor explore "map this repo's run storage" --json
+claudexor ask --deep-scan "map this repo's run storage" --json
 claudexor agent "fix the failing parser test" --json
 claudexor best-of "fix add() in src/math.js" --harness codex,claude --n 2 --json
 claudexor inspect <run_id> --json
@@ -95,7 +95,7 @@ The API is loopback-only and bearer-token guarded (`GET /healthz` is the one
 unauthenticated, loopback-host-guarded liveness route). Artifact files remain
 the source of truth; API responses are projections over daemon state and run
 files. Every product route is under `/v2`: clients first `POST /v2/handshake`,
-then send `X-Claudexor-Protocol-Major: 2`; incompatible or missing negotiation
+then send `X-Claudexor-Protocol-Major: 3`; incompatible or missing negotiation
 returns a typed `426`. `GET /v2/operations` is the runtime operation catalog,
 and unversioned product aliases do not exist.
 `GET /v2/quota` returns every independently reported vendor-owned quota window
@@ -194,7 +194,7 @@ and surface as `isError` tool results.
 
 MCP Tasks remain experimental and are not advertised. Run tools return a
 daemon-bound durable handle instead of holding a tool call open until terminal.
-The implemented tools include `claudexor_ask`, `claudexor_explore`, `claudexor_run`,
+The implemented tools include `claudexor_ask` (with `deepScan`), `claudexor_run`,
 `claudexor_best_of`, `claudexor_plan`, `claudexor_create`,
 `claudexor_orchestrate`, `claudexor_status`, `claudexor_capabilities`
 (the derived AgentCapabilityCatalog: per-harness live capabilities, modes,

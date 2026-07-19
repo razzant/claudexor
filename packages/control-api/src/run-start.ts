@@ -7,7 +7,7 @@
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
-import { ControlRunStartRequest } from "@claudexor/schema";
+import { ControlRunStartRequest, runStartStrategyViolations } from "@claudexor/schema";
 import { assertNoInlineSecretValues, noProjectRepoRoot } from "@claudexor/util";
 import type { DaemonFacadeClient } from "./daemon-server.js";
 import { recordTurnEnqueueFailure } from "./thread-turn-routes.js";
@@ -33,14 +33,12 @@ export function normalizeRunStart(parsed: ControlRunStartRequest): ControlRunSta
     );
   }
   // maxToolCalls caps the orchestrate EXECUTOR's plan steps; accepting it on
-  // any other mode would create a silent no-op knob (INV-023).
-  if (parsed.maxToolCalls !== undefined && mode !== "orchestrate") {
-    throw Object.assign(
-      new Error(
-        "maxToolCalls only applies to mode=orchestrate (it caps the executor's plan steps)",
-      ),
-      { status: 400 },
-    );
+  // any other mode would create a silent no-op knob (INV-023). The shared
+  // mode/strategy coherence owner (D11) covers that class wholesale: every
+  // strategy flag is refused on a mode it does not belong to.
+  const strategyViolations = runStartStrategyViolations(parsed);
+  if (strategyViolations.length > 0) {
+    throw Object.assign(new Error(strategyViolations.join("; ")), { status: 400 });
   }
   if (specPath && specPath !== parsed.specPath) parsed = { ...parsed, specPath };
   // Validate BEFORE enqueue (ARCHITECTURE §5): a contradictory web policy must

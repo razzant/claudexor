@@ -283,7 +283,7 @@ async function main(): Promise<void> {
             n: p.n,
             attempts: p.attempts ?? null,
             untilClean: p.untilClean === true,
-            swarm: p.swarm === true,
+            deepScan: p.deepScan === true,
             create: p.create === true,
             synthesis: p.synthesis,
             paidBudget: p.paidBudget,

@@ -111,14 +111,13 @@ does not bypass built-in critical/security human gates.
 
 ## Modes
 
-Canonical mode ids (exactly five intents; engine strategies are
-FLAGS, not modes):
+Canonical mode ids (engine strategies are FLAGS, not modes):
 
-- `ask` - read-only answer/explanation route. The macOS composer's no-project
+- `ask` - read-only answer/explanation route. `--deep-scan` widens it into
+  the bounded multi-scout research sweep with synthesis (per-scout findings,
+  omissions, follow-up questions). Also the macOS composer's no-project
   fallback intent (Agent is the default on a project thread).
 - `plan` - read-only multi-harness planning and draft SpecPack grounding.
-- `audit` - read-only audit/map report; `--swarm` runs the bounded research
-  swarm (per-explorer findings, synthesis, omissions, follow-up questions).
 - `agent` - default `claudexor agent` route. Strategy flags: `--n N` (best-of-N
   race with isolated candidates, review, synthesis, arbitration),
   `--attempts N` (repair loop with a hard cap), `--until-clean` (repair loop
@@ -135,16 +134,15 @@ FLAGS, not modes):
   applies through the single shared delivery gate, so it can mutate the live
   project.
 
-Unknown modes fail loudly. The old strategy mode ids (`best_of_n`,
-`max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`) and the
-older ids (`daily`, `until_convergence`, `readonly_swarm`) are NOT aliases.
-Note the wire-mode vs CLI-verb distinction: `claudexor explore` and
-`claudexor create` are CLI convenience VERBS that map onto `audit --swarm` and
-`agent --create`, while the old WIRE mode ids above still hard-error at every
-API/DTO boundary.
+Unknown modes fail loudly. The retired mode ids (`audit`, `best_of_n`,
+`max_attempts`, `until_clean`, `explore`, `create`, `readonly_audit`, `daily`,
+`until_convergence`, `readonly_swarm`) are NOT aliases, and the retired
+`audit`/`map`/`explore` verbs hard-error pointing at `claudexor ask
+--deep-scan`. `claudexor create` remains a CLI convenience VERB mapping onto
+`agent --create`; old WIRE mode ids hard-error at every API/DTO boundary.
 
 Chat is the normal loop: `claudexor` with no arguments opens a REPL over a
-thread. Read-only turns (ask/plan/audit, and orchestrate with the default
+thread. Read-only turns (ask/plan, and orchestrate with the default
 `suggest` autonomy) RESUME the routed
 harness's own native CLI session (codex `exec resume`, claude `--resume`) —
 plan first, then keep asking, in ONE conversation. Write (agent) turns run

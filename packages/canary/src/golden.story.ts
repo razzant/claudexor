@@ -112,7 +112,7 @@ describe("canary golden stories", () => {
     const commands: Array<{ args: string[]; mode: string; harness?: string }> = [
       { args: ["ask", "answer"], mode: "ask" },
       { args: ["plan", "plan"], mode: "plan" },
-      { args: ["agent", "inspect", "--mode", "audit"], mode: "audit" },
+      { args: ["ask", "inspect", "--deep-scan"], mode: "ask" },
       { args: ["agent", "change"], mode: "agent" },
       {
         args: ["agent", "coordinate", "--mode", "orchestrate"],

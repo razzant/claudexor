@@ -19,7 +19,12 @@ function sseServer(
       if (req.method === "POST" && req.url === "/v2/handshake") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
-          JSON.stringify({ protocolMajor: 3, compatible: true, operationsPath: "/v2/operations", engine: { version: "0.0.0-test", sha: "unknown", entry: "/test" } }),
+          JSON.stringify({
+            protocolMajor: 3,
+            compatible: true,
+            operationsPath: "/v2/operations",
+            engine: { version: "0.0.0-test", sha: "unknown", entry: "/test" },
+          }),
         );
         return;
       }

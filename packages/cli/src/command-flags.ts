@@ -95,7 +95,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("synthesis", "<mode>", "Best-of-N synthesis: auto (default, only n>=3)|always|never"),
   valueFlag("attempts", "<N>", "Convergence cap (agent): repair loop up to N attempts"),
   booleanFlag("until-clean", "Convergence (agent): iterate until the review/gates are clean"),
-  booleanFlag("swarm", "Research swarm (audit): bounded read-only explorer fan-out"),
+  booleanFlag("deep-scan", "Deep scan (ask): bounded multi-scout research sweep with synthesis"),
   booleanFlag("resume", "Continue the most recently updated thread (shorthand for --thread <id>)"),
   booleanFlag(
     "json-stream",

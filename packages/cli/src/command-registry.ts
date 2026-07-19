@@ -49,8 +49,9 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   {
     id: "ask",
     usageArgs: '"<question>" [opts]',
-    summary: "Read-only answer/explanation route",
-    flags: [...RUN_FLAGS],
+    summary:
+      "Read-only answer/explanation route (--deep-scan widens to a multi-scout research sweep)",
+    flags: [...RUN_FLAGS, "deep-scan"],
     mutability: "read",
     stability: "stable",
     hostFallbackExample: 'claudexor ask "..."',
@@ -59,7 +60,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     id: "agent",
     usageArgs: '"<prompt>" [opts]',
     summary: "Run a task (default mode: agent)",
-    flags: [...RUN_FLAGS, "mode", "swarm", "autonomy", "max-tool-calls"],
+    flags: [...RUN_FLAGS, "mode", "autonomy", "max-tool-calls"],
     mutability: "write",
     stability: "stable",
     hostFallbackExample: 'claudexor agent "..."',
@@ -115,22 +116,6 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     summary: "Create-from-scratch (agent --create)",
     flags: [...RUN_FLAGS],
     mutability: "write",
-    stability: "stable",
-  },
-  {
-    id: "audit",
-    aliases: ["map"],
-    summary: "Read-only repo audit / map",
-    flags: [...RUN_FLAGS, "swarm"],
-    mutability: "read",
-    stability: "stable",
-  },
-  {
-    id: "explore",
-    usageArgs: '"<question>"',
-    summary: "Read-only research swarm (audit --swarm)",
-    flags: [...RUN_FLAGS],
-    mutability: "read",
     stability: "stable",
   },
   {
@@ -345,7 +330,6 @@ export const REPL_COMMANDS: readonly {
 }[] = [
   { name: "/ask", args: "<q>", help: "read-only answer turn" },
   { name: "/plan", args: "<prompt>", help: "read-only planning turn" },
-  { name: "/audit", args: "[prompt]", help: "read-only audit turn" },
   { name: "/best-of", args: "<prompt>", help: "best-of-2 turn (cross-family review)" },
   { name: "/orchestrate", args: "<g>", help: "typed orchestration plan over the tool belt" },
   { name: "/thread", help: "show the current thread (turns + native sessions)" },

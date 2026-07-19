@@ -33,7 +33,6 @@ export const RUN_START_CLIENT_REJECTED_KEYS = ["turnId", "planRunId"] as const;
 export const MODE_MUTABILITY: Record<z.infer<typeof ModeKind>, "read" | "write"> = {
   ask: "read",
   plan: "read",
-  audit: "read",
   agent: "write",
   orchestrate: "write",
 };

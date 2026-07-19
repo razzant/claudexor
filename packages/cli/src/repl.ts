@@ -28,8 +28,6 @@ function parseReplLine(
       return { mode: "ask", prompt: arg };
     case "plan":
       return { mode: "plan", prompt: arg };
-    case "audit":
-      return { mode: "audit", prompt: arg };
     case "best-of":
       return { mode: "agent", prompt: arg, race: true };
     case "orchestrate":

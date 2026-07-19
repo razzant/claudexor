@@ -62,7 +62,6 @@
           "enum": [
             "ask",
             "plan",
-            "audit",
             "agent",
             "orchestrate"
           ],
