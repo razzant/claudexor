@@ -180,16 +180,16 @@ enum RunStatus: String, CaseIterable, Identifiable, Hashable {
     var needsAttention: Bool { self == .needsReview || self == .blocked || self == .ungated || self == .reviewNotRun || self == .failed || self == .costUnverifiable || self == .exhaustedOvershoot || self == .exhausted || self == .notConverged || self == .stuckNoProgress || self == .unknown }
 }
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
-    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, spec, unknown
+    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, unknown
     var id: String { rawValue }
     static var allCases: [RunMode] {
-        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .orchestrate, .spec]
+        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .orchestrate]
     }
 
-    /// The wire MODE (v0.9: five canonical ids — strategies ride as flags, see `strategyFlags`).
-    /// `.spec` has NO wire mode: it uses the durable `/spec/sessions` workflow
-    /// (sendTurn never sends it as a normal turn), so it maps to the
-    /// sentinel "unknown" — which `sendTurn` rejects loudly if it ever leaks here.
+    /// The wire MODE (v3: three intents — Ask/Plan/Agent — with strategies as
+    /// flags, see `strategyFlags`). The remaining enum cases (Best-of / Create /
+    /// Explore / …) are DISPLAY/strategy projections of `agent`|`audit`, kept so
+    /// historical runs render and the composer's pool/`n` logic is unchanged.
     var apiValue: String {
         switch self {
         case .ask: return "ask"
@@ -197,7 +197,7 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .agent, .bestOfN, .maxAttempts, .untilClean, .create: return "agent"
         case .plan: return "plan"
         case .orchestrate: return "orchestrate"
-        case .spec, .unknown: return "unknown"
+        case .unknown: return "unknown"
         }
     }
 
@@ -255,7 +255,6 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .create: return "Create"
         case .readOnlyAudit: return "Read-only Audit"
         case .orchestrate: return "Orchestrate"
-        case .spec: return "Spec"
         case .unknown: return "Unknown Mode"
         }
     }
@@ -271,7 +270,6 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .create: return "plus.square.on.square"
         case .readOnlyAudit: return "magnifyingglass"
         case .orchestrate: return "brain.head.profile"
-        case .spec: return "checklist"
         case .unknown: return "exclamationmark.triangle"
         }
     }
@@ -287,12 +285,11 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .create: return "Scaffold a brand-new repo or component."
         case .readOnlyAudit: return "Read-only audit / map of a codebase."
         case .orchestrate: return "Routed like reviewers; produces a typed orchestration plan over the tool belt."
-        case .spec: return "Interview to freeze a SpecPack: grounding plan → questions → answers → frozen spec to implement."
         case .unknown: return "Persisted run uses an unsupported or legacy mode id."
         }
     }
     var isMultiCandidate: Bool { self == .bestOfN }
-    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit || self == .orchestrate || self == .spec }
+    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit || self == .orchestrate }
     var requiresProject: Bool { self != .ask }
     var requiredIntent: String {
         switch self {
@@ -302,7 +299,6 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .readOnlyAudit: return "audit"
         case .create: return "create_from_scratch"
         case .orchestrate: return "orchestrate"
-        case .spec: return "plan"
         case .unknown: return "implement"
         default: return "implement"
         }
@@ -321,6 +317,11 @@ struct TurnOptions: Equatable {
     var web: String? = nil             // auto | off | cached | live
     var untilClean: Bool = false
     var maxAttempts: Int? = nil        // nil => engine default repair cap
+    /// Agent delegation belt (D32); agent-only. Sent as `delegate` on the turn.
+    var delegate: Bool = false
+    /// Plan council (D31); plan-only. Sent as `council`; `councilN` sets width.
+    var council: Bool = false
+    var councilN: Int? = nil
     var browser: Bool = false          // arm the agent-driven browser (full access)
     /// Harness-scoped per-turn models (harness id -> model id). Built by the
     /// composer's per-harness pickers; empty entries are dropped before send.
@@ -629,7 +630,6 @@ struct TaskRun: Identifiable, Hashable {
     var mode: RunMode
     var status: RunStatus
     var project: String
-    var specTitle: String?
     var harnesses: [HarnessFamily]
     var n: Int
     var createdAt: Date

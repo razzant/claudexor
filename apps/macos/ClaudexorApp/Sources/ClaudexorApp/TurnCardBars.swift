@@ -81,7 +81,3 @@ struct ApplyThreadBar: View {
         .padding(.vertical, Theme.Spacing.sm)
     }
 }
-
-// M5b: the frozen-spec turn card (SpecFrozenCard — id/hash/change badges + an
-// Implement affordance that sent an agent turn over the spec file) was removed with
-// the dead spec flow; the plan lifecycle's implement affordance is a later cut.

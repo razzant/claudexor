@@ -71,6 +71,16 @@ struct TurnCard: View {
     @ViewBuilder
     private var assistantSection: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            // Continuity disclosure (INV-137/D21): one quiet line when this
+            // turn's lane was hydrated with a continuation packet. The wording
+            // is server-shaped (ThreadTurnContinuity.disclosure) so it reads the
+            // same sentence as the CLI; native_resume/fresh disclose nothing.
+            if let note = turn.continuity?.disclosure {
+                Label(note, systemImage: "arrow.triangle.branch")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+            }
             if let run {
                 // W4.1 «Messenger»: ONE status line — two anchored clusters
                 // (identity+state left, time+cash right) + the explicit ⧉

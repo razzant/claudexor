@@ -95,16 +95,13 @@ enum RunFacts {
     }
 
     /// The DETAILS facts: real evidence that does not belong in the primary
-    /// row — provenance, mode, spec, model mismatch, access, output state,
+    /// row — provenance, mode, model mismatch, access, output state,
     /// web evidence, browser requirement. Rendered by the header's Details
     /// disclosure; empty entries are simply absent (honest degradation).
     static func headerDetails(_ task: TaskRun) -> [Fact] {
         var facts: [Fact] = []
         facts.append(Fact(id: "mode", text: task.mode.label, glyph: task.mode.glyph,
                           tone: .neutral, help: nil))
-        if let spec = task.specTitle {
-            facts.append(Fact(id: "spec", text: spec, glyph: "doc.text.fill", tone: .neutral, help: nil))
-        }
         if let mismatch = task.authRoute?.modelMismatch {
             facts.append(Fact(
                 id: "model_mismatch",

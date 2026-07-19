@@ -144,7 +144,7 @@ import ClaudexorKit
         // (the old count<=4 check was vacuous, F4 final review #7).
         var task = TaskRun(
             id: "r1", title: "t", prompt: "", mode: .agent, status: .succeeded,
-            project: "p", specTitle: "spec", harnesses: [.claude, .codex], n: 2,
+            project: "p", harnesses: [.claude, .codex], n: 2,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: true, capKnown: true,
             routeProof: .verified, attentionNote: nil, plan: [], activity: [],

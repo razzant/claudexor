@@ -56,9 +56,8 @@ struct PrimaryHarnessChip: View {
 struct AccessChip: View {
     @Binding var access: AccessProfile
     let browserArmed: Bool
-    /// Read-only intents never write (Spec keeps the control for its
-    /// eventual Implement turn) — the chip disables, and the visible reason
-    /// rides composerAccessHint below the row (not a hover-only tooltip).
+    /// Read-only intents never write — the chip disables, and the visible
+    /// reason rides composerAccessHint below the row (not a hover-only tooltip).
     let writeDisabled: Bool
 
     private var tint: Color { access == .full ? .orange : Theme.accent }
@@ -100,7 +99,7 @@ struct AccessChip: View {
             return "Browser is armed, which requires Full access — disarm Browser (in ⋯) to change the write scope."
         }
         if writeDisabled { return "Read-only intents never write" }
-        return "How much this turn may touch (Spec: applies to the Implement turn)"
+        return "How much this turn may touch"
     }
 }
 
@@ -118,7 +117,7 @@ extension ThreadsScreen {
     /// shown for project threads (the chip itself only appears there).
     @ViewBuilder var composerAccessHint: some View {
         if threadHasProject {
-            if composerMode.isReadOnly && composerMode != .spec {
+            if composerMode.isReadOnly {
                 Text("\(composerMode.label) never writes — switch to Agent to change access")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -155,19 +154,16 @@ extension ThreadsScreen {
     }
 }
 
-/// The intent picker, styled to the design system with a visible selection.
-/// "Best-of" runs the eligible pool (engine `agent` + race strategy).
-/// Strategies (until-clean, max-attempts) live in the composer's "⋯" panel.
+/// The intent picker (D24): exactly Ask / Plan / Agent. Best-of / Create /
+/// until-clean stopped being intents — they are Agent STRATEGY knobs in the
+/// "⋯" popover; Council is a Plan knob. Deep-scan / Spec are likewise gone.
 struct IntentMenu: View {
     @Binding var selection: RunMode
     let projectScoped: Bool
 
     private var options: [RunMode] {
-        // M5b: `.spec` was dropped from the intent picker with the dead spec flow; the
-        // plan lifecycle's intent(s) replace it in a later cut.
-        projectScoped ? [.ask, .agent, .plan, .readOnlyAudit, .bestOfN] : [.ask]
+        projectScoped ? [.ask, .plan, .agent] : [.ask]
     }
-    private func label(_ m: RunMode) -> String { m == .bestOfN ? "Best-of" : m.label }
 
     var body: some View {
         Menu {
@@ -175,14 +171,14 @@ struct IntentMenu: View {
                 Button {
                     selection = m
                 } label: {
-                    Label(label(m), systemImage: m.glyph)
+                    Label(m.label, systemImage: m.glyph)
                     if m == selection { Image(systemName: "checkmark") }
                 }
             }
         } label: {
             HStack(spacing: Theme.Spacing.xs) {
                 Image(systemName: selection.glyph).imageScale(.small)
-                Text(label(selection)).fontWeight(.medium)
+                Text(selection.label).fontWeight(.medium)
                 Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
             }
             .font(.caption)
@@ -194,7 +190,7 @@ struct IntentMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help(projectScoped
-              ? "Intent for the next turn — Best-of runs the eligible pool; until-clean / attempts are in ⋯"
+              ? "Intent for the next turn — Agent strategy (Best-of / until-clean / create / delegate) and Plan council live in ⋯"
               : "No Current Project — only Ask (read-only) is available.")
     }
 }

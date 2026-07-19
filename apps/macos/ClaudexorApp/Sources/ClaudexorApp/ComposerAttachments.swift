@@ -35,11 +35,11 @@ extension ThreadsScreen {
         return availablePool.allSatisfy { model.harnessInfo(for: $0)?.acceptsImages == true }
     }
 
-    /// Spec mode runs the server-owned interview, which has no turn to carry bytes.
-    /// File attachments can ride the shared DTO for normal turns; image attachments
-    /// still require a vision-capable route so the engine will not silently drop them.
-    var fileAttachmentsAllowed: Bool { composerMode != .spec }
-    var imageAttachmentsAllowed: Bool { primaryAcceptsImages && composerMode != .spec }
+    /// File attachments ride the shared turn DTO for every intent; image
+    /// attachments still require a vision-capable route so the engine will not
+    /// silently drop them.
+    var fileAttachmentsAllowed: Bool { true }
+    var imageAttachmentsAllowed: Bool { primaryAcceptsImages }
 
     var attachButton: some View {
         Button { pickAttachments() } label: {
@@ -55,7 +55,6 @@ extension ThreadsScreen {
     }
 
     private var attachButtonHelp: String {
-        if composerMode == .spec { return "Spec interview can't take attachments" }
         return primaryAcceptsImages
             ? "Attach files or images"
             : "Attach files; images need an available vision-capable route"
@@ -137,7 +136,6 @@ extension ThreadsScreen {
     }
 
     private var captureButtonHelp: String {
-        if composerMode == .spec { return "Spec interview can't take attachments" }
         return primaryAcceptsImages
             ? "Capture a screen region to attach (you pick the area)"
             : "Screen captures need an available vision-capable route"

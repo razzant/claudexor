@@ -24,8 +24,16 @@ struct ThreadsScreen: View {
     @State var authRoutePreference = ""  // "" = Thread default; see authRouteRequest (sol #1)
     /// Per-turn reasoning effort ("" = harness default). Not sticky.
     @State var effortPreference = ""
-    @State var untilClean = false
     @State var maxAttempts = 3
+    /// Agent STRATEGY knob (D24): Single / Best-of / Until-clean / Create. Was a
+    /// set of distinct intents; now a per-turn knob inside Agent. Not sticky.
+    @State var agentStrategy: AgentStrategy = .single
+    /// Agent delegation belt (D32): inject the Claudexor MCP belt so the harness
+    /// can spawn bounded isolated sub-runs. Agent-only, default OFF. Not sticky.
+    @State var delegate = false
+    /// Plan strategy (D31): Council draft-and-merge across N harnesses. Plan-only.
+    @State var councilEnabled = false
+    @State var councilMembers = 2
     /// Arm the agent-driven browser (Playwright MCP) for this turn. Requires full
     /// access (codex's sandbox cancels navigation otherwise); turning it on forces
     /// access to full + is disclosed in the options panel. Not sticky across threads.
@@ -80,7 +88,8 @@ struct ThreadsScreen: View {
             maxUsd: ComposerOptionParser.parseNonnegativeFiniteDouble(capUsdText),
             access: access == .workspaceWrite ? nil : access.wire,  // workspace_write is the engine default
             web: webPolicy == "auto" ? nil : webPolicy,
-            untilClean: untilClean,
+            // untilClean / delegate / council are overlaid in send() from the
+            // resolved Agent/Plan strategy (resolveComposerStrategy).
             maxAttempts: maxAttempts == 3 ? nil : maxAttempts,
             // Preserve the user's request even if the cached capability view
             // changed after the toggle was armed. The engine owns the typed
@@ -299,10 +308,6 @@ struct ThreadsScreen: View {
                     .padding(.vertical, Theme.Spacing.xs)
             }
 
-            // M5b: the SPEC-FLOW section (interview / frozen-spec card above the
-            // composer) was removed with the dead spec flow; the plan lifecycle's
-            // pre-composer surface is a later cut.
-
             // Isolated threads accumulate in a worktree; deliver the diff to the
             // project on demand. In-place threads write the live tree directly and
             // never need this bar.
@@ -377,7 +382,7 @@ struct ThreadsScreen: View {
                 // W19: the per-turn write scope is a first-class chip
                 // (moved out of "⋯"); " · Browser" appends while armed.
                 AccessChip(access: $access, browserArmed: browser,
-                           writeDisabled: composerMode.isReadOnly && composerMode != .spec)
+                           writeDisabled: composerMode.isReadOnly)
             }
             // The "⋯" options button is ALWAYS available — a no-project Ask is
             // still entitled to a per-turn model / web / budget. `composerOptions`
@@ -410,7 +415,8 @@ struct ThreadsScreen: View {
             // Per-turn knobs are not sticky — don't carry one thread's budget
             // cap / access / web / repair flags / model into the next thread.
             capUsdText = ""; access = .workspaceWrite; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
-            untilClean = false; maxAttempts = 3; showOptions = false; browser = false
+            maxAttempts = 3; showOptions = false; browser = false
+            agentStrategy = .single; delegate = false; councilEnabled = false; councilMembers = 2
             reviewerPanelText = ""; protectedApprovalsText = ""
             composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)
         }
@@ -419,11 +425,10 @@ struct ThreadsScreen: View {
         .onChange(of: threadHasProject) { _, has in
             if !has { composerMode = .ask; showOptions = false }
         }
-        // An armed Browser cannot ride a read-only intent (Spec keeps it
-        // for its Implement turn): the toggle hides in ⋯ for read-only
-        // modes, so disarm here — never send browser:true on an Ask.
+        // An armed Browser cannot ride a read-only intent: the toggle hides in
+        // ⋯ for read-only modes, so disarm here — never send browser:true on Ask.
         .onChange(of: composerMode) { _, mode in
-            if mode.isReadOnly && mode != .spec { browser = false }
+            if mode.isReadOnly { browser = false }
         }
         // Models are harness-scoped now: a primary switch keeps each
         // harness's own selection valid. Only prune entries for harnesses
@@ -532,16 +537,21 @@ struct ThreadsScreen: View {
             }
             return
         }
-        let mode = composerMode
-        let options = currentOptions
+        // Resolve the composer's intent + strategy knobs (D24/D31/D32) into the
+        // effective wire mode + delegate/council/until-clean facts.
+        let resolution = resolveComposerStrategy(
+            intent: composerMode, agentStrategy: agentStrategy, delegate: delegate,
+            councilEnabled: councilEnabled, councilMembers: councilMembers)
+        let mode = resolution.mode
+        var options = currentOptions
+        options.untilClean = resolution.untilClean
+        options.delegate = resolution.delegate
+        options.council = resolution.council
+        options.councilN = resolution.councilN
         let chosenModel = primaryFamily.flatMap { composerModels[$0.rawValue] } ?? ""
         let atts = composerAttachments
         composerText = ""
         composerAttachments = []
-        // M5b: `.spec` used to branch here into the client-side spec-interview driver
-        // (startSpec) instead of sending a turn; the plan lifecycle replaces that
-        // entry point. `.spec` is no longer selectable in the composer, so send()
-        // falls through to composerSend below (which rejects a leaked `.spec` loudly).
         Task {
             let sent = await model.composerSend(prompt: text, mode: mode, model: chosenModel, attachments: atts, options: options)
             // Restore ONLY if the engine rejected it AND the user hasn't started

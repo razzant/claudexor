@@ -30,10 +30,6 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     }
 }
 
-// M5b: the client-side SPEC-FLOW state machine (grounding → questions → freeze →
-// implement) was removed with the v3 wire contract; the plan lifecycle replaces it
-// and its composer/turn UI is a later cut.
-
 // MARK: - App model
 
 @MainActor
@@ -87,9 +83,6 @@ final class AppModel {
     var selectedThreadId: String?
     var selectedThreadDetail: ThreadDetailResponse?
     var threadStatus: String?
-    // M5b: per-thread SPEC-FLOW state (specFlowByThread/specFlowGen/specPendingModel/
-    // specPendingOptions/specPrior + the `specFlow` accessor) was removed with the
-    // dead spec flow; the plan lifecycle's per-thread state is a later cut.
     /// DRAFT-thread routing (before the first message materializes a thread): the
     /// composer edits these; once a thread exists, primary/pool are sticky on the
     /// thread (PATCHed via setPrimaryHarness/setEligiblePool). nil/[] => inherit
@@ -497,7 +490,6 @@ final class AppModel {
             mode: RunMode(apiValue: s.mode, strategy: s.strategy),
             status: RunStatus(api: s.state),
             project: projectName,
-            specTitle: nil,
             harnesses: families,
             n: s.n ?? max(1, families.count),
             createdAt: .now, updatedAt: .now,
@@ -586,7 +578,6 @@ final class AppModel {
             mode: mode,
             status: .queued,
             project: launchProjectName,
-            specTitle: nil,
             harnesses: harnesses,
             n: n,
             createdAt: .now, updatedAt: .now,
@@ -651,7 +642,7 @@ final class AppModel {
                     let prev = idx.map { liveTasks[$0] } ?? optimistic
                     var started = TaskRun(
                         id: info.runId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
-                        status: .running, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
+                        status: .running, project: prev.project, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now,
                         spendUsd: prev.spendUsd, capUsd: prev.capUsd,
                         spendKnown: false, capKnown: prev.capKnown,
@@ -674,7 +665,7 @@ final class AppModel {
                     let prev = idx.map { liveTasks[$0] } ?? optimistic
                     var row = TaskRun(
                         id: info.jobId, title: prev.title, prompt: prev.prompt, mode: prev.mode,
-                        status: .queued, project: prev.project, specTitle: nil, harnesses: prev.harnesses,
+                        status: .queued, project: prev.project, harnesses: prev.harnesses,
                         n: prev.n, createdAt: prev.createdAt, updatedAt: .now,
                         spendUsd: prev.spendUsd, capUsd: prev.capUsd,
                         spendKnown: false, capKnown: prev.capKnown,
@@ -1069,10 +1060,7 @@ final class AppModel {
             threadStatus = "Engine offline — reconnect before sending."
             return false
         }
-        // M5b: `.spec` has no wire turn and its client-side driver was removed; reject
-        // the sentinel mode (and any leaked spec mode) loudly until the plan lifecycle
-        // composer lands.
-        guard mode != .unknown, mode != .spec else {
+        guard mode != .unknown else {
             threadStatus = "Unknown mode — pick an intent from the composer."
             return false
         }
@@ -1097,6 +1085,10 @@ final class AppModel {
         let raceN: Int?
         if mode == .bestOfN {
             raceN = racePool.count == 1 ? 1 : max(2, racePool.count)
+        } else if mode == .plan, options.council, let n = options.councilN {
+            // Council membership width (D31): `n` on a plan run is legal ONLY
+            // with council; the engine clamps to distinct available harnesses.
+            raceN = n
         } else {
             raceN = nil
         }
@@ -1118,8 +1110,13 @@ final class AppModel {
                 // wins: drop the attempts cap when it's on.
                 attempts: (repairMode && !options.untilClean) ? options.maxAttempts : nil,
                 untilClean: (repairMode && options.untilClean) ? true : (flags.untilClean ? true : nil),
-                swarm: flags.swarm ? true : nil,
+                // Ask deep-scan rides the wire's `deepScan` (was `swarm`); the
+                // engine accepts either, prefer the v3 name.
+                deepScan: flags.swarm ? true : nil,
                 create: flags.create ? true : nil,
+                // Plan council (D31) and Agent delegation belt (D32).
+                council: options.council ? true : nil,
+                delegate: options.delegate ? true : nil,
                 paidBudget: options.maxUsd.map { .finite(maxUsd: $0) },
                 // Per-turn model override (empty = harness default → don't send the key).
                 model: model.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 },

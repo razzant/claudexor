@@ -174,6 +174,20 @@ public struct ThreadTurnContinuity: Codable, Sendable, Equatable {
         self.summarized = summarized
         self.laneSwitchedFrom = laneSwitchedFrom
     }
+
+    /// The ONE disclosure one-liner (INV-137) — a verbatim port of the
+    /// engine's `continuityLabel` (packages/schema status-projection). Only a
+    /// `packet` continuation discloses; `native_resume`/`fresh` return nil (the
+    /// lane already held the context — nothing to say). Phrasing is kept
+    /// identical to the CLI so every surface reads the same sentence.
+    public var disclosure: String? {
+        guard kind == "packet" else { return nil }
+        let noun = packetTurns == 1 ? "turn" : "turns"
+        var line = "continued with thread context · \(packetTurns) \(noun)"
+        if summarized { line += " (older turns condensed)" }
+        if let from = laneSwitchedFrom { line += " · switched from \(from.harness)" }
+        return line
+    }
 }
 
 public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
@@ -363,7 +377,17 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var attempts: Int?
     public var untilClean: Bool?
     public var swarm: Bool?
+    /// Ask strategy (D11/D24): widen the answer into a bounded multi-scout
+    /// research sweep with synthesis (the wire's `deepScan`; supersedes `swarm`).
+    public var deepScan: Bool?
     public var create: Bool?
+    /// Plan strategy (D31/INV-031): N harnesses draft plans in parallel, the
+    /// primary merges into one plan + one question set. Plan mode only; `n`
+    /// (2..4) sets the member count.
+    public var council: Bool?
+    /// Agent delegation belt toggle (D32). Agent-only: injects the scoped
+    /// Claudexor MCP belt so the harness can spawn bounded isolated sub-runs.
+    public var delegate: Bool?
     public var paidBudget: PaidBudget?
     /// Per-turn primary harness override (bias hint; engine pins it first). When
     /// nil the turn inherits the thread's sticky primary_harness.
@@ -403,7 +427,8 @@ public struct ThreadTurnRequest: Codable, Sendable {
     public var effort: String?
 
     public init(prompt: String, mode: String? = nil, harnesses: [String]? = nil, n: Int? = nil,
-                attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, create: Bool? = nil,
+                attempts: Int? = nil, untilClean: Bool? = nil, swarm: Bool? = nil, deepScan: Bool? = nil,
+                create: Bool? = nil, council: Bool? = nil, delegate: Bool? = nil,
                 paidBudget: PaidBudget? = nil, primaryHarness: String? = nil, model: String? = nil,
                 models: [String: String]? = nil,
                 reviewerPanel: [ReviewerPanelEntry]? = nil,
@@ -419,7 +444,10 @@ public struct ThreadTurnRequest: Codable, Sendable {
         self.attempts = attempts
         self.untilClean = untilClean
         self.swarm = swarm
+        self.deepScan = deepScan
         self.create = create
+        self.council = council
+        self.delegate = delegate
         self.paidBudget = paidBudget
         self.primaryHarness = primaryHarness
         self.model = model

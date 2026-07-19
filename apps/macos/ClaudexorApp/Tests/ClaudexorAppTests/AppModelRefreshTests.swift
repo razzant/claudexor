@@ -15,7 +15,7 @@ struct AppModelRefreshTests {
         model.route = .task("stale-run")
         model.liveTasks = [TaskRun(
             id: "stale-run", title: "Stale", prompt: "", mode: .agent, status: .running,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -87,11 +87,6 @@ struct AppModelRefreshTests {
         #expect(model.quotaResponse?.snapshots.isEmpty == true)
         #expect(model.quotaStatus == nil)
     }
-
-    // M5b: durableSpecSessionRestoresItsOwningThreadAfterRestart and
-    // interruptedSpecRestoresWithExplicitResumeInsteadOfBlankChat were removed with
-    // the dead spec flow (recoverSpecFlow / specFlowByThread no longer exist); the
-    // plan lifecycle's recovery gets its own coverage in a later cut.
 
     @MainActor
     @Test func runListRefreshDoesNotNPlusOneHydrateEmptyReviewFindings() async {
@@ -267,7 +262,7 @@ struct AppModelRefreshTests {
     @Test func taggedUnlimitedBudgetRendersUnlimitedInsteadOfUnknown() {
         var task = TaskRun(
             id: "run", title: "Run", prompt: "", mode: .agent, status: .running,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -284,7 +279,7 @@ struct AppModelRefreshTests {
         let model = AppModel(requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
             id: "run-zero", title: "Run", prompt: "", mode: .agent, status: .running,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 1, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -721,7 +716,7 @@ struct AppModelRefreshTests {
         ), requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
             id: "run-delayed", title: "Run", prompt: "", mode: .agent, status: .running,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -765,7 +760,7 @@ struct AppModelRefreshTests {
         ), requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
             id: "run-diag", title: "Run", prompt: "", mode: .agent, status: .failed,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -829,7 +824,7 @@ struct AppModelRefreshTests {
         ), requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
             id: "run-burst", title: "Run", prompt: "", mode: .agent, status: .running,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -874,7 +869,7 @@ struct AppModelRefreshTests {
         ), requestNotificationAuthorization: false)
         var task = TaskRun(
             id: "run-large-diff", title: "Run", prompt: "", mode: .agent,
-            status: .succeeded, project: "Project", specTitle: nil,
+            status: .succeeded, project: "Project",
             harnesses: [], n: 1, createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
@@ -908,7 +903,7 @@ struct AppModelRefreshTests {
             requestNotificationAuthorization: false)
         model.liveTasks = [TaskRun(
             id: "run-cash", title: "Run", prompt: "", mode: .agent, status: .running,
-            project: "Project", specTitle: nil, harnesses: [], n: 1,
+            project: "Project", harnesses: [], n: 1,
             createdAt: .now, updatedAt: .now,
             spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
             routeProof: .unverified, attentionNote: nil, plan: [], activity: [],

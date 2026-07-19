@@ -202,20 +202,45 @@ extension ThreadsScreen {
                     .help("Turns accumulate in a separate worktree; apply them to the project later with “Apply thread”. Off = in-place (the next turn sees prior edits).")
                 }
             }
-            // Repair strategies are single-candidate (the engine routes them to
-            // convergence, NOT a race) — offer them for a plain Agent turn, and for
-            // Spec (they carry through to its Implement agent turn).
-            if composerMode == .agent || composerMode == .spec {
-                OptionSection(title: "Repair strategies") {
-                    HStack(spacing: Theme.Spacing.xl) {
-                        Toggle("Until clean", isOn: $untilClean).toggleStyle(.switch).tint(Theme.accent)
-                            .help("Keep repairing one candidate until gates/review pass")
-                        // Mutually exclusive: "Until clean" has no fixed cap, so the
-                        // Max-attempts stepper is disabled (and not sent) while it's on
-                        // — the two repair strategies must never be combined ambiguously.
-                        Stepper("Max attempts: \(maxAttempts)", value: $maxAttempts, in: 1...8)
-                            .disabled(untilClean)
-                            .help(untilClean ? "Disabled while Until clean is on (no fixed cap)" : "Hard cap on repair attempts")
+            // Agent STRATEGY knob (D24): Single / Best-of / Until-clean / Create
+            // — the old distinct intents are now a per-turn knob. Delegate (D32)
+            // rides alongside; Max-attempts caps the single/until-clean repair.
+            if composerMode == .agent {
+                OptionSection(title: "Agent strategy") {
+                    Picker("", selection: $agentStrategy) {
+                        ForEach(AgentStrategy.allCases) { s in
+                            Label(s.label, systemImage: s.glyph).tag(s)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .help(agentStrategy.blurb)
+                    // Max-attempts caps the single/until-clean repair loop; it is
+                    // meaningless for a Best-of race, so it hides there.
+                    if agentStrategy == .single || agentStrategy == .untilClean {
+                        HStack(spacing: Theme.Spacing.xl) {
+                            Stepper("Max attempts: \(maxAttempts)", value: $maxAttempts, in: 1...8)
+                                .disabled(agentStrategy == .untilClean)
+                                .help(agentStrategy == .untilClean
+                                      ? "Disabled while Until clean is on (no fixed cap)"
+                                      : "Hard cap on repair attempts")
+                        }
+                    }
+                    Toggle("Delegate — let the agent spawn bounded sub-runs", isOn: $delegate)
+                        .toggleStyle(.switch).tint(Theme.accent)
+                        .help("Inject the Claudexor delegation belt (ask / plan / isolated sub-run / best-of / status / result). The harness decides when to delegate; sub-runs are isolated, depth-1, budget- and count-capped. Refused server-side on harnesses without MCP injection.")
+                }
+            }
+            // Plan STRATEGY knob (D31): Council draft-and-merge across N harnesses,
+            // presented to the user as ONE plan + ONE question set.
+            if composerMode == .plan {
+                OptionSection(title: "Plan strategy") {
+                    Toggle("Council — N harnesses draft in parallel, primary merges", isOn: $councilEnabled)
+                        .toggleStyle(.switch).tint(Theme.accent)
+                        .help("Council: each member drafts a plan in its own lane; the primary merges them into one plan and one question set. Solo (off) is the default.")
+                    if councilEnabled {
+                        Stepper("Members: \(councilMembers)", value: $councilMembers, in: 2...4)
+                            .help("How many harnesses draft in parallel (2–4).")
                     }
                 }
             }
