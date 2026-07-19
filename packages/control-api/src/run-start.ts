@@ -10,7 +10,6 @@ import { isAbsolute } from "node:path";
 import { ControlRunStartRequest, runStartStrategyViolations } from "@claudexor/schema";
 import { assertNoInlineSecretValues, noProjectRepoRoot } from "@claudexor/util";
 import type { DaemonFacadeClient } from "./daemon-server.js";
-import { recordTurnEnqueueFailure } from "./thread-turn-routes.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -96,29 +95,17 @@ export interface RunCreateRouteContext {
   requestError(res: ServerResponse, error: unknown): void;
   json(res: ServerResponse, status: number, body: unknown): void;
   respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void>;
-  createThreadTurn?: (
-    id: string,
-    prompt: string,
-    options: {
-      parentRunId?: string | null;
-      planRunId?: string | null;
-      attachments?: ControlRunStartRequest["attachments"];
-      idempotency?: { key: string; client: string; request: unknown };
-    },
-  ) => Promise<unknown>;
-  threadDetail?: (id: string) => Promise<unknown>;
-  setTurnEnqueueError?: (
-    turnId: string,
-    message: string,
-    code: string | null,
-    retryable?: boolean,
-  ) => void;
-  chainThreadMutation?: (threadId: string, work: () => Promise<void>) => Promise<void>;
   validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
   preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
 }
 
-/** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle. */
+/** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle.
+ *
+ * D10: POST /runs is the ONE-SHOT, THREAD-LESS run surface. A thread turn is
+ * ALWAYS created through POST /threads/:id/turns (that route owns scope
+ * resolution, turn lineage, and the continuation packet). `threadId` here is
+ * therefore refused alongside the other server-owned lineage keys — routing a
+ * turn past the turn pipeline would skip continuity entirely. */
 export async function handleRunCreate(
   ctx: RunCreateRouteContext,
   req: IncomingMessage,
@@ -130,29 +117,6 @@ export async function handleRunCreate(
     idempotencyKey = requiredIdempotencyKey(req);
     const body = await ctx.readBody(req);
     assertNoInlineSecretValues(body);
-    // A thread turn ALWAYS runs in the THREAD's own project, never the caller's
-    // scope/cwd — otherwise `--thread <A>` launched from project B would execute
-    // (and mutate) B while recording the run as a turn of A. Resolve the thread
-    // scope onto the body BEFORE normalization/resource-validation/preflight/
-    // idempotency so EVERY downstream step sees the thread's project (not the
-    // caller's), and a missing thread is a 404 before any run work. The
-    // dedicated POST /threads/:id/turns route derives scope the same way.
-    const bodyThreadId =
-      body &&
-      typeof body === "object" &&
-      typeof (body as { threadId?: unknown }).threadId === "string"
-        ? (body as { threadId: string }).threadId
-        : null;
-    if (bodyThreadId && ctx.threadDetail) {
-      const detail = (await ctx.threadDetail(bodyThreadId)) as {
-        thread?: { repo?: { root?: string } | null } | null;
-      };
-      const threadRoot = detail?.thread?.repo?.root;
-      (body as Record<string, unknown>).scope =
-        typeof threadRoot === "string" && threadRoot.length > 0
-          ? { kind: "project", root: threadRoot, context: "auto" }
-          : { kind: "none" };
-    }
     params = normalizeRunStart(ControlRunStartRequest.parse(body));
     await ctx.validateResources?.(params.attachments ?? []);
     await ctx.preflightRunRequirements?.(params);
@@ -168,7 +132,12 @@ export async function handleRunCreate(
   } catch (error) {
     return ctx.requestError(res, error);
   }
-  const directThreadId = params.threadId || null;
+  if (params.threadId) {
+    return ctx.json(res, 400, {
+      error:
+        "threadId is not accepted on POST /runs; continue a thread via POST /threads/:id/turns (the turn pipeline owns scope + continuity)",
+    });
+  }
   if (params.turnId) {
     return ctx.json(res, 400, {
       error: "turnId is not accepted on POST /runs; create the turn via POST /threads/:id/turns",
@@ -185,57 +154,30 @@ export async function handleRunCreate(
       error: "retryOf is server-owned; use POST /runs/:id/retry for Exact Retry",
     });
   }
-  const submit = async (): Promise<void> => {
-    let enqueueParams: ControlRunStartRequest & { turnId?: string } = params;
-    if (directThreadId && ctx.createThreadTurn) {
-      // params.scope was already anchored to the thread's project upfront (and
-      // the thread's existence proven), so normalization/preflight/idempotency
-      // all ran against the correct scope. Here we only create the turn.
-      const turn = (await ctx.createThreadTurn(directThreadId, params.prompt, {
-        parentRunId: params.parentRunId ?? null,
-        planRunId: params.planRunId ?? null,
-        attachments: params.attachments,
-        idempotency: {
-          key: idempotencyKey,
-          client: "control-api",
-          request: params,
-        },
-      })) as { id: string };
-      const { attachments: _attachments, ...rest } = params;
-      enqueueParams = { ...rest, turnId: turn.id };
-    }
-    const preCreatedTurnId = enqueueParams.turnId;
-    let job: { id: string };
-    try {
-      job = await ctx.daemon.enqueue(enqueueParams, {
-        idempotencyKey,
-        clientId: "control-api",
-        idempotencyRequest: params,
-      });
-    } catch (error) {
-      recordTurnEnqueueFailure(ctx.setTurnEnqueueError, preCreatedTurnId, error);
-      const status =
-        error && typeof error === "object" && "status" in error
-          ? Number((error as { status: number }).status)
-          : 500;
-      return ctx.json(res, status, {
-        error: error instanceof Error ? error.message : "enqueue failed",
-        ...(preCreatedTurnId ? { turnId: preCreatedTurnId, retryable: false } : {}),
-      });
-    }
-    try {
-      return await ctx.respondToAcceptedJob(res, job.id);
-    } catch (error) {
-      return ctx.json(res, 500, {
-        error: `job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
-        jobId: job.id,
-        ...(preCreatedTurnId ? { turnId: preCreatedTurnId } : {}),
-      });
-    }
-  };
-  return directThreadId && ctx.chainThreadMutation
-    ? ctx.chainThreadMutation(directThreadId, submit)
-    : submit();
+  let job: { id: string };
+  try {
+    job = await ctx.daemon.enqueue(params, {
+      idempotencyKey,
+      clientId: "control-api",
+      idempotencyRequest: params,
+    });
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "status" in error
+        ? Number((error as { status: number }).status)
+        : 500;
+    return ctx.json(res, status, {
+      error: error instanceof Error ? error.message : "enqueue failed",
+    });
+  }
+  try {
+    return await ctx.respondToAcceptedJob(res, job.id);
+  } catch (error) {
+    return ctx.json(res, 500, {
+      error: `job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
+      jobId: job.id,
+    });
+  }
 }
 
 export function requiredIdempotencyKey(req: IncomingMessage): string {

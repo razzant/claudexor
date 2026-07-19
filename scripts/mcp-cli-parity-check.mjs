@@ -139,7 +139,7 @@ const CLI_ONLY_EXEMPT = {
   "prompt-file":
     "terminal input plumbing (file/stdin prompt sources); MCP callers pass the prompt inline",
   thread:
-    "thread continuation is a CLI/HTTP embedder handle; MCP one-shot tools have no thread surface yet (deferred with DT2.1-1)",
+    "thread continuation is a CLI/HTTP embedder handle routed through POST /threads/:id/turns (D10); MCP one-shot tools still have no thread surface (deferred with DT2.1-1)",
   mode: "MCP encodes the mode in the TOOL NAME (claudexor_ask/plan/run/best_of/...)",
   attempts: "convergence knob; MCP one-shot surface exposes race width (n) only today",
   synthesis: "race synthesis knob; not exposed one-shot (racers get the engine default)",

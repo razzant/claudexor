@@ -986,72 +986,34 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
-  it("POST /runs + threadId runs in the THREAD's project, not the caller's scope (W13/G6)", async () => {
-    const { daemon, record } = fakeDaemon();
-    const threadRepo = mkdtempSync(join(tmpdir(), "claudexor-thread-proj-"));
-    const otherRepo = mkdtempSync(join(tmpdir(), "claudexor-other-proj-"));
-    const now = new Date().toISOString();
-    const threadObj: Record<string, unknown> = {
-      schema_version: 2,
-      id: "th-x",
-      created_at: now,
-      updated_at: now,
-      // The thread is anchored to threadRepo.
-      repo: { root: threadRepo, base_ref: "HEAD" },
-      title: "anchored thread",
-      mode: "agent",
-      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
-      auth_preference: "auto",
-      primary_harness: null,
-      routingGoal: "auto",
-      run_ids: [],
-      head_run_id: null,
-      state: "active",
-    };
-    let enqueued: Record<string, unknown> | undefined;
+  it("POST /runs REFUSES a threadId (D10): a thread turn goes through /threads/:id/turns", async () => {
+    const { daemon } = fakeDaemon();
+    let enqueued = 0;
     const wrapped: DaemonFacadeClient = {
       ...daemon,
       async enqueue(params: unknown, options) {
-        enqueued = params as Record<string, unknown>;
+        enqueued += 1;
         return daemon.enqueue(params, options);
       },
     };
-    const services: DaemonControlApiOptions["services"] = {
-      threadDetail: async () => ({ thread: threadObj, sessions: [], turns: [] }),
-      createThreadTurn: async (id, prompt) => ({
-        id: "tn-x",
-        thread_id: id,
-        run_id: null,
-        parent_run_id: null,
-        plan_run_id: null,
-        kind: "followup",
-        prompt,
-        created_at: now,
-      }),
-    };
-    await withDaemonServer(
-      wrapped,
-      async (base) => {
-        // The caller submits a run for th-x but with a MISMATCHED scope (otherRepo,
-        // e.g. the CLI's cwd). The server must anchor to the thread's project.
-        const res = await apiFetch(`${base}/runs`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}`, "idempotency-key": "idem-g6" },
-          body: JSON.stringify({
-            prompt: "continue",
-            threadId: "th-x",
-            scope: { kind: "project", root: otherRepo },
-          }),
-        });
-        expect(res.status).toBe(200);
-        expect(record).toBeDefined();
-        // The enqueued run runs in the THREAD's project, never the caller's.
-        expect(enqueued?.["scope"]).toEqual({ kind: "project", root: threadRepo, context: "auto" });
-        expect(enqueued?.["turnId"]).toBe("tn-x");
-      },
-      undefined,
-      services,
-    );
+    // The turn pipeline (scope resolution + lineage + continuation packet) is
+    // owned by POST /threads/:id/turns; a threadId smuggled onto POST /runs
+    // would skip continuity entirely, so it is refused BEFORE any enqueue.
+    await withDaemonServer(wrapped, async (base) => {
+      const res = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "idempotency-key": "idem-d10" },
+        body: JSON.stringify({
+          prompt: "continue",
+          mode: "ask",
+          threadId: "th-x",
+          scope: { kind: "none" },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("/threads/:id/turns");
+      expect(enqueued).toBe(0);
+    });
   });
 
   it("threads: a refused enqueue persists the error on the turn; the detail projection renders enqueueError", async () => {
@@ -1516,87 +1478,6 @@ describe("DaemonControlApiServer", () => {
         expect(res.status).toBe(409);
         expect(((await res.json()) as { message: string }).message).toContain("send a new message");
         expect(listCalls).toBe(0); // short-circuited before the registry lookup
-      },
-      undefined,
-      services,
-    );
-  });
-
-  it("POST /runs with threadId: an enqueue throw lands on the pre-created turn (no orphan bubble)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-directrun-refuse-"));
-    const now = new Date().toISOString();
-    const threadObj: Record<string, unknown> = {
-      schema_version: 2,
-      id: "th-d",
-      created_at: now,
-      updated_at: now,
-      repo: { root: repo, base_ref: "HEAD" },
-      title: "direct-run thread",
-      mode: "agent",
-      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
-      auth_preference: "auto",
-      primary_harness: null,
-      routingGoal: "auto",
-      run_ids: [],
-      head_run_id: null,
-      state: "active",
-    };
-    const turns: Record<string, unknown>[] = [];
-    const refusing: DaemonFacadeClient = {
-      async enqueue() {
-        // Deliberately UNTYPED (no status): a daemon socket outage is an
-        // infra failure and must surface as 500, never a client 400.
-        throw new Error("daemon socket is gone");
-      },
-      async status() {
-        throw new Error("missing");
-      },
-      async list() {
-        return [];
-      },
-      async cancel() {
-        return { ok: true };
-      },
-    };
-    const services: DaemonControlApiOptions["services"] = {
-      threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
-      createThreadTurn: async (id, prompt) => {
-        const turn = { id: "tn-direct", thread_id: id, run_id: null, prompt, created_at: now };
-        turns.push(turn);
-        return turn;
-      },
-      setTurnEnqueueError: (turnId, message, code, retryable) => {
-        const turn = turns.find((t) => t["id"] === turnId);
-        if (turn && !turn["run_id"])
-          turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
-      },
-    };
-    await withDaemonServer(
-      refusing,
-      async (base) => {
-        const res = await apiFetch(`${base}/runs`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            prompt: "direct work",
-            mode: "agent",
-            scope: { kind: "project", root: repo },
-            threadId: "th-d",
-          }),
-        });
-        expect(res.status).toBe(500);
-        // The body mirrors the recorded refusal: clients keep the draft for a
-        // retryable:false turn (nothing to replay).
-        const body = (await res.json()) as {
-          message: string;
-          context: { turnId?: string };
-          retryable?: boolean;
-        };
-        expect(body.context.turnId).toBe("tn-direct");
-        expect(body.retryable).toBe(false);
-        const err = turns[0]?.["enqueue_error"] as { message: string; retryable: boolean } | null;
-        expect(err?.message).toContain("daemon socket is gone");
-        expect(err?.retryable).toBe(false);
       },
       undefined,
       services,
@@ -4377,102 +4258,6 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
-  it("serializes direct thread-scoped run creation against thread apply", async () => {
-    const runDir = mkdtempSync(join(tmpdir(), "claudexor-direct-thread-run-"));
-    let releaseTurn!: () => void;
-    const turnBarrier = new Promise<void>((resolve) => {
-      releaseTurn = resolve;
-    });
-    let enteredTurn!: () => void;
-    const turnEntered = new Promise<void>((resolve) => {
-      enteredTurn = resolve;
-    });
-    let enqueued = false;
-    const daemon: DaemonFacadeClient = {
-      async enqueue() {
-        enqueued = true;
-        return { id: "job-direct", state: "running" };
-      },
-      async status() {
-        return {
-          id: "job-direct",
-          state: "running",
-          runId: "run-direct",
-          runDir,
-          params: { threadId: "th-direct", mode: "agent" },
-        };
-      },
-      async list() {
-        return enqueued
-          ? [
-              {
-                id: "job-direct",
-                state: "running" as const,
-                runId: "run-direct",
-                runDir,
-                params: { threadId: "th-direct", mode: "agent" },
-              },
-            ]
-          : [];
-      },
-      async cancel() {
-        return { ok: true };
-      },
-    };
-    const server = new DaemonControlApiServer({
-      ...readyIdentity,
-      token,
-      daemon,
-      services: {
-        threadDetail: async () => ({
-          thread: { id: "th-direct", run_ids: [], workspace: {}, repo: { root: tmpdir() } },
-          sessions: [],
-          turns: [],
-        }),
-        createThreadTurn: async () => {
-          enteredTurn();
-          await turnBarrier;
-          return { id: "turn-direct" };
-        },
-        applyThread: async () => ({ applied: true, status: "applied" }),
-      },
-    });
-    const { host, port } = await server.start();
-    try {
-      const directRun = apiFetch(`http://${host}:${port}/runs`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          prompt: "thread work",
-          mode: "agent",
-          threadId: "th-direct",
-          scope: { kind: "project", root: tmpdir() },
-        }),
-      });
-      await turnEntered;
-      let applySettled = false;
-      const apply = apiFetch(`http://${host}:${port}/threads/th-direct/apply`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-        body: JSON.stringify({ mode: "apply" }),
-      }).then((response) => {
-        applySettled = true;
-        return response;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(applySettled).toBe(false);
-      releaseTurn();
-      expect((await directRun).status).toBe(200);
-      const applyResponse = await apply;
-      expect(applyResponse.status).toBe(409);
-      expect(((await applyResponse.json()) as { code: string }).code).toBe("thread_busy");
-    } finally {
-      releaseTurn();
-      await server.stop();
-      rmSync(runDir, { recursive: true, force: true });
-    }
-  });
-
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";
@@ -4654,220 +4439,6 @@ describe("DaemonControlApiServer", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20_000);
-
-  it("direct POST /runs with a bare threadId pre-creates the turn BEFORE enqueue (202-queued lineage race)", async () => {
-    const { record } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-race-"));
-    const now = new Date().toISOString();
-    const threadObj: Record<string, unknown> = {
-      schema_version: 2,
-      id: "th-race",
-      created_at: now,
-      updated_at: now,
-      repo: { root: repo, base_ref: "HEAD" },
-      title: "race thread",
-      mode: "agent",
-      workspace: { mode: "in_place", worktree_path: null, base_sha: null },
-      auth_preference: "auto",
-      primary_harness: null,
-      eligible_harnesses: [],
-      routingGoal: "auto",
-      run_ids: [],
-      head_run_id: null,
-      state: "active",
-    };
-    const turns: Record<string, unknown>[] = [];
-    // The job sits QUEUED (never surfaces runId/runDir) — exactly the window where
-    // an unbound turn would be observable headless.
-    let enqueuedParams: Record<string, unknown> | undefined;
-    let turnIdempotency: unknown;
-    let createTurnCalled = false;
-    let enqueueOrder: "turn-first" | "enqueue-first" | undefined;
-    const daemon: DaemonFacadeClient = {
-      async enqueue(params: unknown) {
-        enqueuedParams = params as Record<string, unknown>;
-        enqueueOrder = createTurnCalled ? "turn-first" : "enqueue-first";
-        return { id: "job-race", state: "queued" };
-      },
-      async status() {
-        return { id: "job-race", state: "queued" };
-      },
-      async list() {
-        return [{ id: "job-race", state: "queued" }];
-      },
-      async cancel() {
-        return { ok: true };
-      },
-    };
-    const services: DaemonControlApiOptions["services"] = {
-      threadDetail: async (id) => {
-        expect(id).toBe("th-race");
-        return { thread: threadObj, sessions: [], turns };
-      },
-      createThreadTurn: async (id, prompt, opts) => {
-        createTurnCalled = true;
-        turnIdempotency = opts.idempotency;
-        const turn = {
-          id: "tn-race",
-          thread_id: id,
-          run_id: null,
-          parent_run_id: opts.parentRunId ?? null,
-          plan_run_id: opts.planRunId ?? null,
-          kind: opts.kind ?? "followup",
-          prompt,
-          created_at: now,
-        };
-        turns.push(turn);
-        return turn;
-      },
-    };
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const res = await apiFetch(`${base}/runs`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            prompt: "hi",
-            mode: "agent",
-            scope: { kind: "project", root: repo },
-            threadId: "th-race",
-          }),
-        });
-        expect(res.status).toBe(202);
-        // The turn was created (single-writer) BEFORE the run was enqueued, and the
-        // pre-created turnId rides the enqueue so the daemon runner binds it.
-        expect(createTurnCalled).toBe(true);
-        expect(enqueueOrder).toBe("turn-first");
-        expect(enqueuedParams?.["turnId"]).toBe("tn-race");
-        expect(turnIdempotency).toMatchObject({
-          client: "control-api",
-          request: expect.objectContaining({ threadId: "th-race" }),
-        });
-        expect(turns).toHaveLength(1);
-      },
-      5,
-      services,
-    );
-    void record;
-  });
-
-  it("direct POST /runs with a bare threadId for a MISSING thread fails loudly (no orphan enqueue)", async () => {
-    let enqueued = 0;
-    const daemon: DaemonFacadeClient = {
-      async enqueue() {
-        enqueued += 1;
-        return { id: "job", state: "queued" };
-      },
-      async status() {
-        return { id: "job", state: "queued" };
-      },
-      async list() {
-        return [{ id: "job", state: "queued" }];
-      },
-      async cancel() {
-        return { ok: true };
-      },
-    };
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-race-missing-"));
-    const services: DaemonControlApiOptions["services"] = {
-      threadDetail: async () => {
-        throw Object.assign(new Error("no such thread: th-missing"), { status: 404 });
-      },
-      createThreadTurn: async () => {
-        throw new Error("should not be called when the thread is missing");
-      },
-    };
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const res = await apiFetch(`${base}/runs`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            prompt: "hi",
-            mode: "agent",
-            scope: { kind: "project", root: repo },
-            threadId: "th-missing",
-          }),
-        });
-        expect(res.status).toBe(404);
-        expect(enqueued).toBe(0);
-      },
-      5,
-      services,
-    );
-  });
-
-  it("direct POST /runs with a bare threadId returns resource precreate errors as 400", async () => {
-    let enqueued = 0;
-    const daemon: DaemonFacadeClient = {
-      async enqueue() {
-        enqueued += 1;
-        return { id: "job", state: "queued" };
-      },
-      async status() {
-        return { id: "job", state: "queued" };
-      },
-      async list() {
-        return [];
-      },
-      async cancel() {
-        return { ok: true };
-      },
-    };
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-race-attachment-"));
-    const now = new Date().toISOString();
-    const services: DaemonControlApiOptions["services"] = {
-      threadDetail: async () => ({
-        thread: {
-          schema_version: 2,
-          id: "th-attachment",
-          created_at: now,
-          updated_at: now,
-          repo: { root: repo, base_ref: "HEAD" },
-          title: "attachment thread",
-          mode: "agent",
-          workspace: { mode: "in_place", worktree_path: null, base_sha: null },
-          auth_preference: "auto",
-          primary_harness: null,
-          eligible_harnesses: [],
-          routingGoal: "auto",
-          run_ids: [],
-          head_run_id: null,
-          state: "active",
-        },
-        sessions: [],
-        turns: [],
-      }),
-      createThreadTurn: async () => {
-        throw Object.assign(new Error("no such resource: res-missing"), {
-          status: 400,
-        });
-      },
-    };
-    await withDaemonServer(
-      daemon,
-      async (base) => {
-        const res = await apiFetch(`${base}/runs`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            prompt: "hi",
-            mode: "agent",
-            scope: { kind: "project", root: repo },
-            threadId: "th-attachment",
-            attachments: [{ resourceId: "res-missing" }],
-          }),
-        });
-        expect(res.status).toBe(400);
-        expect(await res.text()).toContain("no such resource");
-        expect(enqueued).toBe(0);
-      },
-      5,
-      services,
-    );
-  });
 
   it("rejects old mode ids and inline env/secrets before daemon enqueue", async () => {
     let enqueued = 0;

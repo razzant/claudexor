@@ -186,10 +186,20 @@ export async function enqueueAndAwait(
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
   await ensureRunProject(addr, body);
-  const startRes = await controlApiFetch(addr, "/runs", {
+  // D10 transport split: a thread continuation (`--thread`/`--resume`) ALWAYS
+  // goes through POST /threads/:id/turns — the route owns scope resolution,
+  // turn lineage, and the continuation packet. POST /runs is the one-shot,
+  // thread-less surface and now REFUSES threadId. Server-owned keys (scope,
+  // execution, lineage) are stripped: the turns request schema is strict and
+  // the route derives them from the thread.
+  const turnThreadId = typeof body["threadId"] === "string" ? (body["threadId"] as string) : "";
+  const { url, postBody } = turnThreadId
+    ? { url: `/threads/${encodeURIComponent(turnThreadId)}/turns`, postBody: threadTurnBody(body) }
+    : { url: "/runs", postBody: body };
+  const startRes = await controlApiFetch(addr, url, {
     method: "POST",
     headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(postBody),
   });
   const startText = await startRes.text();
   const start = startText ? (JSON.parse(startText) as Record<string, unknown>) : {};
@@ -287,6 +297,25 @@ export async function enqueueAndAwait(
   } finally {
     removeSignalHandlers();
   }
+}
+
+/**
+ * Strip the server-owned keys the strict ControlThreadTurnRequest schema
+ * rejects (scope/execution/lineage): POST /threads/:id/turns derives them from
+ * the thread itself. Everything else the user passed (mode, prompt, harness
+ * pool, budget, ...) rides through unchanged.
+ */
+function threadTurnBody(body: Record<string, unknown>): Record<string, unknown> {
+  const {
+    threadId: _threadId,
+    scope: _scope,
+    execution: _execution,
+    turnId: _turnId,
+    parentRunId: _parentRunId,
+    retryOf: _retryOf,
+    ...rest
+  } = body;
+  return rest;
 }
 
 async function ensureRunProject(

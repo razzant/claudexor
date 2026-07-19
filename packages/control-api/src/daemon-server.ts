@@ -739,11 +739,6 @@ export class DaemonControlApiServer {
           requestError: (response, error) => this.requestError(response, error),
           json: (response, status, body) => this.json(response, status, body),
           respondToAcceptedJob: (response, jobId) => this.respondToAcceptedJob(response, jobId),
-          createThreadTurn: this.opts.services?.createThreadTurn,
-          threadDetail: this.opts.services?.threadDetail,
-          setTurnEnqueueError: this.opts.services?.setTurnEnqueueError,
-          chainThreadMutation: (threadId, work) =>
-            chainThreadMutation(this.threadTurnRouteCtx(), threadId, work),
           validateResources: this.opts.services?.validateResources,
           preflightRunRequirements: this.opts.services?.preflightRunRequirements,
         },

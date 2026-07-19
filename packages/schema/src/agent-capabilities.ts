@@ -21,8 +21,21 @@ import { AttachmentInputClass } from "./attachment.js";
  * daemon-server 400-guards these; the capability catalog must exclude them
  * from the advertised run-control keys, or the catalog would lie to agents.
  * ONE list, two consumers — keep them in lockstep here.
+ *
+ * `threadId` is server-owned like `turnId` (D10): a thread turn is ALWAYS
+ * created through POST /threads/:id/turns (the route owns scope resolution,
+ * lineage, and the continuation packet). POST /runs is for one-shot,
+ * thread-less runs only — a threadId there would smuggle a turn past the
+ * continuity pipeline, so it is refused. The field stays on the schema
+ * because the daemon-internal enqueue params still carry it (the turn route
+ * fills it in), exactly like turnId.
  */
-export const RUN_START_CLIENT_REJECTED_KEYS = ["turnId", "planRunId", "planRef"] as const;
+export const RUN_START_CLIENT_REJECTED_KEYS = [
+  "threadId",
+  "turnId",
+  "planRunId",
+  "planRef",
+] as const;
 
 /**
  * Mode -> tree mutability. ask/plan/audit are read-only BY CONSTRUCTION

@@ -555,10 +555,11 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
-  // Thread continuation (W13): --thread <id> targets a thread explicitly;
-  // --resume picks the most recently updated one. POST /runs already funnels a
-  // threadId through the SINGLE createThreadTurn point server-side — this is
-  // parameter plumbing, never a second turn-creation path.
+  // Thread continuation (W13/D10): --thread <id> targets a thread explicitly;
+  // --resume picks the most recently updated one. When a threadId is present
+  // the run is enqueued through POST /threads/:id/turns (enqueueAndAwait routes
+  // it there) — the ONE turn-creation path that owns scope, lineage, and the
+  // continuation packet. POST /runs itself now refuses threadId.
   let threadId = flagStr(args, "thread");
   if (threadId === undefined && flagBool(args, "resume")) {
     try {
