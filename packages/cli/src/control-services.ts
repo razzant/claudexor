@@ -27,6 +27,7 @@ import {
   ControlSettingsUpdateRequest,
 } from "@claudexor/schema";
 import { registerConfigDirProfile, removeProfileFromRegistry } from "./profile-registration.js";
+import { harnessAccountsProjection } from "./accounts-projection.js";
 import { createRetentionRunner } from "./retention-service.js";
 import {
   canonicalIsolationLocator,
@@ -334,7 +335,40 @@ export function controlServices(
       for (const profile of profiles) {
         out.push({ profile, status: await profileDoctorStatus(profile) });
       }
-      return { profiles: out };
+      return { profiles: out, harnessAccounts: await harnessAccountsProjection(NO_PROJECT_ROOT) };
+    },
+    // PATCH /credential-profiles/:harness/:id — the Enabled toggle of the
+    // accounts symmetry (INV-135). Flips the profile's durable `enabled` in the
+    // registry (one locked write) and returns the refreshed doctor projection.
+    updateCredentialProfile: async (input: unknown) => {
+      const p = (input ?? {}) as Record<string, unknown>;
+      const harnessId = typeof p["harnessId"] === "string" ? p["harnessId"] : "";
+      const profileId = typeof p["profileId"] === "string" ? p["profileId"] : "";
+      const enabled = typeof p["enabled"] === "boolean" ? p["enabled"] : undefined;
+      if (!harnessId || !profileId || enabled === undefined) {
+        throw Object.assign(new Error("harnessId, profileId and enabled are required"), {
+          status: 400,
+        });
+      }
+      assertCredentialProfileRegistered(
+        loadConfig(NO_PROJECT_ROOT).global.credential_profiles,
+        harnessId,
+        profileId,
+      );
+      let updated: CredentialProfile | undefined;
+      updateGlobalConfig((config) => ({
+        ...config,
+        credential_profiles: config.credential_profiles.map((profile) => {
+          if (profile.harness_id !== harnessId || profile.profile_id !== profileId) return profile;
+          updated = { ...profile, enabled };
+          return updated;
+        }),
+      }));
+      if (!updated) {
+        throw Object.assign(new Error("profile update did not persist"), { status: 500 });
+      }
+      invalidateDoctorCache();
+      return { profile: updated, status: await profileDoctorStatus(updated) };
     },
     // INV-135 deletion: registry first; scoped material cleanup is fenced and disclosed.
     deleteCredentialProfile: async (input: unknown) => {

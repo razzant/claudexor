@@ -1461,6 +1461,24 @@ export const ControlSettingsSnapshot = z
               .boolean()
               .default(true)
               .describe("Whether the harness participates in routing."),
+            /** The harness's ACTIVE account (INV-135): the credential profile a
+             * new run/turn defaults to; null = the native/CLI login. */
+            activeProfileId: z
+              .string()
+              .min(1)
+              .nullable()
+              .default(null)
+              .describe(
+                "Active credential profile id for new runs/turns of this harness; null = the native/CLI login.",
+              ),
+            /** Whether the native/CLI login participates in the credential
+             * ladder for this harness (INV-135). */
+            nativeCredentialsEnabled: z
+              .boolean()
+              .default(true)
+              .describe(
+                "Whether the native/CLI login participates in this harness's credential ladder.",
+              ),
             defaultModel: z
               .string()
               .nullable()
@@ -1525,6 +1543,18 @@ export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;
 export const ControlHarnessSettingsPatch = z
   .object({
     enabled: z.boolean().optional().describe("Enable/disable the harness for routing."),
+    /** Set the harness's ACTIVE account (INV-135): null clears back to the
+     * native/CLI login as the default. Validated against the registry at use. */
+    activeProfileId: NonBlankString.nullable()
+      .optional()
+      .describe(
+        "New active credential profile id for this harness; null clears to the native/CLI login.",
+      ),
+    /** Toggle the native/CLI login in this harness's credential ladder (INV-135). */
+    nativeCredentialsEnabled: z
+      .boolean()
+      .optional()
+      .describe("Whether the native/CLI login participates in this harness's credential ladder."),
     defaultModel: NonBlankString.nullable()
       .optional()
       .describe("New per-harness default model; null clears it."),

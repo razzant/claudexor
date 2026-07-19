@@ -649,16 +649,26 @@ invariant or owner decision before proceeding.
   doctor's projection. Profiles are ADDITIVE identities: the default vendor
   stores (~/.claude, the native codex home) are never a profile target and are
   never mutated by profile operations. ONE resolve owner (the orchestrator)
-  turns an explicit profile id into the spec's typed profile; unknown,
-  disabled, or harness-mismatched ids refuse — an explicit profile never
-  silently becomes the default credential ladder, and an adapter given an
-  unsupported transport refuses typed. Native-session resume never crosses
+  resolves the per-harness EFFECTIVE account by an owner-locked ladder: an
+  explicit per-run profile id wins; else the harness's configured ACTIVE
+  account (`active_profile_id`) is the default when a run/turn pins none; else
+  the native/CLI login. Unknown, disabled, or harness-mismatched explicit ids
+  refuse — an explicit profile never silently becomes the default credential
+  ladder — an invalid Active account refuses loudly AT USE naming its setting,
+  and an adapter given an unsupported transport refuses typed. When the
+  native/CLI login is excluded (`native_credentials_enabled: false`) and no
+  effective account exists, the harness has nothing routable: it refuses
+  (explicit) or drops (auto) and never silently falls back INTO the disabled
+  login. Accounts are SYMMETRIC: every account is a row with an Enabled toggle
+  and an Active marker, the native login is a "CLI login" row with the same
+  toggle semantics minus Delete, and ONE server projection owns which identity
+  is Active so no surface re-derives it. Native-session resume never crosses
   profiles. Selecting a named profile makes its harness/pool coherent and every
-  selected lane probes the profile before spawn; deletion clears durable pins,
-  matching native-session caches, and quota subjects so an id cannot dangle or
-  resurrect stale auth. verify: schema credential-profile.ts; orchestrator
-  credential-profiles.ts; adapter profile tests; threads resume-isolation
-  test.
+  selected lane probes the profile before spawn; deletion clears durable pins
+  (including any harness's Active pointer), matching native-session caches, and
+  quota subjects so an id cannot dangle or resurrect stale auth. verify: schema
+  credential-profile.ts; orchestrator credential-profiles.ts; adapter profile
+  tests; threads resume-isolation test.
 - **INV-136** High-volume UI evidence is PROGRESSIVE, BOUNDED, and honest:
   per-run milestone bursts are exactly one in-flight request plus at most one
   trailing refresh (events during the trailing load cannot chain more GETs);

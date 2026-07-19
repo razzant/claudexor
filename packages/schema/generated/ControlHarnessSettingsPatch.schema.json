@@ -8,13 +8,28 @@
           "type": "boolean",
           "description": "Enable/disable the harness for routing."
         },
-        "defaultModel": {
+        "activeProfileId": {
           "anyOf": [
             {
               "type": "string",
               "minLength": 1,
               "pattern": "\\S",
               "description": "User-supplied string that must contain visible content, not just whitespace."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New active credential profile id for this harness; null clears to the native/CLI login."
+        },
+        "nativeCredentialsEnabled": {
+          "type": "boolean",
+          "description": "Whether the native/CLI login participates in this harness's credential ladder."
+        },
+        "defaultModel": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/activeProfileId/anyOf/0"
             },
             {
               "type": "null"
@@ -68,21 +83,21 @@
         "toolsAllow": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
+            "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/activeProfileId/anyOf/0"
           },
           "description": "New tool allowlist."
         },
         "toolsDeny": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
+            "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/activeProfileId/anyOf/0"
           },
           "description": "New tool denylist."
         },
         "fallbackModel": {
           "anyOf": [
             {
-              "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/defaultModel/anyOf/0"
+              "$ref": "#/definitions/ControlHarnessSettingsPatch/properties/activeProfileId/anyOf/0"
             },
             {
               "type": "null"

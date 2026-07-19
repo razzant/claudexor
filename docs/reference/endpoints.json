@@ -52,6 +52,16 @@
       "error_schema": "ControlProblem"
     },
     {
+      "method": "PATCH",
+      "path": "/v2/credential-profiles/:harness/:profileId",
+      "mutating": true,
+      "summary": "Toggle a credential profile's enabled state (the accounts Enabled row).",
+      "auth": "loopback_bearer",
+      "request_schema": "ControlCredentialProfileUpdateRequest",
+      "response_schema": "ControlCredentialProfileUpdateResponse",
+      "error_schema": "ControlProblem"
+    },
+    {
       "method": "GET",
       "path": "/v2/global/events",
       "mutating": false,

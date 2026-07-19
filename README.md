@@ -249,20 +249,32 @@ the global config's `credential_profiles`; secret material stays in the vendor
 dir or the secret store.
 
 ```bash
-claudexor profiles                         # registry + per-profile doctor readiness
+claudexor profiles                         # symmetric accounts per harness: CLI login + named accounts
 claudexor profiles add claude work         # register a config-dir login profile
 claudexor profiles login claude work       # the vendor's own login, scoped to the profile dir
+claudexor profiles disable claude work     # Enabled toggle: a disabled account is never routable
+claudexor profiles enable claude work
+claudexor settings set harness.claude.active_profile_id work        # Active: new runs/turns default here
+claudexor settings set harness.claude.active_profile_id none        # clear back to the CLI login
+claudexor settings set harness.claude.native_credentials_enabled false  # exclude the CLI login
 claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
-claudexor agent "fix the parser" --profile work   # explicit per-run selection
+claudexor agent "fix the parser" --profile work   # explicit per-run selection still wins
 ```
 
-In the macOS app, the bottom-left accounts control and Settings → Harnesses →
-Manage share ONE account surface: default + named accounts, readiness/quota,
-Log in/Manage, Remove, and Add another account. **Use** pins a named account to
-the current thread (or draft); **Use automatic account routing** clears it.
-Vendor OAuth still runs through the official CLI/browser setup job. Selection
-is turn > thread-sticky > engine default, and an explicit profile is STRICT —
-exactly its transport or a typed refusal, never a silent fallback.
+Accounts are **symmetric** (INV-135). Per harness, every account is a row with
+an **Enabled** toggle (a disabled account is never routable) and an **Active**
+marker (the account new runs/turns of that harness default to when none is
+pinned). The native vendor login is itself a symmetric row named **"CLI
+login"** with the same toggle semantics but no Delete (it is the vendor's, not
+Claudexor's — log in/out through the vendor CLI). Setting
+`native_credentials_enabled: false` EXCLUDES the CLI login from the ladder: a
+harness with no Active account then has nothing routable and refuses loudly
+rather than silently falling back into it. Deleting an account clears any
+harness's Active pointer at it. The macOS Accounts surface renders these rows
+directly from ONE server projection — no client re-derives which identity is
+Active. Selection is turn `--profile` > the harness's Active account > the CLI
+login, and an explicit profile is STRICT — exactly its transport or a typed
+refusal, never a silent fallback.
 Vendor-session resume never crosses profiles. Subscription quota is tracked
 per profile from the vendor's own `oauth/usage` endpoint (proactive
 five-hour/seven-day/per-model percentages in the app's quota footer, one chip

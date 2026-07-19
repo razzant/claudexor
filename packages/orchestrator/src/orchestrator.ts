@@ -849,14 +849,52 @@ export class Orchestrator {
     return new WorkspaceManager(input.repoRoot).laneHomeEnv(
       input.threadId,
       harnessId,
-      input.credentialProfileId ?? null,
+      // The lane is keyed by the EFFECTIVE account (INV-135): the Active
+      // default resolves the same home the recorded native session lives in.
+      this.effectiveProfileId(input, harnessId),
     ).env;
   }
 
+  /**
+   * The per-harness EFFECTIVE credential profile id (INV-135 accounts
+   * authority): an explicit per-run pin wins; else the harness's configured
+   * ACTIVE account (`harnesses.<id>.active_profile_id`); else null (the
+   * native/CLI login, subject to `native_credentials_enabled`). Non-throwing —
+   * validity is proven where the id is resolved into a typed profile.
+   */
+  private effectiveProfileId(input: RunInput, harnessId: string): string | null {
+    if (input.credentialProfileId) return input.credentialProfileId;
+    return this.config(input.repoRoot)?.global.harnesses?.[harnessId]?.active_profile_id ?? null;
+  }
+
+  /** Whether the native/CLI login is EXCLUDED from this harness's credential
+   * ladder (INV-135). When excluded, a harness with no effective profile has
+   * nothing routable and must refuse — never silently fall back into it. */
+  private nativeCredentialsDisabled(repoRoot: string, harnessId: string): boolean {
+    return (
+      this.config(repoRoot)?.global.harnesses?.[harnessId]?.native_credentials_enabled === false
+    );
+  }
+
   private resolveCredentialProfile(input: RunInput, harnessId: string): CredentialProfile | null {
-    if (!input.credentialProfileId) return null;
+    const explicit = input.credentialProfileId ?? null;
+    const wanted = this.effectiveProfileId(input, harnessId);
+    if (!wanted) return null;
     const registry = this.config(input.repoRoot)?.global.credential_profiles ?? [];
-    return resolveCredentialProfile(registry, input.credentialProfileId, harnessId);
+    try {
+      return resolveCredentialProfile(registry, wanted, harnessId);
+    } catch (err) {
+      // An invalid ACTIVE account (deleted/disabled after being set) refuses
+      // loudly AT USE, naming the setting so it is not read as an explicit pin.
+      if (!explicit) {
+        throw new Error(
+          `harness "${harnessId}" active account "${wanted}" (harnesses.${harnessId}.active_profile_id) is unusable: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+      throw err;
+    }
   }
 
   /** The typed effective auth route for a SELECTED credential profile
@@ -1082,6 +1120,19 @@ export class Orchestrator {
         dropped.push(why);
         continue;
       }
+      // INV-135 accounts authority: with the native/CLI login excluded and no
+      // effective account (no explicit pin, no Active profile), the harness has
+      // nothing routable. Refuse an explicit request naming the setting; drop
+      // it from an auto pool — never silently fall back INTO the disabled login.
+      if (
+        this.effectiveProfileId(input, id) === null &&
+        this.nativeCredentialsDisabled(input.repoRoot, id)
+      ) {
+        const why = `${id} has no routable credential: the CLI login is disabled (harnesses.${id}.native_credentials_enabled=false) and no Active account is set`;
+        if (explicitPool) throw new HarnessUnavailableError(why);
+        dropped.push(why);
+        continue;
+      }
       // W3.3 (TZ-1 §B): a route is admitted on readiness truth from the SAME
       // resolved env/cwd its run will spawn with (see routeContext.ts).
       let status = await candidateStatusInRouteContext(
@@ -1110,7 +1161,9 @@ export class Orchestrator {
       const profileAdapter = this.deps.registry.get(id);
       const profileVerdict = await selectedProfileAvailability({
         registry: this.config(input.repoRoot)?.global.credential_profiles ?? [],
-        profileId: input.credentialProfileId,
+        // The EFFECTIVE account (INV-135): an explicit pin or the harness's
+        // Active default is authenticated by ITS store, admitting the route.
+        profileId: this.effectiveProfileId(input, id),
         harnessId: id,
         probe: profileAdapter?.probeCredentialProfile?.bind(profileAdapter),
       });

@@ -107,6 +107,8 @@ import {
   ControlCredentialProfilesResponse,
   ControlCredentialProfileCreateRequest,
   ControlCredentialProfileCreateResponse,
+  ControlCredentialProfileUpdateRequest,
+  ControlCredentialProfileUpdateResponse,
   ControlCredentialProfileDeleteResponse,
   ControlTrustUpdateRequest,
   ControlInteractionAnswerRequest,
@@ -256,6 +258,7 @@ export interface DaemonControlApiOptions {
       refreshQuota?: () => Promise<unknown>;
       credentialProfiles?: () => Promise<unknown>;
       createCredentialProfile?: (input: unknown) => Promise<unknown>;
+      updateCredentialProfile?: (input: unknown) => Promise<unknown>;
       deleteCredentialProfile?: (input: unknown) => Promise<unknown>;
       listSecrets?: () => Promise<unknown>;
       setSecret?: (input: unknown) => Promise<unknown>;
@@ -1464,14 +1467,34 @@ export class DaemonControlApiServer {
         ControlCredentialProfileCreateResponse,
       );
     }
-    const profileDeleteMatch = /^\/credential-profiles\/([^/]+)\/([^/]+)$/.exec(path);
-    if (method === "DELETE" && profileDeleteMatch) {
+    const profileMutateMatch = /^\/credential-profiles\/([^/]+)\/([^/]+)$/.exec(path);
+    if (method === "PATCH" && profileMutateMatch) {
+      let body: ControlCredentialProfileUpdateRequest;
+      try {
+        const raw = await this.readBody(req);
+        assertNoInlineSecretValues(raw);
+        body = ControlCredentialProfileUpdateRequest.parse(raw);
+      } catch (err) {
+        return this.requestError(res, err);
+      }
+      return this.service(
+        res,
+        "updateCredentialProfile",
+        {
+          harnessId: decodeURIComponent(profileMutateMatch[1] as string),
+          profileId: decodeURIComponent(profileMutateMatch[2] as string),
+          enabled: body.enabled,
+        },
+        ControlCredentialProfileUpdateResponse,
+      );
+    }
+    if (method === "DELETE" && profileMutateMatch) {
       return this.service(
         res,
         "deleteCredentialProfile",
         {
-          harnessId: decodeURIComponent(profileDeleteMatch[1] as string),
-          profileId: decodeURIComponent(profileDeleteMatch[2] as string),
+          harnessId: decodeURIComponent(profileMutateMatch[1] as string),
+          profileId: decodeURIComponent(profileMutateMatch[2] as string),
         },
         ControlCredentialProfileDeleteResponse,
       );

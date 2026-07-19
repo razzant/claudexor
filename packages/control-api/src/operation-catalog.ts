@@ -144,6 +144,8 @@ const OPERATION_SUMMARIES: Record<string, string> = {
   "POST /v2/quota": "Refresh and read per-profile harness quota snapshots.",
   "GET /v2/credential-profiles": "List credential profiles per harness.",
   "POST /v2/credential-profiles": "Create a credential profile for a harness.",
+  "PATCH /v2/credential-profiles/:harness/:profileId":
+    "Toggle a credential profile's enabled state (the accounts Enabled row).",
   "DELETE /v2/credential-profiles/:harness/:profileId": "Delete a harness credential profile.",
   "GET /v2/harnesses": "List installed harnesses and their availability.",
   "GET /v2/projects": "List registered projects (durable handles).",
@@ -248,6 +250,14 @@ const operations: ControlOperationDescriptor[] = [
     "mutating",
     "ControlCredentialProfileCreateRequest",
     "ControlCredentialProfileCreateResponse",
+    { idempotency: "natural" },
+  ),
+  j(
+    "PATCH",
+    "/v2/credential-profiles/:harness/:profileId",
+    "mutating",
+    "ControlCredentialProfileUpdateRequest",
+    "ControlCredentialProfileUpdateResponse",
     { idempotency: "natural" },
   ),
   j(

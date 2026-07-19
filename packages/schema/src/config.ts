@@ -283,6 +283,36 @@ export const GlobalConfig = z
               .boolean()
               .default(true)
               .describe("Whether the harness participates in routing."),
+            /**
+             * The harness's ACTIVE account (INV-135): the credential profile a
+             * new run/turn of this harness defaults to when none is pinned
+             * explicitly. null = the engine's default ladder (the native/CLI
+             * login, subject to `native_credentials_enabled`). Validated at USE,
+             * not here: an unknown/deleted/disabled id refuses loudly when the
+             * run resolves it, and profile deletion clears any pointer at it.
+             */
+            active_profile_id: z
+              .string()
+              .min(1)
+              .nullable()
+              .default(null)
+              .describe(
+                "Active credential profile id for new runs/turns of this harness; null = the engine default ladder (native/CLI login).",
+              ),
+            /**
+             * Whether the native/default vendor credential (the "CLI login"
+             * account — ~/.claude, the native codex home) is routable for this
+             * harness (INV-135). false EXCLUDES it from the credential ladder:
+             * a harness with no Active profile and no explicit pin has nothing
+             * routable and refuses rather than silently falling back INTO the
+             * disabled CLI login.
+             */
+            native_credentials_enabled: z
+              .boolean()
+              .default(true)
+              .describe(
+                "Whether the native/default vendor credential (the CLI login) participates in this harness's credential ladder.",
+              ),
             default_model: z
               .string()
               .nullable()

@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { registerConfigDirProfile } from "./profile-registration.js";
 import {
   ControlCredentialProfileDeleteResponse,
+  ControlCredentialProfileUpdateResponse,
   ControlCredentialProfilesResponse,
   ControlSecretListResponse,
   ControlSecretMutationResponse,
@@ -135,6 +136,41 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       return printUsageError(json, err instanceof Error ? err.message : String(err));
     }
   }
+  if (sub === "enable" || sub === "disable") {
+    // The Enabled toggle of the accounts symmetry (INV-135): PATCH the
+    // profile's durable `enabled` via the daemon (one locked write).
+    const harness = args._[2];
+    const profileId = args._[3];
+    if (!harness || !profileId) {
+      return printUsageError(json, `usage: claudexor profiles ${sub} <harness> <profile-id>`);
+    }
+    const { addr } = await ensureDaemon();
+    const response = await controlApiFetch(
+      addr,
+      `/credential-profiles/${encodeURIComponent(harness)}/${encodeURIComponent(profileId)}`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${addr.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ enabled: sub === "enable" }),
+      },
+    );
+    if (!response.ok) {
+      return printUsageError(
+        json,
+        `profile ${sub} failed (${response.status}): ${await response.text()}`,
+      );
+    }
+    const receipt = ControlCredentialProfileUpdateResponse.parse(await response.json());
+    if (json) printJson(receipt);
+    else
+      print(
+        `${sub}d ${harness}/${profileId} (${receipt.profile.enabled ? "enabled" : "disabled"})`,
+      );
+    return 0;
+  }
   if (sub === "remove" || sub === "rm") {
     const harness = args._[2];
     const profileId = args._[3];
@@ -167,21 +203,56 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
   if (sub !== "list") {
     return printUsageError(
       json,
-      "usage: claudexor profiles [list | add <harness> <profile-id> | login <harness> <profile-id> | remove <harness> <profile-id>]",
+      "usage: claudexor profiles [list | add <harness> <profile-id> | login <harness> <profile-id> | enable <harness> <profile-id> | disable <harness> <profile-id> | remove <harness> <profile-id>]",
     );
   }
   const result = ControlCredentialProfilesResponse.parse(await daemonGet("/credential-profiles"));
-  if (json) printJson(result);
-  else if (result.profiles.length === 0) {
+  if (json) {
+    printJson(result);
+    return 0;
+  }
+  // Symmetric accounts rows (INV-135, D25): per harness, every credential
+  // profile (Enabled toggle + Active marker) plus the native "CLI login" row.
+  // The server owns Active/native truth — this surface never re-derives it.
+  const byHarness = new Map<string, Array<(typeof result.profiles)[number]>>();
+  for (const entry of result.profiles) {
+    const list = byHarness.get(entry.profile.harness_id) ?? [];
+    list.push(entry);
+    byHarness.set(entry.profile.harness_id, list);
+  }
+  const harnessIds = [
+    ...new Set([...result.harnessAccounts.map((h) => h.harness_id), ...byHarness.keys()]),
+  ].sort();
+  if (harnessIds.length === 0) {
     print(
-      "no credential profiles registered (add credential_profiles entries to the global config)",
+      "no accounts (add credential_profiles entries to the global config, or log in a harness)",
     );
-  } else {
-    for (const { profile, status } of result.profiles) {
+    return 0;
+  }
+  for (const harnessId of harnessIds) {
+    const authority = result.harnessAccounts.find((h) => h.harness_id === harnessId);
+    const activeMarker = (isActive: boolean) => (isActive ? " *ACTIVE" : "");
+    print(`${harnessId}:`);
+    // The native "CLI login" pseudo-row: same Enabled/Active semantics, no Delete.
+    const nativeEnabled = authority?.native_credentials_enabled ?? true;
+    const nativeActive = authority?.active_identity.kind === "native";
+    const nativeState = !nativeEnabled
+      ? "disabled"
+      : authority?.native_login_detected
+        ? "logged-in"
+        : "not-logged-in";
+    print(`  CLI login [native] ${nativeState}${activeMarker(nativeActive)}`);
+    for (const { profile, status } of byHarness.get(harnessId) ?? []) {
       const state = profile.enabled ? status.availability : "disabled";
+      const isActive =
+        authority?.active_identity.kind === "profile" &&
+        authority.active_identity.profileId === profile.profile_id;
       print(
-        `${profile.harness_id}/${profile.profile_id} [${profile.credential_kind}] ${state}${status.detail ? ` — ${status.detail}` : ""}`,
+        `  ${profile.profile_id} [${profile.credential_kind}] ${state}${activeMarker(isActive)}${status.detail ? ` — ${status.detail}` : ""}`,
       );
+    }
+    if (authority?.active_identity.kind === "none") {
+      print(`  (no Active account: ${authority.active_identity.reason})`);
     }
   }
   return 0;

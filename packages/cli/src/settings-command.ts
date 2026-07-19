@@ -33,6 +33,8 @@ export const GLOBAL_SETTING_FIELDS = {
  */
 export const HARNESS_SETTING_FIELDS = {
   enabled: "enabled",
+  active_profile_id: "activeProfileId",
+  native_credentials_enabled: "nativeCredentialsEnabled",
   default_model: "defaultModel",
   fallback_model: "fallbackModel",
   effort: "effort",
@@ -124,6 +126,14 @@ function harnessFieldPatch(field: keyof typeof HARNESS_SETTING_FIELDS, value: st
       if (value !== "true" && value !== "false")
         throw new Error("harness enabled must be true or false");
       return { enabled: value === "true" };
+    }
+    case "active_profile_id":
+      // `none` clears the Active account back to the native/CLI login.
+      return { activeProfileId: cleared ? null : value };
+    case "native_credentials_enabled": {
+      if (value !== "true" && value !== "false")
+        throw new Error("harness native_credentials_enabled must be true or false");
+      return { nativeCredentialsEnabled: value === "true" };
     }
     case "default_model":
       return { defaultModel: cleared ? null : value };
@@ -246,7 +256,7 @@ function printSettings(settings: ReturnType<typeof ControlSettingsSnapshot.parse
   print("harnesses:");
   for (const [id, harness] of harnesses) {
     print(
-      `  ${id}: enabled=${harness.enabled} model=${harness.defaultModel ?? "(native)"} fallback=${harness.fallbackModel ?? "(none)"} effort=${harness.effort ?? "(native)"} web=${harness.web} max_turns=${harness.maxTurns ?? "(none)"} max_rounds=${harness.maxRounds ?? "(default)"} auth=${harness.authPreference} limit_action=${harness.profileLimitAction}`,
+      `  ${id}: enabled=${harness.enabled} active=${harness.activeProfileId ?? "(cli-login)"} cli_login=${harness.nativeCredentialsEnabled ? "on" : "off"} model=${harness.defaultModel ?? "(native)"} fallback=${harness.fallbackModel ?? "(none)"} effort=${harness.effort ?? "(native)"} web=${harness.web} max_turns=${harness.maxTurns ?? "(none)"} max_rounds=${harness.maxRounds ?? "(default)"} auth=${harness.authPreference} limit_action=${harness.profileLimitAction}`,
     );
   }
 }

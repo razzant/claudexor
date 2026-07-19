@@ -32,6 +32,35 @@ export function assertCredentialProfileCompatibility(
   }
 }
 
+/** A harness's Active account (INV-135) must name a registered, ENABLED profile
+ * of that harness — setting Active to an unknown/disabled/other-harness id is a
+ * 400 at write time (the run-side resolver would otherwise refuse loudly at
+ * use). null clears back to the native/CLI login and is always valid. */
+export function assertActiveProfileRegistered(
+  registry: readonly CredentialProfile[],
+  harnessId: string,
+  activeProfileId: string | null,
+): void {
+  if (activeProfileId === null) return;
+  const match = registry.find(
+    (profile) => profile.harness_id === harnessId && profile.profile_id === activeProfileId,
+  );
+  if (!match) {
+    throw Object.assign(
+      new Error(
+        `active account "${activeProfileId}" is not a registered profile of harness "${harnessId}"`,
+      ),
+      { status: 400 },
+    );
+  }
+  if (!match.enabled) {
+    throw Object.assign(
+      new Error(`active account "${activeProfileId}" (${harnessId}) is disabled; enable it first`),
+      { status: 400 },
+    );
+  }
+}
+
 export function assertCredentialProfileRegistered(
   registry: readonly CredentialProfile[],
   harnessId: string,

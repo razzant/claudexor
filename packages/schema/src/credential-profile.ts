@@ -107,16 +107,104 @@ export const CredentialProfileStatus = z
   .describe("Doctor-owned readiness projection for one credential profile; never durable config.");
 export type CredentialProfileStatus = z.infer<typeof CredentialProfileStatus>;
 
-/** Control response: every registered profile with its doctor projection. */
+/**
+ * Which identity is ACTIVE for a harness — the account a new run/turn defaults
+ * to (INV-135). Server-computed so no surface re-derives it: `profile` names
+ * the Active credential profile; `native` is the CLI login (no Active profile,
+ * native routable); `none` means nothing is routable (no Active profile and the
+ * CLI login is disabled) with a human reason.
+ */
+export const ControlActiveIdentity = z
+  .discriminatedUnion("kind", [
+    z
+      .object({ kind: z.literal("profile"), profileId: Id })
+      .strict()
+      .describe("An enabled credential profile is the harness's Active account."),
+    z
+      .object({ kind: z.literal("native") })
+      .strict()
+      .describe("The native/CLI login is the harness's Active account (no Active profile pinned)."),
+    z
+      .object({ kind: z.literal("none"), reason: z.string() })
+      .strict()
+      .describe(
+        "Nothing is routable for this harness (no Active profile and the CLI login is disabled).",
+      ),
+  ])
+  .describe("Server-computed Active identity for a harness's accounts.");
+export type ControlActiveIdentity = z.infer<typeof ControlActiveIdentity>;
+
+/**
+ * Per-harness ACCOUNTS AUTHORITY projection (INV-135, the accounts symmetry):
+ * the native "CLI login" pseudo-row state and which identity is Active, computed
+ * ONCE on the server so no client re-derives the symmetry. Every credential
+ * profile of this harness appears in the top-level `profiles` list with its own
+ * `enabled` flag; this row adds the authority the profile rows cannot carry.
+ */
+export const ControlHarnessAccounts = z
+  .object({
+    harness_id: Id.describe("Harness family these accounts belong to."),
+    active_profile_id: Id.nullable().describe(
+      "Configured Active credential profile id; null = the native/CLI login is the default.",
+    ),
+    native_credentials_enabled: z
+      .boolean()
+      .describe("Whether the native/CLI login participates in this harness's credential ladder."),
+    native_login_detected: z
+      .boolean()
+      .describe(
+        "Whether a native/default vendor login is currently detected available (the CLI login pseudo-row state).",
+      ),
+    active_identity: ControlActiveIdentity,
+  })
+  .strict()
+  .describe("Per-harness accounts authority: native CLI-login state + the Active identity.");
+export type ControlHarnessAccounts = z.infer<typeof ControlHarnessAccounts>;
+
+/** Control response: every registered profile with its doctor projection, plus
+ * the per-harness accounts authority (native CLI-login row + Active identity). */
 export const ControlCredentialProfilesResponse = z
   .object({
     profiles: z
       .array(z.object({ profile: CredentialProfile, status: CredentialProfileStatus }).strict())
       .describe("Every registered credential profile paired with its doctor readiness projection."),
+    harnessAccounts: z
+      .array(ControlHarnessAccounts)
+      .default([])
+      .describe(
+        "Per-harness accounts authority (INV-135): the native CLI-login pseudo-row state and the server-computed Active identity, so no surface re-derives the accounts symmetry.",
+      ),
   })
   .strict()
-  .describe("Credential-profile registry listing with per-profile doctor readiness.");
+  .describe(
+    "Credential-profile registry listing with per-profile doctor readiness and per-harness accounts authority.",
+  );
 export type ControlCredentialProfilesResponse = z.infer<typeof ControlCredentialProfilesResponse>;
+
+/** PATCH /credential-profiles/:harness/:id — toggle a profile's `enabled`
+ * (the Enabled row of the accounts symmetry). The native CLI login has the same
+ * toggle semantics via the harness settings surface, not this route. */
+export const ControlCredentialProfileUpdateRequest = z
+  .object({
+    enabled: z
+      .boolean()
+      .describe("Whether this credential profile is routable (the Enabled toggle)."),
+  })
+  .strict()
+  .describe("Request body for PATCH /credential-profiles/:harness/:id.");
+export type ControlCredentialProfileUpdateRequest = z.infer<
+  typeof ControlCredentialProfileUpdateRequest
+>;
+
+/** Receipt for a credential-profile update: the updated registry entry with its
+ * refreshed doctor projection. */
+export const ControlCredentialProfileUpdateResponse = z
+  .object({ profile: CredentialProfile, status: CredentialProfileStatus })
+  .strict()
+  .describe("The updated credential profile with its doctor readiness projection.");
+export type ControlCredentialProfileUpdateResponse = z.infer<
+  typeof ControlCredentialProfileUpdateResponse
+>;
 
 /** Register a config-dir login profile (claude/codex) from a UI surface —
  * the same ONE locked registration owner `claudexor profiles add` uses. */

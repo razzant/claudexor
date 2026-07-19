@@ -375,10 +375,22 @@ durable config; every adapter's profile probe enforces the SAME slot binding
 as its run route, so a misconfigured profile reads `unavailable` instead of
 being admitted and refused mid-run.
 
-The orchestrator is the ONE resolve owner: an explicit per-run
-`credentialProfileId` becomes the typed `credential_profile` on every
-`HarnessRunSpec` the run builds; unknown/disabled/harness-mismatched ids are a
-typed refusal before spawn. An explicit profile is STRICT in the adapter —
+The orchestrator is the ONE resolve owner. The per-harness EFFECTIVE account is
+resolved by an owner-locked ladder (INV-135 accounts authority): an explicit
+per-run `credentialProfileId` wins; else the harness's configured ACTIVE
+account (`harnesses.<id>.active_profile_id`) is the default for a run/turn that
+pins none; else null — the native/CLI login. The resolved account becomes the
+typed `credential_profile` on every `HarnessRunSpec` the run builds (and keys
+the lane's read-only home), so the Active default flows to the spec, preflight,
+continuity, and session recording exactly like an explicit pin. An
+unknown/disabled/harness-mismatched explicit id is a typed refusal before
+spawn; an invalid Active account (deleted or disabled after being set) refuses
+loudly AT USE, naming `harnesses.<id>.active_profile_id` so it is never read as
+an explicit pin. When the native/CLI login is EXCLUDED
+(`harnesses.<id>.native_credentials_enabled: false`) and there is no effective
+account, the harness has nothing routable: an explicit selection refuses naming
+the setting, an auto pool drops it — nothing silently falls back INTO the
+disabled login. An explicit profile is STRICT in the adapter —
 exactly the profile's transport or a typed error event, never a fallback to
 default credentials (claude: config-dir login / stored token non-bare / stored
 key; codex: scoped `CODEX_HOME` login / scoped key `auth.json`; cursor,
@@ -398,19 +410,29 @@ login dir or its namespaced secret, NEVER the default vendor store. A failed
 cleanup is disclosed on the receipt (`cleanupWarning`), never silent; removal
 refuses with a typed 409 while a login job for that account is active. The same
 daemon mutation clears every legacy scalar thread pin carrying that profile
-id, marks matching harness/profile native-session caches stale, and removes
-profile quota snapshots, so deletion cannot leave a route that fails on the
-next turn or resurrect a session if the id is recreated. Dependent journal
+id, clears any harness's ACTIVE pointer (`active_profile_id`) and
+`rotation_eligible` entry at the deleted id, marks matching harness/profile
+native-session caches stale, and removes profile quota snapshots, so deletion
+cannot leave a route that fails on the next turn or resurrect a session if the
+id is recreated. Dependent journal
 invalidation happens before registry removal; any unhealthy project partition
 returns typed 409/recovery-required, leaving the profile retryable.
 
-Selection precedence is turn > thread-sticky > engine default: a turn's
-explicit `credentialProfileId` (CLI `--profile`) beats the thread's durable
-`credential_profile_id` (PATCH /v2/threads/:id), and null means the default
-credential ladder. The app's Use action atomically makes the profile's harness
-the primary and sole eligible pool member; external thread create/PATCH calls
-with an explicit pool are rejected unless the profile id exists for every pool
-lane. Run preflight probes the selected profile for every lane even when the
+Selection precedence is turn > thread-sticky > harness Active account > CLI
+login: a turn's explicit `credentialProfileId` (CLI `--profile`) beats the
+thread's durable `credential_profile_id` (PATCH /v2/threads/:id), which — when
+null — resolves through the harness's Active account and then the native login.
+Accounts are SYMMETRIC (D25): the listing (`GET /v2/credential-profiles`,
+`claudexor profiles`) projects, per harness, every credential profile with its
+`enabled` flag, the native "CLI login" pseudo-row state
+(`native_credentials_enabled` + a detected native login), and the
+server-computed `active_identity` (profile | native | none-with-reason) — ONE
+projection so no surface re-derives the symmetry. A profile's `enabled` toggle
+is `PATCH /v2/credential-profiles/:harness/:id` (CLI `profiles enable|disable`);
+the harness's Active account and CLI-login toggle are per-harness settings
+(`harness.<id>.active_profile_id`, `harness.<id>.native_credentials_enabled`).
+External thread create/PATCH calls with an explicit pool are rejected unless
+the profile id exists for every pool lane. Run preflight probes the selected profile for every lane even when the
 default harness doctor is already OK, before any adapter starts:
 `verification: failed` refuses even with `availability: available`, while an
 intentional presence-only API-key probe may remain `not_run` (shown unknown,
@@ -611,6 +633,7 @@ files.
 - `GET /v2/credential-profiles`
 - `POST /v2/credential-profiles`
 - `DELETE /v2/credential-profiles/:harness/:profileId`
+- `PATCH /v2/credential-profiles/:harness/:profileId`
 - `GET /v2/global/events`
 - `POST /v2/handshake`
 - `GET /v2/harnesses`

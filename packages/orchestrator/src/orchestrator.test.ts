@@ -1558,6 +1558,142 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("resolves the harness ACTIVE account as the default when no profile is pinned; an explicit pin still wins (INV-135)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-active-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      [
+        "credential_profiles:",
+        "  - profile_id: work",
+        "    harness_id: asker",
+        "    display_name: Work",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:work'",
+        "  - profile_id: alt",
+        "    harness_id: asker",
+        "    display_name: Alt",
+        "    credential_kind: api_key",
+        "    secret_ref: 'openai:alt'",
+        "harnesses:",
+        "  asker:",
+        "    active_profile_id: work",
+        "",
+      ].join("\n"),
+    );
+    const stamp = () => {
+      const seen: unknown[] = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const inner = asker.run.bind(asker);
+      asker.run = (spec) => {
+        seen.push(spec.credential_profile);
+        return inner(spec);
+      };
+      return { asker, seen };
+    };
+    try {
+      // No pin → the Active account (work) is the default credential.
+      const a = stamp();
+      const activeRes = await new Orchestrator({
+        registry: new Map([["asker", a.asker]]),
+        reviewers: [],
+      }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+      expect(legacyOutcome(activeRes)).toBe("success");
+      expect(a.seen[0]).toMatchObject({ profile_id: "work" });
+
+      // Explicit pin beats the Active default.
+      const b = stamp();
+      const pinnedRes = await new Orchestrator({
+        registry: new Map([["asker", b.asker]]),
+        reviewers: [],
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "alt",
+      });
+      expect(legacyOutcome(pinnedRes)).toBe("success");
+      expect(b.seen[0]).toMatchObject({ profile_id: "alt" });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
+  it("excludes the native/CLI login when native_credentials_enabled=false; explicit selection refuses naming the setting; an Active account still routes (INV-135)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-native-off-config-"));
+    const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    const mkAsker = () => {
+      const seen: unknown[] = [];
+      const asker = askAdapter("asker", function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "4" };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+      const inner = asker.run.bind(asker);
+      asker.run = (spec) => {
+        seen.push(spec.credential_profile);
+        return inner(spec);
+      };
+      return { asker, seen };
+    };
+    try {
+      // Native disabled, no Active account, no pin → nothing routable, refuse
+      // LOUDLY naming the setting; never silently fall back into the login.
+      writeFileSync(
+        join(configDir, "config.yaml"),
+        ["harnesses:", "  asker:", "    native_credentials_enabled: false", ""].join("\n"),
+      );
+      const off = mkAsker();
+      const refused = await new Orchestrator({
+        registry: new Map([["asker", off.asker]]),
+        reviewers: [],
+      }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+      expect(legacyOutcome(refused)).toBe("failed");
+      expect(refused.summary).toMatch(/native_credentials_enabled=false/);
+      expect(off.seen).toHaveLength(0);
+
+      // Native disabled but an Active account is set → the Active account routes.
+      writeFileSync(
+        join(configDir, "config.yaml"),
+        [
+          "credential_profiles:",
+          "  - profile_id: work",
+          "    harness_id: asker",
+          "    display_name: Work",
+          "    credential_kind: api_key",
+          "    secret_ref: 'openai:work'",
+          "harnesses:",
+          "  asker:",
+          "    native_credentials_enabled: false",
+          "    active_profile_id: work",
+          "",
+        ].join("\n"),
+      );
+      const on = mkAsker();
+      const routed = await new Orchestrator({
+        registry: new Map([["asker", on.asker]]),
+        reviewers: [],
+      }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+      expect(legacyOutcome(routed)).toBe("success");
+      expect(on.seen[0]).toMatchObject({ profile_id: "work" });
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = previousConfigDir;
+    }
+  });
+
   it("reactively rotates on a TYPED vendor limit — new session, new profile, provenance (W5.4)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-reactive-config-"));

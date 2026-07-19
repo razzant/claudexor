@@ -15,6 +15,7 @@ import type {
 import { GlobalConfig } from "@claudexor/schema";
 import { validateModel } from "@claudexor/core";
 import { loadConfig } from "@claudexor/config";
+import { assertActiveProfileRegistered } from "./profile-compatibility.js";
 import { buildRegistry, harnessModels } from "./registry.js";
 
 export function settingsSnapshot(repoRoot: string) {
@@ -46,6 +47,8 @@ export function settingsSnapshot(repoRoot: string) {
         id,
         {
           enabled: h.enabled,
+          activeProfileId: h.active_profile_id,
+          nativeCredentialsEnabled: h.native_credentials_enabled,
           defaultModel: h.default_model,
           effort: h.effort,
           maxTurns: h.max_turns,
@@ -115,6 +118,20 @@ export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest):
         `harness settings for '${id}' are not persistable: not a real registered harness (expected one of: ${realList})`,
       );
     }
+    // The Active account (INV-135) must name a registered enabled profile of
+    // THIS harness before it is persisted — an unknown/disabled id 400s here
+    // rather than dying at run-resolve time. null clears to the native login.
+    if (patch.activeProfileId !== undefined) {
+      try {
+        assertActiveProfileRegistered(
+          loadConfig(process.cwd()).global.credential_profiles,
+          id,
+          patch.activeProfileId,
+        );
+      } catch (err) {
+        badRequest(err instanceof Error ? err.message : String(err));
+      }
+    }
     const models: Array<{ field: string; value: string }> = [];
     if (patch.defaultModel) models.push({ field: "defaultModel", value: patch.defaultModel });
     if (patch.fallbackModel) models.push({ field: "fallbackModel", value: patch.fallbackModel });
@@ -180,6 +197,12 @@ export function applyHarnessSettingsPatches(
     next[id] = {
       ...base,
       enabled: patch.enabled ?? base.enabled,
+      active_profile_id:
+        patch.activeProfileId === undefined ? base.active_profile_id : patch.activeProfileId,
+      native_credentials_enabled:
+        patch.nativeCredentialsEnabled === undefined
+          ? base.native_credentials_enabled
+          : patch.nativeCredentialsEnabled,
       default_model: patch.defaultModel === undefined ? base.default_model : patch.defaultModel,
       effort: patch.effort === undefined ? base.effort : patch.effort,
       max_turns: patch.maxTurns === undefined ? base.max_turns : patch.maxTurns,

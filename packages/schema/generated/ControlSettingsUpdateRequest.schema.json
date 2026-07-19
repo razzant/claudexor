@@ -169,6 +169,21 @@
                 "type": "boolean",
                 "description": "Enable/disable the harness for routing."
               },
+              "activeProfileId": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/ControlSettingsUpdateRequest/properties/primaryHarness/anyOf/0"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "New active credential profile id for this harness; null clears to the native/CLI login."
+              },
+              "nativeCredentialsEnabled": {
+                "type": "boolean",
+                "description": "Whether the native/CLI login participates in this harness's credential ladder."
+              },
               "defaultModel": {
                 "anyOf": [
                   {

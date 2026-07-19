@@ -10,10 +10,10 @@
   "packages/cli/src/claudexord.ts": 559,
   "packages/cli/src/cli.ts": 1475,
   "packages/cli/src/command-registry.ts": 467,
-  "packages/cli/src/control-services.ts": 497,
+  "packages/cli/src/control-services.ts": 531,
   "packages/cli/src/plugins.ts": 1858,
   "packages/cli/src/setup-jobs.ts": 1221,
-  "packages/control-api/src/daemon-server.ts": 2762,
+  "packages/control-api/src/daemon-server.ts": 2786,
   "packages/daemon/src/journal-manager.ts": 582,
   "packages/daemon/src/server.ts": 625,
   "packages/daemon/src/threads.ts": 600,
@@ -22,8 +22,8 @@
   "packages/harness-cursor/src/index.ts": 795,
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 719,
-  "packages/orchestrator/src/orchestrator.ts": 6386,
+  "packages/orchestrator/src/orchestrator.ts": 6439,
   "packages/review/src/reviewEngine.ts": 1396,
-  "packages/schema/src/control.ts": 1600,
+  "packages/schema/src/control.ts": 1630,
   "packages/schema/src/harness.ts": 973
 }

@@ -77,6 +77,26 @@ describe("assertSettingsPatchValid", () => {
       else process.env["OPENAI_API_KEY"] = prev;
     }
   });
+
+  it("refuses an Active account that is not a registered profile of the harness (INV-135)", async () => {
+    // The config the validator reads (process.cwd()) has no such profile, so
+    // setting Active to it 400s here rather than dying at run-resolve time.
+    await expect(
+      assertSettingsPatchValid(
+        ControlSettingsUpdateRequest.parse({
+          harnesses: { codex: { activeProfileId: "ghost-account" } },
+        }),
+      ),
+    ).rejects.toThrow(/active account "ghost-account" is not a registered profile/);
+    // Clearing Active back to the native/CLI login (null) is always valid.
+    await expect(
+      assertSettingsPatchValid(
+        ControlSettingsUpdateRequest.parse({
+          harnesses: { codex: { activeProfileId: null } },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  }, 30_000);
 });
 
 describe("applyHarnessSettingsPatches", () => {
