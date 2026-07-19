@@ -469,7 +469,7 @@ export function attemptUsageCostSettlement(
   }
   if (isSubscriptionValuation(authMode)) {
     return {
-      knowledge: "unknown",
+      knowledge: estimated ? "estimated" : "exact",
       source: "harness-token-valuation",
       provenance: [`attempt:${attemptId}`, `harness:${harnessId}`, "route:vendor_native"],
       valuationUsd: totalUsd,

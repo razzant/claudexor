@@ -162,7 +162,7 @@ describe("BudgetLedger", () => {
     );
     expect(native.spend()).toBe(0);
     expect(native.valuation()).toBe(0.25);
-    expect(native.terminal()).toBe("cost_unverifiable");
+    expect(native.terminal()).toBeNull();
 
     const nativeExact = new BudgetLedger({ kind: "unlimited" });
     const nativeExactLease = nativeExact.reserve({
@@ -177,6 +177,7 @@ describe("BudgetLedger", () => {
     );
     expect(nativeExact.spend()).toBe(0);
     expect(nativeExact.valuation()).toBe(0.37);
+    expect(nativeExact.terminal()).toBeNull();
 
     const api = new BudgetLedger({ kind: "finite", maxUsd: 1 });
     const apiLease = api.reserve({
