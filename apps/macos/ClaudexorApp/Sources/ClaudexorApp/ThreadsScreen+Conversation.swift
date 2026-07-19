@@ -1,6 +1,17 @@
 import SwiftUI
 import ClaudexorKit
 
+extension View {
+    /// F10: constrain to the conversation's readable measure (~Apple readable
+    /// content) and CENTER it, so message/progress cards and the composer read as
+    /// one column instead of stretching the full window ("слишком широкие").
+    /// Responsive below the cap.
+    func conversationMeasure() -> some View {
+        frame(maxWidth: Theme.Layout.conversationMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
 // Conversation-pane view helpers for ThreadsScreen, extracted so the main
 // screen stays under the readability ratchet. Same views, same behavior — the
 // empty-conversation placeholder and the native-session footer.

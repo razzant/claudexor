@@ -191,16 +191,37 @@ enum HarnessIconCatalog {
     static func hasBrandMark(_ harnessId: String) -> Bool { mark(for: harnessId) != nil }
 }
 
-/// Renders a harness's official brand mark, tinted with the family color (the
-/// brand's own color), or the ONE shared generic glyph for any vendor without a
-/// bundled mark. The single owner of harness iconography.
+/// Renders a harness's official brand mark, or the ONE shared generic glyph for
+/// any vendor without a bundled mark — ALWAYS MONOCHROME in the current
+/// foreground color (owner F7). The single owner of harness iconography.
+///
+/// Why monochrome-and-explicit, not the brand color: the marks used to fill with
+/// `family.color`, a `Color(dark:light:)` dynamic `NSColor`. A `Canvas` /
+/// `ImageRenderer` does NOT resolve a dynamic `NSColor` against the view's
+/// appearance, so the fill collapsed to its default-appearance value and the
+/// paths read black-on-dark ("чёрные на чёрном фоне"). Both the brand marks AND
+/// the generic/openrouter glyph now render the SAME single foreground color,
+/// resolved from the live `colorScheme` into a CONCRETE color the Canvas fills
+/// correctly — so nothing outlives the template treatment or reads invisible.
 struct HarnessIcon: View {
+    @Environment(\.colorScheme) private var colorScheme
     let family: HarnessFamily
     var size: CGFloat = 16
-    /// Render monochrome (menu/label contexts) rather than in the brand color.
-    var monochrome = false
+    /// Dim to the secondary foreground (where the design dims icons); default is
+    /// the primary label color. Monochrome either way.
+    var dimmed = false
 
-    private var tint: Color { monochrome ? .primary : family.color }
+    private var tint: Color { HarnessIcon.foreground(scheme: colorScheme, dimmed: dimmed) }
+
+    /// The single monochrome tint, resolved against the CURRENT color scheme into
+    /// a concrete (non-dynamic) color so a `Canvas`/`ImageRenderer` fills with the
+    /// correct light/dark foreground. Approximates the primary/secondary label
+    /// color (white on dark, near-black on light). Pure — unit-tested so the
+    /// light/dark + primary/secondary mapping never silently drifts.
+    static func foreground(scheme: ColorScheme, dimmed: Bool) -> Color {
+        let base: Color = scheme == .dark ? .white : .black
+        return base.opacity(dimmed ? 0.55 : 0.88)
+    }
 
     var body: some View {
         if let mark = HarnessIconCatalog.mark(for: family.rawValue) {
@@ -236,7 +257,7 @@ enum HarnessIconImage {
         let key = "\(family.rawValue)@\(Int(size))"
         if let cached = cache[key] { return cached }
         let renderer = ImageRenderer(
-            content: HarnessIcon(family: family, size: size, monochrome: true)
+            content: HarnessIcon(family: family, size: size)
                 .frame(width: size, height: size))
         renderer.scale = 2
         let image: Image

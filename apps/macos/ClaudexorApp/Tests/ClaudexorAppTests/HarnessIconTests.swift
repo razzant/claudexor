@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import ClaudexorApp
 
@@ -26,6 +27,22 @@ import Testing
         #expect(
             NSImage(systemSymbolName: HarnessIconCatalog.genericSymbol, accessibilityDescription: nil) != nil,
             "the generic glyph must be a real SF Symbol")
+    }
+
+    @Test func foregroundIsMonochromeAndFollowsSchemeAndDim() {
+        // Owner F7: EVERY vendor mark (and the generic glyph) tints with ONE
+        // monochrome foreground, resolved to a CONCRETE color a Canvas fills
+        // correctly. White on dark, black on light; dimmed = the same hue at a
+        // lower opacity (the "secondary where the design dims" case). The mapping
+        // never depends on the family — no brand color leaks back in.
+        let darkPrimary = HarnessIcon.foreground(scheme: .dark, dimmed: false)
+        let lightPrimary = HarnessIcon.foreground(scheme: .light, dimmed: false)
+        #expect(darkPrimary == Color.white.opacity(0.88))
+        #expect(lightPrimary == Color.black.opacity(0.88))
+        // Dimmed shares the base hue but reads quieter than primary.
+        #expect(HarnessIcon.foreground(scheme: .dark, dimmed: true) == Color.white.opacity(0.55))
+        #expect(HarnessIcon.foreground(scheme: .light, dimmed: true) == Color.black.opacity(0.55))
+        #expect(darkPrimary != lightPrimary)
     }
 
     @MainActor

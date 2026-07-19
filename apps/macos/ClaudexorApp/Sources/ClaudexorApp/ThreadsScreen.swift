@@ -299,6 +299,8 @@ struct ThreadsScreen: View {
                                 sessionsFooter(detail.sessions)
                             }
                         }
+                        // F10: readable measure — wide content lives in the inspector.
+                        .conversationMeasure()
                         .padding(Theme.Spacing.lg)
                         // Global text selection (M5c): the environment modifier
                         // propagates to every descendant Text — messages, turn
@@ -318,7 +320,7 @@ struct ThreadsScreen: View {
                 Text(status)
                     .font(.callout)
                     .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .conversationMeasure()
                     .padding(.horizontal, Theme.Spacing.lg)
                     .padding(.vertical, Theme.Spacing.xs)
             }
@@ -327,7 +329,7 @@ struct ThreadsScreen: View {
             // project on demand. In-place threads write the live tree directly and
             // never need this bar.
             if let t = model.currentThread, t.workspaceMode == "isolated", !t.runIds.isEmpty {
-                ApplyThreadBar(threadId: t.id)
+                ApplyThreadBar(threadId: t.id).conversationMeasure()
             }
 
             composer
@@ -496,6 +498,7 @@ struct ThreadsScreen: View {
             }
             .padding(Theme.Spacing.md)
             .composerGlass()
+            .conversationMeasure()   // F10: composer shares the feed's readable column
             .padding(Theme.Spacing.md)
         }
     }

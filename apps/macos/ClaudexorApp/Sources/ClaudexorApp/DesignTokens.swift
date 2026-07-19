@@ -116,6 +116,15 @@ enum Theme {
         static let contentMaxWidth: CGFloat = 1040
         /// Reading & forms (interview, settings) — a narrower, more legible measure.
         static let readableMaxWidth: CGFloat = 860
+        /// Conversation prose measure (owner F10 "слишком широкие"). Apple's
+        /// readable-content guide is ~672pt at the default text size (UIKit
+        /// `readableContentGuide`, iPad landscape; it scales 560–896pt with Dynamic
+        /// Type), which holds the line length to a comfortable ~70–90 characters
+        /// instead of a full-window wall of text. Message bubbles and progress /
+        /// assistant cards cap here; genuinely wide content (diff / tables) stays
+        /// full-width with its own internal scroll (those live in the run inspector,
+        /// not the chat feed). The column stays responsive BELOW the cap.
+        static let conversationMaxWidth: CGFloat = 680
         /// The composer "⋯" options popover — a readable column for the option rows.
         static let composerOptionsWidth: CGFloat = 380
     }

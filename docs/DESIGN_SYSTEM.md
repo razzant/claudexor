@@ -204,10 +204,19 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   harness's identity (the harness picker, accounts, composer chips, run/turn
   identity, readiness) renders through `HarnessIcon` — never a scattered
   per-vendor SF-Symbol/emoji literal. Vendors we ship a real brand mark for
-  (Codex/Claude/Cursor/OpenCode) render it (tinted with the brand color inline,
-  monochrome template in menus via `HarnessIconImage`); **every** unknown/future
-  harness — the raw-api/openrouter meta-hosts included — falls back to ONE shared
-  generic glyph. Never substitute a random lookalike for a missing vendor mark.
+  (Codex/Claude/Cursor/OpenCode) render it; **every** unknown/future harness —
+  the raw-api/openrouter meta-hosts included — falls back to ONE shared generic
+  glyph. Never substitute a random lookalike for a missing vendor mark.
+- **All vendor marks render MONOCHROME in the current foreground color.** The
+  brand mark and the generic glyph share ONE color language (primary label color
+  in menus/chips, `dimmed` where the design dims) — no per-brand tint. This is
+  deliberate: the marks are drawn in a `Canvas`/`ImageRenderer`, which does NOT
+  resolve a dynamic `Color(dark:light:)` `NSColor` against the view's appearance,
+  so a brand-color fill collapsed to its default-appearance value and read
+  black-on-dark. `HarnessIcon.foreground(scheme:dimmed:)` resolves the live
+  `colorScheme` into a CONCRETE (non-dynamic) color the Canvas fills correctly;
+  the menu template (`HarnessIconImage`, `isTemplate`) inherits the menu
+  foreground the same way. Never reintroduce a brand-colored mark fill.
 
 ### 2.8 Row alignment
 
@@ -219,10 +228,16 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   column, not a `Spacer()` that pushes a variable-width control cluster to the
   right (the cluster's leading edge then moves per row).
 - Use the shared row components: `OptionRow` (a fixed-width label column + one
-  trailing control) for label/value rows; for a multi-control row, give each
-  trailing control its own fixed-width column and let the leading identity absorb
-  the slack (`.frame(maxWidth: .infinity, alignment: .leading)`), so empty cells
-  still reserve their column and nothing shifts (see the accounts popover row).
+  trailing control) for label/value rows. For a MULTI-control repeated row, put
+  the rows in ONE shared `Grid` and make each row a `GridRow` whose trailing
+  controls are real Grid columns — the Grid gives every column a single shared
+  edge across all rows, so a control (the Enabled toggle) is collinear no matter
+  which other controls a given row carries. A per-row fixed-width HStack can still
+  drift if any cell overflows its `.frame(width:)`; the Grid cannot. The leading
+  identity cell absorbs the slack (`.frame(maxWidth: .infinity, alignment:
+  .leading)` + `.gridColumnAlignment(.leading)`), and an absent trailing control
+  renders a clear spacer of its column width so nothing shifts (see the accounts
+  popover: `AccountsSurface` hosts the `Grid`, `AccountRowView` is the `GridRow`).
 
 ---
 

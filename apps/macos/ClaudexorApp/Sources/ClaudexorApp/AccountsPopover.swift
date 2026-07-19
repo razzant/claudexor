@@ -350,11 +350,17 @@ struct AccountsSurface: View {
     }
 
     private var accountsList: some View {
-        VStack(spacing: Theme.Spacing.xs) {
+        // ONE shared Grid (owner F8): every AccountRowView is a GridRow, so the
+        // trailing controls are real columns whose edges are shared across ALL
+        // rows — the Enabled toggle is collinear regardless of per-row content
+        // (Manage+Active vs Manage+Make active+trash). A per-row fixed-width HStack
+        // could still drift if any cell overflowed; the Grid can't.
+        Grid(alignment: .top, horizontalSpacing: Theme.Spacing.sm, verticalSpacing: Theme.Spacing.sm) {
             if rows.isEmpty {
                 Label("No accounts yet — add one below.", systemImage: "person.crop.circle.badge.plus")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .gridCellColumns(5)
             } else {
                 ForEach(rows) { row in
                     AccountRowView(
