@@ -226,7 +226,7 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   ( HOME="$SMOKE_HOME" "$APP/Contents/Resources/node" "$ENGINE_JS" >/dev/null 2>"$SMOKE_HOME/smoke.err" & echo $! > "$SMOKE_HOME/pid" )
   SMOKE_OK=0
   for _ in $(seq 1 20); do
-    if [ -f "$SMOKE_HOME/.claudexor/v2/daemon/control-api.json" ]; then SMOKE_OK=1; break; fi
+    if [ -f "$SMOKE_HOME/.claudexor/v3/daemon/control-api.json" ]; then SMOKE_OK=1; break; fi
     if ! kill -0 "$(cat "$SMOKE_HOME/pid")" 2>/dev/null; then break; fi
     sleep 0.5
   done
