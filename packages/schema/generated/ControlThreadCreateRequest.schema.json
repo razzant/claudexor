@@ -101,6 +101,17 @@
             "$ref": "#/definitions/ControlThreadCreateRequest/properties/credentialProfileId"
           },
           "description": "Sticky eligible harness pool; turns inherit it when unset."
+        },
+        "access": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "workspace_write",
+            "full",
+            "external_sandbox_full",
+            "inherit_native"
+          ],
+          "description": "Sticky write scope for the thread's write turns; omit = the repo trust default."
         }
       },
       "additionalProperties": false,

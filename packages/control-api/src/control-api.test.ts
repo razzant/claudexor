@@ -1936,6 +1936,7 @@ describe("DaemonControlApiServer", () => {
       auth_preference: "auto",
       primary_harness: "codex", // sticky primary
       eligible_harnesses: ["codex", "claude"], // sticky pool
+      access: "full", // sticky write scope (D26)
       routingGoal: "auto",
       run_ids: [],
       head_run_id: null,
@@ -1991,7 +1992,11 @@ describe("DaemonControlApiServer", () => {
           headers: { authorization: `Bearer ${token}` },
           body: JSON.stringify({ prompt: "go" }),
         });
-        expect(enqueued).toMatchObject({ primaryHarness: "codex", harnesses: ["codex", "claude"] });
+        expect(enqueued).toMatchObject({
+          primaryHarness: "codex",
+          harnesses: ["codex", "claude"],
+          access: "full", // sticky write scope inherited (D26)
+        });
 
         // 2) Body override wins over the thread sticky values (+ per-turn strategy flags pass through).
         enqueued = undefined;
@@ -2004,6 +2009,7 @@ describe("DaemonControlApiServer", () => {
             harnesses: ["cursor"],
             untilClean: true,
             n: 3,
+            access: "workspace_write",
           }),
         });
         expect(enqueued).toMatchObject({

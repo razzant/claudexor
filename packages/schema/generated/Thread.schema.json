@@ -81,6 +81,26 @@
           "description": "Preferred auth route: subscription (native/OAuth session), api_key (a stored API key), or auto (engine picks subscription-first with policy fallback). A preference, not a secret.",
           "default": "auto"
         },
+        "access": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "readonly",
+                "workspace_write",
+                "full",
+                "external_sandbox_full",
+                "inherit_native"
+              ],
+              "description": "Filesystem/command access profile for a run: readonly (no writes), workspace_write (writes inside the workspace only), full (unrestricted; requires the per-repo trust allow), external_sandbox_full (full access inside an external sandbox), inherit_native (defer to the harness's own native sandbox settings)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sticky write scope for write turns; per-turn selection wins, null = the repo trust default.",
+          "default": null
+        },
         "credential_profile_id": {
           "anyOf": [
             {

@@ -34,6 +34,8 @@ export interface CreateThreadInput {
   workspace?: WorkspaceMode;
   authPreference?: Thread["auth_preference"];
   credentialProfileId?: string | null;
+  /** Sticky write scope for write turns (null/omit = repo trust default). */
+  access?: Thread["access"];
   primaryHarness?: string | null;
   /** Sticky eligible harness pool for the thread (turns inherit when unset). */
   eligibleHarnesses?: string[];
@@ -59,6 +61,8 @@ export interface UpdateThreadInput {
   credentialProfileId?: string | null;
   /** Replace the sticky eligible harness pool. */
   eligibleHarnesses?: string[];
+  /** Switch the sticky write scope (null => repo trust default). */
+  access?: Thread["access"];
 }
 
 /**
@@ -205,6 +209,7 @@ export class ThreadStore {
       },
       auth_preference: input.authPreference ?? "auto",
       credential_profile_id: input.credentialProfileId ?? null,
+      access: input.access ?? null,
       primary_harness: primary,
       eligible_harnesses: eligible,
     });
@@ -231,6 +236,7 @@ export class ThreadStore {
       ...(patch.credentialProfileId !== undefined
         ? { credential_profile_id: patch.credentialProfileId }
         : {}),
+      ...(patch.access !== undefined ? { access: patch.access } : {}),
       ...(patch.eligibleHarnesses !== undefined
         ? { eligible_harnesses: patch.eligibleHarnesses }
         : {}),

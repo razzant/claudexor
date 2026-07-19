@@ -47,6 +47,25 @@
             "$ref": "#/definitions/ControlThreadUpdateRequest/properties/primaryHarness/anyOf/0"
           },
           "description": "New sticky eligible harness pool."
+        },
+        "access": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "readonly",
+                "workspace_write",
+                "full",
+                "external_sandbox_full",
+                "inherit_native"
+              ],
+              "description": "Filesystem/command access profile for a run: readonly (no writes), workspace_write (writes inside the workspace only), full (unrestricted; requires the per-repo trust allow), external_sandbox_full (full access inside an external sandbox), inherit_native (defer to the harness's own native sandbox settings)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New sticky write scope; null clears back to the repo trust default."
         }
       },
       "additionalProperties": false,

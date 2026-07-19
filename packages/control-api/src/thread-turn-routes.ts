@@ -211,6 +211,7 @@ export function handleThreadTurnCreate(
         repo: { root: string } | null;
         mode: string;
         auth_preference: string;
+        access?: string | null;
         head_run_id: string | null;
         primary_harness: string | null;
         eligible_harnesses?: string[];
@@ -282,6 +283,10 @@ export function handleThreadTurnCreate(
             typeof body["authPreference"] === "string"
               ? body["authPreference"]
               : (thread.auth_preference as "auto"),
+          // Sticky write scope (D26): per-turn body > thread sticky > omit
+          // (the engine then falls back to the repo trust access_default and
+          // clamps read-only modes to readonly regardless).
+          ...(body["access"] === undefined && thread.access ? { access: thread.access } : {}),
           ...(inheritPrimary ? { primaryHarness: inheritPrimary } : {}),
           ...(body["harnesses"] === undefined &&
           thread.eligible_harnesses &&

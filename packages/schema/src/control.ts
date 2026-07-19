@@ -1036,6 +1036,10 @@ export const ControlThread = z
       .describe(
         "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
       ),
+    /** Sticky write scope for write turns (D26); null = repo trust default. */
+    access: AccessProfile.nullable()
+      .default(null)
+      .describe("Sticky write scope for write turns; null = the repo trust default."),
     state: ThreadState.default("active"),
     trashedAt: z.string().nullable().default(null).describe("When the thread entered trash."),
     purgeAfter: z.string().nullable().default(null).describe("When trash retention expires."),
@@ -1183,6 +1187,9 @@ export const ControlThreadCreateRequest = z
       .array(NonBlankString)
       .optional()
       .describe("Sticky eligible harness pool; turns inherit it when unset."),
+    access: AccessProfile.optional().describe(
+      "Sticky write scope for the thread's write turns; omit = the repo trust default.",
+    ),
   })
   .strict()
   .describe("Request body for POST /threads.");
@@ -1204,6 +1211,9 @@ export const ControlThreadUpdateRequest = z
       .array(NonBlankString)
       .optional()
       .describe("New sticky eligible harness pool."),
+    access: AccessProfile.nullable()
+      .optional()
+      .describe("New sticky write scope; null clears back to the repo trust default."),
   })
   .strict()
   .describe("Request body for PATCH /threads/:id: rename, archive, or switch sticky routing.");

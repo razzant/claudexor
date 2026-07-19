@@ -88,6 +88,26 @@
               "description": "Sticky credential profile for the thread; per-turn selection wins, null = engine-default credentials.",
               "default": null
             },
+            "access": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "readonly",
+                    "workspace_write",
+                    "full",
+                    "external_sandbox_full",
+                    "inherit_native"
+                  ],
+                  "description": "Filesystem/command access profile for a run: readonly (no writes), workspace_write (writes inside the workspace only), full (unrestricted; requires the per-repo trust allow), external_sandbox_full (full access inside an external sandbox), inherit_native (defer to the harness's own native sandbox settings)."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Sticky write scope for write turns; null = the repo trust default.",
+              "default": null
+            },
             "state": {
               "type": "string",
               "enum": [

@@ -276,6 +276,20 @@ describe("ThreadStore", () => {
     expect(s.getThread(t.id)?.credential_profile_id).toBe("work");
   });
 
+  it("thread sticky access is durable and clearable (D26)", () => {
+    const { s } = store();
+    const t = s.createThread({ repoRoot: "/tmp/proj", access: "full" });
+    expect(s.getThread(t.id)?.access).toBe("full");
+    s.updateThread(t.id, { access: "workspace_write" });
+    expect(s.getThread(t.id)?.access).toBe("workspace_write");
+    s.updateThread(t.id, { access: null });
+    expect(s.getThread(t.id)?.access).toBeNull();
+    // An unrelated patch must not disturb the sticky scope.
+    s.updateThread(t.id, { access: "full" });
+    s.updateThread(t.id, { title: "renamed" });
+    expect(s.getThread(t.id)?.access).toBe("full");
+  });
+
   it("resume never crosses credential profiles (INV-135)", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });
