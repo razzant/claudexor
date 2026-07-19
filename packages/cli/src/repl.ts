@@ -15,9 +15,12 @@ interface ReplTurnSpec {
   race?: boolean;
 }
 
-function parseReplLine(
-  line: string,
-): ReplTurnSpec | { command: "thread" | "new" | "help" | "quit"; arg?: string } | null {
+type ReplCommand = {
+  command: "thread" | "new" | "help" | "quit" | "harness" | "profile";
+  arg?: string;
+};
+
+function parseReplLine(line: string): ReplTurnSpec | ReplCommand | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   if (!trimmed.startsWith("/")) return { mode: "agent", prompt: trimmed };
@@ -36,6 +39,10 @@ function parseReplLine(
       return { command: "thread" };
     case "new":
       return { command: "new", arg };
+    case "harness":
+      return { command: "harness", arg };
+    case "profile":
+      return { command: "profile", arg };
     case "help":
       return { command: "help" };
     case "quit":
@@ -152,6 +159,33 @@ async function runDaemonRepl(repoRoot: string, addr: ControlApiAddress): Promise
         } catch (err) {
           process.stdout.write(
             `thread fetch failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
+        }
+      }
+      if (parsed.command === "harness" || parsed.command === "profile") {
+        // Sticky lane preference: PATCH the thread through the SAME server route
+        // the app composer uses (never a REPL-only path). `/harness <id>` sets
+        // the sticky primary; `/profile <id|default>` sets the sticky credential
+        // profile (`default` => null, back to the engine ladder). A bare command
+        // with no id clears the preference (null).
+        const raw = parsed.arg ?? "";
+        const clear = raw === "" || (parsed.command === "profile" && raw === "default");
+        const body =
+          parsed.command === "harness"
+            ? { primaryHarness: clear ? null : raw }
+            : { credentialProfileId: clear ? null : raw };
+        try {
+          const active = await ensureThread();
+          await api("PATCH", `/threads/${encodeURIComponent(active.id)}`, body);
+          const label = parsed.command === "harness" ? "primary harness" : "credential profile";
+          process.stdout.write(
+            clear
+              ? `sticky ${label} cleared (back to engine routing)\n`
+              : `sticky ${label} set to ${raw}\n`,
+          );
+        } catch (err) {
+          process.stdout.write(
+            `${parsed.command} failed: ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
       }

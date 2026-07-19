@@ -161,8 +161,8 @@ tree.
 When a turn runs on a lane that has NOT seen the whole conversation — a lane
 switch (a different harness or account) or a gap (A→B→A) — the engine hydrates
 it with a bounded **continuation packet**: the delta turns since that lane's
-checkpoint, verbatim (older ones condensed to one-liners past a byte budget —
-the mechanical fallback while the cached LLM summary is unavailable), plus the
+checkpoint, verbatim (past a byte budget the oldest turns are condensed — into a
+cached LLM summary when one is available, else mechanical one-liners), plus the
 active plan pointer and a workspace anchor. The packet is written as a file
 (`context/THREAD.md` in the run's artifact tree) and the prompt only points at
 its absolute path — the packet body never rides the prompt. Every hydrated
@@ -171,6 +171,24 @@ stats, the turn record stamps a `continuity` field (`native_resume` | `packet`
 | `fresh`), and the CLI prints one line (e.g. `continued with thread context ·
 3 turns`). Returning to a previously used lane resumes its native session and
 injects ONLY the missed delta — never the whole conversation again.
+
+The condensed prefix's summary is produced lazily at packet-build time: when a
+collapse is forced and no fresh cached summary covers it, the engine runs ONE
+bounded read-only pass (ask-mode, the lane's own harness + credential route, a
+single turn, a hard timeout — no job queue) and caches the result keyed by
+(thread, collapse-boundary turn) under the thread's lane dir. Later packets
+reuse the cache until a new head turn advances the boundary; a timeout or an
+unavailable harness falls back to the mechanical one-liners, so the packet
+always carries the delta.
+
+Inside the REPL, `/harness <id>` and `/profile <id|default>` set the thread's
+sticky lane preference (its primary harness / credential profile) through the
+same `PATCH /v2/threads/:id` route the app composer uses — a bare `/harness` or
+`/profile default` clears it back to engine routing. Outside the REPL,
+`--thread <id>` targets an existing thread so a one-shot `ask`/`plan`/`agent`
+lands as its next turn (`--resume` picks the most recently updated thread); such
+turns enqueue through `POST /v2/threads/:id/turns`, the one path that owns scope,
+lineage, and the continuation packet.
 
 Examples:
 

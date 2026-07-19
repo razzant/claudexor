@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { WorkspaceError } from "@claudexor/core";
 import { ensureDir, projectRuntimeDir } from "@claudexor/util";
@@ -92,6 +92,59 @@ export function ensureLaneHomeEnv(
       XDG_CONFIG_HOME: join(homeDir, ".config"),
     },
   };
+}
+
+/**
+ * Thread-level continuation-summary cache (INV-137, V9c). Keyed by
+ * (threadId, upToTurnId) — the collapse-boundary turn — and stored under the
+ * thread's OWN lanes dir (`<lanesRoot>/<threadId>/summaries/<upToTurnId>.md`) so
+ * the three lane lifecycle owners already sweep it: a purged / profile-deleted /
+ * orphaned thread drops its summaries with the rest of `<threadId>`. A new head
+ * turn advances the collapse boundary → a new key → old entries are harmless
+ * leftover files. The turn id must be a safe path segment (crafted `../` ids
+ * could otherwise escape the summaries dir).
+ */
+function threadSummaryPath(runtimeRoot: string, threadId: string, upToTurnId: string): string {
+  assertSafeSegment("threadId", threadId);
+  assertSafeSegment("upToTurnId", upToTurnId);
+  const root = lanesRootDir(runtimeRoot);
+  const path = join(root, threadId, "summaries", `${upToTurnId}.md`);
+  if (!path.startsWith(root + sep)) {
+    throw new WorkspaceError(`summary path escapes the lanes dir: ${path}`);
+  }
+  return path;
+}
+
+/** Read a cached continuation summary, or null on a miss / unsafe key / I/O error. */
+export function readThreadSummary(
+  projectRoot: string,
+  threadId: string,
+  upToTurnId: string,
+): string | null {
+  let path: string;
+  try {
+    path = threadSummaryPath(projectRuntimeDir(projectRoot), threadId, upToTurnId);
+  } catch {
+    return null;
+  }
+  try {
+    const text = readFileSync(path, "utf8");
+    return text.trim() ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a continuation summary for later reuse until the boundary advances. */
+export function writeThreadSummary(
+  projectRoot: string,
+  threadId: string,
+  upToTurnId: string,
+  text: string,
+): void {
+  const path = threadSummaryPath(projectRuntimeDir(projectRoot), threadId, upToTurnId);
+  ensureDir(join(path, ".."));
+  writeFileSync(path, text, { mode: 0o600 });
 }
 
 function safeReaddir(dir: string): string[] {

@@ -133,9 +133,14 @@ import {
 import {
   buildContinuation,
   type ContinuityDisclosureResult,
-  type ContinuityPlanPointer,
+  type ContinuityRequest,
   type ContinuityTurn,
 } from "./continuity.js";
+import {
+  activePlanPointer,
+  resolveContinuitySummary,
+  workspaceAnchor,
+} from "./continuity-facts.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
 import {
   type AttemptTelemetry,
@@ -171,8 +176,6 @@ import {
   ensureGitRepository,
   consumeRawPatchEnvelope,
   snapshotTree,
-  statusPorcelain,
-  revParse,
 } from "@claudexor/workspace";
 import {
   blockedDecisionOverride,
@@ -1784,15 +1787,34 @@ export class Orchestrator {
           ? (readTextSafe(join(store.runPaths(t.runId).finalDir, "answer.md")) ?? "")
           : "",
       }));
-      const result = buildContinuation({
+      const req: ContinuityRequest = {
         lane,
         priorTurns,
         laneCheckpointTurnId: checkpoint?.turnId ?? null,
         nativeResumeAvailable,
         priorHeadLane,
-        activePlan: this.activePlanPointer(ctx, store),
-        anchor: await this.workspaceAnchor(repoRoot),
+        activePlan: activePlanPointer(ctx.priorTurns, store),
+        anchor: await workspaceAnchor(repoRoot),
+      };
+      // V9c: when the packet would collapse an older prefix, replace the
+      // mechanical one-liners with a cached (or freshly summarized) prose
+      // summary. Same credential route + scoped lane home a real read-only
+      // thread turn uses (INV-034/135). Best-effort in its OWN guard — a summary
+      // failure keeps the full mechanical packet, never drops it.
+      const sessionFields = this.sessionSpecFields(runInput, harnessId);
+      req.cachedSummary = await resolveContinuitySummary({
+        req,
+        threadId: runInput.threadId,
+        projectRoot: runInput.repoRoot,
+        cwd: repoRoot,
+        adapter: this.deps.registry.get(harnessId),
+        credentialProfile: sessionFields.credential_profile,
+        authPreference: sessionFields.auth_preference ?? "auto",
+        laneEnv: this.laneHomeEnvFor(runInput, harnessId) ?? {},
+        envInheritance: envInheritance(this.config(runInput.repoRoot)),
+        signal: runInput.signal,
       });
+      const result = buildContinuation(req);
       // Disclose on every lane and stamp the turn (INV-137: never silent).
       log?.emit("session.continuity", {
         thread_id: runInput.threadId,
@@ -1814,51 +1836,6 @@ export class Orchestrator {
       // run. The turn simply runs without the packet (honest degradation).
       return { pointerLine: null };
     }
-  }
-
-  /** The thread's most recent readable plan pointer (INV-137 packet section). */
-  private activePlanPointer(
-    ctx: ThreadContinuityContext,
-    store: ArtifactStore,
-  ): ContinuityPlanPointer | null {
-    for (let i = ctx.priorTurns.length - 1; i >= 0; i -= 1) {
-      const runId = ctx.priorTurns[i].runId;
-      if (!runId) continue;
-      const finalDir = store.runPaths(runId).finalDir;
-      const planText = readTextSafe(join(finalDir, "plan.md"));
-      if (!planText || !planText.trim()) continue;
-      const questions = readTextSafe(join(finalDir, "questions.json"));
-      let readiness = "unverified";
-      if (questions) {
-        try {
-          readiness = derivePlanReadiness(PlanQuestionsArtifact.parse(JSON.parse(questions))).state;
-        } catch {
-          readiness = "unverified";
-        }
-      }
-      return { path: join(finalDir, "plan.md"), readiness, planRunId: runId };
-    }
-    return null;
-  }
-
-  /** HEAD sha + dirty file count for the packet's workspace anchor. Best-effort:
-   * a non-git or unborn tree yields a null sha / zero dirty count, never a throw. */
-  private async workspaceAnchor(
-    repoRoot: string,
-  ): Promise<{ headSha: string | null; dirtyCount: number }> {
-    let headSha: string | null = null;
-    try {
-      headSha = await revParse(repoRoot, "HEAD");
-    } catch {
-      headSha = null;
-    }
-    let dirtyCount = 0;
-    try {
-      dirtyCount = (await statusPorcelain(repoRoot)).split("\n").filter((l) => l.trim()).length;
-    } catch {
-      dirtyCount = 0;
-    }
-    return { headSha, dirtyCount };
   }
 
   private async runCandidateInEnvelope(

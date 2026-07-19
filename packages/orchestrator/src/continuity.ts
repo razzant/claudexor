@@ -6,9 +6,17 @@
  * new lane has no native memory of the missed turns, so the engine hydrates it
  * with a bounded MECHANICAL continuation packet: recent delta turns verbatim,
  * older ones collapsed to one-line entries when the budget is exceeded, plus
- * the active plan pointer and a workspace anchor. (The cached LLM summary that
- * replaces the collapsed prefix is V9c; here `summarized` marks the mechanical
- * fallback — the packet always works.)
+ * the active plan pointer and a workspace anchor.
+ *
+ * When the budget forces a collapse, a cached LLM summary (V9c) can REPLACE the
+ * collapsed one-liners with real prose: the caller runs `planContinuation` to
+ * learn which older turns would collapse (and their boundary turn id — the
+ * summary cache key), resolves a summary for that prefix (cache hit or a bounded
+ * inline summarization pass), and passes it back as `cachedSummary`. The
+ * mechanical one-liner collapse is ALWAYS the fallback, so a missing/failed
+ * summary never loses information. Either way `summarized` stays true (the
+ * verbatim prefix was condensed); the packet text itself discloses which form
+ * was used.
  *
  * This module takes fully-resolved structured data (the daemon supplies thread
  * facts; the orchestrator reads prior outputs + git anchor) and returns the
@@ -64,6 +72,37 @@ export interface ContinuityRequest {
   activePlan: ContinuityPlanPointer | null;
   /** Workspace anchor to append, when available. */
   anchor: ContinuityAnchor | null;
+  /**
+   * A resolved LLM summary of the collapsed older prefix (V9c). Applied ONLY
+   * when the packet actually collapses AND `upToTurnId` equals the plan's
+   * `summaryUpToTurnId` (the collapse boundary) — otherwise ignored and the
+   * mechanical one-liner collapse renders. Absent = mechanical fallback.
+   */
+  cachedSummary?: ResolvedSummary | null;
+}
+
+/** A summary of the collapsed older prefix, keyed by its boundary turn id. */
+export interface ResolvedSummary {
+  /** The id of the LAST turn the summary covers (the collapse boundary). */
+  upToTurnId: string;
+  /** The summary prose to render in place of the collapsed one-liners. */
+  text: string;
+}
+
+/**
+ * The mechanical collapse plan for a request — WHICH delta turns are carried and
+ * which would collapse under the budget — computed WITHOUT rendering so the
+ * caller can resolve a summary for the collapsed prefix before building the
+ * packet. Pure and cheap (the same math `buildContinuation` uses internally).
+ */
+export interface ContinuityPlan {
+  kind: "native_resume" | "packet" | "fresh";
+  /** All delta turns this lane must be told about (after its checkpoint). */
+  delta: ContinuityTurn[];
+  /** The oldest delta turns that collapse under the budget (empty = none). */
+  collapsedPrefix: ContinuityTurn[];
+  /** Boundary turn id — the summary cache key; null when nothing collapses. */
+  summaryUpToTurnId: string | null;
 }
 
 export interface ContinuityDisclosureResult {
@@ -133,27 +172,43 @@ function collapsedEntry(turn: ContinuityTurn, index: number): string {
 }
 
 /**
- * Assemble the packet body from delta turns, collapsing the OLDEST turns to
- * one-liners while the verbatim total exceeds the budget. Returns the body and
- * whether any collapse happened.
+ * How many of the OLDEST delta turns collapse to one-liners: grow the collapsed
+ * prefix from the oldest until the verbatim total fits the budget. Pure — the
+ * single owner of the collapse decision (both `planContinuation` and
+ * `renderPacket` read it, so the boundary the caller summarizes is exactly the
+ * boundary the packet renders).
+ */
+function collapseCount(delta: ContinuityTurn[]): number {
+  const verbatim = delta.map((t, i) => verbatimEntry(t, i));
+  let collapsed = 0;
+  const totalBytes = (): number =>
+    delta.reduce((sum, t, i) => sum + bytes(i < collapsed ? collapsedEntry(t, i) : verbatim[i]), 0);
+  while (collapsed < delta.length && totalBytes() > TOTAL_BUDGET_BYTES) {
+    collapsed += 1;
+  }
+  return collapsed;
+}
+
+/**
+ * Assemble the packet body from delta turns, collapsing the OLDEST turns while
+ * the verbatim total exceeds the budget. When a `summary` covering the collapse
+ * boundary is supplied it REPLACES the one-liners with real prose; otherwise the
+ * mechanical one-liner collapse renders (always works). Returns the body and
+ * whether any collapse happened (`summarized`).
  */
 function renderPacket(
   delta: ContinuityTurn[],
   activePlan: ContinuityPlanPointer | null,
   anchor: ContinuityAnchor | null,
+  summary: ResolvedSummary | null,
 ): { body: string; summarized: boolean } {
-  // Start all verbatim; collapse from the oldest until the total fits.
-  const verbatim = delta.map((t, i) => ({ turn: t, index: i, text: verbatimEntry(t, i) }));
-  let collapsedCount = 0;
-  const totalBytes = (): number =>
-    verbatim.reduce(
-      (sum, e, i) => sum + bytes(i < collapsedCount ? collapsedEntry(e.turn, e.index) : e.text),
-      0,
-    );
-  while (collapsedCount < verbatim.length && totalBytes() > TOTAL_BUDGET_BYTES) {
-    collapsedCount += 1;
-  }
+  const collapsedCount = collapseCount(delta);
   const summarized = collapsedCount > 0;
+  const boundaryTurnId = collapsedCount > 0 ? delta[collapsedCount - 1].id : null;
+  // A summary applies only when it covers the EXACT collapse boundary — a stale
+  // summary (boundary moved since it was cached) falls back to one-liners.
+  const usableSummary =
+    summary && boundaryTurnId && summary.upToTurnId === boundaryTurnId ? summary : null;
 
   const parts: string[] = [
     "# Thread continuation packet",
@@ -163,24 +218,40 @@ function renderPacket(
   ];
   if (summarized) {
     parts.push(
-      "> The older turns are condensed to one-line entries below (a cached conversation summary is unavailable in this build). The most recent turns are verbatim.",
+      usableSummary
+        ? "> The oldest turns are condensed into the cached conversation summary below; the most recent turns are verbatim."
+        : "> The older turns are condensed to one-line entries below (a cached conversation summary was unavailable for this turn). The most recent turns are verbatim.",
       "",
     );
   }
-  parts.push("## Earlier turns", "");
-  const collapsedLines: string[] = [];
-  for (let i = 0; i < verbatim.length; i += 1) {
-    if (i < collapsedCount) {
-      collapsedLines.push(collapsedEntry(verbatim[i].turn, verbatim[i].index));
-    } else {
-      if (collapsedLines.length > 0) {
-        parts.push(...collapsedLines, "");
-        collapsedLines.length = 0;
-      }
-      parts.push(verbatim[i].text);
+  if (usableSummary) {
+    parts.push(
+      "## Earlier conversation (summary)",
+      "",
+      usableSummary.text.trim(),
+      "",
+      "## Recent turns",
+      "",
+    );
+    for (let i = collapsedCount; i < delta.length; i += 1) {
+      parts.push(verbatimEntry(delta[i], i));
     }
+  } else {
+    parts.push("## Earlier turns", "");
+    const collapsedLines: string[] = [];
+    for (let i = 0; i < delta.length; i += 1) {
+      if (i < collapsedCount) {
+        collapsedLines.push(collapsedEntry(delta[i], i));
+      } else {
+        if (collapsedLines.length > 0) {
+          parts.push(...collapsedLines, "");
+          collapsedLines.length = 0;
+        }
+        parts.push(verbatimEntry(delta[i], i));
+      }
+    }
+    if (collapsedLines.length > 0) parts.push(...collapsedLines, "");
   }
-  if (collapsedLines.length > 0) parts.push(...collapsedLines, "");
 
   if (activePlan) {
     parts.push(
@@ -205,6 +276,30 @@ function renderPacket(
         .replace(/\n{3,}/g, "\n\n")
         .trimEnd() + "\n",
     summarized,
+  };
+}
+
+/**
+ * Compute the mechanical collapse plan for a lane WITHOUT rendering: the caller
+ * uses `summaryUpToTurnId` to look up / generate a summary for the collapsed
+ * prefix, then feeds it back via `req.cachedSummary` to `buildContinuation`.
+ * Pure; matches `buildContinuation`'s own collapse math exactly.
+ */
+export function planContinuation(req: ContinuityRequest): ContinuityPlan {
+  if (req.priorTurns.length === 0) {
+    return { kind: "fresh", delta: [], collapsedPrefix: [], summaryUpToTurnId: null };
+  }
+  const delta = deltaTurns(req);
+  if (delta.length === 0) {
+    return { kind: "native_resume", delta: [], collapsedPrefix: [], summaryUpToTurnId: null };
+  }
+  const collapsed = collapseCount(delta);
+  const collapsedPrefix = delta.slice(0, collapsed);
+  return {
+    kind: "packet",
+    delta,
+    collapsedPrefix,
+    summaryUpToTurnId: collapsed > 0 ? delta[collapsed - 1].id : null,
   };
 }
 
@@ -239,7 +334,12 @@ export function buildContinuation(req: ContinuityRequest): ContinuityResult {
     };
   }
 
-  const { body, summarized } = renderPacket(delta, req.activePlan, req.anchor);
+  const { body, summarized } = renderPacket(
+    delta,
+    req.activePlan,
+    req.anchor,
+    req.cachedSummary ?? null,
+  );
   return {
     disclosure: {
       kind: "packet",

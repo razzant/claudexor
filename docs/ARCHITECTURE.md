@@ -696,7 +696,14 @@ Endpoint semantics beyond the inventory:
   with a bounded continuation packet delivered as `context/THREAD.md` and
   discloses it via a typed `session.continuity` event + a `continuity` field on
   the turn record (INV-137); a plain in-lane turn resumes natively with no
-  packet. A `planRunId` body field implements an approved
+  packet. Past a byte budget the packet's oldest turns collapse; the engine
+  replaces the collapsed prefix with a cached LLM summary keyed by (thread,
+  collapse-boundary turn) under the thread's lane dir — computed once by a
+  bounded read-only ask-mode pass on the lane's own harness + credential route
+  (single turn, hard timeout, no job queue) and reused until a new head turn
+  advances the boundary. A timeout or unavailable harness falls back to
+  mechanical one-liners, so the delta is never lost; the disclosure's
+  `summarized` flag is set either way. A `planRunId` body field implements an approved
   plan from an earlier turn: Implement freezes that plan (sha256 recorded on the
   turn) and delivers it to the executor as a server-owned file reference, so the
   agent runs against the frozen plan rather than a bare prompt. `POST /v2/threads/:id/apply` delivers an isolated thread's accumulated

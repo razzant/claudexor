@@ -16,4 +16,15 @@ describe("parseReplLine", () => {
     expect(parseReplLine("/plan do x")).toMatchObject({ mode: "plan" });
     expect(parseReplLine("/orchestrate ship it")).toMatchObject({ mode: "orchestrate" });
   });
+
+  it("parses /harness and /profile sticky-preference commands with their id arg", () => {
+    expect(parseReplLine("/harness codex")).toEqual({ command: "harness", arg: "codex" });
+    expect(parseReplLine("/profile work")).toEqual({ command: "profile", arg: "work" });
+    expect(parseReplLine("/profile default")).toEqual({ command: "profile", arg: "default" });
+  });
+
+  it("parses a bare /harness or /profile as a clear (empty arg)", () => {
+    expect(parseReplLine("/harness")).toEqual({ command: "harness", arg: "" });
+    expect(parseReplLine("/profile")).toEqual({ command: "profile", arg: "" });
+  });
 });

@@ -9,7 +9,9 @@ import {
   laneHomeDir,
   purgeProfileLanes,
   purgeThreadLanes,
+  readThreadSummary,
   sweepOrphanLanes,
+  writeThreadSummary,
 } from "./lanes.js";
 
 // A hermetic Claudexor-owned root so every projectRuntimeDir(...) resolves
@@ -118,5 +120,43 @@ describe("lane lifecycle owners", () => {
     expect(() => purgeThreadLanes(repo, "th-1")).not.toThrow();
     expect(purgeProfileLanes(repo, "codex", "work")).toBe(0);
     expect(sweepOrphanLanes(repo, new Set())).toEqual([]);
+  });
+});
+
+describe("thread continuation-summary cache (INV-137, V9c)", () => {
+  it("round-trips a summary and misses on an unknown key", () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    expect(readThreadSummary(repo, "th-1", "t5")).toBeNull(); // cold miss
+    writeThreadSummary(repo, "th-1", "t5", "cached summary body");
+    expect(readThreadSummary(repo, "th-1", "t5")).toBe("cached summary body"); // hit
+    expect(readThreadSummary(repo, "th-1", "t6")).toBeNull(); // different key => miss
+  });
+
+  it("expires by NEW HEAD: a new collapse boundary is a new key (old entry harmless)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    writeThreadSummary(repo, "th-1", "t5", "summary up to t5");
+    // Head advances → the collapse boundary moves to t7 → a fresh key misses,
+    // so the engine recomputes; the t5 entry stays but is never read again.
+    expect(readThreadSummary(repo, "th-1", "t7")).toBeNull();
+    writeThreadSummary(repo, "th-1", "t7", "summary up to t7");
+    expect(readThreadSummary(repo, "th-1", "t5")).toBe("summary up to t5");
+    expect(readThreadSummary(repo, "th-1", "t7")).toBe("summary up to t7");
+  });
+
+  it("lives under the thread's lane dir, so the lifecycle owners sweep it", () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const rt = projectRuntimeDir(repo);
+    writeThreadSummary(repo, "th-1", "t5", "body");
+    expect(existsSync(join(rt, "lanes", "th-1", "summaries", "t5.md"))).toBe(true);
+    // Thread purge removes the whole `<threadId>` dir — summaries included.
+    purgeThreadLanes(repo, "th-1");
+    expect(existsSync(join(rt, "lanes", "th-1"))).toBe(false);
+    expect(readThreadSummary(repo, "th-1", "t5")).toBeNull();
+  });
+
+  it("returns null (never throws) for an unsafe key", () => {
+    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    expect(readThreadSummary(repo, "../escape", "t5")).toBeNull();
+    expect(readThreadSummary(repo, "th-1", "../escape")).toBeNull();
   });
 });

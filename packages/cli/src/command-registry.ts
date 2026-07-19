@@ -315,6 +315,16 @@ export const REPL_COMMANDS: readonly {
   { name: "/orchestrate", args: "<g>", help: "typed orchestration plan over the tool belt" },
   { name: "/thread", help: "show the current thread (turns + native sessions)" },
   { name: "/new", args: "[title]", help: "start a new thread" },
+  {
+    name: "/harness",
+    args: "[id]",
+    help: "set the thread's sticky primary harness (no id clears it)",
+  },
+  {
+    name: "/profile",
+    args: "[id|default]",
+    help: "set the thread's sticky credential profile (default/none clears it)",
+  },
   { name: "/help", help: "this help" },
   { name: "/quit", help: "exit" },
 ];

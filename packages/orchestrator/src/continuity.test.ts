@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildContinuation,
+  planContinuation,
   TOTAL_BUDGET_BYTES,
   type ContinuityRequest,
   type ContinuityTurn,
@@ -178,5 +179,104 @@ describe("continuity packet budget + fallback (INV-137)", () => {
     expect(r.packetMarkdown).toContain("## Workspace anchor");
     expect(r.packetMarkdown).toContain("abc1234");
     expect(r.packetMarkdown).toContain("2 file(s)");
+  });
+});
+
+describe("continuity summary plan + injection (INV-137, V9c)", () => {
+  const big = "x".repeat(6 * 1024);
+  const collapsing = (): ContinuityTurn[] =>
+    Array.from({ length: 6 }, (_, i) => turn(`t${i + 1}`, `prompt ${i + 1}`, big));
+
+  it("planContinuation exposes the collapse boundary + collapsed prefix", () => {
+    const plan = planContinuation(
+      req({ priorTurns: collapsing(), laneCheckpointTurnId: null, nativeResumeAvailable: false }),
+    );
+    expect(plan.kind).toBe("packet");
+    expect(plan.delta).toHaveLength(6);
+    expect(plan.collapsedPrefix.length).toBeGreaterThan(0);
+    // The boundary is the LAST collapsed turn's id — the summary cache key.
+    expect(plan.summaryUpToTurnId).toBe(plan.collapsedPrefix[plan.collapsedPrefix.length - 1].id);
+  });
+
+  it("planContinuation reports no boundary when nothing collapses", () => {
+    const plan = planContinuation(
+      req({
+        priorTurns: [turn("t1", "one", "short"), turn("t2", "two", "short")],
+        laneCheckpointTurnId: null,
+        nativeResumeAvailable: false,
+      }),
+    );
+    expect(plan.summaryUpToTurnId).toBeNull();
+    expect(plan.collapsedPrefix).toHaveLength(0);
+  });
+
+  it("planContinuation matches the boundary buildContinuation actually renders", () => {
+    const request = req({
+      priorTurns: collapsing(),
+      laneCheckpointTurnId: null,
+      nativeResumeAvailable: false,
+    });
+    const plan = planContinuation(request);
+    // The mechanical packet collapses EXACTLY the planned prefix as one-liners.
+    const mech = buildContinuation(request);
+    expect(mech.disclosure.summarized).toBe(true);
+    for (const t of plan.collapsedPrefix) {
+      expect(mech.packetMarkdown).toContain(`user: ${t.prompt}`);
+    }
+  });
+
+  it("a cached summary matching the boundary REPLACES the one-liner collapse", () => {
+    const request = req({
+      priorTurns: collapsing(),
+      laneCheckpointTurnId: null,
+      nativeResumeAvailable: false,
+    });
+    const plan = planContinuation(request);
+    const r = buildContinuation({
+      ...request,
+      cachedSummary: {
+        upToTurnId: plan.summaryUpToTurnId as string,
+        text: "SUMMARY: decisions X, state Y, open item Z.",
+      },
+    });
+    expect(r.disclosure.kind).toBe("packet");
+    expect(r.disclosure.summarized).toBe(true);
+    expect(r.packetMarkdown).toContain("## Earlier conversation (summary)");
+    expect(r.packetMarkdown).toContain("SUMMARY: decisions X, state Y, open item Z.");
+    expect(r.packetMarkdown).toContain("cached conversation summary below");
+    // The collapsed prefix's one-liners are GONE (replaced by prose); the most
+    // recent turn stays verbatim.
+    expect(r.packetMarkdown).not.toMatch(/- Turn 1 — user: prompt 1/);
+    expect(r.packetMarkdown).toContain("## Recent turns");
+  });
+
+  it("a STALE summary (boundary moved) is ignored — mechanical one-liners render", () => {
+    const request = req({
+      priorTurns: collapsing(),
+      laneCheckpointTurnId: null,
+      nativeResumeAvailable: false,
+    });
+    const r = buildContinuation({
+      ...request,
+      cachedSummary: { upToTurnId: "some-other-turn", text: "stale summary text" },
+    });
+    expect(r.packetMarkdown).not.toContain("stale summary text");
+    expect(r.packetMarkdown).toMatch(/- Turn 1 — user: prompt 1/);
+    expect(r.packetMarkdown).toContain("was unavailable");
+  });
+
+  it("a summary is never applied when the packet does not collapse", () => {
+    const request = req({
+      priorTurns: [turn("t1", "one", "short"), turn("t2", "two", "short")],
+      laneCheckpointTurnId: null,
+      nativeResumeAvailable: false,
+    });
+    const r = buildContinuation({
+      ...request,
+      cachedSummary: { upToTurnId: "t1", text: "should not appear" },
+    });
+    expect(r.disclosure.summarized).toBe(false);
+    expect(r.packetMarkdown).not.toContain("should not appear");
+    expect(r.packetMarkdown).not.toContain("(summary)");
   });
 });
