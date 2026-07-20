@@ -130,6 +130,21 @@ explicitly test-authoring work, use `--allow-protected-path <glob[,glob...]>` to
 record typed per-run approval for those protected gate/test path changes. This
 does not bypass built-in critical/security human gates.
 
+### Reviewers and approvals
+
+Two power knobs shape review:
+
+- **Reviewers** — pick exactly who reviews a change. Pass `--reviewers` a
+  comma-separated list of `harness=model:effort` entries (model and effort are
+  optional); repeat a harness to review through several models. Example:
+  `--reviewers "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`. Omitted, the
+  engine chooses a cross-family panel automatically.
+- **Approvals** — mark paths that must clear a human before a change touching
+  them can be applied. Set **approval globs** in project/spec config
+  (`TaskContract.constraints.protected_paths`) as path globs, e.g.
+  `migrations/**` or `**/*.env`. A run that changes a matching path escalates to
+  a human-approval gate and is never auto-applied.
+
 ## Modes
 
 Canonical mode ids (engine strategies are FLAGS, not modes):

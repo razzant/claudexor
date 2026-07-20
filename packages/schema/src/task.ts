@@ -85,7 +85,7 @@ export const TaskConstraints = z
       .array(z.string())
       .default([])
       .describe(
-        "Spec/config-owned globs whose changes escalate risk to a human-approval gate; cannot be suppressed by per-run protected-path approvals.",
+        "Approval globs — path globs (e.g. `migrations/**`, `**/*.env`) whose changes escalate a run to a human-approval gate before it can be applied. Spec/config-owned and never suppressed by per-run protected-path approvals.",
       ),
     /** Per-run globs no candidate may touch AT ALL (create, modify, or delete —
      * stricter than protected_paths, which gates only tampering with existing

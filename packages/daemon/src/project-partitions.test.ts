@@ -222,6 +222,81 @@ describe("ProjectPartitions", () => {
     f.manager.close();
   });
 
+  it("listThreadsResilient skips a project whose root vanished, disclosing a typed problem (F2)", () => {
+    const f = fixture();
+    const alive = join(f.root, "alive-project");
+    const doomed = join(f.root, "doomed-project");
+    mkdirSync(alive);
+    mkdirSync(doomed);
+    const aliveThread = f.partitions.createThread({ repoRoot: alive });
+    f.partitions.createThread({ repoRoot: doomed });
+    const doomedId = f.projects.current().findByRoot(realpathSync(doomed))!.id;
+    // The doomed project's root disappears from disk (swept ghost worktree).
+    rmSync(doomed, { recursive: true, force: true });
+    const { threads, problems } = f.partitions.listThreadsResilient();
+    // The alive project's threads still load; the dead one is skipped + disclosed.
+    expect(threads.map((t) => t.id)).toContain(aliveThread.id);
+    expect(problems).toEqual([
+      {
+        projectId: doomedId,
+        root: doomed,
+        code: "project_root_missing",
+        message: expect.stringContaining("project root no longer exists"),
+      },
+    ]);
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("quarantineGhostProjects retires owned-tree and permanently-missing roots, keeps healthy ones (F2 cleanup)", () => {
+    const f = fixture();
+    const prev = process.env["CLAUDEXOR_CONFIG_DIR"];
+    // Survivor + missing live OUTSIDE f.root; the ghost lives UNDER f.root and
+    // becomes "owned" only after we point CLAUDEXOR_CONFIG_DIR at f.root below.
+    const survivor = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-survivor-")));
+    const missing = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-missing-")));
+    roots.push(survivor, missing);
+    const ghostRoot = join(f.root, "projects", "d", "workspaces", "task-9", "a01", "tree");
+    mkdirSync(ghostRoot, { recursive: true });
+    try {
+      // Register all three BEFORE the owned-root env is set, so the register
+      // guard (default owned root ~/.claudexor/v3) admits them.
+      const survivorProj = f.partitions.registerProject({
+        root: survivor,
+        idempotencyKey: "s",
+        clientId: "t",
+      });
+      const ghostProj = f.partitions.registerProject({
+        root: ghostRoot,
+        idempotencyKey: "g",
+        clientId: "t",
+      });
+      const missingProj = f.partitions.registerProject({
+        root: missing,
+        idempotencyKey: "m",
+        clientId: "t",
+      });
+      // Now f.root is the owned runtime tree (ghostRoot is inside it), and the
+      // missing project's root disappears from disk.
+      process.env["CLAUDEXOR_CONFIG_DIR"] = f.root;
+      rmSync(missing, { recursive: true, force: true });
+
+      const retired = f.partitions.quarantineGhostProjects();
+      const byId = new Map(retired.map((r) => [r.projectId, r.reason]));
+      expect(byId.get(ghostProj.id)).toBe("root_inside_claudexor_runtime");
+      expect(byId.get(missingProj.id)).toBe("root_permanently_missing");
+      // The healthy survivor stays registered; the two ghosts are gone.
+      expect(f.projects.current().get(survivorProj.id)).toBeDefined();
+      expect(f.projects.current().get(ghostProj.id)).toBeUndefined();
+      expect(f.projects.current().get(missingProj.id)).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env["CLAUDEXOR_CONFIG_DIR"];
+      else process.env["CLAUDEXOR_CONFIG_DIR"] = prev;
+      f.partitions.close();
+      f.manager.close();
+    }
+  });
+
   it("pings thread.head.updated into the GLOBAL partition for project-thread mutations (W12)", () => {
     const f = fixture();
     const project = join(f.root, "pinged-project");

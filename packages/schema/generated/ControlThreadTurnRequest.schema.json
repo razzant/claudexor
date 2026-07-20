@@ -352,10 +352,10 @@
               "harness"
             ],
             "additionalProperties": false,
-            "description": "One reviewer of an explicit reviewer panel."
+            "description": "One reviewer of an explicit reviewer panel — a harness plus optional model and effort. The CLI spells one entry `harness=model:effort` (e.g. `claude=claude-opus-4-8:max`)."
           },
           "minItems": 1,
-          "description": "Explicit reviewer panel; overrides the legacy reviewerModels/reviewerEfforts maps and preserves duplicate harness entries for multi-model same-provider reviews."
+          "description": "Explicit reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewers \"claude=claude-opus-4-8:max,cursor=gemini-3.1-pro\"`). Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps."
         },
         "authPreference": {
           "type": "string",

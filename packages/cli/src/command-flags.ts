@@ -182,7 +182,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "<file>",
     "Read --instructions from a file (avoids ARG_MAX and ps leakage)",
   ),
-  valueFlag("attach", "<path[,path...]>", "Attach file(s) to ask/agent/best-of/plan/audit"),
+  valueFlag("attach", "<path[,path...]>", "Attach file(s) to ask/agent/best-of/plan"),
   valueFlag(
     "image",
     "<path[,path...]>",

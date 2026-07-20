@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLAUDEXOR_VERSION } from "./version.js";
 
@@ -264,6 +264,24 @@ export function projectRuntimeDir(repoRoot: string): string {
 
 export function noProjectRepoRoot(): string {
   return join(userHomeDir(), ".cache", "claudexor", "no-project");
+}
+
+/**
+ * Whether `candidate` is the Claudexor-owned runtime tree or lives inside it
+ * (F2 ghost-project guard): `~/.claudexor` (or the CLAUDEXOR_CONFIG_DIR
+ * override) and everything under it — most importantly the per-project envelope
+ * worktrees under `projects/<digest>/workspaces/`. Such a path is DAEMON runtime state,
+ * never a legitimate user project root: registering one produces a "ghost"
+ * project whose root vanishes when the workspace is swept. Symlinks are resolved
+ * through the deepest existing ancestor so a not-yet-created (or already-swept)
+ * envelope path is still recognized. `noProjectRepoRoot()` (~/.cache/claudexor)
+ * is deliberately OUTSIDE this tree and is never flagged.
+ */
+export function isClaudexorOwnedRuntimePath(candidate: string): boolean {
+  const owned = canonicalProjectRoot(claudexorOwnedRoot());
+  const resolved = canonicalProjectRoot(candidate);
+  const rel = relative(owned, resolved);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 /**

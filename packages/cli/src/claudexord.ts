@@ -479,6 +479,23 @@ async function main(): Promise<void> {
       );
     }
     if (!shutdownRuntime.requested()) {
+      // F2 ghost-cleanup: retire projects auto-registered from an
+      // envelope worktree (root inside the Claudexor runtime tree) or whose
+      // root is permanently gone, so a dead root can never poison listings.
+      try {
+        const retired = threads.quarantineGhostProjects();
+        for (const ghost of retired) {
+          logLine(
+            logPath(),
+            `projects: quarantined ghost ${ghost.projectId} (${ghost.reason}): ${ghost.root}`,
+          );
+        }
+      } catch (error) {
+        logLine(
+          logPath(),
+          `projects: ghost sweep failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       scheduleStartupRetention(services.runRetention, {
         logPath: logPath(),
         shuttingDown: () => shutdownRuntime!.requested(),

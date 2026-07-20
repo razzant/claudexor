@@ -123,10 +123,23 @@ export function controlServices(
       resources.resolve(refs);
     },
     runRetention: createRetentionRunner({ projects, threads, daemonJobs }),
-    listProjects: async () => ({ projects: projects().list() as unknown[] }),
-    registerProject: async (input: Parameters<ProjectStore["register"]>[0]) =>
-      threads.registerProject(input),
-    relinkProject: async (id: string, root: string) => threads.relinkProject(id, root),
+    // F3 nested-project disclosure: each project carries its (recomputed)
+    // nesting relations with other registered projects — surfaces disclose
+    // "nested inside <root>"; never a refusal.
+    listProjects: async () => {
+      const store = projects();
+      return {
+        projects: store.list().map((p) => ({ ...p, nesting: store.nestingFor(p.id) })) as unknown[],
+      };
+    },
+    registerProject: async (input: Parameters<ProjectStore["register"]>[0]) => {
+      const project = threads.registerProject(input);
+      return { ...project, nesting: projects().nestingFor(project.id) };
+    },
+    relinkProject: async (id: string, root: string) => {
+      const project = threads.relinkProject(id, root);
+      return { ...project, nesting: projects().nestingFor(project.id) };
+    },
     createThread: async (input: unknown) => {
       const request = (input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0];
       assertCredentialProfileCompatibility(
@@ -137,7 +150,10 @@ export function controlServices(
       );
       return threads.createThread(request);
     },
-    listThreads: async () => ({ threads: threads.listThreads() as unknown[] }),
+    listThreads: async () => {
+      const { threads: rows, problems } = threads.listThreadsResilient();
+      return { threads: rows as unknown[], problems: problems as unknown[] };
+    },
     threadDetail: async (id: string) => {
       const thread = threads.getThread(id);
       if (!thread) throw Object.assign(new Error(`no such thread: ${id}`), { status: 404 });
@@ -335,7 +351,13 @@ export function controlServices(
       for (const profile of profiles) {
         out.push({ profile, status: await profileDoctorStatus(profile) });
       }
-      return { profiles: out, harnessAccounts: await harnessAccountsProjection(NO_PROJECT_ROOT) };
+      return {
+        profiles: out,
+        harnessAccounts: await harnessAccountsProjection(
+          NO_PROJECT_ROOT,
+          quotaRegistry().read().snapshots,
+        ),
+      };
     },
     // PATCH /credential-profiles/:harness/:id — the Enabled toggle of the
     // accounts symmetry (INV-135). Flips the profile's durable `enabled` in the

@@ -212,8 +212,10 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
     return 0;
   }
   // Symmetric accounts rows (INV-135, D25): per harness, every credential
-  // profile (Enabled toggle + Active marker) plus the native "CLI login" row.
-  // The server owns Active/native truth — this surface never re-derives it.
+  // profile (the Enabled toggle — the only routing control) plus the native
+  // "CLI login" row, and an informational "next up" line naming who an unpinned
+  // run would route to. The server owns native/next-up truth — this surface
+  // never re-derives it.
   const byHarness = new Map<string, Array<(typeof result.profiles)[number]>>();
   for (const entry of result.profiles) {
     const list = byHarness.get(entry.profile.harness_id) ?? [];
@@ -231,29 +233,26 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
   }
   for (const harnessId of harnessIds) {
     const authority = result.harnessAccounts.find((h) => h.harness_id === harnessId);
-    const activeMarker = (isActive: boolean) => (isActive ? " *ACTIVE" : "");
     print(`${harnessId}:`);
-    // The native "CLI login" pseudo-row: same Enabled/Active semantics, no Delete.
+    // The native "CLI login" pseudo-row: same Enabled toggle, no Delete.
     const nativeEnabled = authority?.native_credentials_enabled ?? true;
-    const nativeActive = authority?.active_identity.kind === "native";
     const nativeState = !nativeEnabled
       ? "disabled"
       : authority?.native_login_detected
         ? "logged-in"
         : "not-logged-in";
-    print(`  CLI login [native] ${nativeState}${activeMarker(nativeActive)}`);
+    print(`  CLI login [native] ${nativeState}`);
     for (const { profile, status } of byHarness.get(harnessId) ?? []) {
       const state = profile.enabled ? status.availability : "disabled";
-      const isActive =
-        authority?.active_identity.kind === "profile" &&
-        authority.active_identity.profileId === profile.profile_id;
       print(
-        `  ${profile.profile_id} [${profile.credential_kind}] ${state}${activeMarker(isActive)}${status.detail ? ` — ${status.detail}` : ""}`,
+        `  ${profile.profile_id} [${profile.credential_kind}] ${state}${status.detail ? ` — ${status.detail}` : ""}`,
       );
     }
-    if (authority?.active_identity.kind === "none") {
-      print(`  (no Active account: ${authority.active_identity.reason})`);
-    }
+    // Informational: who an UNPINNED run routes to next (never a user setting).
+    const nextUp = authority?.next_up;
+    if (nextUp?.kind === "native") print(`  next up: CLI login [native]`);
+    else if (nextUp?.kind === "profile") print(`  next up: ${nextUp.profileId}`);
+    else if (nextUp?.kind === "none") print(`  next up: nothing routable (${nextUp.reason})`);
   }
   return 0;
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
 import { WorkspaceEnvelope as WorkspaceEnvelopeSchema } from "@claudexor/schema";
-import { runCaptureRaw, WorkspaceError } from "@claudexor/core";
+import { CLAUDEXOR_ARTIFACT_DIR, runCaptureRaw, WorkspaceError } from "@claudexor/core";
 import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
 import {
@@ -411,6 +411,17 @@ export class WorkspaceManager {
     // In-place envelopes point worktree_path at the live repo root; NEVER remove a
     // worktree or the tree itself in that case.
     const inPlace = env.worktree_path === env.repo_root;
+    if (inPlace) {
+      // F4: for an in-place run the claudexor-owned artifact dir was
+      // written into the user's LIVE repo — its media is already collected into
+      // Evidence, so remove it rather than littering the working tree. A git-mode
+      // envelope drops the whole worktree below, so this is the in-place-only path.
+      try {
+        rmSync(join(env.worktree_path, CLAUDEXOR_ARTIFACT_DIR), { recursive: true, force: true });
+      } catch {
+        /* best-effort: artifact-dir litter is harmless and re-sweepable */
+      }
+    }
     if (!inPlace) {
       try {
         await worktreeRemove(this.repoRoot, env.worktree_path);

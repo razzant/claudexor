@@ -50,17 +50,17 @@ function applyHint(decision: DecisionRecord | null, lifecycle: string | null): s
   const facts = decision?.facts ?? null;
   if (facts) {
     if (facts.review === "blocked" || facts.checks === "failed") {
-      return "an operator accept_risk/override_needs_human decision (POST /runs/:id/decision) can unblock apply for this patch";
+      return "Accept the risk to apply it anyway (`claudexor decision <run> --accept-risk`), or run a review first.";
     }
     if (facts.review === "not_run" || facts.checks === "not_configured") {
-      return "not verified-applyable — add a --test check or obtain a clean cross-family review, then re-run (risk overrides apply only to review-blocked/checks-failed runs)";
+      return "Add a test check or get a clean cross-family review, then re-run. (Accepting the risk only unblocks a change that was reviewed and blocked.)";
     }
-    if (facts.noChanges) return "the run made no changes; nothing to apply";
+    if (facts.noChanges) return "This run made no changes, so there is nothing to apply.";
   }
   if (lifecycle && lifecycle !== "succeeded") {
-    return "re-run to reach a succeeded, verified outcome";
+    return "Re-run until the change finishes successfully.";
   }
-  return "re-run to reach a succeeded, verified outcome";
+  return "Re-run until the change finishes successfully.";
 }
 
 /** A terminal is a needs-decision block (accepted review blockers or failed
@@ -87,34 +87,39 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     typeof input.operatorDecision.patch_sha256 === "string" &&
     input.operatorDecision.patch_sha256 === sha256(input.patch);
   if (input.state && input.state !== "succeeded" && !override) {
-    return `run is not applyable while lifecycle is ${input.state}; ${applyHint(input.decision, input.state)}`;
+    // Plain human message (F5); the machine axes stay on the decision facts /
+    // ApplyEligibility.state that callers read alongside this string.
+    return `This change can't be applied yet — the run is still ${input.state}. ${applyHint(input.decision, input.state)}`;
   }
-  if (!input.decision) return "decision record is required before apply";
+  if (!input.decision) return "A completed run is required before this change can be applied.";
   // Apply requires a succeeded lifecycle with an APPROVED review and checks
   // not failed (INV-112 verification-basis rules unchanged).
   const applyable =
     facts?.lifecycle === "succeeded" && facts.review === "approved" && facts.checks !== "failed";
   if (!applyable && !override) {
-    return `decision is not applyable (lifecycle=${facts?.lifecycle ?? "unknown"}, review=${facts?.review ?? "unknown"}, checks=${facts?.checks ?? "unknown"}); refusing apply (${applyHint(input.decision, input.state ?? null)})`;
+    // Jargon soup rewritten to plain language (F5). The raw axes (lifecycle,
+    // review, checks) remain the machine detail on `decision.facts` and the
+    // typed `ApplyEligibility` projection — not embedded in this human line.
+    return `This change isn't ready to apply yet. ${applyHint(input.decision, input.state ?? null)}`;
   }
   // FinalVerifier consumer (INV-115): a patch that FAILED to apply onto a
   // fresh tree at its own base is factually undeliverable — no operator
   // override can change that. Failed verify GATES may be overridden through
   // the same accept_risk path as any blocked run.
   const fv = input.finalVerify !== undefined ? input.finalVerify : input.decision.final_verify;
-  if (!fv?.attempted) return "fresh final verify is required before apply";
+  if (!fv?.attempted) return "This change needs a fresh final check before it can be applied.";
   if (fv.attempted) {
     if (fv.applied_cleanly === false) {
-      return `final verify: the patch did not apply onto a fresh tree at its base (${fv.reason ?? "conflict"}); re-run the task`;
+      return `This change no longer applies onto a fresh copy of the code (${fv.reason ?? "conflict"}). Re-run the task.`;
     }
     // FAIL CLOSED (INV-115): null means the verifier ERRORED — the patch was
     // never proven against a clean base. Unlike a proven conflict this is an
     // infra failure, so accept_risk may override it.
     if (fv.applied_cleanly === null && !override) {
-      return `final verify: the verifier errored before proving the patch against a clean base (${fv.reason ?? "verify infrastructure error"}); refusing apply (an operator accept_risk decision can override)`;
+      return `We couldn't confirm this change applies onto a fresh copy (${fv.reason ?? "verification error"}). Accept the risk to apply anyway, or re-run.`;
     }
     if (fv.gates_passed === false && !override) {
-      return "final verify: deterministic gates failed on the fresh verify tree; refusing apply (an operator accept_risk decision can override)";
+      return "The checks failed when re-run on a fresh copy of the code. Accept the risk to apply anyway, or fix and re-run.";
     }
   }
   if (!input.workProduct) return "work product is required before apply";

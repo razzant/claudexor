@@ -351,19 +351,6 @@
                 "default": true,
                 "description": "Whether the harness participates in routing."
               },
-              "active_profile_id": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null,
-                "description": "Active credential profile id for new runs/turns of this harness; null = the engine default ladder (native/CLI login)."
-              },
               "native_credentials_enabled": {
                 "type": "boolean",
                 "default": true,

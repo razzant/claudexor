@@ -89,5 +89,7 @@ function projectWire(input: unknown): ControlProject {
     root: project["root"],
     createdAt: project["created_at"],
     updatedAt: project["updated_at"],
+    // F3: disclosed nesting relations (default [] when the service omits them).
+    nesting: project["nesting"] ?? [],
   });
 }

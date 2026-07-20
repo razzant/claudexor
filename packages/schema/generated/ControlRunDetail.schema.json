@@ -270,7 +270,7 @@
                   "harness"
                 ],
                 "additionalProperties": false,
-                "description": "One reviewer of an explicit reviewer panel."
+                "description": "One reviewer of an explicit reviewer panel — a harness plus optional model and effort. The CLI spells one entry `harness=model:effort` (e.g. `claude=claude-opus-4-8:max`)."
               },
               "description": "Explicit reviewer panel used for the run."
             },

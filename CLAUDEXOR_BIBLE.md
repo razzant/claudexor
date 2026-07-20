@@ -648,24 +648,27 @@ invariant or owner decision before proceeding.
   vendor-owned dir or the namespaced secret store, readiness only in the
   doctor's projection. Profiles are ADDITIVE identities: the default vendor
   stores (~/.claude, the native codex home) are never a profile target and are
-  never mutated by profile operations. ONE resolve owner (the orchestrator)
-  resolves the per-harness EFFECTIVE account by an owner-locked ladder: an
-  explicit per-run profile id wins; else the harness's configured ACTIVE
-  account (`active_profile_id`) is the default when a run/turn pins none; else
-  the native/CLI login. Unknown, disabled, or harness-mismatched explicit ids
-  refuse — an explicit profile never silently becomes the default credential
-  ladder — an invalid Active account refuses loudly AT USE naming its setting,
-  and an adapter given an unsupported transport refuses typed. When the
-  native/CLI login is excluded (`native_credentials_enabled: false`) and no
-  effective account exists, the harness has nothing routable: it refuses
+  never mutated by profile operations. There is NO user-settable "Active"
+  account: enabling/disabling a profile (the toggle) is the only routing
+  control. ONE resolve owner (the orchestrator) resolves the per-harness
+  EFFECTIVE account by an owner-locked ladder: an explicit per-run/per-thread
+  profile pin wins; else POOL AUTO — the native/CLI login default subject.
+  Enabled profiles route ONLY by explicit pin or as quota-rotation targets,
+  never as a silent auto-default. Unknown, disabled, or harness-mismatched
+  explicit ids refuse — an explicit profile never silently becomes the default
+  credential ladder — and an adapter given an unsupported transport refuses
+  typed. When the native/CLI login is excluded (`native_credentials_enabled:
+  false`) and no pin exists, an unpinned run has nothing routable: it refuses
   (explicit) or drops (auto) and never silently falls back INTO the disabled
   login. Accounts are SYMMETRIC: every account is a row with an Enabled toggle
-  and an Active marker, the native login is a "CLI login" row with the same
-  toggle semantics minus Delete, and ONE server projection owns which identity
-  is Active so no surface re-derives it. Native-session resume never crosses
+  (the only routing control), the native login is a "CLI login" row with the
+  same toggle semantics minus Delete, and ONE server projection owns the
+  informational `next_up` identity — who an unpinned run would route to next,
+  computed by the routing owner from enabled profiles + native readiness +
+  quota — so no surface re-derives it. Native-session resume never crosses
   profiles. Selecting a named profile makes its harness/pool coherent and every
   selected lane probes the profile before spawn; deletion clears durable pins
-  (including any harness's Active pointer), matching native-session caches, and
+  (any harness's `rotation_eligible` entry), matching native-session caches, and
   quota subjects so an id cannot dangle or resurrect stale auth. verify: schema
   credential-profile.ts; orchestrator credential-profiles.ts; adapter profile
   tests; threads resume-isolation test.

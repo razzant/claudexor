@@ -1,7 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseUnifiedDiff, runCaptureRaw, WorkspaceError } from "@claudexor/core";
+import {
+  CLAUDEXOR_ARTIFACT_DIR,
+  parseUnifiedDiff,
+  runCaptureRaw,
+  WorkspaceError,
+} from "@claudexor/core";
 
 /** BYTE-FAITHFUL git capture: raw buffers, never readline — CR
  * bytes in CRLF diff content survive, and no trailing newline is fabricated
@@ -490,13 +495,24 @@ export async function diffStaged(worktreePath: string, baseSha?: string): Promis
         `git read-tree ${target} failed during diff capture: ${read.stderr.trim()}`,
       );
     }
-    const add = await gitEnv(worktreePath, ["add", "-A"], env);
+    // F4: EXCLUDE the claudexor-owned artifact dir from the candidate
+    // patch. Media a harness saves for the user (browser-MCP screenshots,
+    // declared artifacts) lives here and must never enter the candidate diff —
+    // a screenshot-only run then reads as `noChanges` and is never
+    // review-blocked. Exclusion is by EXACT owned path only (no file-type
+    // guess), so a real code change elsewhere can never be silently dropped.
+    const excludeArtifacts = `:(exclude,top)${CLAUDEXOR_ARTIFACT_DIR}`;
+    const add = await gitEnv(worktreePath, ["add", "-A", "--", ".", excludeArtifacts], env);
     if (add.code !== 0) {
       throw new WorkspaceError(
         `scratch git add -A failed during diff capture: ${add.stderr.trim()}`,
       );
     }
-    const diff = await gitEnv(worktreePath, ["diff", "--binary", "--cached", target], env);
+    const diff = await gitEnv(
+      worktreePath,
+      ["diff", "--binary", "--cached", target, "--", ".", excludeArtifacts],
+      env,
+    );
     if (diff.code !== 0) {
       throw new WorkspaceError(
         `git diff --cached ${target} failed during diff capture: ${diff.stderr.trim()}`,

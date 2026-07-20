@@ -277,7 +277,7 @@ export interface DaemonControlApiOptions {
         idempotency?: { key: string; client: string; request: unknown },
       ) => ControlOperatorDecisionRecord;
       createThread?: (input: unknown) => Promise<unknown>;
-      listThreads?: () => Promise<{ threads: unknown[] }>;
+      listThreads?: () => Promise<{ threads: unknown[]; problems?: unknown[] }>;
       threadDetail?: (
         id: string,
       ) => Promise<{ thread: unknown; sessions: unknown[]; turns: unknown[] }>;
@@ -907,7 +907,7 @@ export class DaemonControlApiServer {
       const svc = this.opts.services?.listThreads;
       if (!svc)
         return this.json(res, 501, { error: "threads are not supported by this engine build" });
-      const { threads } = await svc();
+      const { threads, problems } = await svc();
       const runs = await this.opts.daemon.list();
       const blocked = new Set(
         runs.filter((r) => this.runNeedsDecision(r)).map((r) => r.runId ?? r.id),
@@ -919,6 +919,7 @@ export class DaemonControlApiServer {
           threads: threads.map((t) =>
             projectThread(t, blocked.has((t as { head_run_id?: string | null }).head_run_id ?? "")),
           ),
+          problems: problems ?? [],
         }),
       );
     }

@@ -108,45 +108,46 @@ export const CredentialProfileStatus = z
 export type CredentialProfileStatus = z.infer<typeof CredentialProfileStatus>;
 
 /**
- * Which identity is ACTIVE for a harness — the account a new run/turn defaults
- * to (INV-135). Server-computed so no surface re-derives it: `profile` names
- * the Active credential profile; `native` is the CLI login (no Active profile,
- * native routable); `none` means nothing is routable (no Active profile and the
- * CLI login is disabled) with a human reason.
+ * The identity routing WOULD pick next for a harness's UNPINNED run (INV-135) —
+ * purely informational, never user-set. Server-computed by the routing owner
+ * from enabled profiles + native readiness + quota so no surface re-derives it:
+ * `profile` names the enabled credential profile a quota-rotation would land on;
+ * `native` is the CLI login (the default subject of an unpinned run); `none`
+ * means an unpinned run has nothing routable (the CLI login is disabled and no
+ * account is pinned) with a human reason. Explicit control stays a per-run
+ * `--profile` pin or a per-thread pin — this field never gates routing.
  */
-export const ControlActiveIdentity = z
+export const ControlNextUpIdentity = z
   .discriminatedUnion("kind", [
     z
       .object({ kind: z.literal("profile"), profileId: Id })
       .strict()
-      .describe("An enabled credential profile is the harness's Active account."),
+      .describe("An enabled credential profile is who an unpinned run routes to next."),
     z
       .object({ kind: z.literal("native") })
       .strict()
-      .describe("The native/CLI login is the harness's Active account (no Active profile pinned)."),
+      .describe("The native/CLI login is the default subject of an unpinned run."),
     z
       .object({ kind: z.literal("none"), reason: z.string() })
       .strict()
       .describe(
-        "Nothing is routable for this harness (no Active profile and the CLI login is disabled).",
+        "An unpinned run has nothing routable (the CLI login is disabled and no account is pinned).",
       ),
   ])
-  .describe("Server-computed Active identity for a harness's accounts.");
-export type ControlActiveIdentity = z.infer<typeof ControlActiveIdentity>;
+  .describe("Server-computed identity an unpinned run of this harness would route to next.");
+export type ControlNextUpIdentity = z.infer<typeof ControlNextUpIdentity>;
 
 /**
  * Per-harness ACCOUNTS AUTHORITY projection (INV-135, the accounts symmetry):
- * the native "CLI login" pseudo-row state and which identity is Active, computed
- * ONCE on the server so no client re-derives the symmetry. Every credential
- * profile of this harness appears in the top-level `profiles` list with its own
- * `enabled` flag; this row adds the authority the profile rows cannot carry.
+ * the native "CLI login" pseudo-row state and the informational `next_up`
+ * identity, computed ONCE on the server so no client re-derives the symmetry.
+ * Every credential profile of this harness appears in the top-level `profiles`
+ * list with its own `enabled` flag — the only user-settable routing control.
+ * This row adds the authority the profile rows cannot carry.
  */
 export const ControlHarnessAccounts = z
   .object({
     harness_id: Id.describe("Harness family these accounts belong to."),
-    active_profile_id: Id.nullable().describe(
-      "Configured Active credential profile id; null = the native/CLI login is the default.",
-    ),
     native_credentials_enabled: z
       .boolean()
       .describe("Whether the native/CLI login participates in this harness's credential ladder."),
@@ -155,14 +156,16 @@ export const ControlHarnessAccounts = z
       .describe(
         "Whether a native/default vendor login is currently detected available (the CLI login pseudo-row state).",
       ),
-    active_identity: ControlActiveIdentity,
+    next_up: ControlNextUpIdentity,
   })
   .strict()
-  .describe("Per-harness accounts authority: native CLI-login state + the Active identity.");
+  .describe(
+    "Per-harness accounts authority: native CLI-login state + the informational next-up identity.",
+  );
 export type ControlHarnessAccounts = z.infer<typeof ControlHarnessAccounts>;
 
 /** Control response: every registered profile with its doctor projection, plus
- * the per-harness accounts authority (native CLI-login row + Active identity). */
+ * the per-harness accounts authority (native CLI-login row + next-up identity). */
 export const ControlCredentialProfilesResponse = z
   .object({
     profiles: z

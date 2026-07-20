@@ -78,6 +78,8 @@ import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config"
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
   AnswerAssembly,
+  CLAUDEXOR_ARTIFACT_DIR,
+  CLAUDEXOR_BROWSER_ARTIFACT_SUBDIR,
   HarnessUnavailableError,
   summarizeDiffPaths as diffStats,
   withInactivityWatchdog,
@@ -861,22 +863,20 @@ export class Orchestrator {
     return new WorkspaceManager(input.repoRoot).laneHomeEnv(
       input.threadId,
       harnessId,
-      // The lane is keyed by the EFFECTIVE account (INV-135): the Active
-      // default resolves the same home the recorded native session lives in.
+      // The lane is keyed by the EFFECTIVE account (INV-135): an explicit pin,
+      // else null resolves the same home the recorded native session lives in.
       this.effectiveProfileId(input, harnessId),
     ).env;
   }
 
   /**
    * The per-harness EFFECTIVE credential profile id (INV-135 accounts
-   * authority): an explicit per-run pin wins; else the harness's configured
-   * ACTIVE account (`harnesses.<id>.active_profile_id`); else null (the
-   * native/CLI login, subject to `native_credentials_enabled`). Non-throwing —
-   * validity is proven where the id is resolved into a typed profile.
+   * authority): an explicit per-run/per-thread pin wins; else null — POOL AUTO,
+   * the native/CLI login default subject (enabled profiles route only by
+   * explicit pin or quota rotation, never as a silent Active default).
    */
-  private effectiveProfileId(input: RunInput, harnessId: string): string | null {
-    if (input.credentialProfileId) return input.credentialProfileId;
-    return this.config(input.repoRoot)?.global.harnesses?.[harnessId]?.active_profile_id ?? null;
+  private effectiveProfileId(input: RunInput, _harnessId: string): string | null {
+    return input.credentialProfileId ?? null;
   }
 
   /** Whether the native/CLI login is EXCLUDED from this harness's credential
@@ -896,11 +896,11 @@ export class Orchestrator {
     try {
       return resolveCredentialProfile(registry, wanted, harnessId);
     } catch (err) {
-      // An invalid ACTIVE account (deleted/disabled after being set) refuses
-      // loudly AT USE, naming the setting so it is not read as an explicit pin.
+      // With Active removed, `wanted` is always the explicit pin; keep the
+      // fail-closed guard so any future non-pin source still refuses loudly.
       if (!explicit) {
         throw new Error(
-          `harness "${harnessId}" active account "${wanted}" (harnesses.${harnessId}.active_profile_id) is unusable: ${
+          `harness "${harnessId}" credential profile "${wanted}" is unusable: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -1133,14 +1133,14 @@ export class Orchestrator {
         continue;
       }
       // INV-135 accounts authority: with the native/CLI login excluded and no
-      // effective account (no explicit pin, no Active profile), the harness has
-      // nothing routable. Refuse an explicit request naming the setting; drop
-      // it from an auto pool — never silently fall back INTO the disabled login.
+      // explicit pin, an unpinned run has nothing routable. Refuse an explicit
+      // request naming the setting; drop it from an auto pool — never silently
+      // fall back INTO the disabled login.
       if (
         this.effectiveProfileId(input, id) === null &&
         this.nativeCredentialsDisabled(input.repoRoot, id)
       ) {
-        const why = `${id} has no routable credential: the CLI login is disabled (harnesses.${id}.native_credentials_enabled=false) and no Active account is set`;
+        const why = `${id} has no routable credential: the CLI login is disabled (harnesses.${id}.native_credentials_enabled=false) and no account is pinned (--profile)`;
         if (explicitPool) throw new HarnessUnavailableError(why);
         dropped.push(why);
         continue;
@@ -1173,8 +1173,7 @@ export class Orchestrator {
       const profileAdapter = this.deps.registry.get(id);
       const profileVerdict = await selectedProfileAvailability({
         registry: this.config(input.repoRoot)?.global.credential_profiles ?? [],
-        // The EFFECTIVE account (INV-135): an explicit pin or the harness's
-        // Active default is authenticated by ITS store, admitting the route.
+        // The EFFECTIVE account (INV-135): an explicit pin is authenticated by ITS store.
         profileId: this.effectiveProfileId(input, id),
         harnessId: id,
         probe: profileAdapter?.probeCredentialProfile?.bind(profileAdapter),
@@ -1975,7 +1974,9 @@ export class Orchestrator {
       attachments: runInput?.attachments ?? [],
       browser: this.requestRequirements.browserSpec(
         routed.browserRequirement,
-        join(paths.root, "browser"),
+        // F4: browser-MCP screenshots land in the claudexor-owned
+        // artifact dir inside the worktree — excluded from the diff, gallery-collected.
+        join(envelope.worktree_path, CLAUDEXOR_ARTIFACT_DIR, CLAUDEXOR_BROWSER_ARTIFACT_SUBDIR),
       ),
       extra_mcp_servers: this.delegationBeltFor(runInput, intent, routed),
       cwd: envelope.worktree_path,

@@ -179,6 +179,45 @@
           },
           "default": [],
           "description": "All threads."
+        },
+        "problems": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "projectId": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "The registered project that was skipped."
+              },
+              "root": {
+                "type": "string",
+                "description": "The project root that could not be listed."
+              },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "project_root_missing"
+                ],
+                "description": "Why skipped (root no longer exists)."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable disclosure of why it was skipped."
+              }
+            },
+            "required": [
+              "projectId",
+              "root",
+              "code",
+              "message"
+            ],
+            "additionalProperties": false,
+            "description": "A project skipped during thread listing, disclosed rather than failing it."
+          },
+          "default": [],
+          "description": "Projects skipped because their root is no longer usable (F2 disclosure)."
         }
       },
       "additionalProperties": false,

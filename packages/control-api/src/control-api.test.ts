@@ -5464,7 +5464,7 @@ describe("DaemonControlApiServer", () => {
         body: "{}",
       });
       expect(apply.status).toBe(409);
-      expect(await apply.text()).toContain("decision record is required");
+      expect(await apply.text()).toContain("A completed run is required before this change");
     });
   });
 

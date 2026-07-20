@@ -25,6 +25,41 @@
         },
         "updatedAt": {
           "$ref": "#/definitions/ControlProject/properties/createdAt"
+        },
+        "nesting": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "relation": {
+                "type": "string",
+                "enum": [
+                  "inside",
+                  "contains"
+                ],
+                "description": "How this project overlaps the other."
+              },
+              "root": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The other registered project's root."
+              },
+              "projectId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The other registered project's id."
+              }
+            },
+            "required": [
+              "relation",
+              "root",
+              "projectId"
+            ],
+            "additionalProperties": false,
+            "description": "A disclosed (never refused) nesting relation with another registered project."
+          },
+          "default": [],
+          "description": "Disclosed nesting relations with other registered projects (F3) — informational, never a refusal."
         }
       },
       "required": [

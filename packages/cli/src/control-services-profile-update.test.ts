@@ -20,7 +20,7 @@ function services() {
     invalidateCredentialProfile: () => ({ clearedThreads: 0, invalidatedSessions: 0 }),
     listThreads: () => [] as unknown[],
   };
-  const quota = { removeSubject: () => 0 };
+  const quota = { removeSubject: () => 0, read: () => ({ snapshots: [] }) };
   return controlServices(
     undefined as never,
     undefined as never,
@@ -74,38 +74,34 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     ).rejects.toMatchObject({ status: 400 });
   });
 
-  it("projects per-harness accounts authority: native default, Active pin, and disabled-CLI-login none", async () => {
+  it("projects per-harness accounts authority: next_up native default, enabled profile still native, disabled-CLI-login none (F1)", async () => {
     registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
     const svc = services();
 
-    // Default: no Active pin, CLI login enabled → Active identity is native.
+    // Default: CLI login enabled, no quota breach → an unpinned run routes to
+    // the native login, so next_up is native. Active is gone; the field is
+    // purely informational.
     const base = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
     const claudeBase = base.harnessAccounts.find((h) => h.harness_id === "claude");
     expect(claudeBase).toBeDefined();
-    expect(claudeBase?.active_profile_id).toBeNull();
+    expect(claudeBase).not.toHaveProperty("active_profile_id");
+    expect(claudeBase).not.toHaveProperty("active_identity");
     expect(claudeBase?.native_credentials_enabled).toBe(true);
-    expect(claudeBase?.active_identity).toEqual({ kind: "native" });
+    expect(claudeBase?.next_up).toEqual({ kind: "native" });
 
-    // Pin Active → the profile is the Active identity.
-    updateGlobalConfig((config) => ({
-      ...config,
-      harnesses: {
-        claude: { ...(config.harnesses.claude ?? {}), active_profile_id: "work" },
-      } as never,
-    }));
-    const pinned = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
-    expect(pinned.harnessAccounts.find((h) => h.harness_id === "claude")?.active_identity).toEqual({
-      kind: "profile",
-      profileId: "work",
+    // An enabled profile does NOT become an auto-default: unpinned runs still
+    // route to the native login (profiles route only by explicit pin / rotation).
+    const withProfile = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
+    expect(withProfile.harnessAccounts.find((h) => h.harness_id === "claude")?.next_up).toEqual({
+      kind: "native",
     });
 
-    // Disable the CLI login with no Active pin → nothing routable (none).
+    // Disable the CLI login → an unpinned run has nothing routable (next_up none).
     updateGlobalConfig((config) => ({
       ...config,
       harnesses: {
         claude: {
           ...(config.harnesses.claude ?? {}),
-          active_profile_id: null,
           native_credentials_enabled: false,
         },
       } as never,
@@ -113,6 +109,6 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     const none = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
     const claudeNone = none.harnessAccounts.find((h) => h.harness_id === "claude");
     expect(claudeNone?.native_credentials_enabled).toBe(false);
-    expect(claudeNone?.active_identity.kind).toBe("none");
+    expect(claudeNone?.next_up.kind).toBe("none");
   });
 });

@@ -147,6 +147,46 @@ export function nextEligibleProfile(
   return null;
 }
 
+/** The informational identity an UNPINNED run of a harness would route to next
+ * (INV-135 `next_up`) — the same routing owner that admits and rotates runs,
+ * exposed for the accounts projection so no surface re-derives it. Never gates
+ * routing: explicit control is a per-run `--profile` / per-thread pin.
+ *
+ * Semantics mirror run-time admission: an unpinned run's default subject is the
+ * native/CLI login when it participates in the ladder; enabled profiles route
+ * only by explicit pin or, under `rotate`, as the quota-failover target when the
+ * native default is already over headroom. A disabled CLI login leaves an
+ * unpinned run with nothing routable. */
+export type NextUpIdentity =
+  { kind: "profile"; profileId: string } | { kind: "native" } | { kind: "none"; reason: string };
+
+export function nextUpIdentity(args: {
+  registry: readonly CredentialProfile[];
+  harnessId: string;
+  policy: ProfilePolicy;
+  snapshots: readonly QuotaSnapshot[];
+  nativeEnabled: boolean;
+}): NextUpIdentity {
+  const { registry, harnessId, policy, snapshots, nativeEnabled } = args;
+  if (!nativeEnabled) {
+    return {
+      kind: "none",
+      reason: "the CLI login is disabled; pin an account per-run (--profile) or per-thread",
+    };
+  }
+  // Under `rotate`, a native/default subject already over its headroom bound
+  // fails over to the next eligible enabled profile BEFORE spawn — that is who
+  // an unpinned run routes to next. `ask`/`fail` proceed on the native default.
+  if (policy.limit_action === "rotate") {
+    const breach = profileHeadroomBreach(snapshots, harnessId, null, policy.headroom_threshold);
+    if (breach) {
+      const next = nextEligibleProfile(registry, harnessId, policy, null, snapshots);
+      if (next) return { kind: "profile", profileId: next.profile_id };
+    }
+  }
+  return { kind: "native" };
+}
+
 /**
  * `rotation_retry_eligible` (sol #30): a failover retry is allowed ONLY when
  * the attempt saw a TYPED vendor limit AND produced no deliverable and no

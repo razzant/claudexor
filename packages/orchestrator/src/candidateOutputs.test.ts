@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildFileBackedSynthesisInput,
+  collectArtifactDirMedia,
   materializeWinnerOutputs,
   persistCandidateOutputs,
   stageFileBackedContext,
@@ -32,6 +33,37 @@ afterEach(() => {
 });
 
 describe("candidate produced-output persistence", () => {
+  it("collects claudexor-owned artifact-dir media into the Evidence gallery (F4)", () => {
+    const worktree = root("claudexor-art-wt-");
+    const attemptDir = root("claudexor-art-attempt-");
+    mkdirSync(join(worktree, ".claudexor-artifacts", "browser"), { recursive: true });
+    writeFileSync(
+      join(worktree, ".claudexor-artifacts", "browser", "shot.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+    // A symlink inside the artifact dir must never be followed into the host.
+    const secret = join(root("claudexor-art-secret-"), "secret.png");
+    writeFileSync(secret, "host-bytes");
+    symlinkSync(secret, join(worktree, ".claudexor-artifacts", "evil.png"));
+    // A non-media file is left out (only declared raster media is collected).
+    writeFileSync(join(worktree, ".claudexor-artifacts", "notes.txt"), "not media");
+
+    const collected = collectArtifactDirMedia({ worktreePath: worktree, attemptDir });
+    expect(collected).toEqual([".claudexor-artifacts/browser/shot.png"]);
+    expect(
+      existsSync(join(attemptDir, "produced", ".claudexor-artifacts", "browser", "shot.png")),
+    ).toBe(true);
+    expect(existsSync(join(attemptDir, "produced", ".claudexor-artifacts", "evil.png"))).toBe(
+      false,
+    );
+  });
+
+  it("returns nothing when there is no artifact dir (F4)", () => {
+    const worktree = root("claudexor-art-none-");
+    const attemptDir = root("claudexor-art-none-attempt-");
+    expect(collectArtifactDirMedia({ worktreePath: worktree, attemptDir })).toEqual([]);
+  });
+
   it("keeps giant candidate diffs out of the argv prompt without truncation", () => {
     const huge = "diff-line\n".repeat(100_000);
     const packet = buildFileBackedSynthesisInput({

@@ -68,17 +68,18 @@ describe("settingPatch", () => {
     });
   });
 
-  it("maps the accounts-authority keys (Active account + native CLI login toggle)", () => {
-    expect(settingPatch("harness.claude.active_profile_id", "work")).toEqual({
-      harnesses: { claude: { activeProfileId: "work" } },
-    });
-    // `none` clears the Active account back to the native/CLI login.
-    expect(settingPatch("harness.claude.active_profile_id", "none")).toEqual({
-      harnesses: { claude: { activeProfileId: null } },
-    });
+  it("maps the native CLI-login toggle (the accounts-authority key)", () => {
     expect(settingPatch("harness.codex.native_credentials_enabled", "false")).toEqual({
       harnesses: { codex: { nativeCredentialsEnabled: false } },
     });
+  });
+
+  it("refuses the retired Active-account key loudly (F1: Active removed)", () => {
+    // active_profile_id no longer exists — enabling/disabling profiles is the
+    // only routing control, and explicit selection is a per-run --profile pin.
+    expect(() => settingPatch("harness.claude.active_profile_id", "work")).toThrow(
+      /unknown setting/,
+    );
   });
 
   it("refuses an unknown key loudly", () => {

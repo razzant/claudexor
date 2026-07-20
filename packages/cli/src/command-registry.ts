@@ -232,8 +232,9 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "profiles",
-    usageArgs: "[list | add|login|remove <harness> <profile-id>]",
-    summary: "Credential profiles: registry + doctor readiness, and per-profile vendor login",
+    usageArgs: "[list | add|login|enable|disable|remove <harness> <profile-id>]",
+    summary:
+      "Credential profiles: registry + doctor readiness, per-profile toggle, and vendor login",
     flags: ["json"],
     mutability: "ops",
     stability: "stable",

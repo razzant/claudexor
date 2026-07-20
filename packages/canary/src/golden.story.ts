@@ -213,7 +213,7 @@ describe("canary golden stories", () => {
     expect(readRunFile(out.runDir, "final/patch.diff").length).toBeGreaterThan(0);
     const check = cli(sb, ["apply", out.runId, "--dry-run"]);
     expect(check.code).toBe(1);
-    expect(check.stdout + check.stderr).toMatch(/refusing apply|not applyable/);
+    expect(check.stdout + check.stderr).toMatch(/isn't ready to apply|can't be applied/);
     expect(check.stdout + check.stderr).toMatch(/cross-family review/);
   });
 

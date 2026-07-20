@@ -129,7 +129,7 @@ describe("deleteCredentialProfile (INV-135 delete service)", () => {
     expect(existsSync(join(dir, "config.yaml"))).toBe(true);
   });
 
-  it("clears any harness's ACTIVE pointer and rotation_eligible entry at the deleted profile (INV-135)", async () => {
+  it("clears any harness's rotation_eligible entry at the deleted profile (INV-135; F1: Active removed)", async () => {
     registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
     const { updateGlobalConfig } = await import("@claudexor/config");
     updateGlobalConfig((config) => ({
@@ -137,17 +137,17 @@ describe("deleteCredentialProfile (INV-135 delete service)", () => {
       harnesses: {
         claude: {
           ...(config.harnesses.claude ?? {}),
-          active_profile_id: "work",
           profile_policy: { limit_action: "rotate", rotation_eligible: ["work"] },
         },
       } as never,
     }));
-    // Precondition: the pointer is set.
-    expect(loadConfig(noProjectRepoRoot()).global.harnesses.claude?.active_profile_id).toBe("work");
+    // Precondition: the rotation entry is set.
+    expect(
+      loadConfig(noProjectRepoRoot()).global.harnesses.claude?.profile_policy.rotation_eligible,
+    ).toEqual(["work"]);
     await servicesWithJobs([]).deleteCredentialProfile({ harnessId: "claude", profileId: "work" });
     const after = loadConfig(noProjectRepoRoot()).global.harnesses.claude;
-    // The Active pointer and rotation entry no longer dangle at the deleted id.
-    expect(after?.active_profile_id).toBeNull();
+    // The rotation entry no longer dangles at the deleted id.
     expect(after?.profile_policy.rotation_eligible).toEqual([]);
   });
 

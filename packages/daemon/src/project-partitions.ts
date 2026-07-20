@@ -1,5 +1,12 @@
-import type { Project, RunEvent, Thread, ThreadTurn } from "@claudexor/schema";
-import { hashJson, newId, nowIso } from "@claudexor/util";
+import { existsSync } from "node:fs";
+import type {
+  ControlProjectListingProblem,
+  Project,
+  RunEvent,
+  Thread,
+  ThreadTurn,
+} from "@claudexor/schema";
+import { hashJson, isClaudexorOwnedRuntimePath, newId, nowIso } from "@claudexor/util";
 import { commandProjection, type CommandStore } from "./command-store.js";
 import { JournalManager, type JournalProjectionSlot } from "./journal-manager.js";
 import { interactionProjection, type InteractionStore } from "./interactions.js";
@@ -148,6 +155,32 @@ export class ProjectPartitions implements CommandAuthority {
     return project;
   }
 
+  /**
+   * F2 ghost-cleanup sweep: unregister every project that can never
+   * be a legitimate user project — its root is INSIDE the Claudexor runtime
+   * tree (an envelope worktree that was auto-registered as a ghost) or its root
+   * is permanently GONE from disk. Closes and drops each ghost's partition so
+   * it stops polluting listings/retention. Idempotent and best-effort; returns
+   * the retired projects for disclosure/logging.
+   */
+  quarantineGhostProjects(): Array<{ projectId: string; root: string; reason: string }> {
+    const registry = this.projects.current();
+    const retired: Array<{ projectId: string; root: string; reason: string }> = [];
+    for (const project of registry.list()) {
+      const owned = isClaudexorOwnedRuntimePath(project.root);
+      const gone = !existsSync(project.root);
+      if (!owned && !gone) continue;
+      registry.unregister(project.id);
+      retired.push({
+        projectId: project.id,
+        root: project.root,
+        reason: owned ? "root_inside_claudexor_runtime" : "root_permanently_missing",
+      });
+    }
+    if (retired.length > 0) this.sync();
+    return retired;
+  }
+
   relinkProject(id: string, root: string): Project {
     const project = this.projects.current().relink(id, root);
     this.ensure(id).threads.current().relinkProjectRoot(project.root);
@@ -173,12 +206,42 @@ export class ProjectPartitions implements CommandAuthority {
   }
 
   listThreads(): Thread[] {
-    // Each store sorts ITS threads by recency, but the stores concatenate —
-    // without a merge-sort a fresh project thread lands below every global
-    // one (dogfood: the fresh thread sank to the bottom). One global recency order.
-    return this.threadStores()
-      .flatMap((store) => store.listThreads())
-      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
+    return this.listThreadsResilient().threads;
+  }
+
+  /**
+   * Thread listing that is RESILIENT to a dead project (F2): a
+   * registered project whose filesystem root has vanished (e.g. a swept ghost
+   * envelope worktree) is SKIPPED with a disclosed per-project problem instead
+   * of failing the whole listing, while every other project's threads load.
+   * Each store sorts ITS threads by recency, but the stores concatenate —
+   * without a merge-sort a fresh project thread lands below every global one
+   * (dogfood: the fresh thread sank to the bottom). One global recency order.
+   */
+  listThreadsResilient(): { threads: Thread[]; problems: ControlProjectListingProblem[] } {
+    this.sync();
+    const registry = this.projects.current();
+    const threads: Thread[] = [...this.globalThreads.current().listThreads()];
+    const problems: ControlProjectListingProblem[] = [];
+    for (const [id, entry] of this.partitions) {
+      if (!entry.manager.ready()) continue;
+      const root = registry.get(id)?.root;
+      if (!root) continue;
+      if (!existsSync(root)) {
+        problems.push({
+          projectId: id,
+          root,
+          code: "project_root_missing",
+          message: `project root no longer exists: ${root}`,
+        });
+        continue;
+      }
+      threads.push(...entry.threads.current().listThreads());
+    }
+    threads.sort((a, b) =>
+      a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0,
+    );
+    return { threads, problems };
   }
 
   getThread(id: string): Thread | undefined {

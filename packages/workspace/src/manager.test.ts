@@ -122,6 +122,31 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.home_dir)).toBe(false);
   });
 
+  it("excludes the claudexor-owned artifact dir from the candidate diff but keeps real code (F4)", async () => {
+    const repo = await initRepo();
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-art", attemptId: "a01", baseRef: "HEAD" });
+
+    // A harness saves a screenshot for the user into the owned artifact dir...
+    mkdirSync(join(env.worktree_path, ".claudexor-artifacts", "browser"), { recursive: true });
+    writeFileSync(
+      join(env.worktree_path, ".claudexor-artifacts", "browser", "shot.png"),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+    );
+    // ...and a screenshot-only run yields NO candidate diff → noChanges.
+    expect((await mgr.diff(env)).trim()).toBe("");
+
+    // A real code change alongside the artifact is still reviewed; the artifact
+    // is never in the diff.
+    writeFileSync(join(env.worktree_path, "src.ts"), "export const x = 1;\n");
+    const mixed = await mgr.diff(env);
+    expect(mixed).toContain("src.ts");
+    expect(mixed).not.toContain("shot.png");
+    expect(mixed).not.toContain(".claudexor-artifacts");
+
+    await mgr.dispose(env);
+  });
+
   it("capture/create/diff/dispose preserves the live index and arbitrary project .claudexor bytes", async () => {
     const repo = await initRepo();
     mkdirSync(join(repo, ".claudexor"), { recursive: true });

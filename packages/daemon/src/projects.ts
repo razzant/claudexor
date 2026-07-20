@@ -1,8 +1,8 @@
 import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import type { DurableJournal } from "@claudexor/journal";
 import { Project as ProjectSchema, SCHEMA_VERSION, type Project } from "@claudexor/schema";
-import { hashJson, newId, nowIso } from "@claudexor/util";
+import { hashJson, isClaudexorOwnedRuntimePath, newId, nowIso } from "@claudexor/util";
 
 interface RegistrationBinding {
   keyDigest: string;
@@ -17,6 +17,7 @@ interface ProjectMutation {
 
 const REGISTERED = "project.registered";
 const RELINKED = "project.relinked";
+const UNREGISTERED = "project.unregistered";
 
 /** Global-journal authority for the deliberately empty v2 project registry. */
 export class ProjectStore {
@@ -44,9 +45,31 @@ export class ProjectStore {
     return id ? this.projects.get(id) : undefined;
   }
 
+  /** F3 nested-project disclosure: every registered project whose
+   * root overlaps `id`'s root — `inside` when `id` lives under it, `contains`
+   * when it lives under `id`. Pure projection over current roots (recomputed as
+   * the registry changes), never a refusal — legit monorepos nest. */
+  nestingFor(
+    id: string,
+  ): Array<{ relation: "inside" | "contains"; root: string; projectId: string }> {
+    const self = this.projects.get(id);
+    if (!self) return [];
+    const relations: Array<{ relation: "inside" | "contains"; root: string; projectId: string }> =
+      [];
+    for (const other of this.projects.values()) {
+      if (other.id === id) continue;
+      if (pathStrictlyInside(self.root, other.root))
+        relations.push({ relation: "inside", root: other.root, projectId: other.id });
+      else if (pathStrictlyInside(other.root, self.root))
+        relations.push({ relation: "contains", root: other.root, projectId: other.id });
+    }
+    return relations.sort((a, b) => a.root.localeCompare(b.root));
+  }
+
   register(input: { root: string; idempotencyKey: string; clientId: string }): Project {
     validateKey(input.idempotencyKey);
     const root = canonicalRoot(input.root);
+    assertNotClaudexorOwned(root);
     const keyDigest = hashJson({
       client: input.clientId,
       partition: "global",
@@ -84,6 +107,7 @@ export class ProjectStore {
     const current = this.projects.get(id);
     if (!current) throw Object.assign(new Error(`no such project: ${id}`), { status: 404 });
     const root = canonicalRoot(rootInput);
+    assertNotClaudexorOwned(root);
     const owner = this.projectIdByRoot.get(root);
     if (owner && owner !== id) {
       throw Object.assign(new Error(`project root is already registered to ${owner}`), {
@@ -94,6 +118,17 @@ export class ProjectStore {
     if (root === current.root) return current;
     const project = ProjectSchema.parse({ ...current, root, updated_at: nowIso() });
     this.commit(RELINKED, { project });
+    return project;
+  }
+
+  /** F2 ghost-cleanup: retire a registered project — used by the
+   * daemon sweep to unregister ghosts whose root is inside the Claudexor
+   * runtime tree or permanently gone. Removes the registry entry, its root
+   * index, and any idempotency bindings pointing at it, in ONE locked write. */
+  unregister(id: string): Project | undefined {
+    const project = this.projects.get(id);
+    if (!project) return undefined;
+    this.commit(UNREGISTERED, { project });
     return project;
   }
 
@@ -111,19 +146,35 @@ export class ProjectStore {
 
   private replay(): void {
     for (const record of this.journal.records()) {
-      if (record.type !== REGISTERED && record.type !== RELINKED) continue;
-      this.apply(parseMutation(record.payload));
+      if (record.type !== REGISTERED && record.type !== RELINKED && record.type !== UNREGISTERED)
+        continue;
+      this.apply(record.type, parseMutation(record.payload));
     }
     this.validateProjection();
   }
 
-  private commit(type: typeof REGISTERED | typeof RELINKED, mutation: ProjectMutation): void {
+  private commit(
+    type: typeof REGISTERED | typeof RELINKED | typeof UNREGISTERED,
+    mutation: ProjectMutation,
+  ): void {
     const parsed = parseMutation(mutation);
     this.journal.append(type, parsed);
-    this.apply(parsed);
+    this.apply(type, parsed);
   }
 
-  private apply(mutation: ProjectMutation): void {
+  private apply(
+    type: typeof REGISTERED | typeof RELINKED | typeof UNREGISTERED,
+    mutation: ProjectMutation,
+  ): void {
+    if (type === UNREGISTERED) {
+      this.projects.delete(mutation.project.id);
+      if (this.projectIdByRoot.get(mutation.project.root) === mutation.project.id)
+        this.projectIdByRoot.delete(mutation.project.root);
+      for (const [keyDigest, binding] of this.registrationByKey) {
+        if (binding.projectId === mutation.project.id) this.registrationByKey.delete(keyDigest);
+      }
+      return;
+    }
     const previous = this.projects.get(mutation.project.id);
     if (previous && previous.root !== mutation.project.root)
       this.projectIdByRoot.delete(previous.root);
@@ -165,6 +216,29 @@ function canonicalRoot(input: string): string {
     throw Object.assign(new Error(`project root is not a directory: ${input}`), { status: 400 });
   }
   return root;
+}
+
+/** F2 ghost-project guard: a project root inside the Claudexor
+ * runtime tree (`~/.claudexor`, esp. the `projects/<digest>/workspaces/`
+ * envelope worktrees) is daemon runtime state, never a user project — refuse it at
+ * registration/relink with a typed error so an envelope cwd can never become a
+ * durable ghost whose root later vanishes. */
+function assertNotClaudexorOwned(root: string): void {
+  if (isClaudexorOwnedRuntimePath(root)) {
+    throw Object.assign(
+      new Error(
+        `project root is inside the Claudexor runtime tree and cannot be registered as a project: ${root}`,
+      ),
+      { code: "claudexor_owned_root", status: 400 },
+    );
+  }
+}
+
+/** True when `child` is STRICTLY below `parent` (not equal). Both are canonical
+ * absolute roots, so a path-segment `relative` is sufficient. */
+function pathStrictlyInside(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
 function parseMutation(value: unknown): ProjectMutation {

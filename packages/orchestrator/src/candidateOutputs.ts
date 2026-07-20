@@ -7,14 +7,15 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import type { Stats } from "node:fs";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { dirname, extname, join, relative as pathRelative, resolve, sep } from "node:path";
 import type { ArtifactStore } from "@claudexor/artifact-store";
-import { summarizeDiffPaths } from "@claudexor/core";
+import { CLAUDEXOR_ARTIFACT_DIR, summarizeDiffPaths } from "@claudexor/core";
 
 const RASTER_OUTPUT_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -120,6 +121,55 @@ export function persistCandidateOutputs(input: {
   return preserved;
 }
 
+/**
+ * Collect media the harness saved for the USER into the claudexor-owned
+ * artifact dir (F4). These files are EXCLUDED from the candidate diff
+ * (so a screenshot-only run reads as noChanges), so they never appear in the
+ * diff's changed paths — this walk is how they reach the Evidence gallery.
+ * Returns worktree-relative paths (retaining the `.claudexor-artifacts/`
+ * prefix) preserved under the attempt's `produced/` plane. Symlink-safe and
+ * byte-bounded exactly like `persistCandidateOutputs`.
+ */
+export function collectArtifactDirMedia(input: {
+  worktreePath: string;
+  attemptDir: string;
+}): string[] {
+  const root = resolve(input.worktreePath);
+  const artifactRoot = join(root, CLAUDEXOR_ARTIFACT_DIR);
+  if (!existsSync(artifactRoot)) return [];
+  let total = 0;
+  const preserved: string[] = [];
+  const walk = (dir: string): void => {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of entries.sort()) {
+      const abs = join(dir, name);
+      const stat = lstatIfPresent(abs);
+      // lstat: a symlink inside the artifact dir must never copy a host file.
+      if (!stat || stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      if (!RASTER_OUTPUT_EXTENSIONS.has(extname(name).toLowerCase())) continue;
+      if (stat.size > MAX_OUTPUT_BYTES || total + stat.size > MAX_TOTAL_BYTES) continue;
+      const rel = pathRelative(root, abs).split("\\").join("/");
+      const target = join(input.attemptDir, "produced", rel);
+      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+      copyFileSync(abs, target);
+      total += stat.size;
+      preserved.push(rel);
+    }
+  };
+  walk(artifactRoot);
+  return preserved;
+}
+
 export function rasterLinksInMarkdown(markdown: string): string[] {
   const paths: string[] = [];
   for (const match of markdown.matchAll(/!?\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)) {
@@ -144,11 +194,23 @@ export function writeCandidateAttemptArtifacts(input: {
 }): string[] {
   input.store.writeText(join(input.attemptDir, "patch.diff"), input.diff);
   const stats = summarizeDiffPaths(input.diff);
-  const produced = persistCandidateOutputs({
-    worktreePath: input.worktreePath,
-    attemptDir: input.attemptDir,
-    changedPaths: [...new Set([...stats.paths, ...rasterLinksInMarkdown(input.answerText ?? "")])],
-  });
+  const produced = [
+    ...new Set([
+      ...persistCandidateOutputs({
+        worktreePath: input.worktreePath,
+        attemptDir: input.attemptDir,
+        changedPaths: [
+          ...new Set([...stats.paths, ...rasterLinksInMarkdown(input.answerText ?? "")]),
+        ],
+      }),
+      // F4: media in the claudexor-owned artifact dir is excluded from the diff,
+      // so it is never in `stats.paths` — collect it into the gallery here.
+      ...collectArtifactDirMedia({
+        worktreePath: input.worktreePath,
+        attemptDir: input.attemptDir,
+      }),
+    ]),
+  ];
   input.store.writeYaml(join(input.attemptDir, "attempt.yaml"), {
     ...input.record,
     diffstat: {

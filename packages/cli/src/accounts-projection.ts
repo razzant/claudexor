@@ -1,17 +1,21 @@
 /**
  * Per-harness ACCOUNTS AUTHORITY projection (INV-135): the native "CLI login"
- * pseudo-row state and the server-computed Active identity, built ONCE on the
- * server so no surface (CLI, macOS) re-derives the accounts symmetry.
- * Native-login detection reads the cached doctor status (a `native_session`
- * source reported available); a probe failure is an honest "not detected",
- * never a thrown listing.
+ * pseudo-row state and the informational `next_up` identity (who an UNPINNED
+ * run would route to next), built ONCE on the server so no surface (CLI, macOS)
+ * re-derives the accounts symmetry. Native-login detection reads the cached
+ * doctor status (a `native_session` source reported available); a probe failure
+ * is an honest "not detected", never a thrown listing. `next_up` is computed by
+ * the routing owner (`nextUpIdentity`) from enabled profiles + native readiness
+ * + quota, so it can never disagree with run-time admission.
  */
-import type { ControlHarnessAccounts } from "@claudexor/schema";
+import type { ControlHarnessAccounts, QuotaSnapshot } from "@claudexor/schema";
 import { loadConfig } from "@claudexor/config";
+import { nextUpIdentity } from "@claudexor/orchestrator";
 import { buildGateway, buildRegistry } from "./registry.js";
 
 export async function harnessAccountsProjection(
   repoRoot: string,
+  quotaSnapshots: readonly QuotaSnapshot[] = [],
 ): Promise<ControlHarnessAccounts[]> {
   const cfg = loadConfig(repoRoot).global;
   const harnessIds = [...buildRegistry({ includeFakes: false }).keys()].sort();
@@ -35,39 +39,24 @@ export async function harnessAccountsProjection(
   }
   return harnessIds.map((harnessId): ControlHarnessAccounts => {
     const h = cfg.harnesses[harnessId];
-    const activeProfileId = h?.active_profile_id ?? null;
     const nativeEnabled = h?.native_credentials_enabled ?? true;
     return {
       harness_id: harnessId,
-      active_profile_id: activeProfileId,
       native_credentials_enabled: nativeEnabled,
       native_login_detected: nativeDetected.get(harnessId) ?? false,
-      active_identity: activeIdentity(
-        cfg.credential_profiles,
+      // The routing owner computes who an unpinned run routes to next — the
+      // accounts projection never re-derives it (INV-135).
+      next_up: nextUpIdentity({
+        registry: cfg.credential_profiles,
         harnessId,
-        activeProfileId,
+        policy: h?.profile_policy ?? {
+          limit_action: "fail",
+          rotation_eligible: [],
+          headroom_threshold: 0.9,
+        },
+        snapshots: quotaSnapshots,
         nativeEnabled,
-      ),
+      }),
     };
   });
-}
-
-function activeIdentity(
-  profiles: ReadonlyArray<{ harness_id: string; profile_id: string; enabled: boolean }>,
-  harnessId: string,
-  activeProfileId: string | null,
-  nativeEnabled: boolean,
-): ControlHarnessAccounts["active_identity"] {
-  if (activeProfileId !== null) {
-    const match = profiles.find(
-      (p) => p.harness_id === harnessId && p.profile_id === activeProfileId,
-    );
-    if (!match)
-      return { kind: "none", reason: `active account "${activeProfileId}" is not registered` };
-    if (!match.enabled)
-      return { kind: "none", reason: `active account "${activeProfileId}" is disabled` };
-    return { kind: "profile", profileId: activeProfileId };
-  }
-  if (nativeEnabled) return { kind: "native" };
-  return { kind: "none", reason: "no Active account and the CLI login is disabled" };
 }

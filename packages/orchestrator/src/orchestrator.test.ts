@@ -1558,7 +1558,7 @@ describe("Orchestrator", () => {
     }
   });
 
-  it("resolves the harness ACTIVE account as the default when no profile is pinned; an explicit pin still wins (INV-135)", async () => {
+  it("routes an unpinned run to the native default (no profile); an explicit pin selects a profile (INV-135; F1: Active removed)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-active-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
@@ -1578,8 +1578,7 @@ describe("Orchestrator", () => {
         "    credential_kind: api_key",
         "    secret_ref: 'openai:alt'",
         "harnesses:",
-        "  asker:",
-        "    active_profile_id: work",
+        "  asker: {}",
         "",
       ].join("\n"),
     );
@@ -1599,16 +1598,17 @@ describe("Orchestrator", () => {
       return { asker, seen };
     };
     try {
-      // No pin → the Active account (work) is the default credential.
+      // No pin → the native default subject (no credential profile). Enabled
+      // profiles never become a silent auto-default (F1: Active removed).
       const a = stamp();
       const activeRes = await new Orchestrator({
         registry: new Map([["asker", a.asker]]),
         reviewers: [],
       }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
       expect(legacyOutcome(activeRes)).toBe("success");
-      expect(a.seen[0]).toMatchObject({ profile_id: "work" });
+      expect(a.seen[0] ?? null).toBeNull();
 
-      // Explicit pin beats the Active default.
+      // An explicit --profile pin selects that profile.
       const b = stamp();
       const pinnedRes = await new Orchestrator({
         registry: new Map([["asker", b.asker]]),
@@ -1628,7 +1628,7 @@ describe("Orchestrator", () => {
     }
   });
 
-  it("excludes the native/CLI login when native_credentials_enabled=false; explicit selection refuses naming the setting; an Active account still routes (INV-135)", async () => {
+  it("excludes the native/CLI login when native_credentials_enabled=false; an unpinned run refuses naming the setting; an explicit pin still routes (INV-135; F1)", async () => {
     const repo = await initRepo();
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-native-off-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
@@ -1649,8 +1649,8 @@ describe("Orchestrator", () => {
       return { asker, seen };
     };
     try {
-      // Native disabled, no Active account, no pin → nothing routable, refuse
-      // LOUDLY naming the setting; never silently fall back into the login.
+      // Native disabled, no pin → nothing routable, refuse LOUDLY naming the
+      // setting; never silently fall back into the login.
       writeFileSync(
         join(configDir, "config.yaml"),
         ["harnesses:", "  asker:", "    native_credentials_enabled: false", ""].join("\n"),
@@ -1664,7 +1664,7 @@ describe("Orchestrator", () => {
       expect(refused.summary).toMatch(/native_credentials_enabled=false/);
       expect(off.seen).toHaveLength(0);
 
-      // Native disabled but an Active account is set → the Active account routes.
+      // Native disabled but an explicit --profile pin is given → the pin routes.
       writeFileSync(
         join(configDir, "config.yaml"),
         [
@@ -1677,7 +1677,6 @@ describe("Orchestrator", () => {
           "harnesses:",
           "  asker:",
           "    native_credentials_enabled: false",
-          "    active_profile_id: work",
           "",
         ].join("\n"),
       );
@@ -1685,7 +1684,13 @@ describe("Orchestrator", () => {
       const routed = await new Orchestrator({
         registry: new Map([["asker", on.asker]]),
         reviewers: [],
-      }).run({ repoRoot: repo, prompt: "2+2?", mode: "ask", harnesses: ["asker"] });
+      }).run({
+        repoRoot: repo,
+        prompt: "2+2?",
+        mode: "ask",
+        harnesses: ["asker"],
+        credentialProfileId: "work",
+      });
       expect(legacyOutcome(routed)).toBe("success");
       expect(on.seen[0]).toMatchObject({ profile_id: "work" });
     } finally {

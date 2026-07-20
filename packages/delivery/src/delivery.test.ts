@@ -282,7 +282,7 @@ describe("delivery", () => {
       originalRepoRoot: "/x",
       targetRepoRoot: "/x",
     });
-    expect(err).toContain("not applyable while lifecycle is failed");
+    expect(err).toContain("the run is still failed");
   });
 
   it("a succeeded lifecycle with an approved decision is NOT refused by the lifecycle/decision checks", () => {
@@ -300,7 +300,7 @@ describe("delivery", () => {
       originalRepoRoot: "/x",
       targetRepoRoot: "/x",
     });
-    expect(err).toBe("fresh final verify is required before apply");
+    expect(err).toBe("This change needs a fresh final check before it can be applied.");
   });
 });
 
@@ -430,24 +430,24 @@ describe("final_verify apply-gate consumer (INV-115)", () => {
 
   it("refuses apply when the patch failed to apply on the verify tree (no override possible)", () => {
     const err = gateWith({ attempted: true, applied_cleanly: false, reason: "conflict vs base" });
-    expect(err).toContain("did not apply onto a fresh tree");
+    expect(err).toContain("no longer applies onto a fresh copy");
   });
 
   it("refuses apply when verify gates failed (override path exists for blocked runs)", () => {
     const err = gateWith({ attempted: true, applied_cleanly: true, gates_passed: false });
-    expect(err).toContain("deterministic gates failed");
+    expect(err).toContain("checks failed when re-run on a fresh copy");
   });
 
   it("passes only when final verify is green; missing or unattempted verification fails closed", () => {
     expect(gateWith({ attempted: true, applied_cleanly: true, gates_passed: true })).toBeNull();
-    expect(gateWith({ attempted: false, reason: "no base sha" })).toContain("fresh final verify");
-    expect(gateWith(null)).toContain("fresh final verify");
+    expect(gateWith({ attempted: false, reason: "no base sha" })).toContain("fresh final check");
+    expect(gateWith(null)).toContain("fresh final check");
   });
 
   it("FAILS CLOSED when the verifier ERRORED (applied_cleanly=null): refuses without an override, allows with accept_risk on the BLOCKED run", () => {
     const errored = { attempted: true, applied_cleanly: null, reason: "worktree add failed" };
     const refusal = gateWith(errored);
-    expect(refusal).toContain("verifier errored");
+    expect(refusal).toContain("confirm this change applies onto a fresh copy");
     // A verifier error BLOCKS the run (fail-closed), so the reachable override
     // combination is state=blocked + a typed accept_risk decision (INV-111:
     // risk overrides unblock ONLY blocked runs — succeeded-state overrides

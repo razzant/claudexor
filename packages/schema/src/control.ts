@@ -52,7 +52,9 @@ export const ControlReviewerPanelEntry = z
     ),
   })
   .strict()
-  .describe("One reviewer of an explicit reviewer panel.");
+  .describe(
+    "One reviewer of an explicit reviewer panel — a harness plus optional model and effort. The CLI spells one entry `harness=model:effort` (e.g. `claude=claude-opus-4-8:max`).",
+  );
 export type ControlReviewerPanelEntry = z.infer<typeof ControlReviewerPanelEntry>;
 
 export const ControlRunStartRequest = z
@@ -224,15 +226,13 @@ export const ControlRunStartRequest = z
       .describe(
         "Internal daemon handoff only; rejected (400) on POST /runs. Frozen-plan reference delivered to the executor as a file.",
       ),
-    /** Explicit reviewer panel. When present it overrides the legacy
-     * per-provider-family reviewerModels/reviewerEfforts maps and preserves
-     * duplicate harness entries for multi-model same-provider reviews. */
+    /** Explicit reviewer panel; syntax + override semantics in the describe. */
     reviewerPanel: z
       .array(ControlReviewerPanelEntry)
       .min(1)
       .optional()
       .describe(
-        "Explicit reviewer panel; overrides the legacy reviewerModels/reviewerEfforts maps and preserves duplicate harness entries for multi-model same-provider reviews.",
+        'Explicit reviewer panel — who reviews the change, one entry per reviewer as `harness=model:effort` (CLI `--reviewers "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`). Duplicate harness entries are kept so one provider can review through several models; overrides the legacy reviewerModels/reviewerEfforts maps.',
       ),
     /** Per-run auth route override (subscription/api_key/auto). */
     authPreference: AuthPreference.optional().describe("Per-run auth route override."),
@@ -1307,9 +1307,27 @@ export const ControlThreadUpdateRequest = z
   .describe("Request body for PATCH /threads/:id: rename, archive, or switch sticky routing.");
 export type ControlThreadUpdateRequest = z.infer<typeof ControlThreadUpdateRequest>;
 
+/** A registered project skipped during thread listing because its root is no
+ * longer usable (F2 resilience): disclosed per-project so a dead root
+ * never 400s the whole listing rather than silently dropping its threads. */
+export const ControlProjectListingProblem = z
+  .object({
+    projectId: NonBlankString.describe("The registered project that was skipped."),
+    root: z.string().describe("The project root that could not be listed."),
+    code: z.enum(["project_root_missing"]).describe("Why skipped (root no longer exists)."),
+    message: z.string().describe("Human-readable disclosure of why it was skipped."),
+  })
+  .strict()
+  .describe("A project skipped during thread listing, disclosed rather than failing it.");
+export type ControlProjectListingProblem = z.infer<typeof ControlProjectListingProblem>;
+
 export const ControlThreadListResponse = z
   .object({
     threads: z.array(ControlThread).default([]).describe("All threads."),
+    problems: z
+      .array(ControlProjectListingProblem)
+      .default([])
+      .describe("Projects skipped because their root is no longer usable (F2 disclosure)."),
   })
   .describe("Response for GET /threads.");
 export type ControlThreadListResponse = z.infer<typeof ControlThreadListResponse>;
@@ -1461,16 +1479,6 @@ export const ControlSettingsSnapshot = z
               .boolean()
               .default(true)
               .describe("Whether the harness participates in routing."),
-            /** The harness's ACTIVE account (INV-135): the credential profile a
-             * new run/turn defaults to; null = the native/CLI login. */
-            activeProfileId: z
-              .string()
-              .min(1)
-              .nullable()
-              .default(null)
-              .describe(
-                "Active credential profile id for new runs/turns of this harness; null = the native/CLI login.",
-              ),
             /** Whether the native/CLI login participates in the credential
              * ladder for this harness (INV-135). */
             nativeCredentialsEnabled: z
@@ -1543,13 +1551,6 @@ export type ControlSettingsSnapshot = z.infer<typeof ControlSettingsSnapshot>;
 export const ControlHarnessSettingsPatch = z
   .object({
     enabled: z.boolean().optional().describe("Enable/disable the harness for routing."),
-    /** Set the harness's ACTIVE account (INV-135): null clears back to the
-     * native/CLI login as the default. Validated against the registry at use. */
-    activeProfileId: NonBlankString.nullable()
-      .optional()
-      .describe(
-        "New active credential profile id for this harness; null clears to the native/CLI login.",
-      ),
     /** Toggle the native/CLI login in this harness's credential ladder (INV-135). */
     nativeCredentialsEnabled: z
       .boolean()

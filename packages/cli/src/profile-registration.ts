@@ -82,15 +82,13 @@ export function removeProfileFromRegistry(harnessId: string, profileId: string):
       );
     }
     // INV-135 durable-pin invalidation: a deleted account must not dangle as a
-    // harness's Active id (a run would then refuse loudly at resolve) nor as a
-    // rotation_eligible entry. Clear both in the SAME locked write.
+    // harness's `rotation_eligible` entry (rotation would then target a
+    // removed profile). Clear it in the SAME locked write.
     const harnesses = Object.fromEntries(
       Object.entries(config.harnesses).map(([id, h]) => [
         id,
         {
           ...h,
-          active_profile_id:
-            h.active_profile_id === profileId && id === harnessId ? null : h.active_profile_id,
           profile_policy: {
             ...h.profile_policy,
             rotation_eligible:
