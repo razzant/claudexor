@@ -144,7 +144,7 @@ export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
 export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION = 3;
 export const OWNER_REVIEW_PROTOCOL = "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS = 2;
-export const OWNER_REVIEW_MAX_ROUNDS = 3;
+export const OWNER_REVIEW_MAX_ROUNDS = 10;
 export const OWNER_REVIEW_VERDICTS = Object.freeze(["pass", "warn"]);
 
 /** Validate the only two release workflow entry modes before any ref is fetched. */
@@ -255,7 +255,7 @@ export function validateFullGateEvidence(gate, expected) {
  * the shared full-gate evidence, and >=2 uniquely-named reviewer reports each
  * digest-bound and carrying a non-blocking verdict. A "block" verdict can
  * never be signed into a shippable attestation — sealing one is the ship
- * decision itself (owner protocol, <=3 convergence rounds).
+ * decision itself (owner protocol, <=10 convergence rounds — raised from 3 by owner decision for v3.0.0: owner scope injections mid-review legitimately extend convergence).
  */
 export function validateOwnerReviewAttestationPayload(payload, expected) {
   const reasons = [];

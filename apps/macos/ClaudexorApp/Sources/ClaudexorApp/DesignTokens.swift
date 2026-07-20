@@ -142,6 +142,7 @@ enum Theme {
     enum Radius {
         static let control: CGFloat = 8     // chips, segmented selection, small code wells
         static let card: CGFloat = 12       // content cards (softened per owner visual QA, 2.1.0)
+        static let bubble: CGFloat = 16     // sent-message bubbles (solid accent fill, 3.0)
         static let hero: CGFloat = 22       // floating composer / hero glass
     }
 

@@ -7,7 +7,7 @@ export const REVIEWER_MIN_PLAUSIBLE_MS: number;
 export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION: 3;
 export const OWNER_REVIEW_PROTOCOL: "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS: 2;
-export const OWNER_REVIEW_MAX_ROUNDS: 3;
+export const OWNER_REVIEW_MAX_ROUNDS: 10;
 export const OWNER_REVIEW_VERDICTS: readonly string[];
 
 export interface ChecklistFinding {

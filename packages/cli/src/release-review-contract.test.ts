@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  OWNER_REVIEW_MAX_ROUNDS,
   OWNER_REVIEW_PROTOCOL,
   REQUIRED_SCOPE_MODEL,
   REQUIRED_TRIAD_MODELS,
@@ -586,7 +587,7 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
     expect(result.reasons.join(" ")).toMatch(/verdict/);
   });
 
-  it("requires two UNIQUE reviewers and at most three rounds", () => {
+  it("requires two UNIQUE reviewers and at most OWNER_REVIEW_MAX_ROUNDS rounds", () => {
     const { attestation, authority, resign, expected } = ownerAttestation();
     const single = resign({
       ...attestation,
@@ -603,7 +604,7 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
     expect(validateReleaseAttestation(duplicated, authority, expected).ok).toBe(false);
     const overRounds = resign({
       ...attestation,
-      payload: { ...attestation.payload, rounds: 4 },
+      payload: { ...attestation.payload, rounds: OWNER_REVIEW_MAX_ROUNDS + 1 },
     });
     expect(validateReleaseAttestation(overRounds, authority, expected).ok).toBe(false);
   });
