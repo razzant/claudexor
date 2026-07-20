@@ -23,11 +23,14 @@ import {
   type ResourceAttachmentRef,
   ControlCredentialProfileCreateRequest,
   type CredentialProfile,
-  type CredentialProfileStatus,
   ControlSettingsUpdateRequest,
 } from "@claudexor/schema";
 import { registerConfigDirProfile, removeProfileFromRegistry } from "./profile-registration.js";
-import { harnessAccountsProjection } from "./accounts-projection.js";
+import {
+  harnessAccountsProjection,
+  profileAccountIdentity,
+  profileDoctorStatus,
+} from "./accounts-projection.js";
 import { createRetentionRunner } from "./retention-service.js";
 import {
   canonicalIsolationLocator,
@@ -38,7 +41,7 @@ import {
 import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
 import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import { AuthReadinessService, normalizeReadiness } from "@claudexor/gateway";
-import { buildGateway, buildRegistry, harnessModels } from "./registry.js";
+import { buildGateway, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import {
   applyHarnessSettingsPatches,
@@ -56,20 +59,6 @@ import {
 } from "./profile-compatibility.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
-
-async function profileDoctorStatus(profile: CredentialProfile): Promise<CredentialProfileStatus> {
-  const adapter = buildRegistry().get(profile.harness_id);
-  return adapter?.probeCredentialProfile
-    ? adapter.probeCredentialProfile(profile)
-    : {
-        profile_id: profile.profile_id,
-        harness_id: profile.harness_id,
-        availability: "unknown" as const,
-        verification: "not_run" as const,
-        detail: `harness "${profile.harness_id}" has no profile probe`,
-        last_verified_at: null,
-      };
-}
 
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
@@ -349,7 +338,11 @@ export function controlServices(
       const profiles = loadConfig(NO_PROJECT_ROOT).global.credential_profiles;
       const out = [];
       for (const profile of profiles) {
-        out.push({ profile, status: await profileDoctorStatus(profile) });
+        out.push({
+          profile,
+          status: await profileDoctorStatus(profile),
+          identity: profileAccountIdentity(profile),
+        });
       }
       return {
         profiles: out,

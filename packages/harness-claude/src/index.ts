@@ -37,7 +37,7 @@ import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { CLAUDE_CAPABILITY_PROFILE } from "./capability-profile.js";
 import { claudeNativeLoginRemedy } from "./doctor-remedy.js";
 import { claudeNativeHomeEnv, defaultNativeClaudeConfigDir } from "./native-home.js";
-export { defaultNativeClaudeConfigDir } from "./native-home.js";
+export { claudeAccountIdentity, defaultNativeClaudeConfigDir } from "./native-home.js";
 import { createClaudeParser } from "./parse.js";
 import { probeClaudeCredentialProfile, resolveClaudeProfileRoute } from "./profile.js";
 export { canonicalProfileConfigDir } from "./profile.js";

@@ -108,6 +108,39 @@ export const CredentialProfileStatus = z
 export type CredentialProfileStatus = z.infer<typeof CredentialProfileStatus>;
 
 /**
+ * NON-SECRET account identity projection (INV-067/INV-135): the email and plan
+ * label derived DAEMON-SIDE from the account's OWN Claudexor-owned store — the
+ * codex `auth.json` id_token claims or the claude `.claude.json` oauthAccount,
+ * never the ordinary vendor home (`~/.codex`, `~/.claude`). Only these two
+ * allowlisted, non-token fields ever cross the wire; token material stays inside
+ * the daemon. A macOS surface MUST render this projection, never re-read the
+ * store (the removed app-side reader was the INV-067/INV-002 violation). Both
+ * fields are optional so a store that discloses only one still projects.
+ */
+export const AccountIdentity = z
+  .object({
+    email: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Login email of the account (codex id_token `email` / claude oauthAccount `emailAddress`).",
+      ),
+    plan: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Subscription/plan label (codex `chatgpt_plan_type` / claude oauthAccount `organizationType`).",
+      ),
+  })
+  .strict()
+  .describe(
+    "Non-secret {email, plan} identity of one account, derived daemon-side from its OWN Claudexor-owned store; never carries token material.",
+  );
+export type AccountIdentity = z.infer<typeof AccountIdentity>;
+
+/**
  * The identity routing WOULD pick next for a harness's UNPINNED run (INV-135) —
  * purely informational, never user-set. Server-computed by the routing owner
  * from enabled profiles + native readiness + quota so no surface re-derives it:
@@ -156,6 +189,11 @@ export const ControlHarnessAccounts = z
       .describe(
         "Whether a native/default vendor login is currently detected available (the CLI login pseudo-row state).",
       ),
+    identity: AccountIdentity.nullable()
+      .default(null)
+      .describe(
+        "Non-secret {email, plan} of the native/CLI login, derived daemon-side from the Claudexor-owned native store; null when absent/undisclosed.",
+      ),
     next_up: ControlNextUpIdentity,
   })
   .strict()
@@ -169,8 +207,22 @@ export type ControlHarnessAccounts = z.infer<typeof ControlHarnessAccounts>;
 export const ControlCredentialProfilesResponse = z
   .object({
     profiles: z
-      .array(z.object({ profile: CredentialProfile, status: CredentialProfileStatus }).strict())
-      .describe("Every registered credential profile paired with its doctor readiness projection."),
+      .array(
+        z
+          .object({
+            profile: CredentialProfile,
+            status: CredentialProfileStatus,
+            identity: AccountIdentity.nullable()
+              .default(null)
+              .describe(
+                "Non-secret {email, plan} of this profile, derived daemon-side from its OWN isolation-locator store; null when absent/undisclosed.",
+              ),
+          })
+          .strict(),
+      )
+      .describe(
+        "Every registered credential profile paired with its doctor readiness projection and non-secret identity.",
+      ),
     harnessAccounts: z
       .array(ControlHarnessAccounts)
       .default([])

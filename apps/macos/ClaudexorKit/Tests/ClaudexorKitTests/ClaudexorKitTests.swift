@@ -1886,13 +1886,15 @@ import Testing
         {
           "profiles": [
             {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","enabled":true},
-             "status":{"availability":"available","verification":"passed","detail":"ok","last_verified_at":null}},
+             "status":{"availability":"available","verification":"passed","detail":"ok","last_verified_at":null},
+             "identity":{"email":"work@example.test","plan":"claude_max"}},
             {"profile":{"profile_id":"spare","harness_id":"claude","display_name":"Spare","credential_kind":"config_dir_login","enabled":false},
-             "status":{"availability":"unknown","verification":"not_run","detail":null,"last_verified_at":null}}
+             "status":{"availability":"unknown","verification":"not_run","detail":null,"last_verified_at":null},
+             "identity":null}
           ],
           "harnessAccounts": [
-            {"harness_id":"claude","native_credentials_enabled":true,"native_login_detected":true,"next_up":{"kind":"profile","profileId":"work"}},
-            {"harness_id":"codex","native_credentials_enabled":false,"native_login_detected":false,"next_up":{"kind":"none","reason":"CLI login disabled"}},
+            {"harness_id":"claude","native_credentials_enabled":true,"native_login_detected":true,"identity":{"email":"native@example.test","plan":"claude_pro"},"next_up":{"kind":"profile","profileId":"work"}},
+            {"harness_id":"codex","native_credentials_enabled":false,"native_login_detected":false,"identity":null,"next_up":{"kind":"none","reason":"CLI login disabled"}},
             {"harness_id":"cursor","native_credentials_enabled":true,"native_login_detected":true,"next_up":{"kind":"native"}}
           ]
         }
@@ -1902,8 +1904,14 @@ import Testing
         #expect(response.profiles[1].profile.enabled == false)
         #expect(response.harnessAccounts.count == 3)
 
+        // Non-secret identity projection (INV-067): decoded on both the profile
+        // entry and the native-login account row; null/absent → nil.
+        #expect(response.profiles[0].identity == AccountIdentity(email: "work@example.test", plan: "claude_max"))
+        #expect(response.profiles[1].identity == nil)
+
         let claude = response.harnessAccounts.first { $0.harnessId == "claude" }
         #expect(claude?.nativeCredentialsEnabled == true)
+        #expect(claude?.identity == AccountIdentity(email: "native@example.test", plan: "claude_pro"))
         #expect(claude?.nextUp.isProfile("work") == true)
         #expect(claude?.nextUp.isProfile("spare") == false)
         #expect(claude?.nextUp.isNative == false)
@@ -1911,6 +1919,7 @@ import Testing
         let codex = response.harnessAccounts.first { $0.harnessId == "codex" }
         #expect(codex?.nativeCredentialsEnabled == false)
         #expect(codex?.nativeLoginDetected == false)
+        #expect(codex?.identity == nil)
         if case .some(.none(let reason)) = codex?.nextUp {
             #expect(reason == "CLI login disabled")
         } else {
@@ -1919,6 +1928,8 @@ import Testing
 
         let cursor = response.harnessAccounts.first { $0.harnessId == "cursor" }
         #expect(cursor?.nextUp.isNative == true)
+        // cursor omits `identity` entirely — an omitted field decodes to nil.
+        #expect(cursor?.identity == nil)
     }
 
     @Test func credentialProfilesResponseDefaultsHarnessAccountsWhenAbsent() throws {
@@ -1927,6 +1938,16 @@ import Testing
             CredentialProfilesResponse.self, from: Data(#"{"profiles":[]}"#.utf8))
         #expect(response.profiles.isEmpty)
         #expect(response.harnessAccounts.isEmpty)
+    }
+
+    @Test func credentialProfileEntryToleratesOmittedIdentity() throws {
+        // An older daemon omits `identity` on the entry — it must still decode to nil.
+        let json = #"""
+        {"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","enabled":true},
+         "status":{"availability":"available","verification":"passed","detail":"ok","last_verified_at":null}}
+        """#
+        let entry = try JSONDecoder().decode(CredentialProfileEntry.self, from: Data(json.utf8))
+        #expect(entry.identity == nil)
     }
 
     @Test func gatewayPatchesCredentialProfileEnabled() async throws {

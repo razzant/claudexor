@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -110,5 +110,61 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
     const claudeNone = none.harnessAccounts.find((h) => h.harness_id === "claude");
     expect(claudeNone?.native_credentials_enabled).toBe(false);
     expect(claudeNone?.next_up.kind).toBe("none");
+  });
+
+  it("projects the non-secret {email, plan} identity from each account's OWN owned store (INV-067)", async () => {
+    const { profile } = registerConfigDirProfile({ harnessId: "claude", profileId: "work" });
+    const svc = services();
+    // The profile's OWN isolation-locator store discloses one identity …
+    writeFileSync(
+      join(profile.isolation_locator ?? "", ".claude.json"),
+      JSON.stringify({
+        oauthAccount: { emailAddress: "work@example.test", organizationType: "claude_max" },
+      }),
+    );
+    // … and the Claudexor-owned NATIVE claude store discloses another.
+    const nativeDir = join(dir, "native", "claude", "default");
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(
+      join(nativeDir, ".claude.json"),
+      JSON.stringify({
+        oauthAccount: { emailAddress: "native@example.test", organizationType: "claude_pro" },
+      }),
+    );
+
+    const listing = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
+
+    const profileEntry = listing.profiles.find((p) => p.profile.profile_id === "work");
+    expect(profileEntry?.identity).toEqual({ email: "work@example.test", plan: "claude_max" });
+
+    const claudeAccounts = listing.harnessAccounts.find((h) => h.harness_id === "claude");
+    expect(claudeAccounts?.identity).toEqual({ email: "native@example.test", plan: "claude_pro" });
+
+    // A harness with no readable native store projects null, never an error.
+    const codexAccounts = listing.harnessAccounts.find((h) => h.harness_id === "codex");
+    expect(codexAccounts?.identity ?? null).toBeNull();
+  });
+
+  it("never lets a token-bearing native store leak beyond {email, plan}", async () => {
+    const svc = services();
+    const nativeDir = join(dir, "native", "claude", "default");
+    mkdirSync(nativeDir, { recursive: true });
+    writeFileSync(
+      join(nativeDir, ".claude.json"),
+      JSON.stringify({
+        oauthAccount: {
+          emailAddress: "native@example.test",
+          organizationType: "claude_max",
+          accountUuid: "uuid-secret-do-not-leak",
+        },
+        oauthToken: "sk-ant-secret-do-not-leak",
+      }),
+    );
+    const listing = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
+    const serialized = JSON.stringify(listing);
+    expect(serialized).not.toContain("uuid-secret-do-not-leak");
+    expect(serialized).not.toContain("sk-ant-secret-do-not-leak");
+    const claudeAccounts = listing.harnessAccounts.find((h) => h.harness_id === "claude");
+    expect(Object.keys(claudeAccounts?.identity ?? {}).sort()).toEqual(["email", "plan"]);
   });
 });

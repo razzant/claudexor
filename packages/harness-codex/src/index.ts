@@ -37,7 +37,7 @@ import { CLAUDEXOR_VERSION, nowIso, redactSecrets } from "@claudexor/util";
 import { parseCodexEvent, type CodexParseState } from "./parse.js";
 import { probeCodexCredentialProfile, resolveCodexProfileRoute } from "./profile.js";
 import { smokeIsolatedApiKey } from "./smoke.js";
-export { canonicalCodexProfileHome } from "./profile.js";
+export { canonicalCodexProfileHome, codexAccountIdentity } from "./profile.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 import { codexImageArgs } from "./attachments.js";
 

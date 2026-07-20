@@ -1,13 +1,83 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { CredentialProfile, CredentialProfileStatus } from "@claudexor/schema";
+import { join, resolve, sep } from "node:path";
+import type {
+  AccountIdentity,
+  CredentialProfile,
+  CredentialProfileStatus,
+} from "@claudexor/schema";
 import { CredentialProfileStatus as CredentialProfileStatusSchema } from "@claudexor/schema";
 import { namespacedSecretRefBase } from "@claudexor/secrets";
-import { nowIso, redactSecrets } from "@claudexor/util";
+import { claudexorOwnedRoot, nowIso, redactSecrets } from "@claudexor/util";
 import { codexAuthModeAt, defaultNativeCodexHome, ensureCodexApiAuth } from "./auth.js";
 import { canonicalIsolationLocator, normalizeThroughExistingAncestor } from "@claudexor/core";
 import { BIN, codexNativeEnv, type CodexProfileRuntimeDeps } from "./index.js";
+
+/**
+ * DAEMON-SIDE, PURE, non-secret identity reader for a codex account (INV-067).
+ *
+ * Given a Claudexor-owned CODEX_HOME (a profile's isolation_locator or the
+ * native `defaultNativeCodexHome`), read the account's OWN `auth.json` and
+ * project ONLY the allowlisted `{email, plan}` claims out of the id_token. The
+ * token itself and every other claim never leave this function — nothing is
+ * returned or logged but email and plan. Containment is enforced HERE: a home
+ * outside the Claudexor-owned root (the ordinary vendor `~/.codex` above all)
+ * is refused WITHOUT a read. Missing/malformed/undisclosed → `null`, never a
+ * throw — an unreadable store must not break the accounts listing.
+ */
+export function codexAccountIdentity(home: string | null | undefined): AccountIdentity | null {
+  if (!home || !home.trim() || !isWithinOwnedRoot(home)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(join(resolve(home), "auth.json"), "utf8")) as {
+      tokens?: { id_token?: unknown };
+    };
+    const idToken = parsed.tokens?.id_token;
+    if (typeof idToken !== "string") return null;
+    const claims = decodeJwtClaims(idToken);
+    if (!claims) return null;
+    const emailClaim = claims["email"];
+    const email = typeof emailClaim === "string" && emailClaim.trim() ? emailClaim : undefined;
+    const auth = claims["https://api.openai.com/auth"];
+    const planClaim =
+      auth && typeof auth === "object"
+        ? (auth as Record<string, unknown>)["chatgpt_plan_type"]
+        : undefined;
+    const plan = typeof planClaim === "string" && planClaim.trim() ? planClaim : undefined;
+    if (email === undefined && plan === undefined) return null;
+    return { ...(email !== undefined ? { email } : {}), ...(plan !== undefined ? { plan } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decode a JWT's PAYLOAD claims WITHOUT verifying the signature — we only read
+ * non-secret identity claims from a token the account already holds, never
+ * trust it. Any structural defect yields null; the raw token never escapes.
+ */
+function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
+  const segments = jwt.split(".");
+  if (segments.length < 2) return null;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(segments[1] ?? "", "base64url").toString("utf8"),
+    ) as unknown;
+    return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `dir` resolves inside the Claudexor-owned tree — the SAME
+ * confinement the isolation-locator discipline uses, normalized through the
+ * deepest existing ancestor so a symlinked root (/var → /private/var) matches.
+ */
+function isWithinOwnedRoot(dir: string): boolean {
+  const owned = normalizeThroughExistingAncestor(claudexorOwnedRoot());
+  const target = normalizeThroughExistingAncestor(dir);
+  return target === owned || target.startsWith(owned + sep);
+}
 
 /**
  * Canonicalize a profile's CODEX_HOME (INV-135): absolute, symlinks resolved

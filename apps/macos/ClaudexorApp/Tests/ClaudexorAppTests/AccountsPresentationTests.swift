@@ -182,6 +182,58 @@ import Testing
     }
 
     @MainActor
+    @Test func identityLineBindsToTheDaemonProjectionAndFallsBackToDetail() throws {
+        // INV-067: the row's secondary line is the daemon-projected {email, plan}
+        // ("email · plan") when disclosed, sourced from the wire — the profile
+        // entry's `identity` and the native account row's `identity`. When absent
+        // the row falls back to the readiness detail.
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "session ready",
+            intents: ["implement"])]
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available", verification: "passed"),
+        ]
+        // "work" discloses both fields; "plan-only" discloses just the plan;
+        // "bare" discloses nothing and must fall back to its status detail.
+        let profilesJSON = """
+        [{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":"probe ok","last_verified_at":null},
+          "identity":{"email":"work@example.test","plan":"claude_max"}},
+         {"profile":{"profile_id":"plan-only","harness_id":"claude","display_name":"PlanOnly",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":"probe ok","last_verified_at":null},
+          "identity":{"plan":"claude_pro"}},
+         {"profile":{"profile_id":"bare","harness_id":"claude","display_name":"Bare",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":"probe ok","last_verified_at":null},
+          "identity":null}]
+        """
+        model.credentialProfiles = try JSONDecoder().decode(
+            [CredentialProfileEntry].self, from: Data(profilesJSON.utf8))
+        let accountsJSON = """
+        [{"harness_id":"claude","native_credentials_enabled":true,
+          "native_login_detected":true,"identity":{"email":"native@example.test","plan":"claude_pro"},
+          "next_up":{"kind":"native"}}]
+        """
+        model.harnessAccounts = try JSONDecoder().decode(
+            [HarnessAccounts].self, from: Data(accountsJSON.utf8))
+
+        let rows = AccountsPresentation.rows(model: model)
+        let cli = try #require(rows.first { $0.isCliLogin })
+        #expect(cli.identityLine == "native@example.test · claude_pro")
+        let work = try #require(rows.first { $0.profileId == "work" })
+        #expect(work.identityLine == "work@example.test · claude_max")
+        let planOnly = try #require(rows.first { $0.profileId == "plan-only" })
+        #expect(planOnly.identityLine == "claude_pro")
+        let bare = try #require(rows.first { $0.profileId == "bare" })
+        #expect(bare.identityLine == nil)     // nothing disclosed → falls back to detail
+        #expect(bare.detail == "probe ok")
+    }
+
+    @MainActor
     @Test func accountRowColumnSetIsStableAcrossRowKinds() throws {
         // §1 presentation contract: every row kind emits the SAME ordered trailing
         // column set, which is exactly what keeps the Enabled toggle collinear.

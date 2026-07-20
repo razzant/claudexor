@@ -8,10 +8,64 @@
  * the routing owner (`nextUpIdentity`) from enabled profiles + native readiness
  * + quota, so it can never disagree with run-time admission.
  */
-import type { ControlHarnessAccounts, QuotaSnapshot } from "@claudexor/schema";
+import type {
+  AccountIdentity,
+  ControlHarnessAccounts,
+  CredentialProfile,
+  CredentialProfileStatus,
+  QuotaSnapshot,
+} from "@claudexor/schema";
 import { loadConfig } from "@claudexor/config";
 import { nextUpIdentity } from "@claudexor/orchestrator";
+import { codexAccountIdentity, defaultNativeCodexHome } from "@claudexor/harness-codex";
+import { claudeAccountIdentity, defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
 import { buildGateway, buildRegistry } from "./registry.js";
+
+/**
+ * Non-secret {email, plan} of a harness's NATIVE/CLI login, read daemon-side
+ * from the Claudexor-owned native store (never the ordinary vendor home). Only
+ * the config_dir_login families (codex, claude) have a readable native store;
+ * every other harness projects no native identity.
+ */
+function nativeAccountIdentity(harnessId: string): AccountIdentity | null {
+  if (harnessId === "codex") return codexAccountIdentity(defaultNativeCodexHome());
+  if (harnessId === "claude") return claudeAccountIdentity(defaultNativeClaudeConfigDir());
+  return null;
+}
+
+/**
+ * Non-secret {email, plan} of a config_dir_login PROFILE, read daemon-side from
+ * the profile's OWN isolation-locator store (INV-067) — never the ordinary
+ * vendor home. Secret-ref profiles (no isolation_locator) and non-config_dir
+ * families project no identity.
+ */
+export function profileAccountIdentity(profile: CredentialProfile): AccountIdentity | null {
+  if (!profile.isolation_locator) return null;
+  if (profile.harness_id === "codex") return codexAccountIdentity(profile.isolation_locator);
+  if (profile.harness_id === "claude") return claudeAccountIdentity(profile.isolation_locator);
+  return null;
+}
+
+/**
+ * Doctor readiness projection for one credential profile (INV-135) — the ONE
+ * live probe the accounts response and the profile mutation receipts share.
+ * Adapters without profile support report an honest unknown.
+ */
+export async function profileDoctorStatus(
+  profile: CredentialProfile,
+): Promise<CredentialProfileStatus> {
+  const adapter = buildRegistry().get(profile.harness_id);
+  return adapter?.probeCredentialProfile
+    ? adapter.probeCredentialProfile(profile)
+    : {
+        profile_id: profile.profile_id,
+        harness_id: profile.harness_id,
+        availability: "unknown" as const,
+        verification: "not_run" as const,
+        detail: `harness "${profile.harness_id}" has no profile probe`,
+        last_verified_at: null,
+      };
+}
 
 export async function harnessAccountsProjection(
   repoRoot: string,
@@ -44,6 +98,7 @@ export async function harnessAccountsProjection(
       harness_id: harnessId,
       native_credentials_enabled: nativeEnabled,
       native_login_detected: nativeDetected.get(harnessId) ?? false,
+      identity: nativeAccountIdentity(harnessId),
       // The routing owner computes who an unpinned run routes to next — the
       // accounts projection never re-derives it (INV-135).
       next_up: nextUpIdentity({

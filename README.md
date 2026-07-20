@@ -312,7 +312,10 @@ vendor CLI). Setting `native_credentials_enabled: false` EXCLUDES the CLI login
 from the ladder: a harness whose whole ladder is disabled then has nothing
 routable and refuses loudly rather than silently falling back into it. The macOS
 Accounts surface renders these rows directly from ONE server projection — no
-client re-derives Enabled or next-up. The per-thread PIN lives in the composer's
+client re-derives Enabled or next-up. Each row's secondary line shows the
+account's non-secret **email · plan**, projected daemon-side from that account's
+OWN Claudexor-owned store (never a vendor credential file the app reads itself,
+and never the ordinary `~/.codex`/`~/.claude`). The per-thread PIN lives in the composer's
 account chip: a thread remembers the account you explicitly choose there —
 routing never silently creates a pin from an unpinned run; a run's
 `--profile` overrides it. Selection is turn/thread pin `--profile` > POOL AUTO

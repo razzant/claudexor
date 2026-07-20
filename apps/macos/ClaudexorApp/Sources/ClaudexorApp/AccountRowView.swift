@@ -57,7 +57,13 @@ struct AccountRowView: View {
         }
         var details: [AlignedRowDetail] = []
         details.append(quotaDetail)
-        if let detail = row.detail {
+        // The SECONDARY line is the daemon-projected identity ("email · plan",
+        // INV-067) when disclosed; otherwise it falls back to the readiness
+        // detail. The component enforces single-line + tail truncation, with the
+        // full text reachable via .help.
+        if let identityLine = row.identityLine {
+            details.append(AlignedRowDetail(1, identityLine, emphasis: .secondary))
+        } else if let detail = row.detail {
             details.append(AlignedRowDetail(1, detail, emphasis: .secondary))
         }
         return AlignedRowIdentity(

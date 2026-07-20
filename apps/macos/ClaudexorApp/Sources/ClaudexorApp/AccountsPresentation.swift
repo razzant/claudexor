@@ -53,12 +53,27 @@ struct AccountRowModel: Identifiable {
     /// as a quiet "Next up" badge, never a control. false when the projection is
     /// absent (older daemon) or another row is next up.
     let nextUp: Bool
+    /// Non-secret {email, plan} of this account (INV-067), projected daemon-side
+    /// from the account's OWN Claudexor-owned store. When present it drives the
+    /// row's secondary line (`identityLine`); nil for hosts with no readable
+    /// store, an undisclosed identity, or an older daemon.
+    var identity: AccountIdentity? = nil
     /// An api-key META-HOST row (raw-api / openrouter): rendered only when a key is
     /// configured (batch-6 item g). Its Enabled is the harness `enabled` setting
     /// (no per-account rotation — one key), and it has no CLI login.
     var isApiKeyHost: Bool = false
 
     var isProfile: Bool { profileId != nil }
+
+    /// The row's secondary line derived from the identity projection:
+    /// "email · plan", or whichever single field is disclosed. nil when the
+    /// store disclosed neither — the row then falls back to `detail`.
+    var identityLine: String? {
+        let parts = [identity?.email, identity?.plan]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
     /// The native vendor login row (not one of Claudexor's credential profiles).
     var isCliLogin: Bool { profileId == nil && !isApiKeyHost }
 
@@ -102,7 +117,8 @@ enum AccountsPresentation {
                 // `native_credentials_enabled` (V11b) — LIVE via the settings
                 // PATCH surface. Absent projection => symmetrically enabled.
                 enabled: accounts?.nativeCredentialsEnabled ?? true,
-                nextUp: accounts?.nextUp.isNative ?? false
+                nextUp: accounts?.nextUp.isNative ?? false,
+                identity: accounts?.identity
             ))
         }
 
@@ -124,7 +140,8 @@ enum AccountsPresentation {
                     $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
                 },
                 enabled: entry.profile.enabled,
-                nextUp: accounts?.nextUp.isProfile(entry.profile.profileId) ?? false
+                nextUp: accounts?.nextUp.isProfile(entry.profile.profileId) ?? false,
+                identity: entry.identity
             ))
         }
 

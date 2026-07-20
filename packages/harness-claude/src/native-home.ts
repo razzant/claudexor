@@ -1,6 +1,8 @@
-import { existsSync, lstatSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { ensureDir, userConfigDir, userHomeDir } from "@claudexor/util";
+import { normalizeThroughExistingAncestor } from "@claudexor/core";
+import type { AccountIdentity } from "@claudexor/schema";
+import { claudexorOwnedRoot, ensureDir, userConfigDir, userHomeDir } from "@claudexor/util";
 
 export const CLAUDE_KEYCHAIN_BRIDGE_ENV = "CLAUDEXOR_CLAUDE_KEYCHAIN_BRIDGE";
 export const CLAUDE_NATIVE_DIR_ENV = "CLAUDEXOR_CLAUDE_NATIVE_DIR";
@@ -84,4 +86,48 @@ export function claudeNativeHomeEnv(
     HOME: claudeHome,
     [CLAUDE_KEYCHAIN_BRIDGE_ENV]: "ready",
   };
+}
+
+/**
+ * DAEMON-SIDE, PURE, non-secret identity reader for a claude account (INV-067).
+ *
+ * Given a Claudexor-owned CLAUDE_CONFIG_DIR (a profile's isolation_locator or
+ * the native `defaultNativeClaudeConfigDir`), read the account's OWN
+ * `.claude.json` and project ONLY the allowlisted `{email, plan}` out of its
+ * `oauthAccount`. Session tokens and every other oauthAccount field never leave
+ * this function. Containment is enforced HERE: a config dir outside the
+ * Claudexor-owned root (the ordinary vendor `~/.claude` above all) is refused
+ * WITHOUT a read. Missing/malformed/undisclosed → `null`, never a throw.
+ */
+export function claudeAccountIdentity(
+  configDir: string | null | undefined,
+): AccountIdentity | null {
+  if (!configDir || !configDir.trim() || !isWithinOwnedRoot(configDir)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(join(resolve(configDir), ".claude.json"), "utf8")) as {
+      oauthAccount?: unknown;
+    };
+    const account = parsed.oauthAccount;
+    if (!account || typeof account !== "object") return null;
+    const fields = account as Record<string, unknown>;
+    const emailField = fields["emailAddress"];
+    const email = typeof emailField === "string" && emailField.trim() ? emailField : undefined;
+    const planField = fields["organizationType"];
+    const plan = typeof planField === "string" && planField.trim() ? planField : undefined;
+    if (email === undefined && plan === undefined) return null;
+    return { ...(email !== undefined ? { email } : {}), ...(plan !== undefined ? { plan } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `dir` resolves inside the Claudexor-owned tree — the SAME
+ * confinement the isolation-locator discipline uses, normalized through the
+ * deepest existing ancestor so a symlinked root (/var → /private/var) matches.
+ */
+function isWithinOwnedRoot(dir: string): boolean {
+  const owned = normalizeThroughExistingAncestor(claudexorOwnedRoot());
+  const target = normalizeThroughExistingAncestor(dir);
+  return target === owned || target.startsWith(owned + sep);
 }

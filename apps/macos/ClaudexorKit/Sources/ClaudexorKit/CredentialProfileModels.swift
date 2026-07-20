@@ -10,6 +10,21 @@ import FoundationNetworking
 // control projections, the registry entry and status ride RAW schema field
 // names (snake_case) — mapped explicitly here.
 
+/// Non-secret {email, plan} identity of one account (INV-067), derived
+/// DAEMON-SIDE from the account's OWN Claudexor-owned store. The app RENDERS
+/// this projection — it never reads a vendor credential file itself (the
+/// removed app-side reader was the INV-067/INV-002 violation). Both fields are
+/// optional so a store that discloses only one still projects.
+public struct AccountIdentity: Codable, Sendable, Equatable {
+    public let email: String?
+    public let plan: String?
+
+    public init(email: String? = nil, plan: String? = nil) {
+        self.email = email
+        self.plan = plan
+    }
+}
+
 public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable {
     public struct Profile: Codable, Sendable, Equatable {
         public let profileId: String
@@ -18,9 +33,9 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
         /// config_dir_login | oauth_token | api_key.
         public let credentialKind: String
         /// Canonical absolute config-dir path for config_dir_login profiles; nil
-        /// for secret-ref kinds. The macOS accounts surface reads the vendor
-        /// identity (codex auth.json id_token claims / claude oauthAccount) from
-        /// THIS local path — the wire never carries the email/plan (INV-135).
+        /// for secret-ref kinds. INFORMATIONAL only — the app NEVER reads this
+        /// local path: the profile's non-secret identity arrives on the entry's
+        /// `identity` field, projected daemon-side (INV-067).
         public let isolationLocator: String?
         public let enabled: Bool
 
@@ -50,7 +65,20 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
 
     public let profile: Profile
     public let status: Status
+    /// Non-secret {email, plan} of this account, projected daemon-side from the
+    /// profile's OWN store (INV-067). nil when absent/undisclosed, or when an
+    /// older daemon omits the field (`decodeIfPresent`).
+    public let identity: AccountIdentity?
     public var id: String { "\(profile.harnessId)/\(profile.profileId)" }
+
+    enum CodingKeys: String, CodingKey { case profile, status, identity }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        profile = try c.decode(Profile.self, forKey: .profile)
+        status = try c.decode(Status.self, forKey: .status)
+        identity = try c.decodeIfPresent(AccountIdentity.self, forKey: .identity)
+    }
 }
 
 /// Server-computed NEXT-UP identity for a harness's accounts (INV-135, F1
@@ -103,6 +131,10 @@ public struct HarnessAccounts: Decodable, Sendable, Equatable {
     public let nativeCredentialsEnabled: Bool
     /// Whether a native/default vendor login is currently detected available.
     public let nativeLoginDetected: Bool
+    /// Non-secret {email, plan} of the native/CLI login, projected daemon-side
+    /// from the Claudexor-owned native store (INV-067). nil when
+    /// absent/undisclosed, or when an older daemon omits the field.
+    public let identity: AccountIdentity?
     /// The identity an unpinned run would route to next (informational).
     public let nextUp: ControlNextUpIdentity
 
@@ -110,7 +142,17 @@ public struct HarnessAccounts: Decodable, Sendable, Equatable {
         case harnessId = "harness_id"
         case nativeCredentialsEnabled = "native_credentials_enabled"
         case nativeLoginDetected = "native_login_detected"
+        case identity
         case nextUp = "next_up"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        harnessId = try c.decode(String.self, forKey: .harnessId)
+        nativeCredentialsEnabled = try c.decode(Bool.self, forKey: .nativeCredentialsEnabled)
+        nativeLoginDetected = try c.decode(Bool.self, forKey: .nativeLoginDetected)
+        identity = try c.decodeIfPresent(AccountIdentity.self, forKey: .identity)
+        nextUp = try c.decode(ControlNextUpIdentity.self, forKey: .nextUp)
     }
 }
 
