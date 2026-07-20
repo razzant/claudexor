@@ -28,7 +28,8 @@ Release history for Claudexor. The current version is declared in the root
   LoadState, a shared ChipMenu, global
   text selection, code-first route descriptors feeding the generated operation
   catalog, and TS↔Swift fixture round-trips. A runtime-closure update CHECK reads
-  a signed release manifest and surfaces a newer engine as a bottom-left chip
+  the release manifest (`{version, sha256, minAppVersion, notes}`; the signature
+  field is reserved) and surfaces a newer engine as a bottom-left chip
   that links to the GitHub release for a manual download (one-click in-app
   auto-install of the engine runtime is deferred to 3.1); a zero-telemetry
   install counter reads public npm and GitHub stats.

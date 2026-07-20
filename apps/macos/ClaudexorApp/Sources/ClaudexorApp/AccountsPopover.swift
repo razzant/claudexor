@@ -11,8 +11,8 @@ import ClaudexorKit
 // auto-balance. Registered profiles come from GET /v2/credential-profiles;
 // default logins from the same doctor/quota models the old footer used.
 
-/// The sidebar footer (bottom-left): a quiet update chip (M5c shell), the active
-/// credential-profile line, and the accounts trigger. Composed so the footer is
+/// The sidebar footer (bottom-left): a quiet update chip (M5c shell), the
+/// in-effect credential-profile line, and the accounts trigger. Composed so the footer is
 /// ONE ordered stack rather than three ad-hoc rows scattered in the thread list.
 struct SidebarFooter: View {
     @Environment(AppModel.self) private var model
@@ -98,8 +98,9 @@ struct UpdateChip: View {
     }
 }
 
-/// The active credential-profile line: which account the next turn will use,
-/// shown next to its harness. Truth from the wire (thread/draft sticky); hidden
+/// The in-effect credential-profile line: which account the next turn will use
+/// (the thread/draft pin, else the harness default), shown next to its harness.
+/// Truth from the wire (thread/draft sticky); hidden
 /// when there is no resolved harness.
 struct FooterProfileRow: View {
     @Environment(AppModel.self) private var model

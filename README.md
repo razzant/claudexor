@@ -288,10 +288,11 @@ claudexor profiles add claude work         # register a config-dir login profile
 claudexor profiles login claude work       # the vendor's own login, scoped to the profile dir
 claudexor profiles disable claude work     # Enabled toggle: a disabled account is never routable
 claudexor profiles enable claude work
-# There is no "active account" to set: among the ENABLED accounts, routing
-# auto-picks the NEXT UP one (shown by `claudexor profiles`, computed from
-# readiness + quota). A thread then PINS whichever account it first ran on
-# (the per-thread override; change it from the composer's account chip in the app).
+# There is no "active account" to set. An unpinned run uses the harness's CLI
+# login by default (or, with quota rotation enabled, the next ready enabled
+# account); `claudexor profiles` shows the informational NEXT-UP identity that
+# policy would pick (from readiness + quota). Enabled named accounts route only
+# when you pin them — per-run --profile, or the composer's per-thread account chip.
 claudexor settings set harness.claude.native_credentials_enabled false  # exclude the CLI login
 claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
 claudexor agent "fix the parser" --profile work   # explicit per-run selection still wins
@@ -299,9 +300,12 @@ claudexor agent "fix the parser" --profile work   # explicit per-run selection s
 
 Accounts are **symmetric** (INV-135). Per harness, every account is a row with
 an **Enabled** toggle — a disabled account is never routable. There is NO
-user-settable "active" account: among the ENABLED accounts, routing auto-picks
-the server-computed **next-up** identity (informational only — shown by
-`claudexor profiles`, derived from readiness + quota). The native vendor login
+user-settable "active" account. An unpinned run routes to the harness's CLI
+login by default (or, when the opt-in quota rotation is on, the next ready
+enabled account); `claudexor profiles` shows the informational **next-up**
+identity that policy would pick (derived from readiness + quota) — not a claim
+that every enabled account is a silent default. Enabled named accounts route
+only through an explicit pin or that opt-in rotation. The native vendor login
 is itself a symmetric row named **"CLI login"** with the same toggle semantics
 but no Delete (it is the vendor's, not Claudexor's — log in/out through the
 vendor CLI). Setting `native_credentials_enabled: false` EXCLUDES the CLI login
@@ -309,7 +313,8 @@ from the ladder: a harness whose whole ladder is disabled then has nothing
 routable and refuses loudly rather than silently falling back into it. The macOS
 Accounts surface renders these rows directly from ONE server projection — no
 client re-derives Enabled or next-up. The per-thread PIN lives in the composer's
-account chip (the thread remembers whichever account it first ran on); a run's
+account chip: a thread remembers the account you explicitly choose there —
+routing never silently creates a pin from an unpinned run; a run's
 `--profile` overrides it. Selection is turn/thread pin `--profile` > POOL AUTO
 (the enabled ladder led by the native/CLI login), and an explicit profile is
 STRICT — exactly its transport or a typed refusal, never a silent fallback.
