@@ -72,13 +72,22 @@ claudexor doctor
 
 You can also build from source — see Quickstart below.
 
-The macOS app ships as a signed and notarized DMG on the
-[Releases](https://github.com/razzant/claudexor/releases) page — download,
-drag to Applications, open. The app is self-contained: it bundles its own
-daemon runtime and starts it on launch; installing the CLI is only needed
-for terminal use. (The v1.0.0 DMG was unsigned — if you kept it, either
-upgrade or approve it via System Settings → Privacy & Security → Open
-Anyway.)
+On a Mac, the app is the easiest way in — it ships as a signed and
+notarized DMG, so it installs like any ordinary Mac app, with no Gatekeeper
+warnings:
+
+1. Download `Claudexor-<version>.dmg` from
+   [Releases](https://github.com/razzant/claudexor/releases).
+2. Drag `Claudexor.app` into `Applications`.
+3. Open it — that's the whole install.
+
+![Installing the macOS app: the mounted DMG window with Claudexor.app being
+dragged into the Applications folder](docs/assets/app-install-dmg.png)
+
+The app is self-contained: it bundles its own daemon runtime and starts it
+on launch; installing the CLI is only needed for terminal use. (The v1.0.0
+DMG was unsigned — if you kept it, either upgrade or approve it via System
+Settings → Privacy & Security → Open Anyway.)
 
 ### Updates
 
