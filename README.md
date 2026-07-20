@@ -1,5 +1,12 @@
 # Claudexor
 
+[![npm version](https://img.shields.io/npm/v/claudexor)](https://www.npmjs.com/package/claudexor)
+[![npm downloads](https://img.shields.io/npm/dt/claudexor?label=npm%20downloads)](https://www.npmjs.com/package/claudexor)
+[![app downloads](https://img.shields.io/github/downloads/razzant/claudexor/total?label=app%20downloads)](https://github.com/razzant/claudexor/releases)
+[![GitHub stars](https://img.shields.io/github/stars/razzant/claudexor)](https://github.com/razzant/claudexor/stargazers)
+[![latest release](https://img.shields.io/github/v/release/razzant/claudexor?label=release)](https://github.com/razzant/claudexor/releases/latest)
+[![license](https://img.shields.io/github/license/razzant/claudexor)](LICENSE)
+
 Claudexor is a local-first control plane for the AI coding agents you already
 pay for. It runs Codex CLI, Claude Code, Cursor CLI, OpenCode, and raw API
 adapters behind one typed interface: a chat of turns where read-only questions
@@ -335,7 +342,10 @@ STRICT — exactly its transport or a typed refusal, never a silent fallback.
 Vendor-session resume never crosses profiles. Subscription quota is tracked
 per profile from the vendor's own `oauth/usage` endpoint (proactive
 five-hour/seven-day/per-model percentages in the app's quota footer, one chip
-per profile), and each harness may declare a typed `profile_policy`
+per profile) — the access token is read transiently from the profile's own
+vendor store, its macOS keychain item or on Linux the vendor's
+`.credentials.json` in the profile's config dir — and each harness may declare
+a typed `profile_policy`
 (`limit_action: fail|ask|rotate`): rotation is opt-in and fires ONLY on typed
 vendor-limit signals or a proactive headroom breach — never on ordinary
 network errors — with full provenance on the run record. See
@@ -702,3 +712,9 @@ The root `package.json` is the version SSOT. The full release history lives in
 
 [MIT](LICENSE) (c) 2026 joi-lab — inbound contributions are accepted under
 the same license.
+
+## Author
+
+Claudexor is written by Anton ([@razzant](https://github.com/razzant)).
+News and discussion live in the author's Telegram channel:
+[t.me/abstractdl_chat](https://t.me/abstractdl_chat).

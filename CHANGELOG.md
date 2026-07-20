@@ -3,7 +3,18 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
-- **v3.0.1** (2026-07-20) — hotfix: every browser-downloaded 3.0.0 DMG crashed
+- **v3.0.2** (2026-07-21) — Linux subscription-quota parity for Claude. The
+  per-profile quota reader (`oauth/usage` source) read the access token only
+  from the macOS keychain item, so on Linux `quota --refresh` returned a
+  misleading `not_logged_in` absence for every logged-in claude account while
+  runs and doctor were green. Off macOS the reader now uses the vendor's own
+  store — `.credentials.json` (mode 0600) inside the profile's config dir —
+  with the same transient-token discipline (one usage request, never
+  persisted/logged/in errors). A missing file stays an honest
+  `not_logged_in`; an unreadable or unparseable file is a typed
+  `refresh_failed` naming only the error class. macOS behavior is unchanged;
+  Codex quota was already file-store-portable. Also: README badges and an
+  author section. — hotfix: every browser-downloaded 3.0.0 DMG crashed
   at launch (EXC_BREAKPOINT in `applicationDidFinishLaunching`). The SwiftPM
   `Bundle.module` accessor fatalErrors when the resource bundle fails to load,
   and a quarantined process refuses the plist-less bundle `swift build` emits.
