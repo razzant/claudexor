@@ -399,12 +399,7 @@ ${readDoc("docs/ARCHITECTURE.md")}
 
 ## Current touched files (full content)
 
-${buildTouchedFilePack(
-  packFiles,
-  git,
-  MAX_FILE_BYTES,
-  MAX_PACK_BYTES,
-)}
+${buildTouchedFilePack(packFiles, git, MAX_FILE_BYTES, MAX_PACK_BYTES)}
 
 ## Diff under review
 
@@ -476,12 +471,7 @@ ${repoAtlas()}
 
 ## Current touched files (post-change)
 
-${buildTouchedFilePack(
-  packFiles,
-  git,
-  MAX_FILE_BYTES,
-  MAX_PACK_BYTES,
-)}
+${buildTouchedFilePack(packFiles, git, MAX_FILE_BYTES, MAX_PACK_BYTES)}
 
 ## Diff under review
 

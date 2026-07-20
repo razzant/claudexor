@@ -277,8 +277,12 @@ describe("release review fail-closed contract", () => {
     expect(livenessFloorMs(150_000)).toBe(10_000);
     expect(livenessFloorMs(Number.NaN)).toBe(30_000);
     expect(livenessFloorMs(0)).toBe(30_000);
-    expect(reviewerLiveness({ status: "responded", duration_ms: 18_000 }, livenessFloorMs(150_000)).live).toBe(true);
-    expect(reviewerLiveness({ status: "responded", duration_ms: 900 }, livenessFloorMs(150_000)).live).toBe(false);
+    expect(
+      reviewerLiveness({ status: "responded", duration_ms: 18_000 }, livenessFloorMs(150_000)).live,
+    ).toBe(true);
+    expect(
+      reviewerLiveness({ status: "responded", duration_ms: 900 }, livenessFloorMs(150_000)).live,
+    ).toBe(false);
   });
 
   it("treats an implausibly fast slot as failed — the liveness floor", () => {
