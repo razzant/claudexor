@@ -1230,7 +1230,9 @@ detail as `candidates` from attempt/review/decision artifacts.
 Repository release review is cumulative and SHA-bound. Under the owner-review
 protocol (INV-125, CHECKLISTS), at least two independent reviewer subagents
 inspect the exact clean committed candidate against the checklists and docs in
-at most three rounds; any tracked mutation invalidates every result and starts
+at most OWNER_REVIEW_MAX_ROUNDS rounds (10 as of v3.0.0 — raised from 3 by
+owner decision: owner scope injections mid-review legitimately extend
+convergence); any tracked mutation invalidates every result and starts
 a new freeze, and the signed schemaVersion-3 attestation binds the candidate
 SHA/tree, gate receipt digest, and reviewer report digests + verdicts. (The
 retired six-slot triad/scope panel's schemaVersion-2 attestations stay

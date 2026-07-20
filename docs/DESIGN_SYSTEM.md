@@ -486,10 +486,12 @@ frequency and volume are. The contracts:
     and the choice persists through the thread DTO, never local-only UI state.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5). The
-    user bubble carries proper HIG contrast in BOTH themes (batch-6 item e):
-    `accent.opacity(0.20)` fill + a soft `accent.opacity(0.30)` stroke + primary
-    label color — accent-tinted, never a saturated block, never the invisible
-    light-theme wash the old `0.14` fill produced. The assistant stays a neutral
+    user bubble is the QUIET `Theme.bubbleUser` fill (a faintly accent-tinted
+    raised surface, owner round-4) with the PRIMARY label color, continuous
+    `Radius.bubble` corners and NO stroke — identity comes from right alignment
+    + fill. Never a saturated accent block (it outshouted the answer) and never
+    a translucent wash (unreadable in light theme); the final answer bubble
+    stays the loudest element in the feed. The assistant stays a neutral
     frosted `cardSurface` with one subtle accent hairline (`accent.opacity(0.22)`)
     so it belongs to the same family. Then the assistant reads top-down: the
     FINAL ANSWER bubble (loudest element — solid `surfaceRaisedHi` inset, 2 pt
