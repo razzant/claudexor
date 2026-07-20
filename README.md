@@ -1,7 +1,7 @@
 # Claudexor
 
 [![npm version](https://img.shields.io/npm/v/claudexor)](https://www.npmjs.com/package/claudexor)
-[![npm downloads](https://img.shields.io/npm/dt/claudexor?label=npm%20downloads)](https://www.npmjs.com/package/claudexor)
+[![npm downloads](https://img.shields.io/npm/d18m/claudexor?label=npm%20downloads)](https://www.npmjs.com/package/claudexor)
 [![app downloads](https://img.shields.io/github/downloads/razzant/claudexor/total?label=app%20downloads)](https://github.com/razzant/claudexor/releases)
 [![GitHub stars](https://img.shields.io/github/stars/razzant/claudexor)](https://github.com/razzant/claudexor/stargazers)
 [![latest release](https://img.shields.io/github/v/release/razzant/claudexor?label=release)](https://github.com/razzant/claudexor/releases/latest)
