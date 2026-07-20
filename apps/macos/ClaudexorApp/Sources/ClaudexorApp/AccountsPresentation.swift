@@ -7,6 +7,13 @@ import ClaudexorKit
 // AccountsPopover.swift (readability ratchet). The views live in
 // AccountsPopover.swift; the SSOT projection lives here.
 
+extension HarnessFamily {
+    /// The api-key META-HOSTS (raw-api / openrouter): routed purely by a stored
+    /// key, no subscription/CLI login. They appear as accounts rows only when
+    /// configured (batch-6 item g).
+    var isApiKeyMetaHost: Bool { self == .raw }
+}
+
 /// Readiness verdict for one account row (the worst wins for the trigger dot).
 enum AccountReadiness: Int, Comparable {
     case unavailable = 0, unknown = 1, ready = 2
@@ -32,6 +39,10 @@ struct AccountRowModel: Identifiable {
     /// the credential profile.
     let profileId: String?
     let detail: String?
+    /// The profile's canonical config-dir path (wire `isolation_locator`), or nil
+    /// for native/CLI-login rows (the loader then probes the conventional home).
+    /// Drives the LOCAL vendor-identity read (email/plan) — batch-6 item a.
+    let isolationLocator: String?
     let quotaGroups: [QuotaPresentation.Group]
     /// D25 Enabled: participates in pickers + the auto-rotation pool. For a
     /// profile row this is the wire `profile.enabled`; for the CLI-login row it
@@ -44,10 +55,14 @@ struct AccountRowModel: Identifiable {
     /// as a quiet "Next up" badge, never a control. false when the projection is
     /// absent (older daemon) or another row is next up.
     let nextUp: Bool
+    /// An api-key META-HOST row (raw-api / openrouter): rendered only when a key is
+    /// configured (batch-6 item g). Its Enabled is the harness `enabled` setting
+    /// (no per-account rotation — one key), and it has no CLI login.
+    var isApiKeyHost: Bool = false
 
     var isProfile: Bool { profileId != nil }
     /// The native vendor login row (not one of Claudexor's credential profiles).
-    var isCliLogin: Bool { profileId == nil }
+    var isCliLogin: Bool { profileId == nil && !isApiKeyHost }
 
     /// The single worst usage window across the account's quota groups; drives
     /// the ONE compact quota line the popover shows per account.
@@ -84,6 +99,9 @@ enum AccountsPresentation {
                 verified: source?.isVerifiedNativeSession == true,
                 profileId: nil,
                 detail: source?.detail,
+                // Native/CLI-login row: no wire isolation_locator — the loader
+                // probes the conventional vendor home for this harness.
+                isolationLocator: nil,
                 quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue },
                 // The native/CLI login's "Enabled" is the harness setting
                 // `native_credentials_enabled` (V11b) — LIVE via the settings
@@ -107,11 +125,37 @@ enum AccountsPresentation {
                 verified: availability == "available" && verification == "passed",
                 profileId: entry.profile.profileId,
                 detail: entry.status.detail,
+                isolationLocator: entry.profile.isolationLocator,
                 quotaGroups: groups.filter {
                     $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
                 },
                 enabled: entry.profile.enabled,
                 nextUp: accounts?.nextUp.isProfile(entry.profile.profileId) ?? false
+            ))
+        }
+
+        // API-key meta-hosts (raw-api / openrouter): a symmetric account row, but
+        // ONLY when a key is actually configured (routable per the wire). An
+        // unconfigured meta-host is hidden ENTIRELY — no dead "log in" row (item g).
+        for info in model.liveHarnesses
+        where info.family.isApiKeyMetaHost && !info.routableIntents.isEmpty {
+            let family = info.family
+            rows.append(AccountRowModel(
+                id: "apikey/\(family.rawValue)",
+                displayName: family.label,
+                harnessId: family.rawValue,
+                family: family,
+                readiness: .ready,   // routable ⇒ a key is present and usable.
+                verified: true,
+                profileId: nil,
+                detail: "API key",
+                isolationLocator: nil,
+                quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue },
+                // The meta-host has no per-account rotation — Enabled IS the
+                // harness routing-enable setting.
+                enabled: model.settingsSnapshot?.harnesses?[family.rawValue]?.enabled ?? true,
+                nextUp: false,
+                isApiKeyHost: true
             ))
         }
         return rows
@@ -228,5 +272,38 @@ enum AccountsPresentation {
         let tail = head.union("-_")
         guard let first = s.first, head.contains(first) else { return false }
         return s.dropFirst().allSatisfy { tail.contains($0) }
+    }
+}
+
+// MARK: - Auto-switch-at-quota (batch-6 item b)
+//
+// The accounts-popover toggle maps to each eligible harness's per-harness
+// `profile_limit_action` (rotate when on, fail when off). Only harnesses that
+// actually have a SECOND account can rotate, so the toggle targets exactly those
+// (a config_dir_login family — claude|codex — with ≥1 registered profile: the
+// native/CLI login + ≥1 profile = 2+ rotatable identities). Pure so the target
+// set and the aggregate state are unit-tested rather than eyeballed.
+enum AccountsAutoBalance {
+    /// Aggregate across the eligible harnesses. `mixed` = they disagree (rendered
+    /// as "—"); `unavailable` = no harness has a second account yet.
+    enum State: Equatable { case on, off, mixed, unavailable }
+
+    /// The rotation action is only auto-balance-capable for config_dir_login
+    /// families; those are the ONLY families that can register a 2nd profile.
+    static let capableHarnessIds = ["claude", "codex"]
+
+    /// Harnesses eligible for the toggle: a capable family with ≥1 registered
+    /// profile (so native + profile = 2+ identities to rotate between).
+    static func eligibleHarnessIds(profileHarnessIds: [String]) -> [String] {
+        let withProfiles = Set(profileHarnessIds)
+        return capableHarnessIds.filter { withProfiles.contains($0) }
+    }
+
+    /// Aggregate on/off/mixed/unavailable from each eligible harness's action.
+    static func state(actions: [String]) -> State {
+        guard !actions.isEmpty else { return .unavailable }
+        if actions.allSatisfy({ $0 == "rotate" }) { return .on }
+        if actions.allSatisfy({ $0 != "rotate" }) { return .off }
+        return .mixed
     }
 }

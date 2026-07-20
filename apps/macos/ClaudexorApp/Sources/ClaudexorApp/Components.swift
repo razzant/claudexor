@@ -21,25 +21,6 @@ struct StatusPill: View {
     }
 }
 
-/// Terminal-state-machine honesty: the run IS terminal but its final snapshot
-/// has not landed yet — never show a green Succeeded next to an empty Outcome.
-struct FinalizingPill: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .imageScale(.small)
-            Text("Finalizing…")
-        }
-        .font(.caption.weight(.medium))
-        .foregroundStyle(Theme.status(.info))
-        .padding(.horizontal, Theme.Spacing.md)
-        .padding(.vertical, Theme.Spacing.xs)
-        .background(Theme.status(.info).opacity(0.15), in: Capsule())
-        .accessibilityLabel("Status finalizing")
-        .help("The run reached a terminal state; the output snapshot is loading.")
-    }
-}
 
 // MARK: - Harness chip / dot
 
@@ -110,25 +91,6 @@ struct SectionLabel: View {
     }
 }
 
-// MARK: - Meter bar
-
-struct MeterBar: View {
-    let fraction: Double
-    var tint: Color = Theme.accent
-    var height: CGFloat = 6
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Theme.surfaceRaisedHi)
-                Capsule().fill(tint.gradient)
-                    .frame(width: max(height, geo.size.width * min(max(fraction, 0), 1)))
-            }
-        }
-        .frame(height: height)
-        .accessibilityValue("\(Int(fraction * 100)) percent")
-    }
-}
-
 // MARK: - Honesty badges
 
 struct RouteProofBadge: View {
@@ -159,21 +121,6 @@ struct EstimatedCostBadge: View {
         .font(.caption2)
         .foregroundStyle(estimated ? Theme.status(.caution) : .secondary)
         .help(estimated ? "Estimated spend (native quota best-effort)." : "Exact spend.")
-    }
-}
-
-struct ProvenanceTag: View {
-    let isLive: Bool
-    var body: some View {
-        HStack(spacing: 3) {
-            Circle().fill(isLive ? Theme.status(.info) : Color.secondary).frame(width: 5, height: 5)
-            Text(isLive ? "Live" : "Sample")
-        }
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(isLive ? Theme.status(.info) : .secondary)
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background((isLive ? Theme.status(.info) : Color.secondary).opacity(0.12), in: Capsule())
-        .accessibilityLabel(isLive ? "Live data" : "Sample data")
     }
 }
 
@@ -333,31 +280,6 @@ struct FlowLayout: Layout {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
-    }
-}
-
-// MARK: - Screen header (ONE H1 recipe so every screen titles itself identically)
-
-struct ScreenHeader: View {
-    let title: String
-    var subtitle: String?
-    var subtitleLineLimit: Int? = nil
-    /// Optional trailing element on the title line (e.g. a run's StatusPill).
-    var accessory: AnyView? = nil
-    var body: some View {
-        HStack(alignment: .top, spacing: Theme.Spacing.md) {
-            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                Text(title).font(.title2.weight(.bold))
-                if let subtitle {
-                    Text(subtitle).font(.callout).foregroundStyle(.secondary).lineLimit(subtitleLineLimit)
-                }
-            }
-            if let accessory {
-                Spacer(minLength: Theme.Spacing.md)
-                accessory
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

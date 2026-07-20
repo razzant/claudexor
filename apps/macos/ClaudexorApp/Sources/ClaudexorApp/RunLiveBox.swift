@@ -91,13 +91,6 @@ extension AppModel {
         return box
     }
 
-    /// Live-first activity: the streaming box while live, the folded TaskRun
-    /// history for terminal runs. Views must read through this so they track
-    /// the BOX (cheap per-run invalidation), not the tasks array.
-    func activityFor(_ task: TaskRun) -> [ActivityEvent] {
-        liveBoxes[task.id]?.activity ?? task.activity
-    }
-
     /// Live-first transcript blocks (box while streaming, folded store after).
     func transcriptBlocks(_ runId: String) -> [TranscriptBlock] {
         liveBoxes[runId]?.transcript.blocks ?? transcripts[runId]?.blocks ?? []

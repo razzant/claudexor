@@ -471,14 +471,15 @@ function collectSourceHaystack() {
 // --------------------------------------------------------------------------
 
 {
-  // D15: the four-tab enum lives in its own file since the M5 restructure.
+  // D42: the thread-workspace tab enum lives in its own file (renamed from the
+  // M5 four-tab RunDetailTab when the per-run inspector was demoted).
   const taskDetail = readFileSync(
-    "apps/macos/ClaudexorApp/Sources/ClaudexorApp/RunDetailTabs.swift",
+    "apps/macos/ClaudexorApp/Sources/ClaudexorApp/WorkspaceTabs.swift",
     "utf8",
   );
-  const tabEnum = /enum RunDetailTab[^{]*\{([\s\S]*?)\n\s*\}/.exec(taskDetail);
+  const tabEnum = /enum WorkspaceTab[^{]*\{([\s\S]*?)\n\s*\}/.exec(taskDetail);
   if (!tabEnum) {
-    failures.push("could not locate the RunDetailTab enum in RunDetailTabs.swift");
+    failures.push("could not locate the WorkspaceTab enum in WorkspaceTabs.swift");
   } else {
     // Declaration lines only (`case a, b, c` — no dot, no colon), NOT the
     // switch labels of the label accessor. A one-line comma list must yield
@@ -489,7 +490,7 @@ function collectSourceHaystack() {
       .filter(Boolean);
     if (tabs.length < 2) {
       failures.push(
-        `inspector Tab enum extraction looks broken: found ${tabs.length} tab(s) in RunDetailTabs.swift`,
+        `workspace Tab enum extraction looks broken: found ${tabs.length} tab(s) in WorkspaceTabs.swift`,
       );
     }
     // Docs speak the user-facing label (`Outcome`, `Timeline`), so parity
@@ -505,7 +506,7 @@ function collectSourceHaystack() {
       const label = labelByCase.get(tab);
       if (!design.includes(tab) && !(label && design.includes(label))) {
         failures.push(
-          `docs/DESIGN_SYSTEM.md does not mention inspector tab '${tab}'${label ? ` (label "${label}")` : ""} (RunDetailTabs.swift RunDetailTab enum)`,
+          `docs/DESIGN_SYSTEM.md does not mention workspace tab '${tab}'${label ? ` (label "${label}")` : ""} (WorkspaceTabs.swift WorkspaceTab enum)`,
         );
       }
     }

@@ -128,7 +128,6 @@ struct AuthSheet: View {
                         Text(status)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
                     }
                 }
                 .padding(Theme.Spacing.xl)
@@ -164,6 +163,7 @@ struct AuthSheet: View {
             }
         }
         .frame(width: 600, height: 720)
+        .textSelection(.enabled)   // root-level selection (item c / §2.9)
         .interactiveDismissDisabled(closeRequiresConfirmation)
         .confirmationDialog(
             closeConfirmationTitle,

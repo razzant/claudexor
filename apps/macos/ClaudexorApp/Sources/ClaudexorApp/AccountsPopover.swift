@@ -216,6 +216,8 @@ struct AccountsPopover: View {
         }
         .padding(Theme.Spacing.lg)
         .frame(width: 400)
+        // Root-level text selection for the popover (batch-6 item c / §2.9).
+        .textSelection(.enabled)
         .task { await model.refreshSettings() }   // profiles refresh lives in AccountsSurface
         .popover(isPresented: $showQuotaDetail, arrowEdge: .trailing) {
             QuotaDetailView().environment(model).frame(width: 420, height: 460)
@@ -247,20 +249,40 @@ struct AccountsPopover: View {
         }
     }
 
-    private var autoBalanceToggle: some View {
+    @ViewBuilder private var autoBalanceToggle: some View {
+        let state = model.autoBalanceState
         VStack(alignment: .leading, spacing: 2) {
-            Toggle(isOn: Binding(
-                get: { model.autoBalanceState == .on },
-                set: { on in Task { await model.setAutoBalance(on) } }
-            )) {
-                Text("Auto-switch accounts at quota limit").font(.callout)
+            HStack(spacing: Theme.Spacing.sm) {
+                Toggle(isOn: Binding(
+                    get: { state == .on },
+                    set: { on in Task { await model.setAutoBalance(on) } }
+                )) {
+                    Text("Auto-switch accounts at quota limit").font(.callout)
+                }
+                .toggleStyle(.switch)
+                .tint(Theme.accent)
+                // Per-harness rotate flags disagree → the aggregate is indeterminate:
+                // show "—" rather than misreporting the mixed state as off.
+                .disabled(state == .unavailable)
+                if state == .mixed {
+                    Text("—")
+                        .font(.callout.weight(.semibold)).foregroundStyle(Theme.status(.caution))
+                        .help("Harnesses disagree — turning this on sets them all to rotate.")
+                }
             }
-            .toggleStyle(.switch)
-            .tint(Theme.accent)
-            Text(model.autoBalanceState == .mixed
-                ? "Claude and Codex disagree — turning this on sets both to rotate."
-                : "When one account hits its quota, runs continue on another registered account.")
+            Text(autoBalanceCaption(state))
                 .font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func autoBalanceCaption(_ state: AccountsAutoBalance.State) -> String {
+        switch state {
+        case .unavailable:
+            return "Add a second account to a harness to enable auto-switch at its quota limit."
+        case .mixed:
+            return "Harnesses disagree (—) — turning this on sets them all to rotate among enabled accounts."
+        case .on, .off:
+            return "When one account hits its quota, runs continue on another enabled account of the same harness."
         }
     }
 }
@@ -289,6 +311,12 @@ struct AccountsSurface: View {
     @State private var pendingDelete: AccountRowModel?
     @State private var deleting = false
     @State private var deleteNotice: String?
+    /// The accounts load state (batch-6 item h): a config/load ERROR is a typed
+    /// state with the reason + retry — never the empty "No accounts yet".
+    @State private var loadState: AccountsLoadState = .idle
+
+    /// Typed load state for the accounts registry (error ≠ empty).
+    enum AccountsLoadState: Equatable { case idle, loading, loaded, failed(String) }
 
     /// The add form registers config_dir_login profiles (claude|codex only —
     /// the same rule the daemon enforces).
@@ -317,7 +345,7 @@ struct AccountsSurface: View {
                 addSection
             }
         }
-        .task { await model.refreshCredentialProfiles() }
+        .task { await loadAccounts() }
         .confirmationDialog(
             "Remove \(pendingDelete?.displayName ?? "account")?",
             isPresented: Binding(
@@ -345,6 +373,9 @@ struct AccountsSurface: View {
                 if let profileId = row.profileId {
                     await model.setProfileEnabled(
                         harnessId: row.harnessId, profileId: profileId, enabled: enabled)
+                } else if row.isApiKeyHost {
+                    // Meta-host (raw-api/openrouter): Enabled is the harness setting.
+                    await model.setHarnessEnabled(harnessId: row.harnessId, enabled: enabled)
                 } else {
                     await model.setNativeCredentialsEnabled(
                         harnessId: row.harnessId, enabled: enabled)
@@ -363,9 +394,24 @@ struct AccountsSurface: View {
         // quota/detail line can never wrap into fragments that flow around the
         // trailing columns (the owner-round-3 bug).
         AlignedList {
-            if rows.isEmpty {
+            if case .failed(let message) = loadState, rows.isEmpty {
+                // A config/load ERROR is NOT an empty registry (item h): render the
+                // typed reason + retry, never the "No accounts yet" empty copy.
                 GridRow {
-                    Label("No accounts yet — add one below.", systemImage: "person.crop.circle.badge.plus")
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        Label("Could not load accounts", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.medium)).foregroundStyle(Theme.status(.negative))
+                        Text(message).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                        Button("Retry") { Task { await loadAccounts() } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .gridCellColumns(AccountsPresentation.AccountRowColumn.allCases.count + 1)
+                }
+            } else if rows.isEmpty {
+                GridRow {
+                    Label(loadState == .loading ? "Loading accounts…" : "No accounts yet — add one below.",
+                          systemImage: "person.crop.circle.badge.plus")
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .gridCellColumns(AccountsPresentation.AccountRowColumn.allCases.count + 1)
@@ -423,6 +469,17 @@ struct AccountsSurface: View {
         }
     }
 
+    /// Load accounts into the typed load state (item h): a failure renders the
+    /// reason + retry, not the empty "No accounts yet".
+    private func loadAccounts() async {
+        if loadState != .loaded { loadState = .loading }
+        if let error = await model.loadCredentialProfiles() {
+            loadState = .failed(error)
+        } else {
+            loadState = .loaded
+        }
+    }
+
     private func addAccount() async {
         guard !adding, let harness = addHarness else { return }
         adding = true
@@ -450,6 +507,7 @@ struct AccountsSurface: View {
             verified: false,
             profileId: id,
             detail: nil,
+            isolationLocator: nil,
             quotaGroups: [],
             enabled: true,
             nextUp: false

@@ -1,6 +1,17 @@
 import Foundation
 import ClaudexorKit
 
+/// Human summary of a run's browser capability requirement resolution (per
+/// harness: enabled / unavailable + reason). Formerly a free function in the
+/// retired TaskDetailView; AppModel still projects it onto the run facts.
+func browserRequirementDetail(_ requirements: [RequestRequirementResolution]?) -> String? {
+    let browser = (requirements ?? []).filter { $0.capability == "browser" && $0.requested }
+    guard !browser.isEmpty else { return nil }
+    return browser.map {
+        "\($0.harnessId): \($0.effective ? "browser enabled" : "browser unavailable (\($0.reason))")"
+    }.joined(separator: " · ")
+}
+
 extension TaskRun {
     mutating func applyPaidBudget(_ budget: PaidBudget?) {
         guard let budget else { return }

@@ -61,7 +61,6 @@ struct HarnessAccountChip: View {
                 if let current { HarnessIcon(family: current, size: 13) }
                 else { Image(systemName: "wand.and.stars").imageScale(.small) }
                 Text(current?.label ?? "Auto")
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
             }
             .font(.caption.weight(.medium))
             .foregroundStyle(tint)
@@ -69,8 +68,8 @@ struct HarnessAccountChip: View {
             .padding(.trailing, Theme.Spacing.sm)
             .padding(.vertical, Theme.Controls.chipVPadding)
         }
+        // Single native chevron (batch-6 item d — no manual glyph / no hidden).
         .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
         .help("Primary harness — answers in chat. A change applies from the next turn; switch from the eligible pool.")
     }
@@ -98,7 +97,6 @@ struct HarnessAccountChip: View {
                     .foregroundStyle(segment.pinned ? tint : .secondary)
                 Text(segment.label).lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: 90, alignment: .leading)
-                Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
             }
             .font(.caption.weight(segment.pinned ? .semibold : .regular))
             .foregroundStyle(segment.pinned ? tint : .secondary)
@@ -106,8 +104,8 @@ struct HarnessAccountChip: View {
             .padding(.trailing, Theme.Spacing.md)
             .padding(.vertical, Theme.Controls.chipVPadding)
         }
+        // Single native chevron (batch-6 item d — no manual glyph / no hidden).
         .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
         .fixedSize()
         .help(segment.pinned
             ? "This thread is pinned to \(segment.label). Pick Automatic to follow the harness default (auto-balance across enabled accounts) instead."

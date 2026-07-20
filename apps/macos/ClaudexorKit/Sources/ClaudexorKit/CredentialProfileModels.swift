@@ -17,6 +17,11 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
         public let displayName: String
         /// config_dir_login | oauth_token | api_key.
         public let credentialKind: String
+        /// Canonical absolute config-dir path for config_dir_login profiles; nil
+        /// for secret-ref kinds. The macOS accounts surface reads the vendor
+        /// identity (codex auth.json id_token claims / claude oauthAccount) from
+        /// THIS local path — the wire never carries the email/plan (INV-135).
+        public let isolationLocator: String?
         public let enabled: Bool
 
         enum CodingKeys: String, CodingKey {
@@ -24,6 +29,7 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
             case harnessId = "harness_id"
             case displayName = "display_name"
             case credentialKind = "credential_kind"
+            case isolationLocator = "isolation_locator"
             case enabled
         }
     }

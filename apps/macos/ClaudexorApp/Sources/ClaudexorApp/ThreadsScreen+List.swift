@@ -7,7 +7,42 @@ import ClaudexorKit
 // sidebar row, its subtitle, and the rename sheet/submit. The rename @State
 // stays on the owning view; these are its pure render/action helpers.
 
+/// The compact state each thread row reads "at a glance" (D42 item 4): running
+/// (a turn is live), needs-decision (blocked on the user), or idle. Pure so the
+/// precedence (running outranks needs-decision) is unit-tested.
+enum ThreadRowStatus: Equatable {
+    case running, needsDecision, idle
+
+    static func of(running: Bool, needsHuman: Bool) -> ThreadRowStatus {
+        if running { return .running }
+        if needsHuman { return .needsDecision }
+        return .idle
+    }
+}
+
 extension ThreadsScreen {
+    /// True when this thread's head run is actively working (per-thread, not the
+    /// global submit gate) — drives the running badge.
+    func threadRunning(_ thread: ThreadSummary) -> Bool {
+        thread.headRunId.flatMap { model.task($0)?.phase.isActive } ?? false
+    }
+
+    /// The at-a-glance status badge for a thread row (item 4).
+    @ViewBuilder
+    func threadStatusBadge(_ thread: ThreadSummary) -> some View {
+        switch ThreadRowStatus.of(running: threadRunning(thread), needsHuman: thread.needsHuman) {
+        case .running:
+            ProgressView().controlSize(.small).scaleEffect(0.6).frame(width: 12, height: 12)
+                .help("A turn is running in this thread")
+        case .needsDecision:
+            Image(systemName: "person.fill.questionmark")
+                .foregroundStyle(Theme.status(.caution))
+                .help("This thread is blocked on your decision")
+        case .idle:
+            EmptyView()
+        }
+    }
+
     var renameSheet: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Rename thread").font(.headline)
@@ -39,11 +74,9 @@ extension ThreadsScreen {
         VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
             HStack(spacing: Theme.Spacing.xs) {
                 Text(thread.title ?? "Untitled thread").font(.body).lineLimit(1)
-                if thread.needsHuman {
-                    Image(systemName: "person.fill.questionmark")
-                        .foregroundStyle(Theme.status(.caution))
-                        .help("This thread is blocked on your decision")
-                }
+                // Compact status badge so "one card per thread" reads state at a
+                // glance: running spinner / needs-decision dot / idle (D42 item 4).
+                threadStatusBadge(thread)
             }
             Text(threadSubtitle(thread)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }

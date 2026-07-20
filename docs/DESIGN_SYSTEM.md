@@ -16,8 +16,9 @@ workflow), and [`CHECKLISTS.md`](CHECKLISTS.md) (visual QA gates).
 Claudexor is a native **chat-first cockpit** over multiple coding harnesses (Codex,
 Claude Code, Cursor, OpenCode): ONE screen — a thread list, the conversation, and a
 persistent composer. You just type; the first message starts a thread; turns run
-in-place so the next turn sees the work; a run's detail opens in the trailing
-Workbench (Run Detail, with Canvas for the project's produced outputs). Its
+in-place so the next turn sees the work; the trailing panel is the THREAD
+WORKSPACE (D42) — the current thread's Changes / Artifacts / Evidence, filtered
+to a run when you select its chat receipt. Its
 single real differentiator from a bare harness is multi-vendor
 **race + review** with the winner adopted into the tree. It must feel instantly
 familiar to users of Claude Code / Cursor / Codex, with honest run outcomes and a
@@ -261,13 +262,18 @@ disciplines call sites kept getting wrong, so they cannot get them wrong again:
 
 ---
 
-### 2.9 Error and status text is user evidence
+### 2.9 Text is selectable by default (root-level selection)
 
-Every error/status message rendered anywhere in the app MUST be selectable
-(`.textSelection(.enabled)`) — the user pastes these into bug reports and
-chats. Persistent banners (thread status line and equivalents) additionally
-carry an explicit copy button (`doc.on.doc`, `.plain` style, "Copy message"
-help). An unselectable error surface is a defect, not a style choice.
+All content text in the app is selectable — the user pastes messages, answers,
+errors, paths, and receipts into bug reports and chats. Selection is enabled
+ONCE at the ROOT content view of every window/popover/sheet
+(`.textSelection(.enabled)` on `RootView`, `AccountsPopover`, `AuthSheet`, the
+composer options popover, the thread-workspace panel), where it propagates to
+every descendant `Text`. This is THE mechanism — do NOT sprinkle per-`Text`
+`.textSelection(.enabled)`; a genuinely non-text control opts OUT locally, and
+nothing opts in. Persistent banners (thread status line and equivalents)
+additionally carry an explicit copy button (`doc.on.doc`, `.plain` style, "Copy
+message" help). An unselectable content surface is a defect, not a style choice.
 
 ## 3. Liquid Glass & materials rules
 
@@ -402,9 +408,9 @@ frequency and volume are. The contracts:
   metadata, not the loaded `[DiffFile]`; a pre-metadata tab open retriggers when
   metadata lands, while 413/network/non-text failures show the reason, artifact
   path, and Retry instead of a perpetual spinner.
-- **Lazy timelines.** The Timeline tab renders newest-first through a lazy
-  reversed collection inside `LazyVStack` — no materialized reversed copies,
-  no eagerly-built thousand-row stacks.
+- **Lazy timelines.** The inline activity transcript (in the chat receipt)
+  renders through a lazy collection inside `LazyVStack` — no materialized
+  reversed copies, no eagerly-built thousand-row stacks.
 - **Off-screen eviction.** Terminal runs outside the open thread / inspected
   run release their heavy feed and transcript arrays on route/thread change;
   reopening reloads the feed from the server timeline (`loadRunDetail`).
@@ -463,27 +469,29 @@ frequency and volume are. The contracts:
     the thread DTO, never local-only UI state.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5). The
-    user bubble is the QUIET ACCENT side of the conversation: the proven
-    `accent.opacity(0.14)` fill and compact `Radius.control` corner — never a
-    saturated block. The assistant stays a neutral frosted `cardSurface` but
-    carries one subtle accent hairline (`accent.opacity(0.22)`) so it belongs
-    to the same family without merging the two speakers. The final answer is
-  the loudest assistant element: solid `surfaceRaisedHi` dense-content inset,
-  `Radius.control`, body-sized prose, and a restrained 2 pt accent leading
-  edge. Then: a
-    status line (harness identity + honest status pill + live elapsed clock),
-    the live transcript disclosure (reasoning segments with duration timers,
-    DIMMED mid-run narration, humane tool rows), the reconciled outcome line,
-    decision/apply actions, and the FINAL ANSWER as the loudest element — its
-    own accent-edged bubble rendering markdown with scope-gated inline images.
-    The always-live composer closes the feed.
-  - **Workbench (trailing region, glass chrome):** a two-plane switch,
-    `[Run Detail | Canvas]`. **Run Detail** (`.inspector`) is the selected run's
-    tabbed detail over Claudexor's internal run evidence (§5). **Canvas** is the
-    project's PRODUCED outputs and a user-driven mini-browser (§5). The two
-    planes are labeled so the user always knows whether they are looking at run
-    evidence or project deliverables. The Workbench is the sanctioned extension
-    of the one-screen doctrine — never a third top-level screen.
+    user bubble carries proper HIG contrast in BOTH themes (batch-6 item e):
+    `accent.opacity(0.20)` fill + a soft `accent.opacity(0.30)` stroke + primary
+    label color — accent-tinted, never a saturated block, never the invisible
+    light-theme wash the old `0.14` fill produced. The assistant stays a neutral
+    frosted `cardSurface` with one subtle accent hairline (`accent.opacity(0.22)`)
+    so it belongs to the same family. Then the assistant reads top-down: the
+    FINAL ANSWER bubble (loudest element — solid `surfaceRaisedHi` inset, 2 pt
+    accent leading edge, W22 Show-more clamp), the persistent RECEIPT row, and
+    the inline activity transcript. The always-live composer closes the feed.
+  - **Thread workspace (trailing `.inspector`, glass chrome):** the panel's
+    IDENTITY is the CURRENT THREAD's workspace (D42), not a per-run inspector.
+    Three tabs — **Changes / Artifacts / Evidence** — aggregate across the whole
+    thread's runs. Selecting a chat receipt FILTERS the panel to that run (a
+    "run: <id> ×" chip clears back to whole-thread) and renders that run's
+    Outcome facts at the top; run detail is DEMOTED, not deleted — it is the
+    run-filtered state of this panel. Changes = the thread-cumulative diff
+    (isolated-thread apply-thread action + per-run diffs beneath); Artifacts = a
+    gallery across the thread's runs (images grid + compact file rows) with an
+    "Open preview" affordance for the project's `index.html`; Evidence = per-run
+    diagnostics/receipts. Empty thread / no output → an honest "No project output
+    in this thread." The Canvas mode is retired (artifacts fold into this panel).
+    The workspace is the sanctioned extension of the one-screen doctrine — never
+    a third top-level screen.
 - Budget, Harness Doctor, and preferences live in the Settings scene (⌘,), not in
   the main window. Detachable pop-out windows remain out of scope.
 
@@ -494,54 +502,57 @@ frequency and volume are. The contracts:
 Each component lists purpose + key tokens. Components are reusable SwiftUI
 views in the shared design-system files; screens compose them.
 
-- **Turn card — the messenger layout (F4 V1a).** The card reads top-down as a
+- **Turn card — the receipt layout (D42).** The card reads top-down as a
   conversation and grows strictly downward; live and terminal are ONE shape:
-  1. the user's right-aligned bubble;
-  2. ONE status line — two anchored clusters: identity + quiet state word on
-     the left ("Codex · Working…", retry folds into the word: "Retrying
-     2/10"; a race says "Best-of N" — a losing candidate's name is never
-     guessed), time + cash-$ on the right, the explicit ⧉ inspector
-     affordance trailing. No permanent status pill (F4 V2a): attention
-     states raise ONE loud chip only when they exist ("Needs your answer" >
-     "Needs you" > the red terminal label), and the quiet state word goes
-     silent when the chip voices it. Success carries no chip — the outcome
-     row already says what happened. Owner mapper: `TurnPresentation`.
-  3. ONE labeled Activity strip — the counter «Thinking 40s · 9 tools ·
-     3 files» (components with no evidence are absent; empty stream = no
-     strip). Clicking the CARD toggles it; expanded while live by default; a
-     user toggle pins it.
-  4. the answer bubble (the loudest element, W22 markdown);
-  5. quiet outcome rows (plan/diffstat + the reconciled W21 line via
-     `OutcomePresentation` ← `RunFacts.applyFact`);
-  6. the action footer, fixed position last (decision bar, apply pre-flight,
-     apply/revert), then the silent-failure card when honest.
-  The inspector opens ONLY via the explicit ⧉ (or the toolbar toggle) —
-  never by clicking the card, never automatically on navigation; a manual
-  close stays closed (F4 V17a, one `inspectorPresented` binding).
-- **Run inspector (Run Detail).** A long run at a glance — the opened turn's
-  detail in the trailing Workbench. Its header is a PRIMARY row of at most
-  the material facts (route, apply, needs-answer + BudgetMini and Cancel);
-  provenance and the route-proof badge are EVIDENCE and live behind the
-  Details disclosure with everything else, composed from
-  `RunFacts.headerDetails` — the header never retells the card (F4 V19a):
+  1. the user's right-aligned bubble (item e contrast);
+  2. the FINAL ANSWER bubble (loudest element, W22 markdown Show-more clamp),
+     when terminal;
+  3. ONE persistent RECEIPT row — status glyph · harness identity · quiet state
+     word · outcome/attention chip when present · live elapsed · cash-$ · the
+     tool/file counter «9 tools · 3 files» · an expand chevron. Attention states
+     raise ONE loud chip only when they exist ("Needs your answer" > the red
+     terminal label); success carries no chip. The WHOLE receipt row is the
+     click target → it toggles the inline activity transcript (auto-expanded
+     while the run is active, collapsed after unless the user pins it: progress
+     never disappears, it becomes the log). A trailing "workspace" affordance
+     (replacing the old ⧉ inspector button) opens the thread workspace filtered
+     to this run. Owner mapper: `TurnPresentation` (`TurnReceiptRow`).
+  4. the inline activity transcript (reasoning segments, DIMMED mid-run
+     narration, humane tool rows) when expanded;
+  5. plan question cards (interactive) and the "Implement plan" affordance stay
+     inline;
+  6. decision + apply render ONCE (never duplicated with the workspace): the
+     receipt carries the DecisionBar + apply ONLY when the run needs a decision;
+     a clean run applies from the workspace Changes tab. Then the silent-failure
+     card when honest. Detailed changes/artifacts/evidence live in the thread
+     workspace, not on the card.
+  The workspace opens via the "workspace" affordance / the toolbar toggle /
+  clicking a receipt with no activity to expand — a manual close stays closed
+  (one `inspectorPresented` binding).
+- **Run-filtered workspace (demoted run detail).** Selecting a receipt filters
+  the thread workspace to that run: its Outcome facts render at the top
+  (server-owned banner verbatim, answer, plan readiness, review verdict +
+  findings — read-only; decisions live on the receipt), then the Changes /
+  Artifacts / Evidence tabs scope to that one run. Apply follows the server
+  eligibility ONLY (batch-6 item f): the Apply / Apply-as-branch buttons are
+  HIDDEN, not disabled, unless the gate says the run is eligible.
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
-    node animates (calm). It rides the active turn's transcript and the inspector's
-    Timeline, not a top-level pane.
+    node animates (calm). It rides the active turn's transcript, not a top-level pane.
   - **Candidate cards — the Candidates-tab contract**: one card per race
     candidate, colored by `harness/*`, showing that candidate's deterministic
     gates, cost (with the estimated-vs-exact badge), and review state, with the
     winner emphasized (`CandidateCard(strokeColor:)`). They live on a race turn
-    and in the Run Detail Candidates tab, projected LIVE from the run
+    and in the run-filtered workspace's Outcome facts, projected LIVE from the run
     detail's `candidates` DTO (per-attempt gates/cost/diffstat/review
     evidence; candidate glyphs inherit the run terminal so a clean loser card
     in a failed run never renders green).
   - **Budget meter**: spend vs cap, circuit-breaker tier, per-harness split; honest quota.
     Money values are typed currency fields when editable; never use a slider for dollar input.
-    The live meter rides the run inspector; the editable budget cockpit is a Settings tab.
-  - **Timeline feed**: streamed `HarnessEvent` transcript with verbosity Verbose/Normal/
-    Summary in the inspector's Timeline tab; code/log text sits on `surface/code`.
-    The CHAT transcript (the card's Activity strip) is a FLAT log (F4 V9a,
+    The live meter rides the receipt row; the editable budget cockpit is a Settings tab.
+  - **Timeline feed**: the streamed `HarnessEvent` transcript now lives INLINE in
+    the chat receipt (D42): the receipt row toggles it, and it stays expanded
+    while the run is live. It is a FLAT log (F4 V9a,
     `TranscriptPresentation`): one line per tool (status glyph + typed-kind
     icon + humane title — a command shows its binary's basename, the full
     command line is the subtitle); a FAILED tool stands alone and carries its
@@ -711,7 +722,7 @@ views in the shared design-system files; screens compose them.
   keep the selectable command, official guide, and actionable Retry/Reconnect state.
 - **Best-of / candidates.** Per-family candidate lanes; the best-of-N
   "attempts/re-roll" primitive. (See the Candidate cards contract above — the
-  Candidates tab renders live server-projected evidence.)
+  run-filtered workspace's Outcome facts render live server-projected evidence.)
 - **Cross-family review (inline, per turn).** Review/findings are NOT a separate
   Review-Queue screen — they live on the turn that produced them and in the run
   inspector's Review tab: severity, finding, reviewer, evidence, and state, on solid
@@ -814,32 +825,29 @@ views in the shared design-system files; screens compose them.
   **Done** button (not an unlabeled x). Back is disabled while an active login
   requires keep-running/cancel confirmation. Owner mapper:
   `AuthSheetPresentation`.
-- **Workbench: Run Detail | Canvas.** The trailing region is a Workbench with the
-  two labeled planes from §4.
-  - **Run Detail** — every run's detail has explicit `Outcome`, `Timeline`,
-    `Plan`, `Candidates`, `Diff`, `Review`, `Artifacts`, and `Diagnostics` tabs
-    (all eight, via the shared `SegmentedTabs` in a horizontal scroller; the
-    Swift `Tab` enum cases are `answer`, `plan`, `activity`, `candidates`,
-    `diff`, `review`, `artifacts`, `diagnostics`) —
-    inline per-turn review and apply live here, not a separate screen.
-    `Outcome` reads the control API `primaryOutput` first and then falls back to
-    `final/answer.md`, `final/explore.md`, `final/report.md`, `final/plan.md`, or
-    `final/summary.md`. Default tab: completed runs open on `Outcome`, active
-    runs on `Timeline`, and failures without output on `Diagnostics` (a blocked
-    run with findings opens on `Review` — its deliverable IS the findings that
-    need a human). `Artifacts` lists the run's internal orchestration tree
-    (`/runs/:id/artifacts`). `Diagnostics` renders bounded typed error/context
-    summaries plus raw-evidence paths and byte sizes; full `events.jsonl`,
-    rollouts and logs remain one click away in the run folder and are never
-    eagerly laid out inline. A failed run must never leave the user hunting for
-    invisible logs or freeze the UI by loading them.
-  - **Canvas** — the project's PRODUCED outputs, distinct from Run Detail's
-    run-internal tree and labeled as such. Two panes: the **artifacts gallery**
-    renders the repo `artifacts/` dir via `GET /runs/:id/produced` (images
-    inline, text/code readable), and the **mini-browser** (`WKWebView`, driven
-    by the user — `loadFileURL` for the project's `index.html`, localhost
-    dev-server previews, arbitrary URLs) sits on SOLID surfaces: web content is
-    dense content, never glass-backed.
+- **Thread workspace (trailing `.inspector`).** ONE panel whose identity is the
+  CURRENT THREAD's workspace (D42), with exactly three tabs (`WorkspaceTab`:
+  `changes`, `artifacts`, `evidence`, via the shared `SegmentedTabs`) aggregated
+  across the thread's runs. Selecting a chat receipt FILTERS the panel to that
+  run (`.task(runId)` route; a "run: <id> ×" chip clears back to whole-thread)
+  and renders the run's Outcome facts at the top (server banner verbatim, answer,
+  plan readiness, review verdict + findings, material facts via
+  `RunFacts.headerPrimary`, best-of candidate cards). Default tab: `changes`;
+  a filtered run that failed with no output opens on `evidence` (`WorkspaceTabPolicy`,
+  no-auto-jump-after-manual-selection guard).
+  - **Changes** — the thread-cumulative diff: the isolated-thread apply-thread
+    action (`ApplyThreadBar`) plus per-run diff sections beneath. Apply / Apply-
+    as-branch are HIDDEN unless the server eligibility says the run is eligible
+    (never disabled); a decision-flow run applies from its chat receipt instead.
+  - **Artifacts** — a gallery across the thread's runs (`ArtifactGalleryView`
+    over a run list, `GET /runs/:id/produced`): images grid + compact file rows,
+    plus an "Open preview" affordance (`WKWebView`, `loadFileURL` for the
+    project's `index.html`) on SOLID surfaces — web content is never glass-backed.
+  - **Evidence** — per-run diagnostics/receipts (`RunEvidenceView`): a single
+    filtered run inline, the whole thread as lazy disclosure sections. Bounded
+    typed error/context summaries + raw-evidence paths; full `events.jsonl` and
+    logs stay one click away in the run folder, never eagerly laid out.
+  An empty / no-output thread reads an honest "No project output in this thread."
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped tabs: General,
@@ -919,9 +927,10 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   picking pins the thread's credential profile (the per-thread override — the accounts popover owns
   the global Enabled set that next-up routing draws from).
 
-- **Titles / H1.** Headed surfaces (Settings tabs, the run inspector's `TaskDetail` header)
-  use the shared `ScreenHeader` recipe (`.title2.weight(.bold)` + optional `.callout`
-  secondary subtitle); never re-implement the title inline. The chat-first main window is
+- **Titles / H1.** Headed surfaces (Settings tabs) use the shared title recipe
+  (`.title2.weight(.bold)` + optional `.callout` secondary subtitle); never
+  re-implement the title inline. The thread workspace panel titles itself
+  ("Thread workspace — <thread>", `.headline`). The chat-first main window is
   deliberately header-less: the thread title/subtitle live in the system window toolbar
   (`.navigationTitle`/`.navigationSubtitle`) and the floating composer *is* the hero — the
   conversation does not get a redundant in-content H1.

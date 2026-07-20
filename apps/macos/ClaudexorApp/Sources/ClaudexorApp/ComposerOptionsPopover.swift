@@ -46,7 +46,11 @@ extension ThreadsScreen {
                         // available (the wire body the composer already sends for
                         // "no explicit pool"). Tapping it clears any explicit subset.
                         let auto = HarnessPoolPresentation.isAuto(pool: model.effectiveEligiblePool)
-                        FilterChip(label: "Auto", systemImage: "wand.and.stars",
+                        // The Auto chip is a toggle like the harness chips; its
+                        // SELECTED state carries the app's standard checkmark so
+                        // "Auto is on" reads unambiguously next to the highlighted
+                        // (included-by-Auto) harness chips (batch-6 item d).
+                        FilterChip(label: "Auto", systemImage: auto ? "checkmark" : "wand.and.stars",
                                    isActive: auto, tint: Theme.accent) {
                             Task { await model.setEligiblePool(HarnessPoolPresentation.selectingAuto()) }
                         }
@@ -251,6 +255,8 @@ extension ThreadsScreen {
         }
         .padding(Theme.Spacing.lg)
         .frame(width: Theme.Layout.composerOptionsWidth, alignment: .leading)
+        // Root-level text selection for the options popover (batch-6 item c / §2.9).
+        .textSelection(.enabled)
     }
 
     /// The wire value the per-turn picker sends: empty ("Thread default") is

@@ -2,23 +2,18 @@ import SwiftUI
 import AppKit
 
 /// v0.10 chat-first cockpit: ONE screen. The thread list + conversation IS the
-/// app (ThreadsScreen); a run's detail (diff/timeline/review) opens in the
-/// trailing inspector, not a separate kitchen-sink of tabs. Budget, Harness
-/// Doctor, and preferences live in the Settings scene (⌘,).
+/// app (ThreadsScreen); the trailing inspector is the THREAD WORKSPACE (D42) —
+/// the current thread's Changes / Artifacts / Evidence, filtered to a run when a
+/// chat receipt is selected. Budget, Harness Doctor, and preferences live in the
+/// Settings scene (⌘,).
 struct RootView: View {
     @Environment(AppModel.self) private var model
-    @State private var workbenchMode: WorkbenchMode = .runDetail
     /// The user's EXPLICIT wizard dismissal (W15/R18) — the only sticky bit.
     /// Whether onboarding is NEEDED is derived from the server's routability
     /// projection each launch (the old `onboardingComplete` flag hid the
     /// wizard forever even when a fresh v2 runtime had no routable harness).
     /// Never auto-reset; Settings → Harness Doctor is the way back in.
     @AppStorage("claudexor.onboardingDismissed") private var onboardingDismissed = false
-
-    enum WorkbenchMode: String, CaseIterable, Identifiable {
-        case runDetail = "Run Detail", canvas = "Canvas"
-        var id: String { rawValue }
-    }
 
     var body: some View {
         @Bindable var model = model
@@ -40,8 +35,8 @@ struct RootView: View {
                 }
             }
                 .inspector(isPresented: Bindable(model).inspectorPresented) {
-                    runInspector
-                        .inspectorColumnWidth(min: 320, ideal: 420, max: 560)
+                    ThreadWorkspacePanel()
+                        .inspectorColumnWidth(min: 340, ideal: 460, max: 620)
                 }
                 .toolbar { toolbarContent }
                 // Hide the toolbar's own material so the behind-window blur is
@@ -49,6 +44,11 @@ struct RootView: View {
                 .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
                 .tint(Theme.accent)
         }
+        // Global text selection (batch-6 item c / DESIGN_SYSTEM §2.9): applied
+        // ONCE at the window's root content so EVERY descendant Text is selectable
+        // — the mechanism, not per-Text opt-in. Genuinely non-text controls opt
+        // OUT locally; nothing opts in.
+        .textSelection(.enabled)
         // Clear the SwiftUI window container so the behind-window material (and the
         // desktop beneath it) shows through — the missing piece that made the window
         // read as a solid gray panel. Window opacity is set in AppDelegate.
@@ -74,47 +74,6 @@ struct RootView: View {
         }
     }
 
-    /// The trailing Workbench: ONE region with a [Run Detail | Canvas] switch.
-    /// Run Detail is the opened run's tabs; Canvas hosts the artifacts gallery and
-    /// the mini-browser.
-    @ViewBuilder private var runInspector: some View {
-        VStack(spacing: 0) {
-            Picker("Workbench", selection: $workbenchMode) {
-                ForEach(WorkbenchMode.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding([.horizontal, .top], Theme.Spacing.sm)
-            switch workbenchMode {
-            case .runDetail: runDetailContent
-            case .canvas: CanvasView(runId: openRunId, repoRoot: openRepoRoot)
-            }
-        }
-    }
-
-    private var openRunId: String? {
-        if case .task(let id) = model.route { return id }
-        return nil
-    }
-
-    /// The open task's project root — drives the Canvas browser auto-load.
-    private var openRepoRoot: String? {
-        guard let id = openRunId else { return nil }
-        return model.task(id)?.repoRoot
-    }
-
-    @ViewBuilder private var runDetailContent: some View {
-        if case .task(let id) = model.route {
-            TaskDetailView(taskId: id)
-        } else {
-            ContentUnavailableView(
-                "No run open",
-                systemImage: "sidebar.trailing",
-                description: Text("Open a run from a turn to inspect its diff, timeline, and review.")
-            )
-        }
-    }
-
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         // One minimal, native action cluster (trailing): appearance · inspector ·
         // settings · new. No custom status capsule and no Refresh button —
@@ -125,10 +84,10 @@ struct RootView: View {
             AppearanceMenu()
 
             Button { withAnimation(.snappy) { model.inspectorPresented.toggle() } } label: {
-                Label("Run inspector", systemImage: "sidebar.trailing")
+                Label("Thread workspace", systemImage: "sidebar.trailing")
             }
             .labelStyle(.iconOnly)
-            .help("Toggle the run inspector — diff, timeline, review")
+            .help("Toggle the thread workspace — changes, artifacts, evidence")
 
             SettingsLink { Label("Settings", systemImage: "gearshape") }
                 .labelStyle(.iconOnly)

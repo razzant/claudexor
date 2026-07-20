@@ -9,50 +9,87 @@ import ClaudexorKit
 /// everything else opens externally. Reuses the binary-aware
 /// `GET /runs/:id/artifacts(/:path)` control-API path. Technical artifacts
 /// (events.jsonl, context/, attempts/) stay in Diagnostics, not the gallery.
+/// One artifact tagged with the run that produced it — so a gallery aggregated
+/// across a thread's runs still fetches each file's bytes from the right run.
+struct RunArtifact: Identifiable, Equatable, Sendable {
+    let runId: String
+    let art: ArtifactInfo
+    var id: String { "\(runId)|\(art.path)" }
+}
+
 struct ArtifactGalleryView: View {
     @Environment(AppModel.self) private var model
-    let runId: String
+    /// The runs whose artifacts are aggregated (D42): one run for the run-filtered
+    /// view, the whole thread's runs for the aggregated Artifacts tab.
+    let runIds: [String]
     /// When true, source the project's PRODUCED outputs (`/runs/:id/produced`)
     /// instead of the run's orchestration tree — and skip the run-tree filter.
     var produced: Bool = false
-    /// D15: identity-keyed load slot — switching runs shows loading/empty, never
-    /// the previous run's artifact list.
-    @State private var slot = PayloadSlot<[ArtifactInfo]>()
+    /// D15: identity-keyed load slot — switching the run set shows loading/empty,
+    /// never the previous set's artifact list.
+    @State private var slot = PayloadSlot<[RunArtifact]>()
+
+    /// Single-run gallery (the run's own tree, or its produced outputs).
+    init(runId: String, produced: Bool = false) {
+        self.runIds = [runId]
+        self.produced = produced
+    }
+    /// Thread-aggregated gallery across a run list (D42).
+    init(runIds: [String], produced: Bool = false) {
+        self.runIds = runIds
+        self.produced = produced
+    }
 
     private var plane: PayloadPlane { produced ? .produced : .run }
-    private var identity: PayloadIdentity { PayloadIdentity(runId: runId, plane: plane) }
+    /// The aggregated identity: the whole ordered run set is the key, so adding a
+    /// run or switching threads resets the slot (no stale bytes across sets).
+    private var identity: PayloadIdentity {
+        PayloadIdentity(runId: runIds.joined(separator: "|"), plane: plane)
+    }
 
     /// Filter the loaded list for display; the raw slot value is the fetch truth.
-    private func display(_ artifacts: [ArtifactInfo]) -> [ArtifactInfo] {
+    private func display(_ artifacts: [RunArtifact]) -> [RunArtifact] {
         // The produced endpoint already returns only project outputs, so show all
         // files it returns. The run-tree filter only applies to the run artifacts.
         if produced {
-            return artifacts.filter { $0.kind == "file" }
+            return artifacts.filter { $0.art.kind == "file" }
         }
         return artifacts.filter {
-            $0.kind == "file"
-                && !$0.path.hasSuffix("events.jsonl")
-                && !$0.path.hasPrefix("context/")
-                && !$0.path.hasPrefix("attempts/")
+            $0.art.kind == "file"
+                && !$0.art.path.hasSuffix("events.jsonl")
+                && !$0.art.path.hasPrefix("context/")
+                && !$0.art.path.hasPrefix("attempts/")
         }
     }
 
-    private var displayArtifacts: [ArtifactInfo] { display(slot.state.value ?? []) }
+    private var displayArtifacts: [RunArtifact] { display(slot.state.value ?? []) }
     /// Item 8 grouping: image cards vs. the compact document list (text + other).
-    private var imageArtifacts: [ArtifactInfo] {
-        displayArtifacts.filter { ArtifactCategory.of(mime: $0.mime, path: $0.path) == .image }
+    private var imageArtifacts: [RunArtifact] {
+        displayArtifacts.filter { ArtifactCategory.of(mime: $0.art.mime, path: $0.art.path) == .image }
     }
-    private var documentArtifacts: [ArtifactInfo] {
-        displayArtifacts.filter { ArtifactCategory.of(mime: $0.mime, path: $0.path) != .image }
+    private var documentArtifacts: [RunArtifact] {
+        displayArtifacts.filter { ArtifactCategory.of(mime: $0.art.mime, path: $0.art.path) != .image }
     }
 
-    /// Images the run CHANGED anywhere in the project tree (typed diff
-    /// evidence — F2.5 W-C7 part 3): agents drop screenshots wherever the
-    /// task says, not just artifacts/, so the canvas surfaces every image the
-    /// diff touched — same canonical scope gate as inline chat previews.
+    /// Images the runs CHANGED anywhere in the project tree (typed diff evidence),
+    /// aggregated across the run set and de-duplicated — agents drop screenshots
+    /// wherever the task says, so the gallery surfaces every image the diffs
+    /// touched, same canonical scope gate as inline chat previews.
     private var runChangedImages: [String] {
-        guard produced, let run = model.task(runId) else { return [] }
-        return Self.runImagePaths(diffPaths: run.diff.map(\.path), repoRoot: run.repoRoot)
+        guard produced else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for runId in runIds {
+            guard let run = model.task(runId) else { continue }
+            for path in Self.runImagePaths(diffPaths: run.diff.map(\.path), repoRoot: run.repoRoot)
+            where seen.insert(path).inserted { out.append(path) }
+        }
+        return out
+    }
+
+    /// The repo roots across the run set (for the scoped inline image gate).
+    private var changedImageRoots: [String] {
+        runIds.compactMap { model.task($0)?.repoRoot }
     }
 
     /// Pure derivation (unit-tested): diff-relative paths -> absolute image
@@ -75,7 +112,7 @@ struct ArtifactGalleryView: View {
                         ForEach(runChangedImages, id: \.self) { path in
                             ScopedInlineImage(target: path,
                                               alt: (path as NSString).lastPathComponent,
-                                              roots: [model.task(runId)?.repoRoot].compactMap { $0 })
+                                              roots: changedImageRoots)
                         }
                     }
                 }
@@ -123,8 +160,8 @@ struct ArtifactGalleryView: View {
                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.Spacing.md)],
                       alignment: .leading, spacing: Theme.Spacing.md) {
-                ForEach(imageArtifacts) { art in
-                    ArtifactImageCard(runId: runId, art: art, produced: produced)
+                ForEach(imageArtifacts) { item in
+                    ArtifactImageCard(runId: item.runId, art: item.art, produced: produced)
                 }
             }
         }
@@ -136,29 +173,42 @@ struct ArtifactGalleryView: View {
             Label("Files", systemImage: "doc.on.doc")
                 .font(.caption.weight(.medium)).foregroundStyle(.secondary)
             LazyVStack(spacing: Theme.Spacing.xxs) {
-                ForEach(documentArtifacts) { art in
-                    ArtifactRow(runId: runId, art: art, produced: produced)
+                ForEach(documentArtifacts) { item in
+                    ArtifactRow(runId: item.runId, art: item.art, produced: produced)
                 }
             }
         }
     }
 
+    /// Load + AGGREGATE artifacts across the run set. Each run's fetch is tagged
+    /// with its runId (so bytes fetch from the right run) and de-duplicated by
+    /// (runId, path). A single failed run does not blank a set that otherwise
+    /// loaded; ALL failing (and nothing loaded) surfaces the typed error state.
     private func load() async {
         let id = identity
         slot.begin(id)
-        let list = produced
-            ? await model.producedArtifacts(runId: runId)
-            : await model.runArtifacts(runId: runId)
-        guard let list else {
-            // Load FAILED (offline/transport): show the typed error state instead
-            // of silently rendering "no artifacts" over kept last-known data.
+        var combined: [RunArtifact] = []
+        var seen = Set<String>()
+        var anyFailed = false
+        for runId in runIds {
+            let list = produced
+                ? await model.producedArtifacts(runId: runId)
+                : await model.runArtifacts(runId: runId)
+            guard let list else { anyFailed = true; continue }
+            for art in list where seen.insert("\(runId)|\(art.path)").inserted {
+                combined.append(RunArtifact(runId: runId, art: art))
+            }
+        }
+        // All runs failed and we have no content: the typed error state (never a
+        // silent "no artifacts" over a real transport failure).
+        if combined.isEmpty && anyFailed && (slot.state.value?.isEmpty ?? true) {
             slot.commit(.failed(.offline), for: id)
             return
         }
         // Keep last-known on a transient empty ONLY when we already have content
         // for THIS identity (a live run still producing) — never across a switch.
-        if list.isEmpty, let existing = slot.state.value, !existing.isEmpty { return }
-        slot.commit(list.isEmpty ? .empty : .loaded(list), for: id)
+        if combined.isEmpty, let existing = slot.state.value, !existing.isEmpty { return }
+        slot.commit(combined.isEmpty ? .empty : .loaded(combined), for: id)
     }
 }
 

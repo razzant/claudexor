@@ -320,12 +320,9 @@ struct ThreadsScreen: View {
                 StatusBanner(message: status)
             }
 
-            // Isolated threads accumulate in a worktree; deliver the diff to the
-            // project on demand. In-place threads write the live tree directly and
-            // never need this bar.
-            if let t = model.currentThread, t.workspaceMode == "isolated", !t.runIds.isEmpty {
-                ApplyThreadBar(threadId: t.id).conversationMeasure()
-            }
+            // The isolated-thread apply-thread action moved into the thread
+            // workspace's Changes tab (D42) — the conversation is just the feed +
+            // composer now.
 
             composer
         }

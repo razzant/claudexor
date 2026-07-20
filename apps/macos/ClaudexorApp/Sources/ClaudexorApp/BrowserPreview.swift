@@ -2,7 +2,13 @@ import SwiftUI
 import WebKit
 import ClaudexorKit
 
-// MARK: - Mini-browser (Phase 5, Feature B)
+// MARK: - Mini-browser preview (D42)
+//
+// The Canvas mode is gone (D42 folds artifacts into the thread workspace's
+// Artifacts tab). BrowserView survives as an "Open preview" affordance: the
+// workspace Artifacts tab opens it in a sheet for the thread's repoRoot
+// index.html (localhost / rendered-output preview). Agent-driven browsing is a
+// separate mirrored Chromium via Playwright MCP.
 
 /// Holds one WKWebView so SwiftUI toolbar buttons (back/forward/reload) can drive
 /// it. WebKit views are created on the main actor.
@@ -90,48 +96,27 @@ struct BrowserView: View {
     }
 }
 
-// MARK: - Canvas / Workbench (Phase 6, Q3/Q13)
+// MARK: - Preview sheet
 
-/// The Canvas side of the trailing Workbench: a segmented set of work surfaces.
-/// Artifacts is run-scoped; the browser is session/global. (A live Preview tab
-/// and the agent-mirror browser arrive with Phase 7.)
-struct CanvasView: View {
-    let runId: String?
-    /// The open run/task's project root — used to auto-load the project's
-    /// index.html in the browser and (via produced) to scope outputs.
-    let repoRoot: String?
-    @State private var tab: CanvasTab = .artifacts
-
-    enum CanvasTab: String, CaseIterable, Identifiable {
-        case artifacts = "Artifacts", browser = "Browser"
-        var id: String { rawValue }
-        var glyph: String { self == .artifacts ? "photo.on.rectangle.angled" : "globe" }
-    }
+/// A sheet host for BrowserView, opened from the workspace Artifacts tab's "Open
+/// preview" affordance. Auto-loads the thread project's index.html.
+struct PreviewSheet: View {
+    let repoRoot: String
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $tab) {
-                ForEach(CanvasTab.allCases) { t in
-                    Label(t.rawValue, systemImage: t.glyph).tag(t)
-                }
+            HStack {
+                Text("Preview").font(.headline)
+                Spacer()
+                Button("Done") { dismiss() }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(Theme.Spacing.sm)
+            .padding(Theme.Spacing.md)
             Divider()
-            switch tab {
-            case .artifacts:
-                if let runId {
-                    ArtifactGalleryView(runId: runId, produced: true)
-                } else {
-                    ContentUnavailableView("No run open", systemImage: "photo.on.rectangle.angled",
-                        description: Text("Open a run from a turn to see its artifacts."))
-                }
-            case .browser:
-                // NSString.appendingPathComponent normalizes separators (a repoRoot
-                // with a trailing slash won't produce `//index.html`).
-                BrowserView(autoLoadFile: repoRoot.map { ($0 as NSString).appendingPathComponent("index.html") })
-            }
+            // NSString.appendingPathComponent normalizes separators (a repoRoot
+            // with a trailing slash won't produce `//index.html`).
+            BrowserView(autoLoadFile: (repoRoot as NSString).appendingPathComponent("index.html"))
         }
+        .frame(minWidth: 720, minHeight: 520)
     }
 }

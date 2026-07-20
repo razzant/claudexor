@@ -4,7 +4,7 @@ import Foundation
 /// owns "how much real money this run has spent" — subscription-entitled work
 /// settles to $0 there, so the UI renders the disclosed number verbatim and
 /// never infers billing from route labels (the old "≈$" valuation essay).
-/// One owner: TurnCard, BudgetMini, and every future spend surface format
+/// One owner: the turn receipt row and every future spend surface format
 /// through here — no duplicated precision decisions.
 enum CashSpend {
     /// "$0.00" while the run stays on subscription routes; real dollars once

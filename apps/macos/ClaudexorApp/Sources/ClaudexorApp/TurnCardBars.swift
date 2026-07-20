@@ -4,8 +4,119 @@ import ClaudexorKit
 // MARK: - Turn-adjacent action bars
 //
 // Extracted from TurnCard.swift (INV-124 readability ratchet): the isolated-
-// thread apply bar and the frozen-spec card are self-contained sibling views
-// of the turn card. Pure move — zero behavior change.
+// thread apply bar and the turn RECEIPT row are self-contained sibling views of
+// the turn card.
+
+/// The D42 persistent RECEIPT row: status glyph · harness · state · duration ·
+/// spend · tool/file counts · outcome chip. The whole row is the click target —
+/// it toggles the inline activity transcript (`onToggle`); a trailing "workspace"
+/// affordance opens the thread workspace filtered to this run (`onOpenWorkspace`,
+/// replacing the old ⧉ inspector button). Progress never disappears: while live
+/// the activity is expanded and this row is its persistent header.
+struct TurnReceiptRow: View {
+    @Environment(AppModel.self) private var model
+    let run: TaskRun
+    let runId: String
+    let expanded: Bool
+    let onToggle: () -> Void
+    let onOpenWorkspace: () -> Void
+
+    private var line: TurnPresentation.StatusLine {
+        TurnPresentation.statusLine(
+            phase: run.phase, reason: run.outcomeFacts?.reason,
+            harnesses: run.harnesses, n: run.n,
+            retryLabel: run.phase.isActive ? run.retryStatus?.label : nil,
+            reviewNeedsDecision: run.reviewNeedsDecision,
+            waitingOnUser: run.waitingOnUser)
+    }
+
+    private var hasActivity: Bool { !model.transcriptBlocks(runId).isEmpty }
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            Button(action: onToggle) { receipt }
+                .buttonStyle(.plain)
+            // The "workspace" affordance (replaces ⧉): open this run's changes /
+            // artifacts / evidence in the thread workspace.
+            Button(action: onOpenWorkspace) {
+                Image(systemName: "sidebar.trailing")
+            }
+            .buttonStyle(.borderless)
+            .help("Open this run in the thread workspace — changes, artifacts, evidence")
+        }
+    }
+
+    private var receipt: some View {
+        HStack(spacing: Theme.Spacing.sm) {
+            statusGlyph
+            if let identity = line.identity {
+                Label {
+                    Text(identity)
+                } icon: {
+                    if let family = line.family { HarnessIcon(family: family, size: 12) }
+                    else { Image(systemName: "flag.checkered.2.crossed") }
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(line.family?.color ?? .secondary)
+                .padding(.horizontal, Theme.Spacing.sm).padding(.vertical, 3)
+                .background((line.family?.color ?? Theme.separator).opacity(0.13), in: Capsule())
+                .overlay(Capsule().stroke((line.family?.color ?? Theme.separator).opacity(0.35), lineWidth: 1))
+            }
+            if let word = line.stateWord {
+                Text(word).font(.caption).foregroundStyle(.secondary)
+            }
+            // The outcome banner CHIP when present: the loud attention state
+            // (needs decision / failed / waiting) — the quiet states stay text.
+            if let chip = TurnPresentation.attention(
+                phase: run.phase, reason: run.outcomeFacts?.reason,
+                reviewNeedsDecision: run.reviewNeedsDecision, waitingOnUser: run.waitingOnUser) {
+                Text(chip.text)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, Theme.Spacing.xs).padding(.vertical, 1)
+                    .background(chip.tone.color.opacity(0.14), in: Capsule())
+                    .foregroundStyle(chip.tone.color)
+            }
+            Spacer()
+            elapsed
+            let spend = model.spendDisplay(run)
+            if spend.known {
+                Text(CashSpend.label(spend.usd, estimated: spend.estimated))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help(CashSpend.help(estimated: spend.estimated))
+            }
+            // Tool / file counts from the transcript — "9 tools · 3 files".
+            if let summary = TurnPresentation.activitySummary(blocks: model.transcriptBlocks(runId)) {
+                Text(summary).font(.caption).foregroundStyle(.secondary)
+            }
+            if hasActivity {
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .imageScale(.small).foregroundStyle(.tertiary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder private var statusGlyph: some View {
+        if run.phase.isActive {
+            ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 12, height: 12)
+        } else {
+            Circle().fill(run.phase.color).frame(width: 8, height: 8)
+        }
+    }
+
+    @ViewBuilder private var elapsed: some View {
+        if run.phase.isActive {
+            Text(run.createdAt, style: .relative).font(.caption).foregroundStyle(.secondary)
+                .help("Time since the run started")
+        } else {
+            let seconds = Int(run.updatedAt.timeIntervalSince(run.createdAt))
+            if seconds >= 1 {
+                Text(TurnCard.durationLabel(seconds: seconds)).font(.caption).foregroundStyle(.secondary)
+                    .help("How long the run took")
+            }
+        }
+    }
+}
 
 /// Deliver an ISOLATED thread's accumulated worktree diff to its project. Renders
 /// the ControlThreadApplyResponse honestly (applied/branched/empty/conflict/rejected

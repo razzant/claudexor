@@ -39,13 +39,25 @@ extension AppModel {
     /// Registered credential profiles + doctor readiness (INV-135). Drives the
     /// accounts popover; a failing fetch leaves the last snapshot in place.
     func refreshCredentialProfiles() async {
-        guard let client else { return }
+        _ = await loadCredentialProfiles()
+    }
+
+    /// Load credential profiles, returning the honest error on failure (batch-6
+    /// item h): the accounts surface distinguishes a config/load ERROR (typed
+    /// state + retry) from an EMPTY registry ("No accounts yet"). nil = loaded OK
+    /// (the arrays are updated); non-nil = the failure message (last snapshot kept).
+    @discardableResult
+    func loadCredentialProfiles() async -> String? {
+        guard let client else { return "Engine offline — reconnect to load accounts." }
         do {
             let response = try await client.credentialProfiles()
             credentialProfiles = response.profiles
             harnessAccounts = response.harnessAccounts
+            return nil
         } catch {
-            /* endpoint absent (older daemon) or offline — keep last snapshot */
+            // Endpoint absent (older daemon) / offline / malformed config — keep
+            // the last snapshot, surface the reason (never a silent empty list).
+            return userMessage(for: error)
         }
     }
 
@@ -85,6 +97,17 @@ extension AppModel {
         await refreshSettings()
         await refreshCredentialProfiles()
         return ok ? nil : (settingsStatus ?? "Could not update the native login setting.")
+    }
+
+    /// Toggle an api-key META-HOST's routing participation (batch-6 item g — the
+    /// raw-api/openrouter row's Enabled). These hosts have no per-account rotation
+    /// (one key), so their "Enabled" IS the harness `enabled` setting.
+    @discardableResult
+    func setHarnessEnabled(harnessId: String, enabled: Bool) async -> String? {
+        let ok = await saveSettings(SettingsUpdateRequest(
+            harnesses: [harnessId: HarnessSettingsPatch(enabled: enabled)]))
+        await refreshSettings()
+        return ok ? nil : (settingsStatus ?? "Could not update the harness setting.")
     }
 
     /// Register a new credential profile (INV-135). On success the registry is
@@ -260,33 +283,40 @@ extension AppModel {
         }
     }
 
-    // MARK: Auto-balance
+    // MARK: Auto-switch-at-quota (batch-6 item b)
 
-    /// Harnesses that participate in credential-profile auto-balance — the
-    /// config_dir_login families the registry covers.
-    static let autoBalanceHarnessIds = ["claude", "codex"]
-
-    /// Aggregated auto-balance state across the profile-capable harnesses:
-    /// on = every harness rotates, off = none rotate, mixed = they disagree.
-    enum AutoBalanceState { case on, off, mixed }
-
-    var autoBalanceState: AutoBalanceState {
-        if let pending = autoBalanceOverride { return pending ? .on : .off }
-        let actions = Self.autoBalanceHarnessIds.map {
-            settingsSnapshot?.harnesses?[$0]?.profileLimitAction ?? "fail"
-        }
-        if actions.allSatisfy({ $0 == "rotate" }) { return .on }
-        if actions.allSatisfy({ $0 != "rotate" }) { return .off }
-        return .mixed
+    /// The harnesses the auto-switch toggle targets: config_dir_login families
+    /// with a SECOND account registered (native login + ≥1 profile = 2+ rotatable
+    /// identities). A single-account harness cannot rotate, so it is excluded —
+    /// the old hardcoded [claude, codex] set patched harnesses that had nothing to
+    /// switch to (owner: "renders but doesn't activate").
+    var autoBalanceHarnessIds: [String] {
+        AccountsAutoBalance.eligibleHarnessIds(
+            profileHarnessIds: credentialProfiles.map(\.profile.harnessId))
     }
 
-    /// Flip auto-balance for BOTH profile-capable harnesses at once (on = rotate,
-    /// off = fail), so a mixed state resolves to a single consistent choice.
+    /// Aggregated auto-switch state across the eligible harnesses. `mixed` (they
+    /// disagree) renders as "—"; `unavailable` (no 2nd account anywhere) disables
+    /// the toggle. Reads the per-harness `profile_limit_action` from settings.
+    var autoBalanceState: AccountsAutoBalance.State {
+        if let pending = autoBalanceOverride {
+            // While a save round-trips, reflect the optimistic choice — but only
+            // when there is actually an eligible harness to have set.
+            return autoBalanceHarnessIds.isEmpty ? .unavailable : (pending ? .on : .off)
+        }
+        let actions = autoBalanceHarnessIds.map {
+            settingsSnapshot?.harnesses?[$0]?.profileLimitAction ?? "fail"
+        }
+        return AccountsAutoBalance.state(actions: actions)
+    }
+
+    /// Flip auto-switch for every eligible harness at once (on = rotate, off =
+    /// fail), so a mixed state resolves to a single consistent choice.
     func setAutoBalance(_ on: Bool) async {
-        // ON sets rotate on both families. OFF only downgrades harnesses that
-        // are currently "rotate" — a hand-configured "ask" is not auto-switch,
-        // so the toggle must not erase it.
-        let patch = Dictionary(uniqueKeysWithValues: Self.autoBalanceHarnessIds.compactMap {
+        // ON sets rotate on every eligible harness. OFF only downgrades harnesses
+        // currently on "rotate" — a hand-configured "ask" is not auto-switch, so
+        // the toggle must not erase it.
+        let patch = Dictionary(uniqueKeysWithValues: autoBalanceHarnessIds.compactMap {
             id -> (String, HarnessSettingsPatch)? in
             let current = settingsSnapshot?.harnesses?[id]?.profileLimitAction ?? "fail"
             if on { return current == "rotate" ? nil : (id, HarnessSettingsPatch(profileLimitAction: "rotate")) }

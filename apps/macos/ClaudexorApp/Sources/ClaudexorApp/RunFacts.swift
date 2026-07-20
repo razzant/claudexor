@@ -89,9 +89,8 @@ enum RunFacts {
 
     // MARK: Header composition (Run Detail)
 
-    /// The PRIMARY header facts (W4.5: 3-4 facts — route, apply, attention;
-    /// status rides the ScreenHeader accessory and budget renders as
-    /// BudgetMini beside this row). Everything else belongs in Details.
+    /// The PRIMARY header facts (W4.5: 3-4 facts — route, apply, attention).
+    /// Everything else belongs in Details.
     static func headerPrimary(_ task: TaskRun) -> [Fact] {
         var facts: [Fact] = []
         if let route = task.authRoute, let effective = route.effective, effective != "unknown" {
