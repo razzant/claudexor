@@ -48,18 +48,18 @@ struct TurnCard: View {
                 // not lay out unbounded on the main thread.
                 Text(turn.prompt.count > 8_000 ? String(turn.prompt.prefix(8_000)) + "…" : turn.prompt)
                     .font(.body)
-                    // Owner-locked bubble contract (final round): the "my message"
-                    // bubble is a SOLID accent fill with white text — the modern
-                    // sent-message idiom (iMessage-class) that reads at full
-                    // contrast in BOTH themes. No stroke: the fill IS the edge;
-                    // borders on filled bubbles are the old-fashioned look the
-                    // owner rejected. TEXT contrast is the requirement, not chrome.
-                    .foregroundStyle(.white)
+                    // Owner-tuned bubble (round 4): the solid-accent version out-
+                    // shouted the assistant's answer, so the user bubble is a QUIET
+                    // faintly-tinted fill with PRIMARY text (ChatGPT/Claude-desktop
+                    // convention; HIG reserves accent for interactive elements).
+                    // No stroke; identity = right alignment + fill. The final
+                    // answer bubble stays the loudest element in the feed.
+                    .foregroundStyle(.primary)
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.sm)
                     .background(
-                        Theme.accentSolid,
+                        Theme.bubbleUser,
                         in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
             }
             assistantSection

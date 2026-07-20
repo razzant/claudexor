@@ -44,6 +44,12 @@ enum Theme {
     static let surfaceRaised = Color(dark: (0.205, 0.216, 0.240), light: (1.0, 1.0, 1.0))
     static let surfaceRaisedHi = Color(dark: (0.250, 0.264, 0.294), light: (0.965, 0.967, 0.974))
     static let surfaceCode = Color(dark: (0.060, 0.064, 0.076), light: (0.968, 0.969, 0.976))
+    /// The USER message bubble: a QUIET, faintly accent-tinted raised fill read
+    /// with the primary label color — the ChatGPT/Claude-desktop convention for
+    /// content-heavy prompts. Identity comes from right-alignment + this fill;
+    /// the ASSISTANT's final answer stays the loudest element in the feed
+    /// (HIG: accent is for interactive elements, not text slabs).
+    static let bubbleUser = Color(dark: (0.235, 0.252, 0.298), light: (0.878, 0.898, 0.938))
     static let separator = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.14)
     static let hairline = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.08)
     /// Card border — a touch stronger than separator for crisp card edges on the glow.
