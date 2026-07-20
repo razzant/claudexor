@@ -52,6 +52,7 @@
             "route.profile.rotation_exhausted",
             "route.transient.exhausted",
             "route.fallback.auth_switched",
+            "route.primary.diverged",
             "session.continuity",
             "interaction.requested",
             "interaction.answered",

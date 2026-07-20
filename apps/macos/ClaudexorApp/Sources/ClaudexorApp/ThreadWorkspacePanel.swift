@@ -15,6 +15,10 @@ struct ThreadWorkspacePanel: View {
     @State private var tab: WorkspaceTab = .changes
     @State private var userSelectedTab = false
     @State private var showPreview = false
+    /// The run-filtered facts are a COMPACT COLLAPSIBLE header (not a static
+    /// upper floor): collapsed by default so the per-tab content is visible
+    /// without scrolling; expanding reveals the full run Outcome section.
+    @State private var runFactsExpanded = false
 
     private var detail: ThreadDetailResponse? { model.selectedThreadDetail }
 
@@ -54,14 +58,19 @@ struct ThreadWorkspacePanel: View {
 
     var body: some View {
         if let detail {
+            // WHOLE-PANEL tabs (round-3 item 2): the tab bar sits at the very top
+            // (directly under the panel title) and EVERYTHING below it switches
+            // per tab. The run-filtered facts are no longer a static upper floor
+            // above the tabs — they are a compact collapsible strip inside the
+            // scrolling content, so switching a tab changes the whole panel.
             VStack(alignment: .leading, spacing: 0) {
-                header(detail)
+                title(detail)
                 tabBar
                 Divider().overlay(Theme.separator)
                 ScrollView {
                     VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
                         if let run = filteredRun {
-                            RunOutcomeSection(task: run)
+                            runFilterHeader(run)
                         }
                         content(detail)
                     }
@@ -91,40 +100,71 @@ struct ThreadWorkspacePanel: View {
         }
     }
 
-    // MARK: Header (title + filter chip)
+    // MARK: Panel title (the tab bar sits directly below it)
 
-    private func header(_ detail: ThreadDetailResponse) -> some View {
+    private func title(_ detail: ThreadDetailResponse) -> some View {
+        Text("Thread workspace — \(detail.thread.title ?? "Untitled thread")")
+            .font(.headline)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.Spacing.xxl)
+            .padding(.top, Theme.Spacing.sm)
+            .padding(.bottom, Theme.Spacing.xs)
+    }
+
+    // MARK: Run-filtered facts — compact COLLAPSIBLE strip (not a static floor)
+
+    /// The compact strip shown INSIDE the content area when a receipt filters the
+    /// panel to one run: the filter chip + a disclosure toggle. Collapsed by
+    /// default (the per-tab content stays visible without scrolling); expanding
+    /// reveals the full run Outcome facts. Keeps the filter chip (round-3 item 2).
+    private func runFilterHeader(_ run: TaskRun) -> some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            Text("Thread workspace — \(detail.thread.title ?? "Untitled thread")")
-                .font(.headline)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if let id = filterRunId {
-                // The receipt filter chip: shows the scoped run and clears back to
-                // the whole thread (× → the `.threads` route).
-                HStack(spacing: Theme.Spacing.xs) {
-                    Button {
-                        model.route = .threads
-                    } label: {
-                        HStack(spacing: Theme.Spacing.xxs) {
-                            Image(systemName: "line.3.horizontal.decrease.circle").imageScale(.small)
-                            Text("run: \(String(id.suffix(6)))").font(.caption.weight(.medium))
-                            Image(systemName: "xmark").imageScale(.small)
-                        }
-                        .padding(.horizontal, Theme.Spacing.sm)
-                        .padding(.vertical, Theme.Controls.chipVPadding)
-                        .background(Theme.accent.opacity(0.14), in: Capsule())
-                        .foregroundStyle(Theme.accent)
+            HStack(spacing: Theme.Spacing.sm) {
+                filterChip(run.id)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { runFactsExpanded.toggle() }
+                } label: {
+                    HStack(spacing: Theme.Spacing.xxs) {
+                        Text(runFactsExpanded ? "Hide run details" : "Run details")
+                        Image(systemName: runFactsExpanded ? "chevron.up" : "chevron.down")
+                            .imageScale(.small)
                     }
-                    .buttonStyle(.plain)
-                    .help("Filtered to this run — clear to see the whole thread's workspace")
-                    Spacer()
+                    .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Show or hide this run's Outcome, answer, plan, candidates, and review")
+            }
+            if runFactsExpanded {
+                RunOutcomeSection(task: run)
             }
         }
-        .padding(.horizontal, Theme.Spacing.xxl)
-        .padding(.top, Theme.Spacing.sm)
-        .padding(.bottom, Theme.Spacing.md)
+    }
+
+    /// The receipt filter chip: shows the scoped run and clears back to the whole
+    /// thread (× → the `.threads` route). Chip text never wraps (round-3 item 4).
+    private func filterChip(_ id: String) -> some View {
+        Button {
+            model.route = .threads
+        } label: {
+            HStack(spacing: Theme.Spacing.xxs) {
+                Image(systemName: "line.3.horizontal.decrease.circle").imageScale(.small)
+                Text("run: \(String(id.suffix(6)))").font(.caption.weight(.medium))
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                Image(systemName: "xmark").imageScale(.small)
+            }
+            .padding(.horizontal, Theme.Spacing.sm)
+            .padding(.vertical, Theme.Controls.chipVPadding)
+            .background(Theme.accent.opacity(0.14), in: Capsule())
+            .foregroundStyle(Theme.accent)
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("Filtered to this run — clear to see the whole thread's workspace")
     }
 
     private var tabBar: some View {

@@ -48,6 +48,12 @@ struct ChipMenu<Leading: View, MenuItems: View>: View {
             HStack(spacing: Theme.Spacing.xs) {
                 leading()
             }
+            // Chip meta-rule (round-3 item 4): a chip label NEVER wraps its text.
+            // `.lineLimit(1)` + the whole-chip `.fixedSize()` below keep the label
+            // on one intrinsic-width line; width pressure is handled by the
+            // surrounding FlowLayout wrapping WHOLE chips, never breaking a word.
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .font(.caption.weight(.medium))
             .foregroundStyle(tint)
             .padding(.horizontal, Theme.Spacing.md)

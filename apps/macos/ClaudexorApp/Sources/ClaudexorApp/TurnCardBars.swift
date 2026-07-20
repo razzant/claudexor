@@ -51,7 +51,8 @@ struct TurnReceiptRow: View {
             statusGlyph
             if let identity = line.identity {
                 Label {
-                    Text(identity)
+                    // Chip meta-rule (round-3 item 4): identity capsule never wraps.
+                    Text(identity).lineLimit(1).fixedSize(horizontal: true, vertical: false)
                 } icon: {
                     if let family = line.family { HarnessIcon(family: family, size: 12) }
                     else { Image(systemName: "flag.checkered.2.crossed") }
@@ -65,6 +66,19 @@ struct TurnReceiptRow: View {
             if let word = line.stateWord {
                 Text(word).font(.caption).foregroundStyle(.secondary)
             }
+            // Live activity inline while ACTIVE and COLLAPSED: the current tool
+            // line (e.g. «bash python3 -m http.server 4173») so progress is
+            // visible without expanding the transcript. When expanded, the
+            // inlineActivity transcript below already shows it — so suppress the
+            // one-liner to avoid duplication.
+            if run.phase.isActive, !expanded,
+               let activity = TurnPresentation.lastActivityLine(blocks: model.transcriptBlocks(runId)) {
+                Text("· \(activity)")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
+                    .layoutPriority(-1)
+                    .help("Current activity — the running step. Click the row to expand the full transcript.")
+            }
             // The outcome banner CHIP when present: the loud attention state
             // (needs decision / failed / waiting) — the quiet states stay text.
             if let chip = TurnPresentation.attention(
@@ -72,6 +86,8 @@ struct TurnReceiptRow: View {
                 reviewNeedsDecision: run.reviewNeedsDecision, waitingOnUser: run.waitingOnUser) {
                 Text(chip.text)
                     .font(.caption.weight(.semibold))
+                    // Chip meta-rule (round-3 item 4): attention chip never wraps.
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     .padding(.horizontal, Theme.Spacing.xs).padding(.vertical, 1)
                     .background(chip.tone.color.opacity(0.14), in: Capsule())
                     .foregroundStyle(chip.tone.color)

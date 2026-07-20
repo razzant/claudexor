@@ -15,6 +15,7 @@ import type {
 import {
   FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
+  RoutePrimaryDivergedPayload as RoutePrimaryDivergedPayloadSchema,
   makeOutcomeFacts,
   runOutcomeLabel,
 } from "@claudexor/schema";
@@ -337,6 +338,37 @@ export function observeAuthSwitch(
   } catch {
     /* a malformed marker must not fail the run */
   }
+}
+
+/** Primary divergence disclosure (round-3 item 1b): the composer chip pins a
+ * sticky PRIMARY, but if that harness's account is quota-exhausted / on cooldown
+ * (dropped by budget/quota ranking) or its route went unavailable (dropped from
+ * the pool), it never enters `ordered` — so the run silently routes to a
+ * different harness with ZERO fallback disclosure (no attempt was ever made on
+ * the primary to fall back FROM). Emit a typed, evidence-backed divergence the
+ * receipt renders loudly ("requested claude → ran on codex"). No-op when the
+ * primary actually ran, or when there is no pinned primary. */
+export function emitPrimaryDivergence(
+  log: EventLog | undefined,
+  requested: string | undefined,
+  ordered: { adapter: { id: string } }[],
+  pool: { adapter: { id: string } }[],
+  dropped: string[],
+): void {
+  if (!log || !requested || ordered.some((r) => r.adapter.id === requested)) return;
+  const survivedPool = pool.some((r) => r.adapter.id === requested);
+  log.emit(
+    "route.primary.diverged",
+    RoutePrimaryDivergedPayloadSchema.parse({
+      requested,
+      effective: ordered[0]?.adapter.id ?? null,
+      reason: survivedPool ? "quota_exhausted" : "auth_unavailable",
+      detail: survivedPool
+        ? `${requested} is on cooldown or over its budget/quota pace`
+        : (dropped.find((d) => d.startsWith(`${requested} `) || d.startsWith(`${requested}(`)) ??
+          `${requested} is unavailable`),
+    }) as unknown as Record<string, unknown>,
+  );
 }
 
 export function observeBudgetSignals(

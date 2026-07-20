@@ -507,6 +507,20 @@ extension AppModel {
             t.attentionNote = note
             taskChanged = true
             box.appendActivity(ActivityEvent(.system, note, at: .now))
+        } else if type == "route.primary.diverged" {
+            // The pinned primary harness never ran (quota-exhausted / unavailable)
+            // and the run silently routed elsewhere. Disclose the mismatch LOUDLY
+            // on the receipt (attentionNote) — what the chip showed was not what
+            // ran, and the user must see why. Built from typed event facts only.
+            let requested = payload["requested"]?.stringValue ?? "the primary harness"
+            let effective = payload["effective"]?.stringValue
+            let note = Self.primaryDivergedNote(
+                requested: requested,
+                effective: effective,
+                reason: payload["reason"]?.stringValue)
+            t.attentionNote = note
+            taskChanged = true
+            box.appendActivity(ActivityEvent(.system, note, at: .now))
         } else {
             box.appendActivity(ActivityEvent(.system, Self.title(payload) ?? Self.pretty(type), at: .now))
         }

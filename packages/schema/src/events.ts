@@ -63,6 +63,13 @@ export const RunEventType = z
     /** A subscription->API (or harness->harness) auth switch driven by a typed
      * quota/money signal. Distinct from a plain harness rotation; never silent. */
     "route.fallback.auth_switched",
+    /** The requested/sticky PRIMARY harness was dropped BEFORE any attempt (its
+     * account was quota-exhausted / on cooldown, or the route was unavailable),
+     * so the run's effective harness differs from what the composer chip showed.
+     * A pre-attempt routing divergence — distinct from a mid-run route.fallback.*
+     * (no attempt was ever made on the primary to fall back FROM); never silent.
+     * Payload: RoutePrimaryDivergedPayload {requested, effective, reason, detail}. */
+    "route.primary.diverged",
     /** A thread turn was continued across the conversation (INV-137); payload
      * carries the ContinuityDisclosure stats (kind, packet_turns, summarized,
      * lane_switched_from). Replaces the old static session.rebound phrase. */
@@ -138,6 +145,35 @@ export const RouteFallbackPayload = z
     "Typed payload for route.fallback.* events, validated before being stamped onto the RunEvent payload so a fallback/auth-switch is always evidence-backed.",
   );
 export type RouteFallbackPayload = z.infer<typeof RouteFallbackPayload>;
+
+/**
+ * Typed payload for the `route.primary.diverged` event. Emitted at route
+ * selection when a run's requested/sticky PRIMARY harness is not the harness
+ * that will actually run (its account was quota-exhausted / on cooldown, or the
+ * route was unavailable), so the composer's visible harness choice silently
+ * would not have applied. The orchestrator validates this before stamping it, so
+ * the divergence is always evidence-backed — the receipt discloses "requested
+ * <requested> → ran on <effective> (<reason>)" from real facts, never invented.
+ */
+export const RoutePrimaryDivergedPayload = z
+  .object({
+    requested: z.string().min(1).describe("The requested/sticky primary harness the chip showed."),
+    effective: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("The harness that actually ran first, or null when nothing remained routable."),
+    reason: FallbackReason.default("quota_exhausted"),
+    detail: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Redacted human reason the primary was dropped (e.g. cooldown, unavailable)."),
+  })
+  .describe(
+    "Typed payload for route.primary.diverged, validated before being stamped onto the RunEvent payload so a pre-attempt primary divergence is always evidence-backed.",
+  );
+export type RoutePrimaryDivergedPayload = z.infer<typeof RoutePrimaryDivergedPayload>;
 
 /** Append-only event record (one JSONL line). */
 export const RunEvent = z

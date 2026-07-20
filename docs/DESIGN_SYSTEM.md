@@ -66,6 +66,19 @@ Four owner-locked rules every surface obeys:
    have fixed widths, capsules have fixed minimum widths, rows keep anchored
    left/right clusters; a longer label truncates or wraps inside its cell and
    never moves its neighbors.
+5. **Chip text is unbreakable; containers wrap chips, not text.** Every chip
+   label carries `.lineLimit(1)` + `.fixedSize(horizontal: true, vertical: false)`
+   so it keeps its intrinsic width and NEVER wraps mid-word (the owner saw a
+   harness chip render `Code\nx`). Width pressure is handled ONE level up: the
+   surrounding `FlowLayout` wraps WHOLE chips to the next row. Menu-dropdown
+   chips inherit this centrally from `ChipMenu` (whose label has both modifiers
+   plus a whole-chip `.fixedSize()`); chips that render their own label
+   (`HarnessChip`, `FilterChip`, `HarnessAccountChip`'s harness segment, the
+   receipt identity capsule and attention chip) apply the two modifiers on the
+   label `Text` directly. The ONE documented exception is
+   `HarnessAccountChip`'s account segment: a credential display name (often a
+   long email) is intentionally capped (`maxWidth` + `.truncationMode(.tail)`),
+   which still never wraps — it truncates.
 
 ---
 

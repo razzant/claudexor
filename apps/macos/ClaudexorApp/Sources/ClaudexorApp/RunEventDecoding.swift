@@ -73,6 +73,24 @@ extension AppModel {
         payload?["title"]?.stringValue ?? payload?["message"]?.stringValue ?? payload?["summary"]?.stringValue
     }
 
+    /// The receipt disclosure line for a `route.primary.diverged` event: the
+    /// pinned primary harness never ran and the run routed elsewhere. Built from
+    /// typed event facts only — "requested claude → ran on codex (quota
+    /// exhausted)". Pure so it is unit-tested directly against the event payload.
+    static func primaryDivergedNote(requested: String, effective: String?, reason: String?) -> String {
+        let ran = (effective?.isEmpty == false) ? "ran on \(effective!)" : "no harness could run"
+        let why: String
+        switch reason {
+        case "quota_exhausted", "subscription_exhausted": why = "\(requested) quota exhausted"
+        case "money_exhausted": why = "\(requested) budget exhausted"
+        case "rate_limited": why = "\(requested) rate-limited"
+        case "auth_unavailable": why = "\(requested) unavailable"
+        case .some(let r) where !r.isEmpty: why = "\(requested) \(r.replacingOccurrences(of: "_", with: " "))"
+        default: why = "\(requested) unavailable"
+        }
+        return "requested \(requested) → \(ran) (\(why))"
+    }
+
     /// "review.finding.proposed" -> "Review · finding proposed"
     static func pretty(_ type: String) -> String {
         let parts = type.split(separator: ".")

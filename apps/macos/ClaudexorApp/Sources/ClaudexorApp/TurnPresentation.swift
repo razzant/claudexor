@@ -103,4 +103,27 @@ enum TurnPresentation {
         if files > 0 { parts.append("\(files) file\(files == 1 ? "" : "s")") }
         return parts.isEmpty ? "Activity" : parts.joined(separator: " · ")
     }
+
+    /// The CURRENT live activity as ONE line for a COLLAPSED active run's
+    /// receipt: the most recent tool or thinking entry (skipping narration
+    /// messages), so progress stays visible without expanding the transcript
+    /// (e.g. «bash python3 -m http.server 4173»). Derived from the same typed
+    /// transcript blocks the expanded view renders — never invented. nil when
+    /// nothing has happened yet (no hollow line). Bounded so a runaway target
+    /// can't balloon the row; the view still clamps to one line.
+    static func lastActivityLine(blocks: [TranscriptBlock]) -> String? {
+        for block in blocks.reversed() {
+            switch block {
+            case .tool(_, let tool):
+                let title = ToolRow.title(tool)
+                let line = ToolRow.subtitle(tool).map { "\(title) \($0)" } ?? title
+                return String(line.prefix(140))
+            case .thinking(_, _, let seconds):
+                return seconds >= 1 ? "Thinking · \(Int(seconds))s" : "Thinking"
+            case .message:
+                continue
+            }
+        }
+        return nil
+    }
 }

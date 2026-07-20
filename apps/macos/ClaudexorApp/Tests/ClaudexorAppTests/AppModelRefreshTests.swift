@@ -74,6 +74,65 @@ struct AppModelRefreshTests {
         #expect(model.effectiveThreadAccess == nil)
     }
 
+    /// Round-3 item 1a: a DRAFT composer chip selection (Claude + pinned profile
+    /// claude4) must ride into the CREATE request body — the first turn requests
+    /// exactly what the chip showed, with no window where a visible selection
+    /// silently doesn't apply. Asserts the wire body, not just local state.
+    @MainActor
+    @Test func draftChipSelectionRidesIntoThreadCreateBody() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config))
+        let model = AppModel(client: client, requestNotificationAuthorization: false)
+        model.health = .connected
+        model.projectRoot = "/tmp/project"
+        // The composer HarnessAccountChip in the draft state: Claude + claude4.
+        await model.setThreadCredentialProfile("claude4", harnessId: "claude")
+        #expect(model.draftPrimaryHarness == "claude")
+        #expect(model.draftCredentialProfileId == "claude4")
+        #expect(model.draftEligiblePool == ["claude"])
+
+        let box = CreateBodyBox()
+        let summary = #"{"id":"new-thread","title":null,"repoRoot":"/tmp/project","mode":null,"workspaceMode":"in_place","authPreference":null,"primaryHarness":"claude","eligibleHarnesses":["claude"],"state":"active","trashedAt":null,"purgeAfter":null,"runIds":[],"headRunId":null,"needsHuman":false,"createdAt":"2026-07-15T00:00:00Z","updatedAt":"2026-07-15T00:00:00Z"}"#
+        AppRequestStubURLProtocol.handler = { request in
+            if request.httpMethod == "POST", request.url?.path == "/v2/threads" {
+                box.data = appTestRequestBody(request)
+                return (appResponse(for: request), Data(summary.utf8))
+            }
+            // openThread's follow-up detail GET — minimal, turn-less.
+            let detail = #"{"thread":\#(summary),"sessions":[],"turns":[]}"#
+            return (appResponse(for: request), Data(detail.utf8))
+        }
+
+        await model.newThread(title: nil)
+
+        let body = try #require(box.data)
+        let req = try JSONDecoder().decode(CreateThreadRequest.self, from: body)
+        #expect(req.primaryHarness == "claude")
+        #expect(req.credentialProfileId == "claude4")
+        #expect(req.eligibleHarnesses == ["claude"])
+    }
+
+    /// Round-3 item 1b: the receipt disclosure line for a harness mismatch is
+    /// built ONLY from typed event facts (requested/effective/reason) — never
+    /// invented. "requested claude → ran on codex (claude quota exhausted)".
+    @MainActor
+    @Test func primaryDivergedNoteRendersFromEventFacts() {
+        #expect(
+            AppModel.primaryDivergedNote(requested: "claude", effective: "codex", reason: "quota_exhausted")
+                == "requested claude → ran on codex (claude quota exhausted)")
+        #expect(
+            AppModel.primaryDivergedNote(requested: "claude", effective: "codex", reason: "auth_unavailable")
+                == "requested claude → ran on codex (claude unavailable)")
+        // No effective harness: honest "no harness could run".
+        #expect(
+            AppModel.primaryDivergedNote(requested: "claude", effective: nil, reason: "money_exhausted")
+                == "requested claude → no harness could run (claude budget exhausted)")
+    }
+
     @MainActor
     @Test func runlessGlobalQuotaEventRefreshesQuotaProjection() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
@@ -1089,6 +1148,12 @@ private final class AppRefreshCallCounter: @unchecked Sendable {
         defer { lock.unlock() }
         return value
     }
+}
+
+/// Captures a request body across the URLProtocol stub boundary (single-threaded
+/// in these serialized tests; @unchecked to satisfy the @Sendable handler).
+private final class CreateBodyBox: @unchecked Sendable {
+    var data: Data?
 }
 
 private func appResponse(for request: URLRequest) -> HTTPURLResponse {

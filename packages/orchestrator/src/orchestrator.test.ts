@@ -6929,6 +6929,91 @@ describe("durable quota projection routing (QP3)", () => {
       });
     },
   );
+
+  it("discloses route.primary.diverged when the sticky primary is quota-dropped and another harness runs (round-3 item 1b)", async () => {
+    await withScopedConfigDir(async () => {
+      const repo = await initRepo();
+      // ONLY claude is in cooldown; codex is free. The sticky primary is claude.
+      const cooldown = new Date(Date.now() + 60_000).toISOString();
+      const snapshots = [
+        {
+          subject: {
+            harness: "claude",
+            credential_route: "vendor_native" as const,
+            plan_label: null,
+            subject_id: null,
+          },
+          constraints: [
+            {
+              id: "cooldown",
+              label: "Cooldown",
+              used_ratio: null,
+              window_seconds: null,
+              resets_at: null,
+              cooldown_until: cooldown,
+            },
+          ],
+          source: "codex_app_server" as const,
+          observed_at: new Date().toISOString(),
+          freshness: "fresh" as const,
+        },
+      ];
+      const orchestrator = new Orchestrator({
+        registry: new Map([
+          ["claude", quotaAdapter("claude")],
+          ["codex", quotaAdapter("codex")],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => snapshots,
+      });
+      const result = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "route or disclose",
+        mode: "ask",
+        harnesses: ["claude", "codex"],
+        primaryHarness: "claude",
+        authPreference: "subscription",
+        web: "off",
+      });
+      // The run SUCCEEDS on codex — but the divergence from the pinned primary
+      // must be disclosed as a typed, evidence-backed event (never silent).
+      const events = readFileSync(join(result.runDir, "events.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; payload: Record<string, unknown> });
+      const diverged = events.find((e) => e.type === "route.primary.diverged");
+      expect(diverged).toBeDefined();
+      expect(diverged!.payload.requested).toBe("claude");
+      expect(diverged!.payload.effective).toBe("codex");
+      expect(diverged!.payload.reason).toBe("quota_exhausted");
+      expect(typeof diverged!.payload.detail).toBe("string");
+    });
+  });
+
+  it("does NOT emit route.primary.diverged when the sticky primary actually runs", async () => {
+    await withScopedConfigDir(async () => {
+      const repo = await initRepo();
+      const orchestrator = new Orchestrator({
+        registry: new Map([
+          ["claude", quotaAdapter("claude")],
+          ["codex", quotaAdapter("codex")],
+        ]),
+        reviewers: [],
+        quotaSnapshots: () => [],
+      });
+      const result = await orchestrator.run({
+        repoRoot: repo,
+        prompt: "route to the primary",
+        mode: "ask",
+        harnesses: ["claude", "codex"],
+        primaryHarness: "claude",
+        authPreference: "subscription",
+        web: "off",
+      });
+      const events = readFileSync(join(result.runDir, "events.jsonl"), "utf8");
+      expect(events).not.toContain("route.primary.diverged");
+    });
+  });
 });
 
 describe("web evidence recovery keying (INV-043)", () => {

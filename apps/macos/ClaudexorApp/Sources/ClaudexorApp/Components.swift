@@ -31,7 +31,9 @@ struct HarnessChip: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.xs) {
             HarnessIcon(family: family, size: 13).opacity(selected && available ? 1 : 0.45)
+            // Chip meta-rule (round-3 item 4): chip label never wraps its text.
             Text(family.label)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
             if !available {
                 Image(systemName: "slash.circle").imageScale(.small)
             }
@@ -238,7 +240,9 @@ struct FilterChip: View {
             HStack(spacing: Theme.Spacing.xs) {
                 if let iconImage { iconImage.imageScale(.small) }
                 else if let systemImage { Image(systemName: systemImage).imageScale(.small) }
+                // Chip meta-rule (round-3 item 4): filter-pill label never wraps.
                 Text(label)
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                 if let count, count > 0 {
                     Text("\(count)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 }

@@ -60,7 +60,11 @@ struct HarnessAccountChip: View {
             HStack(spacing: Theme.Spacing.xs) {
                 if let current { HarnessIcon(family: current, size: 13) }
                 else { Image(systemName: "wand.and.stars").imageScale(.small) }
+                // Chip meta-rule (round-3 item 4): the harness label NEVER wraps
+                // — the owner saw "Code\nx" (Codex broken mid-word) when width-
+                // constrained. lineLimit(1) + intrinsic width forbid it.
                 Text(current?.label ?? "Auto")
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false)
             }
             .font(.caption.weight(.medium))
             .foregroundStyle(tint)

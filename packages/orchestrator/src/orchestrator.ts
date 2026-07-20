@@ -110,6 +110,7 @@ import {
   reviewerTimeoutMs,
   harnessInactivityTimeoutMs,
   observeAuthSwitch,
+  emitPrimaryDivergence,
   deliveryRefusalFailure,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
@@ -947,13 +948,6 @@ export class Orchestrator {
   }
 
   /**
-   * Lift an adapter's auth-route override marker into the typed
-   * `route.fallback.auth_switched` run event (validated payload). An explicit
-   * subscription/api_key preference that could not be honored is never silent;
-   * neither is an `auto` choice that selects a smoke-proven paid route over an
-   * available native route.
-   */
-  /**
    * Resolve candidate adapters: explicit `--harness`, else available real harnesses, then
    * **capability-gate** to those that can actually produce work for `intent` (e.g. a
    * a planner-only adapter with `implement: false` is dropped from an implement race), and
@@ -1038,6 +1032,7 @@ export class Orchestrator {
     input: RunInput,
     intent: Intent,
     ledger?: BudgetLedger,
+    log?: EventLog,
     routeContext?: ResolvedRouteContext,
   ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
@@ -1317,6 +1312,7 @@ export class Orchestrator {
         `no harness remains eligible for '${intent}' after budget and quota routing`,
       );
     }
+    emitPrimaryDivergence(log, input.primaryHarness, ordered, pool, dropped);
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
     for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
@@ -2589,6 +2585,7 @@ export class Orchestrator {
 
     let adapters: RoutedAdapter[];
     try {
+      // Best-of races the whole pool (no divergence `log`: the pool still runs).
       adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(input), ledger);
     } catch (err) {
       const message = safeErrorMessage(err);
@@ -4070,6 +4067,7 @@ export class Orchestrator {
         { ...input, n: undefined },
         this.candidateIntent(input),
         ledger,
+        log,
       );
       this.requestRequirements.assertConvergenceWorkspace(input.inPlace === true, adapterPool);
     } catch (err) {
@@ -5205,6 +5203,7 @@ export class Orchestrator {
         { ...input, n: undefined },
         "plan",
         ledger,
+        log,
         roHome,
       );
     } catch (err) {
@@ -5661,6 +5660,7 @@ export class Orchestrator {
         { ...input, prompt, n: width },
         opts.intent,
         ledger,
+        log,
         roHome,
       );
       if (!opts.deepScan) {
