@@ -47,8 +47,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // Dock icon for the dev executable (the notarized .app uses AppIcon.icns directly).
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
-           let img = NSImage(contentsOf: url) {
+        // Never touch Bundle.module here: its generated accessor fatalErrors when the
+        // resource bundle fails to load, and CFBundle refuses a quarantined bundle that
+        // has no Info.plist — which crashed every browser-downloaded 3.0.0 install at
+        // launch. A cosmetic icon must degrade to "no icon", not kill the app.
+        if let url = Self.devIconURL, let img = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = img
         }
         applyDebugSizeIfRequested()
@@ -62,6 +65,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    /// Resolve the dev icon by plain file path — bypassing Bundle(url:) entirely, so a
+    /// quarantined or otherwise unloadable resource bundle can never crash launch.
+    /// Covers both layouts: the wrapped .app (Contents/Resources/<bundle>) and the bare
+    /// `swift run` executable (bundle next to the binary).
+    static var devIconURL: URL? {
+        let bundleName = "ClaudexorApp_ClaudexorApp.bundle"
+        let bases = [Bundle.main.resourceURL, Bundle.main.bundleURL]
+        for base in bases {
+            guard let base else { continue }
+            let candidate = base.appendingPathComponent(bundleName).appendingPathComponent("AppIcon.png")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
 
     /// Non-opaque + clear background on titled content windows so the behind-window
     /// blur reaches the desktop. This runs ONLY at launch (here + one 0.3s retry),

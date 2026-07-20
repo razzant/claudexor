@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/budget",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "license": "MIT",
   "description": "Budget governor: pre-call leases, circuit breaker, evidence-based routing goals, and multi-window quota pacing.",
   "type": "module",

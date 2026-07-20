@@ -73,6 +73,23 @@ SPM_BUNDLE="$APP_PKG/.build/release/$SPM_BUNDLE_NAME"
 /usr/bin/ditto "$SPM_BUNDLE" "$APP/Contents/Resources/$SPM_BUNDLE_NAME"
 [ -f "$APP/Contents/Resources/$SPM_BUNDLE_NAME/AppIcon.png" ] || { echo "ERROR: SwiftPM resource bundle is missing AppIcon.png" >&2; exit 1; }
 
+# swift build emits the resource bundle WITHOUT an Info.plist, and CFBundle
+# refuses to load a plist-less bundle once quarantine is attached — which made
+# every browser-downloaded 3.0.0 crash at launch via the Bundle.module
+# fatalError. Give the bundle a minimal Info.plist so it loads everywhere.
+cat > "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.claudexor.ClaudexorApp.resources</string>
+  <key>CFBundleName</key><string>ClaudexorApp_ClaudexorApp</string>
+  <key>CFBundlePackageType</key><string>BNDL</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+</dict>
+</plist>
+PLIST
+
 # Info.plist with version substitution.
 sed -e "s/__CLAUDEXOR_VERSION__/$VERSION/" -e "s/__CLAUDEXOR_BUILD__/$BUILD/" \
     "$PACKAGING/Info.plist" > "$APP/Contents/Info.plist"

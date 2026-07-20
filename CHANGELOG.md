@@ -3,6 +3,15 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.0.1** (2026-07-20) — hotfix: every browser-downloaded 3.0.0 DMG crashed
+  at launch (EXC_BREAKPOINT in `applicationDidFinishLaunching`). The SwiftPM
+  `Bundle.module` accessor fatalErrors when the resource bundle fails to load,
+  and a quarantined process refuses the plist-less bundle `swift build` emits.
+  Fixed twice over: the dev-only Dock icon is now resolved by plain file path
+  (no `Bundle.module`, cosmetic degrade instead of crash), and `build-app.sh`
+  writes a minimal `Info.plist` into the resource bundle. Workaround on 3.0.0:
+  `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
+
 - **v3.0.0** (2026-07-20) — the chat-first control plane, rebuilt on honest
   server truth. This is a breaking major: a fresh `~/.claudexor/v3/` data root
   (the old `~/.claudexor/v2/` root is left untouched as the archive; no
