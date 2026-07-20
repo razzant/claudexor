@@ -3,6 +3,41 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.0.0** (2026-07-20) — the chat-first control plane, rebuilt on honest
+  server truth. This is a breaking major: a fresh `~/.claudexor/v3/` data root
+  (the old `~/.claudexor/v2/` root is left untouched as the archive; no
+  migration), wire protocol major 3, and a single chat-first macOS app.
+  Modes collapse to Ask / Plan / Agent — Orchestrate is gone and delegation is
+  `agent --delegate` with a scoped six-tool MCP belt (isolated sub-runs, depth
+  1, count and budget caps enforced server-side). Plan absorbs Spec: native
+  vendor plan modes, typed open questions, answer turns, freeze-on-implement
+  with a hashed ExecutionBrief, and the Council strategy. Continuity is the
+  flagship: durable per-lane native sessions keyed by (thread, harness,
+  profile), lane checkpoints, bounded continuation packets with cached LLM
+  summaries, and a visible typed disclosure when a lane switch carries thread
+  context. Status is independent axes (lifecycle / checks / review / no-changes
+  / typed reason) rendered as Working / Done / Done · not verified / Needs
+  review / Failed / Cancelled / Interrupted, with a server-owned outcome banner
+  that model prose can never outrank; unknown cost renders "—", never $0.
+  Accounts are fully symmetric — every row has an Enabled toggle (participates
+  in pickers and auto-rotation), the next-up account among the enabled ones is
+  computed and shown, threads keep their account and access sticky with a
+  per-thread pin/override, and native CLI login is just a row. The engine
+  owns every fact; macOS, MCP, and ACP are thin clients that decode, not
+  derive: four Run Detail tabs with typed LoadState, a shared ChipMenu, global
+  text selection, code-first route descriptors feeding the generated operation
+  catalog, and TS↔Swift fixture round-trips. A runtime-closure updater installs
+  engine bundles from a signed release manifest with SHA-256 verification,
+  atomic `current.json` switch when the daemon is idle, and last-known-good
+  rollback; a zero-telemetry install counter reads public npm and GitHub stats.
+  The immune system guards all of it: staged-field v3, the INV→verify link
+  gate, the concept gate, reviewer liveness with a typed blocker contract, and
+  a cumulative findings ledger. The review protocol is a single canonical
+  cycle (internal critics + the exact triad plus scope reviewer, one
+  adjudication, one batched fix, one confirmation wave). Upgrade note: v3 boots
+  on its own data root, so the first launch starts clean; existing v2 state and
+  run history remain readable only under the archived `~/.claudexor/v2/` path.
+
 - **v2.1.3** (2026-07-18) — account and large-run reliability finish.
   Accounts now have one shared Manage surface with Back/Done navigation,
   manual thread pinning, auto-balance, and safe deletion. Claude native

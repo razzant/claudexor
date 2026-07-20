@@ -30,7 +30,7 @@ import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/con
 import { armDaemonLifecycle, logLine, runStartupCrashGc } from "./daemon-lifecycle.js";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { buildDelegationBeltDescriptor } from "./delegation-belt-descriptor.js";
-import { loadConfig } from "@claudexor/config";
+import { loadConfig, sweepRetiredConfigKeysAtStartup } from "@claudexor/config";
 import { ensureThreadWorktree } from "@claudexor/workspace";
 import { noProjectRepoRoot, redactSecrets } from "@claudexor/util";
 import { type QuotaSubject, type ResourceAttachmentRef } from "@claudexor/schema";
@@ -95,6 +95,16 @@ async function main(): Promise<void> {
       throw new Error(`a claudexor daemon is already listening on ${socketPath}; stop it first`);
     }
     await runStartupCrashGc({ daemonDir: daemonDir(), logPath: logPath() });
+    // Same-root config evolution hygiene (B9): strip + persist any known-retired
+    // keys an OLDER version wrote into the global config, before any strict
+    // parse can trip on them (mirrors the crash-GC startup sweep). Unknown keys
+    // NOT on the retired registry still fail loud at parse (INV-021).
+    for (const sweep of sweepRetiredConfigKeysAtStartup()) {
+      logLine(
+        logPath(),
+        `swept retired config keys from ${sweep.path}: ${sweep.removed.join(", ")}`,
+      );
+    }
 
     const bus = new RunEventBus();
     const journalManager = new JournalManager(daemonDir());

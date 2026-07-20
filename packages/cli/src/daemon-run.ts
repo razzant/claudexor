@@ -431,6 +431,35 @@ export async function fetchCouncil(
   }
 }
 
+/**
+ * The sub-run's settled cash spend (USD) as projected by the control-plane
+ * budget owner (`GET /runs/:id` → `summary.spendUsd`). Single producer of the
+ * real drawn amount the delegation belt reconciles its reservation against;
+ * null when the run has no known settled cost yet. Soft-fail — a detail hiccup
+ * yields null, never an inflated commit.
+ */
+export async function fetchRunSpendUsd(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<number | null> {
+  if (!runId) return null;
+  try {
+    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
+      headers: { authorization: `Bearer ${addr.token}` },
+    });
+    if (!res.ok) return null;
+    const detail = (await res.json()) as Record<string, unknown>;
+    const summary = detail["summary"];
+    const spend =
+      summary && typeof summary === "object"
+        ? (summary as { spendUsd?: unknown }).spendUsd
+        : undefined;
+    return typeof spend === "number" && Number.isFinite(spend) ? spend : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchApplyEligibility(
   addr: ControlApiAddress,
   runId: string,

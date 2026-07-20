@@ -65,9 +65,18 @@ try {
     stderrSha256: receipt.stderr?.sha256,
   };
   const reviews = options.review.map((entry) => {
-    const match = /^([A-Za-z0-9._-]+)=(.+):(pass|warn)$/.exec(entry);
-    if (!match) throw new Error(`--review must be reviewer=FILE:pass|warn, got "${entry}"`);
-    return { reviewer: match[1], reportSha256: sha256File(match[2]), verdict: match[3] };
+    // reviewer=FILE:verdict[:slot=model] — the optional trailing slot=model
+    // binds this report to a triad/scope panel slot (B8). Panel-less entries
+    // are extra internal-critic reviews (counted only by the >=2 floor).
+    const match = /^([A-Za-z0-9._-]+)=(.+):(pass|warn)(?::(triad|scope)=([^:]+))?$/.exec(entry);
+    if (!match) {
+      throw new Error(
+        `--review must be reviewer=FILE:pass|warn[:triad|scope=model], got "${entry}"`,
+      );
+    }
+    const review = { reviewer: match[1], reportSha256: sha256File(match[2]), verdict: match[3] };
+    if (match[4]) review.panel = { slot: match[4], model: match[5] };
+    return review;
   });
 
   const authority = JSON.parse(readFileSync(options.authority, "utf8"));
@@ -122,7 +131,7 @@ function atomicWrite(path, data, mode) {
 function usage(detail = "") {
   if (detail) console.error(detail);
   console.error(
-    "usage: seal-owner-review-attestation.mjs --full-gate-receipt FILE --rounds N --review reviewer=FILE:pass|warn (x2+) --private-key FILE --authority FILE --out FILE [--base64-out FILE]",
+    "usage: seal-owner-review-attestation.mjs --full-gate-receipt FILE --rounds N --review reviewer=FILE:pass|warn[:triad|scope=model] (must cover the exact triad+scope panel) --private-key FILE --authority FILE --out FILE [--base64-out FILE]",
   );
   process.exit(2);
 }

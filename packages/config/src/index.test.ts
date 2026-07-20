@@ -1,12 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse as yamlParse } from "yaml";
 import {
   ConfigParseError,
   listTrustConfigs,
   loadConfig,
   repoHash,
+  sweepRetiredConfigKeysAtStartup,
   updateGlobalConfig,
   updateTrustConfig,
 } from "./index.js";
@@ -123,6 +125,72 @@ describe("strict config unknown keys", () => {
     try {
       writeFileSync(join(dir, "config.yaml"), "version: 1\ntotally_unknown_knob: true\n");
       expect(() => loadConfig(dir)).toThrowError(/unknown key\(s\): totally_unknown_knob/);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("retired-key sweep (B9)", () => {
+  it("loads a config carrying a retired harnesses.<id>.active_profile_id (stripped in-memory)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-cfg-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      writeFileSync(
+        join(dir, "config.yaml"),
+        "version: 1\nharnesses:\n  claude:\n    active_profile_id: exp-a\n    default_model: sonnet\n",
+      );
+      // Load must SUCCEED — the retired key is stripped before the strict parse.
+      const cfg = loadConfig(dir);
+      expect(cfg.global.harnesses?.claude?.default_model).toBe("sonnet");
+      expect((cfg.global.harnesses?.claude as Record<string, unknown>)?.active_profile_id).toBe(
+        undefined,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("PERSISTS the cleaned file and DISCLOSES the sweep at startup", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-sweep-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    const configPath = join(dir, "config.yaml");
+    try {
+      writeFileSync(
+        configPath,
+        "version: 1\nharnesses:\n  claude:\n    active_profile_id: exp-a\n    default_model: sonnet\n",
+      );
+      const sweeps = sweepRetiredConfigKeysAtStartup();
+      // The global sweep reports the exact retired path it removed.
+      const global = sweeps.find((s) => s.path === configPath);
+      expect(global?.removed).toContain("harnesses.claude.active_profile_id");
+      // The persisted file no longer carries the retired key, keeps the rest.
+      const onDisk = yamlParse(readFileSync(configPath, "utf8")) as Record<string, any>;
+      expect(onDisk.harnesses.claude.active_profile_id).toBeUndefined();
+      expect(onDisk.harnesses.claude.default_model).toBe("sonnet");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still fails LOUD on a genuinely unknown key (not on the retired registry)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-loud-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      writeFileSync(
+        join(dir, "config.yaml"),
+        "version: 1\nharnesses:\n  claude:\n    bogus_knob: 1\n",
+      );
+      expect(() => loadConfig(dir)).toThrowError(/unknown key/);
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;

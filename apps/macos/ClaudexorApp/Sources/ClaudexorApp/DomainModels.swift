@@ -200,23 +200,23 @@ enum RunReasonLabel {
     }
 }
 enum RunMode: String, CaseIterable, Identifiable, Hashable {
-    case ask, explore, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, orchestrate, unknown
+    case ask, agent, bestOfN, maxAttempts, untilClean, plan, create, readOnlyAudit, unknown
     var id: String { rawValue }
     static var allCases: [RunMode] {
-        [.ask, .explore, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit, .orchestrate]
+        [.ask, .agent, .bestOfN, .maxAttempts, .untilClean, .plan, .create, .readOnlyAudit]
     }
 
     /// The wire MODE (v3: three intents — Ask/Plan/Agent — with strategies as
     /// flags, see `strategyFlags`). The remaining enum cases (Best-of / Create /
-    /// Explore / …) are DISPLAY/strategy projections of `agent`|`audit`, kept so
-    /// historical runs render and the composer's pool/`n` logic is unchanged.
+    /// …) are DISPLAY/strategy projections of `agent`|`audit`, kept so historical
+    /// runs render and the composer's pool/`n` logic is unchanged. The retired
+    /// `explore`/`orchestrate` aliases were removed in v3 (D30).
     var apiValue: String {
         switch self {
         case .ask: return "ask"
-        case .explore, .readOnlyAudit: return "audit"
+        case .readOnlyAudit: return "audit"
         case .agent, .bestOfN, .maxAttempts, .untilClean, .create: return "agent"
         case .plan: return "plan"
-        case .orchestrate: return "orchestrate"
         case .unknown: return "unknown"
         }
     }
@@ -226,21 +226,19 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .bestOfN: return (false, false, false, 2)
         case .untilClean: return (true, false, false, nil)
-        case .explore: return (false, true, false, nil)
         case .create: return (false, false, true, nil)
         default: return (false, false, false, nil)
         }
     }
 
     /// Display mode derived from the wire (mode, strategy) pair — `agent --n`
-    /// renders as Best-of-N, `audit --swarm` as Explore, etc.
+    /// renders as Best-of-N, etc.
     init(apiValue: String?, strategy: String?) {
         switch (apiValue, strategy) {
         case ("agent", "race"): self = .bestOfN
         case ("agent", "attempts"): self = .maxAttempts
         case ("agent", "until_clean"): self = .untilClean
         case ("agent", "create"): self = .create
-        case ("audit", "swarm"): self = .explore
         default: self = RunMode(apiValue: apiValue)
         }
     }
@@ -251,10 +249,8 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case "agent": self = .agent
         case "plan": self = .plan
         case "audit": self = .readOnlyAudit
-        case "orchestrate": self = .orchestrate
         // Legacy ids from pre-v0.9 dogfood artifacts decode leniently for
         // DISPLAY only (the engine hard-errors on them at run time).
-        case "explore": self = .explore
         case "best_of_n": self = .bestOfN
         case "max_attempts": self = .maxAttempts
         case "until_clean": self = .untilClean
@@ -266,7 +262,6 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
     var label: String {
         switch self {
         case .ask: return "Ask"
-        case .explore: return "Explore"
         case .agent: return "Agent"
         case .bestOfN: return "Best-of-N"
         case .maxAttempts: return "Max Attempts"
@@ -274,14 +269,12 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "Plan"
         case .create: return "Create"
         case .readOnlyAudit: return "Read-only Audit"
-        case .orchestrate: return "Orchestrate"
         case .unknown: return "Unknown Mode"
         }
     }
     var glyph: String {
         switch self {
         case .ask: return "questionmark.bubble"
-        case .explore: return "map"
         case .agent: return "bolt.fill"
         case .bestOfN: return "flag.checkered.2.crossed"
         case .maxAttempts: return "repeat"
@@ -289,14 +282,12 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "list.bullet.clipboard"
         case .create: return "plus.square.on.square"
         case .readOnlyAudit: return "magnifyingglass"
-        case .orchestrate: return "brain.head.profile"
         case .unknown: return "exclamationmark.triangle"
         }
     }
     var blurb: String {
         switch self {
         case .ask: return "Read-only answer. No edit, run, or apply controls."
-        case .explore: return "Bounded read-only research swarm with verified synthesis and omissions."
         case .agent: return "Single primary-biased envelope route; apply explicitly after review."
         case .bestOfN: return "N candidates in isolated envelopes, cross-reviewed, best wins."
         case .maxAttempts: return "Repair loop with a hard attempt cap and gates."
@@ -304,21 +295,18 @@ enum RunMode: String, CaseIterable, Identifiable, Hashable {
         case .plan: return "Multi-harness planning → adversarial plan review → SpecPack."
         case .create: return "Scaffold a brand-new repo or component."
         case .readOnlyAudit: return "Read-only audit / map of a codebase."
-        case .orchestrate: return "Routed like reviewers; produces a typed orchestration plan over the tool belt."
         case .unknown: return "Persisted run uses an unsupported or legacy mode id."
         }
     }
     var isMultiCandidate: Bool { self == .bestOfN }
-    var isReadOnly: Bool { self == .ask || self == .explore || self == .plan || self == .readOnlyAudit || self == .orchestrate }
+    var isReadOnly: Bool { self == .ask || self == .plan || self == .readOnlyAudit }
     var requiresProject: Bool { self != .ask }
     var requiredIntent: String {
         switch self {
         case .ask: return "explain"
-        case .explore: return "audit"
         case .plan: return "plan"
         case .readOnlyAudit: return "audit"
         case .create: return "create_from_scratch"
-        case .orchestrate: return "orchestrate"
         case .unknown: return "implement"
         default: return "implement"
         }

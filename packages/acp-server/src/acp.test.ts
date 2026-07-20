@@ -240,6 +240,75 @@ describe("AcpServer official SDK projection", () => {
     );
   });
 
+  it("presents an option-less (free-text) mid-run question as turn text, NEVER silently skipping it (D14/B5)", async () => {
+    const cwd = project();
+    let captured: unknown = "unset";
+    await withClient(
+      async (params, hooks) => {
+        if (params.mode === "__acp_session_new") return { sessionId: "thread-ft", cwd };
+        // The engine raises a free-text question mid-run (no options).
+        captured = await hooks!.onInteraction!({
+          run_id: "run-ft-1",
+          request: {
+            interaction_id: "int-1",
+            questions: [{ id: "q1", question: "What ticket does this fix?", options: [] }],
+          },
+        });
+        return { runId: "run-ft-1", status: "succeeded", summary: "done", applyEligibility: null };
+      },
+      async (agent, updates) => {
+        const session = await agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "go" }],
+          _meta: { claudexor: { mode: "agent" } },
+        });
+        // No synthesized answer for a question ACP cannot answer.
+        expect(captured).toBeNull();
+        // The question is disclosed as turn text naming the documented remedy.
+        const text = JSON.stringify(updates);
+        expect(text).toContain("What ticket does this fix?");
+        expect(text).toContain("claudexor follow run-ft-1");
+      },
+    );
+  });
+
+  it("answers a multi-select mid-run question with MORE THAN ONE label (option iteration, B5)", async () => {
+    const cwd = project();
+    let captured: any = null;
+    await withClient(
+      async (params, hooks) => {
+        if (params.mode === "__acp_session_new") return { sessionId: "thread-ms", cwd };
+        captured = await hooks!.onInteraction!({
+          run_id: "run-ms-1",
+          request: {
+            interaction_id: "int-ms",
+            questions: [
+              {
+                id: "q1",
+                question: "Which platforms?",
+                multi_select: true,
+                options: [{ label: "macOS" }, { label: "linux" }, { label: "windows" }],
+              },
+            ],
+          },
+        });
+        return { runId: "run-ms-1", status: "succeeded", summary: "done", applyEligibility: null };
+      },
+      async (agent) => {
+        // The default test client selects options[0] ("Include …") each round,
+        // so every option is included — proving the surface can return >1 label.
+        const session = await agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+        await agent.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text: "go" }],
+          _meta: { claudexor: { mode: "agent" } },
+        });
+        expect(captured?.answers?.[0]?.selected_labels).toEqual(["macOS", "linux", "windows"]);
+      },
+    );
+  });
+
   it("maps a FAILED daemon lifecycle to refusal instead of a false normal end_turn", async () => {
     // D8: a needs-review run has a SUCCEEDED lifecycle and ends end_turn (the
     // process completed); only failed/interrupted lifecycles are a refusal.

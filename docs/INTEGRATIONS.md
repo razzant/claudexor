@@ -116,7 +116,7 @@ refreshes tokens on real use); endpoint refusal never degrades auth
 readiness. The status-line collector stays as a secondary source: an explicit
 `claudexor plugin install claude` composes it with an existing user
 `statusLine` command and restores it on uninstall; it persists only the two
-documented windows and provenance in the Claudexor-owned v2 root and does not
+documented windows and provenance in the Claudexor-owned v3 root and does not
 read Claude credential or session files. See the official
 [Claude Code status-line contract](https://code.claude.com/docs/en/statusline).
 Native login commands are server allowlisted and run as setup jobs with
@@ -252,7 +252,7 @@ missing/partial/installed/registered hosts exit 0, and the JSON carries the
 per-host state either way.
 
 Lifecycle state lives under the user Claudexor config directory
-(`~/.claudexor/v2/plugins/state.json` by default). Generated files carry Claudexor
+(`~/.claudexor/v3/plugins/state.json` by default). Generated files carry Claudexor
 ownership markers, and uninstall removes only owned files or owned scoped config
 entries. Unknown user files fail loudly instead of being overwritten.
 
@@ -334,6 +334,24 @@ authority; no second in-memory session catalog exists. Images and embedded
 resources are uploaded/finalized into immutable daemon resource IDs before the
 turn enqueues. Blocked/failed daemon outcomes return ACP `refusal` plus typed
 `_meta.claudexor` run/status/apply evidence rather than a false `end_turn`.
+
+Questions the surface can answer:
+
+- **End-of-turn plan questions** (a plan turn that ends `needs_answers`) render
+  as numbered turn text — single/multi/free-text all shown; the user answers by
+  sending the next prompt on the same session.
+- **Single-choice mid-run questions** are answered inline through the ACP
+  permission request (one `session/requestPermission` per question).
+- **Multi-select mid-run questions** are answered inline by iterating one
+  include/skip permission round per option, so more than one label can be
+  selected (a single permission request returns exactly one option and would
+  collapse the choice).
+- **Free-text (option-less) mid-run questions** cannot be answered through ACP
+  (its permission mechanism is choice-only). They are NEVER silently skipped:
+  the surface discloses them as turn text naming the remedy, and the run stays
+  paused — answer via `claudexor follow <run>` or
+  `POST /v2/runs/:id/interactions/:id/answer` (see the `docs/FEATURES.md`
+  `acp/interactions` row).
 
 ## External Harness Adapters
 
@@ -485,9 +503,9 @@ Known traps (class → CURRENT rule → pin):
 ## Storage
 
 Project runs write under the external per-project namespace
-`~/.claudexor/v2/projects/<project-sha256>/runs/<run_id>/`; the target repository's
+`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; the target repository's
 `.claudexor/` remains user-owned config. No-project Ask runs use a synthetic cwd
-and write artifacts under `~/.claudexor/v2/runs/`. See `docs/ARCHITECTURE.md` for
+and write artifacts under `~/.claudexor/v3/runs/`. See `docs/ARCHITECTURE.md` for
 the full current layout.
 
 ## Stability Rules

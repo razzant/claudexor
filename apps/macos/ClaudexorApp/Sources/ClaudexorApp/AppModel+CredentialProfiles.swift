@@ -213,12 +213,50 @@ extension AppModel {
         switch decision {
         case .upToDate:
             runtimeUpdateStatus = "Up to date"
+            runtimeAvailableManifest = nil
         case let .available(manifest):
             runtimeUpdateStatus = "Update available: v\(manifest.version)"
+            runtimeAvailableManifest = manifest
         case let .appUpdateRequired(minAppVersion, _):
             runtimeUpdateStatus = "App update required — install the latest app (needs v\(minAppVersion) or newer), then re-check."
+            runtimeAvailableManifest = nil
         case let .unknown(reason):
             runtimeUpdateStatus = "Update status unknown: \(reason)"
+            runtimeAvailableManifest = nil
+        }
+    }
+
+    /// INSTALL the advertised runtime update (the chip's confirm affordance). Only
+    /// a runnable `.available` manifest is installable; the updater resolves the
+    /// tarball from the same release doc, then downloads → sha-verifies → unpacks
+    /// (sanitized) → probes → stops the daemon → swaps → relaunches → handshakes,
+    /// rolling back (or, on a first install, dropping to the bundled runtime) on
+    /// any failure. Reports the outcome verbatim; never a fake success.
+    func installRuntimeUpdate() async {
+        guard let manifest = runtimeAvailableManifest else {
+            runtimeUpdateStatus = "No runnable update is available — re-check first."
+            return
+        }
+        if runtimeInstalling { return }
+        runtimeInstalling = true
+        defer { runtimeInstalling = false }
+        runtimeUpdateStatus = "Installing v\(manifest.version)…"
+
+        let updater = runtimeUpdater
+            ?? RuntimeUpdater(transport: makeRuntimeTransport(), lifecycle: makeRuntimeLifecycle())
+        runtimeUpdater = updater
+        let outcome = await updater.installAvailable(manifest: manifest)
+        switch outcome {
+        case let .installed(version):
+            runtimeUpdateStatus = "Installed v\(version) — the engine is now serving it."
+            runtimeAvailableManifest = nil
+            runtimeUpdateProvider.store(.upToDate)
+            updateAvailability = nil
+        case let .failed(error, rolledBack):
+            let recovery = rolledBack
+                ? "Rolled back to the previous runtime."
+                : "The previous runtime is unchanged."
+            runtimeUpdateStatus = "Update failed: \(error.errorDescription ?? "unknown error") \(recovery)"
         }
     }
 

@@ -50,12 +50,12 @@ struct RunEvidenceView: View {
                 .disabled(task.runDir == nil)
                 .help(task.runDir ?? "Run folder is not available yet.")
                 Button {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claudexor/v2/daemon/claudexord.log"))
+                    NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".claudexor/v3/daemon/claudexord.log"))
                 } label: {
                     Label("Open Daemon Log", systemImage: "terminal")
                 }
                 .buttonStyle(.bordered)
-                .help("Open ~/.claudexor/v2/daemon/claudexord.log.")
+                .help("Open ~/.claudexor/v3/daemon/claudexord.log.")
                 Button {
                     retrying = true
                     Task {

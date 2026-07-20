@@ -499,8 +499,11 @@ invariant or owner decision before proceeding.
   arbitration verification_basis tests.
 - **INV-113** Every path that can mutate the live project tree is
   enumerated in ARCHITECTURE with its fence, and each has one: envelope
-  delivery, manual apply, orchestrate-apply, race adoption, and thread apply
+  delivery, manual apply, race adoption, and thread apply
   go through the delivery-owned fresh verifier immediately before mutation;
+  (the retired `orchestrate-apply` path is gone — delegation sub-runs carry
+  no apply tool, so the parent integrates their results through the ordinary
+  apply path, CONCEPT-CHANGE(INV-113));
   race adoption applies only on a verified clean terminal; `revert_run` is
   content/preimage-fenced; thread apply considers every run not yet recorded
   as delivered and is serialized against active turns. An
@@ -583,11 +586,16 @@ invariant or owner decision before proceeding.
   on the delta. A blocking verdict cannot be sealed. Rounds beyond the
   confirmation wave require an explicit owner decision. The signed
   owner-review attestation binds the candidate SHA/tree, the full-gate
-  receipt digest, and every reviewer report digest + verdict. Substituting
-  or skipping the panel without an explicit owner override is a hard error;
-  an override is a distinct recorded fact, never a reviewer PASS.
-  Already-sealed older-schema attestations stay verifiable for their
-  releases. A whole-tree immune scan (docs-vs-code, dead surface,
+  receipt digest, and — CONCEPT-CHANGE(INV-125) — the EXACT triad+scope
+  panel: each of the three triad slots and the scope slot is bound by its
+  model identity and its report digest + verdict (a >=2 structural floor no
+  longer suffices; off-panel reports can ride along as extra critics but
+  never satisfy coverage). Substituting or skipping the panel without an
+  explicit owner override is a hard error; an override is a distinct recorded
+  fact, never a reviewer PASS. The retired schemaVersion-2 (six-slot)
+  attestation is REJECTED as publish input; already-sealed older-schema
+  attestations stay verifiable only for their own archived releases. A
+  whole-tree immune scan (docs-vs-code, dead surface,
   invariants-vs-tree) is a mandatory pre-release checklist step.
   verify: `scripts/seal-owner-review-attestation.mjs` (panel + round
   constraints); `verify-release-input.mjs`; CHECKLISTS Release + Review

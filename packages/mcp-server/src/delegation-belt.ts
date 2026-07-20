@@ -229,20 +229,35 @@ export function beltClaudexorTools(
         return `delegation refused: ${decision.refusal}`;
       }
       ledger.started += 1;
-      const result = await runner(
-        {
-          ...args,
-          ...params,
-          // Isolated by construction (the runner posts execution.isolation:
-          // envelope and binds no thread); belt sub-runs never delegate again.
-          deferred: false,
-          delegate: false,
-          paidBudget: decision.budget,
-        },
-        ctx.signal ? { signal: ctx.signal } : {},
-      );
-      // Best-effort accounting: commit the sub-run's real spend against the
-      // headroom so the next draw sees it.
+      // Reserve the drawn headroom into committedUsd BEFORE awaiting the run so
+      // concurrent draws in the same belt see the reservation and cannot
+      // over-commit the parent's cap. On completion we reconcile the reservation
+      // down to the sub-run's real settled spend (threaded through the runner
+      // result as spendUsd). An unlimited draw reserves nothing (no cap to
+      // exhaust).
+      const reservedUsd =
+        decision.budget.kind === "finite" ? Math.max(0, decision.budget.maxUsd) : 0;
+      ledger.committedUsd += reservedUsd;
+      let result: unknown;
+      try {
+        result = await runner(
+          {
+            ...args,
+            ...params,
+            // Isolated by construction (the runner posts execution.isolation:
+            // envelope and binds no thread); belt sub-runs never delegate again.
+            deferred: false,
+            delegate: false,
+            paidBudget: decision.budget,
+          },
+          ctx.signal ? { signal: ctx.signal } : {},
+        );
+      } finally {
+        // Release the reservation; a throwing sub-run frees its headroom.
+        ledger.committedUsd -= reservedUsd;
+      }
+      // Reconcile: commit the sub-run's real settled spend against the headroom
+      // so the next draw sees the actual amount drawn.
       const spent =
         result &&
         typeof result === "object" &&

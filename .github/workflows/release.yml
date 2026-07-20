@@ -157,6 +157,8 @@ jobs:
           pnpm docs:check
           node scripts/concept-gate.mjs --since-last-tag
           pnpm staged:check
+          pnpm inv:check
+          pnpm fixtures:swift:check
           pnpm sensitive:check
           pnpm knip
           node scripts/complexity-ratchet.mjs

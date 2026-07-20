@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLAUDEXOR_VERSION } from "./version.js";
 
@@ -419,13 +419,29 @@ let cachedBuildIdentity: EngineBuildIdentity | null = null;
 export function engineBuildIdentity(): EngineBuildIdentity {
   if (cachedBuildIdentity) return cachedBuildIdentity;
   let sha = process.env.CLAUDEXOR_BUILD_SHA?.trim() ?? "";
-  if (!/^[0-9a-f]{40}$/.test(sha)) {
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  // Only trust `git rev-parse` when this module lives in Claudexor's OWN source
+  // checkout. An installed copy (npm into node_modules, or the extracted engine
+  // runtime bundle) sits inside an UNRELATED repo, where git walks up and
+  // reports that project's HEAD as ours — a wrong sha is worse than an honest
+  // "unknown". Release builds inject CLAUDEXOR_BUILD_SHA and skip git entirely.
+  const isInstalledCopy = moduleDir.split(sep).includes("node_modules");
+  if (!/^[0-9a-f]{40}$/.test(sha) && !isInstalledCopy) {
     try {
-      sha = execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: dirname(fileURLToPath(import.meta.url)),
+      const top = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        cwd: moduleDir,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       }).trim();
+      // The toplevel must actually be an ancestor of this module (it always is
+      // when git succeeds from here) AND not itself a node_modules install.
+      if (top && !top.split(sep).includes("node_modules") && moduleDir.startsWith(top)) {
+        sha = execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: moduleDir,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+      }
     } catch {
       sha = "";
     }

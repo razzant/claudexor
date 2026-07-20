@@ -5,6 +5,7 @@ import {
   ensureDaemon,
   enqueueAndAwait,
   fetchApplyEligibility,
+  fetchRunSpendUsd,
 } from "./daemon-run.js";
 import { primaryOutputForCli } from "./primary-output.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
@@ -121,6 +122,11 @@ export function mcpSurfaceRunner() {
     // delay the durable handle on a result that cannot be actionable yet.
     const applyEligibility =
       p?.deferred === true ? null : await fetchApplyEligibility(addr, out.runId);
+    // The sub-run's real settled spend rides the result so the delegation belt
+    // can reconcile its budget reservation against the actual drawn amount
+    // (single producer: the run-detail budget projection). Deferred calls return
+    // before terminal, so spend is not yet settled — null.
+    const spendUsd = p?.deferred === true ? null : await fetchRunSpendUsd(addr, out.runId);
     return {
       runId: out.runId,
       runDir: out.runDir,
@@ -128,6 +134,7 @@ export function mcpSurfaceRunner() {
       outcomeFacts: (out as { outcomeFacts?: unknown }).outcomeFacts ?? null,
       summary,
       applyEligibility,
+      spendUsd,
     };
   };
 }
@@ -458,6 +465,7 @@ export function makeInteractionBridge(
         const result = answerCache.has(id)
           ? answerCache.get(id)
           : await onInteraction({
+              run_id: runId,
               request: {
                 interaction_id: id,
                 questions: Array.isArray(pi.questions) ? pi.questions : [],

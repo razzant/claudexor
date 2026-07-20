@@ -30,6 +30,14 @@ export interface ChecklistValidation {
 }
 
 export function exactPanelMatch(triadModels: readonly string[], scopeModel: string): boolean;
+export function validateReviewPanelCoverage(
+  reviews: readonly {
+    reviewer?: unknown;
+    reportSha256?: unknown;
+    verdict?: unknown;
+    panel?: { slot?: unknown; model?: unknown } | null;
+  }[],
+): string[];
 export interface PanelLockBinding {
   candidateSha: string;
   candidateTree: string;

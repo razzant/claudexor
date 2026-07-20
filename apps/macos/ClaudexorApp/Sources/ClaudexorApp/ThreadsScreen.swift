@@ -411,9 +411,10 @@ struct ThreadsScreen: View {
             // Per-turn knobs are not sticky — don't carry one thread's budget
             // cap / web / repair flags / model into the next thread. Access is
             // the exception (D26): it's sticky per thread, so SEED it from the
-            // thread's server-side value (nil => the trust default = workspace).
+            // thread's server-side value (nil sticky => the repo trust default,
+            // A8: seed the actual default, not a hardcoded Workspace write).
             capUsdText = ""; webPolicy = "auto"; authRoutePreference = ""; effortPreference = ""
-            access = model.effectiveThreadAccess.flatMap(AccessProfile.init(wire:)) ?? .workspaceWrite
+            access = model.effectiveThreadAccess.flatMap(AccessProfile.init(wire:)) ?? model.composerAccessDefault
             maxAttempts = 3; showOptions = false; browser = false
             agentStrategy = .single; delegate = false; councilEnabled = false; councilMembers = 2
             reviewerPanelText = ""; protectedApprovalsText = ""
@@ -424,7 +425,7 @@ struct ThreadsScreen: View {
         // picking the value that already equals the trust default (nil sticky),
         // never fire a redundant PATCH.
         .onChange(of: access) { _, picked in
-            let stickyOrDefault = model.effectiveThreadAccess ?? AccessProfile.workspaceWrite.wire
+            let stickyOrDefault = model.effectiveThreadAccess ?? model.composerAccessDefault.wire
             guard picked.wire != stickyOrDefault else { return }
             Task { await model.setThreadAccess(picked.wire) }
         }

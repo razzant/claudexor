@@ -24,6 +24,75 @@ public protocol RuntimeHandshakeVerifier: Sendable {
     func verifyServing(expectedVersion: String) async -> Bool
 }
 
+/// The daemon lifecycle around a runtime swap (B2): an idle-daemon STOP so the
+/// pointer swap is not raced by a live serving process, and a RELAUNCH so the
+/// post-swap handshake observes the NEW engine (an un-restarted daemon keeps
+/// serving the old closure and would fail the identity check spuriously). Both
+/// are best-effort — the authoritative proof is the handshake — so they return a
+/// Bool for disclosure, never to gate the outcome.
+public protocol RuntimeDaemonLifecycle: Sendable {
+    /// Stop the daemon if one is serving, waiting until it is idle. True when the
+    /// daemon is stopped or was already absent.
+    func stopIdleDaemon() async -> Bool
+    /// Relaunch the daemon from the currently-pointed runtime. True when a
+    /// relaunch was started.
+    func relaunch() async -> Bool
+}
+
+/// Test/default lifecycle that touches NO real daemon (so the offline install
+/// tests, which drive success/failure through the handshake stub, never signal a
+/// developer's running daemon). Production wires `DefaultRuntimeDaemonLifecycle`.
+public struct NoopRuntimeDaemonLifecycle: RuntimeDaemonLifecycle {
+    public init() {}
+    public func stopIdleDaemon() async -> Bool { true }
+    public func relaunch() async -> Bool { true }
+}
+
+/// Production lifecycle: stop the serving daemon by signalling the pid recorded
+/// in its single-writer lease (`<socket>.writer`), wait for the socket to
+/// disappear, then relaunch through `DaemonLauncher` (which resolves the daemon
+/// script through the freshly-swapped `current.json`).
+public struct DefaultRuntimeDaemonLifecycle: RuntimeDaemonLifecycle {
+    private let daemonDir: URL
+    private let stopTimeout: TimeInterval
+
+    public init(daemonDir: URL? = nil, stopTimeout: TimeInterval = 15) {
+        self.daemonDir = daemonDir ?? {
+            if let override = ProcessInfo.processInfo.environment["CLAUDEXOR_CONFIG_DIR"], !override.isEmpty {
+                return URL(fileURLWithPath: override).appendingPathComponent("daemon", isDirectory: true)
+            }
+            return FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claudexor/v3/daemon", isDirectory: true)
+        }()
+        self.stopTimeout = stopTimeout
+    }
+
+    private var socketPath: URL { daemonDir.appendingPathComponent("claudexord.sock") }
+    private var writerLeasePath: URL { daemonDir.appendingPathComponent("claudexord.sock.writer") }
+
+    public func stopIdleDaemon() async -> Bool {
+        // No socket → nothing serving → already idle.
+        guard FileManager.default.fileExists(atPath: socketPath.path) else { return true }
+        guard let data = try? Data(contentsOf: writerLeasePath),
+              let lease = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let pid = lease["pid"] as? Int, pid > 0 else {
+            // A serving socket with no readable lease: cannot safely signal a pid.
+            return false
+        }
+        kill(pid_t(pid), SIGTERM)
+        let deadline = Date().addingTimeInterval(stopTimeout)
+        while Date() < deadline {
+            if !FileManager.default.fileExists(atPath: socketPath.path) { return true }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return !FileManager.default.fileExists(atPath: socketPath.path)
+    }
+
+    public func relaunch() async -> Bool {
+        DaemonLauncher.startIfNeeded()
+    }
+}
+
 /// POST `/v2/handshake` and decode the engine identity. Shared by both real
 /// ports. Returns nil on any transport/status/decode failure.
 func fetchEngineHandshake(baseURL: URL, token: String, session: URLSession) async -> ControlHandshakeResponse? {

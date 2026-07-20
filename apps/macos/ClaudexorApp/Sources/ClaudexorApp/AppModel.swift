@@ -113,6 +113,14 @@ final class AppModel {
     /// M7 last check result (verbatim in Check-for-Updates) + in-flight flag.
     var runtimeUpdateStatus: String?
     var runtimeUpdateChecking = false
+    /// The runnable manifest from the latest `.available` decision (nil unless an
+    /// update is installable) + the install in-flight flag driving the chip's
+    /// confirm affordance and progress state.
+    var runtimeAvailableManifest: RuntimeManifest?
+    var runtimeInstalling = false
+    /// Production daemon lifecycle for a real install (stop → swap → relaunch);
+    /// injectable so tests never signal a live daemon.
+    @ObservationIgnored var makeRuntimeLifecycle: @Sendable () -> RuntimeDaemonLifecycle = { DefaultRuntimeDaemonLifecycle() }
     /// The M7 updater (actor, off the observable graph) + an injectable transport
     /// factory so tests drive a stub without the network. One auto foreground
     /// check per session; the menu command forces a re-check.

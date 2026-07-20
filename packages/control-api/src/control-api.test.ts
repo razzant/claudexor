@@ -4416,6 +4416,74 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  it("reflects a successful apply in the GET /runs summary IMMEDIATELY (delivery_state is in the cache fingerprint) [B7]", async () => {
+    const { daemon, record } = fakeDaemon();
+    const project = mkdtempSync(join(tmpdir(), "claudexor-b7-apply-cache-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: project });
+      execFileSync("git", ["config", "user.name", "Claudexor Test"], { cwd: project });
+      execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: project });
+      writeFileSync(join(project, "x"), "old\n");
+      execFileSync("git", ["add", "x"], { cwd: project });
+      execFileSync("git", ["commit", "-qm", "base"], { cwd: project });
+
+      record.params = {
+        ...(record.params as Record<string, unknown>),
+        scope: { kind: "project", root: project, context: "auto" },
+      };
+      const taskPath = join(record.runDir as string, "context", "task.yaml");
+      writeFileSync(
+        taskPath,
+        readFileSync(taskPath, "utf8").replace(
+          JSON.stringify(record.runDir),
+          JSON.stringify(project),
+        ),
+      );
+      const patch = [
+        "diff --git a/x b/x",
+        "--- a/x",
+        "+++ b/x",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n");
+      writeFileSync(join(record.runDir as string, "final", "patch.diff"), patch);
+      writeFileSync(
+        join(record.runDir as string, "final", "work_product.yaml"),
+        `id: wp-test\nkind: patch\nsource_task_id: task-d1\nmeta:\n  patch_sha256: ${sha256(patch)}\n`,
+      );
+
+      await withDaemonServer(
+        daemon,
+        async (base) => {
+          const listApplyState = async (): Promise<string | undefined> => {
+            const body = (await (
+              await apiFetch(`${base}/runs`, { headers: { authorization: `Bearer ${token}` } })
+            ).json()) as { runs: { runId: string; result?: { applyState?: string } }[] };
+            return body.runs.find((r) => r.runId === "run-d1")?.result?.applyState;
+          };
+          // First GET populates the summary-list cache with not_applied.
+          expect(await listApplyState()).toBe("not_applied");
+          const response = await apiFetch(`${base}/runs/run-d1/apply`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ mode: "apply" }),
+          });
+          expect(response.status).toBe(200);
+          // The apply route writes ONLY delivery_state.yaml; the summary list must
+          // still reflect it immediately (regression: it was cached stale because
+          // delivery_state.yaml was absent from summaryFingerprint).
+          expect(await listApplyState()).toBe("applied");
+        },
+        undefined,
+        inMemoryDeliveryServices(),
+      );
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";

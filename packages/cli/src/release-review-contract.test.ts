@@ -415,8 +415,30 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
         stderrSha256: digest,
       },
       reviews: [
-        { reviewer: "fable-reviewer-1", reportSha256: digest, verdict: "pass" },
-        { reviewer: "fable-reviewer-2", reportSha256: digest, verdict: "warn" },
+        {
+          reviewer: "sol",
+          reportSha256: digest,
+          verdict: "pass",
+          panel: { slot: "triad", model: "openai/gpt-5.6-sol" },
+        },
+        {
+          reviewer: "fable-triad",
+          reportSha256: digest,
+          verdict: "warn",
+          panel: { slot: "triad", model: "anthropic/claude-fable-5" },
+        },
+        {
+          reviewer: "gemini",
+          reportSha256: digest,
+          verdict: "pass",
+          panel: { slot: "triad", model: "google/gemini-3.5-flash" },
+        },
+        {
+          reviewer: "fable-scope",
+          reportSha256: digest,
+          verdict: "pass",
+          panel: { slot: "scope", model: "anthropic/claude-fable-5" },
+        },
       ],
       sealedAt: "2026-07-18T00:00:00.000Z",
     };
@@ -440,9 +462,84 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
     return { attestation, authority, resign, expected };
   };
 
-  it("accepts a signed two-reviewer non-blocking attestation on the exact candidate", () => {
+  it("accepts a signed attestation binding the exact triad+scope panel on the exact candidate", () => {
     const { attestation, authority, expected } = ownerAttestation();
     expect(validateReleaseAttestation(attestation, authority, expected)).toEqual({
+      ok: true,
+      reasons: [],
+    });
+  });
+
+  it("rejects an attestation whose reviews do not cover the exact triad panel (B8)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    // Swap the gemini triad slot for an off-panel model — the >=2 floor still
+    // passes, but the exact-panel binding must fail closed.
+    const offPanel = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          attestation.payload.reviews[0],
+          attestation.payload.reviews[1],
+          {
+            reviewer: "impostor",
+            reportSha256: "d".repeat(64),
+            verdict: "pass",
+            panel: { slot: "triad", model: "openai/gpt-4o" },
+          },
+          attestation.payload.reviews[3],
+        ],
+      },
+    });
+    const verdict = validateReleaseAttestation(offPanel, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toMatch(/exact triad panel/);
+  });
+
+  it("rejects an attestation missing the scope panel slot (B8)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const noScope = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: attestation.payload.reviews.slice(0, 3), // three triad slots, no scope
+      },
+    });
+    const verdict = validateReleaseAttestation(noScope, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toMatch(/scope slot/);
+  });
+
+  it("rejects a panel slot with no report digest (B8)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const noDigest = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          { ...attestation.payload.reviews[0], reportSha256: "not-a-digest" },
+          attestation.payload.reviews[1],
+          attestation.payload.reviews[2],
+          attestation.payload.reviews[3],
+        ],
+      },
+    });
+    expect(validateReleaseAttestation(noDigest, authority, expected).ok).toBe(false);
+  });
+
+  it("accepts extra non-panel internal-critic reviews alongside the exact panel (B8)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const withCritic = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          ...attestation.payload.reviews,
+          { reviewer: "internal-critic-engine", reportSha256: "e".repeat(64), verdict: "pass" },
+        ],
+      },
+    });
+    expect(validateReleaseAttestation(withCritic, authority, expected)).toEqual({
       ok: true,
       reasons: [],
     });

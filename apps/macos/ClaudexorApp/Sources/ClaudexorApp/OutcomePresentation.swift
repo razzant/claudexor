@@ -65,7 +65,6 @@ enum OutcomePresentation {
         if result?.applyState != "applied_review_blocked" {
             switch reviewVerdict {
             case .findings: facts.append(("Needs review", .warning))
-            case .ungated: facts.append(("Ungated", .warning))
             default: break
             }
         }

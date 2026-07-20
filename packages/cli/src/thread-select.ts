@@ -1,4 +1,16 @@
+import { realpathSync } from "node:fs";
 import type { ControlThread } from "@claudexor/schema";
+
+/** Realpath-normalize a path so a symlinked cwd (macOS `/tmp` → `/private/tmp`)
+ * matches a canonically-stored `repoRoot`. Non-existent paths (unit fixtures)
+ * fall back to the raw string, so the comparison stays purely lexical there. */
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
 
 /**
  * The thread `--resume` continues: the most recently UPDATED ACTIVE thread
@@ -14,7 +26,10 @@ export function pickResumableThread(
   threads: ControlThread[],
   projectRoot: string,
 ): ControlThread | undefined {
+  const target = canonicalPath(projectRoot);
   return [...threads]
-    .filter((t) => t.state === "active" && t.repoRoot === projectRoot)
+    .filter(
+      (t) => t.state === "active" && t.repoRoot != null && canonicalPath(t.repoRoot) === target,
+    )
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
 }

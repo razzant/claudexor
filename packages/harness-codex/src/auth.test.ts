@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -36,11 +44,17 @@ describe("Codex strict runtime auth routing", () => {
 
   it("honors CLAUDEXOR_CODEX_NATIVE_HOME carried in the RUN env, not only process.env", () => {
     const previous = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
-    const loggedIn = mkdtempSync(join(tmpdir(), "codex-native-override-"));
+    const prevConfig = process.env.CLAUDEXOR_CONFIG_DIR;
+    // The override must stay inside the Claudexor config root (containment
+    // guard, symmetry with claude), so seed the root and place it within.
+    const root = mkdtempSync(join(tmpdir(), "codex-native-root-"));
+    const loggedIn = join(root, "native", "codex", "override");
+    mkdirSync(loggedIn, { recursive: true });
     writeFileSync(
       join(loggedIn, "auth.json"),
       JSON.stringify({ auth_mode: "chatgpt", tokens: {} }),
     );
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
     delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME; // override lives ONLY in the run env
     try {
       const runEnv = { HOME: "/scoped/home", CLAUDEXOR_CODEX_NATIVE_HOME: loggedIn };
@@ -51,7 +65,30 @@ describe("Codex strict runtime auth routing", () => {
     } finally {
       if (previous === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
       else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previous;
-      rmSync(loggedIn, { recursive: true, force: true });
+      if (prevConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prevConfig;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("REFUSES a CLAUDEXOR_CODEX_NATIVE_HOME override that escapes the Claudexor config root (A4)", () => {
+    const prevConfig = process.env.CLAUDEXOR_CONFIG_DIR;
+    const prevNative = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    const root = mkdtempSync(join(tmpdir(), "codex-guard-root-"));
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
+    delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+    try {
+      // A sibling of the config root — the codex child could mutate an arbitrary
+      // home. The containment guard must throw, not silently honor it.
+      expect(() =>
+        defaultNativeCodexHome({ CLAUDEXOR_CODEX_NATIVE_HOME: join(root, "..", ".codex") }),
+      ).toThrow(/must stay inside/);
+    } finally {
+      if (prevConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prevConfig;
+      if (prevNative === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
+      else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = prevNative;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -76,11 +113,16 @@ describe("Codex strict runtime auth routing", () => {
 
   it("the doctor probe inspects the override home when it rides the spec env only", async () => {
     const previous = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
-    const loggedIn = mkdtempSync(join(tmpdir(), "codex-doctor-override-"));
+    const prevConfig = process.env.CLAUDEXOR_CONFIG_DIR;
+    // The override must stay inside the Claudexor config root (A4 containment).
+    const root = mkdtempSync(join(tmpdir(), "codex-doctor-root-"));
+    const loggedIn = join(root, "native", "codex", "override");
+    mkdirSync(loggedIn, { recursive: true });
     writeFileSync(
       join(loggedIn, "auth.json"),
       JSON.stringify({ auth_mode: "chatgpt", tokens: {} }),
     );
+    process.env.CLAUDEXOR_CONFIG_DIR = root;
     delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
     try {
       let probeEnv: Record<string, string | null | undefined> | undefined;
@@ -105,7 +147,9 @@ describe("Codex strict runtime auth routing", () => {
     } finally {
       if (previous === undefined) delete process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
       else process.env.CLAUDEXOR_CODEX_NATIVE_HOME = previous;
-      rmSync(loggedIn, { recursive: true, force: true });
+      if (prevConfig === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prevConfig;
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

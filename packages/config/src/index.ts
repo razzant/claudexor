@@ -81,6 +81,11 @@ const RETIRED_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
     path: ["harnesses", "*", "native_options"],
     retired: "never consumed by any adapter (v0.15 triage); per-harness knobs are typed fields",
   },
+  {
+    path: ["harnesses", "*", "active_profile_id"],
+    retired:
+      "the per-harness Active profile pointer was removed in v3 (D25); routing uses the Enabled toggle + computed next_up, and a run pins its account per-thread",
+  },
 ];
 
 /** Keys older `claudexor init` scaffolds wrote into PROJECT config and current
@@ -99,13 +104,18 @@ const RETIRED_PROJECT_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = 
   },
 ];
 
-function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): unknown {
+function stripRetiredKeys(
+  raw: unknown,
+  matchers: Array<{ path: string[] }>,
+  removed?: string[],
+): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
-  const strip = (node: Record<string, unknown>, segs: string[][]): void => {
+  const strip = (node: Record<string, unknown>, segs: string[][], prefix: string[]): void => {
     for (const [key, value] of Object.entries(node)) {
       const here = segs.filter((s) => s[0] === key || s[0] === "*");
       if (here.some((s) => s.length === 1)) {
         delete node[key];
+        removed?.push([...prefix, key].join("."));
         continue;
       }
       const deeper = here.filter((s) => s.length > 1).map((s) => s.slice(1));
@@ -115,7 +125,7 @@ function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): un
         value !== null &&
         !Array.isArray(value)
       ) {
-        strip(value as Record<string, unknown>, deeper);
+        strip(value as Record<string, unknown>, deeper, [...prefix, key]);
       }
     }
   };
@@ -123,8 +133,75 @@ function stripRetiredKeys(raw: unknown, matchers: Array<{ path: string[] }>): un
   strip(
     clone,
     matchers.map((m) => m.path),
+    [],
   );
   return clone;
+}
+
+/** Typed disclosure of a retired-key sweep (B9). Not a compat shim — no old
+ * behavior is preserved; the key is DELETED from the persisted file so the next
+ * field removal is one registry entry, never a silent parse failure. */
+export interface RetiredKeySweep {
+  path: string;
+  /** The dotted config paths that were stripped and persisted-out. */
+  removed: string[];
+}
+
+/**
+ * Same-root config evolution hygiene (B9): read a config file, strip exactly the
+ * known-retired keys, and — when any were present — PERSIST the cleaned file
+ * (atomic) and DISCLOSE the sweep (a log line + the returned typed record). A
+ * key NOT in the retired registry still fails loudly at the strict parse
+ * (INV-021). Best-effort persistence: a read-only file still loads (the
+ * in-memory strip already made the parse succeed), it just cannot be cleaned on
+ * disk this run. Returns null when the file is absent or already clean.
+ */
+export function sweepRetiredConfigKeys(
+  path: string,
+  matchers: Array<{ path: string[] }>,
+): RetiredKeySweep | null {
+  const raw = readYaml(path);
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const removed: string[] = [];
+  const cleaned = stripRetiredKeys(raw, matchers, removed);
+  if (removed.length === 0) return null;
+  try {
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, yamlStringify(cleaned), { mode: 0o600 });
+    renameSync(tmp, path);
+    // Disclosure (the daemon's stderr → claudexord.log): never silent.
+    console.warn(
+      `config: swept ${removed.length} retired key(s) from ${path} (${removed.join(", ")}); the cleaned file was persisted`,
+    );
+  } catch (err) {
+    console.warn(
+      `config: found retired key(s) in ${path} (${removed.join(", ")}) but could not persist the cleaned file: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return { path, removed };
+}
+
+/** Sweep the GLOBAL and every known PROJECT config's retired keys, persisting +
+ * disclosing. Called once at daemon start (mirroring the ghost-quarantine
+ * startup sweep) so an existing config written by an older version is cleaned
+ * before any strict parse can trip on it. */
+export function sweepRetiredConfigKeysAtStartup(
+  repoRoots: readonly string[] = [],
+): RetiredKeySweep[] {
+  const sweeps: RetiredKeySweep[] = [];
+  const global = sweepRetiredConfigKeys(
+    join(globalConfigDir(), "config.yaml"),
+    RETIRED_CONFIG_KEYS,
+  );
+  if (global) sweeps.push(global);
+  for (const root of repoRoots) {
+    const project = sweepRetiredConfigKeys(
+      join(root, ".claudexor", "config.yaml"),
+      RETIRED_PROJECT_CONFIG_KEYS,
+    );
+    if (project) sweeps.push(project);
+  }
+  return sweeps;
 }
 
 /**

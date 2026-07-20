@@ -33,6 +33,64 @@ export const SCOPE_ITEMS = Object.freeze([
   "implicit_contracts",
 ]);
 
+/**
+ * The exact panel slots a sealed owner-review attestation must bind. The sealed
+ * `reviews[]` carries one entry per panel slot, each with a `panel: {slot,
+ * model}` identity and its report digest; extra internal-critic reviews may ride
+ * along WITHOUT a `panel` field. Coverage is exact: the three frozen triad
+ * models (each once) plus exactly one scope slot for the frozen scope model
+ * (which equals a triad model, so the slot tag — not the model alone —
+ * distinguishes it). This binds the digests of the precise triad+scope panel
+ * into the signature, not merely a >=2 structural floor.
+ */
+export function validateReviewPanelCoverage(reviews) {
+  const reasons = [];
+  const list = Array.isArray(reviews) ? reviews : [];
+  const triadModels = [];
+  const scopeModels = [];
+  for (const review of list) {
+    const panel = review?.panel;
+    // An extra reviewer (e.g. an internal critic) carries no panel slot; it is
+    // counted only by the >=2 floor, never toward panel coverage.
+    if (panel === undefined || panel === null) continue;
+    if (
+      typeof panel !== "object" ||
+      Array.isArray(panel) ||
+      (panel.slot !== "triad" && panel.slot !== "scope")
+    ) {
+      reasons.push("owner review panel slot must be 'triad' or 'scope'");
+      continue;
+    }
+    if (typeof panel.model !== "string" || panel.model.length === 0) {
+      reasons.push(`owner review panel ${panel.slot} slot is missing a model id`);
+      continue;
+    }
+    if (!SHA256.test(review?.reportSha256 ?? "")) {
+      reasons.push(
+        `owner review panel slot ${panel.slot}/${panel.model} is missing a report digest`,
+      );
+    }
+    if (panel.slot === "triad") triadModels.push(panel.model);
+    else scopeModels.push(panel.model);
+  }
+  const sortedTriad = [...triadModels].sort();
+  const requiredTriadSorted = [...REQUIRED_TRIAD_MODELS].sort();
+  if (
+    triadModels.length !== REQUIRED_TRIAD_MODELS.length ||
+    sortedTriad.some((model, index) => model !== requiredTriadSorted[index])
+  ) {
+    reasons.push(
+      `owner review attestation must bind the exact triad panel [${REQUIRED_TRIAD_MODELS.join(", ")}]; got [${triadModels.join(", ")}]`,
+    );
+  }
+  if (scopeModels.length !== 1 || scopeModels[0] !== REQUIRED_SCOPE_MODEL) {
+    reasons.push(
+      `owner review attestation must bind exactly one scope slot for ${REQUIRED_SCOPE_MODEL}; got [${scopeModels.join(", ")}]`,
+    );
+  }
+  return reasons;
+}
+
 export function exactPanelMatch(triadModels, scopeModel) {
   return (
     Array.isArray(triadModels) &&
@@ -247,6 +305,10 @@ export function validateOwnerReviewAttestationPayload(payload, expected) {
   if (names.size !== reviews.length) {
     reasons.push("owner review attestation contains duplicate reviewer names");
   }
+  // Bind the EXACT triad+scope panel (B8): the sealed reviews must cover the
+  // three frozen triad slots and the scope slot, each digest-bound — a >=2
+  // structural floor alone let an off-panel pair seal.
+  reasons.push(...validateReviewPanelCoverage(reviews));
   return { ok: reasons.length === 0, reasons };
 }
 

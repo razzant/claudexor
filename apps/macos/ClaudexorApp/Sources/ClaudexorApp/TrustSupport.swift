@@ -27,6 +27,24 @@ extension AppModel {
         trustEntries.first { $0.repoRoot == repoRoot }?.allowFullAccess == true
     }
 
+    /// The composer's write-scope BASELINE for a thread with no sticky access
+    /// (A8): a nil sticky access follows the repo's trust `access_default`, so
+    /// the composer SEEDS + treats THAT default (not a hardcoded Workspace write)
+    /// as the no-pin value — otherwise a repo whose trust default is Read-only
+    /// showed "Workspace write" while the engine actually applied Read-only.
+    /// Falls back to Workspace write when the repo has no trust entry (the
+    /// engine's own default), preserving prior behavior for untrusted repos.
+    /// The engine still owns the trust gate at run time; this is display+seed
+    /// fidelity only.
+    var composerAccessDefault: AccessProfile {
+        let root = selectedThreadId.flatMap(threadRepoRoot) ?? projectRoot
+        guard !root.isEmpty,
+              let wire = trustEntries.first(where: { $0.repoRoot == root })?.accessDefault,
+              let profile = AccessProfile(wire: wire)
+        else { return .workspaceWrite }
+        return profile
+    }
+
     /// Grant/revoke full access for one repo (the narrow user-level trust
     /// write). Returns true on success; the entries list is refreshed either way.
     @discardableResult
@@ -132,7 +150,7 @@ struct TrustSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionLabel("Trust — full project access", systemImage: "shield.lefthalf.filled")
-            Text("Projects allowed to run without a sandbox (access: full). Stored user-level in ~/.claudexor/v2/trust — never inside the repo, so versioned config can't self-grant it.")
+            Text("Projects allowed to run without a sandbox (access: full). Stored user-level in ~/.claudexor/v3/trust — never inside the repo, so versioned config can't self-grant it.")
                 .font(.caption).foregroundStyle(.secondary)
             if let status = model.trustStatus {
                 Label(status, systemImage: "exclamationmark.triangle.fill")

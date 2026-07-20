@@ -9,6 +9,16 @@ import SwiftUI
 // single owner of chip-menu chrome: `.menuIndicator(.hidden)` suppresses the
 // native indicator so there is exactly ONE trailing chevron, with consistent
 // padding, capsule metrics, and fixedSize across every chip.
+//
+// SCOPE: ChipMenu owns the chrome of composer CHIPS that drop down a `Menu`.
+// The sidebar-footer `AccountsTriggerRow` is deliberately NOT a ChipMenu: it
+// presents a rich `.popover` (add account, native login, quota rows,
+// auto-balance toggle) that a `Menu` cannot host, and it is a full-width footer
+// row, not a fixedSize capsule. Its `chevron.up.chevron.down` is the macOS
+// popover-selector affordance (distinct from a dropdown's single `chevron.down`),
+// so there is no double-indicator bug to centralize. Keep account PICKING (the
+// composer's per-thread override) on ChipMenu; leave the global accounts popover
+// trigger as this documented exception.
 
 /// The capsule fill a chip carries.
 enum ChipFill {

@@ -167,6 +167,105 @@ private struct StubHandshake: RuntimeHandshakeVerifier {
             atPath: installer.versionDir("3.2.0").appendingPathComponent("claudexord.bundle.cjs").path))
     }
 
+    // MARK: - Install wiring: resolve the tarball from the release doc → install
+
+    @Test func installAvailableResolvesTarballFromReleaseDocAndInstalls() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        let (bytes, sha) = try makeRuntimeTarball()
+        let transport = StubTransport()
+        let tarballURL = "https://example/claudexor-runtime-3.2.0.tar.gz"
+        // The latest-release doc carries the runtime tarball asset by name.
+        let releaseJSON = #"{"assets":[{"name":"claudexor-runtime-3.2.0.tar.gz","browser_download_url":"\#(tarballURL)"}]}"#
+        transport.queuedFetches = [ReleaseFetchResult(status: 200, etag: nil, data: Data(releaseJSON.utf8))]
+        transport.assetData[tarballURL] = bytes
+        let m = manifest(version: "3.2.0", sha: sha)
+        let updater = RuntimeUpdater(
+            transport: transport, installer: installer,
+            probe: StubProbe(result: true), handshakeVerifier: StubHandshake(result: true))
+
+        let outcome = await updater.installAvailable(manifest: m)
+        #expect(outcome == .installed(version: "3.2.0"))
+        #expect(installer.readCurrent()?.version == "3.2.0")
+    }
+
+    @Test func installAvailableReportsMissingTarballAsset() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        let transport = StubTransport()
+        // Release doc has the manifest asset but NOT the runtime tarball.
+        transport.queuedFetches = [ReleaseFetchResult(status: 200, etag: nil, data: Data(#"{"assets":[]}"#.utf8))]
+        let m = manifest(version: "3.2.0", sha: String(repeating: "a", count: 64))
+        let updater = RuntimeUpdater(
+            transport: transport, installer: installer,
+            probe: StubProbe(result: true), handshakeVerifier: StubHandshake(result: true))
+
+        let outcome = await updater.installAvailable(manifest: m)
+        guard case let .failed(error, _) = outcome else { Issue.record("expected failure"); return }
+        if case let .transport(msg) = error { #expect(msg.contains("claudexor-runtime-3.2.0.tar.gz")) }
+        else { Issue.record("expected transport error, got \(error)") }
+    }
+
+    // MARK: - First-install handshake failure with NO last-known-good
+
+    @Test func firstInstallHandshakeFailureRemovesCurrentForBundledFallback() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)  // NO prior current.json
+        let (bytes, sha) = try makeRuntimeTarball()
+        let transport = StubTransport()
+        transport.downloadDefault = bytes
+        let m = manifest(version: "3.2.0", sha: sha)
+        let updater = RuntimeUpdater(
+            transport: transport, installer: installer,
+            probe: StubProbe(result: true),
+            handshakeVerifier: StubHandshake(result: false))  // serving handshake FAILS
+
+        let outcome = await updater.install(manifest: m, tarballURL: URL(string: "https://example/c.tar.gz")!)
+        guard case let .failed(_, rolledBack) = outcome else { Issue.record("expected failure"); return }
+        // Nothing to roll back to on a first install.
+        #expect(rolledBack == false)
+        // The stranding fresh pointer was REMOVED so the daemon falls back to the
+        // app-bundled runtime (never stuck on a closure that failed its handshake).
+        #expect(installer.readCurrent() == nil)
+        #expect(installer.readLastKnownGood() == nil)
+    }
+
+    // MARK: - Tar-entry sanitization (reject symlink / traversal / absolute)
+
+    @Test func unpackRejectsASymlinkEntry() async throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        // Build a tarball that plants a symlink alongside the daemon script.
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claudexor-evil-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        try Data("// daemon\n".utf8).write(to: staging.appendingPathComponent("claudexord.bundle.cjs"))
+        try FileManager.default.createSymbolicLink(
+            at: staging.appendingPathComponent("evil"),
+            withDestinationURL: URL(fileURLWithPath: "/etc/passwd"))
+        let tarball = FileManager.default.temporaryDirectory
+            .appendingPathComponent("evil-\(UUID().uuidString).tar.gz")
+        defer { try? FileManager.default.removeItem(at: tarball) }
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["-czf", tarball.path, "-C", staging.path, "."]
+        try tar.run(); tar.waitUntilExit()
+        #expect(tar.terminationStatus == 0)
+
+        // Unpack must REFUSE the tarball (never extract a symlink).
+        var threw = false
+        do { try installer.unpack(tarball: tarball, version: "9.9.9") }
+        catch { threw = true; if case RuntimeUpdateError.unpackFailed = error {} else { Issue.record("expected unpackFailed, got \(error)") } }
+        #expect(threw)
+        // Nothing was extracted.
+        #expect(!FileManager.default.fileExists(atPath: installer.versionDir("9.9.9").appendingPathComponent("evil").path))
+    }
+
     // MARK: - ETag caching
 
     @Test func secondCheckSendsIfNoneMatchAnd304IsNoChange() async throws {

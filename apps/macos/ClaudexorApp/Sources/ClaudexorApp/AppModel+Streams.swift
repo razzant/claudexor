@@ -357,15 +357,24 @@ extension AppModel {
             // outcomeFacts/banner/applyEligibility. `run.blocked` is a review
             // OUTCOME (not a lifecycle) — the reload sets the axes; we only flip
             // the phase when the frame carries a real lifecycle state.
+            // The v3 terminal run.* payload carries `lifecycle` (orchestrator
+            // log.emit("run.completed"/"run.failed"/"run.blocked", { lifecycle,
+            // facts, ... })); `status`/`state` are legacy fallbacks that v3 never
+            // emits. Reading only status/state silently ignored the real word —
+            // a cancelled/interrupted run (run.failed with lifecycle "cancelled")
+            // mis-rendered as .failed.
+            let lifecycle = payload["lifecycle"]?.stringValue
+                ?? payload["status"]?.stringValue
+                ?? payload["state"]?.stringValue
             if type == "run.completed" {
-                if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue {
+                if let s = lifecycle {
                     t.phase = RunPhase(api: s)
                 } else {
                     t.phase = .succeeded
                 }
                 shouldLoadDetail = true
             } else if type == "run.failed" {
-                if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue {
+                if let s = lifecycle {
                     t.phase = RunPhase(api: s)
                 } else {
                     t.phase = .failed
@@ -373,13 +382,12 @@ extension AppModel {
                 shouldLoadDetail = true
             }
             else if type == "run.blocked" {
-                if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue,
-                   RunPhase(api: s) != .unknown {
+                if let s = lifecycle, RunPhase(api: s) != .unknown {
                     t.phase = RunPhase(api: s)
                 }
                 shouldLoadDetail = true
             }
-            else if let s = payload["status"]?.stringValue ?? payload["state"]?.stringValue { t.phase = RunPhase(api: s) }
+            else if let s = lifecycle { t.phase = RunPhase(api: s) }
             else if t.phase == .queued { t.phase = .running }
             // Only an ACTUAL phase change rewrites the tasks array (a
             // repeated same-phase run.* frame is a no-op for the lists).

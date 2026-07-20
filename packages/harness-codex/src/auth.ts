@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { labelStreams, providerScrubEnv, runCapture } from "@claudexor/core";
 import { resolveSecret } from "@claudexor/secrets";
 import { ensureDir, redactSecrets, userConfigDir } from "@claudexor/util";
@@ -68,8 +68,18 @@ export function ensureCodexApiAuth(
  */
 export function defaultNativeCodexHome(env?: Record<string, string | null | undefined>): string {
   const override = env?.["CLAUDEXOR_CODEX_NATIVE_HOME"] ?? process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
-  if (override && override.trim()) return override;
-  return join(userConfigDir(), "native", "codex");
+  if (!override?.trim()) return join(userConfigDir(), "native", "codex");
+  // Containment guard (symmetry with claude's defaultNativeClaudeConfigDir): an
+  // override that escapes the Claudexor config root could point the codex child
+  // at (and mutate) an arbitrary directory. Keep it inside the owned root.
+  const ownedRoot = resolve(userConfigDir());
+  const target = resolve(override.trim());
+  if (target !== ownedRoot && !target.startsWith(ownedRoot + sep)) {
+    throw new Error(
+      `CLAUDEXOR_CODEX_NATIVE_HOME must stay inside the Claudexor config root ${ownedRoot}`,
+    );
+  }
+  return target;
 }
 
 export type CodexLoginMethod = "chatgpt" | "api_key" | "access_token" | "logged_out" | "unknown";

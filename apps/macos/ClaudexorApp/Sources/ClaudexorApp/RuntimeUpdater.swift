@@ -11,6 +11,12 @@ import ClaudexorKit
 
 public let runtimeManifestAssetName = "runtime-manifest.json"
 
+/// The runtime-closure tarball asset name for a version — the SAME convention
+/// the release pipeline publishes (`claudexor-runtime-<version>.tar.gz`).
+public func runtimeTarballAssetName(version: String) -> String {
+    "claudexor-runtime-\(version).tar.gz"
+}
+
 /// The real, manifest-backed availability provider. `current()` is a cheap,
 /// non-blocking read of the LAST decision computed by an async check — no
 /// network on the read path — so the footer chip binds to it while the actual
@@ -60,6 +66,7 @@ public actor RuntimeUpdater {
     private let installer: RuntimeInstaller
     private let probe: RuntimeProbe
     private let handshakeVerifier: RuntimeHandshakeVerifier
+    private let lifecycle: RuntimeDaemonLifecycle
 
     private var storedETag: String?
     private var lastDecision: RuntimeUpdateDecision?
@@ -68,12 +75,14 @@ public actor RuntimeUpdater {
         transport: RuntimeReleaseTransport,
         installer: RuntimeInstaller = RuntimeInstaller(),
         probe: RuntimeProbe = DefaultRuntimeProbe(),
-        handshakeVerifier: RuntimeHandshakeVerifier = DefaultRuntimeHandshakeVerifier()
+        handshakeVerifier: RuntimeHandshakeVerifier = DefaultRuntimeHandshakeVerifier(),
+        lifecycle: RuntimeDaemonLifecycle = NoopRuntimeDaemonLifecycle()
     ) {
         self.transport = transport
         self.installer = installer
         self.probe = probe
         self.handshakeVerifier = handshakeVerifier
+        self.lifecycle = lifecycle
     }
 
     /// The most recent decision (nil before the first successful check). Lets a
@@ -149,7 +158,13 @@ public actor RuntimeUpdater {
         guard await probe.verify(versionDir: versionDir, expectedVersion: manifest.version) else {
             return .failed(.probeFailed("probe daemon did not confirm version \(manifest.version)"), rolledBack: false)
         }
-        // 7. Atomic swap (promotes outgoing current.json to last-known-good).
+        // Whether a rollback target exists BEFORE the swap promotes one — this
+        // decides the failure recovery (roll back vs. first-install strand).
+        let hadPriorRuntime = installer.readCurrent() != nil
+        // 7. Stop the idle daemon so the pointer swap is not raced by a live
+        // serving process (best-effort; the handshake below is the real proof).
+        _ = await lifecycle.stopIdleDaemon()
+        // 8. Atomic swap (promotes outgoing current.json to last-known-good).
         let pointer = RuntimeCurrent(
             version: manifest.version,
             path: RuntimeCurrent.versionPath(manifest.version),
@@ -160,17 +175,56 @@ public actor RuntimeUpdater {
         do {
             try installer.swapCurrent(to: pointer)
         } catch {
+            _ = await lifecycle.relaunch()
             return .failed(asRuntimeError(error), rolledBack: false)
         }
-        // 8. Handshake-verify the now-serving engine; roll back on any failure.
+        // 9. Relaunch so the handshake observes the NEW engine (an un-restarted
+        // daemon still serves the old closure and would fail identity spuriously).
+        _ = await lifecycle.relaunch()
+        // 10. Handshake-verify the now-serving engine; recover on any failure.
         guard await handshakeVerifier.verifyServing(expectedVersion: manifest.version) else {
-            let rolledBack = (try? installer.rollbackToLastKnownGood()) != nil
+            if hadPriorRuntime, (try? installer.rollbackToLastKnownGood()) != nil {
+                // Restore the previous serving runtime and bring it back up.
+                _ = await lifecycle.relaunch()
+                return .failed(
+                    .identityMismatch(expected: manifest.version, actual: "serving engine did not confirm handshake"),
+                    rolledBack: true
+                )
+            }
+            // FIRST install with no last-known-good: the fresh pointer would
+            // strand the daemon on a closure that failed its handshake. Remove it
+            // so DaemonLauncher falls back to the app-bundled runtime, and report
+            // honestly (nothing was rolled back — there was nothing to roll back to).
+            try? installer.removeCurrent()
+            _ = await lifecycle.relaunch()
             return .failed(
                 .identityMismatch(expected: manifest.version, actual: "serving engine did not confirm handshake"),
-                rolledBack: rolledBack
+                rolledBack: false
             )
         }
         return .installed(version: manifest.version)
+    }
+
+    /// Resolve the runtime tarball asset from the SAME release document as the
+    /// manifest (never a caller-supplied URL), then run the full install. This is
+    /// the wiring the update chip drives: it re-fetches the latest release, finds
+    /// `claudexor-runtime-<version>.tar.gz`, and installs it.
+    public func installAvailable(manifest: RuntimeManifest) async -> RuntimeInstallOutcome {
+        let fetch: ReleaseFetchResult
+        do {
+            fetch = try await transport.fetchLatestRelease(etag: nil)
+        } catch {
+            return .failed(asRuntimeError(error), rolledBack: false)
+        }
+        guard let body = fetch.data, let release = GitHubRelease.parse(body) else {
+            return .failed(.transport("latest-release response was not parseable JSON"), rolledBack: false)
+        }
+        let assetName = runtimeTarballAssetName(version: manifest.version)
+        guard let asset = release.asset(named: assetName),
+              let url = URL(string: asset.browserDownloadURL) else {
+            return .failed(.transport("release has no \(assetName) asset"), rolledBack: false)
+        }
+        return await install(manifest: manifest, tarballURL: url)
     }
 
     private func asRuntimeError(_ error: Error) -> RuntimeUpdateError {

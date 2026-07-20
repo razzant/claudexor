@@ -44,7 +44,7 @@ live surface disagree, trust the live surface.
   CLI. A blocked run returns ACP `refusal` with typed Claudexor metadata, never
   a normal `end_turn`.
 - **Control API** is the daemon's loopback HTTP surface (bearer token from
-  `~/.claudexor/v2/daemon/token`, address from `~/.claudexor/v2/daemon/control-api.json`).
+  `~/.claudexor/v3/daemon/token`, address from `~/.claudexor/v3/daemon/control-api.json`).
   The endpoint map with request/response schema names lives at
   `docs/reference/endpoints.json`; field semantics are in the generated JSON
   Schemas under `packages/schema/generated/`.
@@ -98,7 +98,7 @@ complexity ratchet, canary stories, and the Bible invariants
 The full env reference is in `docs/INTEGRATIONS.md` (§ Environment
 reference). The ones agents most often need:
 
-- `CLAUDEXOR_CONFIG_DIR` — relocate the v2 root (default `~/.claudexor/v2`; tests/CI hermeticity).
+- `CLAUDEXOR_CONFIG_DIR` — relocate the v3 data root (default `~/.claudexor/v3`; tests/CI hermeticity).
 - `CLAUDEXOR_DISABLE_STORED_SECRETS=1` — ignore v2 file-stored keys
   (hermetic runs; native CLI sessions still work).
 - `CLAUDEXOR_<HARNESS>_BIN` (`CODEX`/`CLAUDE`/`CURSOR`/`OPENCODE`) — explicit

@@ -7320,7 +7320,7 @@ describe("delegation belt injection (D32)", () => {
     env: { CLAUDEXOR_DELEGATION_DEPTH: "0" },
   };
 
-  it("injects the belt descriptor into an agent lane whose adapter can host MCP servers", async () => {
+  it("injects the belt descriptor into an agent lane whose adapter can host MCP servers, rebinding its budget to the RESOLVED cap", async () => {
     const repo = await initRepo();
     let injected: unknown;
     const orch = new Orchestrator({
@@ -7337,7 +7337,48 @@ describe("delegation belt injection (D32)", () => {
       delegate: true,
       delegationBelt: belt,
     });
-    expect(injected).toEqual([belt]);
+    // The engine rebinds the belt's parent-budget env to the resolved run
+    // budget (default = unlimited here), preserving the descriptor's other env.
+    const list = injected as Array<{ env: Record<string, string> }>;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.env.CLAUDEXOR_DELEGATION_DEPTH).toBe("0");
+    expect(JSON.parse(list[0]!.env.CLAUDEXOR_DELEGATION_BUDGET)).toEqual({ kind: "unlimited" });
+  });
+
+  it("rebinds the belt budget to the configured global cap when the request supplied none (config-cap inheritance)", async () => {
+    const repo = await initRepo();
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-beltcfg-"));
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      "budget:\n  paid_budget_per_run:\n    kind: finite\n    maxUsd: 0.25\n",
+    );
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      let injected: unknown;
+      const orch = new Orchestrator({
+        registry: new Map([
+          ["deleg", delegatingAdapter("deleg", true, (s) => (injected = s.extra_mcp_servers))],
+        ]),
+        reviewers: [],
+      });
+      await orch.run({
+        repoRoot: repo,
+        prompt: "do the thing",
+        mode: "agent",
+        harnesses: ["deleg"],
+        delegate: true,
+        // No paidBudget on the request: the belt must still inherit the
+        // config-resolved finite cap, not fall back to unlimited.
+        delegationBelt: belt,
+      });
+      const list = injected as Array<{ env: Record<string, string> }>;
+      expect(JSON.parse(list[0]!.env.CLAUDEXOR_DELEGATION_BUDGET)).toEqual({
+        kind: "finite",
+        maxUsd: 0.25,
+      });
+    } finally {
+      delete process.env.CLAUDEXOR_CONFIG_DIR;
+    }
   });
 
   it("does NOT inject the belt when delegate is off", async () => {
@@ -7402,7 +7443,10 @@ describe("delegation belt injection (D32)", () => {
       delegate: true,
       delegationBelt: belt,
     });
-    expect(injected).toEqual([belt]);
+    const list = injected as Array<{ name: string; env: Record<string, string> }>;
+    expect(list).toHaveLength(1);
+    expect(list[0]!.name).toBe("claudexor");
+    expect(JSON.parse(list[0]!.env.CLAUDEXOR_DELEGATION_BUDGET)).toEqual({ kind: "unlimited" });
   });
 
   it("REFUSES --delegate (typed, naming the harness) on a lane that cannot inject MCP servers", async () => {

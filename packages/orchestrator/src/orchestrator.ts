@@ -75,6 +75,7 @@ import {
   estimateEffectiveAuthRoute,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
+import { DELEGATION_ENV } from "@claudexor/mcp-server";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
   AnswerAssembly,
@@ -1696,6 +1697,7 @@ export class Orchestrator {
     input: RunInput | undefined,
     intent: Intent,
     routed: RoutedAdapter,
+    resolvedBudget: PaidBudget,
   ): ExtraMcpServer[] {
     if (!input?.delegate || !input.delegationBelt || !routed.supportsMcpInjection) return [];
     // A lane that sandbox-cancels the belt below full access (codex) must NOT
@@ -1705,7 +1707,21 @@ export class Orchestrator {
     // that cannot host it, so a mixed pool keeps the belt on the lanes that can.
     if (routed.mcpInjectionRequiresFullAccess && !isFullAccess(routed.adapterAccess)) return [];
     const writingIntents: Intent[] = ["implement", "create_from_scratch", "repair"];
-    return writingIntents.includes(intent) ? [input.delegationBelt] : [];
+    if (!writingIntents.includes(intent)) return [];
+    // The CLI built the descriptor from the RAW request budget (undefined when
+    // the caller relied on a config/dep default), which would leave the belt
+    // unlimited while the real run is capped. Rebind the belt's parent-budget
+    // env to the RESOLVED budget (resolvePaidBudget output) so sub-run draws are
+    // bounded by the same headroom the parent run enforces — one budget owner.
+    return [
+      {
+        ...input.delegationBelt,
+        env: {
+          ...input.delegationBelt.env,
+          [DELEGATION_ENV.budget]: JSON.stringify(resolvedBudget),
+        },
+      },
+    ];
   }
 
   private harnessSpecKnobs(
@@ -1905,9 +1921,29 @@ export class Orchestrator {
       return {
         pointerLine: `Earlier conversation context for this thread is at: ${briefPath} — read it before answering.`,
       };
-    } catch {
-      // Continuity is best-effort: a packet-build failure must never fail the
-      // run. The turn simply runs without the packet (honest degradation).
+    } catch (err) {
+      // Continuity is best-effort — a packet-build failure must never fail the
+      // run — but it is NEVER silent (INV-137). Disclose the degradation: emit
+      // the session.continuity event carrying the reason (so the failure is in
+      // the run log), and stamp the turn as fresh — it honestly ran WITHOUT the
+      // thread packet. Absent this, a summarization/anchor/read failure vanished.
+      const reason = err instanceof Error ? err.message : String(err);
+      log?.emit("session.continuity", {
+        thread_id: runInput.threadId,
+        harness_id: harnessId,
+        kind: "fresh",
+        packet_turns: 0,
+        summarized: false,
+        lane_switched_from: null,
+        degraded: true,
+        reason,
+      });
+      runInput.onContinuityResolved?.(ctx.turnId, {
+        kind: "fresh",
+        packetTurns: 0,
+        summarized: false,
+        laneSwitchedFrom: null,
+      });
       return { pointerLine: null };
     }
   }
@@ -1978,7 +2014,12 @@ export class Orchestrator {
         // artifact dir inside the worktree — excluded from the diff, gallery-collected.
         join(envelope.worktree_path, CLAUDEXOR_ARTIFACT_DIR, CLAUDEXOR_BROWSER_ARTIFACT_SUBDIR),
       ),
-      extra_mcp_servers: this.delegationBeltFor(runInput, intent, routed),
+      extra_mcp_servers: this.delegationBeltFor(
+        runInput,
+        intent,
+        routed,
+        contract.budget.paid_budget,
+      ),
       cwd: envelope.worktree_path,
       access: routed.adapterAccess,
       ...this.harnessSpecKnobs(contract, knobs, intent),

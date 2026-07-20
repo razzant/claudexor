@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { userConfigDir } from "@claudexor/util";
 import { nativeLoginDisplayCommand, nativeLoginEnv, nativeLoginSpec } from "./native-login.js";
 import { defaultNativeClaudeConfigDir } from "@claudexor/harness-claude";
 import { CODEX_FILE_AUTH_OVERRIDE, defaultNativeCodexHome } from "@claudexor/harness-codex";
@@ -13,7 +13,10 @@ describe("native login specs", () => {
 
   beforeEach(() => {
     previousNativeHome = process.env.CLAUDEXOR_CODEX_NATIVE_HOME;
-    nativeHome = mkdtempSync(join(tmpdir(), "claudexor-native-codex-"));
+    // The override must stay inside the Claudexor config root (A4 containment),
+    // so seed the disposable native home under the (hermetic) config dir.
+    mkdirSync(join(userConfigDir(), "native"), { recursive: true });
+    nativeHome = mkdtempSync(join(userConfigDir(), "native", "codex-login-"));
     process.env.CLAUDEXOR_CODEX_NATIVE_HOME = nativeHome;
   });
 

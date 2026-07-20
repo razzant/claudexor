@@ -14,7 +14,8 @@
   continuation packets with cached LLM summaries, and visible typed
   disclosure. Status is independent axes (lifecycle / checks / review /
   noChanges / reason) with a server-owned outcome banner that model prose
-  can never outrank. Accounts are fully symmetric (Enabled + Active,
+  can never outrank. Accounts are fully symmetric (an Enabled toggle plus a
+  computed next-up account; a thread pins the account it first ran on;
   native CLI login is just a row). Fresh v3 data root; protocol major 3;
   runtime-closure updater + zero-telemetry install counter; the immune
   system (staged-field v3, INV→verify link gate, concept gate, reviewer

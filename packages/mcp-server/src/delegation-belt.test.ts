@@ -143,6 +143,59 @@ describe("delegation belt tool surface (D32)", () => {
     expect(ledger.committedUsd).toBeCloseTo(0.2, 5);
   });
 
+  it("reserves the drawn headroom BEFORE awaiting the run so a concurrent draw cannot over-commit", async () => {
+    // A slow sub-run that stays in flight until we release it.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = 0;
+    const runner: RunnerFn = async () => {
+      started += 1;
+      await gate;
+      return { runId: `sub-${started}`, status: "succeeded", spendUsd: 0.3 };
+    };
+    const ledger = newBeltLedger();
+    const tools = beltClaudexorTools(
+      runner,
+      { depth: 0, maxSubRuns: 8, parentBudget: { kind: "finite", maxUsd: 1 } },
+      ledger,
+    );
+    const run = tools.find((t) => t.name === "claudexor_run")!;
+    // First sub-run starts and reserves the FULL $1 headroom before its await.
+    const first = run.handler({ prompt: "a" }, {});
+    expect(ledger.committedUsd).toBeCloseTo(1, 5); // reservation is visible immediately
+    // A concurrent draw sees the reservation and is refused (no over-draw).
+    const second = await run.handler({ prompt: "b" }, {});
+    expect(String(typeof second === "string" ? second : second.text)).toMatch(
+      /no parent budget headroom/,
+    );
+    expect(started).toBe(1); // the second never reached the runner
+    // Complete the first: the reservation reconciles DOWN to the real spend.
+    release();
+    await first;
+    expect(ledger.committedUsd).toBeCloseTo(0.3, 5);
+    // Now that headroom is freed, a fresh draw is granted again.
+    const third = await run.handler({ prompt: "c" }, {});
+    expect(String(typeof third === "string" ? third : third.text)).toContain("runId:");
+  });
+
+  it("releases the reservation when a sub-run throws (headroom is not stranded)", async () => {
+    const ledger = newBeltLedger();
+    const runner: RunnerFn = async () => {
+      throw new Error("sub-run blew up");
+    };
+    const tools = beltClaudexorTools(
+      runner,
+      { depth: 0, maxSubRuns: 8, parentBudget: { kind: "finite", maxUsd: 1 } },
+      ledger,
+    );
+    const run = tools.find((t) => t.name === "claudexor_run")!;
+    await expect(run.handler({ prompt: "a" }, {})).rejects.toThrow("blew up");
+    // The reservation was released on the throw — headroom is fully available.
+    expect(ledger.committedUsd).toBeCloseTo(0, 5);
+  });
+
   it("refuses further sub-runs once the count cap is hit (server-side, not trusting the harness)", async () => {
     let runs = 0;
     const runner: RunnerFn = async () => {

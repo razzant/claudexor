@@ -254,7 +254,7 @@ explicit `WebSearch`/`WebFetch` allow/deny arguments, while Codex gets
 `web_search` config. Command/network sandboxing remains separate.
 
 `access=full` (unsandboxed) additionally requires `allow_full_access: true` in
-the USER-LEVEL trust config (`~/.claudexor/v2/trust/<repo-hash>.yaml`); versioned
+the USER-LEVEL trust config (`~/.claudexor/v3/trust/<repo-hash>.yaml`); versioned
 repo config can never self-grant it, and the violation is a loud routing error
 naming the resolved trust path, not a silent downgrade. `claudexor trust` is
 the writer for that file (`--allow-full-access`, `--revoke-full-access`,
@@ -485,7 +485,7 @@ Creates a run directory, writes a `TaskContract`, runs one adapter with
 `final/summary.md`, and a `report` WorkProduct. There is no patch/apply control.
 In the macOS app, Ask may run with no project selected. The harness cwd is an
 empty synthetic directory at `~/.cache/claudexor/no-project`, while artifacts live
-in the user-level store `~/.claudexor/v2/runs/<run_id>/`. If routing or the harness
+in the user-level store `~/.claudexor/v3/runs/<run_id>/`. If routing or the harness
 fails, the run still writes inspectable failure artifacts
 (`context/context_error.md`, `final/failure.yaml`, `final/summary.md`) and emits
 `run.failed`.
@@ -516,7 +516,7 @@ emits artifacts, and live project mutation happens only through explicit
 delivery/apply.
 
 Envelope semantics are strict. Project runs execute under
-`~/.claudexor/v2/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
+`~/.claudexor/v3/projects/<project-sha256>/workspaces/<task>/<attempt>/tree`, and
 the harness `cwd` is the envelope worktree. Proven work product is the git diff in that worktree, a
 declared run artifact, or an explicitly verified host side-effect. Absolute
 `/tmp/...` writes are host side effects and are not project diffs; project tmp
@@ -750,7 +750,7 @@ Endpoint semantics beyond the inventory:
   lists server-owned fields omitted from that draft. The CLI projects these as
   `claudexor retry` and `claudexor run-again`.
 - `GET /v2/trust` + `POST /v2/trust` are the user-level trust surface: the GET
-  enumerates per-repo trust files (`~/.claudexor/v2/trust/<repo-hash>.yaml`, each
+  enumerates per-repo trust files (`~/.claudexor/v3/trust/<repo-hash>.yaml`, each
   stamped with its `repo_root` provenance so the list is human-readable; legacy
   pre-provenance files show a null root), and the POST accepts `repoRoot` plus
   `allowFullAccess` and/or `accessDefault` (strict — unknown fields are 400) to
@@ -1267,8 +1267,8 @@ raw event reference, and are capped with an explicit truncation marker.
 ## 8. Artifact Layout
 
 Canonical project output lives under
-`~/.claudexor/v2/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
-`~/.claudexor/v2/runs/<run_id>/`:
+`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; no-project Ask uses
+`~/.claudexor/v3/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -1439,10 +1439,11 @@ code touching one of these areas must honor it or change it explicitly here.
   delegated sub-run adds no new live-tree mutation path. Sub-runs are isolated
   envelopes (forced no-thread), depth is capped at 1, and each draws from the
   parent budget headroom.
-- Spec-interview grounding runs execute in-process in the daemon (synchronous
-  request/response); they persist a normal run dir but are not daemon jobs —
-  they do not appear in `GET /v2/runs` and cannot be cancelled via the run
-  control endpoint.
+- Planning rides the normal thread/turn path (the spec-interview state machine
+  and its in-process grounding runs were retired in v3): a `plan` run surfaces
+  typed open questions, answer turns refine it on the same persisted lane, and
+  Implement freezes it as a content-hashed brief. There is no separate spec
+  surface, spec-session store, or grounding-run job class.
 - `--json` mode guarantees exactly one JSON object on stdout for run/ops
   verbs; interactive TTY question prompts (follow/agent Q&A) remain human-text
   affordances by design.
@@ -1463,7 +1464,7 @@ code touching one of these areas must honor it or change it explicitly here.
   snapshot, never degraded auth. The user-scoped status-line payload
   (installed explicitly by the Claude host-plugin lifecycle) remains a
   SECONDARY source for the default subject only; its collector stores only
-  allowlisted windows in the external v2 root and composes/restores any
+  allowlisted windows in the external v3 root and composes/restores any
   existing display command. Per-run budget observations remain run evidence,
   not quota authority.
 - The `verify` intent is reserved: the shipped FinalVerifier is

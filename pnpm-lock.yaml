@@ -428,6 +428,9 @@ importers:
       '@claudexor/gateway':
         specifier: workspace:*
         version: link:../gateway
+      '@claudexor/mcp-server':
+        specifier: workspace:*
+        version: link:../mcp-server
       '@claudexor/policy':
         specifier: workspace:*
         version: link:../policy

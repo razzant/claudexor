@@ -2125,10 +2125,16 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
     mtime("final/explore.md"),
     mtime("final/report.md"),
     mtime("final/patch.diff"),
-    // The honest outcome (result kind / diffstat / adopted / apply_state) is
-    // projected from work_product.yaml; a summary cached before it landed (or
-    // before a revert flipped apply_state) must invalidate.
+    // The honest outcome (result kind / diffstat / adopted) is projected from
+    // work_product.yaml; a summary cached before it landed must invalidate.
     mtime("final/work_product.yaml"),
+    // The MUTABLE delivery state (applied / reverted / not_applied) is written
+    // to delivery_state.yaml by markRunApplyState, and controlRunResult prefers
+    // that overlay over work_product.yaml's immutable apply_state. It must be in
+    // the fingerprint set or a summary cached before an apply/revert keeps
+    // reporting the stale applyState (the dedicated apply route writes only this
+    // file, so no other fingerprinted mtime would move). [B7]
+    mtime("final/delivery_state.yaml"),
   ].join("|");
 }
 

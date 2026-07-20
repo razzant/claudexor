@@ -129,7 +129,6 @@ enum ReviewVerdict: String, Hashable {
     case findings
     case failed
     case error
-    case ungated
 
     var label: String {
         switch self {
@@ -139,7 +138,6 @@ enum ReviewVerdict: String, Hashable {
         case .findings: return "Findings"
         case .failed: return "Failed"
         case .error: return "Error"
-        case .ungated: return "Ungated"
         }
     }
 }

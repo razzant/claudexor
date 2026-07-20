@@ -915,9 +915,9 @@ DesignSystemComponents.swift, DesignTokens.swift.)
 - **`HarnessAccountChip`** — a single shared view (one instance in the composer controls row):
   ONE capsule with two menu segments. The harness segment (brand mark + label + chevron `Menu`)
   switches the thread's sticky primary harness (a change applies from the next turn); the
-  account segment shows the thread's pinned account or the harness's Active default, and picking
-  pins the thread's credential profile (the per-thread override — the accounts popover owns the
-  global routing default).
+  account segment shows the thread's pinned account or the harness's computed next-up account, and
+  picking pins the thread's credential profile (the per-thread override — the accounts popover owns
+  the global Enabled set that next-up routing draws from).
 
 - **Titles / H1.** Headed surfaces (Settings tabs, the run inspector's `TaskDetail` header)
   use the shared `ScreenHeader` recipe (`.title2.weight(.bold)` + optional `.callout`

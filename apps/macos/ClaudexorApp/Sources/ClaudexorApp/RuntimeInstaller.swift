@@ -84,6 +84,12 @@ public struct RuntimeInstaller: Sendable {
     /// `versions/<v>/claudexord.bundle.cjs` etc. A pre-existing version dir is
     /// removed first so a partial prior attempt never contaminates the closure.
     public func unpack(tarball: URL, version: String) throws {
+        // Sanitize BEFORE extracting: a malicious closure tarball must never
+        // write outside the version dir or plant a symlink/hardlink/device that a
+        // later step follows. Validate the listing first (INV: extraction is only
+        // reached for a tarball proven to contain regular files/dirs at safe
+        // relative paths).
+        try validateTarEntries(tarball: tarball)
         let dir = versionDir(version)
         if fileManager.fileExists(atPath: dir.path) {
             try fileManager.removeItem(at: dir)
@@ -109,6 +115,72 @@ public struct RuntimeInstaller: Sendable {
         // Honest smoke check: the daemon script must exist at the version root.
         guard fileManager.fileExists(atPath: dir.appendingPathComponent("claudexord.bundle.cjs").path) else {
             throw RuntimeUpdateError.unpackFailed("unpacked closure is missing claudexord.bundle.cjs")
+        }
+    }
+
+    /// List a tarball's members via `/usr/bin/tar`. `verbose` (-tv) prepends the
+    /// entry-type mode string so callers can reject non-regular entries; plain
+    /// (-t) yields bare member names. Throws `.unpackFailed` on any tar error.
+    private func tarList(tarball: URL, verbose: Bool) throws -> [String] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = [verbose ? "-tzvf" : "-tzf", tarball.path]
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+        do { try process.run() } catch {
+            throw RuntimeUpdateError.unpackFailed("could not launch tar: \(error.localizedDescription)")
+        }
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            let msg = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw RuntimeUpdateError.unpackFailed(msg.isEmpty ? "tar listing exited \(process.terminationStatus)" : msg)
+        }
+        return String(decoding: outData, as: UTF8.self)
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+    }
+
+    /// Reject an unsafe closure tarball BEFORE extraction: any absolute path, any
+    /// `..` traversal component, or any entry that is NOT a regular file or
+    /// directory (symlink / hardlink / device / fifo / socket). bsdtar's verbose
+    /// listing prints the type as the first character of each line's mode string.
+    func validateTarEntries(tarball: URL) throws {
+        // Names (no type noise): reject absolute paths and `..` traversal.
+        for name in try tarList(tarball: tarball, verbose: false) {
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("/") {
+                throw RuntimeUpdateError.unpackFailed("refusing absolute path in runtime tarball: \(trimmed)")
+            }
+            let components = trimmed.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+            if components.contains("..") {
+                throw RuntimeUpdateError.unpackFailed("refusing path traversal in runtime tarball: \(trimmed)")
+            }
+        }
+        // Types: only regular files ('-') and directories ('d') are allowed.
+        for line in try tarList(tarball: tarball, verbose: true) {
+            guard let typeChar = line.trimmingCharacters(in: .whitespaces).first else { continue }
+            if typeChar != "-" && typeChar != "d" {
+                throw RuntimeUpdateError.unpackFailed(
+                    "refusing non-regular entry (symlink/hardlink/device) in runtime tarball: \(line)")
+            }
+        }
+    }
+
+    /// Remove the active-runtime pointer entirely (bundled-runtime fallback). Used
+    /// when a FIRST install fails its serving handshake and there is no
+    /// last-known-good to roll back to: leaving the fresh (unverified) pointer in
+    /// place would strand the daemon on a closure that did not handshake, so we
+    /// delete it and let DaemonLauncher fall back to the app-bundled script.
+    public func removeCurrent() throws {
+        guard fileManager.fileExists(atPath: currentPointerURL.path) else { return }
+        do {
+            try fileManager.removeItem(at: currentPointerURL)
+        } catch {
+            throw RuntimeUpdateError.io("remove current.json: \(error.localizedDescription)")
         }
     }
 

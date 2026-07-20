@@ -40,29 +40,60 @@ struct SidebarFooter: View {
 /// to re-check.
 struct UpdateChip: View {
     @Environment(AppModel.self) private var model
+    @State private var confirmInstall = false
 
     var body: some View {
-        if let update = model.updateAvailability {
-            Button {
-                Task { await model.checkForRuntimeUpdate() }
-            } label: {
-                HStack(spacing: Theme.Spacing.xs) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .font(.caption).foregroundStyle(Theme.accent)
-                    Text("Update available")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                    Text("v\(update.version)")
-                        .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
-                        .monospacedDigit()
-                    Spacer(minLength: 0)
-                }
+        if model.runtimeInstalling {
+            // Install in flight: a quiet, honest progress line (no fake success).
+            HStack(spacing: Theme.Spacing.xs) {
+                ProgressView().controlSize(.small)
+                Text(model.runtimeUpdateStatus ?? "Installing update…")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+        } else if let update = model.updateAvailability {
+            // A runnable update: the chip's PRIMARY action is Install (with a
+            // confirm), reflecting the manifest-backed availability. A trailing
+            // re-check stays available for a manual refresh.
+            HStack(spacing: Theme.Spacing.xs) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.caption).foregroundStyle(Theme.accent)
+                Text("Update available")
+                    .font(.caption).foregroundStyle(.secondary)
+                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                Text("v\(update.version)")
+                    .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
+                    .monospacedDigit()
+                Spacer(minLength: 0)
+                Button("Install") { confirmInstall = true }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                Button {
+                    Task { await model.checkForRuntimeUpdate() }
+                } label: {
+                    Image(systemName: "arrow.clockwise").font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .help("Re-check for updates")
+            }
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, Theme.Spacing.xs)
             .help(update.url.map { "Update to v\(update.version) — \($0)" }
-                  ?? "Update to v\(update.version) is available. Click to re-check.")
+                  ?? "Update to v\(update.version) is available.")
+            .confirmationDialog(
+                "Install engine runtime v\(update.version)?",
+                isPresented: $confirmInstall,
+                titleVisibility: .visible
+            ) {
+                Button("Install v\(update.version)") {
+                    Task { await model.installRuntimeUpdate() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The daemon briefly restarts to serve the new engine. If it does not come up, the previous runtime is restored automatically.")
+            }
         } else if let status = model.runtimeUpdateStatus, status != "Up to date" {
             // App-update-required / failure / unknown: a quiet, verbatim line.
             HStack(spacing: Theme.Spacing.xs) {

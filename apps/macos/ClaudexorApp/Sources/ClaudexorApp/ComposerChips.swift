@@ -110,8 +110,8 @@ struct HarnessAccountChip: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help(segment.pinned
-            ? "This thread is pinned to \(segment.label). Pick Automatic to follow the harness's active default instead."
-            : "Account for this thread: following the harness's active default (\(segment.label)). Pick a specific account to pin it to this thread.")
+            ? "This thread is pinned to \(segment.label). Pick Automatic to follow the harness default (auto-balance across enabled accounts) instead."
+            : "Account for this thread: following the harness default (\(segment.label)); auto-balance may rotate among enabled accounts at a quota limit. Pick a specific account to pin it to this thread.")
     }
 }
 

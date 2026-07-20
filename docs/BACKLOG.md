@@ -6,6 +6,20 @@ Silent drops are the failure mode this file exists to prevent — the 2.1.0
 audit found ten F2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
+## v3.0.0 review wave 1 deferrals (adjudication; ledgered `backlog`)
+
+- D-b: `GET /threads` needs-decision derivation cost — the derivation reads one
+  structured artifact per terminal run off a cached snapshot; the measured
+  surface is small and there is no live evidence of pain. Revisit only if a
+  large thread list shows real latency (then memoize the per-run axes).
+- D-c: council parallel-continuity disclosure is last-wins for a multi-candidate
+  turn — deliberate (recorded in the V9b commit); the per-lane continuation
+  packets are each correct, only the single visible disclosure line reflects the
+  last lane. Serialize the disclosure only if council UX demands per-lane lines.
+- D-d: the summary pass does not run through `BudgetLedger` — it is a bounded
+  one-turn ask with a hard timeout, so its cost risk is contained; fold it into
+  the ledger only if summary spend ever needs first-class accounting.
+
 ## Owner-review wave 1 leftovers (2.1.0 accounts scope; NITs recorded per ship rule)
 
 - E3: a preflight-rotated default-subject profile is invisible to router

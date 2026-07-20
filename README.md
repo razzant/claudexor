@@ -277,7 +277,7 @@ claudexor agent --delegate "ship the v2 parser refactor across this repo"
 A credential profile is an ADDITIVE identity for one harness beyond its
 default login: register several Claude or Codex subscriptions side by side,
 each in its own isolated vendor config dir. Claudexor's default Claude and
-Codex logins are also Claudexor-owned (`~/.claudexor/v2/native/...`);
+Codex logins are also Claudexor-owned (`~/.claudexor/v3/native/...`);
 ordinary `~/.claude` / `~/.codex` stores are never used or mutated. Profiles
 may alternatively use namespaced secret-store keys
 (`anthropic:work`, `openai:acc2`). Profiles are durable non-secret entries in
@@ -290,8 +290,10 @@ claudexor profiles add claude work         # register a config-dir login profile
 claudexor profiles login claude work       # the vendor's own login, scoped to the profile dir
 claudexor profiles disable claude work     # Enabled toggle: a disabled account is never routable
 claudexor profiles enable claude work
-claudexor settings set harness.claude.active_profile_id work        # Active: new runs/turns default here
-claudexor settings set harness.claude.active_profile_id none        # clear back to the CLI login
+# There is no "active account" to set: among the ENABLED accounts, routing
+# auto-picks the NEXT UP one (shown by `claudexor profiles`, computed from
+# readiness + quota). A thread then PINS whichever account it first ran on
+# (the per-thread override; change it from the composer's account chip in the app).
 claudexor settings set harness.claude.native_credentials_enabled false  # exclude the CLI login
 claudexor secrets set claude_oauth:work --from-env TOKEN_VAR
 claudexor agent "fix the parser" --profile work   # explicit per-run selection still wins
@@ -391,11 +393,11 @@ claudexor daemon stop
 ## Artifact Layout
 
 Every project run creates files under the external per-project namespace
-`~/.claudexor/v2/projects/<project-sha256>/runs/<run_id>/`; the repository's
+`~/.claudexor/v3/projects/<project-sha256>/runs/<run_id>/`; the repository's
 `.claudexor/` directory remains user-owned versioned config. App-launched Ask
 without a project uses an empty synthetic cwd at
 `~/.cache/claudexor/no-project` and writes artifacts to
-`~/.claudexor/v2/runs/<run_id>/`:
+`~/.claudexor/v3/runs/<run_id>/`:
 
 ```text
 events.jsonl
@@ -425,7 +427,7 @@ directly from these artifacts/events, so successful answers and failed runs are
 inspectable instead of disappearing into logs.
 
 Project runs execute in isolated envelopes under the same external project
-namespace at `~/.claudexor/v2/projects/<project-sha256>/workspaces/.../tree`;
+namespace at `~/.claudexor/v3/projects/<project-sha256>/workspaces/.../tree`;
 harness `cwd` is that envelope worktree.
 Proven work product means a git diff in the envelope, a declared run artifact,
 or an explicitly verified host side-effect. Absolute `/tmp/...` writes are host
@@ -580,7 +582,7 @@ What stability means in the clean v2 contract, per surface:
   `docs/reference/endpoints.json` + `packages/schema/generated/`
   (loopback + bearer token, add-only fields); the MCP tool set with their
   input/output schemas; external run artifact layout under
-  `~/.claudexor/v2/projects/<project-sha256>/runs/`
+  `~/.claudexor/v3/projects/<project-sha256>/runs/`
   (`final/`, `arbitration/`, `events.jsonl`).
 - **Experimental** (may change in minors, disclosed in the CHANGELOG):
   the ACP surface, the `release check-name` verb, host-plugin file layout
@@ -628,7 +630,7 @@ check-name` (package registries), `claudexor release check` and the app's Check
 for Updates (the GitHub release manifest), and `claudexor release stats` (GitHub
 release download counts + the npm downloads API, owner-facing). The app's engine
 update check runs only on foreground or when you click Check for Updates — never
-on a timer. The `telemetry/` names you may see under `~/.claudexor/v2/` and in
+on a timer. The `telemetry/` names you may see under `~/.claudexor/v3/` and in
 run artifacts are **local files only** (per-harness cost/latency averages and
 per-run evidence); nothing is transmitted.
 
@@ -636,15 +638,18 @@ per-run evidence); nothing is transmitted.
 
 Claudexor owns these locations:
 
-- `~/.claudexor/v2/` — v2 global config (`config.yaml`), per-repo trust grants
-  (`trust/`), the file-only secret store (`secrets.json`), daemon global journal
-  and process state (`daemon/`: token, socket, log), local harness metrics (`telemetry/`), host-plugin
-  ownership state (`plugins/`), and user-level runs for no-project asks.
-- Existing v1 files directly under `~/.claudexor/` are legacy user bytes. v2
-  neither imports nor mutates them.
+- `~/.claudexor/v3/` — the active global config (`config.yaml`), per-repo trust
+  grants (`trust/`), the file-only secret store (`secrets.json`), daemon global
+  journal and process state (`daemon/`: token, socket, log), local harness
+  metrics (`telemetry/`), host-plugin ownership state (`plugins/`), the installed
+  engine runtime (`runtime/`), and user-level runs for no-project asks.
+- `~/.claudexor/v2/` is the ARCHIVED prior root. v3 boots on its own fresh root
+  and never imports or mutates v2; keep it if you want the old run history,
+  otherwise it is safe to delete. Files directly under `~/.claudexor/` (and any
+  older v1 layout) are likewise legacy user bytes that v3 leaves untouched.
 - `~/Library/LaunchAgents/com.claudexor.claudexord.plist` — only if you opted
   into the launchd autostart.
-- `~/.claudexor/v2/projects/<project-sha256>/` — daemon-owned project journals,
+- `~/.claudexor/v3/projects/<project-sha256>/` — daemon-owned project journals,
   run artifacts, and isolated-thread worktrees. Isolated worktrees may hold
   unapplied work; apply or export it before removing this external namespace.
 - A repository's `.claudexor/` directory is user-owned versioned configuration.

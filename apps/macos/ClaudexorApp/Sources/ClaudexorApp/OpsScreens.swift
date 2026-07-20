@@ -198,7 +198,7 @@ struct SettingsScreen: View {
 
     @ViewBuilder private var perHarnessGroup: some View {
         settingsGroup("Per-Harness Defaults", "slider.horizontal.3") {
-                    Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/v2/config.yaml.")
+                    Text("Engine-level defaults per harness: enable/disable, model override, effort, and web policy. Stored in ~/.claudexor/v3/config.yaml.")
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(model.selectableHarnesses.filter { $0 != .raw }) { family in
                         HarnessDefaultsRow(family: family,
