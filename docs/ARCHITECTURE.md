@@ -29,15 +29,15 @@ packages, never in macOS or CLI-specific state.
 
 ## 2. Canonical Modes
 
-`ModeKind` lives in `packages/schema` and is the single source of truth. In
-v0.9 the nine v0.8 ids were collapsed into FIVE intents-on-a-thread; engine
-strategies became flags, not modes:
+`ModeKind` lives in `packages/schema` and is the single source of truth. The
+v3.0.0 collapse (BREAKING) reduced the surface to THREE conversation intents;
+engine strategies are flags on a mode, never modes:
 
 - `ask` - one selected read-only `explain` route; writes `final/answer.md`.
+  `--deep-scan` widens it into the bounded multi-scout research sweep that used
+  to be `audit --swarm` / `explore` (`intent: audit`), writing
+  `final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
 - `plan` - read-only multi-harness planning; writes `final/plan.md`.
-- `audit` - read-only audit/map (`final/report.md`); with `--swarm` (the old
-  `explore`) a bounded research swarm writing `final/explore.md`,
-  `final/explore-findings.yaml`, and `final/omissions.md`.
 - `agent` - default `claudexor agent`; one primary-biased envelope route. Flags
   select the strategy on the SAME mode: `--n N` (best-of-N race with isolated
   candidate envelopes, review, synthesis, arbitration), `--attempts N`
@@ -67,9 +67,10 @@ belt; `--delegate` on any other harness is a typed preflight refusal naming the
 harness. This replaces the former `orchestrate` mode (retired in v3); ordinary
 `claudexor plan` covers the "suggest"-style use-case.
 
-Old mode ids (`best_of_n`, `max_attempts`, `until_clean`, `explore`, `create`,
-`readonly_audit`, plus the older `daily`/`until_convergence`/`readonly_swarm`)
-are NOT aliases: they hard-error at every wire boundary.
+Old mode ids (`audit`, `orchestrate`, `best_of_n`, `max_attempts`,
+`until_clean`, `explore`, `create`, `readonly_audit`, plus the older
+`daily`/`until_convergence`/`readonly_swarm`) are NOT aliases: they hard-error
+at every wire boundary.
 
 ## 3. Package Map
 
@@ -160,10 +161,10 @@ Routing is `Pool + Primary + Routing Goal`:
   `auto`; the other goals are `quality` and `economy`. The v1 portfolio ids
   have no aliases and fail at every boundary.
 
-Single-route read-only modes (`ask`, `audit`) choose one route from the
-eligible pool, primary first. `Agent` is a one-candidate envelope run. `audit
---swarm` (the old `explore`) expands a bounded read-only pool (default width 4,
-capped at 8). Best-of-N expands the eligible pool over N candidates. Convergence rotates compatible
+The single-route read-only mode (`ask`) chooses one route from the eligible
+pool, primary first. `Agent` is a one-candidate envelope run. `ask --deep-scan`
+(the old `audit --swarm` / `explore`) expands a bounded read-only pool (default
+width 4, capped at 8). Best-of-N expands the eligible pool over N candidates. Convergence rotates compatible
 harnesses when a stall signature persists.
 
 A thread carries sticky routing so the chat surface stays a thin gateway: a
@@ -182,8 +183,8 @@ never route.
 
 Harness availability is determined by discovery + doctor + capabilities:
 `available` alone is not enough. A harness must be `ok`, expose the required
-intent for the selected mode (`explain` for Ask, `audit` for Audit and its
-swarm,
+intent for the selected mode (`explain` for Ask, `audit` for Ask's `--deep-scan`
+sweep,
 `implement` for Agent/repair paths, `plan`, etc.), and support read-only when
 the mode requires it. Surfaces show unavailable/degraded harnesses with reasons,
 but gate them out of launch and routing.
@@ -498,11 +499,11 @@ read-only route exists, Ask falls back before terminal failure. If no fallback
 can satisfy the policy, the run is `blocked` with a partial unverified output
 artifact when one exists.
 
-### Audit --swarm (research swarm)
+### Ask --deep-scan (research sweep)
 
 Runs a bounded read-only swarm (`intent: audit`, default width 4, cap 8; the
-CLI verb `claudexor explore` maps here). Each explorer writes a per-attempt
-event stream and a findings markdown artifact. Swarm final artifacts include
+CLI `claudexor ask --deep-scan` maps here). Each explorer writes a per-attempt
+event stream and a findings markdown artifact. Sweep final artifacts include
 `final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
 Partial explorer failures are recorded as omissions when at least one explorer
 succeeds; if all explorers fail, the run emits `run.failed` with
@@ -600,10 +601,10 @@ to the executor as a server-owned file reference. The plan lifecycle — typed
 open questions, server-derived readiness, plan freeze on Implement — is
 plan-owned, not a permanent top-level app sidebar concept.
 
-### Audit (single report)
+### Ask --deep-scan (single report, width 1)
 
 Runs one selected compatible harness read-only with `intent: audit` and writes
-`final/report.md`.
+`final/report.md` (deep scan at width 1 — no swarm fan-out).
 
 ## 7. Control API
 
@@ -771,8 +772,8 @@ Endpoint semantics beyond the inventory:
   are refused instead of overwritten. The anchor remains reachable independently
   of Git garbage collection.
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
-  project's PRODUCED outputs — the repo `artifacts/` dir, the macOS Canvas
-  source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
+  project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
+  Artifacts-tab source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
 - `claudexor settings show|set` is a thin client of `GET|POST /v2/settings`.
   Validation, persistence, cache invalidation, and the returned effective
   `ControlSettingsSnapshot` come from the daemon; the CLI has no second config
@@ -1045,7 +1046,7 @@ rather than left as an always-`unsupported` stub.
 
 A run blocked by `NEEDS_HUMAN` findings (reviewer escalation, protected-path
 change, critical-risk diff) is a terminal `blocked` state whose findings surface
-inline on the blocking turn and in the run inspector's Review tab (there is no
+inline on the blocking turn and in the run-filtered workspace's Outcome facts (there is no
 separate Review Queue screen). Since v0.9 the human decision is a TYPED server action:
 `POST /v2/runs/:id/decision` records `accept_risk` / `override_needs_human` as an
 auditable, patch-hash-bound record in the owning journal. The single-owner
@@ -1332,15 +1333,15 @@ show fake zero spend/quota values.
 ## 9. macOS App
 
 The UI behavioral and visual contract — the one-screen chat shell, the
-composer, the Workbench (`Run Detail | Canvas`), Settings, and every
-interaction rule — lives in [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md), the macOS
-UI/UX SSOT. This section keeps only the engine-facing facts.
+composer, the thread workspace (`Changes | Artifacts | Evidence`), Settings, and
+every interaction rule — lives in [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md), the
+macOS UI/UX SSOT. This section keeps only the engine-facing facts.
 
 - The app is a thin native control surface over the control API (§7). It
   consumes: threads and turns (`/v2/threads`, `/v2/threads/:id`, `/v2/threads/:id/turns`,
   `/v2/threads/:id/apply`), runs and events (`/v2/runs`, `/v2/runs/:id`,
   `/v2/runs/:id/events`, `/v2/global/events`), run-internal artifacts (`/v2/runs/:id/artifacts`)
-  and produced project outputs (`/v2/runs/:id/produced` — the Canvas source),
+  and produced project outputs (`/v2/runs/:id/produced` — the workspace Artifacts source),
   delivery, decisions, and control (`/v2/runs/:id/apply/check`, `/v2/runs/:id/apply`,
   `/v2/runs/:id/decision`, `/v2/runs/:id/control`,
   `/v2/runs/:id/interactions/:id/answer`), harness status (`/v2/harnesses`,
@@ -1374,7 +1375,7 @@ UI/UX SSOT. This section keeps only the engine-facing facts.
   incapable lane participating without Browser (`effective=false`); zero
   effective Browser lanes produce a typed preflight refusal before a harness
   starts. The same receipts project through telemetry, Control API, CLI, and
-  the macOS run inspector, so a missing Browser is never a silent null.
+  the macOS thread workspace, so a missing Browser is never a silent null.
   The runtime is deployed inside the DMG/ZIP and its offline entrypoint is
   build-smoked; no `npx`, runtime package download, or provider credential is
   available to the browser child. The injection is disclosed, the browser runs

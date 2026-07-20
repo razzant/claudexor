@@ -18,7 +18,7 @@ opt-in policy that rotates a spent account out of the way on typed vendor
 limits only. Everything runs on your machine, files are the source of truth,
 and there is no telemetry.
 
-Current status: **v2.1**. See "Stability at 2.0" below for what is a stable
+Current status: **v3.0**. See "Stability at 2.0" below for what is a stable
 contract and what remains experimental; retired verbs and mode ids hard-error
 with the new spelling instead of silently aliasing.
 
@@ -111,7 +111,7 @@ alias claudexor="node $(pwd)/packages/cli/dist/cli.js"
 
 claudexor ask "2+2?"
 claudexor ask "google the latest release notes" --web auto
-claudexor explore "map this repo's auth and run storage"
+claudexor ask --deep-scan "map this repo's auth and run storage"
 claudexor agent "fix the failing auth refresh test" --harness codex
 claudexor best-of "fix add() and keep the patch minimal" --harness codex,claude --n 2
 claudexor inspect <run_id>
@@ -262,7 +262,7 @@ Examples:
 claudexor                       # REPL: a thread of turns (read-only turns resume natively)
 claudexor ask "2+2?"
 claudexor ask "google the latest release notes" --web auto
-claudexor explore "map this repo's auth and run storage"   # = audit --swarm
+claudexor ask --deep-scan "map this repo's auth and run storage"   # bounded multi-scout research sweep
 claudexor agent "fix the failing auth refresh test" --harness codex
 claudexor best-of "fix add() in src/math.js and keep the patch minimal" --harness codex,claude --n 2
 claudexor agent "repair the parser test" --attempts 3
@@ -422,9 +422,10 @@ context/context_error.md?
 ```
 
 Files are the source of truth. Terminal output and UI rows are projections. The
-macOS run detail screen surfaces `Outcome`, `Timeline`, and `Diagnostics`
-directly from these artifacts/events, so successful answers and failed runs are
-inspectable instead of disappearing into logs.
+macOS thread workspace surfaces Changes, Artifacts, and Evidence (with each
+run's Outcome facts on top when a receipt is selected) directly from these
+artifacts/events, so successful answers and failed runs are inspectable instead
+of disappearing into logs.
 
 Project runs execute in isolated envelopes under the same external project
 namespace at `~/.claudexor/v3/projects/<project-sha256>/workspaces/.../tree`;
@@ -507,7 +508,7 @@ choosing a route. Do not assume a provider is usable just because a token exists
 ```
 
 ```text
-Use Claudexor audit on this repository and return the final report with concrete
+Use Claudexor ask --deep-scan on this repository and return the final report with concrete
 file references. Keep it read-only.
 ```
 

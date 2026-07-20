@@ -539,7 +539,7 @@ views in the shared design-system files; screens compose them.
   - **Phase pipeline**: contract → context → risk → budget → envelope → gates → review →
     synthesis → arbitration → final, each a node with `status/*` color+glyph; the active
     node animates (calm). It rides the active turn's transcript, not a top-level pane.
-  - **Candidate cards — the Candidates-tab contract**: one card per race
+  - **Candidate cards contract**: one card per race
     candidate, colored by `harness/*`, showing that candidate's deterministic
     gates, cost (with the estimated-vs-exact badge), and review state, with the
     winner emphasized (`CandidateCard(strokeColor:)`). They live on a race turn
@@ -574,8 +574,10 @@ views in the shared design-system files; screens compose them.
 - **Chat composer.** ONE floating Liquid-Glass panel
   (`composerGlass` — **static `.regular`**, solid fallback under Reduce Transparency).
   Two stacked zones, all with SOLID contents (no glass-on-glass):
-  - a controls row — the intent `Menu` (Ask, Agent, Plan, Spec, Audit, plus
-    Best-of as the best-of-N agent strategy),
+  - a controls row — the intent `Menu` (exactly **Ask / Plan / Agent**; Best-of,
+    until-clean, create and delegate are Agent STRATEGY knobs and Council is a
+    Plan knob — all in the "⋯" popover, never intents; Spec and deep-scan are
+    not intents),
     the `ProjectChip` (the working directory — MRU recent + Browse…; sets the new
     thread's project, an open thread's repo is bound; the ONLY place project
     selection lives in the app), the `HarnessAccountChip` (which
@@ -645,15 +647,17 @@ views in the shared design-system files; screens compose them.
   "Pick a project to use Agent · Plan · Best-of" hint prevents sending into the void.
   Project-only controls inside the options popover are hidden or disabled rather
   than faking project scope. The draft-state first message materializes the
-  thread. The composer's intent menu surfaces four everyday canonical modes —
-  `ask` / `agent` / `plan` / `audit` — plus **Spec** as the grounding flow and
-  **Best-of** as `agent` + the best-of-N strategy flag, not a mode. The fifth
-  canonical mode `orchestrate` (and `explore` / `create`) are intentionally
-  **CLI-only**: they are power-user / scripted flows, so the composer keeps the everyday
-  surface small. race width / until-clean / attempts are engine strategy flags, not modes.
+  thread. The composer's intent menu surfaces the THREE canonical modes —
+  `ask` / `plan` / `agent` (the v3.0.0 collapse) — and nothing else. **Best-of**
+  is `agent` + the best-of-N strategy flag, not a mode; **Council** is a Plan
+  knob; `ask --deep-scan`, `agent --delegate`, `--create`, race width,
+  until-clean and attempts are engine strategy flags (in the "⋯" popover or
+  CLI-only power-user flows), not modes. The retired `orchestrate` / `spec` /
+  `explore` / `audit` modes are gone — delegation is `agent --delegate` and Plan
+  absorbed Spec.
 - **Composer attachments + Capture.** The paperclip picker attaches files to a
   turn; attached files render as removable chips above the input. Generic file
-  attachments ride any non-Spec turn; IMAGE attachments and the **Capture**
+  attachments ride any non-plan turn; IMAGE attachments and the **Capture**
   button (system `screencapture` region select, off the main thread; a
   denied/cancelled grab yields no attachment — never a blank fake image) are
   gated by the pool's finite `capability_profile.attachment_inputs` declarations.
@@ -674,7 +678,7 @@ views in the shared design-system files; screens compose them.
 - **One minimal toolbar, no second header.** The thread title/subtitle live in the
   system window toolbar (`.navigationTitle`/`.navigationSubtitle`) — there is NO custom
   header strip below it. The toolbar holds ONLY the standard trailing icon cluster:
-  appearance · run-inspector · settings · new (each with a `.help()` tooltip). There is
+  appearance · thread-workspace · settings · new (each with a `.help()` tooltip). There is
   **no engine-status capsule and no Refresh button** in the toolbar (custom capsules
   overlapped the window edge and read out-of-app; the engine auto-reconnects on launch
   and over SSE). Project/primary chips live in the composer, not the toolbar.
@@ -683,7 +687,7 @@ views in the shared design-system files; screens compose them.
   styles, paragraphs stay separated (never collapsed into one run-on line),
   list items render as bulleted rows, and fenced code renders on solid
   `surface/code`. Text is selectable. Patch/diff work products are never
-  markdown-rendered as Outcome; they belong to the Diff tab parsed from
+  markdown-rendered as Outcome; they belong to the workspace Changes tab, parsed from
   `final/patch.diff`. Dense output uses solid `surface/raised`; never put
   Liquid Glass behind dense output.
 - **Evidence badges.** Header/timeline badges show output readiness
@@ -695,8 +699,8 @@ views in the shared design-system files; screens compose them.
   warning treatment from a benign `attempted`; telemetry-unavailable runs say
   so instead of guessing. Engine-typed event severity (info/warning/error)
   tints timeline rows.
-- **Read-only report surfaces.** Ask/Audit (single report or research swarm)
-  primary output appears in
+- **Read-only report surfaces.** Ask (the answer, or the `--deep-scan` research
+  sweep) primary output appears in
   Outcome as markdown. Technical artifacts (`context/task.yaml`, `events.jsonl`)
   stay in Diagnostics/artifact lists and must not be transformed into Plan rows.
 - **Setup job lifecycle.** Auth/setup sheets show compatible coarse state plus
@@ -724,13 +728,13 @@ views in the shared design-system files; screens compose them.
   "attempts/re-roll" primitive. (See the Candidate cards contract above — the
   run-filtered workspace's Outcome facts render live server-projected evidence.)
 - **Cross-family review (inline, per turn).** Review/findings are NOT a separate
-  Review-Queue screen — they live on the turn that produced them and in the run
-  inspector's Review tab: severity, finding, reviewer, evidence, and state, on solid
+  Review-Queue screen — they live on the turn that produced them and in the
+  run-filtered workspace's Outcome facts: severity, finding, reviewer, evidence, and state, on solid
   `surface/code`-backed rows. Local accept/rebut toggles are forbidden unless backed by a
   server endpoint (`POST /runs/:id/decision`).
 - **Convergence.** Round timeline; accepted findings fed back; convergence predicate state.
 - **Diff + Apply (inline, per turn).** Git-scoped diff from server artifacts, shown in the
-  run inspector's Diff tab. Apply/check actions use `POST /runs/:id/apply/check` and
+  workspace Changes tab. Apply/check actions use `POST /runs/:id/apply/check` and
   `POST /runs/:id/apply` (an isolated thread delivers its accumulated diff via
   `POST /threads/:id/apply`). Do not present per-file or per-hunk apply controls until the
   backend exposes selected scope.
@@ -763,7 +767,7 @@ views in the shared design-system files; screens compose them.
   instead of reading as idle next to a red status pill. The card also carries
   the run's TYPED failure category as a small chip and the auth route the turn
   actually ran under (from the route receipt) — never inferred from prose.
-- **Run route disclosure (Run Detail header).** The finished run's header shows
+- **Run route disclosure (run-filtered workspace header).** The finished run's header shows
   the auth route ACTUALLY taken (Subscription / API key, from the engine's
   route receipt; hover reveals requested preference, source, and the typed
   reason) next to the route-proof badge, plus an orange `observed ≠ requested`
@@ -797,7 +801,7 @@ views in the shared design-system files; screens compose them.
   itself lands in M5; the Swift surface is knowingly stale until then.
 - **Budget cockpit (Settings tab).** Spend, circuit breaker, portfolio weights,
   pre-exhaustion warnings — a Settings tab, not a top-level screen; the live per-run meter
-  rides the run inspector.
+  rides the receipt row.
 - **Harness Doctor — ONE readiness card, three surfaces (F4 V20a/V22a).**
   Settings, Onboarding step 0, and the AuthSheet all render the same
   `HarnessReadinessCard` from one `HarnessReadinessPresentation`: identity

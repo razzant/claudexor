@@ -161,9 +161,16 @@ public actor RuntimeUpdater {
         // Whether a rollback target exists BEFORE the swap promotes one — this
         // decides the failure recovery (roll back vs. first-install strand).
         let hadPriorRuntime = installer.readCurrent() != nil
-        // 7. Stop the idle daemon so the pointer swap is not raced by a live
-        // serving process (best-effort; the handshake below is the real proof).
-        _ = await lifecycle.stopIdleDaemon()
+        // 7. Stop the running daemon so the pointer swap is not raced by a live
+        // serving process. B4: HONOR the result — an unconfirmed stop (a live or
+        // unverifiable daemon; a recycled pid is never signalled) must abort
+        // BEFORE the swap, since mutating the pointer under a serving daemon
+        // strands a half-updated runtime. Nothing changed → rolledBack:false.
+        guard await lifecycle.stopIdleDaemon() else {
+            return .failed(
+                .daemonStopUnconfirmed("refusing to swap under a daemon that did not confirm it stopped"),
+                rolledBack: false)
+        }
         // 8. Atomic swap (promotes outgoing current.json to last-known-good).
         let pointer = RuntimeCurrent(
             version: manifest.version,
@@ -183,18 +190,29 @@ public actor RuntimeUpdater {
         _ = await lifecycle.relaunch()
         // 10. Handshake-verify the now-serving engine; recover on any failure.
         guard await handshakeVerifier.verifyServing(expectedVersion: manifest.version) else {
-            if hadPriorRuntime, (try? installer.rollbackToLastKnownGood()) != nil {
-                // Restore the previous serving runtime and bring it back up.
+            // B4: STOP and death-prove the failed NEW runtime BEFORE restoring —
+            // a still-live bad daemon would race the pointer restore + relaunch,
+            // and the rollback would falsely report success while it kept serving.
+            let stopped = await lifecycle.stopIdleDaemon()
+            if hadPriorRuntime, stopped, (try? installer.rollbackToLastKnownGood()) != nil {
+                // Restore the previous runtime, relaunch it, and HANDSHAKE-VERIFY
+                // it is actually serving again — so `rolledBack` is a PROVEN claim,
+                // never a hopeful one (the old code reported rolledBack:true blind).
                 _ = await lifecycle.relaunch()
+                var rolledBack = false
+                if let restoredVersion = installer.readCurrent()?.version {
+                    rolledBack = await handshakeVerifier.verifyServing(expectedVersion: restoredVersion)
+                }
                 return .failed(
                     .identityMismatch(expected: manifest.version, actual: "serving engine did not confirm handshake"),
-                    rolledBack: true
+                    rolledBack: rolledBack
                 )
             }
-            // FIRST install with no last-known-good: the fresh pointer would
-            // strand the daemon on a closure that failed its handshake. Remove it
-            // so DaemonLauncher falls back to the app-bundled runtime, and report
-            // honestly (nothing was rolled back — there was nothing to roll back to).
+            // FIRST install with no last-known-good (or the failed runtime could
+            // not be confirmed stopped): the fresh pointer would strand the daemon
+            // on a closure that failed its handshake. Remove it so DaemonLauncher
+            // falls back to the app-bundled runtime, and report honestly (nothing
+            // was rolled back — there was nothing to roll back to).
             try? installer.removeCurrent()
             _ = await lifecycle.relaunch()
             return .failed(

@@ -29,7 +29,6 @@
     "@claudexor/delivery": "workspace:*",
     "@claudexor/event-log": "workspace:*",
     "@claudexor/gateway": "workspace:*",
-    "@claudexor/mcp-server": "workspace:*",
     "@claudexor/policy": "workspace:*",
     "@claudexor/review": "workspace:*",
     "@claudexor/schema": "workspace:*",

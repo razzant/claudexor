@@ -35,7 +35,7 @@ struct TurnCard: View {
     /// A decision-flow run applies from its CHAT RECEIPT (decide → apply inline);
     /// a clean run applies from the thread workspace. Split so apply renders once.
     private func isDecisionFlow(_ run: TaskRun) -> Bool {
-        run.reviewNeedsDecision || run.operatorDecisionAction != nil
+        DecisionApplyPresentation.isDecisionFlow(run)
     }
 
     var body: some View {
@@ -100,6 +100,15 @@ struct TurnCard: View {
                         .background(Theme.status(.caution).opacity(0.12), in: Capsule())
                         .textSelection(.enabled)
                 }
+                // B2 (D42 regression fix): a mid-run harness question
+                // (waiting_on_user) is answered INLINE on the turn, mirroring the
+                // PlanQuestionCard placement below. D42 retired TaskDetailView, the
+                // pinned InteractionCard's only surface, leaving AppModel
+                // .answerInteraction with no UI caller — this restores it so a
+                // pending interaction is always answerable in default config.
+                ForEach(run.pendingInteractions) { pending in
+                    InteractionCard(runId: runId, interaction: pending)
+                }
                 // D17: a plan that came back needs_answers surfaces its open
                 // questions inline; answering submits a follow-up plan turn.
                 if run.mode == .plan, run.planReadiness?.state == "needs_answers", !run.planQuestions.isEmpty {
@@ -110,6 +119,13 @@ struct TurnCard: View {
                     planImplementRow(result)
                 }
                 decisionAndApply(run)
+                // A4: the honest DELIVERY-state line — a terminal run whose patch
+                // was applied under a BLOCKED review ("Applied · review blocked"),
+                // reverted, or adopted must voice it INLINE on the turn. The
+                // receipt shows lifecycle ("Succeeded") and never the delivery
+                // state, so D42 must not leave a project mutation visible only in
+                // the workspace Outcome facts (INV-093 honest outcome).
+                applyStateLine(run)
                 // Inline failure card: a terminal-FAILED turn with nothing to show.
                 if isSilentFailure(run) { failureCard(run) }
             } else if let refusal = turn.enqueueError {
@@ -136,10 +152,13 @@ struct TurnCard: View {
         }
     }
 
-    /// Re-key the eligibility load on the run's decision-flow signals only.
+    /// Re-key the eligibility load on the run's decision-flow signals AND on the
+    /// local risk-accept (B6): accepting risk makes the run eligible server-side,
+    /// so the reload must re-fire to pull the fresh eligibility — the stale
+    /// `run.applyEligibility` (blocked) would otherwise hide Apply until an
+    /// unrelated refresh.
     private var applyLoadKey: String {
-        guard let run else { return "none" }
-        return "\(run.id):\(run.reviewNeedsDecision):\(run.operatorDecisionAction ?? "")"
+        DecisionApplyPresentation.applyLoadKey(run, riskAccepted: riskAccepted)
     }
 
     // MARK: Answer bubble
@@ -217,18 +236,43 @@ struct TurnCard: View {
         }
     }
 
+    /// A4: the inline honest apply-DELIVERY line via the single-owner mapper
+    /// (`RunFacts.applyFact`). Read-only — the decision/apply/revert CONTROLS are
+    /// owned by the DecisionBar (receipt) and the workspace, never duplicated
+    /// here; this line only voices what already happened. The transient local
+    /// "Applied to project" confirmation (`applied`) owns the just-applied case,
+    /// so this yields to it.
+    @ViewBuilder
+    private func applyStateLine(_ run: TaskRun) -> some View {
+        if !applied, run.phase.isTerminal,
+           let fact = RunFacts.applyFact(state: run.applyState, adopted: run.adopted) {
+            Label(fact.text, systemImage: fact.glyph)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(fact.tone.color)
+                .textSelection(.enabled)
+                .help("Honest application state of this turn's in-place change.")
+        }
+    }
+
     // MARK: Decision + apply (rendered ONCE — receipt only for decision-flow runs)
 
     @ViewBuilder
     private func decisionAndApply(_ run: TaskRun) -> some View {
         // The review gate needs a human: the decision controls live HERE, inline.
-        if run.reviewNeedsDecision && !riskAccepted {
-            DecisionBar(runId: run.id) { riskAccepted = true }
+        if DecisionApplyPresentation.showsDecisionBar(run, riskAccepted: riskAccepted) {
+            DecisionBar(runId: run.id) {
+                riskAccepted = true
+                // B6: pull the SERVER apply-eligibility right after accept-risk so
+                // Apply renders from the refreshed (now-eligible) gate — not the
+                // stale blocked eligibility. isDecisionFlow stays true (the
+                // operator decision is recorded), so Apply renders on THIS receipt.
+                await model.loadRunDetail(run.id)
+            }
         }
         if applied {
             Label("Applied to project", systemImage: "checkmark.seal.fill")
                 .font(.caption).foregroundStyle(Theme.status(.positive))
-        } else if isDecisionFlow(run), run.applyEligibility?.eligible == true {
+        } else if DecisionApplyPresentation.showsApply(run) {
             // Item f: Apply is HIDDEN unless the server eligibility says eligible.
             // Only decision-flow runs apply here; clean runs apply in the workspace.
             HStack(spacing: Theme.Spacing.sm) {
@@ -324,5 +368,40 @@ struct TurnCard: View {
                                      planRunId: runId, options: options, onThread: turn.threadId)
             implementingPlan = false
         }
+    }
+}
+
+/// Pure decision/apply presentation for a decision-flow turn's receipt (B6):
+/// whether the DecisionBar and the Apply affordance render, and the reload key
+/// that re-pulls SERVER eligibility after accept-risk. Extracted so the
+/// blocked → accept-risk → eligible Apply transition is unit-tested
+/// (TurnCardDecisionApplyTests) and cannot silently regress into an
+/// apply-less accepted-risk run.
+enum DecisionApplyPresentation {
+    /// A decision-flow run (needs a human, or already carries an operator
+    /// decision) applies from its chat receipt — never duplicated in the
+    /// workspace (D42).
+    static func isDecisionFlow(_ run: TaskRun) -> Bool {
+        run.reviewNeedsDecision || run.operatorDecisionAction != nil
+    }
+
+    /// The DecisionBar shows while the run still needs a decision and the user
+    /// has not just accepted risk locally.
+    static func showsDecisionBar(_ run: TaskRun, riskAccepted: Bool) -> Bool {
+        run.reviewNeedsDecision && !riskAccepted
+    }
+
+    /// Apply renders on the receipt for a decision-flow run ONCE the SERVER
+    /// eligibility says eligible (item f) — hidden, not disabled, otherwise.
+    static func showsApply(_ run: TaskRun) -> Bool {
+        isDecisionFlow(run) && run.applyEligibility?.eligible == true
+    }
+
+    /// The eligibility-reload identity: keyed on the decision signals AND the
+    /// local risk-accept, so accepting risk RE-FIRES the load and the stale
+    /// blocked eligibility is replaced before Apply is gated (B6).
+    static func applyLoadKey(_ run: TaskRun?, riskAccepted: Bool) -> String {
+        guard let run else { return "none" }
+        return "\(run.id):\(run.reviewNeedsDecision):\(run.operatorDecisionAction ?? ""):\(riskAccepted)"
     }
 }

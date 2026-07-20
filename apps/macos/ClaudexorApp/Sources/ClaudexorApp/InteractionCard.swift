@@ -90,9 +90,7 @@ struct InteractionCard: View {
     }
 
     private var hasAnyAnswer: Bool {
-        interaction.questions.contains { q in
-            !selections[q.id, default: []].isEmpty || !(freeText[q.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-        }
+        InteractionAnswerComposer.hasAnyAnswer(interaction, selections: selections, freeText: freeText)
     }
 
     private var timeoutLabel: String? {
@@ -122,12 +120,7 @@ struct InteractionCard: View {
     }
 
     private func submit() {
-        let answers = interaction.questions.compactMap { q -> InteractionAnswerPayload? in
-            let labels = Array(selections[q.id, default: []])
-            let text = (freeText[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !labels.isEmpty || !text.isEmpty else { return nil }
-            return InteractionAnswerPayload(questionId: q.id, selectedLabels: labels, freeText: text.isEmpty ? nil : text)
-        }
+        let answers = InteractionAnswerComposer.payloads(interaction, selections: selections, freeText: freeText)
         guard !answers.isEmpty else { return }
         sending = true
         errorMessage = nil
@@ -135,6 +128,33 @@ struct InteractionCard: View {
             let failure = await model.answerInteraction(runId: runId, interactionId: interaction.interactionId, answers: answers)
             sending = false
             errorMessage = failure
+        }
+    }
+}
+
+/// Pure answer composer for a live interaction — the affordance's completeness
+/// gate (`hasAnyAnswer`) and the typed answer payloads are extracted so they are
+/// unit-tested (InteractionCardTests); the InteractionCard view only collects
+/// selections/free text and calls `AppModel.answerInteraction`.
+enum InteractionAnswerComposer {
+    static func hasAnyAnswer(_ interaction: PendingInteraction,
+                             selections: [String: Set<String>],
+                             freeText: [String: String]) -> Bool {
+        interaction.questions.contains { q in
+            !selections[q.id, default: []].isEmpty
+                || !(freeText[q.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
+    static func payloads(_ interaction: PendingInteraction,
+                         selections: [String: Set<String>],
+                         freeText: [String: String]) -> [InteractionAnswerPayload] {
+        interaction.questions.compactMap { q -> InteractionAnswerPayload? in
+            let labels = Array(selections[q.id, default: []])
+            let text = (freeText[q.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !labels.isEmpty || !text.isEmpty else { return nil }
+            return InteractionAnswerPayload(questionId: q.id, selectedLabels: labels,
+                                            freeText: text.isEmpty ? nil : text)
         }
     }
 }

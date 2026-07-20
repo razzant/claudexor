@@ -17,6 +17,7 @@
  * testable without a live daemon.
  */
 import type { PaidBudget } from "@claudexor/schema";
+import { DELEGATION_ENV } from "@claudexor/util";
 import type { McpTool, McpToolAnnotations, RunnerFn } from "./index.js";
 
 /** Runtime policy the belt enforces, derived from the injected delegation env. */
@@ -109,15 +110,6 @@ export function evaluateBeltRun(
   if (draw.refusal) return { refusal: draw.refusal };
   return { budget: draw.budget };
 }
-
-/** Env var names the daemon injects to carry the delegation policy into the
- * belt process (one owner for producer + consumer). */
-export const DELEGATION_ENV = {
-  parentRunId: "CLAUDEXOR_DELEGATION_PARENT_RUN_ID",
-  depth: "CLAUDEXOR_DELEGATION_DEPTH",
-  maxSubRuns: "CLAUDEXOR_DELEGATION_MAX_SUBRUNS",
-  budget: "CLAUDEXOR_DELEGATION_BUDGET",
-} as const;
 
 /** Parse the delegation policy from a process env (the belt-serve entrypoint's
  * first read). Missing/invalid values fail CLOSED: depth defaults high (refuse),

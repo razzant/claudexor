@@ -8,10 +8,12 @@ import ClaudexorKit
 // AccountsPopover.swift; the SSOT projection lives here.
 
 extension HarnessFamily {
-    /// The api-key META-HOSTS (raw-api / openrouter): routed purely by a stored
-    /// key, no subscription/CLI login. They appear as accounts rows only when
-    /// configured (batch-6 item g).
-    var isApiKeyMetaHost: Bool { self == .raw }
+    /// The api-key META-HOSTS: routed purely by a stored key, no subscription/CLI
+    /// login. Both raw-api AND the openrouter raw-API instance (registry.ts:
+    /// `createRawApiAdapter({ id: "openrouter" })`) qualify — the gating must match
+    /// the copy, or a live openrouter host renders as a native-login row it can
+    /// never satisfy. They appear as accounts rows only when configured (item g).
+    var isApiKeyMetaHost: Bool { self == .raw || self == .openrouter }
 }
 
 /// Readiness verdict for one account row (the worst wins for the trigger dot).
@@ -39,10 +41,6 @@ struct AccountRowModel: Identifiable {
     /// the credential profile.
     let profileId: String?
     let detail: String?
-    /// The profile's canonical config-dir path (wire `isolation_locator`), or nil
-    /// for native/CLI-login rows (the loader then probes the conventional home).
-    /// Drives the LOCAL vendor-identity read (email/plan) — batch-6 item a.
-    let isolationLocator: String?
     let quotaGroups: [QuotaPresentation.Group]
     /// D25 Enabled: participates in pickers + the auto-rotation pool. For a
     /// profile row this is the wire `profile.enabled`; for the CLI-login row it
@@ -99,9 +97,6 @@ enum AccountsPresentation {
                 verified: source?.isVerifiedNativeSession == true,
                 profileId: nil,
                 detail: source?.detail,
-                // Native/CLI-login row: no wire isolation_locator — the loader
-                // probes the conventional vendor home for this harness.
-                isolationLocator: nil,
                 quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue },
                 // The native/CLI login's "Enabled" is the harness setting
                 // `native_credentials_enabled` (V11b) — LIVE via the settings
@@ -125,7 +120,6 @@ enum AccountsPresentation {
                 verified: availability == "available" && verification == "passed",
                 profileId: entry.profile.profileId,
                 detail: entry.status.detail,
-                isolationLocator: entry.profile.isolationLocator,
                 quotaGroups: groups.filter {
                     $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
                 },
@@ -149,7 +143,6 @@ enum AccountsPresentation {
                 verified: true,
                 profileId: nil,
                 detail: "API key",
-                isolationLocator: nil,
                 quotaGroups: groups.filter { $0.subjectId == nil && $0.harness == family.rawValue },
                 // The meta-host has no per-account rotation — Enabled IS the
                 // harness routing-enable setting.

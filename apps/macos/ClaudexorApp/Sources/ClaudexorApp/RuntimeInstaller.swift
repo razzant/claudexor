@@ -19,6 +19,10 @@ public enum RuntimeUpdateError: Error, LocalizedError, Equatable {
     case probeFailed(String)
     case handshakeFailed(String)
     case identityMismatch(expected: String, actual: String)
+    /// The running daemon could not be CONFIRMED stopped before the pointer swap
+    /// (a live/unverifiable process), so the install aborted rather than mutate
+    /// runtime state under it (B4).
+    case daemonStopUnconfirmed(String)
     case io(String)
 
     public var errorDescription: String? {
@@ -33,6 +37,8 @@ public enum RuntimeUpdateError: Error, LocalizedError, Equatable {
         case let .handshakeFailed(m): return "The new runtime did not serve correctly: \(m)"
         case let .identityMismatch(expected, actual):
             return "The serving engine reported version \(actual), expected \(expected)."
+        case let .daemonStopUnconfirmed(m):
+            return "Could not confirm the running engine stopped before the swap: \(m)"
         case let .io(m): return "Runtime update file error: \(m)"
         }
     }

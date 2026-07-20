@@ -507,7 +507,6 @@ struct AccountsSurface: View {
             verified: false,
             profileId: id,
             detail: nil,
-            isolationLocator: nil,
             quotaGroups: [],
             enabled: true,
             nextUp: false

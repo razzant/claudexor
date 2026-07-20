@@ -30,7 +30,7 @@ extension AppModel {
     // MARK: - Produced outputs (project artifacts/, not the run tree)
 
     /// List a run's PRODUCED outputs — files the run writes into the project's
-    /// `artifacts/` folder — for the Canvas gallery. nil = load failed.
+    /// `artifacts/` folder — for the thread-workspace Artifacts gallery. nil = load failed.
     func producedArtifacts(runId: String) async -> [ArtifactInfo]? {
         guard let client else { return nil }
         return try? await client.listProducedFiles(runId: runId)

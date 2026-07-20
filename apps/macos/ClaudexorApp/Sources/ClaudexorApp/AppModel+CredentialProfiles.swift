@@ -205,7 +205,12 @@ extension AppModel {
         runtimeUpdateChecking = true
         defer { runtimeUpdateChecking = false }
 
-        let updater = runtimeUpdater ?? RuntimeUpdater(transport: makeRuntimeTransport())
+        // B3: the check-path updater is CACHED into `runtimeUpdater` and reused by
+        // installRuntimeUpdate, so it MUST carry the real daemon lifecycle — a
+        // Noop here silently no-ops the install's stop/swap and every real
+        // install rolls back (handshake keeps seeing the old engine).
+        let updater = runtimeUpdater
+            ?? RuntimeUpdater(transport: makeRuntimeTransport(), lifecycle: makeRuntimeLifecycle())
         runtimeUpdater = updater
         let running = resolvedRunningEngineVersion()
         let app = Self.appVersionString()

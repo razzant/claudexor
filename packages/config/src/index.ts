@@ -160,25 +160,44 @@ export function sweepRetiredConfigKeys(
   path: string,
   matchers: Array<{ path: string[] }>,
 ): RetiredKeySweep | null {
-  const raw = readYaml(path);
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const removed: string[] = [];
-  const cleaned = stripRetiredKeys(raw, matchers, removed);
-  if (removed.length === 0) return null;
+  // Cheap UNLOCKED pre-check: skip the lock entirely for the common case (an
+  // absent or already-clean file). Only when a retired key is actually present
+  // do we take the config lock for the authoritative read-mutate-write.
+  const peek = readYaml(path);
+  if (peek === null || typeof peek !== "object" || Array.isArray(peek)) return null;
+  const peekRemoved: string[] = [];
+  stripRetiredKeys(peek, matchers, peekRemoved);
+  if (peekRemoved.length === 0) return null;
+
   try {
-    const tmp = `${path}.tmp-${process.pid}`;
-    writeFileSync(tmp, yamlStringify(cleaned), { mode: 0o600 });
-    renameSync(tmp, path);
-    // Disclosure (the daemon's stderr → claudexord.log): never silent.
-    console.warn(
-      `config: swept ${removed.length} retired key(s) from ${path} (${removed.join(", ")}); the cleaned file was persisted`,
-    );
+    // LOCKED read-mutate-write (A2): the rewrite must not race a concurrent
+    // daemon/CLI config write — same discipline as saveConfig/updateGlobalConfig.
+    // Re-read UNDER the lock so a write that landed since the peek is never
+    // clobbered with a stale in-memory copy.
+    return withConfigLock(path, () => {
+      const raw = readYaml(path);
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+      const removed: string[] = [];
+      const cleaned = stripRetiredKeys(raw, matchers, removed);
+      if (removed.length === 0) return null;
+      const tmp = `${path}.tmp-${process.pid}`;
+      writeFileSync(tmp, yamlStringify(cleaned), { mode: 0o600 });
+      renameSync(tmp, path);
+      // Disclosure (the daemon's stderr → claudexord.log): never silent.
+      console.warn(
+        `config: swept ${removed.length} retired key(s) from ${path} (${removed.join(", ")}); the cleaned file was persisted`,
+      );
+      return { path, removed };
+    });
   } catch (err) {
+    // Best-effort persistence: a read-only file OR a config lock held by another
+    // writer (>10s) disclose and do NOT block startup — loadConfig strips these
+    // keys in-memory regardless, so the strict parse still succeeds.
     console.warn(
-      `config: found retired key(s) in ${path} (${removed.join(", ")}) but could not persist the cleaned file: ${err instanceof Error ? err.message : String(err)}`,
+      `config: found retired key(s) in ${path} (${peekRemoved.join(", ")}) but could not persist the cleaned file: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return { path, removed: peekRemoved };
   }
-  return { path, removed };
 }
 
 /** Sweep the GLOBAL and every known PROJECT config's retired keys, persisting +

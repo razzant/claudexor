@@ -75,7 +75,6 @@ import {
   estimateEffectiveAuthRoute,
 } from "@claudexor/schema";
 import { globalConfigDir, loadConfig, trustConfigPath } from "@claudexor/config";
-import { DELEGATION_ENV } from "@claudexor/mcp-server";
 import type { AdapterRegistry, HarnessAdapter, InteractionChannel } from "@claudexor/core";
 import {
   AnswerAssembly,
@@ -203,6 +202,7 @@ import {
   appendLine,
   assertNoInlineSecretValues,
   containsSecretLikeToken,
+  DELEGATION_ENV,
   hashJson,
   newId,
   noProjectRepoRoot,

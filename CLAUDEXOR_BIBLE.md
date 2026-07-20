@@ -261,7 +261,7 @@ invariant or owner decision before proceeding.
   internal orchestration evidence, while the project's produced outputs (the
   repo `artifacts/` dir served via `/runs/:id/produced`) are user
   deliverables. Surfaces label which plane they show. verify: control-api
-  produced/artifacts endpoint tests; UI Canvas review.
+  produced/artifacts endpoint tests; thread-workspace Artifacts review.
 
 ## 6. Secrets Never Become Artifacts
 
@@ -401,16 +401,23 @@ invariant or owner decision before proceeding.
 ## 9. macOS UX Must Be Native, Honest, And Familiar
 
 - **INV-090** The app is chat-first: ONE screen — thread list, conversation,
-  persistent composer — with a run's detail in the trailing inspector, not a
-  separate kitchen-sink of tabs. Users of Claude Code, Cursor, and Codex
-  should feel at home: you just type; the first message starts a thread;
-  turns run in-place so the next turn sees the work. verify: DESIGN_SYSTEM
-  contract; visual QA checklist.
-- **INV-091** The trailing region is a Workbench with two labeled planes:
-  Run Detail (the run's tabs over internal run evidence) and Canvas (the
-  project's produced outputs and a user-driven mini-browser on solid
-  surfaces). This is the sanctioned extension of the one-screen doctrine —
-  no third top-level screen. verify: DESIGN_SYSTEM; RootView review.
+  persistent composer — with the current thread's workspace in the trailing
+  region, not a separate kitchen-sink of tabs. Users of Claude Code, Cursor,
+  and Codex should feel at home: you just type; the first message starts a
+  thread; turns run in-place so the next turn sees the work. verify:
+  DESIGN_SYSTEM contract; visual QA checklist.
+- **INV-091** The trailing region is the CURRENT THREAD's workspace (D42),
+  not a per-run inspector: three tabs — Changes, Artifacts, Evidence —
+  aggregated across the thread's runs on solid surfaces. Selecting a chat
+  receipt FILTERS the workspace to that run (its Outcome facts on top); run
+  detail is demoted to this filtered view, never the panel's identity.
+  Produced outputs (including any project preview) fold into Artifacts —
+  there is no competing Canvas plane and no two-plane Workbench. Live run
+  progress is a PERSISTENT inline receipt in the conversation (auto-expanded
+  while active, then the collapsed log), never a disappearing pane. This is
+  the sanctioned extension of the one-screen doctrine — no third top-level
+  screen. verify: DESIGN_SYSTEM workspace contract; RootView /
+  ThreadWorkspacePanel review.
 - **INV-092** The composer is always live — an empty chat is never a silent
   no-op. While a turn runs, Send swaps to a server-owned Stop. verify:
   composer state tests (ComposerTurnState).

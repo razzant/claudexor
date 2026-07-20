@@ -35,3 +35,28 @@ import Testing
         #expect(RunFacts.bestOfLabel(isMultiCandidate: true, requested: 1, delivered: 1) == nil)
     }
 }
+
+/// W2-A4: the honest apply-DELIVERY line (`RunFacts.applyFact`) that D42 dropped
+/// from the chat turn is restored inline in TurnCard.applyStateLine. These lock
+/// the single-owner mapper so a review-blocked apply is voiced as BOTH facts,
+/// never a victorious bare "Applied", and so `not_applied` renders nothing.
+@Suite struct ApplyFactHonestLineTests {
+    @Test func reviewBlockedApplyVoicesBothFacts() {
+        let fact = RunFacts.applyFact(state: "applied_review_blocked", adopted: false)
+        #expect(fact?.text == "Applied · review blocked")
+        #expect(fact?.tone == .warning)
+    }
+
+    @Test func cleanApplyAndAdoptedWinner() {
+        #expect(RunFacts.applyFact(state: "applied", adopted: false)?.text == "Applied")
+        #expect(RunFacts.applyFact(state: "applied", adopted: true)?.text == "Winner applied")
+        #expect(RunFacts.applyFact(state: "applied", adopted: false)?.tone == .success)
+    }
+
+    @Test func revertedIsNeutralAndNotAppliedIsSilent() {
+        #expect(RunFacts.applyFact(state: "reverted", adopted: false)?.text == "Reverted")
+        // not_applied / unknown render NO line (the turn is silent about delivery).
+        #expect(RunFacts.applyFact(state: "not_applied", adopted: false) == nil)
+        #expect(RunFacts.applyFact(state: nil, adopted: false) == nil)
+    }
+}

@@ -20,16 +20,6 @@ struct AccountRowView: View {
     /// default vendor logins are not Claudexor's to delete).
     var delete: (() -> Void)? = nil
 
-    /// The vendor identity (login email + plan) read LOCALLY from the account's
-    /// config file (batch-6 item a). nil until the off-main read resolves, or
-    /// permanently when the file has no identity claims — absence keeps the row's
-    /// current detail rather than showing a blank line.
-    @State private var vendor: VendorAccountIdentity?
-
-    /// Stable key for the vendor read: re-loads only when the row's identity or
-    /// its config path changes (never on every re-render).
-    private var vendorKey: String { "\(row.harnessId)|\(row.profileId ?? "native")|\(row.isolationLocator ?? "")" }
-
     /// Per-cell width FLOORS for the trailing control columns (owner F8). The
     /// shared Grid in `AlignedList` pins the true collinear edge; these only stop
     /// a cell collapsing narrower than its siblings. The column SET is stable
@@ -50,13 +40,6 @@ struct AccountRowView: View {
             // Column 2 (delete): a clear spacer reserves the column when absent.
             deleteCell.alignedControlColumn(minWidth: Col.delete)
         }
-        // Vendor identity is read off the main actor from the account's own
-        // config file (never the wire); re-keyed so it loads once per identity.
-        .task(id: vendorKey) {
-            vendor = nil
-            vendor = await VendorIdentityLoader.load(
-                harnessId: row.harnessId, isolationLocator: row.isolationLocator)
-        }
     }
 
     /// The identity block: readiness dot + name (+ harness/CLI badge + optional
@@ -72,12 +55,7 @@ struct AccountRowView: View {
             // F1 informational hint: this is who an unpinned run routes to next.
             badges.append(AlignedRowBadge("Next up", systemImage: "arrow.turn.down.right", emphasis: .accent))
         }
-        // The vendor identity (login email · plan) is the most identifying
-        // secondary line — it leads when resolved (batch-6 item a).
         var details: [AlignedRowDetail] = []
-        if let line = vendor?.summaryLine {
-            details.append(AlignedRowDetail(2, line, emphasis: .secondary))
-        }
         details.append(quotaDetail)
         if let detail = row.detail {
             details.append(AlignedRowDetail(1, detail, emphasis: .secondary))

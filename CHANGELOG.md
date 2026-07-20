@@ -24,7 +24,8 @@ Release history for Claudexor. The current version is declared in the root
   computed and shown, threads keep their account and access sticky with a
   per-thread pin/override, and native CLI login is just a row. The engine
   owns every fact; macOS, MCP, and ACP are thin clients that decode, not
-  derive: four Run Detail tabs with typed LoadState, a shared ChipMenu, global
+  derive: a thread-scoped Changes / Artifacts / Evidence workspace with typed
+  LoadState, a shared ChipMenu, global
   text selection, code-first route descriptors feeding the generated operation
   catalog, and TS↔Swift fixture round-trips. A runtime-closure updater installs
   engine bundles from a signed release manifest with SHA-256 verification,

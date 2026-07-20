@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { DELEGATION_ENV } from "@claudexor/util";
 import {
   DEFAULT_MAX_SUBRUNS,
-  DELEGATION_ENV,
   beltClaudexorTools,
   delegationBudgetDraw,
   delegationDepthRefusal,

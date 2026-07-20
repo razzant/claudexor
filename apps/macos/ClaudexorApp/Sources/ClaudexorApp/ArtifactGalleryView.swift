@@ -187,14 +187,16 @@ struct ArtifactGalleryView: View {
     private func load() async {
         let id = identity
         slot.begin(id)
+        // A6: fan the per-run listing fetches out CONCURRENTLY over the Sendable
+        // gateway client — a thread-aggregated gallery otherwise SERIALIZED N
+        // produced-endpoint round-trips. Results are reassembled in runIds order
+        // and de-duplicated by (runId, path), so the list stays deterministic.
+        let byRun = await Self.fetchListings(runIds: runIds, produced: produced, client: model.client)
         var combined: [RunArtifact] = []
         var seen = Set<String>()
         var anyFailed = false
         for runId in runIds {
-            let list = produced
-                ? await model.producedArtifacts(runId: runId)
-                : await model.runArtifacts(runId: runId)
-            guard let list else { anyFailed = true; continue }
+            guard let list = byRun[runId] ?? nil else { anyFailed = true; continue }
             for art in list where seen.insert("\(runId)|\(art.path)").inserted {
                 combined.append(RunArtifact(runId: runId, art: art))
             }
@@ -209,6 +211,30 @@ struct ArtifactGalleryView: View {
         // for THIS identity (a live run still producing) — never across a switch.
         if combined.isEmpty, let existing = slot.state.value, !existing.isEmpty { return }
         slot.commit(combined.isEmpty ? .empty : .loaded(combined), for: id)
+    }
+
+    /// Fetch every run's artifact listing CONCURRENTLY over the Sendable client
+    /// (a nil client or a per-run transport failure yields nil for that run,
+    /// matching the AppModel accessors' `try?` semantics). `nonisolated` so only
+    /// Sendable values (the client, run ids, the flag) cross into the child
+    /// tasks — no MainActor state is captured.
+    nonisolated private static func fetchListings(
+        runIds: [String], produced: Bool, client: GatewayClient?
+    ) async -> [String: [ArtifactInfo]?] {
+        guard let client else { return [:] }
+        return await withTaskGroup(of: (String, [ArtifactInfo]?).self) { group in
+            for runId in runIds {
+                group.addTask {
+                    let list = produced
+                        ? try? await client.listProducedFiles(runId: runId)
+                        : try? await client.listRunArtifacts(runId: runId)
+                    return (runId, list)
+                }
+            }
+            var out: [String: [ArtifactInfo]?] = [:]
+            for await (runId, list) in group { out[runId] = list }
+            return out
+        }
     }
 }
 
