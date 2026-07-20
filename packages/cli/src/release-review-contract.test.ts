@@ -19,6 +19,7 @@ import {
   blockerContractGaps,
   releaseReviewDecision,
   releaseAttestationSigningBytes,
+  livenessFloorMs,
   reviewerLiveness,
   validateFrozenReviewBinding,
   validateNewReviewOutput,
@@ -265,6 +266,19 @@ describe("release review fail-closed contract", () => {
     });
     expect(decision.passed).toBe(false);
     expect(decision.reasons.join(" ")).toContain("not live");
+  });
+
+  it("scales the liveness floor with the submitted prompt size", () => {
+    // Megabyte-scale release packets keep the full 30s floor; a small hotfix
+    // packet gets a floor a flash-tier reviewer can legitimately clear, and
+    // instant/cache artifacts stay rejected at every size.
+    expect(livenessFloorMs(2_000_000)).toBe(30_000);
+    expect(livenessFloorMs(500_000)).toBe(20_000);
+    expect(livenessFloorMs(150_000)).toBe(10_000);
+    expect(livenessFloorMs(Number.NaN)).toBe(30_000);
+    expect(livenessFloorMs(0)).toBe(30_000);
+    expect(reviewerLiveness({ status: "responded", duration_ms: 18_000 }, livenessFloorMs(150_000)).live).toBe(true);
+    expect(reviewerLiveness({ status: "responded", duration_ms: 900 }, livenessFloorMs(150_000)).live).toBe(false);
   });
 
   it("treats an implausibly fast slot as failed — the liveness floor", () => {

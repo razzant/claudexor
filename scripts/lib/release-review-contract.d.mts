@@ -4,6 +4,7 @@ export const TRIAD_ITEMS: readonly string[];
 export const SCOPE_ITEMS: readonly string[];
 export const RELEASE_REVIEW_ATTESTATION_ALGORITHM: "Ed25519";
 export const REVIEWER_MIN_PLAUSIBLE_MS: number;
+export function livenessFloorMs(promptChars: number): number;
 export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION: 3;
 export const OWNER_REVIEW_PROTOCOL: "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS: 2;

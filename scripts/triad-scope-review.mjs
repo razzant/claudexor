@@ -71,6 +71,7 @@ import {
   buildTouchedFilePack,
   completionTermination,
   parseChecklistJson,
+  livenessFloorMs,
   reviewerLiveness,
   pathIsWithin,
   panelLockText,
@@ -308,6 +309,27 @@ function changedFiles(base) {
   return git(["diff", "--name-only", `${base}..HEAD`]).trim();
 }
 
+/**
+ * Files whose FULL current text goes into the review pack: the union of the
+ * base..HEAD changed files and the sealed packet's FILES_TO_READ_WHOLE.txt.
+ * The list can name files changed BEFORE the review base (e.g. docs commits
+ * folded into the base and text-reviewed via a sidecar diff) — without the
+ * union those never reach reviewers in full (v3.0.1 wave r6 critical).
+ */
+function reviewPackFiles(base, packetDir) {
+  const changed = changedFiles(base).split("\n").filter(Boolean);
+  let listed = [];
+  try {
+    listed = readFileSync(join(packetDir, "FILES_TO_READ_WHOLE.txt"), "utf8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    // Optional packet file; absence means the changed set alone is the pack.
+  }
+  return [...new Set([...changed, ...listed])];
+}
+
 /** Compact whole-repo atlas: every tracked path + byte size (scope reviewer's map). */
 function repoAtlas() {
   const lines = git(["ls-files"]).trim().split("\n");
@@ -328,7 +350,7 @@ function checklistSection(title) {
   return m ? m[0] : `(section "${title}" not found in docs/CHECKLISTS.md)`;
 }
 
-function buildTriadPrompt(base, packetPrompt, diff) {
+function buildTriadPrompt(base, packetPrompt, diff, packFiles) {
   return `${PREAMBLE}
 ## Review instructions
 
@@ -378,7 +400,7 @@ ${readDoc("docs/ARCHITECTURE.md")}
 ## Current touched files (full content)
 
 ${buildTouchedFilePack(
-  changedFiles(base).split("\n").filter(Boolean),
+  packFiles,
   git,
   MAX_FILE_BYTES,
   MAX_PACK_BYTES,
@@ -394,7 +416,7 @@ ${changedFiles(base)}
 `;
 }
 
-function buildScopePrompt(base, packetPrompt, diff) {
+function buildScopePrompt(base, packetPrompt, diff, packFiles) {
   return `${PREAMBLE}
 ## Your role
 
@@ -455,7 +477,7 @@ ${repoAtlas()}
 ## Current touched files (post-change)
 
 ${buildTouchedFilePack(
-  changedFiles(base).split("\n").filter(Boolean),
+  packFiles,
   git,
   MAX_FILE_BYTES,
   MAX_PACK_BYTES,
@@ -697,8 +719,9 @@ async function main() {
   if (!outputCheck.ok) {
     throw new Error(`invalid review output '${outDir}': ${outputCheck.reasons.join("; ")}`);
   }
-  const triadPrompt = buildTriadPrompt(base, frozen.prompt, frozen.diff);
-  const scopePrompt = buildScopePrompt(base, frozen.prompt, frozen.diff);
+  const packFiles = reviewPackFiles(base, frozen.packet);
+  const triadPrompt = buildTriadPrompt(base, frozen.prompt, frozen.diff, packFiles);
+  const scopePrompt = buildScopePrompt(base, frozen.prompt, frozen.diff, packFiles);
   // Fail BEFORE remote submission if the evidence contains a token-like value:
   // a leaked secret must not reach OpenRouter or the persisted artifacts.
   if (containsSecretLikeToken(triadPrompt) || containsSecretLikeToken(scopePrompt)) {
@@ -738,9 +761,12 @@ async function main() {
   // "responded" result that is implausibly fast or carries no parseable JSON
   // array is downgraded before the retry decision so cache/transport
   // artifacts can never occupy a required slot.
-  const withLiveness = (result) => {
+  const withLiveness = (result, promptChars) => {
     if (result.status !== "responded") return result;
-    const liveness = reviewerLiveness({ status: result.status, duration_ms: result.ms });
+    const liveness = reviewerLiveness(
+      { status: result.status, duration_ms: result.ms },
+      livenessFloorMs(promptChars),
+    );
     if (!liveness.live) {
       return { ...result, status: "implausible", error: liveness.reason };
     }
@@ -749,7 +775,8 @@ async function main() {
     }
     return result;
   };
-  const callSlotOnce = (model, prompt) => callModel(model, prompt).then(withLiveness);
+  const callSlotOnce = (model, prompt) =>
+    callModel(model, prompt).then((result) => withLiveness(result, prompt.length));
   const callSlotWithRetry = async (model, prompt, role) => {
     const first = await callSlotOnce(model, prompt);
     if (first.status === "responded") return first;
