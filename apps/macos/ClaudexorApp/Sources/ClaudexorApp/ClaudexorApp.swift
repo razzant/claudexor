@@ -43,11 +43,28 @@ struct ClaudexorApp: App {
 /// so its window may not appear. Force `.regular` + activate on launch. (Harmless for
 /// the notarized .app bundle, essential for `swift run` dev/CI.)
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// SwiftPM synthesises `Bundle.module` for this *executable* target, and that flavour of
+    /// the accessor looks only beside the binary before it traps with `fatalError`. Once
+    /// `build-app.sh` wraps the executable in an .app the resource bundle sits in
+    /// `Contents/Resources`, which the generated accessor never consults — so merely
+    /// evaluating `Bundle.module` killed the packaged app at launch, icon or no icon. Moving
+    /// the bundle to the .app root is not an option either: codesign then rejects the app
+    /// with "unsealed contents present in the bundle root". Resolve it by hand instead, and
+    /// keep it optional — the icon is cosmetic and the .app already ships AppIcon.icns.
+    private static let resourceBundle: Bundle? = {
+        let name = "ClaudexorApp_ClaudexorApp.bundle"
+        return [Bundle.main.resourceURL, Bundle.main.bundleURL]
+            .compactMap { $0?.appendingPathComponent(name) }
+            .lazy
+            .compactMap(Bundle.init(url:))
+            .first
+    }()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // Dock icon for the dev executable (the notarized .app uses AppIcon.icns directly).
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
+        if let url = Self.resourceBundle?.url(forResource: "AppIcon", withExtension: "png"),
            let img = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = img
         }

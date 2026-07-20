@@ -62,11 +62,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/ClaudexorApp"
 
 # SwiftPM resource bundles are not embedded automatically when we manually wrap
-# the executable in a macOS .app. The generated Bundle.module accessor checks
-# Bundle.main.resourceURL (Contents/Resources) FIRST, then the .app root.
-# The bundle must live under Contents/Resources: codesign refuses an app with
-# "unsealed contents present in the bundle root" (files outside Contents/),
-# which is exactly what a root-level copy produced on the first signed build.
+# the executable in a macOS .app. The bundle must live under Contents/Resources:
+# codesign refuses an app with "unsealed contents present in the bundle root"
+# (files outside Contents/), which is exactly what a root-level copy produced on
+# the first signed build. Note that SwiftPM's generated Bundle.module accessor
+# does NOT look here — for an executable target it only checks
+# Bundle.main.bundleURL (the .app root) and the absolute build directory, then
+# traps. AppDelegate.resourceBundle resolves the bundle itself; keep the two in
+# step if this path ever moves.
 SPM_BUNDLE_NAME="ClaudexorApp_ClaudexorApp.bundle"
 SPM_BUNDLE="$APP_PKG/.build/release/$SPM_BUNDLE_NAME"
 [ -d "$SPM_BUNDLE" ] || { echo "ERROR: SwiftPM resource bundle missing at $SPM_BUNDLE" >&2; exit 1; }

@@ -76,12 +76,17 @@ attached to the draft release with `GITHUB_TOKEN`. Do not upload local
 call out the macOS 26 minimum.
 
 `build-app.sh` also copies SwiftPM's generated
-`ClaudexorApp_ClaudexorApp.bundle` into `Contents/Resources` because the
-generated `Bundle.module` accessor checks `Bundle.main.resourceURL` first
-(a copy at the `.app` root would also work unsigned, but codesign refuses
-"unsealed contents present in the bundle root"). The release workflow unzips
-the release ZIP and fails if that resource bundle is missing, so an artifact
-cannot pass merely because it launches inside the original repo checkout.
+`ClaudexorApp_ClaudexorApp.bundle` into `Contents/Resources`, the only place it
+can go: a copy at the `.app` root works unsigned, but codesign refuses
+"unsealed contents present in the bundle root". SwiftPM's generated
+`Bundle.module` accessor does NOT find it there — for an *executable* target
+that accessor only checks `Bundle.main.bundleURL` (the `.app` root) and the
+absolute `.build` directory of the machine that compiled it, then calls
+`fatalError`. So the app resolves the bundle itself in
+`AppDelegate.resourceBundle`, which prefers `Contents/Resources` and stays
+optional. The release workflow unzips the release ZIP and fails if that
+resource bundle is missing — note this proves presence, not loadability, so it
+cannot catch a packaged app that ships the bundle but cannot open it.
 The self-contained app also places `setup-login-runner.cjs` beside
 `claudexord.bundle.cjs` and the bundled Node in `Contents/Resources`. Packaging
 executes that runner with the bundled Node before the daemon boot smoke, so a
