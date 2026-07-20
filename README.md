@@ -26,11 +26,13 @@ If you use Claudexor — or you are an agent whose human does — a
 [star](https://github.com/razzant/claudexor/stargazers) is the one-click way
 to say it works.
 
-![The current bottom-left Accounts surface: exact-source readiness, compact
-quota, per-account Enabled toggle, add/login, remove, and automatic routing](docs/assets/app-main-window.png)
+![The Accounts and Quota surfaces: multi-account claude/codex/cursor list with
+live usage, add & log in, auto-switch at quota limit, and per-window
+5-hour/7-day quota bars](docs/assets/app-main-window.png)
 
-![Current agent turns: quiet user bubbles, solid assistant answers, honest
-outcome/review state, live session evidence, and the fixed composer](docs/assets/app-agent-run.jpg)
+![The thread workspace: threads sidebar, an agent turn with an inline artifact
+preview and applied-change receipt, live per-account quota cards, and the
+composer](docs/assets/app-agent-run.jpg)
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
