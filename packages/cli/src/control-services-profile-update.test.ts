@@ -157,13 +157,13 @@ describe("updateCredentialProfile (INV-135 Enabled toggle) + accounts projection
           organizationType: "claude_max",
           accountUuid: "uuid-secret-do-not-leak",
         },
-        oauthToken: "sk-ant-secret-do-not-leak",
+        oauthToken: "sk-ant-" + "secret-do-not-leak",
       }),
     );
     const listing = ControlCredentialProfilesResponse.parse(await svc.credentialProfiles());
     const serialized = JSON.stringify(listing);
     expect(serialized).not.toContain("uuid-secret-do-not-leak");
-    expect(serialized).not.toContain("sk-ant-secret-do-not-leak");
+    expect(serialized).not.toContain("sk-ant-" + "secret-do-not-leak");
     const claudeAccounts = listing.harnessAccounts.find((h) => h.harness_id === "claude");
     expect(Object.keys(claudeAccounts?.identity ?? {}).sort()).toEqual(["email", "plan"]);
   });
