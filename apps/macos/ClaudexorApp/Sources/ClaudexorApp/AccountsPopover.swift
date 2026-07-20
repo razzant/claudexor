@@ -33,30 +33,29 @@ struct SidebarFooter: View {
     }
 }
 
-/// The bottom-left update chip (M7). Renders a pending-version chip when the
-/// real, manifest-backed updater reports a runnable `.available` closure. When
-/// there is no advertised update it renders NOTHING except an honest status line
-/// for the app-update-required / failure cases (never a fake "up to date"). Tap
-/// to re-check.
+/// The bottom-left update chip (M7 — 3.0 CHECK-only). Renders a pending-version
+/// chip when the real, manifest-backed CHECK reports a runnable `.available`
+/// closure. 3.0 does NOT install in-app (owner-locked D1): the chip is an
+/// INFORMATIONAL affordance whose action opens the GitHub release for a manual
+/// download; one-click auto-install lands in 3.1. When there is no advertised
+/// update it renders NOTHING except an honest status line for the
+/// app-update-required / failure cases (never a fake "up to date"). Tap to
+/// re-check.
 struct UpdateChip: View {
     @Environment(AppModel.self) private var model
-    @State private var confirmInstall = false
+    @Environment(\.openURL) private var openURL
+
+    /// The GitHub release page the chip links to for a manual download.
+    /// `releases/latest` always resolves to the release whose runtime manifest
+    /// the CHECK just read, so the linked page carries the advertised version.
+    static let releaseURL = URL(
+        string: "https://github.com/\(GitHubRuntimeReleaseTransport.repoSlug)/releases/latest")!
 
     var body: some View {
-        if model.runtimeInstalling {
-            // Install in flight: a quiet, honest progress line (no fake success).
-            HStack(spacing: Theme.Spacing.xs) {
-                ProgressView().controlSize(.small)
-                Text(model.runtimeUpdateStatus ?? "Installing update…")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, Theme.Spacing.md)
-            .padding(.vertical, Theme.Spacing.xs)
-        } else if let update = model.updateAvailability {
-            // A runnable update: the chip's PRIMARY action is Install (with a
-            // confirm), reflecting the manifest-backed availability. A trailing
-            // re-check stays available for a manual refresh.
+        if let update = model.updateAvailability {
+            // A newer runtime exists. 3.0 is CHECK-only (D1): the chip's action
+            // opens the GitHub release for a MANUAL download — there is no in-app
+            // install. A trailing re-check stays available for a manual refresh.
             HStack(spacing: Theme.Spacing.xs) {
                 Image(systemName: "arrow.down.circle.fill")
                     .font(.caption).foregroundStyle(Theme.accent)
@@ -67,9 +66,10 @@ struct UpdateChip: View {
                     .font(.caption.weight(.medium)).foregroundStyle(Theme.accent)
                     .monospacedDigit()
                 Spacer(minLength: 0)
-                Button("Install") { confirmInstall = true }
+                Button("View release") { openURL(update.url.flatMap(URL.init) ?? Self.releaseURL) }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
+                    .help("Open the GitHub release to download the update manually")
                 Button {
                     Task { await model.checkForRuntimeUpdate() }
                 } label: {
@@ -81,19 +81,7 @@ struct UpdateChip: View {
             .padding(.horizontal, Theme.Spacing.md)
             .padding(.vertical, Theme.Spacing.xs)
             .help(update.url.map { "Update to v\(update.version) — \($0)" }
-                  ?? "Update to v\(update.version) is available.")
-            .confirmationDialog(
-                "Install engine runtime v\(update.version)?",
-                isPresented: $confirmInstall,
-                titleVisibility: .visible
-            ) {
-                Button("Install v\(update.version)") {
-                    Task { await model.installRuntimeUpdate() }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("The daemon briefly restarts to serve the new engine. If it does not come up, the previous runtime is restored automatically.")
-            }
+                  ?? "Update to v\(update.version) is available on GitHub (manual download).")
         } else if let status = model.runtimeUpdateStatus, status != "Up to date" {
             // App-update-required / failure / unknown: a quiet, verbatim line.
             HStack(spacing: Theme.Spacing.xs) {

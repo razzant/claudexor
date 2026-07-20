@@ -441,11 +441,13 @@ frequency and volume are. The contracts:
     the official vendor CLI in an auto-opened Terminal window (the setup-job
     handoff below). Each popover row is one account (a
     default vendor login labeled with the harness name, or a registered
-    credential profile): a readiness dot, its name, ONE compact quota line
-    (worst window % + reset), one "Log in" / "Manage" action, a **Use/Using**
-    thread-pin action for ready named profiles (ready means that exact source is
-    `available + passed`, never aggregate harness health). Use atomically makes
-    that harness primary and the sole eligible pool member, and — on
+    credential profile): a readiness dot (ready means that exact source is
+    `available + passed`, never aggregate harness health), its name, ONE compact
+    quota line (worst window % + reset), one "Log in" / "Manage" action, an
+    **Enabled** toggle that includes/excludes the account from the harness's
+    routing pool (a disabled account is never routable; there is NO user-settable
+    "active" account — among the enabled accounts routing auto-picks the
+    server-computed informational next-up identity), and — on
     registered profiles only — a confirmed Remove (trash) that deletes the
     registration plus the account's own login/key
     (`DELETE /v2/credential-profiles/:harness/:id`; the default vendor login
@@ -463,10 +465,10 @@ frequency and volume are. The contracts:
     implicit default login is simply the first account row; named profiles
     follow, and "Add another account" is the only add flow. There is no
     parallel "Native setup" card competing with "Additional accounts"; a named
-    profile drill-in never exposes the default/global API-key fallback panel.
-    "Use
-    automatic account routing" clears a manual pin; selection persists through
-    the thread DTO, never local-only UI state.
+    profile drill-in never exposes the default/global API-key fallback panel. The
+    per-thread account PIN lives in the composer's account chip, not this popover;
+    its "automatic account routing" option clears the pin back to next-up routing,
+    and the choice persists through the thread DTO, never local-only UI state.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5). The
     user bubble carries proper HIG contrast in BOTH themes (batch-6 item e):

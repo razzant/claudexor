@@ -1396,26 +1396,33 @@ the one the release gates smoke-tested. `release/runtime-min-app-version.json`
 is the tracked `minAppVersion` floor (validated `<=` the release version by
 `scripts/verify-version-parity.mjs`), the app-vs-engine skew guard.
 
+**3.0 ships the update CHECK only** (owner-locked D1). The one-click
+auto-INSTALL — download → sha256-verify → unpack → probe-start → stop the idle
+daemon → atomic `current.json` swap → relaunch → handshake-verify → rollback — is
+DEFERRED to 3.1: that path signals a running daemon process, so it ships whole
+and reviewed in 3.1 rather than half-wired in 3.0. The release pipeline, the
+manifest/closure assets, and the pointer READ below are all forward-compatible
+with that installer.
+
 - **Layout.** Runtimes live under `~/.claudexor/runtime/versions/<version>/`; the
   active one is named by `runtime/current.json` (version + path + sha256), and
-  `runtime/last-known-good.json` is the rollback target. `DaemonLauncher` resolves
-  the daemon script through `current.json` when it points at a valid version dir,
-  else the bundled `Contents/Resources` path (first run). Node is ALWAYS the
+  `runtime/last-known-good.json` is the 3.1 rollback target. `DaemonLauncher`
+  resolves the daemon script through `current.json` when it points at a valid
+  version dir, else the bundled `Contents/Resources` path (the 3.0 norm — nothing
+  writes `current.json` until the 3.1 installer does). Node is ALWAYS the
   app-bundled binary; because the whole closure unpacks together, the Browser MCP
   resolves adjacent to the daemon inside the same version dir.
-- **Flow** (foreground / bottom-left chip / Check for Updates — no timer): GET the
-  latest release manifest (`api.github.com`, ETag-cached) → compare `version` to
-  the running engine and gate on `minAppVersion` → download the tarball →
-  sha256-verify (mismatch aborts before any unpack) → unpack to `versions/<v>` →
-  probe-start with an empty `CLAUDEXOR_CONFIG_DIR` → stop the idle daemon →
-  atomically swap `current.json` (previous copied to last-known-good) → start →
-  handshake-verify the serving engine's identity (`POST /v2/handshake`, D20) →
-  any failure rolls the pointer back to last-known-good.
+- **Check flow** (foreground / bottom-left chip / Check for Updates — no timer):
+  GET the latest release manifest (`api.github.com`, ETag-cached) → compare
+  `version` to the running engine and gate on `minAppVersion` → surface an
+  informational "Update available → vX.Y.Z" chip that links to the GitHub release
+  for a manual download. No download, unpack, or daemon signalling happens in 3.0;
+  the auto-install flow lands in 3.1.
 - **Engine side.** `claudexor release check` reads the same manifest and reports
-  whether a newer runtime is published (npm installs update via npm; only the app
-  swaps the closure). `claudexor release stats` is the owner-facing install
-  counter (D23) — GitHub asset download counts + the npm downloads API, zero
-  infra, no telemetry, no ping. Both hit the network only when invoked.
+  whether a newer runtime is published (npm installs update via npm). `claudexor
+  release stats` is the owner-facing install counter (D23) — GitHub asset
+  download counts + the npm downloads API, zero infra, no telemetry, no ping.
+  Both hit the network only when invoked.
 
 ## 10. Change Rules
 

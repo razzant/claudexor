@@ -27,7 +27,7 @@ If you use Claudexor — or you are an agent whose human does — a
 to say it works.
 
 ![The current bottom-left Accounts surface: exact-source readiness, compact
-quota, Manage, Use, remove, add/login, and automatic routing](docs/assets/app-main-window.png)
+quota, per-account Enabled toggle, add/login, remove, and automatic routing](docs/assets/app-main-window.png)
 
 ![Current agent turns: quiet user bubbles, solid assistant answers, honest
 outcome/review state, live session evidence, and the fixed composer](docs/assets/app-agent-run.jpg)
@@ -80,24 +80,22 @@ Anyway.)
 
 ### Updates
 
-- **macOS app** — the app can update its **engine runtime in place** without a
-  new DMG. Each release publishes a `claudexor-runtime-<version>.tar.gz` closure
-  (the bundled daemon, setup-login runner, Browser MCP, and native
+- **macOS app** — each release publishes a `claudexor-runtime-<version>.tar.gz`
+  closure (the bundled daemon, setup-login runner, Browser MCP, and native
   process-identity helper — everything except Node) plus a `runtime-manifest.json`
   describing it. On foreground and from the bottom-left update chip / **Check for
-  Updates**, the app reads that manifest, and if a newer runtime is offered it
-  downloads, sha256-verifies, unpacks under `~/.claudexor/runtime/versions/`,
-  probe-starts and handshake-verifies the new engine, then atomically swaps it
-  in — rolling back to the last-known-good runtime on any failure. Node stays
-  app-owned, so a Node bump ships a new signed DMG. There is no background
-  update timer; the check runs only when you open the app or click Check for
-  Updates. The manifest's `minAppVersion` floor means an app that is too old is
-  told to update the app itself rather than silently taking an incompatible
-  engine.
+  Updates**, the app reads that manifest and, if a newer runtime is offered,
+  surfaces "Update available → vX.Y.Z" — an informational chip that links to the
+  GitHub release for a manual download. **3.0 ships this update CHECK only;
+  one-click in-app auto-install of the engine runtime in place (no new DMG)
+  arrives in 3.1.** Node stays app-owned, so a Node bump ships a new signed DMG
+  regardless. There is no background update timer; the check runs only when you
+  open the app or click Check for Updates. The manifest's `minAppVersion` floor
+  means an app that is too old is told to update the app itself rather than
+  offered an incompatible engine.
 - **npm** — CLI/daemon installs update the ordinary way:
   `npm install -g claudexor@latest`. `claudexor release check` reports whether a
-  newer engine runtime is published (npm users update via npm; only the macOS
-  app swaps the runtime closure in place).
+  newer engine runtime is published (npm users update via npm).
 
 ## Quickstart
 
@@ -300,19 +298,21 @@ claudexor agent "fix the parser" --profile work   # explicit per-run selection s
 ```
 
 Accounts are **symmetric** (INV-135). Per harness, every account is a row with
-an **Enabled** toggle (a disabled account is never routable) and an **Active**
-marker (the account new runs/turns of that harness default to when none is
-pinned). The native vendor login is itself a symmetric row named **"CLI
-login"** with the same toggle semantics but no Delete (it is the vendor's, not
-Claudexor's — log in/out through the vendor CLI). Setting
-`native_credentials_enabled: false` EXCLUDES the CLI login from the ladder: a
-harness with no Active account then has nothing routable and refuses loudly
-rather than silently falling back into it. Deleting an account clears any
-harness's Active pointer at it. The macOS Accounts surface renders these rows
-directly from ONE server projection — no client re-derives which identity is
-Active. Selection is turn `--profile` > the harness's Active account > the CLI
-login, and an explicit profile is STRICT — exactly its transport or a typed
-refusal, never a silent fallback.
+an **Enabled** toggle — a disabled account is never routable. There is NO
+user-settable "active" account: among the ENABLED accounts, routing auto-picks
+the server-computed **next-up** identity (informational only — shown by
+`claudexor profiles`, derived from readiness + quota). The native vendor login
+is itself a symmetric row named **"CLI login"** with the same toggle semantics
+but no Delete (it is the vendor's, not Claudexor's — log in/out through the
+vendor CLI). Setting `native_credentials_enabled: false` EXCLUDES the CLI login
+from the ladder: a harness whose whole ladder is disabled then has nothing
+routable and refuses loudly rather than silently falling back into it. The macOS
+Accounts surface renders these rows directly from ONE server projection — no
+client re-derives Enabled or next-up. The per-thread PIN lives in the composer's
+account chip (the thread remembers whichever account it first ran on); a run's
+`--profile` overrides it. Selection is turn/thread pin `--profile` > POOL AUTO
+(the enabled ladder led by the native/CLI login), and an explicit profile is
+STRICT — exactly its transport or a typed refusal, never a silent fallback.
 Vendor-session resume never crosses profiles. Subscription quota is tracked
 per profile from the vendor's own `oauth/usage` endpoint (proactive
 five-hour/seven-day/per-model percentages in the app's quota footer, one chip

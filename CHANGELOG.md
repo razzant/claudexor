@@ -27,10 +27,11 @@ Release history for Claudexor. The current version is declared in the root
   derive: a thread-scoped Changes / Artifacts / Evidence workspace with typed
   LoadState, a shared ChipMenu, global
   text selection, code-first route descriptors feeding the generated operation
-  catalog, and TS↔Swift fixture round-trips. A runtime-closure updater installs
-  engine bundles from a signed release manifest with SHA-256 verification,
-  atomic `current.json` switch when the daemon is idle, and last-known-good
-  rollback; a zero-telemetry install counter reads public npm and GitHub stats.
+  catalog, and TS↔Swift fixture round-trips. A runtime-closure update CHECK reads
+  a signed release manifest and surfaces a newer engine as a bottom-left chip
+  that links to the GitHub release for a manual download (one-click in-app
+  auto-install of the engine runtime is deferred to 3.1); a zero-telemetry
+  install counter reads public npm and GitHub stats.
   The immune system guards all of it: staged-field v3, the INV→verify link
   gate, the concept gate, reviewer liveness with a typed blocker contract, and
   a cumulative findings ledger. The review protocol is a single canonical
