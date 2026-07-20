@@ -61,4 +61,57 @@ public enum ComposerOptionParser {
         let reason = parts.count == 2 && !parts[1].isEmpty ? parts[1] : nil
         return ProtectedPathApproval(path: path, reason: reason)
     }
+
+    // MARK: - Structured-editor → wire-token mapping (UI cut 3, §3)
+    //
+    // The humane Advanced pickers build the SAME `harness=model:effort` /
+    // `glob:reason` tokens the raw power-syntax fields accept, so one wire
+    // grammar has one owner. Pure + tested; the views only bind to these.
+
+    /// Build the reviewer wire token for one structured picker row. Empty
+    /// harness ⇒ nil (an incomplete row contributes nothing). Grammar:
+    /// `harness`, `harness:effort`, `harness=model`, `harness=model:effort`.
+    public static func reviewerWireToken(
+        harness: String, model: String?, effort: String?
+    ) -> String? {
+        let h = harness.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !h.isEmpty else { return nil }
+        let m = (model ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let e = (effort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var token = h
+        if !m.isEmpty { token += "=\(m)" }
+        if !e.isEmpty { token += ":\(e)" }
+        return token
+    }
+
+    /// Serialize a `ReviewerPanelEntry` back to its canonical wire token, so the
+    /// raw power-syntax field can be prefilled from the structured picker.
+    public static func reviewerWireToken(_ entry: ReviewerPanelEntry) -> String? {
+        reviewerWireToken(harness: entry.harness, model: entry.model, effort: entry.effort)
+    }
+
+    /// Build the protected-path approval wire token for one list-editor row.
+    /// Empty path ⇒ nil (an incomplete row contributes nothing). Grammar:
+    /// `glob` or `glob:reason`.
+    public static func protectedApprovalWireToken(path: String, reason: String?) -> String? {
+        let p = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return nil }
+        let r = (reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return r.isEmpty ? p : "\(p):\(r)"
+    }
+
+    /// Serialize a `ProtectedPathApproval` back to its wire token.
+    public static func protectedApprovalWireToken(_ approval: ProtectedPathApproval) -> String? {
+        protectedApprovalWireToken(path: approval.path, reason: approval.reason)
+    }
+
+    /// Join structured editor rows into the comma-separated string both the raw
+    /// power field and the send path consume (skipping incomplete rows).
+    public static func joinReviewerTokens(_ entries: [ReviewerPanelEntry]) -> String {
+        entries.compactMap(reviewerWireToken).joined(separator: ", ")
+    }
+
+    public static func joinApprovalTokens(_ approvals: [ProtectedPathApproval]) -> String {
+        approvals.compactMap(protectedApprovalWireToken).joined(separator: ", ")
+    }
 }

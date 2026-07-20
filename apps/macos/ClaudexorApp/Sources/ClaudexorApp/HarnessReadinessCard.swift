@@ -80,24 +80,20 @@ struct HarnessReadinessCard<Actions: View>: View {
                     .background(presentation.health.color.opacity(0.14), in: Capsule())
             }
             if !presentation.rows.isEmpty {
-                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                // Ported to the shared AlignedListRow component (UI cut 3 §1):
+                // status glyph + check title + SINGLE-LINE detail (full text via
+                // `.help`), so a long probe detail can never wrap into fragments.
+                AlignedList(verticalSpacing: Theme.Spacing.xxs) {
                     ForEach(presentation.rows, id: \.id) { row in
-                        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.xs) {
-                            Image(systemName: Self.rowGlyph(row.status))
-                                .foregroundStyle(Self.rowColor(row.status))
-                                .font(.caption2)
-                                .frame(width: 14) // fixed glyph column
-                            Text(row.title)
-                                .font(.caption)
-                                .frame(width: 150, alignment: .leading) // fixed name column
-                            if let detail = row.detail, !detail.isEmpty {
-                                Text(detail)
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .textSelection(.enabled)
-                            }
-                            Spacer(minLength: 0)
-                        }
+                        AlignedListRow(identity: AlignedRowIdentity(
+                            dotColor: Self.rowColor(row.status),
+                            dotSystemImage: Self.rowGlyph(row.status),
+                            dotHelp: row.status,
+                            title: row.title,
+                            titleFont: .caption,
+                            details: (row.detail?.isEmpty == false)
+                                ? [AlignedRowDetail(0, row.detail!)] : []
+                        )) { EmptyView() }
                     }
                 }
             }

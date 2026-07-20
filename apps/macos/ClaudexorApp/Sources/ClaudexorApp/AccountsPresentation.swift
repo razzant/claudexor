@@ -36,12 +36,14 @@ struct AccountRowModel: Identifiable {
     /// D25 Enabled: participates in pickers + the auto-rotation pool. For a
     /// profile row this is the wire `profile.enabled`; for the CLI-login row it
     /// is the harness's `native_credentials_enabled` (V11b). LIVE — the toggle
-    /// PATCHes the owning surface (profile route / harness settings).
+    /// PATCHes the owning surface (profile route / harness settings). This is the
+    /// ONLY routing control (the F1 engine cut deleted user-settable Active).
     let enabled: Bool
-    /// D25 Active marker, server-computed (V11b `active_identity`): this row is
-    /// the harness's Active account. nil when the projection is absent (older
-    /// daemon) — the surface then falls back to the client-derived pin state.
-    let serverActive: Bool?
+    /// Server-computed NEXT-UP (F1 engine `next_up`): true when an unpinned run of
+    /// this harness would route to THIS row next. INFORMATIONAL only — rendered
+    /// as a quiet "Next up" badge, never a control. false when the projection is
+    /// absent (older daemon) or another row is next up.
+    let nextUp: Bool
 
     var isProfile: Bool { profileId != nil }
     /// The native vendor login row (not one of Claudexor's credential profiles).
@@ -87,7 +89,7 @@ enum AccountsPresentation {
                 // `native_credentials_enabled` (V11b) — LIVE via the settings
                 // PATCH surface. Absent projection => symmetrically enabled.
                 enabled: accounts?.nativeCredentialsEnabled ?? true,
-                serverActive: accounts.map { $0.activeIdentity.isNative }
+                nextUp: accounts?.nextUp.isNative ?? false
             ))
         }
 
@@ -109,7 +111,7 @@ enum AccountsPresentation {
                     $0.subjectId == entry.profile.profileId && $0.harness == entry.profile.harnessId
                 },
                 enabled: entry.profile.enabled,
-                serverActive: accounts.map { $0.activeIdentity.isProfile(entry.profile.profileId) }
+                nextUp: accounts?.nextUp.isProfile(entry.profile.profileId) ?? false
             ))
         }
         return rows
@@ -154,8 +156,9 @@ enum AccountsPresentation {
         if let pinned = pinnedProfileId {
             return AccountSegment(pinned: true, label: profileName(pinned), systemImage: "pin.fill")
         }
-        // No pin → follow the harness's Active default from the server projection.
-        guard let identity = model.harnessAccounts(for: harnessId)?.activeIdentity else {
+        // No pin → follow the harness's next-up identity from the server
+        // projection (what routing would pick — informational).
+        guard let identity = model.harnessAccounts(for: harnessId)?.nextUp else {
             return AccountSegment(pinned: false, label: "Default", systemImage: "person.crop.circle")
         }
         switch identity {
@@ -170,15 +173,20 @@ enum AccountsPresentation {
         rows.compactMap(\.worstPercent).max()
     }
 
-    /// The Active-marker wording for a row (M9-UX item 1). When the Active
-    /// identity is not ready the marker DEGRADES verbally so it never reads as
-    /// operational — pure so the vocabulary is unit-tested in one place.
-    static func activeMarkerLabel(readiness: AccountReadiness) -> String {
-        switch readiness {
-        case .ready: return "Active"
-        case .unknown: return "Active · unverified"
-        case .unavailable: return "Active · not logged in"
-        }
+    /// The trailing control columns EVERY account row emits, in order. The set is
+    /// STABLE across row kinds (CLI-login vs profile) — a profile carries a real
+    /// trash control where the CLI-login row reserves a clear spacer of the same
+    /// width — so the Enabled toggle and Manage button stay collinear regardless
+    /// of which controls a given row actually renders (owner F8 / §2.8). Pure so
+    /// column-set stability is unit-tested rather than eyeballed.
+    enum AccountRowColumn: String, CaseIterable, Equatable {
+        case enabled, manage, delete
+    }
+
+    /// The ordered column set for a row — identical for every row kind, which is
+    /// exactly what keeps the trailing controls on a shared edge.
+    static func columns(for row: AccountRowModel) -> [AccountRowColumn] {
+        AccountRowColumn.allCases
     }
 
     /// The trigger's label: a single account's name, else "N accounts".

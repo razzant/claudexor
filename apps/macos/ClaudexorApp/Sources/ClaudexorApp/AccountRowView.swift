@@ -1,93 +1,85 @@
 import SwiftUI
 import ClaudexorKit
 
-/// One account row inside the popover. A separate view so the popover's body
-/// stays small for the Swift type-checker (composerControlsRow precedent).
+/// One account row inside the popover, built on the shared `AlignedListRow`
+/// component (UI cut 3 §1). The identity block (status dot + name + SINGLE-LINE
+/// quota/detail) and the shared-Grid trailing columns are owned by the
+/// component, so this row cannot reintroduce the owner-round-3 wrap/drift bug.
+/// The F1 engine cut deleted user-settable Active: the Enabled toggle is the
+/// only routing control, and the row routing would pick next carries a quiet
+/// informational "Next up" badge (never a control); per-thread pinning lives on
+/// the composer chip.
 struct AccountRowView: View {
     let row: AccountRowModel
     let login: () -> Void
     var loginDisabled = false
-    /// The active account for the current thread/draft (the D25 Active marker).
-    var active = false
     /// V11b: live Enabled toggle action — PATCHes the profile / native setting.
     /// nil renders a read-only toggle (defensive; the surface always supplies it).
     var setEnabled: ((Bool) -> Void)? = nil
-    /// "Make active" (M9-UX item 2): set this row as the harness's GLOBAL routing
-    /// default. nil when it is already active or cannot become active.
-    var makeActive: (() -> Void)? = nil
     /// Present when the account can be removed (registered profiles only —
     /// default vendor logins are not Claudexor's to delete).
     var delete: (() -> Void)? = nil
 
-    /// The row is ONE `GridRow` in the accounts `Grid` (owner F8). The trailing
-    /// controls are real Grid COLUMNS shared across every sibling row, so the
-    /// Enabled toggle (and every other control) lands on the exact same x in ALL
-    /// rows regardless of the identity width or which other controls a row carries
-    /// (Manage+Active vs Manage+Make active+trash). Absent controls render a
-    /// clear spacer that still reserves the column. See docs/DESIGN_SYSTEM.md
-    /// "Row alignment". The fixed widths here are only per-cell FLOORS — the Grid
-    /// pins the actual shared column edge.
+    /// Per-cell width FLOORS for the trailing control columns (owner F8). The
+    /// shared Grid in `AlignedList` pins the true collinear edge; these only stop
+    /// a cell collapsing narrower than its siblings. The column SET is stable
+    /// across row kinds (`AccountsPresentation.columns`), so the toggle and
+    /// Manage button never shift between a CLI-login row and a profile row.
     private enum Col {
         static let enabled: CGFloat = 30
-        static let login: CGFloat = 64
-        static let active: CGFloat = 100
+        static let manage: CGFloat = 64
         static let delete: CGFloat = 18
     }
 
     var body: some View {
-        GridRow(alignment: .top) {
-            // Column 0: identity (readiness dot + name/quota/detail) — absorbs the
-            // slack so the trailing columns share a fixed edge.
-            HStack(alignment: .top, spacing: Theme.Spacing.sm) {
-                Circle()
-                    .fill(row.readiness.color)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 4)
-                    .help(row.verified ? "Verified" : "Not verified — log in")
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: Theme.Spacing.xs) {
-                        Text(row.displayName).font(.callout.weight(.medium)).lineLimit(1)
-                        // D25: the native vendor login is a symmetric "CLI login"
-                        // row, no longer visually "the default".
-                        Text(row.isProfile ? row.harnessId : "CLI login")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    quotaLine
-                    if let detail = row.detail {
-                        Text(detail).font(.caption2).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.tail).help(detail)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .gridColumnAlignment(.leading)
-
-            // Column 1: Enabled toggle — the collinear anchor across every row.
-            enabledToggle
-                .frame(minWidth: Col.enabled)
-                .gridColumnAlignment(.center)
-
-            // Column 2: Manage / Log in.
-            manageButton
-                .frame(minWidth: Col.login)
-                .gridColumnAlignment(.center)
-
-            // Column 3: status / "Make active" (or an empty reserved cell).
-            activeControl
-                .frame(minWidth: Col.active, alignment: .trailing)
-                .gridColumnAlignment(.trailing)
-
-            // Column 4: delete — a clear spacer keeps the column when absent.
-            deleteCell
-                .frame(minWidth: Col.delete)
-                .gridColumnAlignment(.center)
+        AlignedListRow(identity: identity) {
+            // Column 0 (enabled): the collinear anchor across every row.
+            enabledToggle.alignedControlColumn(minWidth: Col.enabled)
+            // Column 1 (manage / log in).
+            manageButton.alignedControlColumn(minWidth: Col.manage)
+            // Column 2 (delete): a clear spacer reserves the column when absent.
+            deleteCell.alignedControlColumn(minWidth: Col.delete)
         }
+    }
+
+    /// The identity block: readiness dot + name (+ harness/CLI badge + optional
+    /// "Next up") + the ONE single-line quota line + optional single-line detail.
+    private var identity: AlignedRowIdentity {
+        var badges: [AlignedRowBadge] = [
+            // The native vendor login is a symmetric "CLI login" row, not "the default".
+            AlignedRowBadge(row.isProfile ? row.harnessId : "CLI login", emphasis: .secondary)
+        ]
+        if row.nextUp {
+            // F1 informational hint: this is who an unpinned run routes to next.
+            badges.append(AlignedRowBadge("Next up", systemImage: "arrow.turn.down.right", emphasis: .accent))
+        }
+        var details: [AlignedRowDetail] = [quotaDetail]
+        if let detail = row.detail {
+            details.append(AlignedRowDetail(1, detail, emphasis: .secondary))
+        }
+        return AlignedRowIdentity(
+            dotColor: row.readiness.color,
+            dotHelp: row.verified ? "Verified" : "Not verified — log in",
+            title: row.displayName,
+            badges: badges,
+            details: details)
+    }
+
+    /// ONE compact quota detail: the worst window's used-% and its reset, as a
+    /// single-line string (the component enforces single-line + tail truncation).
+    private var quotaDetail: AlignedRowDetail {
+        guard let window = row.worstWindow, let pct = row.worstPercent else {
+            return AlignedRowDetail(0, "Quota unknown", emphasis: .secondary)
+        }
+        var text = "\(pct)% used"
+        if let reset = formattedDate(window.resetsAt) { text += " · resets \(reset)" }
+        return AlignedRowDetail(0, text, emphasis: pct >= 90 ? .warning : .secondary, monospacedDigit: true)
     }
 
     /// D25 Enabled: symmetric on every row and LIVE (V11b). A profile row PATCHes
     /// its own `enabled`; the CLI-login row drives the harness's
-    /// `native_credentials_enabled`. The toggle reads wire truth and the set fires
-    /// the PATCH (reload-after-PATCH — no faked client state).
+    /// `native_credentials_enabled`. Reads wire truth; the set fires the PATCH
+    /// (reload-after-PATCH — no faked client state).
     private var enabledToggle: some View {
         Toggle("", isOn: Binding(get: { row.enabled }, set: { setEnabled?($0) }))
             .toggleStyle(.switch)
@@ -125,57 +117,7 @@ struct AccountRowView: View {
                 .controlSize(.small)
                 .help("Remove this account: its registration and its own login/key. The default \(row.family.label) login is untouched.")
         } else {
-            Color.clear.frame(width: Col.delete, height: 1)
-        }
-    }
-
-    /// The Active column (M9-UX items 1 + 2): the routing-default marker or the
-    /// "Make active" affordance. Item 1: when the Active identity is not ready its
-    /// marker DEGRADES — dimmed + verbally qualified ("Active · unverified" /
-    /// "Active · not logged in") — so it never reads as operational.
-    @ViewBuilder private var activeControl: some View {
-        if active {
-            if row.readiness == .ready {
-                Label("Active", systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(Theme.accent)
-                    .lineLimit(1)
-                    .help("The routing default — new runs of this harness use this account.")
-            } else {
-                Label(AccountsPresentation.activeMarkerLabel(readiness: row.readiness),
-                      systemImage: "exclamationmark.circle")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .opacity(0.7)
-                    .lineLimit(1)
-                    .help("This is the routing default, but it is NOT ready. Until you log in / verify it, a run will fail or fall back to another account.")
-            }
-        } else if let makeActive {
-            // Item 5: kept WORKING (the wire still has Active) but deliberately
-            // secondary — a concurrent engine cut removes the Active concept, so
-            // this is a quiet text button, not a prominent affordance.
-            Button("Make active", action: makeActive)
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .help("Make this the harness's active account — the global default new runs use.")
-        }
-    }
-
-    /// ONE compact quota line: the worst window's used-% and its reset.
-    @ViewBuilder private var quotaLine: some View {
-        if let window = row.worstWindow, let pct = row.worstPercent {
-            HStack(spacing: Theme.Spacing.xs) {
-                Text("\(pct)% used")
-                    .font(.caption2).monospacedDigit()
-                    .foregroundStyle(pct >= 90 ? Theme.status(.caution) : .secondary)
-                if let reset = formattedDate(window.resetsAt) {
-                    Text("· resets \(reset)").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        } else {
-            Text("Quota unknown").font(.caption2).foregroundStyle(.secondary)
+            AlignedColumnSpacer(width: Col.delete)
         }
     }
 }

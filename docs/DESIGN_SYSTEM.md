@@ -218,26 +218,46 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
   the menu template (`HarnessIconImage`, `isTemplate`) inherits the menu
   foreground the same way. Never reintroduce a brand-colored mark fill.
 
-### 2.8 Row alignment
+### 2.8 Row alignment — `AlignedListRow` is the rule
 
-- **Trailing controls in sibling rows sit on a shared column edge.** When a list
-  renders repeated rows (accounts, per-harness settings, option rows) whose
-  trailing controls (a toggle, a button, a status marker) differ in width between
-  rows, those controls MUST line up on a common column edge — a control that
-  drifts row-to-row reads as broken. Achieve this with a fixed-position trailing
-  column, not a `Spacer()` that pushes a variable-width control cluster to the
-  right (the cluster's leading edge then moves per row).
-- Use the shared row components: `OptionRow` (a fixed-width label column + one
-  trailing control) for label/value rows. For a MULTI-control repeated row, put
-  the rows in ONE shared `Grid` and make each row a `GridRow` whose trailing
-  controls are real Grid columns — the Grid gives every column a single shared
-  edge across all rows, so a control (the Enabled toggle) is collinear no matter
-  which other controls a given row carries. A per-row fixed-width HStack can still
-  drift if any cell overflows its `.frame(width:)`; the Grid cannot. The leading
-  identity cell absorbs the slack (`.frame(maxWidth: .infinity, alignment:
-  .leading)` + `.gridColumnAlignment(.leading)`), and an absent trailing control
-  renders a clear spacer of its column width so nothing shifts (see the accounts
-  popover: `AccountsSurface` hosts the `Grid`, `AccountRowView` is the `GridRow`).
+A multi-control list row (a repeated row that carries a toggle, a button, a
+status marker, …) has ONE owning component: **`AlignedListRow`**, hosted by
+**`AlignedList`** (`apps/macos/.../AlignedListRow.swift`). Hand-rolled row
+layouts for control rows are **forbidden** — the component exists precisely
+because hand-rolled coordinates drifted and hand-rolled identity cells wrapped
+(the owner-round-3 accounts bug: a quota/status detail wrapped into fragments
+that flowed around the trailing columns). The component folds in the two
+disciplines call sites kept getting wrong, so they cannot get them wrong again:
+
+- **The identity cell is disciplined, not hand-rolled.** `AlignedRowIdentity`
+  owns the leading status dot (or status glyph) + title line (+ optional muted
+  inline badges) + zero or more detail lines. Every detail is rendered
+  **single-line** (`AlignedRowText.singleLine` collapses all whitespace/newline
+  runs) with `.truncationMode(.tail)`, and the full text is always reachable via
+  `.help`. A detail can therefore never wrap into fragments that interleave the
+  trailing controls. The identity cell absorbs the row's slack
+  (`.frame(maxWidth: .infinity, alignment: .leading)` +
+  `.gridColumnAlignment(.leading)`).
+- **Trailing controls share a column edge via ONE Grid, owned by the container.**
+  `AlignedList` is the single shared `Grid`; each `AlignedListRow` is a `GridRow`
+  whose trailing controls are real Grid columns, so a control (the Enabled
+  toggle) is collinear across every sibling row no matter which other controls a
+  given row carries. A per-row fixed-width `HStack` can still drift if a cell
+  overflows its `.frame(width:)`; the Grid cannot. Mark each trailing cell with
+  `.alignedControlColumn(minWidth:alignment:)` (a per-cell width FLOOR + shared
+  column alignment; the Grid pins the true edge). An absent control renders an
+  `AlignedColumnSpacer` of its column width so the columns to its left never
+  shift between rows. The trailing **column SET must be stable across row kinds**
+  — model it as data and unit-test the stability (see
+  `AccountsPresentation.columns`), never eyeball it.
+- **Rule of thumb, not `Spacer()`.** Never push a variable-width control cluster
+  to the right with a `Spacer()` (its leading edge then moves per row) — that is
+  the anti-pattern the component replaces.
+- **Ports:** accounts rows (`AccountRowView`), per-harness defaults header
+  (`HarnessDefaultsRow`, via the `leading:` escape hatch for its chip), and the
+  doctor/readiness check rows (`HarnessReadinessCard`) are all built on
+  `AlignedListRow`. `OptionRow` (a fixed-width label column + one trailing
+  control) remains the shared component for simple label/value rows.
 
 ---
 

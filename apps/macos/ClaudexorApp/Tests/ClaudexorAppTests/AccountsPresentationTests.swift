@@ -91,7 +91,7 @@ import Testing
     @Test func cliLoginRowDefaultsEnabledWithoutProjectionAndIsNotDeletable() throws {
         // The native vendor login is a symmetric row: never a credential profile
         // (so never Claudexor's to delete). With no V11b projection present it
-        // defaults to enabled, and serverActive is nil (client-fallback path).
+        // defaults to enabled, and nextUp is false (client-fallback path).
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         model.liveHarnesses = [HarnessInfo(
             family: .claude, health: .ok, version: "1", auth: "session ready",
@@ -102,15 +102,16 @@ import Testing
         ]
         let row = try #require(AccountsPresentation.rows(model: model).first { $0.isCliLogin })
         #expect(row.enabled)
-        #expect(row.serverActive == nil)
+        #expect(row.nextUp == false)
         #expect(!row.isProfile)
         #expect(row.profileId == nil)
     }
 
     @MainActor
-    @Test func activeMarkerAndCliEnabledBindToServerProjection() throws {
-        // V11b: the Active marker and the CLI-login Enabled state come from the
-        // server accounts projection, not client-derived pin state.
+    @Test func nextUpProfileAndCliEnabledBindToServerProjection() throws {
+        // F1 engine cut: the informational next-up hint and the CLI-login Enabled
+        // state come from the server accounts projection (`next_up`), not client
+        // pin state — and there is no user-settable Active any more.
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         model.liveHarnesses = [HarnessInfo(
             family: .claude, health: .ok, version: "1", auth: "session ready",
@@ -129,26 +130,26 @@ import Testing
         """
         model.credentialProfiles = try JSONDecoder().decode(
             [CredentialProfileEntry].self, from: Data(profilesJSON.utf8))
-        // Projection: profile "work" is Active; the native login is DISABLED.
+        // Projection: routing would pick "work" next; the native login is DISABLED.
         let accountsJSON = """
-        [{"harness_id":"claude","active_profile_id":"work","native_credentials_enabled":false,
-          "native_login_detected":true,"active_identity":{"kind":"profile","profileId":"work"}}]
+        [{"harness_id":"claude","native_credentials_enabled":false,
+          "native_login_detected":true,"next_up":{"kind":"profile","profileId":"work"}}]
         """
         model.harnessAccounts = try JSONDecoder().decode(
             [HarnessAccounts].self, from: Data(accountsJSON.utf8))
 
         let rows = AccountsPresentation.rows(model: model)
         let cli = try #require(rows.first { $0.isCliLogin })
-        #expect(cli.enabled == false)          // driven by native_credentials_enabled
-        #expect(cli.serverActive == false)     // a profile is Active, not the native login
+        #expect(cli.enabled == false)     // driven by native_credentials_enabled
+        #expect(cli.nextUp == false)      // a profile is next up, not the native login
         let work = try #require(rows.first { $0.profileId == "work" })
-        #expect(work.serverActive == true)
+        #expect(work.nextUp == true)
         let spare = try #require(rows.first { $0.profileId == "spare" })
-        #expect(spare.serverActive == false)
+        #expect(spare.nextUp == false)
     }
 
     @MainActor
-    @Test func nativeActiveIdentityMarksTheCliLoginRowActive() throws {
+    @Test func nativeNextUpMarksTheCliLoginRow() throws {
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         model.liveHarnesses = [HarnessInfo(
             family: .claude, health: .ok, version: "1", auth: "session ready",
@@ -164,10 +165,10 @@ import Testing
         """
         model.credentialProfiles = try JSONDecoder().decode(
             [CredentialProfileEntry].self, from: Data(profilesJSON.utf8))
-        // Projection: no Active profile — the native/CLI login is Active.
+        // Projection: routing would pick the native/CLI login next.
         let accountsJSON = """
-        [{"harness_id":"claude","active_profile_id":null,"native_credentials_enabled":true,
-          "native_login_detected":true,"active_identity":{"kind":"native"}}]
+        [{"harness_id":"claude","native_credentials_enabled":true,
+          "native_login_detected":true,"next_up":{"kind":"native"}}]
         """
         model.harnessAccounts = try JSONDecoder().decode(
             [HarnessAccounts].self, from: Data(accountsJSON.utf8))
@@ -175,23 +176,39 @@ import Testing
         let rows = AccountsPresentation.rows(model: model)
         let cli = try #require(rows.first { $0.isCliLogin })
         #expect(cli.enabled == true)
-        #expect(cli.serverActive == true)
+        #expect(cli.nextUp == true)
         let work = try #require(rows.first { $0.profileId == "work" })
-        #expect(work.serverActive == false)
-    }
-
-    @Test func activeMarkerDegradesWhenNotReady() {
-        // M9-UX item 1: the Active marker never reads as operational when the
-        // identity is not green — it gains a plain verbal qualifier.
-        #expect(AccountsPresentation.activeMarkerLabel(readiness: .ready) == "Active")
-        #expect(AccountsPresentation.activeMarkerLabel(readiness: .unknown) == "Active · unverified")
-        #expect(AccountsPresentation.activeMarkerLabel(readiness: .unavailable) == "Active · not logged in")
+        #expect(work.nextUp == false)
     }
 
     @MainActor
-    @Test func composerAccountSegmentFollowsPinThenActiveDefault() throws {
-        // M9-UX item 2: the composer chip's account segment shows the thread's
-        // pinned account, else the harness's server-computed Active default.
+    @Test func accountRowColumnSetIsStableAcrossRowKinds() throws {
+        // §1 presentation contract: every row kind emits the SAME ordered trailing
+        // column set, which is exactly what keeps the Enabled toggle collinear.
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        model.liveHarnesses = [HarnessInfo(
+            family: .claude, health: .ok, version: "1", auth: "session ready",
+            intents: ["implement"])]
+        model.exactAuthSources[.claude] = [
+            .nativeSession: HarnessAuthSource(
+                source: "native_session", availability: "available", verification: "passed"),
+        ]
+        model.credentialProfiles = try JSONDecoder().decode([CredentialProfileEntry].self, from: Data("""
+        [{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
+          "credential_kind":"config_dir_login","enabled":true},
+          "status":{"availability":"available","verification":"passed","detail":null,"last_verified_at":null}}]
+        """.utf8))
+        let rows = AccountsPresentation.rows(model: model)
+        let cli = try #require(rows.first { $0.isCliLogin })
+        let profile = try #require(rows.first { $0.isProfile })
+        #expect(AccountsPresentation.columns(for: cli) == AccountsPresentation.columns(for: profile))
+        #expect(AccountsPresentation.columns(for: cli) == [.enabled, .manage, .delete])
+    }
+
+    @MainActor
+    @Test func composerAccountSegmentFollowsPinThenNextUpDefault() throws {
+        // The composer chip's account segment shows the thread's pinned account,
+        // else the harness's server-computed next-up default.
         let model = AppModel(client: nil, requestNotificationAuthorization: false)
         let profilesJSON = """
         [{"profile":{"profile_id":"work","harness_id":"claude","display_name":"Work",
@@ -207,10 +224,10 @@ import Testing
         #expect(seg.pinned == false)
         #expect(seg.label == "Default")
 
-        // Projection: the native CLI login is Active.
+        // Projection: the native CLI login is next up.
         model.harnessAccounts = try JSONDecoder().decode([HarnessAccounts].self, from: Data("""
-        [{"harness_id":"claude","active_profile_id":null,"native_credentials_enabled":true,
-          "native_login_detected":true,"active_identity":{"kind":"native"}}]
+        [{"harness_id":"claude","native_credentials_enabled":true,
+          "native_login_detected":true,"next_up":{"kind":"native"}}]
         """.utf8))
         seg = AccountsPresentation.composerAccountSegment(
             model: model, harnessId: "claude", pinnedProfileId: nil)

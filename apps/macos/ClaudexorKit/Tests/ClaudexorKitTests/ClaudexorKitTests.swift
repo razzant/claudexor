@@ -136,6 +136,64 @@ import Testing
         #expect(harnessEffort.effort == "deep")
     }
 
+    // MARK: - Structured-editor → wire-token mapping (UI cut 3, §3)
+
+    @Test func reviewerPickerStateBuildsWireToken() throws {
+        // Full grammar: harness=model:effort.
+        #expect(ComposerOptionParser.reviewerWireToken(
+            harness: "claude", model: "opus", effort: "max") == "claude=opus:max")
+        // Model only.
+        #expect(ComposerOptionParser.reviewerWireToken(
+            harness: "cursor", model: "openai/gpt-5.5", effort: nil) == "cursor=openai/gpt-5.5")
+        // Effort only (no model).
+        #expect(ComposerOptionParser.reviewerWireToken(
+            harness: "claude", model: nil, effort: "high") == "claude:high")
+        // Bare harness.
+        #expect(ComposerOptionParser.reviewerWireToken(
+            harness: "codex", model: "", effort: "") == "codex")
+        // Empty harness ⇒ incomplete row contributes nothing.
+        #expect(ComposerOptionParser.reviewerWireToken(
+            harness: "  ", model: "opus", effort: "max") == nil)
+    }
+
+    @Test func reviewerWireTokenRoundTripsThroughParse() throws {
+        // Picker → token → parse must reproduce the structured entry, so the raw
+        // power field prefilled from the picker parses identically.
+        let token = try #require(ComposerOptionParser.reviewerWireToken(
+            harness: "claude", model: "opus", effort: "max"))
+        let entry = try #require(ComposerOptionParser.parseReviewerPanelEntry(
+            token, effortLevels: ["max"]))
+        #expect(entry.harness == "claude")
+        #expect(entry.model == "opus")
+        #expect(entry.effort == "max")
+        #expect(ComposerOptionParser.reviewerWireToken(entry) == "claude=opus:max")
+
+        #expect(ComposerOptionParser.joinReviewerTokens([
+            ReviewerPanelEntry(harness: "claude", model: "opus", effort: "max"),
+            ReviewerPanelEntry(harness: "codex"),
+        ]) == "claude=opus:max, codex")
+    }
+
+    @Test func approvalListEditorBuildsEntries() throws {
+        #expect(ComposerOptionParser.protectedApprovalWireToken(
+            path: "test/**", reason: "test update") == "test/**:test update")
+        #expect(ComposerOptionParser.protectedApprovalWireToken(
+            path: "docs/**", reason: nil) == "docs/**")
+        #expect(ComposerOptionParser.protectedApprovalWireToken(
+            path: "  ", reason: "x") == nil)
+
+        let token = try #require(ComposerOptionParser.protectedApprovalWireToken(
+            path: "test/**", reason: "test update"))
+        let approval = try #require(ComposerOptionParser.parseProtectedPathApproval(token))
+        #expect(approval.path == "test/**")
+        #expect(approval.reason == "test update")
+
+        #expect(ComposerOptionParser.joinApprovalTokens([
+            ProtectedPathApproval(path: "test/**", reason: "test update"),
+            ProtectedPathApproval(path: "docs/**"),
+        ]) == "test/**:test update, docs/**")
+    }
+
     @Test func settingsUpdateEncodesRoutingAndTaggedBudget() throws {
         let req = SettingsUpdateRequest(
             routingGoal: "economy",
@@ -1833,9 +1891,9 @@ import Testing
              "status":{"availability":"unknown","verification":"not_run","detail":null,"last_verified_at":null}}
           ],
           "harnessAccounts": [
-            {"harness_id":"claude","active_profile_id":"work","native_credentials_enabled":true,"native_login_detected":true,"active_identity":{"kind":"profile","profileId":"work"}},
-            {"harness_id":"codex","active_profile_id":null,"native_credentials_enabled":false,"native_login_detected":false,"active_identity":{"kind":"none","reason":"CLI login disabled"}},
-            {"harness_id":"cursor","active_profile_id":null,"native_credentials_enabled":true,"native_login_detected":true,"active_identity":{"kind":"native"}}
+            {"harness_id":"claude","native_credentials_enabled":true,"native_login_detected":true,"next_up":{"kind":"profile","profileId":"work"}},
+            {"harness_id":"codex","native_credentials_enabled":false,"native_login_detected":false,"next_up":{"kind":"none","reason":"CLI login disabled"}},
+            {"harness_id":"cursor","native_credentials_enabled":true,"native_login_detected":true,"next_up":{"kind":"native"}}
           ]
         }
         """#
@@ -1845,23 +1903,22 @@ import Testing
         #expect(response.harnessAccounts.count == 3)
 
         let claude = response.harnessAccounts.first { $0.harnessId == "claude" }
-        #expect(claude?.activeProfileId == "work")
         #expect(claude?.nativeCredentialsEnabled == true)
-        #expect(claude?.activeIdentity.isProfile("work") == true)
-        #expect(claude?.activeIdentity.isProfile("spare") == false)
-        #expect(claude?.activeIdentity.isNative == false)
+        #expect(claude?.nextUp.isProfile("work") == true)
+        #expect(claude?.nextUp.isProfile("spare") == false)
+        #expect(claude?.nextUp.isNative == false)
 
         let codex = response.harnessAccounts.first { $0.harnessId == "codex" }
         #expect(codex?.nativeCredentialsEnabled == false)
         #expect(codex?.nativeLoginDetected == false)
-        if case .some(.none(let reason)) = codex?.activeIdentity {
+        if case .some(.none(let reason)) = codex?.nextUp {
             #expect(reason == "CLI login disabled")
         } else {
-            Issue.record("expected codex active identity to be .none")
+            Issue.record("expected codex next-up identity to be .none")
         }
 
         let cursor = response.harnessAccounts.first { $0.harnessId == "cursor" }
-        #expect(cursor?.activeIdentity.isNative == true)
+        #expect(cursor?.nextUp.isNative == true)
     }
 
     @Test func credentialProfilesResponseDefaultsHarnessAccountsWhenAbsent() throws {

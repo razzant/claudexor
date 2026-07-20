@@ -47,15 +47,18 @@ public struct CredentialProfileEntry: Codable, Sendable, Identifiable, Equatable
     public var id: String { "\(profile.harnessId)/\(profile.profileId)" }
 }
 
-/// Server-computed Active identity for a harness's accounts (INV-135 / V11b):
-/// which account a new run/turn defaults to. A discriminated union on `kind` —
-/// no surface re-derives the symmetry.
-public enum ControlActiveIdentity: Decodable, Sendable, Equatable {
-    /// An enabled credential profile is the harness's Active account.
+/// Server-computed NEXT-UP identity for a harness's accounts (INV-135, F1
+/// engine cut): the identity an UNPINNED run/turn would route to next, computed
+/// from enabled + readiness + quota. INFORMATIONAL only — the engine deleted
+/// user-settable Active; the Enabled toggle is the only routing control, and a
+/// per-thread pin overrides. A discriminated union on `kind`; no surface
+/// re-derives the symmetry.
+public enum ControlNextUpIdentity: Decodable, Sendable, Equatable {
+    /// An enabled credential profile is who an unpinned run routes to next.
     case profile(profileId: String)
-    /// The native/CLI login is Active (no Active profile pinned).
+    /// The native/CLI login is the next-up subject of an unpinned run.
     case native
-    /// Nothing is routable (no Active profile and the CLI login is disabled).
+    /// An unpinned run has nothing routable (CLI login disabled, nothing pinned).
     case none(reason: String)
 
     enum CodingKeys: String, CodingKey { case kind, profileId, reason }
@@ -69,39 +72,39 @@ public enum ControlActiveIdentity: Decodable, Sendable, Equatable {
         case let other:
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
-                debugDescription: "Unknown active-identity kind '\(other)'"))
+                debugDescription: "Unknown next-up-identity kind '\(other)'"))
         }
     }
 
-    /// True when the native/CLI login is the Active identity.
+    /// True when the native/CLI login is the next-up identity.
     public var isNative: Bool { if case .native = self { return true }; return false }
-    /// True when `id` is the Active credential profile.
+    /// True when `id` is the next-up credential profile.
     public func isProfile(_ id: String) -> Bool {
         if case .profile(let profileId) = self { return profileId == id }
         return false
     }
 }
 
-/// Per-harness ACCOUNTS AUTHORITY projection (INV-135 / V11b): the native
-/// "CLI login" pseudo-row state and which identity is Active, computed ONCE on
-/// the server so no client re-derives the symmetry. Rides RAW schema field
-/// names (snake_case).
+/// Per-harness ACCOUNTS AUTHORITY projection (INV-135, F1 engine cut): the
+/// native "CLI login" pseudo-row state and the server-computed next-up identity,
+/// computed ONCE on the server so no client re-derives the symmetry. The engine
+/// DELETED user-settable Active — there is no `active_profile_id`; `next_up` is
+/// informational (what routing would pick). Rides RAW schema field names
+/// (snake_case).
 public struct HarnessAccounts: Decodable, Sendable, Equatable {
     public let harnessId: String
-    /// Configured Active credential profile id; nil = the native/CLI login.
-    public let activeProfileId: String?
     /// Whether the native/CLI login participates in this harness's ladder.
     public let nativeCredentialsEnabled: Bool
     /// Whether a native/default vendor login is currently detected available.
     public let nativeLoginDetected: Bool
-    public let activeIdentity: ControlActiveIdentity
+    /// The identity an unpinned run would route to next (informational).
+    public let nextUp: ControlNextUpIdentity
 
     enum CodingKeys: String, CodingKey {
         case harnessId = "harness_id"
-        case activeProfileId = "active_profile_id"
         case nativeCredentialsEnabled = "native_credentials_enabled"
         case nativeLoginDetected = "native_login_detected"
-        case activeIdentity = "active_identity"
+        case nextUp = "next_up"
     }
 }
 

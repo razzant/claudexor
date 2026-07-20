@@ -69,16 +69,26 @@ struct HarnessDefaultsRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-            HStack(spacing: Theme.Spacing.sm) {
-                HarnessChip(family: family, selected: enabled, available: true)
-                Spacer(minLength: Theme.Spacing.md)
-                statusLabel
-                Toggle("Enabled", isOn: $enabled)
-                    .toggleStyle(.switch).tint(Theme.accent)
-                    .labelsHidden()
-                    .help("Disabled harnesses are excluded from routing and pools.")
-                    // A toggle commits immediately — no need to debounce a discrete flip.
-                    .onChange(of: enabled) { _, _ in scheduleSave(immediate: true) }
+            // Header is a control row on the shared AlignedListRow component
+            // (UI cut 3 §1): the leading is the HarnessChip (not a dot+title
+            // identity, so it uses the `leading:` escape hatch); the status label
+            // and the Enabled toggle are trailing Grid columns, so the toggle
+            // stays collinear across every harness card and a long status can
+            // never shove it around.
+            AlignedList {
+                AlignedListRow {
+                    HarnessChip(family: family, selected: enabled, available: true)
+                } controls: {
+                    statusLabel
+                        .alignedControlColumn(minWidth: 60, alignment: .trailing)
+                    Toggle("Enabled", isOn: $enabled)
+                        .toggleStyle(.switch).tint(Theme.accent)
+                        .labelsHidden()
+                        .help("Disabled harnesses are excluded from routing and pools.")
+                        // A toggle commits immediately — no debounce for a discrete flip.
+                        .onChange(of: enabled) { _, _ in scheduleSave(immediate: true) }
+                        .alignedControlColumn(minWidth: 40, alignment: .trailing)
+                }
             }
             HStack(spacing: Theme.Spacing.sm) {
                 // Settings default-model enumeration stays UNfiltered: the

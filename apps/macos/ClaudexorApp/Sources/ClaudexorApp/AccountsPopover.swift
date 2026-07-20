@@ -304,14 +304,6 @@ struct AccountsSurface: View {
         }
     }
 
-    /// The Active marker (M9-UX item 2): the GLOBAL routing default per harness —
-    /// the account a new run picks. V11b: the SERVER computes the Active identity
-    /// from `active_profile_id`, so the marker binds to that projection verbatim.
-    /// The popover is the global surface; the per-thread override lives on the
-    /// composer's Harness+Account chip. A pre-V11b daemon (no projection) shows no
-    /// Active marker rather than faking one.
-    private func isActive(_ row: AccountRowModel) -> Bool { row.serverActive ?? false }
-
     /// The Enabled-toggle action for a row (V11b — LIVE). A profile row PATCHes
     /// its own `enabled`; the CLI-login row drives the harness's
     /// `native_credentials_enabled` via the settings surface. Both reload the
@@ -330,53 +322,33 @@ struct AccountsSurface: View {
         }
     }
 
-    /// The "Make active" action for a row, or nil when it is already active /
-    /// cannot become the routing default (M9-UX item 2). Sets the harness's
-    /// GLOBAL `active_profile_id` via the settings PATCH — a verified+enabled
-    /// profile becomes Active; the CLI login clears the Active profile back to the
-    /// native login. This is the global level; per-thread pinning is the
-    /// composer's job. No V11b projection ⇒ no affordance (nothing to target).
-    private func makeActiveAction(_ row: AccountRowModel) -> (() -> Void)? {
-        guard row.serverActive != nil, !isActive(row) else { return nil }
-        if row.isProfile {
-            // Only a verified, enabled profile can be the routing default.
-            guard row.verified, row.enabled else { return nil }
-            return {
-                Task { await model.setHarnessActiveProfile(harnessId: row.harnessId, profileId: row.profileId) }
-            }
-        }
-        // CLI-login row: clear the Active profile → the native login is Active.
-        return { Task { await model.setHarnessActiveProfile(harnessId: row.harnessId, profileId: nil) } }
-    }
-
     private var accountsList: some View {
-        // ONE shared Grid (owner F8): every AccountRowView is a GridRow, so the
-        // trailing controls are real columns whose edges are shared across ALL
-        // rows — the Enabled toggle is collinear regardless of per-row content
-        // (Manage+Active vs Manage+Make active+trash). A per-row fixed-width HStack
-        // could still drift if any cell overflowed; the Grid can't.
-        Grid(alignment: .top, horizontalSpacing: Theme.Spacing.sm, verticalSpacing: Theme.Spacing.sm) {
+        // ONE shared Grid, owned by AlignedList (owner F8 / §2.8): every
+        // AccountRowView is an AlignedListRow (a GridRow), so the trailing
+        // controls are real columns whose edges are shared across ALL rows — the
+        // Enabled toggle stays collinear regardless of per-row content (a profile
+        // carries a trash where the CLI-login row reserves a clear spacer). The
+        // identity cell's single-line discipline lives in the component, so a long
+        // quota/detail line can never wrap into fragments that flow around the
+        // trailing columns (the owner-round-3 bug).
+        AlignedList {
             if rows.isEmpty {
-                Label("No accounts yet — add one below.", systemImage: "person.crop.circle.badge.plus")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .gridCellColumns(5)
+                GridRow {
+                    Label("No accounts yet — add one below.", systemImage: "person.crop.circle.badge.plus")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .gridCellColumns(AccountsPresentation.AccountRowColumn.allCases.count + 1)
+                }
             } else {
                 ForEach(rows) { row in
                     AccountRowView(
                         row: row,
                         login: { login(row) },
                         loginDisabled: loginDisabled(row),
-                        active: isActive(row),
-                        // V11b: the Enabled toggle is LIVE — a profile row PATCHes
-                        // its own `enabled`; the CLI-login row drives the harness's
-                        // `native_credentials_enabled` via the settings surface.
+                        // V11b: the Enabled toggle is the ONLY routing control — a
+                        // profile row PATCHes its own `enabled`; the CLI-login row
+                        // drives the harness's `native_credentials_enabled`.
                         setEnabled: enabledAction(row),
-                        // "Make active" sets the harness's GLOBAL routing default
-                        // (wire-backed settings PATCH of active_profile_id). Offered
-                        // for a verified+enabled profile, and for the CLI login (clear
-                        // the Active profile back to the native login).
-                        makeActive: makeActiveAction(row),
                         delete: row.isProfile && !deleting ? { pendingDelete = row } : nil
                     )
                 }
@@ -449,7 +421,7 @@ struct AccountsSurface: View {
             detail: nil,
             quotaGroups: [],
             enabled: true,
-            serverActive: nil
+            nextUp: false
         ))
     }
 

@@ -153,33 +153,17 @@ extension ThreadsScreen {
             // logins, quotas, and the auto-balance toggle all live in the
             // bottom-left accounts popover now. Runs use the default account
             // unless engine auto-balance rotates at a quota limit.
+            // Review controls (owner round-3): Reviewers + Approvals moved under
+            // a collapsed "Advanced" DisclosureGroup with a structured reviewer
+            // picker + an approvals list editor (ComposerReviewControls). They
+            // bind to the same SSOT strings the send path reads.
             OptionSection(title: "Review controls") {
-                OptionRow(label: "Reviewers") {
-                    HStack(spacing: Theme.Spacing.xs) {
-                        TextField("claude=opus:max", text: $reviewerPanelText)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.caption, design: .monospaced))
-                            .help("Comma or newline entries: harness[=model[:effort]] or harness[:effort]")
-                        if reviewerPanelInvalid {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange).font(.caption)
-                                .help("Reviewer entries need harness[=model[:effort]] or harness[:effort]; supported effort values come from each harness manifest.")
-                        }
-                    }
-                }
-                OptionRow(label: "Approvals") {
-                    HStack(spacing: Theme.Spacing.xs) {
-                        TextField("test/**:test update", text: $protectedApprovalsText)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.caption, design: .monospaced))
-                            .help("Comma or newline entries: path[:reason]")
-                        if protectedApprovalsInvalid {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange).font(.caption)
-                                .help("Protected path approvals need a non-empty path")
-                        }
-                    }
-                }
+                AdvancedReviewControls(
+                    reviewerText: $reviewerPanelText,
+                    approvalsText: $protectedApprovalsText,
+                    harnessChoices: poolFamilies,
+                    effortLevels: composerEffortLevels,
+                    reviewerRawInvalid: reviewerPanelInvalid)
             }
             // Agent-driven browser (Playwright MCP). Offered only where a pooled
             // harness can inject it. Arming it forces Full access (codex's sandbox
