@@ -9,7 +9,11 @@ Release history for Claudexor. The current version is declared in the root
   and a quarantined process refuses the plist-less bundle `swift build` emits.
   Fixed twice over: the dev-only Dock icon is now resolved by plain file path
   (no `Bundle.module`, cosmetic degrade instead of crash), and `build-app.sh`
-  writes a minimal `Info.plist` into the resource bundle. Workaround on 3.0.0:
+  writes a minimal `Info.plist` into the resource bundle. If you downloaded
+  3.0.0: upgrade to this DMG — that is the fix. Only if you must stay on
+  3.0.0, first verify the app is the untampered notarized original
+  (`spctl -a -vv /Applications/Claudexor.app` must say `Notarized Developer
+  ID`), then drop its quarantine flag:
   `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
 
 - **v3.0.0** (2026-07-20) — the chat-first control plane, rebuilt on honest

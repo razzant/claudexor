@@ -89,6 +89,14 @@ cat > "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Deterministic packaging assertion: the plist must parse and carry the
+# identifier — a malformed or dropped plist would silently reopen the
+# quarantined-launch crash surface this file exists to close.
+/usr/bin/plutil -lint -s "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" \
+  || { echo "ERROR: resource bundle Info.plist failed plutil lint" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+  "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" >/dev/null \
+  || { echo "ERROR: resource bundle Info.plist missing CFBundleIdentifier" >&2; exit 1; }
 
 # Info.plist with version substitution.
 sed -e "s/__CLAUDEXOR_VERSION__/$VERSION/" -e "s/__CLAUDEXOR_BUILD__/$BUILD/" \

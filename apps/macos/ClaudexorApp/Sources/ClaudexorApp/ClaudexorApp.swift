@@ -71,8 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Covers both layouts: the wrapped .app (Contents/Resources/<bundle>) and the bare
     /// `swift run` executable (bundle next to the binary).
     static var devIconURL: URL? {
+        devIconURL(bases: [Bundle.main.resourceURL, Bundle.main.bundleURL])
+    }
+
+    static func devIconURL(bases: [URL?]) -> URL? {
         let bundleName = "ClaudexorApp_ClaudexorApp.bundle"
-        let bases = [Bundle.main.resourceURL, Bundle.main.bundleURL]
         for base in bases {
             guard let base else { continue }
             let candidate = base.appendingPathComponent(bundleName).appendingPathComponent("AppIcon.png")
