@@ -68,6 +68,12 @@ cp "$BIN" "$APP/Contents/MacOS/ClaudexorApp"
 # "unsealed contents present in the bundle root" (files outside Contents/),
 # which is exactly what a root-level copy produced on the first signed build.
 SPM_BUNDLE_NAME="ClaudexorApp_ClaudexorApp.bundle"
+# The same literal is hardcoded in AppDelegate.devIconURL (Bundle.module is
+# banned on the launch path since the 3.0.0 quarantine crash). A SwiftPM
+# target rename would fail here loudly but only silently drop the dev icon
+# in Swift — tie the two constants together at build time.
+grep -q "$SPM_BUNDLE_NAME" "$APP_PKG/Sources/ClaudexorApp/ClaudexorApp.swift" \
+  || { echo "ERROR: $SPM_BUNDLE_NAME not referenced by ClaudexorApp.swift devIconURL — the two hardcoded bundle names diverged" >&2; exit 1; }
 SPM_BUNDLE="$APP_PKG/.build/release/$SPM_BUNDLE_NAME"
 [ -d "$SPM_BUNDLE" ] || { echo "ERROR: SwiftPM resource bundle missing at $SPM_BUNDLE" >&2; exit 1; }
 /usr/bin/ditto "$SPM_BUNDLE" "$APP/Contents/Resources/$SPM_BUNDLE_NAME"

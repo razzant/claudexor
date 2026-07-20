@@ -7,16 +7,21 @@ Release history for Claudexor. The current version is declared in the root
   at launch (EXC_BREAKPOINT in `applicationDidFinishLaunching`). The SwiftPM
   `Bundle.module` accessor fatalErrors when the resource bundle fails to load,
   and a quarantined process refuses the plist-less bundle `swift build` emits.
-  Fixed twice over: the dev-only Dock icon is now resolved by plain file path
-  (no `Bundle.module`, cosmetic degrade instead of crash), and `build-app.sh`
-  writes a minimal `Info.plist` into the resource bundle. If you downloaded
-  3.0.0: upgrade to this DMG — that is the fix. Only if you must stay on
-  3.0.0, first verify the app is the exact official artifact:
+  Fixed twice over: the Dock-icon override (essential for the bare dev
+  executable, harmlessly re-applied by the packaged app) is now resolved by
+  plain file path (no `Bundle.module`, cosmetic degrade instead of crash),
+  and `build-app.sh` writes a minimal `Info.plist` into the resource bundle.
+  If you downloaded 3.0.0: upgrade to this DMG — that is the fix. Only if
+  you must stay on 3.0.0, first verify you have an intact app signed by the
+  official Claudexor Developer ID:
   `spctl -a -vv /Applications/Claudexor.app` must report `Notarized
   Developer ID` AND `origin=Developer ID Application: Andrei Kaznacheev
   (N7RDVVZ7LA)` — a generic notarization line alone proves only that
-  *some* notarized app sits at that path. Only then drop the quarantine
-  flag: `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
+  *some* notarized app sits at that path. (Signer identity proves an intact
+  official build, not byte-identity with the published artifact; for that,
+  check the downloaded DMG against `SHA256SUMS` on the release page.) Only
+  then drop the quarantine flag:
+  `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
 
 - **v3.0.0** (2026-07-20) — the chat-first control plane, rebuilt on honest
   server truth. This is a breaking major: a fresh `~/.claudexor/v3/` data root
