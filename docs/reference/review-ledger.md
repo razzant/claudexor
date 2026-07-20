@@ -19,24 +19,24 @@ Dispositions:
 
 | release | wave | reviewer | item | finding (short) | disposition | reference |
 | ------- | ---- | -------- | ---- | --------------- | ----------- | --------- |
-| 3.0.0 | 1 | sol, critic-engine | B1 | delegation-belt budget: spendUsd had no producer, no reservation at grant (parallel bypass), descriptor from raw not resolved budget | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | sol, critic-surfaces | B2 | runtime updater: install() had zero call sites, no daemon stop/swap/start, first-install strands current.json, tar extraction unsanitized | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | critic-surfaces | B3 | root CHANGELOG.md had no v3.0.0 entry so the publish leg throws | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | immune-scan | B4 | docs-truth sweep: v2-root refs, README active_profile_id, DEVELOPMENT five-pipelines, ARCHITECTURE spec/audit, Bible INV-113/INV-125 wording | fixed | wave-1 batch fix; CONCEPT-CHANGE INV-113, INV-125 |
-| 3.0.0 | 1 | fable-scope | B5 | ACP question forms (D14): option-less mid-run questions silently skipped; multi collapses to one | fixed | wave-1 batch fix; docs/FEATURES.md acp/interactions |
-| 3.0.0 | 1 | critic-surfaces | B6 | macOS live bugs: Open Daemon Log v2 path, phase from payload.status not lifecycle, dead ReviewVerdict.ungated + RunMode explore/orchestrate, stale account help | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | fable-scope | B7 | markRunApplyState writes only delivery_state.yaml but the summary fingerprint missed it, so RunDetail went stale after apply | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | sol | B8 | owner attestation validated structural floors but not the exact triad+scope panel; bind panel slot digests | fixed | wave-1 batch fix; CONCEPT-CHANGE INV-125 |
-| 3.0.0 | 1 | owner-live | B9 | F1 removal left retired active_profile_id keys in existing v3 config.yaml — strict parse bricked accounts; forward sweep strips known-retired keys with disclosure | fixed | wave-1 batch fix (RETIRED_CONFIG_KEYS, packages/config) |
-| 3.0.0 | 1 | sol | A1 | resolveContinuity catch-all swallowed packet-build failures silently | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | critic-surfaces | A2 | CI/release workflows missing pnpm inv:check + fixtures:swift:check | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | fable | A3 | thread-select needed realpath-normalized repoRoot comparison | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | fable | A4 | codex native-home override lacked the containment guard claude has | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | fable-scope | A5 | engineBuildIdentity reported a wrong git sha from an installed copy inside an unrelated repo | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | fable-scope | A6 | prunableCommandIds pruned needs-decision runs, losing operator visibility parity with old blocked retention | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | fable-scope | A7 | deriveApplyEligibility legacy-vocab arm alignment | fixed | wave-1 batch fix (verified already on the v3 review/checks axes) |
-| 3.0.0 | 1 | fable | A8 | composer seeded Workspace write instead of the repo trust access_default | fixed | wave-1 batch fix |
-| 3.0.0 | 1 | adjudication | A9 | canary needed a typed operator-decision golden story (replacing old INV-111) | fixed | wave-1 batch fix (packages/canary golden.story.ts INV-116 blockers-visible) |
+| 3.0.0 | 1 | sol, critic-engine | B1 | delegation-belt budget: spendUsd had no producer, no reservation at grant (parallel bypass), descriptor from raw not resolved budget | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | sol, critic-surfaces | B2 | runtime updater: install() had zero call sites, no daemon stop/swap/start, first-install strands current.json, tar extraction unsanitized | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | critic-surfaces | B3 | root CHANGELOG.md had no v3.0.0 entry so the publish leg throws | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | immune-scan | B4 | docs-truth sweep: v2-root refs, README active_profile_id, DEVELOPMENT five-pipelines, ARCHITECTURE spec/audit, Bible INV-113/INV-125 wording | fixed | wave-1 batch fix 262070d5; CONCEPT-CHANGE INV-113, INV-125 |
+| 3.0.0 | 1 | fable-scope | B5 | ACP question forms (D14): option-less mid-run questions silently skipped; multi collapses to one | fixed | wave-1 batch fix 262070d5; docs/FEATURES.md acp/interactions |
+| 3.0.0 | 1 | critic-surfaces | B6 | macOS live bugs: Open Daemon Log v2 path, phase from payload.status not lifecycle, dead ReviewVerdict.ungated + RunMode explore/orchestrate, stale account help | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | fable-scope | B7 | markRunApplyState writes only delivery_state.yaml but the summary fingerprint missed it, so RunDetail went stale after apply | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | sol | B8 | owner attestation validated structural floors but not the exact triad+scope panel; bind panel slot digests | fixed | wave-1 batch fix 262070d5; CONCEPT-CHANGE INV-125 |
+| 3.0.0 | 1 | owner-live | B9 | F1 removal left retired active_profile_id keys in existing v3 config.yaml — strict parse bricked accounts; forward sweep strips known-retired keys with disclosure | fixed | wave-1 batch fix 262070d5 (RETIRED_CONFIG_KEYS, packages/config) |
+| 3.0.0 | 1 | sol | A1 | resolveContinuity catch-all swallowed packet-build failures silently | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | critic-surfaces | A2 | CI/release workflows missing pnpm inv:check + fixtures:swift:check | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | fable | A3 | thread-select needed realpath-normalized repoRoot comparison | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | fable | A4 | codex native-home override lacked the containment guard claude has | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | fable-scope | A5 | engineBuildIdentity reported a wrong git sha from an installed copy inside an unrelated repo | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | fable-scope | A6 | prunableCommandIds pruned needs-decision runs, losing operator visibility parity with old blocked retention | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | fable-scope | A7 | deriveApplyEligibility legacy-vocab arm alignment | fixed | wave-1 batch fix 262070d5 (verified already on the v3 review/checks axes) |
+| 3.0.0 | 1 | fable | A8 | composer seeded Workspace write instead of the repo trust access_default | fixed | wave-1 batch fix 262070d5 |
+| 3.0.0 | 1 | adjudication | A9 | canary needed a typed operator-decision golden story (replacing old INV-111) | fixed | wave-1 batch fix 262070d5 (packages/canary golden.story.ts INV-116 blockers-visible) |
 | 3.0.0 | 1 | fable | D-a | belt caps enforceable-in-sandbox: env vars are not a hard boundary | declined | design: only a delegate=true parent gets a belt; sub-runs get none (parent-side structural guard is the authority; env is defense-in-depth) |
 | 3.0.0 | 1 | fable-scope | D-b | GET /threads needs-decision derivation perf | backlog | docs/BACKLOG.md v3.0.0 wave 1 deferrals |
 | 3.0.0 | 1 | fable | D-c | council parallel continuity disclosure is last-wins | backlog | docs/BACKLOG.md v3.0.0 wave 1 deferrals |
@@ -67,11 +67,11 @@ Dispositions:
 | 3.0.0 | confirm | sol | A4 | B6: is the .task(id: applyLoadKey) accept-risk→apply reload inert? | declined | verified working: the reload fires from the DecisionBar accept-risk closure (await model.loadRunDetail); TurnCard.run is computed from model.task(id), so the refreshed eligibility re-renders Apply — not inert |
 | 3.0.0 | confirm | sol | A5 | rollback prior-runtime edge (install rollback restores current.json on unconfirmed daemon death) | declined | moot: the entire install/rollback path is deferred to 3.1 (C1-C3 / D1), so the edge cannot occur in 3.0 |
 | 3.0.0 | confirm | sol | A6 | ARCHITECTURE cumulative-review paragraph wording | declined | verified accurate: the INV-125 owner-review protocol (≥2 independent reviewers, ≤3 rounds, any mutation invalidates + re-freezes, schemaVersion-3 attestation binding SHA/tree/gate-receipt/reviewer digests) is described correctly |
-| 3.0.0 | final | sol | doc-routing | README/DESIGN_SYSTEM overclaimed routing auto-picks next_up among all enabled accounts | fixed | final doc commit (unpinned→CLI-login default; named accounts route only via pin/quota-rotation; next_up informational) |
-| 3.0.0 | final | sol | doc-pin | README claimed a thread auto-remembers its first account | fixed | final doc commit (thread pins only an explicit composer choice) |
+| 3.0.0 | final | sol | doc-routing | README/DESIGN_SYSTEM overclaimed routing auto-picks next_up among all enabled accounts | fixed | commit dca62e41 (final doc) (unpinned→CLI-login default; named accounts route only via pin/quota-rotation; next_up informational) |
+| 3.0.0 | final | sol | doc-pin | README claimed a thread auto-remembers its first account | fixed | commit dca62e41 (final doc) (thread pins only an explicit composer choice) |
 | 3.0.0 | final | sol/fable | doc-manifest | CHANGELOG said the update reads a "signed" release manifest | fixed | signature field is reserved; reworded |
 | 3.0.0 | final | fable | swift-comments | AccountsPopover comments still said "active" account | fixed | reworded to "in-effect" |
 | 3.0.0 | final | fable | cli-check-story | CLI release-command not updated for check-only | declined | verified: CLI already says check + `npm install -g claudexor@latest`, no auto-install claim |
 | 3.0.0 | final | sol | chip-stale-avail | checkForRuntimeUpdate catch keeps prior .available | declined | a transient check failure should not erase a real prior availability; the status line discloses the failure |
 | 3.0.0 | final | sol | engine-version-src | resolvedRunningEngineVersion trusts readCurrent().version vs DaemonLauncher fallback | backlog | cosmetic version display; docs/BACKLOG.md |
-| 3.0.0 | final | fable | packet-hygiene | packet TESTS.txt carried stale counts | fixed | TESTS.txt made count-agnostic (references TEST_RESULTS.json + gate receipt) |
+| 3.0.0 | final | fable | packet-hygiene | packet TESTS.txt carried stale counts | fixed | sealed-packet evidence file (packet-src TESTS.txt), not a repo artifact — made count-agnostic |
