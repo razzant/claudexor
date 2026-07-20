@@ -115,7 +115,7 @@ before reading any review claims, then recomputes the commit tree and
 validates the attestation's payload for its schema: schemaVersion 3 (the
 current contract) binds the candidate SHA/tree, the full-gate receipt
 digest, and the panel reviewer report digests with non-blocking verdicts —
-the workflow enforces the structural floors (>=2 reviewers, <=3 rounds);
+the workflow enforces the structural floors (>=2 reviewers, <=OWNER_REVIEW_MAX_ROUNDS (10) rounds);
 the exact panel composition and wave discipline are process law in
 `docs/CHECKLISTS.md` (Release review protocol). schemaVersion 2 (the
 retired six-slot panel, still verifiable for already-sealed evidence)

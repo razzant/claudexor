@@ -75,3 +75,5 @@ Dispositions:
 | 3.0.0 | final | sol | chip-stale-avail | checkForRuntimeUpdate catch keeps prior .available | declined | a transient check failure should not erase a real prior availability; the status line discloses the failure |
 | 3.0.0 | final | sol | engine-version-src | resolvedRunningEngineVersion trusts readCurrent().version vs DaemonLauncher fallback | backlog | cosmetic version display; docs/BACKLOG.md |
 | 3.0.0 | final | fable | packet-hygiene | packet TESTS.txt carried stale counts | fixed | sealed-packet evidence file (packet-src TESTS.txt), not a repo artifact — made count-agnostic |
+| 3.0.0 | final-2 | sol | rounds-cap-relitigation | argued the 3→10 rounds-cap raise weakens the attestation floor | declined | re-litigates the recorded owner decision (owner: "повысь кап до 10 раундов"; rationale in ef996872 + ARCHITECTURE) — out of scope by the blocker contract |
+| 3.0.0 | final-2 | fable | dev-doc-rounds | docs/DEVELOPMENT.md still stated the <=3 rounds structural floor | fixed | final docs commit (DEVELOPMENT.md synced to OWNER_REVIEW_MAX_ROUNDS=10) |
