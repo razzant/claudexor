@@ -85,3 +85,23 @@ deferred; they are recorded here now.
   see `docs/FEATURES.md` row).
 - raw-API profile bootstrap when the instance key is absent (ARCHITECTURE
   Design constraint; revisit only if raw-API instances get profile demand).
+
+## v3.0.2 review wave deferrals (adjudication; ledgered `backlog`)
+
+- Q-a: claude oauth-usage refresher — a 200 response whose body parses to null
+  produces neither snapshot nor typed absence for that candidate (silent
+  subject drop; needs a changed/nonstandard vendor response, so not reachable
+  in default config today). Fix shape when shipped: push a `refresh_failed`
+  absence with a static non-secret detail ("oauth/usage response did not
+  contain valid quota windows") + a focused `{}`-response test; add a size cap
+  on the credential-file read for symmetry with the keychain leg's 1 MiB
+  maxBuffer while in there.
+- Q-b: quota sources (`claude-oauth-usage.ts`, `codex-quota-source.ts`) live in
+  `packages/cli`; relocate to a daemon/core-owned module so the CLI stays a
+  thin projection of `/v2/quota`. Structural, pre-existing; move only with
+  tests riding along.
+- Q-c: review devtool (triad-scope-review.mjs) — run retry eligibility through
+  full checklist validation BEFORE deciding a slot "responded", and persist
+  complete per-attempt telemetry for retried slots (3.0.1-r7 sol criticals,
+  re-observed in the 3.0.2 wave when the gemini slot failed its liveness floor
+  without the promised same-SHA retry).

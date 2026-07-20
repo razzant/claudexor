@@ -14,7 +14,9 @@ Release history for Claudexor. The current version is declared in the root
   `not_logged_in`; an unreadable or unparseable file is a typed
   `refresh_failed` naming only the error class. macOS behavior is unchanged;
   Codex quota was already file-store-portable. Also: README badges and an
-  author section. — hotfix: every browser-downloaded 3.0.0 DMG crashed
+  author section.
+
+- **v3.0.1** (2026-07-20) — hotfix: every browser-downloaded 3.0.0 DMG crashed
   at launch (EXC_BREAKPOINT in `applicationDidFinishLaunching`). The SwiftPM
   `Bundle.module` accessor fatalErrors when the resource bundle fails to load,
   and a quarantined process refuses the plist-less bundle `swift build` emits.

@@ -145,6 +145,18 @@ describe("claude credential-file store off macOS (Linux quota parity)", () => {
     await expect(readClaudeOauthCredential(await configDir(), "linux")).resolves.toBeNull();
   });
 
+  it("darwin stays keychain-only: a present credential file is never read there", async () => {
+    // Owner lock Q2=a. A fresh temp dir can have no keychain item (its name
+    // hashes the path), and off macOS the `security` binary does not exist —
+    // so on EVERY platform a darwin-gated read must ignore the file → null.
+    const dir = await configDir();
+    await writeFile(
+      join(dir, ".credentials.json"),
+      JSON.stringify({ accessToken: bait, subscriptionType: "max" }),
+    );
+    await expect(readClaudeOauthCredential(dir, "darwin")).resolves.toBeNull();
+  });
+
   it("an unparseable credential file throws a tagged fault with no file bytes", async () => {
     const dir = await configDir();
     await writeFile(join(dir, ".credentials.json"), `{"refreshToken":"${bait}"`);
