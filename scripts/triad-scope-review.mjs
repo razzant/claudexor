@@ -275,6 +275,11 @@ Blocker contract (INV-139) — applies to every critical FAIL row:
   owner decision from the packet's decision registry, will be adjudicated to
   the declined ledger instead of fixed — cite or downgrade yourself first.
 Both fields are optional on PASS and advisory rows.
+EVERY row — PASS rows included — MUST carry all four keys "item", "verdict",
+"severity", "reason"; use "severity": "advisory" on PASS rows. A single row
+missing "severity" invalidates the ENTIRE response as a parse failure and
+burns one of your two liveness attempts, so double-check the keys before
+returning.
 The array must parse with JSON.parse: use only standard JSON string escapes
 inside "reason" (a backslash before a backtick is NOT valid JSON — write the
 backtick bare), no trailing commas, no comments, no text outside the array.`;
