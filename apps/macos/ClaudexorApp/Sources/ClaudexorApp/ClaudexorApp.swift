@@ -46,7 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        // Dock icon for the dev executable (the notarized .app uses AppIcon.icns directly).
+        // Dock icon override. Essential for the bare dev executable (no .icns);
+        // the packaged .app also passes through here and re-applies the same
+        // artwork its AppIcon.icns was derived from — harmless by construction.
         // Never touch Bundle.module here: its generated accessor fatalErrors when the
         // resource bundle fails to load, and CFBundle refuses a quarantined bundle that
         // has no Info.plist — which crashed every browser-downloaded 3.0.0 install at

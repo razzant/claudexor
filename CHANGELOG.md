@@ -11,10 +11,12 @@ Release history for Claudexor. The current version is declared in the root
   (no `Bundle.module`, cosmetic degrade instead of crash), and `build-app.sh`
   writes a minimal `Info.plist` into the resource bundle. If you downloaded
   3.0.0: upgrade to this DMG — that is the fix. Only if you must stay on
-  3.0.0, first verify the app is the untampered notarized original
-  (`spctl -a -vv /Applications/Claudexor.app` must say `Notarized Developer
-  ID`), then drop its quarantine flag:
-  `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
+  3.0.0, first verify the app is the exact official artifact:
+  `spctl -a -vv /Applications/Claudexor.app` must report `Notarized
+  Developer ID` AND `origin=Developer ID Application: Andrei Kaznacheev
+  (N7RDVVZ7LA)` — a generic notarization line alone proves only that
+  *some* notarized app sits at that path. Only then drop the quarantine
+  flag: `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
 
 - **v3.0.0** (2026-07-20) — the chat-first control plane, rebuilt on honest
   server truth. This is a breaking major: a fresh `~/.claudexor/v3/` data root
