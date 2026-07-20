@@ -95,7 +95,10 @@ deferred; they are recorded here now.
   absence with a static non-secret detail ("oauth/usage response did not
   contain valid quota windows") + a focused `{}`-response test; add a size cap
   on the credential-file read for symmetry with the keychain leg's 1 MiB
-  maxBuffer while in there.
+  maxBuffer while in there; harden the same read with no-follow open +
+  fstat regular-file check + rejection tests (3.0.2 confirmation A7 — a
+  locally planted symlink is outside the untampered threat model but cheap
+  to close).
 - Q-b: quota sources (`claude-oauth-usage.ts`, `codex-quota-source.ts`) live in
   `packages/cli`; relocate to a daemon/core-owned module so the CLI stays a
   thin projection of `/v2/quota`. Structural, pre-existing; move only with
