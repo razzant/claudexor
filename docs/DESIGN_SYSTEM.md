@@ -261,6 +261,14 @@ disciplines call sites kept getting wrong, so they cannot get them wrong again:
 
 ---
 
+### 2.9 Error and status text is user evidence
+
+Every error/status message rendered anywhere in the app MUST be selectable
+(`.textSelection(.enabled)`) — the user pastes these into bug reports and
+chats. Persistent banners (thread status line and equivalents) additionally
+carry an explicit copy button (`doc.on.doc`, `.plain` style, "Copy message"
+help). An unselectable error surface is a defect, not a style choice.
+
 ## 3. Liquid Glass & materials rules
 
 - **Where Liquid Glass (`glassEffect`) goes:** sidebar, toolbars, the

@@ -81,7 +81,7 @@ struct InteractionCard: View {
                 .tint(Theme.accent)
                 .disabled(sending || !hasAnyAnswer)
                 if let errorMessage {
-                    Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.negative))
+                    Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.negative)).textSelection(.enabled)
                 }
             }
         }

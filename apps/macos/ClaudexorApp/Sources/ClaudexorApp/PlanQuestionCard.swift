@@ -81,7 +81,7 @@ struct PlanQuestionCard: View {
                 questionRow(question)
             }
             if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.negative))
+                Text(errorMessage).font(.caption).foregroundStyle(Theme.status(.negative)).textSelection(.enabled)
                     .textSelection(.enabled)
             }
             HStack {

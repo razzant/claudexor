@@ -272,7 +272,7 @@ struct TurnCard: View {
                 Text(state).font(.caption).foregroundStyle(.secondary)
             }
             if let actionError {
-                Text(actionError).font(.caption).foregroundStyle(.red)
+                Text(actionError).font(.caption).foregroundStyle(.red).textSelection(.enabled)
             }
         }
         .padding(Theme.Spacing.md)

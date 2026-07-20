@@ -84,7 +84,7 @@ struct ArtifactGalleryView: View {
             }
             if case .failed(let error) = slot.state {
                 VStack(spacing: Theme.Spacing.sm) {
-                    Text(error.message).font(.callout).foregroundStyle(.secondary)
+                    Text(error.message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                         .multilineTextAlignment(.center)
                     Button("Retry") { Task { await load() } }
                         .buttonStyle(.bordered).controlSize(.small)
@@ -413,7 +413,7 @@ private struct ArtifactRow: View {
                     ContentUnavailableView("Empty file", systemImage: "doc")
                 case .failed(let error):
                     VStack(spacing: Theme.Spacing.sm) {
-                        Text(error.message).font(.callout).foregroundStyle(.secondary)
+                        Text(error.message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                             .multilineTextAlignment(.center)
                         Button("Retry") { Task { await loadText(force: true) } }
                             .buttonStyle(.bordered).controlSize(.small)
