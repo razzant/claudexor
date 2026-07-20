@@ -317,27 +317,7 @@ struct ThreadsScreen: View {
             }
 
             if let status = model.threadStatus {
-                // Error/status text is USER EVIDENCE: always selectable, with an
-                // explicit copy affordance (DESIGN_SYSTEM §2.9 — no unselectable
-                // error surfaces anywhere).
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.xs) {
-                    Text(status)
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                        .textSelection(.enabled)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(status, forType: .string)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Copy message")
-                }
-                .conversationMeasure()
-                .padding(.horizontal, Theme.Spacing.lg)
-                .padding(.vertical, Theme.Spacing.xs)
+                StatusBanner(message: status)
             }
 
             // Isolated threads accumulate in a worktree; deliver the diff to the
