@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/orchestrator",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "license": "MIT",
   "description": "Hub that composes all subsystems and implements the three canonical intents (ask, plan, agent) with their strategy flags (ask deep-scan, plan solo/council, agent best-of-N race, attempt caps, until-clean, create, delegate).",
   "type": "module",

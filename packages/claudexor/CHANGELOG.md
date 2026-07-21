@@ -1,5 +1,12 @@
 # claudexor
 
+## 3.0.3
+
+### Patch Changes
+
+- Incident-hardening patch: typed config_invalid errors, retired-key completeness (+gate), root-scoped config sweep with backups, plugin artifact skew hard-refusal with root provenance, logins survive daemon restarts, codex device-auth default login, quota logged-out precheck with absence backoff, no real ~/.codex transcript fallback, macOS settings-400/onboarding-scroll fixes, build-app.sh libnode guard, and the agent Install And Login guide.
+  - @claudexor/cli@3.0.3
+
 ## 3.0.0
 
 ### Major Changes
