@@ -18,9 +18,10 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
   codex: {
     binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
     // Device-code auth is the DEFAULT interactive flow (v3.0.3 S6,
-    // live-verified 2026-07-21): completed in any browser context it cannot
-    // disturb sibling OpenAI sessions, unlike the localhost-redirect flow
-    // whose in-browser account switch revokes them server-side.
+    // live-verified 2026-07-21): completed in an ISOLATED browser context it
+    // avoids the session-invalidation trigger the localhost-redirect flow
+    // carries (an in-browser account switch revokes sibling sessions
+    // server-side). Vendor-side invalidation can never be fully prevented.
     args: [...CODEX_FILE_AUTH_ARGS, "login", "--device-auth"],
     displayCommand: "codex login --device-auth (isolated Claudexor profile)",
   },

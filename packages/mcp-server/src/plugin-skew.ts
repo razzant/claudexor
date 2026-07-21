@@ -48,7 +48,7 @@ export function assertNoPluginArtifactSkew(serverVersion: string | undefined): v
     resolve(frozenRoot) !== resolve(defaultUserConfigDir())
   ) {
     throw new PluginArtifactSkewError(
-      `host plugin artifacts freeze a foreign config root (neither this build's default nor a marked explicit override) [${diag}]`,
+      `the managed launch carries a foreign config root (neither this build's default nor a marked explicit override) — a stale artifact, or a CLAUDEXOR_CONFIG_DIR exported in your shell reaching the host; unset it for managed hosts or set CLAUDEXOR_ROOT_MODE=explicit [${diag}]`,
     );
   }
 }

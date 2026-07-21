@@ -1276,6 +1276,24 @@ import Testing
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
         }
+
+        // device_auth_unsupported (schema v3.0.x) decodes like the other never-started codes...
+        object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+        native = try #require(object["nativeCommand"] as? [String: Any])
+        native["errorCode"] = "device_auth_unsupported"
+        object["nativeCommand"] = native
+        let unsupported = try JSONDecoder().decode(
+            SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(unsupported.nativeCommand?.errorCode == .deviceAuthUnsupported)
+        #expect(try JSONDecoder().decode(SetupJob.self, from: JSONEncoder().encode(unsupported)) == unsupported)
+
+        // ...and, like the schema, cannot claim the vendor command ever started.
+        native["commandStarted"] = true
+        native["permitIssuedAt"] = "2026-07-14T00:00:01Z"
+        object["nativeCommand"] = native
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(SetupJob.self, from: JSONSerialization.data(withJSONObject: object))
+        }
     }
 
     @Test func authCapabilityReceiptPreservesRequiredNullableFields() throws {

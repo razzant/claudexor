@@ -111,6 +111,21 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     expect(nativeAbsence?.reason).toBe("refresh_failed");
     expect(nativeAbsence?.detail).toContain("500");
   });
+
+  it("claims a refresh_failed absence when an HTTP-200 body carries no parseable quota windows (BACKLOG Q-a)", async () => {
+    // An endpoint that answers 200 but with a body that maps to zero quota
+    // windows must yield a typed absence, not silent emptiness — the registry
+    // needs the observation to back off instead of re-polling forever.
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => ({ accessToken: "tok", subscriptionType: "max" }),
+      fetchUsage: async () => ({ unrelated: "payload", limits: [] }),
+      now: () => new Date("2026-07-18T00:00:00Z"),
+    });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("refresh_failed");
+    expect(nativeAbsence?.detail).toContain("parseable quota windows");
+  });
 });
 
 describe("claude credential-file store off macOS (Linux quota parity)", () => {

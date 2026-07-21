@@ -226,6 +226,160 @@ describe("QuotaRegistry", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("an absence-only refresh cycle backs off exponentially without throwing", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-absence-backoff-")));
+    const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
+    let nowMs = Date.parse("2026-07-15T12:00:00.000Z");
+    let calls = 0;
+    let mode: "absence" | "snapshot" = "absence";
+    const subject = {
+      harness: "claude",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        async () => {
+          calls += 1;
+          if (mode === "snapshot") {
+            return {
+              snapshots: [
+                {
+                  subject,
+                  constraints: [],
+                  source: "claude_oauth_usage" as const,
+                  // A deliberately stale observation (>5min): the projection
+                  // stays poll-eligible so the RESTORED 60s cadence is
+                  // observable rather than masked by a fresh short-circuit.
+                  observed_at: new Date(nowMs - 10 * 60_000).toISOString(),
+                  freshness: "fresh" as const,
+                },
+              ],
+            };
+          }
+          return {
+            snapshots: [],
+            absences: [
+              {
+                subject,
+                reason: "not_logged_in" as const,
+                detail: "logged out",
+                observed_at: new Date(nowMs).toISOString(),
+              },
+            ],
+          };
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+
+    // Cycle 1: an absence-only refresh records the typed absence and arms a 60s
+    // backoff. It SUCCEEDS (returns true) and never throws.
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(1);
+    expect(registry.read().absences).toHaveLength(1);
+    // A second poll inside the 60s window is skipped — pollNotBefore honored.
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+
+    // The interval doubles per absence-only cycle; poll exactly at each boundary.
+    nowMs += 60_000; // 2^0 window elapsed
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+    nowMs += 60_000; // half of the 2^1 (120s) window — still skipped
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(2);
+    nowMs += 60_000; // 2^1 window elapsed
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(3);
+
+    // Saturate the backoff at the 15-minute ceiling: a full 15 min each step
+    // clears whatever the (capped) window is.
+    for (let step = 0; step < 6; step += 1) {
+      nowMs += 15 * 60_000;
+      await expect(registry.pollStale()).resolves.toBe(true);
+    }
+    const atCeiling = calls;
+    // The window never exceeds 15 min: one ms short is skipped, at the ceiling fires.
+    nowMs += 15 * 60_000 - 1;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(atCeiling);
+    nowMs += 1;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(atCeiling + 1);
+
+    // A cycle that RETURNS a snapshot resets the cadence to 60s.
+    mode = "snapshot";
+    nowMs += 15 * 60_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    const afterReset = calls;
+    // 30s later the (stale) projection is still poll-eligible but inside the
+    // restored 60s window → skipped, NOT the former 15-min ceiling.
+    nowMs += 30_000;
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(afterReset);
+    // At the 60s boundary it polls again — the exponential backoff is gone.
+    nowMs += 30_000;
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(afterReset + 1);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("noteCredentialChange drops the absence backoff", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-note-cred-")));
+    const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });
+    let nowMs = Date.parse("2026-07-15T12:00:00.000Z");
+    let calls = 0;
+    const subject = {
+      harness: "claude",
+      credential_route: "vendor_native" as const,
+      plan_label: null,
+      subject_id: null,
+    };
+    const registry = new QuotaRegistry(
+      journal,
+      [
+        async () => {
+          calls += 1;
+          return {
+            snapshots: [],
+            absences: [
+              {
+                subject,
+                reason: "not_logged_in" as const,
+                detail: "logged out",
+                observed_at: new Date(nowMs).toISOString(),
+              },
+            ],
+          };
+        },
+      ],
+      () => new Date(nowMs),
+      () => [subject],
+    );
+
+    // Arm the backoff: one absence-only cycle, then confirm the next immediate
+    // poll is inside the 60s window and is skipped.
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(1);
+    await expect(registry.pollStale()).resolves.toBe(false);
+    expect(calls).toBe(1);
+
+    // A credential change (login/logout) drops the backoff — the very next poll
+    // runs the refresher at once, without waiting out the window.
+    registry.noteCredentialChange();
+    await expect(registry.pollStale()).resolves.toBe(true);
+    expect(calls).toBe(2);
+
+    journal.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
   it("keeps official quota sources independent when one refresher is unavailable", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-quota-sources-")));
     const journal = new DurableJournal({ rootDir: join(root, "journal"), partition: "global" });

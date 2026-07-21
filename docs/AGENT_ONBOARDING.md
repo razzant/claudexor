@@ -84,8 +84,7 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
   daemon binds the run; use `claudexor_run_status`, `claudexor_run_result`,
   `claudexor_run_cancel`, `claudexor_run_interactions`, and
   `claudexor_answer_interaction` to continue. A cancel or answer is successful
-  only after the `/v2` control API acknowledges it. MCP orchestrate remains
-  suggest-only.
+  only after the `/v2` control API acknowledges it.
 - **ACP** (`claudexor acp serve`, stdio) uses stable protocol version 1 through
   the official TypeScript SDK. ACP session IDs are daemon thread IDs, so
   `session/list`, `session/load`, `session/resume`, `session/close`, prompts,
@@ -100,8 +99,10 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
 
 ## Read-only vs mutating
 
-- `ask`, `plan`, `audit` (and `explore` = `audit --swarm`) never mutate the
-  tree. `orchestrate` in the default suggest autonomy only plans.
+- `ask` (including `ask --deep-scan`) and `plan` never mutate the tree; `agent`
+  is the one write mode, and its candidates work in isolated envelopes until an
+  explicit apply. The old `audit`/`explore`/`orchestrate` verbs are retired and
+  hard-error.
 - New project threads (including ACP sessions) default to `in_place`: their
   turns can change the live project tree. Choose `isolated` explicitly when you
   want a persistent thread worktree and a later Apply step. Standalone CLI/MCP

@@ -8,6 +8,7 @@ import {
   defaultProcessGroupService,
   type ProcessGroupCapture,
 } from "@claudexor/core";
+import { redactSecrets } from "@claudexor/util";
 import { nativeLoginEnv } from "./native-login.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
@@ -227,11 +228,16 @@ function createTailBuffer(): { push(chunk: Buffer | string): void; text(): strin
   };
 }
 
-/** Strip ANSI escapes and clamp — diagnostic evidence, not a vendor log copy. */
+/** Strip terminal escapes (CSI, OSC, bare ESC, C0 controls except newline),
+ * redact secret-like tokens, and clamp â diagnostic evidence entering a
+ * durable journal/API surface, never a raw vendor log copy (INV-062). */
 function boundedTail(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  const plain = text.replace(/\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\r/g, "");
-  return plain.slice(-OUTPUT_TAIL_BYTES).trim().slice(0, 4000);
+  const plain = text
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u001b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "");
+  return redactSecrets(plain.slice(-OUTPUT_TAIL_BYTES).trim().slice(0, 4000));
 }
 
 /** Run `<binary> login --help` captured, bounded to 10s. Fails OPEN: only a
@@ -269,7 +275,10 @@ function probeLoginHelp(
       output += String(chunk);
     });
     probe.on("error", () => settle(false));
-    probe.on("exit", () => settle(output.length > 0));
+    // `close` (streams drained) + exit code 0: an errored-but-chatty probe
+    // (old CLI printing \"unrecognized subcommand\") must fail OPEN to the
+    // real spawn, and `exit` could race the final help-output chunks.
+    probe.on("close", (code) => settle(code === 0 && output.length > 0));
     const timer = setTimeout(() => {
       try {
         probe.kill("SIGKILL");
@@ -334,9 +343,12 @@ function persistResult(
 function waitForExit(
   child: ReturnType<typeof spawn>,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  // `close` fires after the stdio streams drain (wave-1 finding: `exit` can
+  // race the final piped data chunks, truncating the captured tail); children
+  // with fully-inherited stdio emit `close` immediately after `exit` too.
   return new Promise((resolveExit, reject) => {
     child.once("error", reject);
-    child.once("exit", (code, signal) => resolveExit({ code, signal }));
+    child.once("close", (code, signal) => resolveExit({ code, signal }));
   });
 }
 

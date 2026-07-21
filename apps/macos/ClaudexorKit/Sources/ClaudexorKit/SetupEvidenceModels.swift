@@ -129,6 +129,7 @@ public struct SetupCommandAuthorization: Codable, Sendable, Equatable {
 public enum SetupNativeCommandErrorCode: String, Codable, Sendable {
     case permitTimeout = "permit_timeout"
     case spawnFailed = "spawn_failed"
+    case deviceAuthUnsupported = "device_auth_unsupported"
 }
 
 public struct SetupNativeCommandReceipt: Codable, Sendable, Equatable {
@@ -187,6 +188,10 @@ public struct SetupNativeCommandReceipt: Codable, Sendable, Equatable {
         }
         if errorCode == .spawnFailed {
             try require(!commandStarted, decoder: decoder, "Spawn failure cannot claim command start")
+        }
+        if errorCode == .deviceAuthUnsupported {
+            try require(!commandStarted, decoder: decoder,
+                        "Device auth unsupported means the vendor command was never started")
         }
     }
 

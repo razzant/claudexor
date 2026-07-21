@@ -24,7 +24,10 @@ Release history for Claudexor. The current version is declared in the root
   login defaults to device-auth (safe for sibling OpenAI sessions when
   completed in an isolated browser window) with `--browser-redirect` as the
   explicit opt-in and a typed `not_supported` outcome on older codex CLIs;
-  claude login drops the version-varying `--claudeai` flag (#17). Quota: a
+  claude login drops the version-varying `--claudeai` flag (#17); a failed
+  device-auth login always carries the ChatGPT "Allow device code login"
+  toggle remedy; the CLI discloses daemon/CLI engine-version skew from the
+  control handshake. Quota: a
   logged-out codex home reports a typed `not_logged_in` absence WITHOUT
   booting `codex app-server` (ending the every-60s scoped-home spawn loop),
   absence-only refresh cycles back off exponentially, and a claude

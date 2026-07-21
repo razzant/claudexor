@@ -42,7 +42,11 @@ export class ConfigParseError extends Error {
     this.name = "ConfigParseError";
     this.requiredActions = [
       `inspect and fix ${path} against the current schema`,
-      `or restore it from the newest sibling backup (${path}.bak-*)`,
+      // Only swept config files ever get sibling backups; trust files and env
+      // pseudo-paths must not advertise a .bak-* that cannot exist.
+      ...(path.endsWith("config.yaml")
+        ? [`or restore it from the newest sibling backup (${path}.bak-*)`]
+        : []),
     ];
   }
 }

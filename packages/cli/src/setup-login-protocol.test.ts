@@ -128,7 +128,12 @@ describe("setup-login sidecar protocol v2", () => {
       const result = runSetupLogin(manifestPath, {
         spawnProcess: ((_command: string, _args: readonly string[], options: SpawnOptions) => {
           workerEnvironment = options.env;
-          queueMicrotask(() => child.emit("exit", 0, null));
+          // waitForExit settles on `close` now (wave-1: `exit` can race the
+          // final piped chunks) — a real child emits both, so the fake must too.
+          queueMicrotask(() => {
+            child.emit("exit", 0, null);
+            child.emit("close", 0, null);
+          });
           return child;
         }) as never,
       });
@@ -522,5 +527,69 @@ describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
     expect(
       (readRunnerResult(spec.resultPath) as { outputTail?: string }).outputTail,
     ).toBeUndefined();
+  });
+
+  it("an errored-but-chatty probe falls through to the real spawn (fail-open)", async () => {
+    // An old CLI whose `login --help` prints an error to stderr AND exits
+    // nonzero must NOT be classified as device_auth_unsupported: the probe
+    // settles on `close` with code===0, so a chatty-but-errored probe fails
+    // OPEN to the real spawn (whose own failure would carry the diagnostics).
+    const { manifestPath, spec, jobDir } = prepare(
+      `#!/bin/sh\nif [ "$1" = "login" ] && [ "$2" = "--help" ]; then echo "error: unrecognized subcommand 'login'" >&2; exit 2; fi\ntouch real-run.txt\nexit 0\n`,
+      { args: ["login", "--device-auth"] },
+      "probe-chatty-error",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(0);
+    expect(existsSync(join(jobDir, "real-run.txt"))).toBe(true);
+    const result = readRunnerResult(spec.resultPath) as {
+      errorCode?: string;
+      commandStarted?: boolean;
+      exitCode?: number;
+    };
+    expect(result.errorCode).not.toBe("device_auth_unsupported");
+    expect(result).toMatchObject({ commandStarted: true, exitCode: 0 });
+  });
+
+  it("the persisted tail carries no ESC bytes and redacts secret-like tokens", async () => {
+    // Assembled at runtime so no token-like literal lands in the source tree
+    // (secret-scan CI, INV-062). This matches the redactor's `sk-…` rule.
+    const token = ["sk", "or", "FAKE".repeat(4) + "1234"].join("-");
+    // The script emits, to stderr: an OSC-8 hyperlink (ESC ] 8 ; ; URI ESC \),
+    // readable words, a bare ESC, and the secret — then fails (exit 3).
+    const script =
+      "#!/bin/sh\n" +
+      "printf 'plain readable words here\\n' >&2\n" +
+      "printf '\\033]8;;https://example\\033\\\\hyperlinked words\\n' >&2\n" +
+      "printf 'a bare \\033 escape then secret " +
+      token +
+      " tail end\\n' >&2\n" +
+      "exit 3\n";
+    const { manifestPath, spec } = prepare(script, { args: ["login"] }, "tee-redact");
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(1);
+    const result = readRunnerResult(spec.resultPath) as { outputTail?: string; exitCode?: number };
+    expect(result.exitCode).toBe(3);
+    const tail = result.outputTail ?? "";
+    // The readable prose survives the escape-stripping.
+    expect(tail).toContain("plain readable words here");
+    expect(tail).toContain("hyperlinked words");
+    expect(tail).toContain("a bare");
+    expect(tail).toContain("tail end");
+    // No terminal escape byte anywhere — OSC hyperlink and bare ESC are gone.
+    expect(/\u001b/.test(tail)).toBe(false);
+    // The secret is redacted, not passed through.
+    expect(tail).not.toContain(token);
+    expect(tail).toContain("[redacted]");
   });
 });

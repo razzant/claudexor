@@ -1003,8 +1003,8 @@ private runner manifest; Terminal
 starts the bundled absolute Node + runner; the runner executes the absolute
 vendor binary without a shell, inherits the TTY, scrubs provider credentials,
 and atomically records PID/kernel-start/process-group and result sidecars. It
-never receives or persists a vendor token or credential file. Vendor output is
-not copied into durable logs, and Terminal stays open on the result until the
+never receives or persists a vendor token or credential file. Apart from the bounded, ANSI-stripped, secret-redacted diagnostic tail a
+FAILED codex login persists, vendor output is not copied into durable logs, and Terminal stays open on the result until the
 operator presses Return. The daemon fsyncs an immutable executable/argv
 authorization and one-use permit before the detached runner may spawn. The
 runner's hash-bound result is journaled before verification. For a

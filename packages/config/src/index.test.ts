@@ -222,12 +222,16 @@ describe("retired-key sweep (B9)", () => {
     const repo = join(dir, "repo");
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
     const projectPath = join(repo, ".claudexor", "config.yaml");
+    const originalText = "version: 1\nreview:\n  attempts: 3\n";
     try {
-      writeFileSync(projectPath, "version: 1\nreview:\n  attempts: 3\n");
+      writeFileSync(projectPath, originalText);
       const sweeps = sweepRetiredConfigKeysAtStartup([repo]);
       const project = sweeps.find((s) => s.path === projectPath);
       expect(project?.removed).toContain("review");
       expect(project?.backupPath).toBeTruthy();
+      // The pre-sweep backup is byte-identical to the original (parity with the
+      // global-root sweep test) — the untouched original bytes are recoverable.
+      expect(readFileSync(project!.backupPath!, "utf8")).toBe(originalText);
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;

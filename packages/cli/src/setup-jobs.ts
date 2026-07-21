@@ -668,7 +668,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
           "not_supported",
           "not_supported",
           `${job.harness} CLI does not support device-code login (--device-auth needs codex >= 0.46.0); ` +
-            `upgrade the codex CLI, or retry with the browser-redirect flow (loginFlow: browser_redirect).`,
+            `upgrade the codex CLI, or retry with \`claudexor auth login codex --browser-redirect\`.`,
         );
         return;
       }
@@ -689,13 +689,20 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       });
       return;
     }
+    // R6: a failed device-auth flow ALWAYS carries the toggle remedy — the
+    // vendor's rejection prose is not classified (no regex governance), the
+    // remedy is keyed deterministically on the authorized flow itself.
+    const deviceAuthRemedy = job.authorization?.args.includes("--device-auth")
+      ? " If the sign-in page rejected your one-time code, enable ChatGPT → Settings → Security → " +
+        '"Allow device code login" and retry, or use `claudexor auth login codex --browser-redirect`.'
+      : "";
     finish(
       jobId,
       "failed",
       "command_failed",
       `${job.harness} login command failed.${
         result.outputTail ? ` Last output: ${result.outputTail.slice(-600)}` : ""
-      }`,
+      }${deviceAuthRemedy}`,
       {
         exitCode: result.exitCode,
         signal: result.signal,
@@ -888,6 +895,13 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   async function reconcileRestart(): Promise<void> {
     for (const job of store.list({ active: true })) {
       if (settleDurableCapability(job, "restart")) continue;
+      // A cancel that raced the previous daemon's death left phase=cancelling
+      // with a live runner nothing would ever finish (wave-1): complete the
+      // interrupted cancellation instead of adopting a zombie.
+      if (job.phase === "cancelling") {
+        await terminateLogin(job.jobId, "cancelled_by_user");
+        continue;
+      }
       const result = matchingResult(job.jobId);
       if (result) {
         markAwaitingUser(job.jobId);
@@ -904,6 +918,16 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         const handle = parseProcessGroupHandle(state.processGroup);
         const probe = processGroups.probeEmpty(handle);
         if (probe.status === "empty") {
+          // TOCTOU re-check (wave-1): the worker persists its result BEFORE
+          // exiting, so a login that finished between the result read above
+          // and this probe has a durable receipt on disk — consume it rather
+          // than discarding a completed login as cancelled_on_restart.
+          const lateResult = matchingResult(job.jobId);
+          if (lateResult) {
+            markAwaitingUser(job.jobId);
+            await consumeLoginResult(job.jobId, lateResult);
+            continue;
+          }
           finish(
             job.jobId,
             "cancelled",
@@ -936,6 +960,12 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       }
       const empty = processGroups.probeEmpty(group);
       if (empty.status === "empty") {
+        const lateResult = matchingResult(job.jobId);
+        if (lateResult) {
+          markAwaitingUser(job.jobId);
+          await consumeLoginResult(job.jobId, lateResult);
+          continue;
+        }
         finish(
           job.jobId,
           "cancelled",
@@ -1109,8 +1139,27 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       if (active) {
         // Same target store → idempotent reuse. A DIFFERENT target (default vs
         // profile, or two profiles) must refuse loudly: returning the other job
-        // would hand the caller a login into the wrong store.
+        // would hand the caller a login into the wrong store. A different
+        // LOGIN FLOW for the same target refuses the same way (wave-1): a
+        // --browser-redirect request must never be silently answered with the
+        // active device-auth job.
         if ((active.profileId ?? null) === (profileBinding?.profileId ?? null)) {
+          const activeDeviceAuth = active.authorization?.args.includes("--device-auth") ?? null;
+          const requestedDeviceAuth = harness === "codex" ? request.loginFlow !== "browser_redirect" : null;
+          if (
+            activeDeviceAuth !== null &&
+            requestedDeviceAuth !== null &&
+            activeDeviceAuth !== requestedDeviceAuth
+          ) {
+            throw Object.assign(
+              new Error(
+                `another ${harness} login job is active (${active.jobId}) using the ` +
+                  `${activeDeviceAuth ? "device-auth" : "browser-redirect"} flow; finish or cancel ` +
+                  `it before starting a ${requestedDeviceAuth ? "device-auth" : "browser-redirect"} login`,
+              ),
+              { status: 409 },
+            );
+          }
           return binding ? store.bindCreate(active.jobId, binding) : active;
         }
         throw Object.assign(

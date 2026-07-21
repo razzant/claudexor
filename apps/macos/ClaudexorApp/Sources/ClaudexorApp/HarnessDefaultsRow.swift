@@ -159,7 +159,7 @@ struct HarnessDefaultsRow: View {
 
     /// Persist any pending debounced edit before the row goes away. Called from
     /// `.onDisappear`; safe to call when there's nothing to save (no-ops unless
-    /// `dirty`). Skips when the budget cap is invalid so we never POST a bad value.
+    /// `dirty`).
     private func flushPendingSave() {
         debounce?.cancel()
         guard dirty else { return }

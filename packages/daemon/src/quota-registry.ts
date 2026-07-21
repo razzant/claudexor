@@ -172,6 +172,14 @@ export class QuotaRegistry {
     return this.absences.filter((absence) => !covered.has(subjectIdentity(absence.subject)));
   }
 
+  /** A credential just changed (login/logout): drop the absence backoff so
+   * the next poll observes the new state immediately instead of waiting out
+   * up to 15 minutes of logged-out pacing (wave-1). */
+  noteCredentialChange(): void {
+    this.pollFailures = 0;
+    this.pollNotBefore = 0;
+  }
+
   /** Background official-source refresh for empty/stale projections with bounded backoff. */
   async pollStale(): Promise<boolean> {
     const now = this.now().getTime();

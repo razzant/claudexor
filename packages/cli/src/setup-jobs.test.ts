@@ -1585,6 +1585,138 @@ describe("setup jobs", () => {
     },
   );
 
+  it("a failed device-auth login message carries the toggle remedy", async () => {
+    // The default codex login authorizes the --device-auth flow. A started
+    // command that exits nonzero (e.g. the sign-in page rejected the one-time
+    // code) must ALWAYS carry the deterministic toggle remedy, keyed on the
+    // authorized flow — not classified from the vendor's rejection prose.
+    const group = processGroupFixture();
+    const capability = capabilityVerifier();
+    const manager = createSetupJobManager({
+      rootDir: join(root, "device-auth-remedy"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      monitorPollMs: 1,
+      processGroups: group.service,
+      authCapabilityVerifier: capability.verifier,
+      probeAuthSource: async () => nativeReadiness(true),
+    });
+    await manager.start();
+    const job = manager.create(LOGIN_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+    writeRunnerResultV2(manager, job.jobId, { commandStarted: true, exitCode: 1 });
+    expect(await waitForTerminal(manager, job.jobId)).toBe("failed");
+    const done = manager.status({ jobId: job.jobId });
+    expect(done.outcome?.reason).toBe("command_failed");
+    expect(done.message).toContain("Allow device code login");
+    expect(done.message).toContain("--browser-redirect");
+    // A nonzero exit never runs the same-harness smoke.
+    expect(capability.runs).toEqual([]);
+    await manager.shutdown();
+  });
+
+  it("a browser-redirect create refuses (409) while a device-auth login is active", () => {
+    const manager = createSetupJobManager({
+      rootDir: join(root, "flow-conflict"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+    });
+    // The default codex login seals the device-auth flow into its authorization
+    // synchronously at create. A --browser-redirect request for the same target
+    // must refuse loudly rather than be answered with the active device-auth job.
+    manager.create(LOGIN_REQUEST);
+    let thrown: (Error & { status?: number }) | undefined;
+    try {
+      manager.create({ ...LOGIN_REQUEST, loginFlow: "browser_redirect" });
+    } catch (error) {
+      thrown = error as Error & { status?: number };
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown?.message).toMatch(/browser-redirect|device-auth/);
+    expect(thrown?.status).toBe(409);
+  });
+
+  it("restart consumes a result that appeared after the group emptied (TOCTOU)", async () => {
+    const group = processGroupFixture({ leader: knownLeader(108) });
+    const opts = {
+      rootDir: join(root, "toctou-late-result"),
+      platform: "darwin" as const,
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      processGroups: group.service,
+      monitorPollMs: 1,
+      sleep: async () => {},
+    };
+    const first = createSetupJobManager(opts);
+    await first.start();
+    const job = first.create(LOGIN_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(first, job.jobId, group.leader, "awaiting_permit", observedAt);
+    await waitForPhase(first, job.jobId, "awaiting_user"); // durable permit issued
+    // The worker persists a successful result bound to the issued permit, then
+    // the group empties — all before the first daemon consumes it, then a crash.
+    writeRunnerStateV2(first, job.jobId, group.leader, "running", observedAt);
+    group.setAlive(false);
+    writeRunnerResultV2(first, job.jobId);
+    first.beginDrain();
+    first._store.journal.close();
+
+    const capability = capabilityVerifier();
+    const restarted = createSetupJobManager({
+      ...opts,
+      authCapabilityVerifier: capability.verifier,
+      probeAuthSource: async () => nativeReadiness(true),
+    });
+    await restarted.start();
+    // The durable receipt is consumed, NOT discarded as cancelled_on_restart.
+    expect(await waitForTerminal(restarted, job.jobId)).toBe("succeeded");
+    const done = restarted.status({ jobId: job.jobId });
+    expect(done.outcome?.reason).not.toBe("cancelled_on_restart");
+    expect(done.outcome?.reason).toBe("completed");
+    await restarted.shutdown();
+  });
+
+  it("a cancelling-phase job is completed by the successor daemon", async () => {
+    const group = processGroupFixture({ leader: knownLeader(109) });
+    const opts = {
+      rootDir: join(root, "cancelling-successor"),
+      platform: "darwin" as const,
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      processGroups: group.service,
+      monitorPollMs: 1,
+      terminationGraceMs: 1,
+      sleep: async () => {},
+    };
+    const first = createSetupJobManager(opts);
+    await first.start();
+    const job = first.create(LOGIN_REQUEST);
+    writeRunnerStateV2(first, job.jobId, group.leader, "awaiting_permit");
+    await waitForPhase(first, job.jobId, "awaiting_user");
+    // A cancel began — the phase is persisted "cancelling" — but termination
+    // never completed before the daemon crashed.
+    first._store.update(job.jobId, {
+      phase: "cancelling",
+      message: "Stopping codex login (cancelled_by_user).",
+    });
+    first.beginDrain();
+    first._store.journal.close();
+
+    const restarted = createSetupJobManager(opts);
+    await restarted.start();
+    // The successor finishes the interrupted cancellation instead of adopting a
+    // zombie: the job reaches a terminal cancelled state (not stuck active).
+    expect(await waitForTerminal(restarted, job.jobId)).toBe("cancelled");
+    expect(restarted.status({ jobId: job.jobId }).outcome?.reason).toBe("cancelled_by_user");
+    expect(group.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    await restarted.shutdown();
+  });
+
   it("extends the deadline by exactly fifteen minutes on every call", () => {
     const manager = createSetupJobManager({
       rootDir: join(root, "store"),

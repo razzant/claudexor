@@ -299,7 +299,10 @@ export async function handshakeControlApi(
   // dedup state is needed.
   try {
     const body = (await response.json()) as { engine?: { version?: string } };
-    const daemonVersion = body.engine?.version;
+    const raw = body.engine?.version;
+    // Same echo hygiene as the plugin-skew check: never print an arbitrary
+    // response-sourced string into the terminal.
+    const daemonVersion = raw && /^[\w.+-]{1,32}$/.test(raw) ? raw : undefined;
     if (daemonVersion && daemonVersion !== CLAUDEXOR_VERSION) {
       process.stderr.write(
         `claudexor: daemon is engine ${daemonVersion} but this CLI is ${CLAUDEXOR_VERSION}; ` +

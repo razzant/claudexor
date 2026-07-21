@@ -214,6 +214,7 @@ export const ControlSetupJobOutcome = z
       "timed_out",
       "cancelled_by_user",
       "cancelled_on_restart",
+      // Historical (pre-3.0.3 restart reconciliation); kept for journal replay.
       "interrupted",
       "interrupted_unknown",
       "termination_unconfirmed",
@@ -249,14 +250,15 @@ export const ControlSetupJobCreateRequest = z
       .optional()
       .describe("Registered config_dir_login profile to log in; absent = the default session."),
     /** Codex-only interactive login flow selection. Default (absent) is
-     * device_auth — completed in any browser context, it cannot disturb
-     * sibling OpenAI sessions on this machine (v3.0.3 S6, live-verified).
-     * browser_redirect is the explicit opt-in localhost-callback flow. */
+     * device_auth — completed in an isolated browser context it avoids the
+     * account-switch trigger that revokes sibling OpenAI sessions
+     * (v3.0.3 S6, live-verified). browser_redirect is the explicit opt-in
+     * localhost-callback flow. */
     loginFlow: z
       .enum(["device_auth", "browser_redirect"])
       .optional()
       .describe(
-        "Codex-only: device_auth (default; complete in any browser context) or browser_redirect (explicit opt-in localhost callback).",
+        "Codex-only: device_auth (default; complete it in an isolated browser window) or browser_redirect (explicit opt-in localhost callback).",
       ),
   })
   .strict()

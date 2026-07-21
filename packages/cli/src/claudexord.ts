@@ -414,7 +414,12 @@ async function main(): Promise<void> {
       createSetupJobManager({
         rootDir: daemonDir(),
         store,
-        onCredentialStateMayHaveChanged: (harness) => authReadiness.invalidate(harness),
+        onCredentialStateMayHaveChanged: (harness) => {
+          authReadiness.invalidate(harness);
+          // Drop the quota absence backoff too (wave-1): a fresh login must
+          // not wait out up to 15 minutes of logged-out pacing.
+          quotaStoreSlot.current().noteCredentialChange();
+        },
       }),
     );
     let control: DaemonControlApiServer | null = null;
