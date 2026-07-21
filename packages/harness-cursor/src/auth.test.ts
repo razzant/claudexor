@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1198,5 +1199,22 @@ describe("cursor credential-profile doctor probe (INV-135)", () => {
       profile({ credential_kind: "config_dir_login", secret_ref: null, isolation_locator: "/x" }),
     );
     expect(unsupported).toMatchObject({ availability: "unavailable", verification: "failed" });
+  });
+});
+
+describe("doctor remedies never name a bare vendor login (INV-067, v3.0.3 wave 3)", () => {
+  it("the source carries no bare cursor-agent login remedy string", () => {
+    // The doctor reason strings are static: pin the INV-067 rule at the
+    // source level so a future edit cannot reintroduce the bare vendor
+    // command an agent would copy into the wrong store.
+    const source = readFileSync(join(import.meta.dirname, "index.ts"), "utf8");
+    const remedies = source
+      .split("\n")
+      .filter((line) => /not authenticated|not ready|not logged in/.test(line));
+    expect(remedies.length).toBeGreaterThan(0);
+    for (const line of remedies) {
+      expect(line).not.toMatch(/\(cursor-agent login/);
+      expect(line).not.toMatch(/run `cursor-agent login`/);
+    }
   });
 });

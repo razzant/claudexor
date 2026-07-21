@@ -248,13 +248,14 @@ function probeLoginHelp(
   probeEnv: NodeJS.ProcessEnv,
 ): Promise<{ completed: boolean; output: string }> {
   return new Promise((resolveProbe) => {
-    let output = "";
     const PROBE_OUTPUT_CAP = 65_536;
+    const chunks: Buffer[] = [];
+    let retainedBytes = 0;
     let settled = false;
     const settle = (completed: boolean) => {
       if (!settled) {
         settled = true;
-        resolveProbe({ completed, output });
+        resolveProbe({ completed, output: Buffer.concat(chunks).toString("utf8") });
       }
     };
     let probe: ReturnType<typeof spawn>;
@@ -269,9 +270,13 @@ function probeLoginHelp(
       settle(false);
       return;
     }
+    // Byte-accurate retention (UTF-16 string length under-counts multibyte
+    // output); decode ONCE at settle so split UTF-8 never corrupts.
     const retain = (chunk: Buffer) => {
-      if (output.length < PROBE_OUTPUT_CAP)
-        output += String(chunk).slice(0, PROBE_OUTPUT_CAP - output.length);
+      if (retainedBytes >= PROBE_OUTPUT_CAP) return;
+      const slice = chunk.subarray(0, PROBE_OUTPUT_CAP - retainedBytes);
+      chunks.push(Buffer.from(slice));
+      retainedBytes += slice.length;
     };
     probe.stdout?.on("data", retain);
     probe.stderr?.on("data", retain);
@@ -279,7 +284,7 @@ function probeLoginHelp(
     // `close` (streams drained) + exit code 0: an errored-but-chatty probe
     // (old CLI printing \"unrecognized subcommand\") must fail OPEN to the
     // real spawn, and `exit` could race the final help-output chunks.
-    probe.on("close", (code) => settle(code === 0 && output.length > 0));
+    probe.on("close", (code) => settle(code === 0 && retainedBytes > 0));
     const timer = setTimeout(() => {
       try {
         probe.kill("SIGKILL");

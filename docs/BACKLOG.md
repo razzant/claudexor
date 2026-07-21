@@ -108,6 +108,10 @@ deferred; they are recorded here now.
 - W-d: redaction straddle — a secret split exactly at the 4096/4000 tail
   boundaries escapes prefix-anchored rules; consider redacting pre-slice or
   overlap-aware slicing.
+- W-f: `claudexor profiles login` runs the vendor login outside the daemon,
+  so noteCredentialChange never fires and a previously logged-out subject's
+  quota can stay absent for up to 15 minutes; expose a credential-changed
+  nudge on the control API and call it after a verified profile login.
 - W-e: Bible INV-137 note wording — the a-b-a continuity proof lives in a
   pnpm-test suite, not the canary golden-story home the note implies.
 - Q-b: quota sources (`claude-oauth-usage.ts`, `codex-quota-source.ts`) live in

@@ -132,3 +132,14 @@ Dispositions:
 | 3.0.3 | 2 | panel-infra | W15 | round-2 scope slot died: prompt 1.008M tokens > 1M provider cap | fixed | round-3 rerun with a reduced evidence pack (transport bound, not a panel substitution) |
 | 3.0.3 | 1-2 | immune-scan | T1 | INV-137 note calls a pnpm-test suite a "canary" | backlog | docs/BACKLOG.md (wording) |
 | 3.0.3 | 1-2 | immune-scan | T2 | one ratchet baseline sits above the shrunk mcp-server file | declined | tightening is --update hygiene, not release work |
+| 3.0.3 | 3 | triad-sol | W16 | harness-cursor auto/no-key doctor reason still named bare `cursor-agent login` (missed by the W7 grep pattern) | fixed | wave-3 close commit (+ source-level INV-067 remedy test) |
+| 3.0.3 | 3 | triad-sol | W17 | probe retention cap counted UTF-16 units, not bytes; split-UTF-8 decode risk | fixed | wave-3 close commit (Buffer accumulator, decode-once) |
+| 3.0.3 | 3 | triad-sol | W18 | README credential-profiles row still says "log in/out through the vendor CLI" | fixed | wave-3 close commit (wording aligned with INV-067) |
+| 3.0.3 | 3 | triad-fable | W19 | reason replay evaluates deadlineAt at successor time — a daemon-down window past the deadline replays a user cancel as timed_out | declined | both are honest cancel-family terminals; persisting the in-flight reason needs a schema field (disproportionate; noted for a future sidecar rev) |
+| 3.0.3 | 3 | triad-fable | W20 | `claudexor profiles login` bypasses the daemon so noteCredentialChange never fires — up to 15min quota absence latency | backlog | docs/BACKLOG.md W-f (credential-changed nudge on the control API) |
+| 3.0.3 | 3 | triad-fable | W21 | 3.0.3 runner result read by a pre-3.0.3 daemon rejects the unknown outputTail key (upgrade-mid-login window only) | declined | unreachable in the bundled single-version default; upgrade guidance noted |
+| 3.0.3 | 3 | triad-fable | W22 | DECLINED D1-D4 rows absent from the durable ledger (numbering starts at D5) | fixed | wave-3 close commit (rows added below) |
+| 3.0.3 | pre | audit | D1 | profiles-login lacks flow opt-out/probe/isolation note | declined | deferred (plan S6 partial-thread decision); BACKLOG candidate next cycle |
+| 3.0.3 | pre | audit | D2 | codex-only login conditionals not declared capabilities at n=1 | declined | data-drive when a second flow-bearing harness exists |
+| 3.0.3 | pre | audit | D3 | quota test writes auth.json under the hermetic default home without a guard assert | declined | hermetic via vitest global override; guard assert is test hygiene |
+| 3.0.3 | pre | audit | D4 | RetiredKeySweep.backupPath absent from the daemon log line | declined | disclosure exists in the sweep warn; duplicate logging declined |

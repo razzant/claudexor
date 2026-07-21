@@ -327,8 +327,10 @@ identity that policy would pick (derived from readiness + quota) — not a claim
 that every enabled account is a silent default. Enabled named accounts route
 only through an explicit pin or that opt-in rotation. The native vendor login
 is itself a symmetric row named **"CLI login"** with the same toggle semantics
-but no Delete (it is the vendor's, not Claudexor's — log in/out through the
-vendor CLI). Setting `native_credentials_enabled: false` EXCLUDES the CLI login
+but no Delete (the credential state is the vendor's, not Claudexor's — manage
+it through `claudexor auth login <harness>`, which drives the vendor's own
+login into the Claudexor-scoped store). Setting
+`native_credentials_enabled: false` EXCLUDES the CLI login
 from the ladder: a harness whose whole ladder is disabled then has nothing
 routable and refuses loudly rather than silently falling back into it. The macOS
 Accounts surface renders these rows directly from ONE server projection — no

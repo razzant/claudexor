@@ -666,7 +666,9 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
                   ]
                 : apiKey
                   ? [`cursor key present but route unproven: ${apiSmoke.detail}`]
-                  : ["not authenticated (cursor-agent login or set CURSOR_API_KEY)"],
+                  : [
+                      "not authenticated (run `claudexor auth login cursor` for native/subscription use, or set/store a Cursor API-key fallback)",
+                    ],
       });
     },
 
