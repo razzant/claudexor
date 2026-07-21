@@ -82,9 +82,10 @@ can go: a copy at the `.app` root works unsigned, but codesign refuses
 `Bundle.module` accessor does NOT find it there — for an *executable* target
 that accessor only checks `Bundle.main.bundleURL` (the `.app` root) and the
 absolute `.build` directory of the machine that compiled it, then calls
-`fatalError`. So the app resolves the bundle itself in
-`AppDelegate.resourceBundle`, which prefers `Contents/Resources` and stays
-optional. The release workflow unzips the release ZIP and fails if that
+`fatalError`. So the app never touches `Bundle.module` on the launch path:
+`AppDelegate.devIconURL` resolves the icon by plain file path (preferring
+`Contents/Resources`), and it stays optional — a missing bundle means no dev
+icon, never a trap. The release workflow unzips the release ZIP and fails if that
 resource bundle is missing — note this proves presence, not loadability, so it
 cannot catch a packaged app that ships the bundle but cannot open it.
 The self-contained app also places `setup-login-runner.cjs` beside

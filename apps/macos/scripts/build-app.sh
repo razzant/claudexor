@@ -68,13 +68,45 @@ cp "$BIN" "$APP/Contents/MacOS/ClaudexorApp"
 # the first signed build. Note that SwiftPM's generated Bundle.module accessor
 # does NOT look here — for an executable target it only checks
 # Bundle.main.bundleURL (the .app root) and the absolute build directory, then
-# traps. AppDelegate.resourceBundle resolves the bundle itself; keep the two in
-# step if this path ever moves.
+# traps. AppDelegate.devIconURL resolves the icon by plain file path instead
+# (no Bundle API on the launch path); keep the two in step if this path ever
+# moves.
 SPM_BUNDLE_NAME="ClaudexorApp_ClaudexorApp.bundle"
+# The same literal is hardcoded in AppDelegate.devIconURL (Bundle.module is
+# banned on the launch path since the 3.0.0 quarantine crash). A SwiftPM
+# target rename would fail here loudly but only silently drop the dev icon
+# in Swift — tie the two constants together at build time.
+grep -q "$SPM_BUNDLE_NAME" "$APP_PKG/Sources/ClaudexorApp/ClaudexorApp.swift" \
+  || { echo "ERROR: $SPM_BUNDLE_NAME not referenced by ClaudexorApp.swift devIconURL — the two hardcoded bundle names diverged" >&2; exit 1; }
 SPM_BUNDLE="$APP_PKG/.build/release/$SPM_BUNDLE_NAME"
 [ -d "$SPM_BUNDLE" ] || { echo "ERROR: SwiftPM resource bundle missing at $SPM_BUNDLE" >&2; exit 1; }
 /usr/bin/ditto "$SPM_BUNDLE" "$APP/Contents/Resources/$SPM_BUNDLE_NAME"
 [ -f "$APP/Contents/Resources/$SPM_BUNDLE_NAME/AppIcon.png" ] || { echo "ERROR: SwiftPM resource bundle is missing AppIcon.png" >&2; exit 1; }
+
+# swift build emits the resource bundle WITHOUT an Info.plist, and CFBundle
+# refuses to load a plist-less bundle once quarantine is attached — which made
+# every browser-downloaded 3.0.0 crash at launch via the Bundle.module
+# fatalError. Give the bundle a minimal Info.plist so it loads everywhere.
+cat > "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.claudexor.ClaudexorApp.resources</string>
+  <key>CFBundleName</key><string>ClaudexorApp_ClaudexorApp</string>
+  <key>CFBundlePackageType</key><string>BNDL</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+</dict>
+</plist>
+PLIST
+# Deterministic packaging assertion: the plist must parse and carry the
+# identifier — a malformed or dropped plist would silently reopen the
+# quarantined-launch crash surface this file exists to close.
+/usr/bin/plutil -lint -s "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" \
+  || { echo "ERROR: resource bundle Info.plist failed plutil lint" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+  "$APP/Contents/Resources/$SPM_BUNDLE_NAME/Info.plist" >/dev/null \
+  || { echo "ERROR: resource bundle Info.plist missing CFBundleIdentifier" >&2; exit 1; }
 
 # Info.plist with version substitution.
 sed -e "s/__CLAUDEXOR_VERSION__/$VERSION/" -e "s/__CLAUDEXOR_BUILD__/$BUILD/" \

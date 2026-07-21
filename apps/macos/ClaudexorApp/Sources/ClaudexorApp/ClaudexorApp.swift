@@ -43,29 +43,17 @@ struct ClaudexorApp: App {
 /// so its window may not appear. Force `.regular` + activate on launch. (Harmless for
 /// the notarized .app bundle, essential for `swift run` dev/CI.)
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// SwiftPM synthesises `Bundle.module` for this *executable* target, and that flavour of
-    /// the accessor looks only beside the binary before it traps with `fatalError`. Once
-    /// `build-app.sh` wraps the executable in an .app the resource bundle sits in
-    /// `Contents/Resources`, which the generated accessor never consults — so merely
-    /// evaluating `Bundle.module` killed the packaged app at launch, icon or no icon. Moving
-    /// the bundle to the .app root is not an option either: codesign then rejects the app
-    /// with "unsealed contents present in the bundle root". Resolve it by hand instead, and
-    /// keep it optional — the icon is cosmetic and the .app already ships AppIcon.icns.
-    private static let resourceBundle: Bundle? = {
-        let name = "ClaudexorApp_ClaudexorApp.bundle"
-        return [Bundle.main.resourceURL, Bundle.main.bundleURL]
-            .compactMap { $0?.appendingPathComponent(name) }
-            .lazy
-            .compactMap(Bundle.init(url:))
-            .first
-    }()
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        // Dock icon for the dev executable (the notarized .app uses AppIcon.icns directly).
-        if let url = Self.resourceBundle?.url(forResource: "AppIcon", withExtension: "png"),
-           let img = NSImage(contentsOf: url) {
+        // Dock icon override. Essential for the bare dev executable (no .icns);
+        // the packaged .app also passes through here and re-applies the same
+        // artwork its AppIcon.icns was derived from — harmless by construction.
+        // Never touch Bundle.module here: its generated accessor fatalErrors when the
+        // resource bundle fails to load, and CFBundle refuses a quarantined bundle that
+        // has no Info.plist — which crashed every browser-downloaded 3.0.0 install at
+        // launch. A cosmetic icon must degrade to "no icon", not kill the app.
+        if let url = Self.devIconURL, let img = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = img
         }
         applyDebugSizeIfRequested()
@@ -79,6 +67,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    /// Resolve the dev icon by plain file path — bypassing Bundle(url:) entirely, so a
+    /// quarantined or otherwise unloadable resource bundle can never crash launch.
+    /// Covers both layouts: the wrapped .app (Contents/Resources/<bundle>) and the bare
+    /// `swift run` executable (bundle next to the binary).
+    static var devIconURL: URL? {
+        devIconURL(bases: [Bundle.main.resourceURL, Bundle.main.bundleURL])
+    }
+
+    static func devIconURL(bases: [URL?]) -> URL? {
+        let bundleName = "ClaudexorApp_ClaudexorApp.bundle"
+        for base in bases {
+            guard let base else { continue }
+            let candidate = base.appendingPathComponent(bundleName).appendingPathComponent("AppIcon.png")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return nil
+    }
 
     /// Non-opaque + clear background on titled content windows so the behind-window
     /// blur reaches the desktop. This runs ONLY at launch (here + one 0.3s retry),

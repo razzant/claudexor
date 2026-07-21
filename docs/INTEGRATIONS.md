@@ -106,9 +106,11 @@ zero. The CLI projection is `claudexor quota [--refresh] --json`.
 Codex refreshes through the vendor app-server (including the live-verified
 `rateLimitResetCredits` balance, surfaced only when positive). Claude's
 PRIMARY subscription source is the `api.anthropic.com/api/oauth/usage`
-endpoint, read per credential profile: the profile's own keychain item
-(`Claude Code-credentials-<sha256(configDir)[:8]>`, live-verified formula)
-yields an access token held transiently for exactly one request — never
+endpoint, read per credential profile from the profile's own vendor store:
+on macOS its keychain item
+(`Claude Code-credentials-<sha256(configDir)[:8]>`, live-verified formula),
+on Linux the vendor's `.credentials.json` inside the profile's config dir.
+Either store yields an access token held transiently for exactly one request — never
 persisted, logged, or included in errors — and returns proactive
 five_hour/seven_day/per-model utilization attributed to the profile
 (`subject_id`). An expired idle token fails to unknown (the vendor CLI

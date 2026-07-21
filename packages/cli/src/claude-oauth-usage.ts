@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "@claudexor/config";
 import type { QuotaRefreshResult } from "@claudexor/daemon";
@@ -23,9 +25,11 @@ const FETCH_TIMEOUT_MS = 10_000;
  * signals arrive only reactively, AFTER a limit bites.
  *
  * Security (INV-062 class): the access token is read from the profile's OWN
- * keychain item, held transiently for exactly one usage request, and never
- * persisted, logged, or included in errors. A failing endpoint yields NO
- * snapshot (fail-to-unknown) and never degrades auth readiness.
+ * vendor store — the keychain item on macOS, the vendor's
+ * `<configDir>/.credentials.json` (documented 0600 file store) elsewhere —
+ * held transiently for exactly one usage request, and never persisted,
+ * logged, or included in errors. A failing endpoint yields NO snapshot
+ * (fail-to-unknown) and never degrades auth readiness.
  */
 
 /** Vendor formula, live-verified: `Claude Code-credentials-<sha256(configDir)[:8]>`. */
@@ -40,10 +44,14 @@ export interface ClaudeOauthCredential {
 
 const execFileAsync = promisify(execFile);
 
-/** Read the profile's OAuth credential from ITS keychain item (macOS `security`). */
+/** Read the profile's OAuth credential from the vendor's own store: the
+ * profile-keyed keychain item on macOS (`security`), or the vendor's
+ * `<configDir>/.credentials.json` everywhere else — Linux has no keychain. */
 export async function readClaudeOauthCredential(
   configDir: string,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<ClaudeOauthCredential | null> {
+  if (platform !== "darwin") return readClaudeOauthCredentialFile(configDir);
   try {
     const { stdout } = await execFileAsync(
       "security",
@@ -59,8 +67,36 @@ export async function readClaudeOauthCredential(
     );
     return parseClaudeOauthCredential(stdout);
   } catch {
-    return null; // no item / not macOS / locked keychain — honest absence
+    return null; // no item / locked keychain — honest absence
   }
+}
+
+/** The non-macOS vendor store (`.credentials.json`, documented mode 0600).
+ * A missing file is the honest logged-out null; a present-but-unreadable or
+ * unparseable file throws a reason-tagged error carrying only the error
+ * class — never file bytes or a token (INV-062). */
+async function readClaudeOauthCredentialFile(
+  configDir: string,
+): Promise<ClaudeOauthCredential | null> {
+  let raw: string;
+  try {
+    raw = await readFile(join(configDir, ".credentials.json"), "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw taggedRefreshFailure(`credential file unreadable (${code ?? "io_error"})`);
+  }
+  const credential = parseClaudeOauthCredential(raw);
+  if (credential === null) {
+    throw taggedRefreshFailure("credential file did not parse as a vendor credential");
+  }
+  return credential;
+}
+
+function taggedRefreshFailure(detail: string): Error {
+  return Object.assign(new Error(detail), {
+    quotaAbsenceReason: "refresh_failed" as QuotaAbsence["reason"],
+  });
 }
 
 /** Accepts both credential shapes seen in the wild: flat and `{claudeAiOauth}`. */
@@ -159,6 +195,7 @@ export interface ClaudeOauthUsageDeps {
   readCredential: typeof readClaudeOauthCredential;
   fetchUsage: (accessToken: string) => Promise<unknown>;
   now: () => Date;
+  platform: NodeJS.Platform;
 }
 
 async function fetchUsageDefault(accessToken: string): Promise<unknown> {
@@ -198,15 +235,22 @@ function claudeOauthAbsence(
  * plus every enabled claude config_dir_login profile (subject = profile_id).
  * The PRIMARY claude source (release cut V11a) — it owns the claude subject
  * universe, so every candidate resolves to a snapshot OR a typed absence:
- * a null credential is not_logged_in (readClaudeOauthCredential cannot tell a
- * missing item from an unavailable keychain, so the detail states both), and a
- * fetch refusal is refresh_failed. Absence is stated, never inferred. */
+ * a null credential is not_logged_in (on macOS the keychain read cannot tell
+ * a missing item from an unavailable keychain, so its detail states both; off
+ * macOS a missing credential file IS the vendor's logged-out state), a store
+ * read fault is the tagged reason it carries, and a fetch refusal is
+ * refresh_failed. Absence is stated, never inferred. */
 export async function refreshClaudeOauthUsageQuota(
   deps: Partial<ClaudeOauthUsageDeps> = {},
 ): Promise<QuotaRefreshResult> {
   const readCredential = deps.readCredential ?? readClaudeOauthCredential;
   const fetchUsage = deps.fetchUsage ?? fetchUsageDefault;
   const now = deps.now ?? (() => new Date());
+  const platform = deps.platform ?? process.platform;
+  const notLoggedInDetail =
+    platform === "darwin"
+      ? "no OAuth credential in the keychain item (no login, or the keychain tool is unavailable)"
+      : "no vendor credential file in the config dir (not logged in)";
   const candidates: Array<{ subjectId: string | null; configDir: string }> = [
     { subjectId: null, configDir: defaultNativeClaudeConfigDir() },
   ];
@@ -225,15 +269,24 @@ export async function refreshClaudeOauthUsageQuota(
   const snapshots: QuotaSnapshot[] = [];
   const absences: QuotaAbsence[] = [];
   for (const candidate of candidates) {
-    const credential = await readCredential(candidate.configDir);
-    if (!credential) {
+    let credential: ClaudeOauthCredential | null;
+    try {
+      credential = await readCredential(candidate.configDir, platform);
+    } catch (error) {
+      const tagged = (error as { quotaAbsenceReason?: QuotaAbsence["reason"] })?.quotaAbsenceReason;
       absences.push(
         claudeOauthAbsence(
           candidate.subjectId,
-          "not_logged_in",
-          "no OAuth credential in the keychain item (no login, or the keychain tool is unavailable)",
+          tagged ?? "refresh_failed",
+          error instanceof Error ? error.message : String(error),
           now(),
         ),
+      );
+      continue;
+    }
+    if (!credential) {
+      absences.push(
+        claudeOauthAbsence(candidate.subjectId, "not_logged_in", notLoggedInDetail, now()),
       );
       continue;
     }

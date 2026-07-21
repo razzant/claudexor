@@ -1,8 +1,12 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   claudeOauthKeychainItem,
   parseClaudeOauthCredential,
   parseClaudeOauthUsage,
+  readClaudeOauthCredential,
   refreshClaudeOauthUsageQuota,
 } from "./claude-oauth-usage.js";
 
@@ -106,5 +110,120 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
     const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
     expect(nativeAbsence?.reason).toBe("refresh_failed");
     expect(nativeAbsence?.detail).toContain("500");
+  });
+});
+
+describe("claude credential-file store off macOS (Linux quota parity)", () => {
+  const configDir = () => mkdtemp(join(tmpdir(), "claudexor-cred-"));
+  // Redaction bait is assembled at runtime so no token-like literal ever
+  // lands in the source tree (secret-scan CI step, INV-062).
+  const bait = ["sk", "ant", "oat01", "b".repeat(24)].join("-");
+
+  it("reads both vendor credential shapes from .credentials.json", async () => {
+    const flat = await configDir();
+    await writeFile(
+      join(flat, ".credentials.json"),
+      JSON.stringify({ accessToken: bait, subscriptionType: "max" }),
+    );
+    await expect(readClaudeOauthCredential(flat, "linux")).resolves.toEqual({
+      accessToken: bait,
+      subscriptionType: "max",
+    });
+
+    const wrapped = await configDir();
+    await writeFile(
+      join(wrapped, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { accessToken: bait, subscriptionType: "pro" } }),
+    );
+    await expect(readClaudeOauthCredential(wrapped, "linux")).resolves.toEqual({
+      accessToken: bait,
+      subscriptionType: "pro",
+    });
+  });
+
+  it("a missing credential file is the honest logged-out null, not an error", async () => {
+    await expect(readClaudeOauthCredential(await configDir(), "linux")).resolves.toBeNull();
+  });
+
+  it("darwin stays keychain-only: a present credential file is never read there", async () => {
+    // Owner lock Q2=a. A fresh temp dir can have no keychain item (its name
+    // hashes the path), and off macOS the `security` binary does not exist —
+    // so on EVERY platform a darwin-gated read must ignore the file → null.
+    const dir = await configDir();
+    await writeFile(
+      join(dir, ".credentials.json"),
+      JSON.stringify({ accessToken: bait, subscriptionType: "max" }),
+    );
+    await expect(readClaudeOauthCredential(dir, "darwin")).resolves.toBeNull();
+  });
+
+  it("an unparseable credential file throws a tagged fault with no file bytes", async () => {
+    const dir = await configDir();
+    await writeFile(join(dir, ".credentials.json"), `{"refreshToken":"${bait}"`);
+    const failure = await readClaudeOauthCredential(dir, "linux").then(
+      () => null,
+      (error: unknown) => error as Error & { quotaAbsenceReason?: string },
+    );
+    expect(failure).not.toBeNull();
+    expect(failure?.quotaAbsenceReason).toBe("refresh_failed");
+    expect(failure?.message).not.toContain(bait);
+    expect(failure?.message).not.toContain("refreshToken");
+  });
+
+  it("an unreadable credential file throws a tagged fault naming only the error class", async () => {
+    const dir = await configDir();
+    await mkdir(join(dir, ".credentials.json"));
+    const failure = await readClaudeOauthCredential(dir, "linux").then(
+      () => null,
+      (error: unknown) => error as Error & { quotaAbsenceReason?: string },
+    );
+    expect(failure?.quotaAbsenceReason).toBe("refresh_failed");
+    expect(failure?.message).toContain("EISDIR");
+  });
+
+  it("refresher states the file-store detail off macOS and keychain detail on it", async () => {
+    const linux = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => null,
+      fetchUsage: async () => {
+        throw new Error("should not be called");
+      },
+      now: () => new Date("2026-07-21T00:00:00Z"),
+      platform: "linux",
+    });
+    const linuxAbsence = linux.absences?.find((a) => a.subject.subject_id === null);
+    expect(linuxAbsence?.reason).toBe("not_logged_in");
+    expect(linuxAbsence?.detail).toContain("credential file");
+    expect(linuxAbsence?.detail).not.toContain("keychain");
+
+    const darwin = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => null,
+      fetchUsage: async () => {
+        throw new Error("should not be called");
+      },
+      now: () => new Date("2026-07-21T00:00:00Z"),
+      platform: "darwin",
+    });
+    const darwinAbsence = darwin.absences?.find((a) => a.subject.subject_id === null);
+    expect(darwinAbsence?.reason).toBe("not_logged_in");
+    expect(darwinAbsence?.detail).toContain("keychain");
+  });
+
+  it("refresher converts a tagged store fault into a refresh_failed absence, never a throw", async () => {
+    const result = await refreshClaudeOauthUsageQuota({
+      readCredential: async () => {
+        throw Object.assign(new Error("credential file unreadable (EACCES)"), {
+          quotaAbsenceReason: "refresh_failed" as const,
+        });
+      },
+      fetchUsage: async () => {
+        throw new Error("should not be called");
+      },
+      now: () => new Date("2026-07-21T00:00:00Z"),
+      platform: "linux",
+    });
+    expect(result.snapshots).toEqual([]);
+    const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+    expect(nativeAbsence?.reason).toBe("refresh_failed");
+    expect(nativeAbsence?.detail).toContain("EACCES");
   });
 });

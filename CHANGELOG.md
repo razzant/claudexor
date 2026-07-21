@@ -3,6 +3,39 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.0.2** (2026-07-21) — Linux subscription-quota parity for Claude. The
+  per-profile quota reader (`oauth/usage` source) read the access token only
+  from the macOS keychain item, so on Linux `quota --refresh` returned a
+  misleading `not_logged_in` absence for every logged-in claude account while
+  runs and doctor were green. Off macOS the reader now uses the vendor's own
+  store — `.credentials.json` (mode 0600) inside the profile's config dir —
+  with the same transient-token discipline (one usage request, never
+  persisted/logged/in errors). A missing file stays an honest
+  `not_logged_in`; an unreadable or unparseable file is a typed
+  `refresh_failed` naming only the error class. macOS behavior is unchanged;
+  Codex quota was already file-store-portable. Also: README badges and an
+  author section.
+
+- **v3.0.1** (2026-07-20) — hotfix: every browser-downloaded 3.0.0 DMG crashed
+  at launch (EXC_BREAKPOINT in `applicationDidFinishLaunching`). The SwiftPM
+  `Bundle.module` accessor fatalErrors when the resource bundle fails to load,
+  and a quarantined process refuses the plist-less bundle `swift build` emits.
+  Fixed twice over: the Dock-icon override (essential for the bare dev
+  executable, harmlessly re-applied by the packaged app) is now resolved by
+  plain file path (no `Bundle.module`, cosmetic degrade instead of crash),
+  and `build-app.sh` writes a minimal `Info.plist` into the resource bundle.
+  If you downloaded 3.0.0: upgrade to this DMG — that is the fix. Only if
+  you must stay on 3.0.0, first verify you have an intact app signed by the
+  official Claudexor Developer ID:
+  `spctl -a -vv /Applications/Claudexor.app` must report `Notarized
+  Developer ID` AND `origin=Developer ID Application: Andrei Kaznacheev
+  (N7RDVVZ7LA)` — a generic notarization line alone proves only that
+  *some* notarized app sits at that path. (Signer identity proves an intact
+  official build, not byte-identity with the published artifact; for that,
+  check the downloaded DMG against `SHA256SUMS` on the release page.) Only
+  then drop the quarantine flag:
+  `xattr -d com.apple.quarantine /Applications/Claudexor.app`.
+
 - **v3.0.0** (2026-07-20) — the chat-first control plane, rebuilt on honest
   server truth. This is a breaking major: a fresh `~/.claudexor/v3/` data root
   (the old `~/.claudexor/v2/` root is left untouched as the archive; no

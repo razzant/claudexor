@@ -541,6 +541,22 @@ export function blockerContractGaps(findings) {
  */
 export const REVIEWER_MIN_PLAUSIBLE_MS = 30_000;
 
+/**
+ * Prompt-size-aware liveness floor. The 30s ceiling was calibrated for the
+ * megabyte-scale v3.0.0 release packets; a flash-tier reviewer legitimately
+ * clears a sub-200KB hotfix packet in ~20s, which made the protocol
+ * structurally unsatisfiable for small deltas (v3.0.1 wave, rounds 5-6).
+ * The floor scales with the ACTUAL submitted prompt so liveness still
+ * rejects instant/cache/transport artifacts at every size; it never rises
+ * above REVIEWER_MIN_PLAUSIBLE_MS and never falls below 10s.
+ */
+export function livenessFloorMs(promptChars) {
+  if (!Number.isFinite(promptChars) || promptChars <= 0) return REVIEWER_MIN_PLAUSIBLE_MS;
+  if (promptChars >= 1_000_000) return REVIEWER_MIN_PLAUSIBLE_MS;
+  if (promptChars >= 300_000) return 20_000;
+  return 10_000;
+}
+
 export function reviewerLiveness(actor, minPlausibleMs = REVIEWER_MIN_PLAUSIBLE_MS) {
   if (actor?.status !== "responded") {
     return { live: false, reason: `status is ${actor?.status ?? "(missing)"}` };
