@@ -1145,7 +1145,8 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         // active device-auth job.
         if ((active.profileId ?? null) === (profileBinding?.profileId ?? null)) {
           const activeDeviceAuth = active.authorization?.args.includes("--device-auth") ?? null;
-          const requestedDeviceAuth = harness === "codex" ? request.loginFlow !== "browser_redirect" : null;
+          const requestedDeviceAuth =
+            harness === "codex" ? request.loginFlow !== "browser_redirect" : null;
           if (
             activeDeviceAuth !== null &&
             requestedDeviceAuth !== null &&

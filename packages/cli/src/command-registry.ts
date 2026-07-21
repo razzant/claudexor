@@ -393,7 +393,9 @@ export function renderHelp(version: string): string {
     lines.push(padded(label, flag.help, 25));
   }
   lines.push("");
-  lines.push("First time (or driving Claudexor as an agent)? docs/AGENT_ONBOARDING.md — Install And Login.");
+  lines.push(
+    "First time (or driving Claudexor as an agent)? docs/AGENT_ONBOARDING.md — Install And Login.",
+  );
   return lines.join("\n") + "\n";
 }
 
