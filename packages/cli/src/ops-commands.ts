@@ -378,6 +378,13 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
         `claudexor: unknown auth-login harness '${harness}' (expected codex|claude|cursor)`,
       );
     }
+    // --browser-redirect (codex only): explicit opt-in for the localhost
+    // OAuth flow; the default is device-auth (v3.0.3 S6, safe for sibling
+    // OpenAI sessions when completed in an isolated browser context).
+    const browserRedirect = args.flags["browser-redirect"] === true;
+    if (browserRedirect && harness !== "codex") {
+      return printUsageError(json, "claudexor: --browser-redirect applies only to codex login");
+    }
     const { addr } = await ensureDaemon();
     const response = await controlApiFetch(addr, "/setup/jobs", {
       method: "POST",
@@ -385,7 +392,12 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
         Authorization: `Bearer ${addr.token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ harness, action: "login", authRequest: "subscription" }),
+      body: JSON.stringify({
+        harness,
+        action: "login",
+        authRequest: "subscription",
+        ...(browserRedirect ? { loginFlow: "browser_redirect" } : {}),
+      }),
     });
     if (!response.ok) {
       const detail = await response.text();

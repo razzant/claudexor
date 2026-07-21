@@ -662,6 +662,16 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     }
     job = persistNativeCommandOutcome(jobId, result);
     if (!result.commandStarted) {
+      if (result.errorCode === "device_auth_unsupported") {
+        finish(
+          jobId,
+          "not_supported",
+          "not_supported",
+          `${job.harness} CLI does not support device-code login (--device-auth needs codex >= 0.46.0); ` +
+            `upgrade the codex CLI, or retry with the browser-redirect flow (loginFlow: browser_redirect).`,
+        );
+        return;
+      }
       finish(
         jobId,
         "failed",
@@ -679,10 +689,18 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       });
       return;
     }
-    finish(jobId, "failed", "command_failed", `${job.harness} login command failed.`, {
-      exitCode: result.exitCode,
-      signal: result.signal,
-    });
+    finish(
+      jobId,
+      "failed",
+      "command_failed",
+      `${job.harness} login command failed.${
+        result.outputTail ? ` Last output: ${result.outputTail.slice(-600)}` : ""
+      }`,
+      {
+        exitCode: result.exitCode,
+        signal: result.signal,
+      },
+    );
   }
 
   function serializeTermination(
@@ -975,7 +993,15 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         commandDigest: authorizedCommandDigest,
       });
       atomicPrivateJson(paths.manifest, manifest);
-      const script = `#!/usr/bin/env bash\nset -uo pipefail\n${NativeLogin.nativeLoginTerminalExports(job.harness)}set +e\n${shellQuote(nodePath)} ${shellQuote(runnerPath)} ${shellQuote(paths.manifest)}\nstatus=$?\nset -e\nprintf '\\nClaudexor setup command finished (exit %s). Press Return to close this window. ' "$status"\nIFS= read -r _\nexit "$status"\n`;
+      // External-risk disclosure (v3.0.3, Bible): a browser-based OpenAI
+      // sign-in completed in a browser holding ANOTHER account's session can
+      // revoke sibling sessions (incl. the ChatGPT desktop app) server-side.
+      // The isolation instruction is load-bearing for the device-auth flow.
+      const codexIsolationNote =
+        job.harness === "codex"
+          ? `printf '%s\\n\\n' 'IMPORTANT: complete the sign-in link in a PRIVATE/incognito browser window (or a browser profile signed into no other OpenAI account). Completing it in your normal signed-in browser and switching accounts there can sign out other OpenAI apps on this Mac (e.g. the ChatGPT desktop app).'\n`
+          : "";
+      const script = `#!/usr/bin/env bash\nset -uo pipefail\n${NativeLogin.nativeLoginTerminalExports(job.harness)}${codexIsolationNote}set +e\n${shellQuote(nodePath)} ${shellQuote(runnerPath)} ${shellQuote(paths.manifest)}\nstatus=$?\nset -e\nprintf '\\nClaudexor setup command finished (exit %s). Press Return to close this window. ' "$status"\nIFS= read -r _\nexit "$status"\n`;
       writeFileSync(paths.command, script, { mode: 0o700, flag: "wx" });
       chmodSync(paths.command, 0o700);
       const waiting = update(job.jobId, {
@@ -1141,7 +1167,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         jobId,
         `created ${harness} ${action}${profileBinding ? ` for profile "${profileBinding.profileId}"` : ""}`,
       );
-      const spec = NativeLogin.nativeLoginSpec(harness);
+      const spec = NativeLogin.nativeLoginSpec(harness, undefined, request.loginFlow);
       if (!spec)
         return finish(
           jobId,

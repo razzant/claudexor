@@ -107,12 +107,40 @@ export async function runSetupLoginWorker(
   }
 
   atomicPrivateJson(manifest.statePath, { ...awaitingPermit, stage: "running" });
+
+  // Device-auth capability gate (v3.0.3 S6): `--device-auth` exists only
+  // since codex 0.46.0. Probe the vendor's own `login --help` BEFORE spawning
+  // so an old CLI yields a typed unsupported outcome instead of an opaque
+  // argv error. The probe fails OPEN — a broken probe falls through to the
+  // real spawn, whose own failure carries the diagnostics.
+  if (manifest.args.includes("--device-auth")) {
+    const probe = await probeLoginHelp(manifest.binary, spawnProcess);
+    if (probe.completed && !probe.output.includes("--device-auth")) {
+      persistResult(manifest, {
+        permitIssuedAt: permit.issuedAt,
+        commandStarted: false,
+        errorCode: "device_auth_unsupported",
+        exitCode: null,
+        signal: null,
+        finishedAt: now().toISOString(),
+        outputTail: boundedTail(probe.output),
+      });
+      return 1;
+    }
+  }
+
   // Keep the group leader alive through TERM so the daemon can still prove
   // identity and escalate a stubborn descendant with KILL after the grace
   // period. The vendor child receives the same group signal directly.
   const holdLeaderForEscalation = () => undefined;
   process.on("SIGTERM", holdLeaderForEscalation);
   process.on("SIGINT", holdLeaderForEscalation);
+  // Tee the codex login's output (v3.0.3 S6): the user still sees the URL +
+  // one-time code in Terminal, while a bounded ANSI-stripped tail rides the
+  // result so the daemon can classify failures (e.g. the ChatGPT
+  // "Allow device code login" toggle being off) instead of a bare exit code.
+  const teeOutput = manifest.harness === "codex";
+  const tail = createTailBuffer();
   let child;
   try {
     const spawnOptions: SpawnOptions = {
@@ -121,9 +149,19 @@ export async function runSetupLoginWorker(
       // profile's own store; absent = the default vendor store as before.
       env: nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
       detached: false,
-      stdio: "inherit",
+      stdio: teeOutput ? ["inherit", "pipe", "pipe"] : "inherit",
     };
     child = spawnProcess(manifest.binary, manifest.args, spawnOptions);
+    if (teeOutput) {
+      child.stdout?.on("data", (chunk: Buffer) => {
+        process.stdout.write(chunk);
+        tail.push(chunk);
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        process.stderr.write(chunk);
+        tail.push(chunk);
+      });
+    }
   } catch {
     persistResult(manifest, {
       permitIssuedAt: permit.issuedAt,
@@ -156,14 +194,84 @@ export async function runSetupLoginWorker(
   }
   process.off("SIGTERM", holdLeaderForEscalation);
   process.off("SIGINT", holdLeaderForEscalation);
+  const capturedTail = tail.text();
   persistResult(manifest, {
     permitIssuedAt: permit.issuedAt,
     commandStarted: true,
     exitCode: result.code,
     signal: result.signal,
     finishedAt: now().toISOString(),
+    ...(capturedTail && (result.code !== 0 || result.signal !== null)
+      ? { outputTail: capturedTail }
+      : {}),
   });
   return result.code === 0 && result.signal === null ? 0 : 1;
+}
+
+const OUTPUT_TAIL_BYTES = 4096;
+
+/** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
+function createTailBuffer(): { push(chunk: Buffer | string): void; text(): string } {
+  let tail = "";
+  return {
+    push(chunk) {
+      tail = (tail + String(chunk)).slice(-OUTPUT_TAIL_BYTES);
+    },
+    text() {
+      return boundedTail(tail);
+    },
+  };
+}
+
+/** Strip ANSI escapes and clamp — diagnostic evidence, not a vendor log copy. */
+function boundedTail(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  const plain = text.replace(/\[[0-9;?]*[ -/]*[@-~]/g, "").replace(/\r/g, "");
+  return plain.slice(-OUTPUT_TAIL_BYTES).trim().slice(0, 4000);
+}
+
+/** Run `<binary> login --help` captured, bounded to 10s. Fails OPEN: only a
+ * COMPLETED probe whose help text lacks the flag reports unsupported. */
+function probeLoginHelp(
+  binary: string,
+  spawnProcess: typeof spawn,
+): Promise<{ completed: boolean; output: string }> {
+  return new Promise((resolveProbe) => {
+    let output = "";
+    let settled = false;
+    const settle = (completed: boolean) => {
+      if (!settled) {
+        settled = true;
+        resolveProbe({ completed, output });
+      }
+    };
+    let probe: ReturnType<typeof spawn>;
+    try {
+      probe = spawnProcess(binary, ["login", "--help"], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      settle(false);
+      return;
+    }
+    probe.stdout?.on("data", (chunk: Buffer) => {
+      output += String(chunk);
+    });
+    probe.stderr?.on("data", (chunk: Buffer) => {
+      output += String(chunk);
+    });
+    probe.on("error", () => settle(false));
+    probe.on("exit", () => settle(output.length > 0));
+    const timer = setTimeout(() => {
+      try {
+        probe.kill("SIGKILL");
+      } catch {
+        // best-effort
+      }
+      settle(false);
+    }, 10_000);
+    timer.unref?.();
+  });
 }
 
 function validateManifest(manifestPath: string): SetupLoginManifest {

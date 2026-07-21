@@ -185,7 +185,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     id: "auth",
     usageArgs: "status|login",
     summary: "Inspect native harness auth",
-    flags: ["all", "json"],
+    flags: ["all", "json", "browser-redirect"],
     mutability: "ops",
     stability: "stable",
   },

@@ -12,16 +12,27 @@ export interface NativeLoginSpec {
 
 type LoginDefinition = Omit<NativeLoginSpec, "binary"> & { binaryName: () => string };
 
+export type CodexLoginFlow = "device_auth" | "browser_redirect";
+
 const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
   codex: {
     binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
-    args: [...CODEX_FILE_AUTH_ARGS, "login"],
-    displayCommand: "codex login (isolated Claudexor profile)",
+    // Device-code auth is the DEFAULT interactive flow (v3.0.3 S6,
+    // live-verified 2026-07-21): completed in any browser context it cannot
+    // disturb sibling OpenAI sessions, unlike the localhost-redirect flow
+    // whose in-browser account switch revokes them server-side.
+    args: [...CODEX_FILE_AUTH_ARGS, "login", "--device-auth"],
+    displayCommand: "codex login --device-auth (isolated Claudexor profile)",
   },
   claude: {
     binaryName: () => process.env.CLAUDEXOR_CLAUDE_BIN || "claude",
-    args: ["auth", "login", "--claudeai"],
-    displayCommand: "claude auth login --claudeai",
+    // No --claudeai flag: it is version-varying (absent on older CLIs, #17)
+    // while plain `auth login` already defaults to the claude.ai subscription
+    // route; the scoped CLAUDE_CONFIG_DIR isolates us from any user setting
+    // that could flip that default, and doctor's native_session check refuses
+    // anything but authMethod=claude.ai after the fact.
+    args: ["auth", "login"],
+    displayCommand: "claude auth login",
   },
   cursor: {
     binaryName: () => process.env.CLAUDEXOR_CURSOR_BIN || "cursor-agent",
@@ -38,11 +49,19 @@ const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
 export function nativeLoginSpec(
   harness: string,
   resolver: (binary: string) => string | null = resolveHarnessBinary,
+  loginFlow?: CodexLoginFlow,
 ): NativeLoginSpec | null {
   const definition = NATIVE_LOGIN_DEFINITIONS[harness];
   if (!definition) return null;
   const resolved = resolver(definition.binaryName());
   if (!resolved || !isAbsolute(resolved)) return null;
+  if (harness === "codex" && loginFlow === "browser_redirect") {
+    return {
+      binary: resolved,
+      args: [...CODEX_FILE_AUTH_ARGS, "login"],
+      displayCommand: "codex login (browser redirect, isolated Claudexor profile)",
+    };
+  }
   return {
     binary: resolved,
     args: [...definition.args],

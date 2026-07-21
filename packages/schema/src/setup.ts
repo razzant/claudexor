@@ -105,8 +105,13 @@ const SetupNativeCommandReceiptShape = {
   commandStarted: z.boolean(),
   exitCode: z.number().int().nonnegative().nullable(),
   signal: z.string().nullable(),
-  errorCode: z.enum(["permit_timeout", "spawn_failed"]).optional(),
+  errorCode: z.enum(["permit_timeout", "spawn_failed", "device_auth_unsupported"]).optional(),
   finishedAt: SetupTimestamp,
+  /** Bounded, ANSI-stripped tail of the vendor command's captured output —
+   * diagnostic evidence for classifying a failed login (e.g. the device-code
+   * toggle being disabled) without copying vendor output into durable logs
+   * wholesale. Only flows the runner tees (codex) carry it. */
+  outputTail: z.string().max(4000).optional(),
 };
 
 export const SetupNativeCommandReceipt = z
@@ -135,6 +140,13 @@ export const SetupNativeCommandReceipt = z
         code: z.ZodIssueCode.custom,
         path: ["errorCode"],
         message: "spawn_failed cannot claim that the command started",
+      });
+    }
+    if (value.errorCode === "device_auth_unsupported" && value.commandStarted) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["errorCode"],
+        message: "device_auth_unsupported means the vendor command was never started",
       });
     }
   })
@@ -241,8 +253,27 @@ export const ControlSetupJobCreateRequest = z
       .min(1)
       .optional()
       .describe("Registered config_dir_login profile to log in; absent = the default session."),
+    /** Codex-only interactive login flow selection. Default (absent) is
+     * device_auth — completed in any browser context, it cannot disturb
+     * sibling OpenAI sessions on this machine (v3.0.3 S6, live-verified).
+     * browser_redirect is the explicit opt-in localhost-callback flow. */
+    loginFlow: z
+      .enum(["device_auth", "browser_redirect"])
+      .optional()
+      .describe(
+        "Codex-only: device_auth (default; complete in any browser context) or browser_redirect (explicit opt-in localhost callback).",
+      ),
   })
   .strict()
+  .superRefine((value, context) => {
+    if (value.loginFlow && value.harness !== "codex") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["loginFlow"],
+        message: "loginFlow selection exists only for the codex harness",
+      });
+    }
+  })
   .describe("Request body to create an exact-subscription native-login job.");
 export type ControlSetupJobCreateRequest = z.infer<typeof ControlSetupJobCreateRequest>;
 

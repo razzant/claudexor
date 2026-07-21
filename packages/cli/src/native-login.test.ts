@@ -33,13 +33,24 @@ describe("native login specs", () => {
     try {
       expect(nativeLoginSpec("codex", resolver)).toEqual({
         binary: "/normalized/bin/codex",
-        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "login"],
-        displayCommand: "codex login (isolated Claudexor profile)",
+        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "login", "--device-auth"],
+        displayCommand: "codex login --device-auth (isolated Claudexor profile)",
       });
+      // Explicit opt-in localhost-redirect flow (codex only).
+      expect(nativeLoginSpec("codex", resolver, "browser_redirect")).toEqual({
+        binary: "/normalized/bin/codex",
+        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "login"],
+        displayCommand: "codex login (browser redirect, isolated Claudexor profile)",
+      });
+      // A flow hint never changes non-codex harnesses.
+      expect(nativeLoginSpec("claude", resolver, "browser_redirect")?.args).toEqual([
+        "auth",
+        "login",
+      ]);
       expect(nativeLoginSpec("claude", resolver)).toEqual({
         binary: "/normalized/bin/claude",
-        args: ["auth", "login", "--claudeai"],
-        displayCommand: "claude auth login --claudeai",
+        args: ["auth", "login"],
+        displayCommand: "claude auth login",
       });
       expect(nativeLoginSpec("cursor", resolver)).toEqual({
         binary: "/normalized/bin/cursor-agent",
@@ -62,7 +73,9 @@ describe("native login specs", () => {
     expect(nativeLoginSpec("codex", () => null)).toBeNull();
     expect(nativeLoginSpec("codex", () => "codex")).toBeNull();
     expect(nativeLoginSpec("opencode", resolver)).toBeNull();
-    expect(nativeLoginDisplayCommand("codex")).toBe("codex login (isolated Claudexor profile)");
+    expect(nativeLoginDisplayCommand("codex")).toBe(
+      "codex login --device-auth (isolated Claudexor profile)",
+    );
   });
 
   it("resolves the same explicit binary override used by the adapter", () => {

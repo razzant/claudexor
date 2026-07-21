@@ -847,11 +847,16 @@
                   "type": "string",
                   "enum": [
                     "permit_timeout",
-                    "spawn_failed"
+                    "spawn_failed",
+                    "device_auth_unsupported"
                   ]
                 },
                 "finishedAt": {
                   "$ref": "#/definitions/ControlSetupJobEvent/properties/job/properties/deadlineAt"
+                },
+                "outputTail": {
+                  "type": "string",
+                  "maxLength": 4000
                 }
               },
               "required": [

@@ -26,6 +26,14 @@
           "type": "string",
           "minLength": 1,
           "description": "Registered config_dir_login profile to log in; absent = the default session."
+        },
+        "loginFlow": {
+          "type": "string",
+          "enum": [
+            "device_auth",
+            "browser_redirect"
+          ],
+          "description": "Codex-only: device_auth (default; complete in any browser context) or browser_redirect (explicit opt-in localhost callback)."
         }
       },
       "required": [
