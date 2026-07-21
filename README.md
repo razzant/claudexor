@@ -730,6 +730,6 @@ the same license.
 
 ## Author
 
-Claudexor is written by Anton ([@razzant](https://github.com/razzant)).
+Claudexor is written by Anton ([@razzant](https://t.me/razzant)).
 News and discussion live in the author's Telegram channel:
-[t.me/abstractdl_chat](https://t.me/abstractdl_chat).
+[t.me/abstractdl](https://t.me/abstractdl).
