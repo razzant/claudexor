@@ -344,6 +344,17 @@ invariant or owner decision before proceeding.
   tests; Claude-only native-home bridge tests + generic-home no-bridge test;
   W3.3 route-admission tests; CHECKLISTS review row.
 
+  NOTE (external session-invalidation risk, INV-067 corollary): a browser-based
+  OAuth login completed in a browser already signed into the same vendor can
+  revoke that vendor's sibling sessions server-side within seconds — the
+  2026-07-21 incident was an in-browser OpenAI account switch that 401'd the
+  ChatGPT desktop app. The OpenAI backend also invalidates sessions with no
+  local trigger. This is vendor backend behavior, outside Claudexor's control.
+  Claudexor's only levers are its device-auth default for codex login, the
+  isolation instruction (complete the link in a private window / a profile
+  signed into no other vendor account), and honest disclosure of the risk. The
+  product must NEVER claim to prevent it — mitigation and disclosure only.
+
 ## 7. Project Context Is Explicit
 
 - **INV-070** Claudexor distinguishes the Claudexor product repo, the

@@ -159,6 +159,16 @@ profiles with their own vendor-owned state; readiness is always a live
 doctor projection in the exact environment a run will use, never a stored
 assertion. Raw secrets never become artifacts — prompts included.
 
+Login is run through Claudexor rather than the bare vendor CLI so the session
+lands in the Claudexor-scoped store the runs actually read. Codex login
+defaults to device-auth (a URL and one-time code in the Terminal), and the
+prompt carries an isolation instruction: complete the link in a private
+browser context, because a browser-based OAuth completed alongside another
+session of the same vendor can invalidate that sibling session server-side —
+vendor backend behavior Claudexor discloses and mitigates (device-auth
+default, isolation guidance) but never claims to prevent. An interactive login
+survives an ordinary daemon restart; only an explicit cancel ends it.
+
 ## Workspace Semantics
 
 Chat write turns run in-place on the live tree (the way local coding agents

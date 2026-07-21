@@ -190,6 +190,10 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   ),
   booleanFlag("json", "Machine-readable JSON output"),
   booleanFlag("all", null),
+  booleanFlag(
+    "browser-redirect",
+    "Codex login: opt into the localhost-callback flow instead of the device-auth default",
+  ),
   booleanFlag("dry-run", "Plugin: show lifecycle actions; apply: check patch without mutating"),
   booleanFlag(
     "force",

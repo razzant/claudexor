@@ -108,3 +108,10 @@ deferred; they are recorded here now.
   complete per-attempt telemetry for retried slots (3.0.1-r7 sol criticals,
   re-observed in the 3.0.2 wave when the gemini slot failed its liveness floor
   without the promised same-SHA retry).
+
+## v3.0.3 deferrals (owner decision R2)
+
+- #18 fallback-model picker — the macOS Per-Harness Defaults 400 (#18) was
+  fixed by removing the dead `maxUsd` field; the SEPARATE request to add a UI
+  picker for the per-harness fallback model is deferred (owner-scoped out of
+  3.0.3). Ship it as its own reviewed surface, not folded into the 400 fix.

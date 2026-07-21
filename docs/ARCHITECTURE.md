@@ -892,8 +892,11 @@ a startup failure — enters ONE state machine (`DaemonRuntimeShutdown
 .beginShutdown(reason)`): abort in-flight runs, complete their journaled
 terminal transitions, close the journal, under a shared bounded escalation
 ladder (hung-stop deadline, then a post-stop leaked-handle sweep, every rung
-disclosed in the log). A hung participant cannot immortalize the daemon
-whichever trigger asked it to die. The daemon records its birth identity in
+disclosed in the log). Awaiting-user interactive login runners are the one
+exemption: the shutdown drain does NOT signal them (a detached Terminal login
+survives an ordinary daemon bounce and is reconciled on the next start;
+explicit cancel is the only killer). A hung participant cannot immortalize the
+daemon whichever trigger asked it to die. The daemon records its birth identity in
 the writer lease at startup; `claudexor daemon stop` then CONFIRMS death
 (released lease, gone pid, or identity-verified SIGKILL escalation — a
 recycled pid is never signalled) before reporting success, so scripts and
@@ -984,9 +987,19 @@ after the daemon proves the recorded process group empty. Unknown or nonempty
 state remains a typed refusal and cannot be bypassed by creating another job.
 
 Native login specs are a shared `{binary,args,displayCommand}` contract for
-Codex (`codex -c cli_auth_credentials_store=file login` in its dedicated
-`CODEX_HOME`), Claude (`claude auth login --claudeai`), and Cursor
-(`cursor-agent login`). The daemon writes a private runner manifest; Terminal
+Codex (`codex -c cli_auth_credentials_store=file login --device-auth` in its
+dedicated `CODEX_HOME`, the device-auth default; the request `loginFlow`
+selects `browser_redirect` for the explicit localhost-callback opt-in), Claude
+(`claude auth login`, the claude.ai subscription route with no version-varying
+flag), and Cursor (`cursor-agent login`). The setup runner probes
+`codex login --help` before spawning — `--device-auth` exists only on recent
+codex, so an older CLI yields a typed `not_supported` outcome with the upgrade
+or `--browser-redirect` remedy, never an opaque argv error, and the probe fails
+open. The runner tees codex login output so the operator still sees the URL and
+one-time code, and persists a bounded ANSI-stripped tail on the result so the
+daemon can disclose the real failure cause (e.g. the ChatGPT "Allow device code
+login" toggle being off) instead of a bare exit code. The daemon writes a
+private runner manifest; Terminal
 starts the bundled absolute Node + runner; the runner executes the absolute
 vendor binary without a shell, inherits the TTY, scrubs provider credentials,
 and atomically records PID/kernel-start/process-group and result sidecars. It
@@ -1015,10 +1028,16 @@ a second Terminal; a create naming a DIFFERENT target while a login is active
 refuses with a typed 409, and a conflicting active mutating
 action is refused. Cancel is asynchronous. Cancel/timeout sends TERM and, after
 five seconds, KILL only when PID + kernel-start identity still matches; an
-unproven identity is never signalled or called cancelled. Restart consumes an
-existing result first and reconciles a still-live proven login runner. A
-capability smoke with no durable completed receipt becomes
-`interrupted_unknown` and is never auto-replayed. Terminal outcomes distinguish
+unproven identity is never signalled or called cancelled. An ordinary daemon
+stop/restart no longer terminates an awaiting-user login runner (that regression
+killed the operator's own pending login in the 2026-07-21 incident); explicit
+`setup jobs cancel` stays the only signalling path. Restart consumes an existing
+terminal result first, then adopts a live runner only on positive evidence — a
+matching durable handle, the same leader identity, and a nonempty process
+group; a proven-dead group with no receipt is the unrecoverable
+`cancelled_on_restart`, and identity uncertainty stays fail-closed as
+`termination_unconfirmed`. A capability smoke with no durable completed receipt
+becomes `interrupted_unknown` and is never auto-replayed. Terminal outcomes distinguish
 `completed`, `not_supported`, `launch_failed`, `command_failed`,
 `auth_not_ready`, `capability_verification_failed`,
 `credential_route_mismatch`, `timed_out`, `cancelled_by_user`,

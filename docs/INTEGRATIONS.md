@@ -122,7 +122,15 @@ documented windows and provenance in the Claudexor-owned v3 root and does not
 read Claude credential or session files. See the official
 [Claude Code status-line contract](https://code.claude.com/docs/en/statusline).
 Native login commands are server allowlisted and run as setup jobs with
-typed phase/deadline/outcome and a polling-backed SSE lifecycle stream
+typed phase/deadline/outcome. Codex login defaults to device-auth (a URL plus
+one-time code shown in the Terminal), with the older localhost-callback flow
+selectable through the request `loginFlow` (`--browser-redirect` on the CLI,
+codex only); an older codex CLI without device-auth support yields a typed
+`not_supported` outcome, never a silent fallback. The Terminal wrapper prints
+the isolation instruction — complete the link in a private window or a profile
+signed into no other OpenAI account, because an in-browser account switch can
+revoke sibling OpenAI sessions server-side. The lifecycle streams over a
+polling-backed SSE channel
 (`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
 heartbeats, and closes on every terminal state including `timed_out` and
 `interrupted_unknown`. A reconnecting client first GET-resnapshots the job;
@@ -227,9 +235,16 @@ Current operational behavior:
   terminal result, cancellation, pending questions, and answers are separate
   stable tools; cancel/answer success means the `/v2` journal mutation was
   acknowledged.
-- A version skew between installed plugin artifacts
-  (`CLAUDEXOR_PLUGIN_VERSION`) and the running CLI is disclosed on stderr at
-  serve time; run `claudexor plugin repair all` and reload the host.
+- A skew between installed plugin artifacts (`CLAUDEXOR_PLUGIN_VERSION`) and
+  the running CLI — a version mismatch, or an unmarked non-default frozen
+  config root — is a HARD REFUSAL at `mcp serve` time, not an ignorable stderr
+  warning: a pre-handshake process refusal (`plugin_artifact_skew`) whose
+  message names the `claudexor plugin repair all` remedy. Default-root installs
+  no longer serialize `CLAUDEXOR_CONFIG_DIR` at all (every CLI generation
+  self-selects its own versioned root at serve time, so a stale frozen root can
+  never launch new code against old data); an explicit operator override is
+  serialized together with a `CLAUDEXOR_ROOT_MODE=explicit` provenance marker
+  so the bridge can tell an intentional override from a legacy frozen root.
 - Long work no longer depends on the host's tool-call timeout; the daemon keeps
   running after the durable handle is returned.
 
@@ -585,7 +600,8 @@ always preferred.
 | `CLAUDEXOR_DAEMON_SOCK` | daemon | Override the daemon's UNIX socket path. |
 | `CLAUDEXOR_DOCTOR_TTL_MS` / `CLAUDEXOR_DOCTOR_NON_OK_TTL_MS` | doctor | Cache TTLs for ok / non-ok doctor probes. |
 | `CLAUDEXOR_CLI_PATH` / `CLAUDEXOR_NODE_PATH` | plugins | Paths baked into generated host-plugin MCP configs (set by the installer, rarely by hand). |
-| `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by generated host configs; a mismatch with the CLI version prints the plugin-repair warning. |
+| `CLAUDEXOR_PLUGIN_VERSION` | mcp-server | Set by generated host configs; a mismatch with the CLI version is a hard `mcp serve` refusal (`plugin_artifact_skew`) whose message names `claudexor plugin repair all`. |
+| `CLAUDEXOR_ROOT_MODE` | plugins / mcp-server | Provenance marker (`explicit`) the installer stamps ALONGSIDE a serialized `CLAUDEXOR_CONFIG_DIR` only for an operator-chosen non-default root; its absence next to a frozen non-default root is treated as legacy skew and refused. Default-root installs serialize neither. Never set by hand. |
 | `CLAUDEXOR_MANAGED` | plugins | Ownership marker the installer writes into generated host MCP configs (never set by hand). |
 | `CLAUDEXOR_DELEGATION_PARENT_RUN_ID` / `CLAUDEXOR_DELEGATION_DEPTH` / `CLAUDEXOR_DELEGATION_MAX_SUBRUNS` / `CLAUDEXOR_DELEGATION_BUDGET` | mcp-server (delegation belt) | Injected by the daemon into the `agent --delegate` belt process (`claudexor mcp serve-belt`); carry the parent run id, nesting depth (belt refuses depth>0), the per-parent sub-run cap, and the parent paid-budget headroom snapshot. Never set by hand. |
 | `CLAUDEXOR_REVIEWER_TIMEOUT_MS` | config | Per-reviewer timeout override for review panels. |

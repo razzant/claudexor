@@ -3,6 +3,42 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.0.3** (2026-07-21) — hardening from the 2026-07-21 "codex chats
+  disappeared" incident forensics (local data was never touched; the trigger
+  was an OpenAI server-side session invalidation from a shared-browser account
+  switch) plus GitHub issue triage. Config: a schema-parse failure is now a
+  typed `config_invalid` (422) with a path-specific inspect-or-restore remedy
+  instead of a generic 500; the retired-key registry gained the pre-registry
+  v1 removals that broke strict parse (`default_portfolio`,
+  `routing.default_policy`, `budget.max_usd_per_run`, `harnesses.*.max_usd`);
+  the startup sweep now rewrites the GLOBAL config only on this generation's
+  own default root — never a foreign root reached via `CLAUDEXOR_CONFIG_DIR` —
+  and writes a byte-identical backup before it mutates. Plugins: a version
+  skew or an unmarked non-default frozen root is a hard `mcp serve` refusal
+  (`plugin_artifact_skew`, remedy `claudexor plugin repair all`) rather than an
+  ignorable stderr warning; default-root installs no longer freeze
+  `CLAUDEXOR_CONFIG_DIR`, and an explicit override carries a
+  `CLAUDEXOR_ROOT_MODE=explicit` provenance marker. Setup: an interactive login
+  survives an ordinary daemon restart (a bounce no longer kills the operator's
+  own pending login), reconciling only identity-proven live runners; codex
+  login defaults to device-auth (safe for sibling OpenAI sessions when
+  completed in an isolated browser window) with `--browser-redirect` as the
+  explicit opt-in and a typed `not_supported` outcome on older codex CLIs;
+  claude login drops the version-varying `--claudeai` flag (#17). Quota: a
+  logged-out codex home reports a typed `not_logged_in` absence WITHOUT
+  booting `codex app-server` (ending the every-60s scoped-home spawn loop),
+  absence-only refresh cycles back off exponentially, and a claude
+  `oauth/usage` HTTP 200 with no parseable windows is a typed
+  `refresh_failed` absence (BACKLOG Q-a); codex transcript readers no longer
+  fall back to the operator's real `~/.codex`. macOS: the
+  dead per-harness `maxUsd` field that 400'd Per-Harness Defaults is removed
+  (#18), and the onboarding window scrolls (#15). Build: `build-app.sh` hard-
+  fails on a non-self-contained (libnode-linked) Node instead of silently
+  bundling a dead binary (#14); a new `retired-key-check` gate asserts every
+  key removed from the persisted config schemas lands in the retired-key
+  registry. Docs: a new agent Install And Login guide in
+  `docs/AGENT_ONBOARDING.md`.
+
 - **v3.0.2** (2026-07-21) — Linux subscription-quota parity for Claude. The
   per-profile quota reader (`oauth/usage` source) read the access token only
   from the macOS keychain item, so on Linux `quota --refresh` returned a

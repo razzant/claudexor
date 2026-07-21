@@ -180,7 +180,12 @@ the system ones, so CI and other machines work unchanged:
 - On macOS, some setups kill ad-hoc-signed Homebrew Node during bundling.
   `apps/macos/scripts/build-app.sh` therefore prefers a notarized Node: set
   `CLAUDEXOR_NODE_BIN`, or place one under `~/.claudexor/node/bin` (probed
-  automatically); otherwise it falls back to the `node` on `PATH`.
+  automatically); otherwise it falls back to the `node` on `PATH`. That
+  fallback is now a HARD FAIL, not a warning, when the selected Node links
+  `libnode` dynamically (an `otool -L` check): a non-self-contained Node
+  bundles a dead binary that crashes the packaged app, so the build stops and
+  names the `CLAUDEXOR_NODE_BIN` remedy. CI is unaffected — the release
+  workflow always sets `CLAUDEXOR_NODE_BIN`.
 - If the Xcode Command Line Tools `swift-package` crashes with a dyld llbuild
   symbol error, use a Swiftly-managed toolchain
   (`PATH="$HOME/.swiftly/bin:$PATH" swift build`).

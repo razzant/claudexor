@@ -230,6 +230,8 @@ function skillText(host: PluginHost): string {
     "",
     "Readiness semantics: a harness is usable only when `claudexor_status` reports it `ok` (doctor-backed). An installed binary, a stored key, or an auth file alone is NOT readiness — do not retry a degraded harness expecting different results; surface the doctor reasons instead.",
     "",
+    "Setup and login prerequisites (version check, plugin status/repair, and logging in ONLY via `claudexor auth login <harness>` — never a bare vendor login) are the strict sequence in docs/AGENT_ONBOARDING.md (Install And Login).",
+    "",
     "Host timeouts: mutating tools can run for many minutes and hosts often cap tool calls. The `runId:` trailer arrives in EVERY result — if the host times out, the run continues daemon-side; recover it with `claudexor_inspect` or the CLI.",
     "",
     `Mutating runs (agent/best-of/create) are daemon-tracked and end with a \`runId:\` trailer — use ${recoveryVerbLine()} for evidence, live progress, delivery, or unblocking a blocked run. Structured results carry \`applyEligibility\`: apply only when \`eligible\` is true; otherwise follow \`requiredAction\`.`,

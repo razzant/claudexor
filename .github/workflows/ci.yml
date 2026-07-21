@@ -99,6 +99,9 @@ jobs:
       - name: Staged-field gate (schema fields need producer+consumer)
         run: pnpm staged:check
 
+      - name: Retired-key gate (persisted-config removals need a registry entry)
+        run: pnpm retired:check
+
       - name: "INV→verify link gate (every Bible verify: target exists and runs)"
         run: pnpm inv:check
 

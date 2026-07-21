@@ -65,7 +65,9 @@ composer](docs/assets/app-agent-run.jpg)
 - git (worktrees, envelopes, and delivery all use it)
 - At least one logged-in vendor CLI — `codex`, `claude`, `cursor-agent`, or
   `opencode` — OR a provider API key (adapters accept `OPENAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, ... as fallbacks; the raw-API route needs only a key)
+  `ANTHROPIC_API_KEY`, ... as fallbacks; the raw-API route needs only a key).
+  Log in through Claudexor, not the bare vendor CLI — see
+  [Install And Login](docs/AGENT_ONBOARDING.md#install-and-login)
 - macOS for the desktop app; the CLI/daemon also run on Linux
 
 ## Install
@@ -387,10 +389,17 @@ transport. Native login stays vendor-owned (official CLI, structured argv,
 scrubbed env; Claudexor never sees or copies vendor tokens). The deep
 semantics live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.
 
+Codex login defaults to device-auth (a URL + one-time code in the Terminal);
+complete it in a private browser window signed into no other OpenAI account —
+an in-browser account switch can revoke sibling OpenAI sessions server-side.
+`claudexor auth login codex --browser-redirect` opts back into the older
+localhost-callback flow. See
+[Install And Login](docs/AGENT_ONBOARDING.md#install-and-login).
+
 ```bash
 claudexor auth status
-claudexor auth login codex    # codex login
-claudexor auth login claude   # claude auth login --claudeai
+claudexor auth login codex    # codex login (device-auth by default)
+claudexor auth login claude   # claude auth login (claude.ai subscription route)
 claudexor auth login cursor   # cursor-agent login
 claudexor secrets set openai --from-env OPENAI_API_KEY
 claudexor secrets list
@@ -510,6 +519,10 @@ After install: Claude Code/OpenCode may need a new session; Cursor may need a
 reload or manual local-plugin enablement; Codex is only registered in the
 personal marketplace, so tell me to open Codex Plugins and enable Claudexor
 manually.
+
+Then follow the Install And Login sequence in docs/AGENT_ONBOARDING.md
+(verify version/doctor, check plugin status before touching anything, and log
+in only via `claudexor auth login <harness>` — never a bare vendor login).
 ```
 
 The explicit Claude install also enables the official subscription-quota
