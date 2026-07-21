@@ -216,14 +216,17 @@ export async function runSetupLoginWorker(
 const OUTPUT_TAIL_BYTES = 4096;
 
 /** Ring buffer of the last OUTPUT_TAIL_BYTES of tee'd vendor output. */
-function createTailBuffer(): { push(chunk: Buffer | string): void; text(): string } {
-  let tail = "";
+function createTailBuffer(): { push(chunk: Buffer): void; text(): string } {
+  // Byte-accurate ring: keep the final OUTPUT_TAIL_BYTES RAW bytes and decode
+  // ONCE in text() — a per-chunk String() decode splits multibyte UTF-8 into
+  // replacement chars and a UTF-16 .slice miscounts the byte bound.
+  let tail = Buffer.alloc(0);
   return {
     push(chunk) {
-      tail = (tail + String(chunk)).slice(-OUTPUT_TAIL_BYTES);
+      tail = Buffer.concat([tail, chunk]).subarray(-OUTPUT_TAIL_BYTES);
     },
     text() {
-      return boundedTail(tail);
+      return boundedTail(tail.toString("utf8"));
     },
   };
 }

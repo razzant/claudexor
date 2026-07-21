@@ -511,6 +511,27 @@ describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
     expect((result.outputTail ?? "").length).toBeLessThanOrEqual(4000);
   });
 
+  it("the tail keeps the final bytes intact across a split multibyte UTF-8 boundary", async () => {
+    // A script that prints a multibyte string (cyrillic) then fails: the
+    // persisted tail must decode cleanly (no U+FFFD) and stay within the cap.
+    const { manifestPath, spec } = prepare(
+      `#!/bin/sh\nprintf 'начало ЛОГ вывод конец'\nexit 4\n`,
+      { args: ["login"] },
+      "tail-multibyte",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(1);
+    const tail = (readRunnerResult(spec.resultPath) as { outputTail?: string }).outputTail ?? "";
+    expect(tail).toContain("конец");
+    expect(tail).not.toContain("�");
+    expect(Buffer.byteLength(tail, "utf8")).toBeLessThanOrEqual(4096);
+  });
+
   it("omits the output tail on success", async () => {
     const { manifestPath, spec } = prepare(
       `#!/bin/sh\necho "Successfully logged in"\nexit 0\n`,
