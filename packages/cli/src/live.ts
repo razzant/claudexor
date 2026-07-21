@@ -295,12 +295,12 @@ export async function handshakeControlApi(
   // The handshake already reports the daemon's build identity precisely so a
   // stale daemon is visible HERE instead of guessed later — consume it. A
   // version skew is advisory (the protocol major gate above is the hard
-  // fence): disclose with the remedy, once per process.
+  // fence): disclose with the remedy. A CLI process handshakes once, so no
+  // dedup state is needed.
   try {
     const body = (await response.json()) as { engine?: { version?: string } };
     const daemonVersion = body.engine?.version;
-    if (daemonVersion && daemonVersion !== CLAUDEXOR_VERSION && !warnedDaemonSkew) {
-      warnedDaemonSkew = true;
+    if (daemonVersion && daemonVersion !== CLAUDEXOR_VERSION) {
       process.stderr.write(
         `claudexor: daemon is engine ${daemonVersion} but this CLI is ${CLAUDEXOR_VERSION}; ` +
           `run \`claudexor daemon stop\` and rerun the command so a matching daemon starts\n`,
@@ -310,8 +310,6 @@ export async function handshakeControlApi(
     // Identity is advisory; a body parse failure never fails the handshake.
   }
 }
-
-let warnedDaemonSkew = false;
 
 /**
  * `claudexor follow <run_id>`: live SSE tail of a daemon-backed run with full

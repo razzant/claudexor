@@ -33,9 +33,9 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
    account** — an in-browser account switch during OAuth can revoke your other
    OpenAI sessions server-side within seconds, including the ChatGPT desktop
    app. That is vendor backend behavior; Claudexor mitigates it (device-auth
-   default + this isolation instruction) but cannot prevent it. `codex auth
-   login --browser-redirect` is the explicit opt-in for the older
-   localhost-callback flow. **NEVER run a bare `codex login`,
+   default + this isolation instruction) but cannot prevent it.
+   `claudexor auth login codex --browser-redirect` is the explicit opt-in for
+   the older localhost-callback flow. **NEVER run a bare `codex login`,
    `claude auth login`, or `cursor-agent login`** — those write the vendor's
    default store, not the Claudexor-scoped one Claudexor's runs and doctor
    read (Bible INV-067).

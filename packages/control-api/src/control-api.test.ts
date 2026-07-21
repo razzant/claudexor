@@ -3533,6 +3533,45 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("projects a ConfigParseError as a typed 422 config_invalid problem, not a generic 500 (v3.0.3 S1)", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const response = await apiFetch(`${base}/harnesses`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(response.status).toBe(422);
+        expect(response.headers.get("content-type")).toBe("application/problem+json");
+        const body = await response.json();
+        expect(body.code).toBe("config_invalid");
+        expect(body.retryable).toBe(false);
+        expect(body.message).toContain("invalid Claudexor YAML config");
+        expect(
+          (body.requiredActions as string[]).some((a) => a.includes("config.yaml")),
+        ).toBe(true);
+      },
+      undefined,
+      {
+        harnesses: async () => {
+          // The exact duck-typed shape ConfigParseError carries (config pkg).
+          throw Object.assign(
+            new Error("invalid Claudexor YAML config at /tmp/x/config.yaml: unknown key(s): z"),
+            {
+              status: 422,
+              code: "config_invalid",
+              retryable: false,
+              requiredActions: [
+                "inspect and fix /tmp/x/config.yaml against the current schema",
+                "or restore it from the newest sibling backup (/tmp/x/config.yaml.bak-*)",
+              ],
+            },
+          );
+        },
+      },
+    );
+  });
+
   it("forwards an exact auth-readiness request without invoking the aggregate harness service", async () => {
     const { daemon } = fakeDaemon();
     const seen: unknown[] = [];

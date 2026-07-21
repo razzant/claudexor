@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  existsSync,
   linkSync,
   mkdtempSync,
   mkdirSync,
@@ -82,7 +83,7 @@ function prepare(
   writeFileSync(binary, script, { mode: 0o700 });
   chmodSync(binary, 0o700);
   const executable = captureExecutableEvidence(binary);
-  const args = ["login"];
+  const args = overrides.args ?? ["login"];
   const spec = sealLoginManifest({
     version: SETUP_LOGIN_PROTOCOL_VERSION,
     jobId: "setup-protocol",
@@ -420,5 +421,107 @@ describe("setup-login executable evidence — hard-link tolerance (W2)", () => {
     const evidence = captureExecutableEvidence(link);
     expect(evidence.realpath).toBe(realpathSync(primary));
     expect(evidence.sha256).toBe(captureExecutableEvidence(primary).sha256);
+  });
+});
+
+
+describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
+  const helpWithout =
+    'if [ "$1" = "login" ] && [ "$2" = "--help" ]; then echo "Usage: codex login"; echo "  --with-api-key"; exit 0; fi';
+  const helpWith =
+    'if [ "$1" = "login" ] && [ "$2" = "--help" ]; then echo "Usage: codex login"; echo "  --device-auth"; exit 0; fi';
+
+  it("refuses an old CLI with device_auth_unsupported WITHOUT running the vendor command", async () => {
+    const { manifestPath, spec, jobDir } = prepare(
+      `#!/bin/sh\n${helpWithout}\ntouch real-run.txt\nexit 0\n`,
+      { args: ["login", "--device-auth"] },
+      "probe-unsupported",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(1);
+    const result = readRunnerResult(spec.resultPath);
+    expect(result).toMatchObject({
+      commandStarted: false,
+      errorCode: "device_auth_unsupported",
+      exitCode: null,
+    });
+    expect((result as { outputTail?: string }).outputTail).toContain("--with-api-key");
+    expect(existsSync(join(jobDir, "real-run.txt"))).toBe(false);
+  });
+
+  it("runs the vendor command when the help advertises --device-auth", async () => {
+    const { manifestPath, spec, jobDir } = prepare(
+      `#!/bin/sh\n${helpWith}\ntouch real-run.txt\nexit 0\n`,
+      { args: ["login", "--device-auth"] },
+      "probe-supported",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(0);
+    expect(readRunnerResult(spec.resultPath)).toMatchObject({ commandStarted: true, exitCode: 0 });
+    expect(existsSync(join(jobDir, "real-run.txt"))).toBe(true);
+  });
+
+  it("fails OPEN when the probe produces no output (broken probe falls through to the real spawn)", async () => {
+    const { manifestPath, spec, jobDir } = prepare(
+      `#!/bin/sh\nif [ "$1" = "login" ] && [ "$2" = "--help" ]; then exit 7; fi\ntouch real-run.txt\nexit 0\n`,
+      { args: ["login", "--device-auth"] },
+      "probe-broken",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(0);
+    expect(existsSync(join(jobDir, "real-run.txt"))).toBe(true);
+  });
+
+  it("persists a bounded ANSI-stripped output tail on failure only", async () => {
+    const { manifestPath, spec } = prepare(
+      `#!/bin/sh\nprintf '\\033[94mdevice code rejected\\033[0m by server\\n' >&2\nexit 3\n`,
+      { args: ["login"] },
+      "tee-tail",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(1);
+    const result = readRunnerResult(spec.resultPath) as { outputTail?: string; exitCode?: number };
+    expect(result.exitCode).toBe(3);
+    expect(result.outputTail).toContain("device code rejected");
+    expect(result.outputTail).not.toContain("[94m");
+    expect((result.outputTail ?? "").length).toBeLessThanOrEqual(4000);
+  });
+
+  it("omits the output tail on success", async () => {
+    const { manifestPath, spec } = prepare(
+      `#!/bin/sh\necho "Successfully logged in"\nexit 0\n`,
+      { args: ["login"] },
+      "tee-success",
+    );
+    issuePermit(spec);
+    expect(
+      await runSetupLoginWorker(manifestPath, {
+        processGroupService: processGroups(),
+        selfPid: 4242,
+      }),
+    ).toBe(0);
+    expect(
+      (readRunnerResult(spec.resultPath) as { outputTail?: string }).outputTail,
+    ).toBeUndefined();
   });
 });

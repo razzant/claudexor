@@ -8,6 +8,7 @@ import {
   createRunEventLineFormatter,
   followRun,
   formatRunEventLine,
+  handshakeControlApi,
 } from "./live.js";
 
 /** Stub control API speaking just enough SSE for the follow contract. */
@@ -368,5 +369,37 @@ describe("controlApiFetch create idempotency", () => {
         server.close((error) => (error ? reject(error) : resolve())),
       );
     }
+  });
+});
+
+
+describe("handshake engine identity (v3.0.3 S4c)", () => {
+  it("discloses a daemon/CLI version skew from the handshake body on stderr, once", async () => {
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url ?? "");
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true, engine: { version: "9.9.9", sha: "x", entry: "/e" } }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    const chunks: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr as unknown as { write: (c: unknown) => boolean }).write = (c: unknown) => {
+      chunks.push(String(c));
+      return true;
+    };
+    try {
+      await handshakeControlApi({ baseUrl: `http://127.0.0.1:${port}`, token: "t" });
+      await handshakeControlApi({ baseUrl: `http://127.0.0.1:${port}`, token: "t" });
+    } finally {
+      (process.stderr as unknown as { write: unknown }).write = origWrite;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(requests.filter((u) => u === "/v2/handshake")).toHaveLength(2);
+    const warned = chunks.join("");
+    expect(warned).toContain("daemon is engine 9.9.9");
+    expect(warned).toContain("claudexor daemon stop");
+    expect(warned.match(/daemon is engine 9\.9\.9/g)).toHaveLength(2);
   });
 });

@@ -114,7 +114,11 @@ export async function runSetupLoginWorker(
   // argv error. The probe fails OPEN — a broken probe falls through to the
   // real spawn, whose own failure carries the diagnostics.
   if (manifest.args.includes("--device-auth")) {
-    const probe = await probeLoginHelp(manifest.binary, spawnProcess);
+    const probe = await probeLoginHelp(
+      manifest.binary,
+      spawnProcess,
+      nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
+    );
     if (probe.completed && !probe.output.includes("--device-auth")) {
       persistResult(manifest, {
         permitIssuedAt: permit.issuedAt,
@@ -235,6 +239,7 @@ function boundedTail(text: string): string {
 function probeLoginHelp(
   binary: string,
   spawnProcess: typeof spawn,
+  probeEnv: NodeJS.ProcessEnv,
 ): Promise<{ completed: boolean; output: string }> {
   return new Promise((resolveProbe) => {
     let output = "";
@@ -248,6 +253,9 @@ function probeLoginHelp(
     let probe: ReturnType<typeof spawn>;
     try {
       probe = spawnProcess(binary, ["login", "--help"], {
+        // Same provider-secret-scrubbed allowlist env as the real vendor
+        // spawn — the probe must never inherit the Terminal's full env.
+        env: probeEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch {

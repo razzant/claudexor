@@ -107,11 +107,6 @@ const SetupNativeCommandReceiptShape = {
   signal: z.string().nullable(),
   errorCode: z.enum(["permit_timeout", "spawn_failed", "device_auth_unsupported"]).optional(),
   finishedAt: SetupTimestamp,
-  /** Bounded, ANSI-stripped tail of the vendor command's captured output —
-   * diagnostic evidence for classifying a failed login (e.g. the device-code
-   * toggle being disabled) without copying vendor output into durable logs
-   * wholesale. Only flows the runner tees (codex) carry it. */
-  outputTail: z.string().max(4000).optional(),
 };
 
 export const SetupNativeCommandReceipt = z
@@ -573,6 +568,12 @@ export const SetupLoginRunnerResult = z
     version: SetupLoginProtocolVersion,
     jobId: SetupLoginJobId,
     ...SetupNativeCommandReceiptShape,
+    /** Bounded, ANSI-stripped tail of the vendor command's captured output —
+     * diagnostic evidence for classifying a failed login (e.g. the device-code
+     * toggle being disabled). RESULT-FILE ONLY: the durable control receipt
+     * deliberately does not carry it (the ≤600-char slice in the failure
+     * message is the only journal/API exposure). Only tee'd flows (codex). */
+    outputTail: z.string().max(4000).optional(),
   })
   .strict()
   .superRefine((value, context) => {

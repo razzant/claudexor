@@ -805,10 +805,6 @@
                   },
                   "finishedAt": {
                     "$ref": "#/definitions/ControlSetupJobListResponse/properties/jobs/items/properties/deadlineAt"
-                  },
-                  "outputTail": {
-                    "type": "string",
-                    "maxLength": 4000
                   }
                 },
                 "required": [
