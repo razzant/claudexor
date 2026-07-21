@@ -725,7 +725,7 @@ The root `package.json` is the version SSOT. The full release history lives in
 
 ## License
 
-[MIT](LICENSE) (c) 2026 joi-lab — inbound contributions are accepted under
+[MIT](LICENSE) (c) 2026 Anton Razzhigaev — inbound contributions are accepted under
 the same license.
 
 ## Author

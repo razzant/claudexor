@@ -31,7 +31,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026 joi-lab. MIT License.</string>
+    <string>© 2026 Anton Razzhigaev. MIT License.</string>
     <!-- Single-window app; no document types. -->
     <key>LSUIElement</key>
     <false/>
