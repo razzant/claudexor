@@ -266,7 +266,6 @@ import Testing
             defaultModel: .some("gpt-5.5"),
             effort: .some("high"),
             web: "live",
-            maxUsd: .some(2.5),
             toolsAllow: ["read"],
             toolsDeny: [],
             fallbackModel: .some(nil),
@@ -277,7 +276,6 @@ import Testing
         #expect(setObj?["defaultModel"] as? String == "gpt-5.5")  // typed → real value, never reverted to null
         #expect(setObj?["effort"] as? String == "high")
         #expect(setObj?["web"] as? String == "live")
-        #expect(setObj?["maxUsd"] as? Double == 2.5)
         #expect(setObj?["toolsAllow"] as? [String] == ["read"])
         #expect(setObj?["authPreference"] as? String == "api_key")
         // fallback empty → explicit null (clear); untouched fields omitted (kept server-side).
@@ -692,21 +690,20 @@ import Testing
     }
 
     @Test func harnessSettingsPatchEncodesFullPerHarnessFields() throws {
-        let patch = HarnessSettingsPatch(enabled: true, maxUsd: .some(1.5), toolsAllow: ["bash"],
+        let patch = HarnessSettingsPatch(enabled: true, toolsAllow: ["bash"],
                                          toolsDeny: ["net"], fallbackModel: .some("gpt-5-mini"),
                                          authPreference: "subscription")
         let obj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(patch)) as? [String: Any]
         #expect(obj?["enabled"] as? Bool == true)
-        #expect(obj?["maxUsd"] as? Double == 1.5)
         #expect(obj?["toolsAllow"] as? [String] == ["bash"])
         #expect(obj?["toolsDeny"] as? [String] == ["net"])
         #expect(obj?["fallbackModel"] as? String == "gpt-5-mini")
         #expect(obj?["authPreference"] as? String == "subscription")
-        // .some(nil) clears the cap (explicit JSON null); .none omits.
-        let clear = HarnessSettingsPatch(maxUsd: .some(nil))
+        // .some(nil) clears the field (explicit JSON null); .none omits.
+        let clear = HarnessSettingsPatch(fallbackModel: .some(nil))
         let cobj = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clear)) as? [String: Any]
-        #expect(cobj?.keys.contains("maxUsd") == true)
-        #expect(cobj?["maxUsd"] is NSNull)
+        #expect(cobj?.keys.contains("fallbackModel") == true)
+        #expect(cobj?["fallbackModel"] is NSNull)
         #expect(cobj?["toolsAllow"] == nil)
     }
 
@@ -929,27 +926,25 @@ import Testing
         // Empty/whitespace drafts must encode an EXPLICIT clear (.some(nil) -> JSON
         // null), not be omitted — so the override is dropped server-side.
         let patch = buildHarnessPatch(enabled: false, modelDraft: "  ", effort: "__default",
-                                      web: "off", maxUsdDraft: "", toolsAllowDraft: " , ",
+                                      web: "off", toolsAllowDraft: " , ",
                                       toolsDenyDraft: "", fallbackDraft: "")
         #expect(patch.defaultModel == .some(Optional<String>.none))   // cleared
         #expect(patch.effort == .some(Optional<String>.none))         // sentinel -> cleared
-        #expect(patch.maxUsd == .some(Optional<Double>.none))         // empty -> cleared
         #expect(patch.fallbackModel == .some(Optional<String>.none))
         #expect(patch.toolsAllow == [])                               // " , " -> no tokens
         #expect(patch.enabled == false)
         let json = String(decoding: try JSONEncoder().encode(patch), as: UTF8.self)
         #expect(json.contains("\"defaultModel\":null"))               // explicit clear on the wire
-        #expect(json.contains("\"maxUsd\":null"))
+        #expect(json.contains("\"fallbackModel\":null"))
     }
 
     @Test func harnessPatchSetsTypedValuesAndParses() {
         // Typed values survive into the patch; CSV/number parsing is fixed.
         let patch = buildHarnessPatch(enabled: true, modelDraft: " fable ", effort: "high",
-                                      web: "live", maxUsdDraft: "1.5", toolsAllowDraft: "bash, edit ,read",
+                                      web: "live", toolsAllowDraft: "bash, edit ,read",
                                       toolsDenyDraft: "web", fallbackDraft: "opus")
         #expect(patch.defaultModel == .some("fable"))                 // trimmed, set
         #expect(patch.effort == .some("high"))
-        #expect(patch.maxUsd == .some(1.5))
         #expect(patch.toolsAllow == ["bash", "edit", "read"])         // trimmed CSV
         #expect(patch.toolsDeny == ["web"])
         #expect(patch.fallbackModel == .some("opus"))
@@ -961,13 +956,13 @@ import Testing
         // a stored legacy model must NOT ride along with other saves — the
         // strict engine would 400 the whole patch. Explicit clears still go.
         let stuck = buildHarnessPatch(enabled: true, modelDraft: "legacy-model", effort: "__default",
-                                      web: "off", maxUsdDraft: "", toolsAllowDraft: "",
+                                      web: "off", toolsAllowDraft: "",
                                       toolsDenyDraft: "", fallbackDraft: "", modelEditable: false)
         #expect(stuck.defaultModel == Optional<String?>.none)         // omitted entirely
         let json = String(decoding: try JSONEncoder().encode(stuck), as: UTF8.self)
         #expect(!json.contains("defaultModel"))                       // absent on the wire
         let clear = buildHarnessPatch(enabled: true, modelDraft: "  ", effort: "__default",
-                                      web: "off", maxUsdDraft: "", toolsAllowDraft: "",
+                                      web: "off", toolsAllowDraft: "",
                                       toolsDenyDraft: "", fallbackDraft: "", modelEditable: false)
         #expect(clear.defaultModel == .some(Optional<String>.none))   // explicit null clear rides
     }
@@ -1176,14 +1171,14 @@ import Testing
     @Test func harnessSettingsDecodeAndPatchProfileLimitAction() throws {
         let json = """
         {"enabled":true,"defaultModel":null,"effort":null,"maxTurns":null,"maxRounds":null,
-         "maxUsd":null,"toolsAllow":[],"toolsDeny":[],"fallbackModel":null,"web":"auto",
+         "toolsAllow":[],"toolsDeny":[],"fallbackModel":null,"web":"auto",
          "authPreference":null,"profileLimitAction":"rotate"}
         """
         #expect(try JSONDecoder().decode(HarnessSettings.self, from: Data(json.utf8)).profileLimitAction == "rotate")
         // Absent field tolerated (pre-INV-135 daemon).
         let legacy = """
         {"enabled":true,"defaultModel":null,"effort":null,"maxTurns":null,"maxRounds":null,
-         "maxUsd":null,"toolsAllow":[],"toolsDeny":[],"fallbackModel":null,"web":"auto","authPreference":null}
+         "toolsAllow":[],"toolsDeny":[],"fallbackModel":null,"web":"auto","authPreference":null}
         """
         #expect(try JSONDecoder().decode(HarnessSettings.self, from: Data(legacy.utf8)).profileLimitAction == nil)
         // The patch emits the key ONLY when set (absent fields keep their stored value).

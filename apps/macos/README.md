@@ -137,10 +137,11 @@ There is no sample/demo data mode: surfaces the engine does not fully expose
 yet use honest empty states instead of pretending to be live.
 
 The Per-Harness Defaults editor saves enable/disable, model override, effort,
-web policy, per-harness budget cap (`maxUsd` per run), tool allow/deny lists,
-and fallback model via the `HarnessSettingsPatch` DTO (which also carries
-`maxTurns`/`maxRounds`); the per-harness turn/round caps remain
-config-file/settings-API surfaces the editor UI does not yet expose.
+web policy, tool allow/deny lists, and fallback model via the
+`HarnessSettingsPatch` DTO (which also carries `maxTurns`/`maxRounds`); the
+per-harness turn/round caps remain config-file/settings-API surfaces the editor
+UI does not yet expose. There is no per-harness budget cap: the global
+`budget.paid_budget_per_run` and the per-run `--max-usd` cover run spend.
 
 ## Design And Contributor Docs
 

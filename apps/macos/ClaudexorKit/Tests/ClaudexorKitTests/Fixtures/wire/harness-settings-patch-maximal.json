@@ -1,0 +1,22 @@
+{
+  "schema": "ControlHarnessSettingsPatch",
+  "value": {
+    "enabled": true,
+    "nativeCredentialsEnabled": true,
+    "defaultModel": "gpt-5.5",
+    "effort": "high",
+    "maxTurns": 40,
+    "maxRounds": 6,
+    "toolsAllow": [
+      "bash",
+      "read"
+    ],
+    "toolsDeny": [
+      "net"
+    ],
+    "fallbackModel": "gpt-5-mini",
+    "web": "live",
+    "authPreference": "subscription",
+    "profileLimitAction": "rotate"
+  }
+}

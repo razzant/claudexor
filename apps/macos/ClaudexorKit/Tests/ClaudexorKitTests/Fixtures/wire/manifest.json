@@ -17,5 +17,6 @@
   "plan-questions": "PlanQuestionsArtifact",
   "apply-eligibility-yes": "ApplyEligibility",
   "apply-eligibility-no": "ApplyEligibility",
-  "quota-response": "ControlQuotaResponse"
+  "quota-response": "ControlQuotaResponse",
+  "harness-settings-patch-maximal": "ControlHarnessSettingsPatch"
 }

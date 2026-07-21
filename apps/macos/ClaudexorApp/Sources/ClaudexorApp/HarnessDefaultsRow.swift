@@ -28,7 +28,6 @@ struct HarnessDefaultsRow: View {
     @State private var models: HarnessModelsResponse?
     @State private var effort = "__default"
     @State private var web = "auto"
-    @State private var maxUsdDraft = ""
     @State private var fallbackDraft = ""
     @State private var toolsAllowDraft = ""
     @State private var toolsDenyDraft = ""
@@ -116,16 +115,6 @@ struct HarnessDefaultsRow: View {
                 .onChange(of: web) { _, _ in scheduleSave(immediate: true) }
             }
             HStack(spacing: Theme.Spacing.sm) {
-                HStack(spacing: 4) {
-                    Text("$").foregroundStyle(.secondary)
-                    TextField("max/run", text: $maxUsdDraft)
-                        .frame(width: 64)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.caption, design: .monospaced))
-                        .onChange(of: maxUsdDraft) { _, _ in scheduleSave() }
-                        .onSubmit { scheduleSave(immediate: true) }
-                }
-                .help("Per-harness USD cap per run. Empty keeps the engine default.")
                 TextField("fallback model", text: $fallbackDraft)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.caption, design: .monospaced))
@@ -146,10 +135,6 @@ struct HarnessDefaultsRow: View {
                     .help("Deny-list of tool ids for \(family.label).")
                     .onChange(of: toolsDenyDraft) { _, _ in scheduleSave() }
                     .onSubmit { scheduleSave(immediate: true) }
-            }
-            if !maxUsdValid {
-                Label("Budget cap must be a non-negative number, or empty.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2).foregroundStyle(Theme.status(.negative))
             }
         }
         .padding(Theme.Spacing.sm)
@@ -177,7 +162,7 @@ struct HarnessDefaultsRow: View {
     /// `dirty`). Skips when the budget cap is invalid so we never POST a bad value.
     private func flushPendingSave() {
         debounce?.cancel()
-        guard dirty, maxUsdValid else { return }
+        guard dirty else { return }
         // Single-flight performSave: if a loop is already running it persists the
         // latest drafts; otherwise this starts one.
         Task { @MainActor in await performSave() }
@@ -204,12 +189,6 @@ struct HarnessDefaultsRow: View {
         }
     }
 
-    private var maxUsdValid: Bool {
-        let t = maxUsdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty { return true }
-        return (Double(t) ?? -1) >= 0
-    }
-
     /// Re-derive the @State drafts from the server `settings`. ANTI-CLOBBER: this
     /// is a no-op while the row is `dirty` (the user has unsaved edits or a save in
     /// flight), so a post-save `refreshSettings()` — which republishes
@@ -226,7 +205,6 @@ struct HarnessDefaultsRow: View {
         modelDraft = settings?.defaultModel ?? ""
         effort = settings?.effort ?? "__default"
         web = settings?.web ?? "auto"
-        maxUsdDraft = settings?.maxUsd.map { String(format: "%g", $0) } ?? ""
         fallbackDraft = settings?.fallbackModel ?? ""
         toolsAllowDraft = (settings?.toolsAllow ?? []).joined(separator: ", ")
         toolsDenyDraft = (settings?.toolsDeny ?? []).joined(separator: ", ")
@@ -241,7 +219,7 @@ struct HarnessDefaultsRow: View {
     /// A value snapshot of the editable drafts, for distinguishing a programmatic
     /// `sync()` echo from a genuine user edit (see `syncedSnapshot`).
     private func draftSnapshot() -> [String] {
-        [String(enabled), modelDraft, effort, web, maxUsdDraft, fallbackDraft, toolsAllowDraft, toolsDenyDraft]
+        [String(enabled), modelDraft, effort, web, fallbackDraft, toolsAllowDraft, toolsDenyDraft]
     }
 
     /// AUTO-SAVE entry point fired by every field's `.onChange`/`.onSubmit`. Marks
@@ -286,7 +264,6 @@ struct HarnessDefaultsRow: View {
         status = .saving
         defer { saving = false }
         while true {
-            guard maxUsdValid else { status = .editing; return }   // bad cap: don't POST
             let gen = saveGen
             // Staged-field patch mapping lives in Kit (buildHarnessPatch) so it's tested.
             let patch = buildHarnessPatch(
@@ -294,7 +271,6 @@ struct HarnessDefaultsRow: View {
                 modelDraft: modelDraft,
                 effort: effort,
                 web: web,
-                maxUsdDraft: maxUsdDraft,
                 toolsAllowDraft: toolsAllowDraft,
                 toolsDenyDraft: toolsDenyDraft,
                 fallbackDraft: fallbackDraft,

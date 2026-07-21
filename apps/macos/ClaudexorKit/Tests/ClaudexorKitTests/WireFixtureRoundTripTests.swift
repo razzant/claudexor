@@ -29,6 +29,7 @@ import Testing
         case "PlanQuestionsArtifact": return try recode(PlanQuestionsArtifact.self, data)
         case "ApplyEligibility": return try recode(ApplyEligibility.self, data)
         case "ControlQuotaResponse": return try recode(ControlQuotaResponse.self, data)
+        case "ControlHarnessSettingsPatch": return try recode(HarnessSettingsPatch.self, data)
         default: return nil
         }
     }
@@ -37,7 +38,7 @@ import Testing
     private static let handledSchemas: Set<String> = [
         "ControlHandshakeResponse", "ControlProblem", "ControlThread", "ControlThreadTurn",
         "RunOutcomeFacts", "ControlBudgetSnapshot", "PlanReadiness", "PlanQuestionsArtifact",
-        "ApplyEligibility", "ControlQuotaResponse",
+        "ApplyEligibility", "ControlQuotaResponse", "ControlHarnessSettingsPatch",
     ]
 
     private static func recode<T: Codable>(_ type: T.Type, _ data: Data) throws -> Data {

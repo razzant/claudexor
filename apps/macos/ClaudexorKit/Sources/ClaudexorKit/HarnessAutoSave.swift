@@ -22,7 +22,6 @@ public func buildHarnessPatch(
     modelDraft: String,
     effort: String,
     web: String,
-    maxUsdDraft: String,
     toolsAllowDraft: String,
     toolsDenyDraft: String,
     fallbackDraft: String,
@@ -36,7 +35,6 @@ public func buildHarnessPatch(
     func csv(_ s: String) -> [String] {
         s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
-    let capText = maxUsdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
     let model = trimmedOrNil(modelDraft)
     let modelField: String?? = modelEditable || model == nil ? .some(model) : .none
     return HarnessSettingsPatch(
@@ -44,7 +42,6 @@ public func buildHarnessPatch(
         defaultModel: modelField,
         effort: .some(effort == effortSentinel ? nil : effort),
         web: web,
-        maxUsd: .some(capText.isEmpty ? nil : Double(capText)),
         toolsAllow: csv(toolsAllowDraft),
         toolsDeny: csv(toolsDenyDraft),
         fallbackModel: .some(trimmedOrNil(fallbackDraft))

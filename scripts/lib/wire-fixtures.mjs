@@ -241,5 +241,25 @@ export function buildWireFixtures() {
     refreshed_at: NOW,
   });
 
+  // ControlHarnessSettingsPatch is STRICT server-side: a key the schema never
+  // declared 400s the whole save (GitHub #18 — the Swift client used to send a
+  // dead `maxUsd`). This MAXIMAL fixture populates every allowed key, so the
+  // Swift HarnessSettingsPatch decode→re-encode round trip drifts loudly the
+  // moment its key set diverges from this SSOT schema.
+  add("harness-settings-patch-maximal", "ControlHarnessSettingsPatch", {
+    enabled: true,
+    nativeCredentialsEnabled: true,
+    defaultModel: "gpt-5.5",
+    effort: "high",
+    maxTurns: 40,
+    maxRounds: 6,
+    toolsAllow: ["bash", "read"],
+    toolsDeny: ["net"],
+    fallbackModel: "gpt-5-mini",
+    web: "live",
+    authPreference: "subscription",
+    profileLimitAction: "rotate",
+  });
+
   return fixtures;
 }

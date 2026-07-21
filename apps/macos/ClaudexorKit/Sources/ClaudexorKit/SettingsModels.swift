@@ -53,7 +53,6 @@ public struct HarnessSettings: Codable, Sendable, Equatable {
     public let effort: String?
     public let maxTurns: Int?
     public let maxRounds: Int?
-    public let maxUsd: Double?
     public let toolsAllow: [String]
     public let toolsDeny: [String]
     public let fallbackModel: String?
@@ -66,14 +65,16 @@ public struct HarnessSettings: Codable, Sendable, Equatable {
 }
 
 /// Partial per-harness settings patch; absent fields keep their stored value.
-public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
+/// Codable (not just Encodable) so the TS→Swift wire-fixture round trip can
+/// decode a maximal patch and re-encode it — a stray key drifting from the
+/// daemon's strict ControlHarnessSettingsPatch schema then fails that gate.
+public struct HarnessSettingsPatch: Codable, Sendable, Equatable {
     public var enabled: Bool?
     /// Toggle the native/CLI login in this harness's credential ladder (V11b).
     public var nativeCredentialsEnabled: Bool?
     public var defaultModel: String??
     public var effort: String??
     public var web: String?
-    public var maxUsd: Double??
     public var toolsAllow: [String]?
     public var toolsDeny: [String]?
     public var fallbackModel: String??
@@ -86,7 +87,7 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     public init(enabled: Bool? = nil,
                 nativeCredentialsEnabled: Bool? = nil,
                 defaultModel: String?? = nil, effort: String?? = nil, web: String? = nil,
-                maxUsd: Double?? = nil, toolsAllow: [String]? = nil, toolsDeny: [String]? = nil,
+                toolsAllow: [String]? = nil, toolsDeny: [String]? = nil,
                 fallbackModel: String?? = nil, maxTurns: Int?? = nil, maxRounds: Int?? = nil,
                 authPreference: String? = nil, profileLimitAction: String? = nil) {
         self.enabled = enabled
@@ -94,7 +95,6 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         self.defaultModel = defaultModel
         self.effort = effort
         self.web = web
-        self.maxUsd = maxUsd
         self.toolsAllow = toolsAllow
         self.toolsDeny = toolsDeny
         self.fallbackModel = fallbackModel
@@ -105,7 +105,7 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case enabled, nativeCredentialsEnabled, defaultModel, effort, web, maxUsd, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference, profileLimitAction
+        case enabled, nativeCredentialsEnabled, defaultModel, effort, web, toolsAllow, toolsDeny, fallbackModel, maxTurns, maxRounds, authPreference, profileLimitAction
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -115,7 +115,6 @@ public struct HarnessSettingsPatch: Encodable, Sendable, Equatable {
         if let defaultModel { try c.encode(defaultModel, forKey: .defaultModel) }
         if let effort { try c.encode(effort, forKey: .effort) }
         try c.encodeIfPresent(web, forKey: .web)
-        if let maxUsd { try c.encode(maxUsd, forKey: .maxUsd) }
         try c.encodeIfPresent(toolsAllow, forKey: .toolsAllow)
         try c.encodeIfPresent(toolsDeny, forKey: .toolsDeny)
         if let fallbackModel { try c.encode(fallbackModel, forKey: .fallbackModel) }

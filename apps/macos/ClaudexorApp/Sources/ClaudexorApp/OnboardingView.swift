@@ -16,19 +16,24 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().overlay(Theme.separator)
-            Group {
-                switch step {
-                case 0: nativeAuth
-                case 1: apiKeys
-                default: defaults
+            // Only the per-step content scrolls; the header and the footer's
+            // Back/Continue controls stay pinned and visible (#15 — dense steps
+            // clipped inside the fixed 620×520 sheet with no way to reach them).
+            ScrollView {
+                Group {
+                    switch step {
+                    case 0: nativeAuth
+                    case 1: apiKeys
+                    default: defaults
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(Theme.Spacing.xl)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(Theme.Spacing.xl)
             Divider().overlay(Theme.separator)
             footer
         }
-        .frame(width: 620, height: 520)
+        .frame(minWidth: 620, minHeight: 520)
         .background(Theme.surfaceBase)
         .task {
             await model.refreshHarnesses()
