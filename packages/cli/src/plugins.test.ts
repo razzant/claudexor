@@ -468,8 +468,9 @@ describe("plugin lifecycle", () => {
     // stale artifact can never freeze a future runtime onto this root.
     await withTempHome(async ({ home, config }) => {
       expect((await runPluginCommand("install", "cursor")).exitCode).toBe(0);
-      const overridden = readJson(join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"))
-        .mcpServers.claudexor.env;
+      const overridden = readJson(
+        join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"),
+      ).mcpServers.claudexor.env;
       expect(overridden.CLAUDEXOR_CONFIG_DIR).toBe(config);
       expect(overridden.CLAUDEXOR_ROOT_MODE).toBe("explicit");
 

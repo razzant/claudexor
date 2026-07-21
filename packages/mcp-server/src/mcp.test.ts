@@ -527,7 +527,9 @@ describe("Claudexor MCP server (SDK v2)", () => {
           defaultClaudexorTools(async () => "ok"),
           { version: "0.2.0" },
         ),
-      ).toThrowError(/plugin_artifact_skew: .*version 0\.1\.0 but the CLI is 0\.2\.0.*plugin repair all/);
+      ).toThrowError(
+        /plugin_artifact_skew: .*version 0\.1\.0 but the CLI is 0\.2\.0.*plugin repair all/,
+      );
     } finally {
       if (prev === undefined) delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
       else process.env["CLAUDEXOR_PLUGIN_VERSION"] = prev;
