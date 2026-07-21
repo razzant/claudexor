@@ -41,9 +41,6 @@ export class QuotaRegistry {
    * cycle", never a durable fact to replay. */
   private absences: QuotaAbsence[] = [];
   private pollFailures = 0;
-  /** Snapshots produced by the most recent refresh() cycle — an absence-only
-   * cycle (zero new snapshots) is backoff-eligible even though it "succeeded". */
-  private lastRefreshSnapshotCount = 0;
   private pollNotBefore = 0;
 
   constructor(
@@ -94,6 +91,13 @@ export class QuotaRegistry {
   }
 
   async refresh() {
+    return (await this.refreshCycle()).response;
+  }
+
+  /** Cycle-local core: the produced-snapshot count belongs to THIS invocation
+   * (wave-2 finding: a shared mutable field let a concurrent user refresh
+   * overwrite the poller's view of its own cycle). */
+  private async refreshCycle() {
     if (this.refreshers.length === 0) {
       throw Object.assign(new Error("no live vendor-owned quota refresh source is available"), {
         code: "quota_refresh_unavailable",
@@ -101,14 +105,14 @@ export class QuotaRegistry {
       });
     }
     let successfulSources = 0;
+    let producedSnapshots = 0;
     const failures: string[] = [];
     const claims: QuotaAbsence[] = [];
-    this.lastRefreshSnapshotCount = 0;
     for (const refresher of this.refreshers) {
       try {
         const result = await refresher();
         for (const snapshot of result.snapshots) this.upsert(snapshot);
-        this.lastRefreshSnapshotCount += result.snapshots.length;
+        producedSnapshots += result.snapshots.length;
         if (result.absences) claims.push(...result.absences);
         successfulSources += 1;
       } catch (error) {
@@ -123,11 +127,12 @@ export class QuotaRegistry {
     }
     const now = this.now().getTime();
     this.recomputeAbsences(claims, now);
-    return ControlQuotaResponse.parse({
+    const response = ControlQuotaResponse.parse({
       snapshots: this.activeSnapshots(now),
       absences: this.activeAbsences(now),
       refreshed_at: this.now().toISOString(),
     });
+    return { response, producedSnapshots };
   }
 
   /** Aggregate one cycle's snapshots + absence claims against the subject
@@ -188,8 +193,8 @@ export class QuotaRegistry {
       return false;
     if (now < this.pollNotBefore) return false;
     try {
-      await this.refresh();
-      if (this.lastRefreshSnapshotCount > 0) {
+      const { producedSnapshots } = await this.refreshCycle();
+      if (producedSnapshots > 0) {
         this.pollFailures = 0;
         this.pollNotBefore = now + POLL_BACKOFF_MS;
         return true;

@@ -579,7 +579,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
                       ? `login-status probe failed (NOT an auth verdict): ${redactCodexDoctorDetail(login.probeError)}`
                       : login.authed
                         ? `logged in via ${login.method}, not ChatGPT subscription auth`
-                        : "not logged in (run `codex login`)",
+                        : "not logged in (run `claudexor auth login codex`)",
                 },
               ]
             : []),
@@ -611,7 +611,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
                   ? `Codex native-session probe failed: ${redactCodexDoctorDetail(login.probeError)}`
                   : login.authed
                     ? `Codex is authenticated via ${login.method}, not a ChatGPT subscription session`
-                    : "Codex subscription route is not ready (run `codex login`)",
+                    : "Codex subscription route is not ready (run `claudexor auth login codex`)",
               ]
             : preference === "api_key"
               ? [
@@ -622,7 +622,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
               : apiKey
                 ? [`isolated Codex API-key smoke failed: ${smoke.detail}`]
                 : [
-                    "not authenticated (run `codex login` for native/subscription use, or store an openai API key fallback)",
+                    "not authenticated (run `claudexor auth login codex` for native/subscription use, or store an openai API key fallback)",
                   ],
       });
     },
@@ -694,7 +694,7 @@ async function* runCodex(
     if (authRoute === null) {
       const error =
         authPreference === "subscription"
-          ? "Codex subscription auth was explicitly requested but vendor status did not confirm a native ChatGPT session (run `codex login`)"
+          ? "Codex subscription auth was explicitly requested but vendor status did not confirm a native ChatGPT session (run `claudexor auth login codex`)"
           : authPreference === "api_key"
             ? "Codex API-key auth was explicitly requested but no usable OpenAI API key route is ready"
             : "no usable Codex auth: native ChatGPT session is not ready and no OpenAI API key fallback is ready";

@@ -89,3 +89,46 @@ Dispositions:
 | 3.0.2 | confirm | sol | C4 | wave-1 ledger row C3 embedded a machine-local operator path in tracked public documentation (docs-hygiene: no local paths) | fixed | confirmation batch fix (row reworded to "retained outside the repository, in gitignored operator records") |
 | 3.0.2 | confirm | sol | A7 | credential-file read follows symlinks and does not require a regular file (locally planted symlink could point the reader outside the owned store; not reachable untampered) | backlog | docs/BACKLOG.md Q-a extended: no-follow open, fstat regular-file check, bounded read, rejection tests |
 | 3.0.2 | confirm | fable | A8 | does the accounts identity line (email · plan) share the quota reader's old macOS-only gap on Linux? | declined | verified in code: claudeAccountIdentity (packages/harness-claude/src/native-home.ts) reads the NON-secret .claude.json directly from the owned config dir via readFileSync — platform-neutral, no keychain involvement; the owner's post-release Linux smoke will observe it live as a bonus |
+| 3.0.3 | 1 | triad-fable | C1 | Swift SetupNativeCommandErrorCode lacked device_auth_unsupported — strict decode fails in the exact old-CLI scenario | fixed | wave-1 batch abf4c11c (SetupEvidenceModels + decode/invariant tests) |
+| 3.0.3 | 1 | triad-fable, security-critic | C2 | tee'd outputTail persisted without redactSecrets (INV-062 defense-in-depth) | fixed | abf4c11c (boundedTail redactSecrets + no-ESC/redaction test) |
+| 3.0.3 | 1 | docs-critic, contracts-critic | C3 | R6 device-auth-disabled remedy not delivered; packet claimed it was | fixed | abf4c11c (flow-keyed toggle remedy on command_failed; DECIDED corrected) |
+| 3.0.3 | 1 | triad-fable | A1 | ANSI-strip claimed missing ESC prefix | declined | factually wrong (byte-verified real ESC in source); superseded by the C2/OSC upgrade |
+| 3.0.3 | 1 | security-critic, contracts-critic | A2 | strip covered CSI only; OSC/bare-ESC/C0 survive into journaled messages | fixed | abf4c11c (full CSI+OSC+C0 scrub, newline kept) |
+| 3.0.3 | 1 | correctness-critic, triad-fable | A3 | probe/tee settled on exit (truncation race) and probe lacked exit-code gate (chatty old CLI misclassified) | fixed | abf4c11c (close-settle; exit-0 + nonempty = completed; chatty fail-open test) |
+| 3.0.3 | 1 | correctness-critic | A4 | reconcile TOCTOU: a login finishing inside the restart window discarded as cancelled_on_restart | fixed | abf4c11c (late-result re-check in both branches) + wave-2 probe-hook test |
+| 3.0.3 | 1 | correctness-critic | A5 | cancel racing daemon death leaves an unfinishable cancelling zombie | fixed | abf4c11c (successor completes the interrupted termination) |
+| 3.0.3 | 1 | correctness-critic | A6 | post-login quota blindness up to 15min (absence backoff not reset) | fixed | abf4c11c (noteCredentialChange on the credential hook + test) |
+| 3.0.3 | 1 | triad-fable | A7 | create() dedupe ignored loginFlow — redirect request silently answered with the active device-auth job | fixed | abf4c11c (typed 409 on flow mismatch + test) |
+| 3.0.3 | 1 | triad-fable, contracts-critic | A8 | quota-registry backoff + oauth 200-null tests promised by the plan did not land; records over-claimed | fixed | abf4c11c (daemon-boundary backoff/reset tests; oauth null-body test); packet corrected |
+| 3.0.3 | 1 | triad-fable | A9 | ARCHITECTURE self-contradiction: "vendor output is not copied into durable logs" vs the tail | fixed | abf4c11c (sentence qualified) |
+| 3.0.3 | 1 | triad-fable | A10 | HarnessDefaultsRow stale budget-cap comment | fixed | abf4c11c |
+| 3.0.3 | 1 | triad-fable | A11 | interrupted outcome value now producer-less | fixed | abf4c11c (documented historical, kept for journal replay) |
+| 3.0.3 | 1 | triad-fable | A12 | shell-exported CLAUDEXOR_CONFIG_DIR + default-root artifact refuses with an unfixable remedy | fixed | abf4c11c (refusal message names the env-inherited case) |
+| 3.0.3 | 1 | triad-fable | A13 | AGENT_ONBOARDING carried retired pre-v3 verbs (orchestrate/audit/explore) in the promoted canonical guide | fixed | abf4c11c |
+| 3.0.3 | 1 | docs-critic | A14 | S13(b) CLI help pointer silently undelivered | fixed | abf4c11c (help epilogue) |
+| 3.0.3 | 1 | docs-critic | A15 | BACKLOG Q-a row stale vs the shipped half | fixed | abf4c11c (row split: shipped half marked, hardening stays open) |
+| 3.0.3 | 1 | security-critic | A16 | handshake echoed the daemon-reported version unguarded | fixed | abf4c11c (version-shape guard) |
+| 3.0.3 | 1 | security-critic | A17 | "any browser context / cannot disturb" over-claim in code comment + generated schema describe | fixed | abf4c11c (hedged; schema regenerated) |
+| 3.0.3 | 1 | contracts-critic | A18 | config_invalid advertised .bak-* for trust/env paths that never have backups | fixed | abf4c11c (conditional on config.yaml paths + test) |
+| 3.0.3 | 1 | contracts-critic | A19 | project-sweep backup byte-identity untested | fixed | abf4c11c |
+| 3.0.3 | 1 | contracts-critic | A20 | device_auth_unsupported remedy named the API field, not the CLI flag | fixed | abf4c11c |
+| 3.0.3 | 1 | correctness-critic | D5 | updateGlobalConfig strips retired keys without a backup on any root | backlog | docs/BACKLOG.md (settings-write backup row) |
+| 3.0.3 | 1 | contracts-critic | D6 | retired-key gate blind to imported sub-schemas; extract-refactor trap | backlog | docs/BACKLOG.md (gate hardening row) |
+| 3.0.3 | 1 | contracts-critic | D7 | 422 test uses a duck-typed literal, not the real ConfigParseError class | declined | two-sided pinning accepted; integration case noted |
+| 3.0.3 | 2 | triad-sol | W1 | protected gate/test edits lack typed protectedPathApprovals receipts | declined | approvals are the PRODUCT-run surface; authored owner-program edits are covered by AUTHORIZATION.json + this review (3.0.x precedent) |
+| 3.0.3 | 2 | triad-sol | W2 | device one-time code can persist in the failed-login tail | declined | re-litigates the wave-1 adjudicated tradeoff (code is not a bearer secret, written post-exit, 0600 + token-authed local surfaces, redactSecrets applied) |
+| 3.0.3 | 2 | triad-sol | W3 | probe output retained unbounded for up to 10s | fixed | wave-2 close commit (64 KiB retention cap) |
+| 3.0.3 | 2 | triad-sol | W4 | shared mutable lastRefreshSnapshotCount races concurrent refreshes | fixed | wave-2 close commit (cycle-local refreshCycle) |
+| 3.0.3 | 2 | triad-fable | W5 | restart-completed cancel misattributes a timeout as cancelled_by_user | fixed | wave-2 close commit (durable-deadline reason replay) |
+| 3.0.3 | 2 | triad-fable | W6 | mojibake em-dash in the boundedTail comment | fixed | wave-2 close commit |
+| 3.0.3 | 2 | ledger-critic | W7 | wave-1 bare `claude auth login` doctor remedy had no disposition (INV-067) | fixed | wave-2 close commit (all six doctor remedies now name `claudexor auth login <harness>`) |
+| 3.0.3 | 2 | ledger-critic, delta-critic | W8 | zero v3.0.3 rows in this ledger (S14 undelivered) | fixed | this section |
+| 3.0.3 | 2 | ledger-critic | W9 | packet record errors: test counts (10/111 vs 9/96+Swift-extended), two TRACEABILITY misattributions, DECIDED precision | fixed | wave-2 reseal (packet-only) |
+| 3.0.3 | 2 | delta-critic | W10 | close-wait can hang the codex tee leg on a pipe-holding grandchild | backlog | docs/BACKLOG.md (bounded by the 15-min job deadline; vendor-contingent) |
+| 3.0.3 | 2 | delta-critic | W11 | prefix-anchored redaction can miss a secret straddling the tail slice boundary | backlog | docs/BACKLOG.md (defense-in-depth edge) |
+| 3.0.3 | 2 | delta-critic | W12 | unterminated-OSC over-strip erases trailing diagnostics | declined | safe-direction cosmetic loss; terminal-faithful |
+| 3.0.3 | 2 | delta-critic | W13 | unguarded quotaStoreSlot.current() in the credential hook | declined | practically shielded (slots bind/clear as a unit); convention nit |
+| 3.0.3 | 2 | delta-critic | W14 | CHANGELOG "always carries the remedy" wider than the command_failed path | fixed | wave-2 close commit (wording) |
+| 3.0.3 | 2 | panel-infra | W15 | round-2 scope slot died: prompt 1.008M tokens > 1M provider cap | fixed | round-3 rerun with a reduced evidence pack (transport bound, not a panel substitution) |
+| 3.0.3 | 1-2 | immune-scan | T1 | INV-137 note calls a pnpm-test suite a "canary" | backlog | docs/BACKLOG.md (wording) |
+| 3.0.3 | 1-2 | immune-scan | T2 | one ratchet baseline sits above the shrunk mcp-server file | declined | tightening is --update hygiene, not release work |

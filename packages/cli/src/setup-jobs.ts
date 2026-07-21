@@ -899,7 +899,12 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       // with a live runner nothing would ever finish (wave-1): complete the
       // interrupted cancellation instead of adopting a zombie.
       if (job.phase === "cancelling") {
-        await terminateLogin(job.jobId, "cancelled_by_user");
+        // Replay an honest reason: cancelling is entered for user cancels AND
+        // deadline timeouts; the durable deadline decides which one this was
+        // (wave-2 finding — no prose classification needed).
+        const deadlinePassed =
+          typeof job.deadlineAt === "string" && Date.parse(job.deadlineAt) <= now().getTime();
+        await terminateLogin(job.jobId, deadlinePassed ? "timed_out" : "cancelled_by_user");
         continue;
       }
       const result = matchingResult(job.jobId);

@@ -593,7 +593,7 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
                       ? `auth-status probe failed (NOT an auth verdict): ${redactClaudeDoctorDetail(login.probeError)}`
                       : login.loggedIn
                         ? `logged in via ${login.authMethod ?? "unknown"}, not claude.ai`
-                        : "not logged in (run `claude auth login`)",
+                        : "not logged in (run `claudexor auth login claude`)",
                 },
               ]
             : []),

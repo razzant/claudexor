@@ -95,6 +95,21 @@ deferred; they are recorded here now.
   symmetry with the keychain leg, no-follow open + fstat regular-file check +
   rejection tests (3.0.2 confirmation A7 — a locally planted symlink is
   outside the untampered threat model but cheap to close).
+- W-a (3.0.3 wave deferrals): updateGlobalConfig strips retired keys on any
+  root without a byte-identical backup (settings-write path; startup sweep
+  already backs up on the default root). Add the same locked-bytes backup.
+- W-b: retired-key gate hardening — descend imported sub-schemas
+  (CredentialProfile, QualityTierSet) and detect the inline-to-named-const
+  extract refactor before it masquerades as removals; skip commented-out
+  registry entries.
+- W-c: codex login tee — waitForExit settles on `close`; a vendor grandchild
+  holding the piped stdio could delay the result until the 15-min job
+  deadline. Consider exit+drain-timeout hybrid if observed live.
+- W-d: redaction straddle — a secret split exactly at the 4096/4000 tail
+  boundaries escapes prefix-anchored rules; consider redacting pre-slice or
+  overlap-aware slicing.
+- W-e: Bible INV-137 note wording — the a-b-a continuity proof lives in a
+  pnpm-test suite, not the canary golden-story home the note implies.
 - Q-b: quota sources (`claude-oauth-usage.ts`, `codex-quota-source.ts`) live in
   `packages/cli`; relocate to a daemon/core-owned module so the CLI stays a
   thin projection of `/v2/quota`. Structural, pre-existing; move only with

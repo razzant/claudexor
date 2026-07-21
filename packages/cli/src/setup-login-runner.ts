@@ -229,7 +229,7 @@ function createTailBuffer(): { push(chunk: Buffer | string): void; text(): strin
 }
 
 /** Strip terminal escapes (CSI, OSC, bare ESC, C0 controls except newline),
- * redact secret-like tokens, and clamp â diagnostic evidence entering a
+ * redact secret-like tokens, and clamp - diagnostic evidence entering a
  * durable journal/API surface, never a raw vendor log copy (INV-062). */
 function boundedTail(text: string): string {
   const plain = text
@@ -249,6 +249,7 @@ function probeLoginHelp(
 ): Promise<{ completed: boolean; output: string }> {
   return new Promise((resolveProbe) => {
     let output = "";
+    const PROBE_OUTPUT_CAP = 65_536;
     let settled = false;
     const settle = (completed: boolean) => {
       if (!settled) {
@@ -268,12 +269,12 @@ function probeLoginHelp(
       settle(false);
       return;
     }
-    probe.stdout?.on("data", (chunk: Buffer) => {
-      output += String(chunk);
-    });
-    probe.stderr?.on("data", (chunk: Buffer) => {
-      output += String(chunk);
-    });
+    const retain = (chunk: Buffer) => {
+      if (output.length < PROBE_OUTPUT_CAP)
+        output += String(chunk).slice(0, PROBE_OUTPUT_CAP - output.length);
+    };
+    probe.stdout?.on("data", retain);
+    probe.stderr?.on("data", retain);
     probe.on("error", () => settle(false));
     // `close` (streams drained) + exit code 0: an errored-but-chatty probe
     // (old CLI printing \"unrecognized subcommand\") must fail OPEN to the

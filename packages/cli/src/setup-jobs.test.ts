@@ -1519,6 +1519,78 @@ describe("setup jobs", () => {
     await restarted.shutdown();
   });
 
+  it("consumes a result that lands BETWEEN the result read and the empty probe (true TOCTOU)", async () => {
+    const group = processGroupFixture({ leader: knownLeader(105) });
+    let firstManager: ReturnType<typeof createSetupJobManager>;
+    let jobId = "";
+    let armed = false;
+    let planted = false;
+    let plantResult: () => void = () => undefined;
+    // Wrap the service so the empty-group probe ITSELF plants the durable
+    // result, exercising the wave-1 late-result re-check rather than the
+    // pre-existing result-first branch. Armed only for the successor daemon.
+    // Explicit delegation (not Object.create): class-private state must keep
+    // its real `this`.
+    const rigged = {
+      captureLeader: (pid: number) => group.service.captureLeader(pid),
+      compareLeader: (handle: Parameters<typeof group.service.compareLeader>[0]) =>
+        group.service.compareLeader(handle),
+      signal: (
+        handle: Parameters<typeof group.service.signal>[0],
+        sig: Parameters<typeof group.service.signal>[1],
+      ) => group.service.signal(handle, sig),
+      probeEmpty: (handle: Parameters<typeof group.service.probeEmpty>[0]) => {
+        if (armed && !planted) {
+          planted = true;
+          // Direct file write with values captured BEFORE the crash — the
+          // first manager's journal is closed by now.
+          plantResult();
+        }
+        return group.service.probeEmpty(handle);
+      },
+    } as unknown as typeof group.service;
+    const baseOpts = {
+      rootDir: join(root, "toctou-probe-hook"),
+      platform: "darwin" as const,
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      sleep: async () => {},
+    };
+    firstManager = createSetupJobManager({ ...baseOpts, processGroups: group.service });
+    await firstManager.start();
+    const job = firstManager.create(LOGIN_REQUEST);
+    jobId = job.jobId;
+    writeRunnerStateV2(firstManager, jobId, group.leader);
+    await waitForPhase(firstManager, jobId, "awaiting_user");
+    // Capture everything the planted result needs while the journal is open.
+    const paths = firstManager._store.paths(jobId);
+    const manifest = readLoginManifest(paths.manifest);
+    const permitIssuedAt = firstManager.status({ jobId }).execution?.permitIssuedAt ?? null;
+    plantResult = () =>
+      atomicPrivateJson(paths.runnerResult, {
+        version: SETUP_LOGIN_PROTOCOL_VERSION,
+        jobId,
+        executionId: manifest.executionId,
+        commandDigest: manifest.commandDigest,
+        manifestDigest: manifest.manifestDigest,
+        permitIssuedAt,
+        commandStarted: true,
+        exitCode: 0,
+        signal: null,
+        finishedAt: new Date().toISOString(),
+      });
+    group.setAlive(false); // group empty by the time the successor probes
+    firstManager.beginDrain();
+    firstManager._store.journal.close();
+    armed = true;
+    const restarted = createSetupJobManager({ ...baseOpts, processGroups: rigged });
+    await restarted.start();
+    const after = restarted.status({ jobId });
+    expect(after.outcome?.reason).not.toBe("cancelled_on_restart");
+    expect(group.signals).toEqual([]);
+    await restarted.shutdown();
+  });
+
   it("classifies a proven-dead login runner as cancelled_on_restart at successor start", async () => {
     const group = processGroupFixture({ leader: knownLeader(104) });
     const opts = {

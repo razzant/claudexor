@@ -657,7 +657,7 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           : nativeProbe.probeError && authPreference !== "api_key"
             ? [`Cursor native-session probe failed: ${nativeProbe.probeError}`]
             : authPreference === "subscription"
-              ? ["Cursor subscription route is not ready (run `cursor-agent login`)"]
+              ? ["Cursor subscription route is not ready (run `claudexor auth login cursor`)"]
               : authPreference === "api_key"
                 ? [
                     apiKey
