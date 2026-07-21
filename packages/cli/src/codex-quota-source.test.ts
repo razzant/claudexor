@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultNativeCodexHome } from "@claudexor/harness-codex";
 import {
@@ -84,13 +86,32 @@ describe("Codex app-server quota source", () => {
     expect(snapshot?.subject.subject_id).toBe("work");
   });
 
-  it("a missing Codex binary yields a transport absence claim, not a throw", async () => {
+  it("a logged-out native home yields a not_logged_in absence WITHOUT spawning the binary", async () => {
+    // No auth.json in the hermetic native home: even a "binary" that would
+    // explode on spawn must never be reached (v3.0.3 S8 precheck).
     const result = await refreshCodexQuota({ bin: "/definitely/missing/claudexor-codex" });
     expect(result.snapshots).toEqual([]);
     const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
     expect(nativeAbsence?.subject.harness).toBe("codex");
-    expect(nativeAbsence?.reason).toBe("transport_unavailable");
-    expect(nativeAbsence?.detail).toContain("Codex app-server quota refresh failed");
+    expect(nativeAbsence?.reason).toBe("not_logged_in");
+    expect(nativeAbsence?.detail).toContain("auth login codex");
+  });
+
+  it("a missing Codex binary yields a transport absence claim, not a throw", async () => {
+    const home = defaultNativeCodexHome();
+    mkdirSync(home, { recursive: true });
+    const authPath = join(home, "auth.json");
+    writeFileSync(authPath, "{}\n");
+    try {
+      const result = await refreshCodexQuota({ bin: "/definitely/missing/claudexor-codex" });
+      expect(result.snapshots).toEqual([]);
+      const nativeAbsence = result.absences?.find((a) => a.subject.subject_id === null);
+      expect(nativeAbsence?.subject.harness).toBe("codex");
+      expect(nativeAbsence?.reason).toBe("transport_unavailable");
+      expect(nativeAbsence?.detail).toContain("Codex app-server quota refresh failed");
+    } finally {
+      rmSync(authPath, { force: true });
+    }
   });
 });
 

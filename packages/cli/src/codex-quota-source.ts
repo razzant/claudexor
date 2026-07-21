@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { loadConfig } from "@claudexor/config";
 import { providerScrubEnv } from "@claudexor/core";
@@ -25,6 +27,24 @@ export async function refreshCodexQuota(
   const snapshots: QuotaSnapshot[] = [];
   const absences: QuotaAbsence[] = [];
   for (const candidate of codexQuotaCandidates()) {
+    // Logged-out precheck (v3.0.3 S8): a home without auth.json cannot yield a
+    // quota window — report the typed absence WITHOUT booting a codex
+    // app-server (the 2026-07-21 incident: a fresh scoped home was re-spawned
+    // and re-initialized every 60s forever).
+    if (!existsSync(join(candidate.home, "auth.json"))) {
+      absences.push({
+        subject: {
+          harness: "codex",
+          credential_route: "vendor_native",
+          plan_label: null,
+          subject_id: candidate.subjectId,
+        },
+        reason: "not_logged_in",
+        detail: `no auth.json in ${candidate.home}; run \`claudexor auth login codex\``,
+        observed_at: new Date().toISOString(),
+      });
+      continue;
+    }
     try {
       snapshots.push(
         ...(await readCodexCandidate(

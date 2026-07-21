@@ -299,6 +299,18 @@ export async function refreshClaudeOauthUsageQuota(
         now(),
       );
       if (snapshot) snapshots.push(snapshot);
+      else
+        // BACKLOG Q-a (v3.0.3 S8): an HTTP 200 whose body parses to no quota
+        // windows must yield a typed absence, never silent nothing — the
+        // registry needs the observation to back off instead of re-polling.
+        absences.push(
+          claudeOauthAbsence(
+            candidate.subjectId,
+            "refresh_failed",
+            "oauth/usage returned HTTP 200 without parseable quota windows",
+            now(),
+          ),
+        );
     } catch (error) {
       absences.push(
         claudeOauthAbsence(

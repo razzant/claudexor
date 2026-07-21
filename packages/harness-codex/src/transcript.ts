@@ -5,7 +5,6 @@
  * and the rate-window quota. One owner for rollout facts.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HarnessEvent } from "@claudexor/schema";
 
@@ -23,7 +22,11 @@ export function codexTranscriptModel(
   threadId: string | undefined,
 ): string | null {
   if (!threadId) return null;
-  const home = codexHome && codexHome.trim() ? codexHome : join(homedir(), ".codex");
+  // An explicit scoped home is REQUIRED (v3.0.3 S9): falling back to the
+  // operator's real ~/.codex would read native state Claudexor does not own.
+  // Callers always resolve the run's CODEX_HOME; absent means unobserved.
+  const home = codexHome && codexHome.trim() ? codexHome : null;
+  if (!home) return null;
   const rollout = findCodexRollout(join(home, "sessions"), threadId);
   if (!rollout) return null;
   let observed: string | null = null;
@@ -60,7 +63,11 @@ export function codexTranscriptRateLimits(
   threadId: string | undefined,
 ): NonNullable<HarnessEvent["quota"]> | null {
   if (!threadId) return null;
-  const home = codexHome && codexHome.trim() ? codexHome : join(homedir(), ".codex");
+  // An explicit scoped home is REQUIRED (v3.0.3 S9): falling back to the
+  // operator's real ~/.codex would read native state Claudexor does not own.
+  // Callers always resolve the run's CODEX_HOME; absent means unobserved.
+  const home = codexHome && codexHome.trim() ? codexHome : null;
+  if (!home) return null;
   const rollout = findCodexRollout(join(home, "sessions"), threadId);
   if (!rollout) return null;
   let latest: NonNullable<HarnessEvent["quota"]> | null = null;

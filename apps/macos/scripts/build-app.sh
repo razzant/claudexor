@@ -212,6 +212,13 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
     NODE_BIN="$(command -v node)"
     echo "    WARNING: bundling the system node ($NODE_BIN) — set CLAUDEXOR_NODE_BIN to a notarized Node for a distributable build" >&2
   fi
+  # Self-containment guard (v3.0.3, GH #14): a Homebrew/managed Node links
+  # libnode from its Cellar — the copied binary dies at dyld three smoke
+  # stages later with a misleading error. Fail HERE, at the selection point.
+  if [ -x "$NODE_BIN" ] && command -v otool >/dev/null 2>&1 && otool -L "$NODE_BIN" | grep -q 'libnode\.'; then
+    echo "ERROR: $NODE_BIN links an external libnode dylib (not self-contained); set CLAUDEXOR_NODE_BIN to an official nodejs.org build (or the notarized ~/.claudexor/node/bin/node)" >&2
+    exit 1
+  fi
   if [ -x "$NODE_BIN" ]; then
     cp "$NODE_BIN" "$APP/Contents/Resources/node"; chmod +x "$APP/Contents/Resources/node"
     echo "    bundled node ($(du -h "$APP/Contents/Resources/node" | cut -f1 | tr -d ' '))"

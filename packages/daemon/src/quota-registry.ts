@@ -41,6 +41,9 @@ export class QuotaRegistry {
    * cycle", never a durable fact to replay. */
   private absences: QuotaAbsence[] = [];
   private pollFailures = 0;
+  /** Snapshots produced by the most recent refresh() cycle — an absence-only
+   * cycle (zero new snapshots) is backoff-eligible even though it "succeeded". */
+  private lastRefreshSnapshotCount = 0;
   private pollNotBefore = 0;
 
   constructor(
@@ -100,10 +103,12 @@ export class QuotaRegistry {
     let successfulSources = 0;
     const failures: string[] = [];
     const claims: QuotaAbsence[] = [];
+    this.lastRefreshSnapshotCount = 0;
     for (const refresher of this.refreshers) {
       try {
         const result = await refresher();
         for (const snapshot of result.snapshots) this.upsert(snapshot);
+        this.lastRefreshSnapshotCount += result.snapshots.length;
         if (result.absences) claims.push(...result.absences);
         successfulSources += 1;
       } catch (error) {
@@ -176,8 +181,19 @@ export class QuotaRegistry {
     if (now < this.pollNotBefore) return false;
     try {
       await this.refresh();
-      this.pollFailures = 0;
-      this.pollNotBefore = now + POLL_BACKOFF_MS;
+      if (this.lastRefreshSnapshotCount > 0) {
+        this.pollFailures = 0;
+        this.pollNotBefore = now + POLL_BACKOFF_MS;
+        return true;
+      }
+      // An absence-only cycle (nobody logged in, endpoint returned nothing
+      // parseable) is a SOFT failure for pacing (v3.0.3 S8): the typed
+      // absences are recorded, but re-polling every minute forever would just
+      // re-spawn vendor probes for the same answer — back off exponentially
+      // until real state appears.
+      this.pollFailures += 1;
+      this.pollNotBefore =
+        now + Math.min(POLL_BACKOFF_MS * 2 ** (this.pollFailures - 1), MAX_POLL_BACKOFF_MS);
       return true;
     } catch {
       this.pollFailures += 1;

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { codexTranscriptModel } from "./transcript.js";
+import { codexTranscriptModel, codexTranscriptRateLimits } from "./transcript.js";
 
 // codex's `--json` stream never carries the model, but the CLI records it in
 // its own rollout transcript. codexTranscriptModel reads that file so the
@@ -98,5 +98,31 @@ describe("codexTranscriptRateLimits (quota)", () => {
     // Missing rollout -> null (fail-honest, no signal).
     expect(codexTranscriptRateLimits(home, "unknown-thread")).toBeNull();
     rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe("no real ~/.codex fallback (v3.0.3 S9)", () => {
+  it("returns null for an absent/empty CODEX_HOME instead of reading the operator's real home", () => {
+    // Poison a fake real home: if the reader fell back to ~/.codex it would
+    // find this planted rollout and report its model.
+    const fakeHome = mkdtempSync(join(tmpdir(), "claudexor-transcript-home-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    const day = join(fakeHome, ".codex", "sessions", "2026", "07", "21");
+    mkdirSync(day, { recursive: true });
+    writeFileSync(
+      join(day, "rollout-2026-07-21T00-00-00-poisoned-thread.jsonl"),
+      JSON.stringify({ type: "turn_context", payload: { model: "poisoned-model" } }) + "\n",
+    );
+    try {
+      expect(codexTranscriptModel(null, "poisoned-thread")).toBeNull();
+      expect(codexTranscriptModel("", "poisoned-thread")).toBeNull();
+      expect(codexTranscriptModel("   ", "poisoned-thread")).toBeNull();
+      expect(codexTranscriptRateLimits(undefined, "poisoned-thread")).toBeNull();
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
   });
 });
