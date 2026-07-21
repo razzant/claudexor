@@ -433,10 +433,9 @@ describe("setup jobs", () => {
     manager.beginDrain();
     expect(() => manager.create(LOGIN_REQUEST)).toThrow(/setup supervisor is unavailable/);
     await manager.shutdown();
-    expect(manager.status({ jobId: job.jobId })).toMatchObject({
-      state: "cancelled",
-      outcome: { reason: "cancelled_on_restart" },
-    });
+    // v3.0.3 S5: ordinary shutdown leaves the interactive login untouched —
+    // the detached runner keeps waiting and the successor daemon adopts it.
+    expect(manager.status({ jobId: job.jobId }).state).toBe("waiting_for_input");
 
     manager._store.journal.close();
     const journalAtShutdown = readFileSync(manager._store.journal.path);
@@ -445,7 +444,7 @@ describe("setup jobs", () => {
     expect(readFileSync(manager._store.journal.path)).toEqual(journalAtShutdown);
   });
 
-  it("reaches a fully drained supervisor even when terminal persistence fails", async () => {
+  it("reaches a fully drained supervisor with an active login present (no termination on shutdown)", async () => {
     const opener = fakeOpener();
     const manager = createSetupJobManager({
       rootDir: join(root, "shutdown-persistence-failure"),
@@ -455,15 +454,10 @@ describe("setup jobs", () => {
     });
     await manager.start();
     manager.create(LOGIN_REQUEST);
-    const originalUpdate = manager._store.update.bind(manager._store);
-    manager._store.update = ((jobId, patch) => {
-      if (patch.phase === "cancelling") throw new Error("injected terminal persistence failure");
-      return originalUpdate(jobId, patch);
-    }) as typeof manager._store.update;
-
-    await expect(manager.shutdown()).rejects.toThrow("injected terminal persistence failure");
+    // v3.0.3 S5: shutdown no longer routes through terminateLogin (no
+    // "cancelling" persistence step); it must resolve cleanly and drain.
+    await manager.shutdown();
     expect(manager._supervisorHealth()).toMatchObject({ state: "stopped", activeTasks: 0 });
-    manager._store.update = originalUpdate;
     manager._store.journal.close();
     const journalAtShutdown = readFileSync(manager._store.journal.path);
     expect(() => opener.emit("error", new Error("late opener failure"))).not.toThrow();
@@ -1486,8 +1480,68 @@ describe("setup jobs", () => {
       openTerminal: fakeOpener,
     });
     await restarted.start();
-    expect(restarted.status({ jobId: job.jobId }).outcome?.reason).toBe("interrupted");
+    expect(restarted.status({ jobId: job.jobId }).outcome?.reason).toBe("cancelled_on_restart");
     expect(manifest.executionId).not.toBe("wrong-execution");
+    await restarted.shutdown();
+  });
+
+  it("ordinary graceful shutdown leaves the login runner unsignalled and the successor adopts it", async () => {
+    const group = processGroupFixture({ leader: knownLeader(103) });
+    let opened = 0;
+    const opts = {
+      rootDir: join(root, "graceful-adopt"),
+      platform: "darwin" as const,
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: () => {
+        opened += 1;
+        return fakeOpener();
+      },
+      processGroups: group.service,
+      sleep: async () => {},
+    };
+    const first = createSetupJobManager(opts);
+    await first.start();
+    const job = first.create(LOGIN_REQUEST);
+    writeRunnerStateV2(first, job.jobId, group.leader);
+    await waitForPhase(first, job.jobId, "awaiting_user");
+    await first.shutdown();
+    expect(group.signals).toEqual([]);
+    first._store.journal.close();
+    const restarted = createSetupJobManager(opts);
+    await restarted.start();
+    expect(restarted.status({ jobId: job.jobId })).toMatchObject({
+      state: "waiting_for_input",
+      phase: "awaiting_user",
+      execution: { permitIssuedAt: expect.any(String) },
+    });
+    expect(group.signals).toEqual([]);
+    expect(opened).toBe(1);
+    await restarted.shutdown();
+  });
+
+  it("classifies a proven-dead login runner as cancelled_on_restart at successor start", async () => {
+    const group = processGroupFixture({ leader: knownLeader(104) });
+    const opts = {
+      rootDir: join(root, "dead-runner-restart"),
+      platform: "darwin" as const,
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      processGroups: group.service,
+      sleep: async () => {},
+    };
+    const first = createSetupJobManager(opts);
+    const job = first.create(LOGIN_REQUEST);
+    writeRunnerStateV2(first, job.jobId, group.leader);
+    group.setAlive(false); // the runner died while no daemon was watching
+    first.beginDrain();
+    first._store.journal.close();
+    const restarted = createSetupJobManager(opts);
+    await restarted.start();
+    expect(restarted.status({ jobId: job.jobId })).toMatchObject({
+      state: "cancelled",
+      outcome: { reason: "cancelled_on_restart" },
+    });
+    expect(group.signals).toEqual([]);
     await restarted.shutdown();
   });
 

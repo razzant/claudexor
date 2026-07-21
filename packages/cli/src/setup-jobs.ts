@@ -878,6 +878,31 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       }
       const state = matchingState(job.jobId);
       if (state) {
+        // Adoption of a still-live login runner (logins SURVIVE ordinary
+        // daemon restarts — v3.0.3 S5): adopt only on positive liveness AND
+        // re-proven leader identity; a proven-dead runner with no terminal
+        // receipt is the unrecoverable cancelled_on_restart case, and
+        // identity uncertainty stays fail-closed as termination_unconfirmed.
+        const handle = parseProcessGroupHandle(state.processGroup);
+        const probe = processGroups.probeEmpty(handle);
+        if (probe.status === "empty") {
+          finish(
+            job.jobId,
+            "cancelled",
+            "cancelled_on_restart",
+            `${job.harness} login runner did not survive the daemon restart window and left no terminal receipt.`,
+          );
+          continue;
+        }
+        if (probe.status !== "nonempty" || processGroups.compareLeader(handle) !== "same") {
+          finish(
+            job.jobId,
+            "failed",
+            "termination_unconfirmed",
+            `${job.harness} login worker identity could not be re-proven after daemon restart.`,
+          );
+          continue;
+        }
         await observeAndPermit(job.jobId, state);
         continue;
       }
@@ -885,9 +910,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       if (!group) {
         finish(
           job.jobId,
-          "failed",
-          "interrupted",
-          `${job.harness} login stopped before execution authorization during daemon restart.`,
+          "cancelled",
+          "cancelled_on_restart",
+          `${job.harness} login stopped before execution authorization and cannot continue across the daemon restart.`,
         );
         continue;
       }
@@ -895,8 +920,8 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       if (empty.status === "empty") {
         finish(
           job.jobId,
-          "failed",
-          "interrupted",
+          "cancelled",
+          "cancelled_on_restart",
           `${job.harness} login process ended without a terminal receipt during daemon restart.`,
         );
       } else {
@@ -1018,31 +1043,15 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     shutdownPromise ??= (async () => {
       beginDrain();
       let firstError: unknown;
-      let unconfirmed: ControlSetupJob | undefined;
       const rememberError = (error: unknown) => {
         firstError ??= error;
         supervisor.reportFailure(error, "setup-shutdown");
       };
-      try {
-        const active = store.recoveryState().status === "ready" ? store.list({ active: true }) : [];
-        const waitingLogins = active.filter(
-          (job) =>
-            job.authCapability?.state !== "running" &&
-            job.authCapability?.state !== "completed" &&
-            job.authCapability?.state !== "interrupted_unknown",
-        );
-        const stopped = await Promise.allSettled(
-          waitingLogins.map((job) => terminateLogin(job.jobId, "cancelled_on_restart")),
-        );
-        for (const result of stopped) {
-          if (result.status === "rejected") rememberError(result.reason);
-          else if (result.value.outcome?.reason === "termination_unconfirmed") {
-            unconfirmed ??= result.value;
-          }
-        }
-      } catch (error) {
-        rememberError(error);
-      }
+      // Interactive native logins are NOT terminated on ordinary shutdown
+      // (v3.0.3 S5): the detached Terminal runner keeps waiting for the user,
+      // and the successor daemon adopts it in reconcileRestart (result-first,
+      // then identity-proven live adoption). Explicit cancel remains the only
+      // path that signals a login runner.
       await supervisor.shutdown();
       try {
         if (store.recoveryState().status === "ready") {
@@ -1052,12 +1061,6 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         }
       } catch (error) {
         rememberError(error);
-      }
-      if (unconfirmed) {
-        throw Object.assign(
-          new Error(`setup shutdown could not prove termination for ${unconfirmed.jobId}`),
-          { code: "setup_shutdown_unconfirmed", status: 503 },
-        );
       }
       if (firstError !== undefined) throw firstError;
     })();
