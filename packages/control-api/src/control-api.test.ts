@@ -3543,13 +3543,16 @@ describe("DaemonControlApiServer", () => {
         });
         expect(response.status).toBe(422);
         expect(response.headers.get("content-type")).toBe("application/problem+json");
-        const body = await response.json();
+        const body = (await response.json()) as {
+          code: string;
+          retryable: boolean;
+          message: string;
+          requiredActions: string[];
+        };
         expect(body.code).toBe("config_invalid");
         expect(body.retryable).toBe(false);
         expect(body.message).toContain("invalid Claudexor YAML config");
-        expect(
-          (body.requiredActions as string[]).some((a) => a.includes("config.yaml")),
-        ).toBe(true);
+        expect(body.requiredActions.some((a) => a.includes("config.yaml"))).toBe(true);
       },
       undefined,
       {
