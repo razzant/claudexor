@@ -372,7 +372,6 @@ describe("controlApiFetch create idempotency", () => {
   });
 });
 
-
 describe("handshake engine identity (v3.0.3 S4c)", () => {
   it("discloses a daemon/CLI version skew from the handshake body on stderr, once", async () => {
     const requests: string[] = [];

@@ -424,7 +424,6 @@ describe("setup-login executable evidence — hard-link tolerance (W2)", () => {
   });
 });
 
-
 describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
   const helpWithout =
     'if [ "$1" = "login" ] && [ "$2" = "--help" ]; then echo "Usage: codex login"; echo "  --with-api-key"; exit 0; fi';
