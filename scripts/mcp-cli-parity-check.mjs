@@ -91,6 +91,11 @@ const MCP_TO_CLI = {
 
 // BOOLEAN CLI strategy flags -> how MCP expresses them (or a reason).
 const BOOLEAN_FLAG_MAP = {
+  "browser-redirect": {
+    mcp: null,
+    reason:
+      "codex login flow opt-in on `claudexor auth login` (an ops verb, not a run tool); MCP hosts never drive native logins — setup jobs carry loginFlow on the control API instead",
+  },
   "deep-scan": { mcp: "deepScan", reason: "ask deep-scan strategy; same arg on every run tool" },
   council: { mcp: "council", reason: "plan council strategy; same arg on every run tool" },
   "until-clean": { mcp: null, reason: "convergence strategy; not exposed one-shot (CLI/app only)" },
