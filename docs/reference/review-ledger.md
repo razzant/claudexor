@@ -149,5 +149,5 @@ Dispositions:
 | 3.0.3 | 3 | owner | W26 | anthropic OpenRouter slots capped at 1M tokens; owner substituted Opus (native subagent, triad slot) and gpt-5.6-sol (scope slot) | fixed | owner decision 2026-07-21; recorded in the attestation as an owner override, never a silent panel change |
 | 3.0.3 | 3 | scope-sol | W27 | setup-job reducer forbade waiting_for_input/running -> not_supported: the device_auth_unsupported path threw invalid_setup_transition and journal replay repeated it at daemon start | fixed | wave-3 final commit (transition registry + end-to-end old-CLI test) |
 | 3.0.3 | 3 | scope-sol | W28 | ARCHITECTURE/WHITEPAPER claimed explicit cancel is the ONLY login terminator, contradicting the 15-min deadline | fixed | wave-3 final commit (both claims name cancel + deadline) |
-| 3.0.3 | 3 | scope-sol | W29 | INTEGRATIONS login section omitted the S13-promised login-survival semantics | fixed | wave-3 final commit |
+| 3.0.3 | 3 | scope-sol | W29 | INTEGRATIONS login section omitted the S13-promised login-survival semantics | fixed | c46ed49d (the wave-3 edit missed its anchor; landed as a docs-only follow-up, caught by both delta confirmations) |
 | 3.0.3 | 3 | scope-sol | W30 | tee ring can start mid-codepoint and decode a leading replacement char | fixed | wave-3 final commit (leading continuation-byte trim) |

@@ -193,7 +193,7 @@ function writeRunnerResultV2(
     commandStarted?: boolean;
     exitCode?: number | null;
     signal?: string | null;
-    errorCode?: "permit_timeout" | "spawn_failed";
+    errorCode?: "permit_timeout" | "spawn_failed" | "device_auth_unsupported";
     permitIssuedAt?: string | null;
     executionId?: string;
   } = {},
