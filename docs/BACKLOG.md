@@ -127,6 +127,14 @@ deferred; they are recorded here now.
   complete per-attempt telemetry for retried slots (3.0.1-r7 sol criticals,
   re-observed in the 3.0.2 wave when the gemini slot failed its liveness floor
   without the promised same-SHA retry).
+- W-h: test suites leak tmpdirs — one 2026-07-21 release-day gate pass left
+  ~16.5k dirs (~1.2G) in DARWIN_USER_TEMP_DIR under prefixes claudexor-*
+  (vitest-config/orch/control-run/…), cx-*, cdx-*, raw-patch-*, plus
+  "claudexor setup tests *" and empty TemporaryDirectory.* markers. Add
+  afterEach/finally rmSync cleanup to the mkdtemp call sites (canary
+  support.ts, context.test.ts, workspace manager/raw-patch tests,
+  delegation-belt-descriptor.test.ts, harness-codex browser.test.ts) or a
+  shared tmpdir fixture with process-exit sweep.
 
 ## v3.0.3 deferrals (owner decision R2)
 
