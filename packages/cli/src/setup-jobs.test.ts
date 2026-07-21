@@ -1657,6 +1657,40 @@ describe("setup jobs", () => {
     },
   );
 
+  it("a device_auth_unsupported runner result terminates the awaiting-user job as not_supported (old codex CLI)", async () => {
+    const group = processGroupFixture({ leader: knownLeader(106) });
+    const manager = createSetupJobManager({
+      rootDir: join(root, "device-auth-unsupported"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      processGroups: group.service,
+      sleep: async () => {},
+    });
+    await manager.start();
+    const job = manager.create(LOGIN_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    // The real runner rewrites the state sidecar to stage=running with the
+    // SAME observedAt before executing, and the probe refusal happens AFTER
+    // the permit — replicate both so the result binds to the durable permit.
+    writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+    const permitIssuedAt = manager.status({ jobId: job.jobId }).execution?.permitIssuedAt ?? null;
+    writeRunnerResultV2(manager, job.jobId, {
+      commandStarted: false,
+      errorCode: "device_auth_unsupported",
+      exitCode: null,
+      permitIssuedAt,
+    });
+    await waitForTerminal(manager, job.jobId);
+    const done = manager.status({ jobId: job.jobId });
+    expect(done.state).toBe("not_supported");
+    expect(done.outcome?.reason).toBe("not_supported");
+    expect(done.message).toContain("--browser-redirect");
+    await manager.shutdown();
+  });
+
   it("a failed device-auth login message carries the toggle remedy", async () => {
     // The default codex login authorizes the --device-auth flow. A started
     // command that exits nonzero (e.g. the sign-in page rejected the one-time

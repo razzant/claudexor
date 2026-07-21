@@ -226,7 +226,11 @@ function createTailBuffer(): { push(chunk: Buffer): void; text(): string } {
       tail = Buffer.concat([tail, chunk]).subarray(-OUTPUT_TAIL_BYTES);
     },
     text() {
-      return boundedTail(tail.toString("utf8"));
+      // The ring can start mid-codepoint: drop leading continuation bytes
+      // (0b10xxxxxx) so the decode never opens with a replacement char.
+      let start = 0;
+      while (start < tail.length && (tail[start]! & 0b1100_0000) === 0b1000_0000) start += 1;
+      return boundedTail(tail.subarray(start).toString("utf8"));
     },
   };
 }

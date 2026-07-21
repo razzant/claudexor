@@ -167,7 +167,8 @@ browser context, because a browser-based OAuth completed alongside another
 session of the same vendor can invalidate that sibling session server-side —
 vendor backend behavior Claudexor discloses and mitigates (device-auth
 default, isolation guidance) but never claims to prevent. An interactive login
-survives an ordinary daemon restart; only an explicit cancel ends it.
+survives an ordinary daemon restart; an explicit cancel or the login's own
+15-minute deadline (extendable) are what end a pending login.
 
 ## Workspace Semantics
 

@@ -21,6 +21,9 @@ const ALLOWED_STATE_TRANSITIONS: Record<
     "cancelled",
     "timed_out",
     "interrupted_unknown",
+    // v3.0.3: the device-auth capability probe can refuse before the vendor
+    // command starts, terminating a launched login as not_supported.
+    "not_supported",
   ]),
   waiting_for_input: new Set([
     "waiting_for_input",
@@ -30,6 +33,9 @@ const ALLOWED_STATE_TRANSITIONS: Record<
     "cancelled",
     "timed_out",
     "interrupted_unknown",
+    // v3.0.3: an awaiting-user codex login refused by the device-auth
+    // capability probe (old CLI) terminates as not_supported.
+    "not_supported",
   ]),
   succeeded: new Set(),
   failed: new Set(["failed"]),

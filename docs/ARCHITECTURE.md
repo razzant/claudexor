@@ -1031,7 +1031,8 @@ five seconds, KILL only when PID + kernel-start identity still matches; an
 unproven identity is never signalled or called cancelled. An ordinary daemon
 stop/restart no longer terminates an awaiting-user login runner (that regression
 killed the operator's own pending login in the 2026-07-21 incident); explicit
-`setup jobs cancel` stays the only signalling path. Restart consumes an existing
+`setup jobs cancel` and the login deadline's timeout escalation are the only
+signalling paths. Restart consumes an existing
 terminal result first, then adopts a live runner only on positive evidence — a
 matching durable handle, the same leader identity, and a nonempty process
 group; a proven-dead group with no receipt is the unrecoverable
