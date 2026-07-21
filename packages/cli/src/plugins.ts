@@ -16,6 +16,7 @@ import { hostFallbackExamples, recoveryVerbs } from "./command-registry.js";
 import { manageClaudeStatusline } from "./claude-statusline.js";
 import {
   CLAUDEXOR_VERSION,
+  defaultUserConfigDir,
   ensureDir,
   sha256,
   userConfigDir,
@@ -145,11 +146,22 @@ function jsonText(value: unknown): string {
 }
 
 function generatedMcpEnv(runtime: RuntimePaths): Record<string, string> {
-  return {
-    CLAUDEXOR_CONFIG_DIR: runtime.configDir,
+  const env: Record<string, string> = {
     CLAUDEXOR_MANAGED: MARKER,
     CLAUDEXOR_PLUGIN_VERSION: CLAUDEXOR_VERSION,
   };
+  // A DEFAULT-root install serializes NO config root: every generation of the
+  // CLI self-selects its own versioned default at serve time, so a stale
+  // artifact can never freeze a newer runtime onto an older data root
+  // (2026-07-21 incident: a 1.0.0 artifact drove 3.0.2 code against the v1
+  // root). An EXPLICIT operator override stays serialized WITH a provenance
+  // marker so the serve-time skew check can tell an intentional override from
+  // a legacy frozen root.
+  if (resolve(runtime.configDir) !== resolve(defaultUserConfigDir())) {
+    env.CLAUDEXOR_CONFIG_DIR = runtime.configDir;
+    env.CLAUDEXOR_ROOT_MODE = "explicit";
+  }
+  return env;
 }
 
 function mcpServers(runtime: RuntimePaths): Record<string, unknown> {

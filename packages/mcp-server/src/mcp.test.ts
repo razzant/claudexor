@@ -518,15 +518,45 @@ describe("Claudexor MCP server (SDK v2)", () => {
     });
   });
 
-  it("warns on stderr when the plugin artifact version does not match the CLI", async () => {
+  it("REFUSES to serve when the plugin artifact version does not match the CLI", async () => {
     const prev = process.env["CLAUDEXOR_PLUGIN_VERSION"];
     process.env["CLAUDEXOR_PLUGIN_VERSION"] = "0.1.0";
-    const chunks: string[] = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    (process.stderr as any).write = (chunk: any, ...rest: any[]) => {
-      chunks.push(String(chunk));
-      return origWrite(chunk, ...rest);
-    };
+    try {
+      expect(() =>
+        wire(
+          defaultClaudexorTools(async () => "ok"),
+          { version: "0.2.0" },
+        ),
+      ).toThrowError(/plugin_artifact_skew: .*version 0\.1\.0 but the CLI is 0\.2\.0.*plugin repair all/);
+    } finally {
+      if (prev === undefined) delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
+      else process.env["CLAUDEXOR_PLUGIN_VERSION"] = prev;
+    }
+  });
+
+  it("REFUSES a managed launch whose frozen config root is neither the default nor a marked explicit override", async () => {
+    // vitest globally overrides CLAUDEXOR_CONFIG_DIR to a temp dir — exactly a
+    // "legacy frozen foreign root" from the managed bridge's point of view.
+    const prev = process.env["CLAUDEXOR_PLUGIN_VERSION"];
+    process.env["CLAUDEXOR_PLUGIN_VERSION"] = "0.2.0";
+    try {
+      expect(() =>
+        wire(
+          defaultClaudexorTools(async () => "ok"),
+          { version: "0.2.0" },
+        ),
+      ).toThrowError(/plugin_artifact_skew: .*foreign config root/);
+    } finally {
+      if (prev === undefined) delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
+      else process.env["CLAUDEXOR_PLUGIN_VERSION"] = prev;
+    }
+  });
+
+  it("serves a managed launch whose non-default root carries the explicit-override marker", async () => {
+    const prev = process.env["CLAUDEXOR_PLUGIN_VERSION"];
+    const prevMode = process.env["CLAUDEXOR_ROOT_MODE"];
+    process.env["CLAUDEXOR_PLUGIN_VERSION"] = "0.2.0";
+    process.env["CLAUDEXOR_ROOT_MODE"] = "explicit";
     try {
       const w = wire(
         defaultClaudexorTools(async () => "ok"),
@@ -534,10 +564,25 @@ describe("Claudexor MCP server (SDK v2)", () => {
       );
       await w.close();
     } finally {
-      (process.stderr as any).write = origWrite;
+      if (prev === undefined) delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
+      else process.env["CLAUDEXOR_PLUGIN_VERSION"] = prev;
+      if (prevMode === undefined) delete process.env["CLAUDEXOR_ROOT_MODE"];
+      else process.env["CLAUDEXOR_ROOT_MODE"] = prevMode;
+    }
+  });
+
+  it("non-plugin launches (no CLAUDEXOR_PLUGIN_VERSION) are never skew-checked", async () => {
+    const prev = process.env["CLAUDEXOR_PLUGIN_VERSION"];
+    delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
+    try {
+      const w = wire(
+        defaultClaudexorTools(async () => "ok"),
+        { version: "0.2.0" },
+      );
+      await w.close();
+    } finally {
       if (prev === undefined) delete process.env["CLAUDEXOR_PLUGIN_VERSION"];
       else process.env["CLAUDEXOR_PLUGIN_VERSION"] = prev;
     }
-    expect(chunks.join("")).toContain("plugin artifacts are version 0.1.0 but the CLI is 0.2.0");
   });
 });

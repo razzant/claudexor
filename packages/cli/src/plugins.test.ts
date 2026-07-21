@@ -323,8 +323,8 @@ describe("plugin lifecycle", () => {
         ".claude/skills/claudexor/.mcp.json": [
           '  "mcpServers": {',
           '      "command": "<NODE>",',
-          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
           '        "CLAUDEXOR_MANAGED": "claudexor:managed host-plugin-lifecycle",',
+          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
         ],
         ".claude/skills/claudexor/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
@@ -343,8 +343,8 @@ describe("plugin lifecycle", () => {
         ".codex/plugins/claudexor/.mcp.json": [
           '  "mcpServers": {',
           '      "command": "<NODE>",',
-          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
           '        "CLAUDEXOR_MANAGED": "claudexor:managed host-plugin-lifecycle",',
+          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
         ],
         ".codex/plugins/claudexor/skills/claudexor/SKILL.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
@@ -362,8 +362,8 @@ describe("plugin lifecycle", () => {
         ".cursor/plugins/local/claudexor/mcp.json": [
           '  "mcpServers": {',
           '      "command": "<NODE>",',
-          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
           '        "CLAUDEXOR_MANAGED": "claudexor:managed host-plugin-lifecycle",',
+          '        "CLAUDEXOR_CONFIG_DIR": "<CONFIG>",',
         ],
         ".config/opencode/commands/claudexor.md": [
           `<!-- ${MANAGED_VERSION_MARKER} -->`,
@@ -458,6 +458,35 @@ describe("plugin lifecycle", () => {
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.OPENROUTER_API_KEY).toBeUndefined();
       expect(env.GITHUB_TOKEN).toBeUndefined();
+    });
+  });
+
+  it("serializes NO config root for a default-root install and marks explicit overrides", async () => {
+    // Under a CLAUDEXOR_CONFIG_DIR override (any withTempHome install), the
+    // generated env must carry the root WITH the explicit-override provenance
+    // marker; on this generation's default root it must carry NEITHER, so a
+    // stale artifact can never freeze a future runtime onto this root.
+    await withTempHome(async ({ home, config }) => {
+      expect((await runPluginCommand("install", "cursor")).exitCode).toBe(0);
+      const overridden = readJson(join(home, ".cursor", "plugins", "local", "claudexor", "mcp.json"))
+        .mcpServers.claudexor.env;
+      expect(overridden.CLAUDEXOR_CONFIG_DIR).toBe(config);
+      expect(overridden.CLAUDEXOR_ROOT_MODE).toBe("explicit");
+
+      const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+      delete process.env.CLAUDEXOR_CONFIG_DIR; // default root = $HOME/.claudexor/v3 (fake HOME)
+      try {
+        expect((await runPluginCommand("install", "codex")).exitCode).toBe(0);
+        const defaulted = readJson(join(home, ".codex", "plugins", "claudexor", ".mcp.json"))
+          .mcpServers.claudexor.env;
+        expect(defaulted.CLAUDEXOR_CONFIG_DIR).toBeUndefined();
+        expect(defaulted.CLAUDEXOR_ROOT_MODE).toBeUndefined();
+        expect(defaulted.CLAUDEXOR_MANAGED).toBeTruthy();
+        expect(defaulted.CLAUDEXOR_PLUGIN_VERSION).toBeTruthy();
+      } finally {
+        if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+        else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      }
     });
   });
 

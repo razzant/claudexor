@@ -9,6 +9,7 @@ import {
   continuityLabel,
   processExitCode,
 } from "@claudexor/schema";
+import { CLAUDEXOR_VERSION } from "@claudexor/util";
 
 const print = (s: string): void => {
   process.stdout.write(s + "\n");
@@ -291,7 +292,26 @@ export async function handshakeControlApi(
       `control API handshake failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
     );
   }
+  // The handshake already reports the daemon's build identity precisely so a
+  // stale daemon is visible HERE instead of guessed later — consume it. A
+  // version skew is advisory (the protocol major gate above is the hard
+  // fence): disclose with the remedy, once per process.
+  try {
+    const body = (await response.json()) as { engine?: { version?: string } };
+    const daemonVersion = body.engine?.version;
+    if (daemonVersion && daemonVersion !== CLAUDEXOR_VERSION && !warnedDaemonSkew) {
+      warnedDaemonSkew = true;
+      process.stderr.write(
+        `claudexor: daemon is engine ${daemonVersion} but this CLI is ${CLAUDEXOR_VERSION}; ` +
+          `run \`claudexor daemon stop\` and rerun the command so a matching daemon starts\n`,
+      );
+    }
+  } catch {
+    // Identity is advisory; a body parse failure never fails the handshake.
+  }
 }
+
+let warnedDaemonSkew = false;
 
 /**
  * `claudexor follow <run_id>`: live SSE tail of a daemon-backed run with full
