@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Reproducible GitHub social-preview layout. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <metadata><![CDATA[
+Re-render from the repository root with the real app icon:
+  sips -s format png docs/assets/social-preview.svg --out /tmp/claudexor-social-layout.png
+  magick apps/macos/ClaudexorApp/Sources/ClaudexorApp/Resources/AppIcon.png \
+    -resize 300x300 /tmp/claudexor-social-icon.png
+  magick /tmp/claudexor-social-layout.png /tmp/claudexor-social-icon.png \
+    -geometry +82+170 -composite -strip docs/assets/social-preview.png
+  pngquant --force --output docs/assets/social-preview.png --quality 80-95 \
+    docs/assets/social-preview.png
+  ]]></metadata>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12151d"/>
+      <stop offset="1" stop-color="#08090d"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.27" cy="0.5" r="0.42">
+      <stop offset="0" stop-color="#ff835f" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#ff5f43" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ff5f43" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff9a73"/>
+      <stop offset="1" stop-color="#ff5e45"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#background)"/>
+  <rect width="1280" height="640" fill="url(#halo)"/>
+  <rect x="28" y="28" width="1224" height="584" rx="34" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+
+  <g opacity="0.13" stroke="#ff8a68" stroke-width="1">
+    <path d="M0 548H1280"/>
+    <path d="M0 576H1280"/>
+    <path d="M1038 0V640"/>
+    <path d="M1070 0V640"/>
+  </g>
+
+  <g font-family="Arial, sans-serif">
+    <text x="446" y="132" fill="url(#accent)" font-size="28" font-weight="750" letter-spacing="5">CLAUDEXOR</text>
+
+    <text x="446" y="232" fill="#f7f8fa" font-size="59" font-weight="720" letter-spacing="-1.8">Multi-harness.</text>
+    <text x="446" y="305" fill="#f7f8fa" font-size="59" font-weight="720" letter-spacing="-1.8">Multi-subscription.</text>
+
+    <text x="446" y="384" fill="#d7d9df" font-size="28" font-weight="560" letter-spacing="0.1">Claude Code · Codex · Cursor · OpenCode</text>
+
+    <rect x="446" y="426" width="650" height="1" fill="#ffffff" opacity="0.12"/>
+    <text x="446" y="477" fill="#9ea3ae" font-size="23" font-weight="500" letter-spacing="0.2">Quota-aware rotation · shared thread context</text>
+  </g>
+</svg>
