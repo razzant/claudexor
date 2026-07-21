@@ -122,7 +122,9 @@ documented windows and provenance in the Claudexor-owned v3 root and does not
 read Claude credential or session files. See the official
 [Claude Code status-line contract](https://code.claude.com/docs/en/statusline).
 Native login commands are server allowlisted and run as setup jobs with
-typed phase/deadline/outcome. Codex login defaults to device-auth (a URL plus
+typed phase/deadline/outcome. An awaiting-user login SURVIVES an ordinary
+daemon restart — the successor adopts the identity-proven runner; only an
+explicit cancel or the deadline timeout signals it. Codex login defaults to device-auth (a URL plus
 one-time code shown in the Terminal), with the older localhost-callback flow
 selectable through the request `loginFlow` (`--browser-redirect` on the CLI,
 codex only); an older codex CLI without device-auth support yields a typed
