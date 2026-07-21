@@ -36,8 +36,10 @@ Release history for Claudexor. The current version is declared in the root
   fails on a non-self-contained (libnode-linked) Node instead of silently
   bundling a dead binary (#14); a new `retired-key-check` gate asserts every
   key removed from the persisted config schemas lands in the retired-key
-  registry. Docs: a new agent Install And Login guide in
-  `docs/AGENT_ONBOARDING.md`.
+  registry. Also ships the packaged-.app launch fix from #13 (thanks
+  @robert-platov): the executable no longer traps on `Bundle.module` at
+  startup. Docs: a new agent Install And Login guide in
+  `docs/AGENT_ONBOARDING.md` and a reproducible GitHub social preview (#19).
 
 - **v3.0.2** (2026-07-21) — Linux subscription-quota parity for Claude. The
   per-profile quota reader (`oauth/usage` source) read the access token only
