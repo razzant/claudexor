@@ -1,5 +1,5 @@
 import { readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import type { ResolvedConfig } from "@claudexor/schema";
@@ -10,6 +10,7 @@ import {
   TrustConfig,
 } from "@claudexor/schema";
 import {
+  defaultUserConfigDir,
   ensureDir,
   pathExists,
   readTextSafe,
@@ -23,6 +24,14 @@ export function globalConfigDir(): string {
 }
 
 export class ConfigParseError extends Error {
+  /** Typed problem projection (INV-021 fail-loudly, without a generic 500):
+   * the control-api problemBody duck-types these fields, and the MCP bridge's
+   * code-prefix rendering carries them to agent hosts. */
+  public readonly status = 422;
+  public readonly code = "config_invalid";
+  public readonly retryable = false;
+  public readonly requiredActions: string[];
+
   constructor(
     public readonly path: string,
     cause: unknown,
@@ -31,6 +40,10 @@ export class ConfigParseError extends Error {
       `invalid Claudexor YAML config at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
     this.name = "ConfigParseError";
+    this.requiredActions = [
+      `inspect and fix ${path} against the current schema`,
+      `or restore it from the newest sibling backup (${path}.bak-*)`,
+    ];
   }
 }
 
@@ -85,6 +98,25 @@ const RETIRED_CONFIG_KEYS: Array<{ path: string[]; retired: string }> = [
     path: ["harnesses", "*", "active_profile_id"],
     retired:
       "the per-harness Active profile pointer was removed in v3 (D25); routing uses the Enabled toggle + computed next_up, and a run pins its account per-thread",
+  },
+  // v1-era keys removed from the schema before the retired registry existed
+  // (2026-07-21 incident: a daemon on a v1 root failed strict parse on these).
+  {
+    path: ["default_portfolio"],
+    retired: "portfolio ids were removed in phase 4; routing is Pool + Primary + Routing Goal",
+  },
+  {
+    path: ["routing", "default_policy"],
+    retired: "the v1 routing policy enum was removed (D30); use routing.goal",
+  },
+  {
+    path: ["budget", "max_usd_per_run"],
+    retired: "replaced by the tagged budget.paid_budget_per_run contract",
+  },
+  {
+    path: ["harnesses", "*", "max_usd"],
+    retired:
+      "per-harness caps were removed; the global paid budget and per-run --max-usd own spend limits",
   },
 ];
 
@@ -145,6 +177,9 @@ export interface RetiredKeySweep {
   path: string;
   /** The dotted config paths that were stripped and persisted-out. */
   removed: string[];
+  /** Byte-identical pre-sweep backup written beside the config (absent when
+   * persistence itself failed and the file was left untouched). */
+  backupPath?: string;
 }
 
 /**
@@ -175,19 +210,31 @@ export function sweepRetiredConfigKeys(
     // Re-read UNDER the lock so a write that landed since the peek is never
     // clobbered with a stale in-memory copy.
     return withConfigLock(path, () => {
-      const raw = readYaml(path);
+      // Read the authoritative bytes ONCE under the lock: they feed both the
+      // parse and the byte-identical backup, so the backup can never diverge
+      // from what the sweep actually rewrote.
+      const originalText = readTextSafe(path);
+      if (originalText === null) return null;
+      let raw: unknown;
+      try {
+        raw = yamlParse(originalText);
+      } catch (err) {
+        throw new ConfigParseError(path, err);
+      }
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
       const removed: string[] = [];
       const cleaned = stripRetiredKeys(raw, matchers, removed);
       if (removed.length === 0) return null;
+      const backupPath = `${path}.bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      writeFileSync(backupPath, originalText, { mode: 0o600 });
       const tmp = `${path}.tmp-${process.pid}`;
       writeFileSync(tmp, yamlStringify(cleaned), { mode: 0o600 });
       renameSync(tmp, path);
       // Disclosure (the daemon's stderr → claudexord.log): never silent.
       console.warn(
-        `config: swept ${removed.length} retired key(s) from ${path} (${removed.join(", ")}); the cleaned file was persisted`,
+        `config: swept ${removed.length} retired key(s) from ${path} (${removed.join(", ")}); the cleaned file was persisted; pre-sweep backup at ${backupPath}`,
       );
-      return { path, removed };
+      return { path, removed, backupPath };
     });
   } catch (err) {
     // Best-effort persistence: a read-only file OR a config lock held by another
@@ -203,16 +250,26 @@ export function sweepRetiredConfigKeys(
 /** Sweep the GLOBAL and every known PROJECT config's retired keys, persisting +
  * disclosing. Called once at daemon start (mirroring the ghost-quarantine
  * startup sweep) so an existing config written by an older version is cleaned
- * before any strict parse can trip on it. */
+ * before any strict parse can trip on it.
+ *
+ * The GLOBAL sweep is root-scoped (2026-07-21 incident): it rewrites only this
+ * generation's OWN default root. A daemon pointed at a foreign root via
+ * CLAUDEXOR_CONFIG_DIR (a stale plugin artifact, an older generation's data
+ * dir) must not "clean up" files whose schema it does not own — loadConfig
+ * still strips retired keys in-memory, and unknown keys still fail loudly as
+ * config_invalid. Explicit repoRoots are the operator's own project configs
+ * and sweep under any root. */
 export function sweepRetiredConfigKeysAtStartup(
   repoRoots: readonly string[] = [],
 ): RetiredKeySweep[] {
   const sweeps: RetiredKeySweep[] = [];
-  const global = sweepRetiredConfigKeys(
-    join(globalConfigDir(), "config.yaml"),
-    RETIRED_CONFIG_KEYS,
-  );
-  if (global) sweeps.push(global);
+  if (resolve(globalConfigDir()) === resolve(defaultUserConfigDir())) {
+    const global = sweepRetiredConfigKeys(
+      join(globalConfigDir(), "config.yaml"),
+      RETIRED_CONFIG_KEYS,
+    );
+    if (global) sweeps.push(global);
+  }
   for (const root of repoRoots) {
     const project = sweepRetiredConfigKeys(
       join(root, ".claudexor", "config.yaml"),

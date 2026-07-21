@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -156,16 +156,21 @@ describe("retired-key sweep (B9)", () => {
     }
   });
 
-  it("PERSISTS the cleaned file and DISCLOSES the sweep at startup", () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-sweep-"));
+  it("PERSISTS the cleaned file, DISCLOSES the sweep, and leaves a byte-identical backup on this generation's DEFAULT root", () => {
+    // The positive gate case needs root == defaultUserConfigDir(): point HOME
+    // at a temp dir and drop the vitest-global CLAUDEXOR_CONFIG_DIR override.
+    const home = mkdtempSync(join(tmpdir(), "claudexor-retired-sweep-home-"));
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
-    process.env.CLAUDEXOR_CONFIG_DIR = dir;
-    const configPath = join(dir, "config.yaml");
+    const prevHome = process.env.HOME;
+    delete process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.HOME = home;
+    const configDir = join(home, ".claudexor", "v3");
+    mkdirSync(configDir, { recursive: true });
+    const configPath = join(configDir, "config.yaml");
+    const originalText =
+      "version: 1\nharnesses:\n  claude:\n    active_profile_id: exp-a\n    default_model: sonnet\n";
     try {
-      writeFileSync(
-        configPath,
-        "version: 1\nharnesses:\n  claude:\n    active_profile_id: exp-a\n    default_model: sonnet\n",
-      );
+      writeFileSync(configPath, originalText);
       const sweeps = sweepRetiredConfigKeysAtStartup();
       // The global sweep reports the exact retired path it removed.
       const global = sweeps.find((s) => s.path === configPath);
@@ -174,11 +179,100 @@ describe("retired-key sweep (B9)", () => {
       const onDisk = yamlParse(readFileSync(configPath, "utf8")) as Record<string, any>;
       expect(onDisk.harnesses.claude.active_profile_id).toBeUndefined();
       expect(onDisk.harnesses.claude.default_model).toBe("sonnet");
+      // A byte-identical pre-sweep backup sits beside the config.
+      expect(global?.backupPath).toBeTruthy();
+      expect(readFileSync(global!.backupPath!, "utf8")).toBe(originalText);
+      const backups = readdirSync(configDir).filter((f) => f.startsWith("config.yaml.bak-"));
+      expect(backups.length).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT rewrite the global config of a FOREIGN root (CLAUDEXOR_CONFIG_DIR override)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-foreign-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    const configPath = join(dir, "config.yaml");
+    const originalText =
+      "version: 1\nharnesses:\n  claude:\n    active_profile_id: exp-a\n    default_model: sonnet\n";
+    try {
+      writeFileSync(configPath, originalText);
+      const sweeps = sweepRetiredConfigKeysAtStartup();
+      // No global sweep on a root this generation does not own by default.
+      expect(sweeps.find((s) => s.path === configPath)).toBeUndefined();
+      expect(readFileSync(configPath, "utf8")).toBe(originalText);
+      // In-memory stripping still makes the config loadable (separate concern).
+      expect(loadConfig(dir).global.harnesses?.claude?.default_model).toBe("sonnet");
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("still sweeps explicit PROJECT repoRoots under a config-dir override", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-project-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    const repo = join(dir, "repo");
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    const projectPath = join(repo, ".claudexor", "config.yaml");
+    try {
+      writeFileSync(projectPath, "version: 1\nreview:\n  attempts: 3\n");
+      const sweeps = sweepRetiredConfigKeysAtStartup([repo]);
+      const project = sweeps.find((s) => s.path === projectPath);
+      expect(project?.removed).toContain("review");
+      expect(project?.backupPath).toBeTruthy();
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("strips the incident-class v1 keys (default_portfolio, routing.default_policy, budget.max_usd_per_run, harnesses.*.max_usd)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "claudexor-retired-v1-"));
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      writeFileSync(
+        join(dir, "config.yaml"),
+        [
+          "version: 1",
+          "default_portfolio: subscription-first",
+          "routing:",
+          "  default_policy: auto",
+          "budget:",
+          "  max_usd_per_run: null",
+          "harnesses:",
+          "  codex:",
+          "    max_usd: 5",
+          "    default_model: gpt-5.6-sol",
+          "",
+        ].join("\n"),
+      );
+      const cfg = loadConfig(dir);
+      expect(cfg.global.harnesses?.codex?.default_model).toBe("gpt-5.6-sol");
+      expect((cfg.global as Record<string, unknown>).default_portfolio).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ConfigParseError carries the typed problem projection (status/code/requiredActions)", () => {
+    const err = new ConfigParseError("/tmp/nowhere/config.yaml", new Error("boom"));
+    expect(err.status).toBe(422);
+    expect(err.code).toBe("config_invalid");
+    expect(err.retryable).toBe(false);
+    expect(err.requiredActions.some((a) => a.includes("/tmp/nowhere/config.yaml"))).toBe(true);
+    expect(err.requiredActions.some((a) => a.includes(".bak-"))).toBe(true);
   });
 
   it("still fails LOUD on a genuinely unknown key (not on the retired registry)", () => {

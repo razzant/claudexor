@@ -215,13 +215,23 @@ export function userConfigDir(): string {
     if (!safe) throw new Error("CLAUDEXOR_CONFIG_DIR must be a safe absolute path");
     return safe;
   }
-  // v3 is an intentionally empty, non-migrating namespace: the untouched
-  // older roots (v2, v1) ARE the archive (owner decision, v3.0.0 plan).
-  // Keeping the version boundary in the default root prevents the daemon
-  // from even probing older config, trust, secret, token, or journal bytes
-  // whose contracts this generation deleted. An explicit CLAUDEXOR_CONFIG_DIR
-  // remains the hermetic test/operator override and is already treated as
-  // the complete root.
+  return defaultUserConfigDir();
+}
+
+/**
+ * This build's generation-versioned default root, INDEPENDENT of the
+ * CLAUDEXOR_CONFIG_DIR override. v3 is an intentionally empty, non-migrating
+ * namespace: the untouched older roots (v2, v1) ARE the archive (owner
+ * decision, v3.0.0 plan). Keeping the version boundary in the default root
+ * prevents the daemon from even probing older config, trust, secret, token,
+ * or journal bytes whose contracts this generation deleted. An explicit
+ * CLAUDEXOR_CONFIG_DIR remains the hermetic test/operator override and is
+ * treated as the complete root. Comparing the ACTIVE root against this
+ * default is how root-scoped behaviors (the global retired-key sweep) tell
+ * "this generation's own root" from a foreign/overridden one — comparing
+ * against userConfigDir() would be tautological.
+ */
+export function defaultUserConfigDir(): string {
   return join(userHomeDir(), ".claudexor", "v3");
 }
 
