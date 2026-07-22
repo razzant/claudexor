@@ -181,7 +181,7 @@ export const StructuredOutputConformance = z
       .nullable()
       .default(null)
       .describe(
-        "Artifact path of the materialized structured output (final/output.json); null when the answer never parsed.",
+        "Artifact path of the materialized structured output: final/output.json when conformant, final/output.invalid.json when parsed but non-conformant; null when the answer never parsed.",
       ),
     generated_at: IsoTimestamp.describe("When the receipt was generated."),
   })
