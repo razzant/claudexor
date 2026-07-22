@@ -382,7 +382,10 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
 
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
-      if (version === null) throw missingCliError(runtime.brokenInstallAdvisory(BIN));
+      if (version === null) {
+        const advisory = runtime.brokenInstallAdvisory(BIN);
+        throw missingCliError(advisory && redactCodexDoctorDetail(advisory));
+      }
       const apiKey = runtime.hasApiKey();
       const login = await runtime.probeLogin(BIN, { env: codexNativeEnv() });
       const nativeSessionAvailable = login.method === "chatgpt";
@@ -469,7 +472,8 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
       // diagnosis always describes the exact env the probe failed in.
       const version = await runtime.detectVersion(_spec.abortSignal, _spec.env);
       if (version === null) {
-        return missingCliReport(runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env)));
+        const advisory = runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env));
+        return missingCliReport(advisory && redactCodexDoctorDetail(advisory));
       }
       const requestedSource = _spec.authSource;
       const probeNative = requestedSource === undefined || requestedSource === "native_session";
@@ -518,7 +522,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
         "explain",
         "audit",
       ];
-      const binPath = resolveHarnessBinary(BIN);
+      const binPath = resolveHarnessBinary(BIN, probeEnv(_spec.env));
       const apiSource: AuthSourceReadiness = {
         source: "provider_auth_file",
         availability: apiKey ? "available" : "unavailable",
