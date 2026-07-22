@@ -133,6 +133,18 @@ describe("Claudexor MCP server (SDK v2)", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      outputSchemaDialects: [
+        {
+          dialect: "draft-07",
+          uri: "http://json-schema.org/draft-07/schema#",
+          defaultWhenOmitted: true,
+        },
+        {
+          dialect: "draft-2020-12",
+          uri: "https://json-schema.org/draft/2020-12/schema",
+          defaultWhenOmitted: false,
+        },
+      ],
       mutability: {
         readOnlyModes: ["ask", "plan"],
         writeModes: ["agent"],

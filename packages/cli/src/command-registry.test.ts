@@ -53,6 +53,9 @@ describe("command registry — the one owner of the CLI surface", () => {
     expect(j.version).toBe("1.2.3");
     expect(j.commands.map((c) => c.id)).toEqual(CLI_COMMANDS.map((c) => c.id));
     expect(j.flags.length).toBe(CLI_FLAGS.length);
+    const outputSchema = j.flags.find((flag) => flag.name === "output-schema");
+    expect(outputSchema?.description).toContain("http://json-schema.org/draft-07/schema#");
+    expect(outputSchema?.description).toContain("https://json-schema.org/draft/2020-12/schema");
     expect(j.repl_commands.length).toBe(REPL_COMMANDS.length);
     // Descriptions with help-layout newlines are flattened for machines.
     for (const f of j.flags) if (f.description !== null) expect(f.description).not.toContain("\n");

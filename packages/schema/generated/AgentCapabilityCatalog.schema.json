@@ -278,6 +278,40 @@
           },
           "description": "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these)."
         },
+        "outputSchemaDialects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "dialect": {
+                "type": "string",
+                "enum": [
+                  "draft-07",
+                  "draft-2020-12"
+                ],
+                "description": "Stable dialect id used in structured-output receipts."
+              },
+              "uri": {
+                "type": "string",
+                "format": "uri",
+                "description": "Canonical $schema URI accepted for this dialect."
+              },
+              "defaultWhenOmitted": {
+                "type": "boolean",
+                "description": "True when this dialect is selected for schemas without a $schema declaration."
+              }
+            },
+            "required": [
+              "dialect",
+              "uri",
+              "defaultWhenOmitted"
+            ],
+            "additionalProperties": false,
+            "description": "One JSON Schema dialect accepted by the structured-output validator."
+          },
+          "minItems": 1,
+          "description": "Supported structured-output JSON Schema dialects and canonical $schema URIs."
+        },
         "mutability": {
           "type": "object",
           "properties": {
@@ -416,6 +450,7 @@
         "availableHarnesses",
         "modes",
         "runControlKeys",
+        "outputSchemaDialects",
         "mutability",
         "cliCommands",
         "mcpTools",

@@ -20,6 +20,7 @@ import {
   type ControlApiAddress,
 } from "./live.js";
 import { TERMINAL_LIFECYCLES, type RunOutcomeFacts } from "@claudexor/schema";
+export { daemonOutcomeProblemFields, mergeDaemonRunOutcome } from "./daemon-outcome.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -163,6 +164,9 @@ export interface DaemonRunOutcome {
   status: string;
   jobId: string;
   error?: string;
+  errorCode?: string;
+  errorStatus?: number;
+  errorRetryable?: boolean;
 }
 
 /**
@@ -204,11 +208,29 @@ export async function enqueueAndAwait(
   const startText = await startRes.text();
   const start = startText ? (JSON.parse(startText) as Record<string, unknown>) : {};
   if (!startRes.ok) {
-    throw new Error(
+    const message =
       typeof start["message"] === "string"
         ? (start["message"] as string)
-        : `run enqueue failed (HTTP ${startRes.status})`,
-    );
+        : `run enqueue failed (HTTP ${startRes.status})`;
+    const code = typeof start["code"] === "string" ? (start["code"] as string) : undefined;
+    // Output-schema refusals are born before a job exists. Preserve their
+    // typed public contract as a terminal outcome instead of throwing through
+    // the CLI's legacy string-only catch; the general problem projector is
+    // intentionally owned by #28.
+    if (code === "unsupported_schema_dialect" || code === "invalid_output_schema") {
+      return {
+        runId: "",
+        runDir: "",
+        status: "failed",
+        jobId: "",
+        error: message,
+        errorCode: code,
+        errorStatus: startRes.status,
+        errorRetryable:
+          typeof start["retryable"] === "boolean" ? (start["retryable"] as boolean) : false,
+      };
+    }
+    throw new Error(message);
   }
   const jobId = String(start["jobId"] ?? "");
   let runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
@@ -264,7 +286,15 @@ export async function enqueueAndAwait(
       if (TERMINAL_STATES.has(rec.state) && !rec.runDir) {
         // Terminal with no runDir = the run never materialized (e.g. validation
         // failure pre-run-dir). Surface it honestly.
-        return { runId: rec.runId ?? "", runDir: "", status: rec.state, jobId, error: rec.error };
+        return {
+          runId: rec.runId ?? "",
+          runDir: "",
+          status: rec.state,
+          jobId,
+          error: rec.error,
+          errorCode: rec.errorCode,
+          errorStatus: rec.errorStatus,
+        };
       }
       await sleep(120);
     }
@@ -289,6 +319,8 @@ export async function enqueueAndAwait(
           status: rec.state,
           jobId,
           error: rec.error,
+          errorCode: rec.errorCode,
+          errorStatus: rec.errorStatus,
         };
       }
       if (opts.onPollTick) await opts.onPollTick({ runId: rec.runId ?? runId });

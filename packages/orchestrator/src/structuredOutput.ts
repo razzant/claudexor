@@ -1,32 +1,102 @@
 import { join } from "node:path";
 import AjvModule from "ajv";
+import Ajv2020Module from "ajv/dist/2020.js";
 import type { ErrorObject } from "ajv";
 
 // ajv ships CJS; under NodeNext the default import resolves to the module
 // namespace whose `.default` is the constructor (module.exports.default is set
 // by ajv itself, so this is correct at runtime in both ESM and CJS).
 const Ajv = AjvModule.default ?? (AjvModule as unknown as typeof AjvModule.default);
+const Ajv2020 = Ajv2020Module.default ?? (Ajv2020Module as unknown as typeof Ajv2020Module.default);
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
-import { SCHEMA_VERSION, StructuredOutputConformance } from "@claudexor/schema";
-import { nowIso } from "@claudexor/util";
+import {
+  DEFAULT_OUTPUT_SCHEMA_DIALECT,
+  OUTPUT_SCHEMA_DIALECTS,
+  outputSchemaDialectFromUri,
+  SCHEMA_VERSION,
+  StructuredOutputConformance,
+  type OutputSchemaDialect,
+} from "@claudexor/schema";
+import { hashJson, nowIso } from "@claudexor/util";
 
 export interface StructuredOutputVerdict {
   status: "passed" | "failed";
   reason: string | null;
 }
 
+/** A declared dialect is caller-actionable, not a retryable engine failure. */
+export class UnsupportedOutputSchemaDialectError extends Error {
+  readonly status = 400;
+  readonly code = "unsupported_schema_dialect";
+  readonly retryable = false;
+  readonly supportedDialects = OUTPUT_SCHEMA_DIALECTS.map(({ dialect, uri }) => ({ dialect, uri }));
+  readonly context = { supportedDialects: this.supportedDialects };
+  readonly requiredActions = [
+    `set $schema to one of: ${OUTPUT_SCHEMA_DIALECTS.map(({ uri }) => uri).join(", ")}; or omit $schema for ${DEFAULT_OUTPUT_SCHEMA_DIALECT}`,
+  ];
+
+  constructor(readonly dialect: unknown) {
+    super(
+      `unsupported outputSchema dialect ${JSON.stringify(dialect)}; supported dialects: ${OUTPUT_SCHEMA_DIALECTS.map(({ uri }) => uri).join(", ")} (omitted $schema defaults to ${DEFAULT_OUTPUT_SCHEMA_DIALECT})`,
+    );
+    this.name = "UnsupportedOutputSchemaDialectError";
+  }
+}
+
+/** A malformed schema is a caller error and retrying the same input cannot help. */
+export class InvalidOutputSchemaError extends Error {
+  readonly status = 400;
+  readonly code = "invalid_output_schema";
+  readonly retryable = false;
+  readonly requiredActions = ["fix the output schema and retry the run"];
+
+  constructor(cause: unknown) {
+    super(
+      `outputSchema is not a compilable JSON Schema: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "InvalidOutputSchemaError";
+  }
+}
+
+function outputSchemaDialect(schema: Record<string, unknown>): OutputSchemaDialect {
+  const declared = schema["$schema"];
+  if (declared === undefined) return DEFAULT_OUTPUT_SCHEMA_DIALECT;
+  if (typeof declared !== "string") throw new UnsupportedOutputSchemaDialectError(declared);
+  const dialect = outputSchemaDialectFromUri(declared);
+  if (dialect) return dialect;
+  throw new UnsupportedOutputSchemaDialectError(declared);
+}
+
+function outputSchemaCompiler(schema: Record<string, unknown>): {
+  ajv: InstanceType<typeof Ajv> | InstanceType<typeof Ajv2020>;
+  schema: Record<string, unknown>;
+} {
+  const dialect = outputSchemaDialect(schema);
+  // The selected Ajv class already fixes the dialect. Removing the declaration
+  // lets us accept the URI's harmless http/https and trailing-# spellings while
+  // still compiling the caller's validation keywords under the declared draft.
+  const schemaForCompiler = { ...schema };
+  delete schemaForCompiler["$schema"];
+  return {
+    ajv:
+      dialect === "draft-2020-12"
+        ? new Ajv2020({ allErrors: true, strict: false })
+        : new Ajv({ allErrors: true, strict: false }),
+    schema: schemaForCompiler,
+  };
+}
+
 /** Preflight: prove a caller schema COMPILES under the same ajv the validator
  *  uses, so a malformed schema is refused before any run dir exists instead of
  *  crashing the validator mid-run. Throws on a schema ajv cannot build. */
 export function assertOutputSchemaCompiles(schema: Record<string, unknown>): void {
-  const ajv = new Ajv({ allErrors: true, strict: false });
+  const compiler = outputSchemaCompiler(schema);
   try {
-    ajv.compile(schema);
+    compiler.ajv.compile(compiler.schema);
   } catch (err) {
-    throw new Error(
-      `outputSchema is not a compilable JSON Schema: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new InvalidOutputSchemaError(err);
   }
 }
 
@@ -52,6 +122,7 @@ export function finalizeStructuredOutput(opts: {
   schema: Record<string, unknown>;
   answerText: string | null | undefined;
 }): StructuredOutputVerdict {
+  const schemaDialect = outputSchemaDialect(opts.schema);
   const text = opts.answerText?.trim() ?? "";
   let value: unknown;
   let parsed = false;
@@ -73,9 +144,9 @@ export function finalizeStructuredOutput(opts: {
     // strict:false — accept the JSON Schema dialect as-authored; do not
     // re-litigate meta-schema strictness (the boundary already proved it
     // compiles). This validates the ORIGINAL caller schema.
-    const ajv = new Ajv({ allErrors: true, strict: false });
+    const compiler = outputSchemaCompiler(opts.schema);
     try {
-      const validate = ajv.compile(opts.schema);
+      const validate = compiler.ajv.compile(compiler.schema);
       if (validate(value) === true) {
         status = "passed";
       } else {
@@ -104,6 +175,8 @@ export function finalizeStructuredOutput(opts: {
   }
   const receipt = StructuredOutputConformance.parse({
     schema_version: SCHEMA_VERSION,
+    schema_dialect: schemaDialect,
+    schema_hash: hashJson(opts.schema),
     status,
     reason: status === "passed" ? null : reason,
     output_path: outputPath,

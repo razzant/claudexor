@@ -7,9 +7,13 @@
 import { existsSync, lstatSync, mkdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute } from "node:path";
-import { ControlRunStartRequest, runStartStrategyViolations } from "@claudexor/schema";
+import {
+  ControlQueuedRunInfo,
+  ControlRunStartRequest,
+  runStartStrategyViolations,
+} from "@claudexor/schema";
 import { assertNoInlineSecretValues, noProjectRepoRoot } from "@claudexor/util";
-import type { DaemonFacadeClient } from "./daemon-server.js";
+import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -96,6 +100,20 @@ export interface RunCreateRouteContext {
   respondToAcceptedJob(res: ServerResponse, jobId: string): Promise<void>;
   validateResources?: (refs: NonNullable<ControlRunStartRequest["attachments"]>) => Promise<void>;
   preflightRunRequirements?: (request: ControlRunStartRequest) => Promise<void>;
+}
+
+export function unboundRunStartResponse(
+  rec: DaemonRunRecord,
+  terminal: boolean,
+): { status: number; body: Record<string, unknown> } {
+  return {
+    status: terminal ? (rec.errorStatus ?? 500) : 202,
+    body: {
+      ...ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
+      ...(rec.errorCode ? { code: rec.errorCode } : {}),
+      ...(terminal ? { retryable: false } : {}),
+    },
+  };
 }
 
 /** POST /v2/runs: validates, deduplicates, durably enqueues, then returns its handle.

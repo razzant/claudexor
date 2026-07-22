@@ -135,7 +135,7 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag(
     "output-schema",
     "<file>",
-    "JSON Schema file the run's final answer must conform to; engine-validated into final/output.json with a typed conformance receipt",
+    "JSON Schema file the run's final answer must conform to; supports $schema http://json-schema.org/draft-07/schema# and https://json-schema.org/draft/2020-12/schema (omitted $schema defaults to draft-07); engine-validated into final/output.json with a typed conformance receipt",
   ),
   valueFlag("max-turns", "<n>", "Per-run turn cap (beats per-harness settings)"),
   valueFlag("prompt-file", "<file>", "Read the prompt from a file (or pass `-` to read stdin)"),

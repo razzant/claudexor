@@ -4,6 +4,7 @@ import {
   ControlRunStartRequest,
   MODE_MUTABILITY,
   ModeKind,
+  OUTPUT_SCHEMA_DIALECTS,
   RUN_START_CLIENT_REJECTED_KEYS,
   RunApplyState,
   WorkspaceMode,
@@ -105,6 +106,7 @@ export async function buildAgentCapabilityCatalog(): Promise<AgentCapabilityCata
     availableHarnesses: harnesses.filter((h) => h.status === "ok" && h.enabled).map((h) => h.id),
     modes: [...ModeKind.options],
     runControlKeys,
+    outputSchemaDialects: OUTPUT_SCHEMA_DIALECTS.map((dialect) => ({ ...dialect })),
     mutability: {
       readOnlyModes: ModeKind.options.filter((m) => MODE_MUTABILITY[m] === "read"),
       writeModes: ModeKind.options.filter((m) => MODE_MUTABILITY[m] === "write"),

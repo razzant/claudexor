@@ -1235,7 +1235,10 @@ strictified
 for vendor strict modes (every object: `required` = all keys,
 `additionalProperties: false`; inline root — both live-verified: codex
 `--output-schema <FILE>` written into the scoped CODEX_HOME, claude
-`--json-schema <inline JSON>`). The two CLIs SATISFY the schema differently
+`--json-schema <inline JSON>`). The conformance validator selects draft-07
+(the compatibility default when `$schema` is omitted) or draft 2020-12 from
+the caller declaration; the metadata declaration is removed only from the
+vendor-strict transport copy. The two CLIs SATISFY the schema differently
 (live-observed): codex constrains its FINAL MESSAGE to bare JSON
 (structured-first parse path); claude materializes the schema as a
 StructuredOutput TOOL — the constrained JSON rides the tool call while the

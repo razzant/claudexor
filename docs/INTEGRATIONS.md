@@ -68,7 +68,9 @@ exemptions):
   incapable lane is a preflight refusal, the single engine validator writes
   `final/output.json` plus a typed conformance receipt, and a non-conformant
   answer ends success-with-warnings (`outputConformance: failed`) for the
-  embedder to retry.
+  embedder to retry. Caller schemas may omit `$schema` (draft-07, retained for
+  compatibility) or declare draft-07 / draft 2020-12 explicitly; any other
+  dialect is refused at preflight with `unsupported_schema_dialect`.
 - `--thread <id>` / `--resume`: continue an existing thread (the daemon
   funnels the run through its single thread-turn creation point); `--resume`
   picks the most recently updated thread.

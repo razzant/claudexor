@@ -766,6 +766,44 @@ describe("DaemonControlApiServer", () => {
     }
   }
 
+  it("runs: preserves a typed pre-start refusal's code and status", async () => {
+    const typedFail: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-schema", state: "queued" };
+      },
+      async status() {
+        return {
+          id: "job-schema",
+          state: "failed",
+          error: "unsupported outputSchema dialect",
+          errorCode: "unsupported_schema_dialect",
+          errorStatus: 400,
+        };
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+
+    await withDaemonServer(typedFail, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: startAgentBody(),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: "unsupported_schema_dialect",
+        message: "unsupported outputSchema dialect",
+        retryable: false,
+        context: { jobId: "job-schema", state: "failed" },
+      });
+    });
+  });
+
   it("producedRepoRoot uses the typed scope and NEVER resolves a no-project run to the home dir", () => {
     expect(
       producedRepoRoot({

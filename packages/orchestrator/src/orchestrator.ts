@@ -626,7 +626,7 @@ export class Orchestrator {
     // every other strategy refuses loudly rather than carrying a contract the
     // engine would not validate (INV-023). The schema itself is normalized for
     // the native structured-output routes here at the boundary — unsupported
-    // shapes ($ref, non-object root) are a typed refusal, not a mid-run 400.
+    // shapes (external/cyclic $ref, non-object root) are a typed refusal, not a mid-run 400.
     if (resolved.outputSchema !== undefined && resolved.outputSchema !== null) {
       if (mode !== "agent" && mode !== "ask") {
         throw new Error(
@@ -641,8 +641,8 @@ export class Orchestrator {
       // Shape-refuse unsupported schemas, then PROVE it compiles under the same
       // ajv the engine validator uses — a malformed schema is a preflight
       // refusal here (before any run dir), never a mid-run validator crash. The
-      // contract keeps the ORIGINAL (conformance authority); strictify is a
-      // transport-only transform applied per-lane in harnessSpecKnobs.
+      // contract keeps the ORIGINAL (conformance authority); local-ref inlining
+      // and strictification are transport-only transforms in harnessSpecKnobs.
       resolved.outputSchema = normalizeUserOutputSchema(resolved.outputSchema);
       assertOutputSchemaCompiles(resolved.outputSchema);
     }

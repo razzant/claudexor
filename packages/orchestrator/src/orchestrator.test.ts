@@ -25,7 +25,7 @@ import { runCapture, spawnProcess } from "@claudexor/core";
 import { createFakeHarness } from "@claudexor/harness-fake";
 import type { AccessProfile, ControlReviewerPanelEntry, ProviderFamily } from "@claudexor/schema";
 import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
-import { noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
+import { hashJson, noProjectRepoRoot, projectRuntimeDir, sha256 } from "@claudexor/util";
 import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
@@ -5523,26 +5523,43 @@ describe("Orchestrator", () => {
       registry: new Map([[adapter.id, adapter]]),
       reviewers: [],
     });
+    const outputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        verdict: { $ref: "#/$defs/verdict" },
+        score: { type: "number" },
+      },
+      required: ["verdict", "score"],
+      $defs: { verdict: { type: "string" } },
+      unevaluatedProperties: false,
+    };
     const res = await orch.run({
       repoRoot: repo,
       prompt: "grade this repo",
       mode: "agent",
       harnesses: [adapter.id],
       n: 1,
-      outputSchema: {
-        type: "object",
-        properties: { verdict: { type: "string" }, score: { type: "number" } },
-        required: ["verdict", "score"],
-      },
+      outputSchema,
     });
     // An answer-only agent run (no diff) ends no_op with the answer delivered.
     expect(res.facts.noChanges).toBe(true);
     // The lane received the NORMALIZED (strictified) schema.
-    expect(seenSchema).toMatchObject({ type: "object", additionalProperties: false });
+    expect(seenSchema).toMatchObject({
+      type: "object",
+      properties: { verdict: { type: "string" }, score: { type: "number" } },
+      additionalProperties: false,
+    });
+    expect(seenSchema).not.toHaveProperty("$schema");
+    expect(seenSchema).not.toHaveProperty("$defs");
+    expect(seenSchema).not.toHaveProperty("unevaluatedProperties");
+    expect(JSON.stringify(seenSchema)).not.toContain("$ref");
     const output = JSON.parse(readFileSync(join(res.runDir, "final", "output.json"), "utf8"));
     expect(output).toEqual({ verdict: "ok", score: 7 });
     const receipt = readFileSync(join(res.runDir, "final", "structured_output.yaml"), "utf8");
     expect(receipt).toContain("status: passed");
+    expect(receipt).toContain("schema_dialect: draft-2020-12");
+    expect(receipt).toContain(hashJson(outputSchema));
     const types = readRunEvents(res.runDir).map((e) => e.type);
     expect(types).toContain("output.ready");
   });
