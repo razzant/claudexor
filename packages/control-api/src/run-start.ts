@@ -121,7 +121,10 @@ export function unboundRunStartResponse(
     body: {
       ...ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
       ...(rec.errorCode ? { code: rec.errorCode } : {}),
-      ...(terminal ? { retryable: false } : {}),
+      // Only a TYPED refusal proves non-retryability; an untyped terminal
+      // (e.g. cancelled or interrupted before a run dir bound) makes no
+      // retryability claim, matching the pre-change body.
+      ...(terminal && rec.errorCode ? { retryable: false } : {}),
     },
   };
 }
