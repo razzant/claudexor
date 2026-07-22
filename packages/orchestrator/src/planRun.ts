@@ -388,7 +388,7 @@ export function finalizePlanRun(
     meta: {
       mode: "plan",
       result_kind: "plan",
-      planners: plans.length,
+      planners: council?.members.length ?? plans.length,
       diffstat: { files: 0, additions: 0, deletions: 0 },
       blockers: 0,
       adopted: null,

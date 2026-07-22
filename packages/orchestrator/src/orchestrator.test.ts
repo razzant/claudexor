@@ -999,6 +999,11 @@ describe("Orchestrator", () => {
     expect(review).toContain("level: critical");
     expect(review).toContain("candidate changed protected path");
     expect(review).toContain("severity: BLOCK");
+    const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(decision).toContain("lifecycle: succeeded");
+    expect(decision).toContain("checks: passed");
+    expect(decision).toContain("review: blocked");
+    expect(decision).toContain("reason: review_blocked");
   });
 
   it("allows explicitly approved existing protected gate path changes", async () => {
@@ -4736,6 +4741,17 @@ describe("Orchestrator", () => {
     const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
     expect(summary).toContain("Open questions: 2");
     expect(summary).toContain("Goal: make a racing game");
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      final_attempt_id: string | null;
+      attempts: Array<{
+        attempt_id: string;
+        outcome: { deliverable_present: boolean; status: string };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry).toMatchObject({
+      final_attempt_id: "p01",
+      attempts: [{ attempt_id: "p01", outcome: { deliverable_present: true, status: "success" } }],
+    });
   });
 
   it("an untagged plan is DISCLOSED as unverified, never silently ready", async () => {
@@ -4803,6 +4819,26 @@ describe("Orchestrator", () => {
     expect(eventTypes).toContain("route.fallback.started");
     expect(eventTypes).toContain("route.fallback.completed");
     expect(res.candidates.map((c) => c.status)).toEqual(["failed", "success"]);
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      final_attempt_id: string | null;
+      attempts: Array<{
+        attempt_id: string;
+        outcome: { deliverable_present: boolean; harness_errored: boolean; status: string };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry).toMatchObject({
+      final_attempt_id: "p02",
+      attempts: [
+        {
+          attempt_id: "p01",
+          outcome: { deliverable_present: false, harness_errored: true, status: "failed" },
+        },
+        {
+          attempt_id: "p02",
+          outcome: { deliverable_present: true, harness_errored: false, status: "success" },
+        },
+      ],
+    });
   });
 
   // Council (INV-031): a planner that emits DRAFT questions on intent=plan and
@@ -4895,6 +4931,24 @@ describe("Orchestrator", () => {
     expect(eventTypes).toContain("council.started");
     expect(eventTypes).toContain("council.draft");
     expect(eventTypes).toContain("council.merged");
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      final_attempt_id: string | null;
+      attempts: Array<{
+        attempt_id: string;
+        outcome: { deliverable_present: boolean; status: string };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry?.final_attempt_id).toBe("p03");
+    expect(telemetry?.attempts.map((attempt) => attempt.attempt_id)).toEqual(["p01", "p02", "p03"]);
+    expect(
+      telemetry?.attempts.every(
+        (attempt) => attempt.outcome.deliverable_present && attempt.outcome.status === "success",
+      ),
+    ).toBe(true);
+    const workProduct = new ArtifactStore(repo).readYaml<{ meta: { planners: number } }>(
+      join(res.runDir, "final", "work_product.yaml"),
+    );
+    expect(workProduct?.meta.planners).toBe(2);
   });
 
   it("council degrades honestly when a member fails but the merge still runs", async () => {
@@ -4935,6 +4989,10 @@ describe("Orchestrator", () => {
     expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain("# Merged plan");
     const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
     expect(summary).toContain("council degraded");
+    const workProduct = new ArtifactStore(repo).readYaml<{ meta: { planners: number } }>(
+      join(res.runDir, "final", "work_product.yaml"),
+    );
+    expect(workProduct?.meta.planners).toBe(2);
   });
 
   it("council records a native session per member lane on a thread turn", async () => {
@@ -6005,6 +6063,20 @@ describe("Orchestrator", () => {
     expect(plannerStarted).toBe(true);
     expect(legacyOutcome(res)).toBe("cancelled");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(false);
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      final_attempt_id: string | null;
+      attempts: Array<{
+        outcome: { deliverable_present: boolean; harness_errored: boolean; status: string };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry).toMatchObject({
+      final_attempt_id: null,
+      attempts: [
+        {
+          outcome: { deliverable_present: false, harness_errored: false, status: "failed" },
+        },
+      ],
+    });
   });
 
   it("cancels agent mode after a reviewer-panel abort instead of continuing to arbitration", async () => {

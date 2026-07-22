@@ -71,7 +71,7 @@ export function writeRaceDeliveryDecision(
     ...(input.deliveryFailureReason
       ? deliveryRefusalDecisionFields(input.decision.evidence_facts, input.deliveryFailureReason)
       : needsDecision
-        ? blockedDecisionOverride(input.decision.evidence_facts, input.finalVerify)
+        ? blockedDecisionOverride(input.decision.evidence_facts, input.facts, input.finalVerify)
         : { facts: input.facts }),
     review_verified: input.reviewVerified,
     final_verify: input.finalVerify,
