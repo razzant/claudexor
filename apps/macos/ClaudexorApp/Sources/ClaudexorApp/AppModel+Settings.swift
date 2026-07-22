@@ -35,8 +35,14 @@ extension AppModel {
         await enqueueSettingsOperation { [weak self] in
             guard let self, self.settingsEpoch == epoch, let client = self.client else { return }
             do {
-                self.settingsSnapshot = try await client.settings()
+                let answer = try await client.settings()
+                // Re-check AFTER the await (X24): enterHardOffline may have
+                // reset the projection while the request was in flight; a late
+                // answer must not repopulate the cleared state.
+                guard self.settingsEpoch == epoch else { return }
+                self.settingsSnapshot = answer
             } catch {
+                guard self.settingsEpoch == epoch else { return }
                 self.settingsStatus = "Could not load settings: \(error)"
             }
         }
@@ -51,11 +57,16 @@ extension AppModel {
                 return false
             }
             do {
-                self.settingsSnapshot = try await client.updateSettings(patch)
+                let answer = try await client.updateSettings(patch)
+                // Re-check AFTER the await (X24): a response landing past an
+                // enterHardOffline reset must not write into the cleared state.
+                guard self.settingsEpoch == epoch else { return false }
+                self.settingsSnapshot = answer
                 self.settingsStatus = "Saved engine defaults."
                 await self.refreshHarnesses()
                 return true
             } catch {
+                guard self.settingsEpoch == epoch else { return false }
                 self.settingsStatus = "Could not save settings: \(error)"
                 return false
             }

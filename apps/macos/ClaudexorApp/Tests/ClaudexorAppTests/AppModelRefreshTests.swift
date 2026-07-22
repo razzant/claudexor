@@ -1238,6 +1238,58 @@ struct AppModelRefreshTests {
         #expect(model.settingsSnapshot?.interactionTimeoutMs == 111_000)
         #expect(model.settingsStatus?.hasPrefix("Could not save settings") == true)
     }
+
+    /// X20/X24 fence: enterHardOffline while a save is IN FLIGHT — the late
+    /// answer must not repopulate the cleared projection (post-await epoch
+    /// re-check), and a save QUEUED before offline retires inert.
+    @MainActor
+    @Test func hardOfflineRetiresInFlightAndQueuedSettingsSaves() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        let okSnapshot = #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":333000}"#
+        let saveArrived = AppRefreshCallCounter()
+        let releaseSave = DispatchSemaphore(value: 0)
+        AppRequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v2/settings"):
+                saveArrived.increment()
+                _ = releaseSave.wait(timeout: .now() + 5)
+                return (appResponse(for: request), Data(okSnapshot.utf8))
+            case (_, "/v2/harnesses"):
+                return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
+            default:
+                throw AppRefreshTestError.badRequest
+            }
+        }
+        let inFlight = Task { await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["codex": HarnessSettingsPatch(effort: "high")])) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while saveArrived.count == 0 {
+            try #require(ContinuousClock.now <= deadline, "in-flight save never reached the stub")
+            await Task.yield()
+        }
+        let queued = Task { await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["claude": HarnessSettingsPatch(effort: "low")])) }
+        // Let the queued save START (capture the pre-offline epoch and enqueue
+        // behind the in-flight save) before the offline transition.
+        for _ in 0..<50 { await Task.yield() }
+        model.enterHardOffline()
+        releaseSave.signal()
+        let okInFlight = await inFlight.value
+        let okQueued = await queued.value
+        #expect(!okInFlight && !okQueued)
+        // The late answer did not repopulate the offline-cleared projection,
+        // no status was written over the reset, and the queued save never
+        // reached the wire.
+        #expect(model.settingsSnapshot == nil)
+        #expect(model.settingsStatus == nil)
+        #expect(saveArrived.count == 1)
+    }
 }
 
 private func appSetupJob(
