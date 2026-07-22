@@ -3402,7 +3402,7 @@ export class Orchestrator {
     store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
       ...result.decision,
       ...(needsDec
-        ? blockedDecisionOverride(result.decision.evidence_facts, finalVerify)
+        ? blockedDecisionOverride(result.decision.evidence_facts, facts, finalVerify)
         : { facts }),
       review_verified: actualReviewVerified,
       final_verify: finalVerify,
@@ -4711,7 +4711,7 @@ export class Orchestrator {
       decision = {
         ...decision,
         ...(convNeedsDecision
-          ? blockedDecisionOverride(decision.evidence_facts, convFinalVerify)
+          ? blockedDecisionOverride(decision.evidence_facts, facts, convFinalVerify)
           : { facts }),
         final_verify: convFinalVerify,
       };
@@ -4925,15 +4925,7 @@ export class Orchestrator {
     ].join("\n");
   }
 
-  /**
-   * Run ONE planner spawn (native plan mode, read-only) end to end: budget
-   * lease, spec build, continuity hydration, event streaming, telemetry, and
-   * settle. Shared by the solo plan loop (each pool member is a sequential
-   * fallback) and the Council strategy (each member is a parallel draft, then
-   * one merge iteration on the primary — same machinery, different prompt +
-   * intent). The caller owns bookkeeping that differs per path: which artifact
-   * a success writes to, fallback disclosure, and accumulation.
-   */
+  /** One read-only planner spawn shared by solo fallback, Council drafts, and merge. */
   async runPlannerAttempt(args: PlannerAttemptArgs): Promise<PlannerAttemptOutcome> {
     const { input, contract, taskId, runId, log, store, paths, ledger, routed, attemptId } = args;
     const adapter = routed.adapter;
@@ -5120,19 +5112,26 @@ export class Orchestrator {
       const first = unrecovered[0] as ToolErrorRecord;
       harnessError = `${first.tool} failed without recovery: ${first.summary}`;
     }
-    if (harnessError) {
+    const attemptError = harnessError ?? (input.signal?.aborted ? "planner cancelled" : null);
+    setAttemptOutcome(telemetry, {
+      deliverablePresent: attemptError === null,
+      gatesPassed: null,
+      harnessErrored: harnessError !== null && !webBlocked,
+      webRequiredUnsatisfied: webBlocked,
+    });
+    if (attemptError) {
       log.emit("harness.completed", {
         harness_id: adapter.id,
         attempt_id: attemptId,
         status: webBlocked ? "blocked" : "failed",
-        error: harnessError,
+        error: attemptError,
         ...telemetrySummary(telemetry),
       });
       return {
         attemptId,
         harnessId: adapter.id,
         status: webBlocked ? "blocked" : "failed",
-        error: harnessError,
+        error: attemptError,
         text: null,
         telemetry,
         budgetDenied: false,
@@ -5362,7 +5361,7 @@ export class Orchestrator {
               attempt_id: attemptId,
               reason: "planner_failed",
             });
-          } else if (fallbackFrom || next === undefined) {
+          } else if (!input.signal?.aborted && (fallbackFrom || next === undefined)) {
             log.emit("route.fallback.exhausted", {
               harness_id: outcome.harnessId,
               attempt_id: attemptId,

@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FinalVerifyRecord, makeOutcomeFacts, type RunOutcomeFacts } from "@claudexor/schema";
+import { FinalVerifyRecord, type RunOutcomeFacts } from "@claudexor/schema";
 import { type GateSpec, gatesPassed, runGates } from "@claudexor/review";
 import {
   applyPatchProtected,
@@ -36,6 +36,7 @@ export function finalVerifyBlocks(finalVerify: FinalVerifyRecord | null): boolea
  * succeeded — the process finished; a human decision is what is pending. */
 export function blockedDecisionOverride(
   evidenceFacts: string[],
+  facts: RunOutcomeFacts,
   finalVerify: FinalVerifyRecord | null,
 ): {
   facts: RunOutcomeFacts;
@@ -51,8 +52,8 @@ export function blockedDecisionOverride(
     : "reviewer escalated blocking NEEDS_HUMAN findings; a typed operator decision is required";
   return {
     facts: verifyBlocked
-      ? makeOutcomeFacts("succeeded", { checks: "failed", reason: "checks_failed" })
-      : makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" }),
+      ? { ...facts, checks: "failed", reason: "checks_failed" }
+      : { ...facts, review: "blocked", reason: "review_blocked" },
     apply_recommendation: "human_review",
     verification_basis: "none",
     evidence_facts: [...evidenceFacts, fact],

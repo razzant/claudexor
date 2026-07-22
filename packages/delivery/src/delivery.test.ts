@@ -14,7 +14,13 @@ import { describe, expect, it } from "vitest";
 import { runCapture } from "@claudexor/core";
 import { sha256 } from "@claudexor/util";
 import { DecisionRecord, makeOutcomeFacts } from "@claudexor/schema";
-import { checkPatch, deliver, validateApplyGate, verifyAndDeliver } from "./index.js";
+import {
+  blockedDecisionOverride,
+  checkPatch,
+  deliver,
+  validateApplyGate,
+  verifyAndDeliver,
+} from "./index.js";
 
 async function git(repo: string, args: string[]) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 30_000 });
@@ -467,5 +473,43 @@ describe("final_verify apply-gate consumer (INV-115)", () => {
       operatorDecision: { action: "accept_risk", patch_sha256: sha256(patch) },
     });
     expect(overridden).toBeNull();
+  });
+});
+
+describe("blocked decision fact overrides", () => {
+  it("preserves passed checks when a review block overrides the review axis", () => {
+    const result = blockedDecisionOverride(
+      [],
+      makeOutcomeFacts("succeeded", { checks: "passed" }),
+      null,
+    );
+
+    expect(result.facts).toMatchObject({
+      checks: "passed",
+      review: "blocked",
+      reason: "review_blocked",
+    });
+  });
+
+  it("preserves an approved review when final verify overrides the checks axis", () => {
+    const result = blockedDecisionOverride(
+      [],
+      makeOutcomeFacts("succeeded", { review: "approved" }),
+      {
+        attempted: true,
+        applied_cleanly: true,
+        gates_passed: false,
+        gates: [],
+        base_sha: null,
+        duration_ms: null,
+        reason: "configured gate failed",
+      },
+    );
+
+    expect(result.facts).toMatchObject({
+      checks: "failed",
+      review: "approved",
+      reason: "checks_failed",
+    });
   });
 });
