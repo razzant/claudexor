@@ -1290,6 +1290,72 @@ struct AppModelRefreshTests {
         #expect(model.settingsStatus == nil)
         #expect(saveArrived.count == 1)
     }
+
+    /// X30 fence: offline + reconnect while a save is STILL in flight — the
+    /// post-reconnect save must not reach the wire until the old request
+    /// settles (the chain tail survives enterHardOffline), and only the new
+    /// save's answer is applied.
+    @MainActor
+    @Test func reconnectSaveWaitsForTheOldInFlightRequest() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config))
+        let model = AppModel(client: client, requestNotificationAuthorization: false)
+
+        func snapshot(timeoutMs: Int) -> String {
+            #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":"# + String(timeoutMs) + "}"
+        }
+        let oldArrived = AppRefreshCallCounter()
+        let newArrived = AppRefreshCallCounter()
+        let releaseOld = DispatchSemaphore(value: 0)
+        AppRequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v2/settings"):
+                guard let body = appTestRequestBody(request),
+                      let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                      let harnesses = obj["harnesses"] as? [String: Any] else {
+                    throw AppRefreshTestError.badRequest
+                }
+                if harnesses["codex"] != nil {
+                    oldArrived.increment()
+                    _ = releaseOld.wait(timeout: .now() + 5)
+                    return (appResponse(for: request), Data(snapshot(timeoutMs: 111_000).utf8))
+                }
+                newArrived.increment()
+                return (appResponse(for: request), Data(snapshot(timeoutMs: 222_000).utf8))
+            case (_, "/v2/harnesses"):
+                return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
+            default:
+                throw AppRefreshTestError.badRequest
+            }
+        }
+        let oldSave = Task { await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["codex": HarnessSettingsPatch(effort: "high")])) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while oldArrived.count == 0 {
+            try #require(ContinuousClock.now <= deadline, "old save never reached the stub")
+            await Task.yield()
+        }
+        model.enterHardOffline()
+        model.adoptClientForReconnect(client)
+        let newSave = Task { await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["claude": HarnessSettingsPatch(effort: "low")])) }
+        // Single-chain fence: the post-reconnect save must NOT reach the wire
+        // while the old request is still in flight.
+        for _ in 0..<200 { await Task.yield() }
+        #expect(newArrived.count == 0)
+        releaseOld.signal()
+        let okOld = await oldSave.value
+        let okNew = await newSave.value
+        #expect(!okOld && okNew)
+        #expect(newArrived.count == 1)
+        // Only the new-epoch answer was applied; the old one retired inert.
+        #expect(model.settingsSnapshot?.interactionTimeoutMs == 222_000)
+        #expect(model.settingsStatus == "Saved engine defaults.")
+    }
 }
 
 private func appSetupJob(

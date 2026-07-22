@@ -221,6 +221,10 @@ final class AppModel {
         return eventDateFormatterFractional.date(from: raw) ?? eventDateFormatter.date(from: raw)
     }
 
+    /// Reconnect seam (X30 test fence): adopt a client exactly as tryConnect
+    /// does after discovery, without the discovery I/O.
+    func adoptClientForReconnect(_ newClient: GatewayClient) { client = newClient }
+
     init(client: GatewayClient? = nil, requestNotificationAuthorization: Bool = true) {
         self.client = client
         // Bind the update chip to the real, manifest-backed provider by default.
@@ -282,10 +286,11 @@ final class AppModel {
         client = nil
         authSheetTarget = nil
         cancelAllStreams()
-        // Retire queued settings ops: one enqueued just before offline must
-        // not fire against a future reconnected client (X20).
+        // Retire queued settings ops (X20) but KEEP the chain tail (X30): a
+        // post-reconnect op must still await the old in-flight request, or two
+        // settings requests overlap on the wire and break the X14 single-chain
+        // criterion. Old ops retire inert through their epoch guards.
         settingsEpoch += 1
-        settingsChain = nil
 
         route = .threads
         liveTasks.removeAll()
