@@ -496,9 +496,8 @@ final class AppModel {
             return false
         }
         do {
-            let res = try await client.updateSettings(patch)
-            settingsStatus = "Saved engine defaults to \(res.path)."
-            await refreshSettings()
+            settingsSnapshot = try await client.updateSettings(patch)
+            settingsStatus = "Saved engine defaults."
             await refreshHarnesses()
             return true
         } catch {

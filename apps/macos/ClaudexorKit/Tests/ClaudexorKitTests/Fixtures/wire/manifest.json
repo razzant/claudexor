@@ -18,5 +18,6 @@
   "apply-eligibility-yes": "ApplyEligibility",
   "apply-eligibility-no": "ApplyEligibility",
   "quota-response": "ControlQuotaResponse",
-  "harness-settings-patch-maximal": "ControlHarnessSettingsPatch"
+  "harness-settings-patch-maximal": "ControlHarnessSettingsPatch",
+  "settings-snapshot-maximal": "ControlSettingsSnapshot"
 }

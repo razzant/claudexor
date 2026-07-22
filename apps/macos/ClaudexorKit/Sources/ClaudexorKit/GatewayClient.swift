@@ -318,7 +318,7 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(SettingsSnapshot.self, from: data)
     }
 
-    public func updateSettings(_ body: SettingsUpdateRequest) async throws -> SettingsUpdateResponse {
+    public func updateSettings(_ body: SettingsUpdateRequest) async throws -> SettingsSnapshot {
         var req = request("settings", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try Self.encoder.encode(body)
@@ -327,7 +327,7 @@ public final class GatewayClient: Sendable {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
-        return try Self.decoder.decode(SettingsUpdateResponse.self, from: data)
+        return try Self.decoder.decode(SettingsSnapshot.self, from: data)
     }
 
     public func listSecrets() async throws -> SecretListResponse {

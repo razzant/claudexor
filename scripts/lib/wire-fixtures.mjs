@@ -261,5 +261,48 @@ export function buildWireFixtures() {
     profileLimitAction: "rotate",
   });
 
+  // POST /settings answers with the effective snapshot (GET's shape), not the
+  // v0.x `{path}` receipt — the Swift client decoding the dead receipt shape
+  // read every successful save as a failure (GitHub #20). This MAXIMAL
+  // fixture pins the response contract the same way the patch fixture above
+  // pins the request.
+  add("settings-snapshot-maximal", "ControlSettingsSnapshot", {
+    sources: ["/home/u/.claudexor/v3/config.yaml"],
+    interactionTimeoutMs: 900_000,
+    routing: {
+      primaryHarness: "codex",
+      eligibleHarnesses: ["codex", "claude"],
+      envInheritance: "clean",
+      authPreference: "subscription",
+      goal: "quality",
+      paidFallback: "never",
+      qualityTiers: {
+        implement: [[{ harness: "codex", model: "gpt-5.6-sol", effort: "high" }]],
+      },
+    },
+    budget: { paidBudgetPerRun: { kind: "finite", maxUsd: 4 } },
+    runtime: {
+      reviewerTimeoutMs: 600_000,
+      harnessInactivityTimeoutMs: 1_200_000,
+      transientRetry: { maxRetries: 2, initialDelayMs: 1_000, maxDelayMs: 10_000 },
+    },
+    harnesses: {
+      codex: {
+        enabled: true,
+        nativeCredentialsEnabled: true,
+        defaultModel: "gpt-5.6-sol",
+        effort: "high",
+        maxTurns: 40,
+        maxRounds: 6,
+        toolsAllow: ["bash", "read"],
+        toolsDeny: ["net"],
+        fallbackModel: "gpt-5-mini",
+        web: "live",
+        authPreference: "subscription",
+        profileLimitAction: "rotate",
+      },
+    },
+  });
+
   return fixtures;
 }

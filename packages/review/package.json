@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/review",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "license": "MIT",
   "description": "Deterministic gates, cross-family review, finding revalidation, route proof, convergence, readiness-debt.",
   "type": "module",

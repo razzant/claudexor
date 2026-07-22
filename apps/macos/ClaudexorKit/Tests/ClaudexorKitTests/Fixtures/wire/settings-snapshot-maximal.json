@@ -1,0 +1,67 @@
+{
+  "schema": "ControlSettingsSnapshot",
+  "value": {
+    "sources": [
+      "/home/u/.claudexor/v3/config.yaml"
+    ],
+    "interactionTimeoutMs": 900000,
+    "routing": {
+      "primaryHarness": "codex",
+      "eligibleHarnesses": [
+        "codex",
+        "claude"
+      ],
+      "envInheritance": "clean",
+      "authPreference": "subscription",
+      "goal": "quality",
+      "paidFallback": "never",
+      "qualityTiers": {
+        "implement": [
+          [
+            {
+              "harness": "codex",
+              "model": "gpt-5.6-sol",
+              "effort": "high"
+            }
+          ]
+        ]
+      }
+    },
+    "budget": {
+      "paidBudgetPerRun": {
+        "kind": "finite",
+        "maxUsd": 4
+      }
+    },
+    "runtime": {
+      "reviewerTimeoutMs": 600000,
+      "harnessInactivityTimeoutMs": 1200000,
+      "transientRetry": {
+        "maxRetries": 2,
+        "initialDelayMs": 1000,
+        "maxDelayMs": 10000
+      }
+    },
+    "harnesses": {
+      "codex": {
+        "enabled": true,
+        "nativeCredentialsEnabled": true,
+        "defaultModel": "gpt-5.6-sol",
+        "effort": "high",
+        "maxTurns": 40,
+        "maxRounds": 6,
+        "toolsAllow": [
+          "bash",
+          "read"
+        ],
+        "toolsDeny": [
+          "net"
+        ],
+        "fallbackModel": "gpt-5-mini",
+        "web": "live",
+        "authPreference": "subscription",
+        "profileLimitAction": "rotate"
+      }
+    }
+  }
+}

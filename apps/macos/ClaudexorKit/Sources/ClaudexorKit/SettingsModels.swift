@@ -180,7 +180,3 @@ public struct SettingsUpdateRequest: Encodable, Sendable, Equatable {
         try c.encodeIfPresent(harnesses, forKey: .harnesses)
     }
 }
-
-public struct SettingsUpdateResponse: Codable, Sendable, Equatable {
-    public let path: String
-}

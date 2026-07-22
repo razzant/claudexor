@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/context",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "license": "MIT",
   "description": "AGENTS.md-first context: Scope Atlas (no silent truncation), hashable ContextPack, evidence packet.",
   "type": "module",

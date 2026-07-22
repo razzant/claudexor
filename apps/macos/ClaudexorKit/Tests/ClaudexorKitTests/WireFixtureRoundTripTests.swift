@@ -30,6 +30,7 @@ import Testing
         case "ApplyEligibility": return try recode(ApplyEligibility.self, data)
         case "ControlQuotaResponse": return try recode(ControlQuotaResponse.self, data)
         case "ControlHarnessSettingsPatch": return try recode(HarnessSettingsPatch.self, data)
+        case "ControlSettingsSnapshot": return try recode(SettingsSnapshot.self, data)
         default: return nil
         }
     }
@@ -39,6 +40,7 @@ import Testing
         "ControlHandshakeResponse", "ControlProblem", "ControlThread", "ControlThreadTurn",
         "RunOutcomeFacts", "ControlBudgetSnapshot", "PlanReadiness", "PlanQuestionsArtifact",
         "ApplyEligibility", "ControlQuotaResponse", "ControlHarnessSettingsPatch",
+        "ControlSettingsSnapshot",
     ]
 
     private static func recode<T: Codable>(_ type: T.Type, _ data: Data) throws -> Data {

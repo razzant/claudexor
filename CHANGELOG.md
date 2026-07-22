@@ -3,6 +3,16 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.0.4** (2026-07-22) — fixes GitHub #20: saving Per-Harness Defaults from
+  the macOS app reported "Could not save settings: DecodingError.keyNotFound
+  ('path')" even though the daemon had already written the config. The Swift
+  client still decoded the v0.x `{path}` receipt from POST /settings; the
+  daemon has answered with the effective settings snapshot (GET's shape) since
+  v2.1.2, and the mismatch was unmasked when v3.0.3 fixed the request-side
+  400 (#18). The app now decodes the snapshot, applies it directly (no
+  follow-up GET), and reports success honestly. The TS→Swift wire-fixture
+  gate gains a maximal `ControlSettingsSnapshot` fixture so the POST
+  /settings response contract is pinned the same way #18 pinned the request.
 - **v3.0.3** (2026-07-21) — hardening from the 2026-07-21 "codex chats
   disappeared" incident forensics (local data was never touched; the trigger
   was an OpenAI server-side session invalidation from a shared-browser account

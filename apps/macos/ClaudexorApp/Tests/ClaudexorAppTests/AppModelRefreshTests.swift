@@ -1101,7 +1101,9 @@ struct AppModelRefreshTests {
                     throw AppRefreshTestError.badRequest
                 }
                 patched.increment()
-                return (appResponse(for: request), Data(#"{"path":"~/.claudexor/v3/settings.json"}"#.utf8))
+                // The daemon answers a save with the fresh effective snapshot
+                // (GET's shape), not the legacy v0.x {path} receipt (#20).
+                return (appResponse(for: request), Data(snapshot.utf8))
             case ("GET", "/v2/settings"):
                 return (appResponse(for: request), Data(snapshot.utf8))
             case (_, "/v2/harnesses"):
