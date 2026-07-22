@@ -34,8 +34,8 @@ struct HarnessDefaultsRow: View {
     @State private var saving = false
     /// Anti-clobber: true once the user edits a field, until OUR save settles.
     /// While dirty, `sync()` refuses to re-derive drafts from `settings`, so a
-    /// post-save `refreshSettings()` (which republishes `settingsSnapshot` to
-    /// EVERY row) can't overwrite an in-progress edit — in this row or any other.
+    /// post-save snapshot republish (the save answer republishes `settingsSnapshot`
+    /// to EVERY row) can't overwrite an in-progress edit — in this row or any other.
     @State private var dirty = false
     /// Debounce handle: each edit (re)schedules this; it sleeps, then auto-saves.
     /// Cancelled on further edits so typing is one save, not a save per keystroke.
@@ -191,7 +191,7 @@ struct HarnessDefaultsRow: View {
 
     /// Re-derive the @State drafts from the server `settings`. ANTI-CLOBBER: this
     /// is a no-op while the row is `dirty` (the user has unsaved edits or a save in
-    /// flight), so a post-save `refreshSettings()` — which republishes
+    /// flight), so a post-save snapshot republish — which republishes
     /// `settingsSnapshot` to EVERY row — can never overwrite a value being typed,
     /// in this row or any other. `dirty` is cleared authoritatively by the save's
     /// success path (`performSave`), after which the drafts already hold the saved

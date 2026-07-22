@@ -88,13 +88,13 @@ extension AppModel {
 
     /// Toggle the native/CLI login's participation in a harness's credential
     /// ladder (V11b — the CLI-login row's Enabled). Drives the per-harness
-    /// `native_credentials_enabled` via the settings PATCH surface, then reloads
-    /// settings + the accounts projection. Returns nil on success.
+    /// `native_credentials_enabled` via the settings PATCH surface; the save
+    /// answer IS the fresh snapshot (applied inside saveSettings, #20/D1), so
+    /// only the accounts projection reloads here. Returns nil on success.
     @discardableResult
     func setNativeCredentialsEnabled(harnessId: String, enabled: Bool) async -> String? {
         let ok = await saveSettings(SettingsUpdateRequest(
             harnesses: [harnessId: HarnessSettingsPatch(nativeCredentialsEnabled: enabled)]))
-        await refreshSettings()
         await refreshCredentialProfiles()
         return ok ? nil : (settingsStatus ?? "Could not update the native login setting.")
     }
@@ -106,7 +106,6 @@ extension AppModel {
     func setHarnessEnabled(harnessId: String, enabled: Bool) async -> String? {
         let ok = await saveSettings(SettingsUpdateRequest(
             harnesses: [harnessId: HarnessSettingsPatch(enabled: enabled)]))
-        await refreshSettings()
         return ok ? nil : (settingsStatus ?? "Could not update the harness setting.")
     }
 

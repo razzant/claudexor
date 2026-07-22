@@ -142,3 +142,11 @@ deferred; they are recorded here now.
   fixed by removing the dead `maxUsd` field; the SEPARATE request to add a UI
   picker for the per-harness fallback model is deferred (owner-scoped out of
   3.0.3). Ship it as its own reviewed surface, not folded into the 400 fix.
+
+- W-i (from the v3.0.4 immune scan): the TS→Swift wire-fixture gate pins only
+  a representative subset; ~23 further GatewayClient response DTOs (SetupJob,
+  RunDetail, ThreadApplyResponse, RunDecisionResponse, TrustListResponse, …)
+  have no response-side fixture, so the #20 defect class (Swift decoding a
+  shape the daemon stopped sending) stays reachable there. Grow coverage
+  endpoint-by-endpoint, maximal-variant first, decoder-map + handledSchemas in
+  lockstep (the manifest-driven Swift test fails loudly on a missed entry).

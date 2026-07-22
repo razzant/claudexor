@@ -1086,6 +1086,7 @@ struct AppModelRefreshTests {
         ), requestNotificationAuthorization: false)
 
         let patched = AppRefreshCallCounter()
+        let settingsGets = AppRefreshCallCounter()
         let snapshot = #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":900000}"#
         AppRequestStubURLProtocol.handler = { request in
             switch (request.httpMethod, request.url?.path) {
@@ -1105,6 +1106,9 @@ struct AppModelRefreshTests {
                 // (GET's shape), not the legacy v0.x {path} receipt (#20).
                 return (appResponse(for: request), Data(snapshot.utf8))
             case ("GET", "/v2/settings"):
+                // D1 fence (#20): the save answer IS the fresh snapshot; the
+                // save path must never follow up with a GET. Counted, asserted 0.
+                settingsGets.increment()
                 return (appResponse(for: request), Data(snapshot.utf8))
             case (_, "/v2/harnesses"):
                 return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
@@ -1118,6 +1122,10 @@ struct AppModelRefreshTests {
         let error = await model.setNativeCredentialsEnabled(harnessId: "claude", enabled: false)
         #expect(error == nil)
         #expect(patched.count == 1)
+        #expect(settingsGets.count == 0)
+        // The POST answer was APPLIED, not just decoded-and-dropped.
+        #expect(model.settingsSnapshot?.interactionTimeoutMs == 900000)
+        #expect(model.settingsSnapshot?.routing.envInheritance == "mirror_native")
     }
 }
 
