@@ -7,7 +7,15 @@
  */
 
 /** A caller-supplied output schema the structured-output routes cannot carry. */
-export class UnsupportedOutputSchemaError extends Error {}
+/** Every fail-closed shape refusal is caller-actionable: it must surface as
+ *  the same typed `invalid_output_schema` contract the compile-failure path
+ *  uses (W24 errorCode/errorStatus), never as an untyped 500. */
+export class UnsupportedOutputSchemaError extends Error {
+  readonly status = 400;
+  readonly code = "invalid_output_schema";
+  readonly retryable = false;
+  readonly requiredActions = ["fix the output schema and retry the run"];
+}
 
 /**
  * Validate a CALLER-supplied per-run output schema and return it UNCHANGED —
@@ -144,43 +152,32 @@ const REF_ANNOTATION_KEYWORDS = new Set([
   "writeOnly",
 ]);
 
-function forEachChildSchema(
-  source: Record<string, unknown>,
-  visit: (schema: unknown) => void,
-): void {
-  for (const [key, value] of Object.entries(source)) {
-    if (
-      SCHEMA_MAP_KEYWORDS.has(key) &&
-      value &&
-      typeof value === "object" &&
-      !Array.isArray(value)
-    ) {
-      for (const child of Object.values(value as Record<string, unknown>)) visit(child);
-    } else if (SCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(value)) {
-      value.forEach(visit);
-    } else if (key === "items") {
-      if (Array.isArray(value)) value.forEach(visit);
-      else visit(value);
-    } else if (
-      key === "dependencies" &&
-      value &&
-      typeof value === "object" &&
-      !Array.isArray(value)
-    ) {
-      for (const child of Object.values(value as Record<string, unknown>)) {
-        if (!Array.isArray(child)) visit(child);
-      }
-    } else if (SCHEMA_VALUE_KEYWORDS.has(key)) {
-      visit(value);
-    }
-  }
-}
+/** Fail-closed ceiling for schema nesting: deeper documents would risk a raw
+ *  RangeError (stack exhaustion) in the recursive walks instead of a typed
+ *  refusal. No legitimate output contract nests anywhere near this. */
+const MAX_SCHEMA_DEPTH = 256;
 
+/**
+ * Generic deep scan of the WHOLE document — every object node, not just
+ * keyword-reachable schema positions. A $ref may point at any JSON Pointer
+ * (including subtrees under ad-hoc non-keyword keys), and unreferenced
+ * non-keyword subtrees are copied verbatim into the vendor transport, so
+ * dynamic/recursive/scoped semantics anywhere in the document must fail
+ * closed at preflight. Map-keyword containers skip the key check on the map
+ * itself (property NAMES may legitimately collide with keywords) but their
+ * values are scanned. Keyword-shaped keys inside data values (default,
+ * examples) are refused too — fail closed beats a mid-run vendor 400.
+ */
 function assertSupportedReferenceScope(root: Record<string, unknown>): void {
-  let hasRef = false;
-  let hasNestedId = false;
   const scan = (value: unknown, depth: number): void => {
-    if (typeof value === "boolean" || !value || typeof value !== "object" || Array.isArray(value)) {
+    if (typeof value === "boolean" || !value || typeof value !== "object") return;
+    if (depth > MAX_SCHEMA_DEPTH) {
+      throw new UnsupportedOutputSchemaError(
+        `outputSchema nesting exceeds ${MAX_SCHEMA_DEPTH} levels; flatten the schema`,
+      );
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) scan(item, depth + 1);
       return;
     }
     const schema = value as Record<string, unknown>;
@@ -191,46 +188,9 @@ function assertSupportedReferenceScope(root: Record<string, unknown>): void {
         );
       }
     }
-    if (typeof schema["$ref"] === "string") hasRef = true;
-    if (depth > 0 && typeof schema["$id"] === "string") hasNestedId = true;
-    forEachChildSchema(schema, (child) => scan(child, depth + 1));
-  };
-  scan(root, 0);
-  if (hasRef && hasNestedId) {
-    throw new UnsupportedOutputSchemaError(
-      "outputSchema cannot combine local $ref with nested $id scopes for native transport; inline the scoped schema or remove the nested $id",
-    );
-  }
-}
-
-/**
- * A $ref may point at ANY JSON Pointer in the document — including subtrees
- * stored under non-keyword keys that assertSupportedReferenceScope's
- * keyword-driven scan never visits. Re-check the RAW resolved target with a
- * generic deep walk so dynamic/recursive/scoped semantics cannot ride an
- * inlined target into the vendor transport. Map-keyword containers skip the
- * key check itself (property NAMES may legitimately collide with keywords);
- * everything else fails closed, including keyword-shaped keys inside data
- * values of a referenced subtree.
- */
-function assertInlinableRefTarget(target: unknown, ref: string): void {
-  const scan = (value: unknown): void => {
-    if (typeof value === "boolean" || !value || typeof value !== "object") return;
-    if (Array.isArray(value)) {
-      value.forEach(scan);
-      return;
-    }
-    const schema = value as Record<string, unknown>;
-    for (const keyword of ["$dynamicRef", "$recursiveRef", "$dynamicAnchor", "$recursiveAnchor"]) {
-      if (keyword in schema) {
-        throw new UnsupportedOutputSchemaError(
-          `outputSchema $ref target contains ${keyword}, which is unsupported by native structured-output transport: ${ref}`,
-        );
-      }
-    }
-    if (typeof schema["$id"] === "string") {
+    if (depth > 0 && typeof schema["$id"] === "string") {
       throw new UnsupportedOutputSchemaError(
-        `outputSchema $ref target carries an $id scope and cannot be inlined for native transport: ${ref}`,
+        "outputSchema cannot carry nested $id scopes for native transport; inline the scoped schema or remove the nested $id",
       );
     }
     for (const [key, child] of Object.entries(schema)) {
@@ -240,13 +200,13 @@ function assertInlinableRefTarget(target: unknown, ref: string): void {
         typeof child === "object" &&
         !Array.isArray(child)
       ) {
-        for (const entry of Object.values(child as Record<string, unknown>)) scan(entry);
+        for (const entry of Object.values(child as Record<string, unknown>)) scan(entry, depth + 2);
       } else {
-        scan(child);
+        scan(child, depth + 1);
       }
     }
   };
-  scan(target);
+  scan(root, 0);
 }
 
 /** Fail-closed ceiling for transport dereference work: each $ref occurrence
@@ -289,9 +249,7 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
           `outputSchema $ref siblings are unsupported for native transport (${unsupportedSiblings.join(", ")}); inline the combined constraints`,
         );
       }
-      const rawTarget = localRefTarget(root, refValue);
-      assertInlinableRefTarget(rawTarget, refValue);
-      const target = walkSchema(rawTarget, [...resolving, refValue]);
+      const target = walkSchema(localRefTarget(root, refValue), [...resolving, refValue]);
       if (!target || typeof target !== "object" || Array.isArray(target)) {
         throw new UnsupportedOutputSchemaError(
           `outputSchema local $ref must resolve to an object schema for native transport: ${refValue}`,
@@ -304,6 +262,17 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
     }
 
     const output: Record<string, unknown> = {};
+    // defineProperty, not assignment: an own "__proto__" key from JSON.parse
+    // must round-trip as an own data property instead of hitting the
+    // Object.prototype setter (which would silently drop the key).
+    const setOwn = (key: string, val: unknown): void => {
+      Object.defineProperty(output, key, {
+        value: val,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    };
     for (const [key, child] of Object.entries(source)) {
       // Definitions are source-only after all references have been inlined.
       if (key === "$defs" || key === "definitions") continue;
@@ -344,34 +313,46 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
         typeof child === "object" &&
         !Array.isArray(child)
       ) {
-        output[key] = Object.fromEntries(
-          Object.entries(child as Record<string, unknown>).map(([name, schema]) => [
-            name,
-            walkSchema(schema, resolving),
-          ]),
+        setOwn(
+          key,
+          Object.fromEntries(
+            Object.entries(child as Record<string, unknown>).map(([name, schema]) => [
+              name,
+              walkSchema(schema, resolving),
+            ]),
+          ),
         );
       } else if (SCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(child)) {
-        output[key] = child.map((schema) => walkSchema(schema, resolving));
+        setOwn(
+          key,
+          child.map((schema) => walkSchema(schema, resolving)),
+        );
       } else if (key === "items") {
-        output[key] = Array.isArray(child)
-          ? child.map((schema) => walkSchema(schema, resolving))
-          : walkSchema(child, resolving);
+        setOwn(
+          key,
+          Array.isArray(child)
+            ? child.map((schema) => walkSchema(schema, resolving))
+            : walkSchema(child, resolving),
+        );
       } else if (
         key === "dependencies" &&
         child &&
         typeof child === "object" &&
         !Array.isArray(child)
       ) {
-        output[key] = Object.fromEntries(
-          Object.entries(child as Record<string, unknown>).map(([name, dependency]) => [
-            name,
-            Array.isArray(dependency) ? dependency : walkSchema(dependency, resolving),
-          ]),
+        setOwn(
+          key,
+          Object.fromEntries(
+            Object.entries(child as Record<string, unknown>).map(([name, dependency]) => [
+              name,
+              Array.isArray(dependency) ? dependency : walkSchema(dependency, resolving),
+            ]),
+          ),
         );
       } else if (SCHEMA_VALUE_KEYWORDS.has(key)) {
-        output[key] = walkSchema(child, resolving);
+        setOwn(key, walkSchema(child, resolving));
       } else {
-        output[key] = child;
+        setOwn(key, child);
       }
     }
     return output;

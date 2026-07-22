@@ -203,6 +203,36 @@ describe("canary golden stories", () => {
     });
   });
 
+  it("[INV-021:output-schema-refusal] an unsupported schema shape is a typed JSON refusal", () => {
+    const schemaPath = join(sb.repo, "cyclic-ref.schema.json");
+    writeFileSync(
+      schemaPath,
+      JSON.stringify({
+        type: "object",
+        properties: { x: { $ref: "#/$defs/x" } },
+        $defs: { x: { $ref: "#/$defs/x" } },
+      }),
+    );
+
+    const r = cli(sb, [
+      "ask",
+      "return ok=true",
+      "--harness",
+      "fake-success",
+      "--output-schema",
+      schemaPath,
+      "--json",
+    ]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe("");
+    expect(r.json()).toMatchObject({
+      status: "failed",
+      code: "invalid_output_schema",
+      errorStatus: 400,
+      retryable: false,
+    });
+  });
+
   it("[INV-093:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
     const r = cli(sb, [
       "plan",
