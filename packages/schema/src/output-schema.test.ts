@@ -190,16 +190,17 @@ describe("strictifyOutputSchema", () => {
     ).toThrow(/unevaluatedProperties can be transported only/);
   });
 
-  it("rejects dynamic scope reachable only through a non-keyword $ref target", () => {
-    // The keyword-driven document scan never visits ad-hoc container keys, so
-    // the resolved target itself must be re-checked before it is inlined.
+  it("rejects dynamic scope and nested $id hiding under non-keyword container keys", () => {
+    // A $ref may point at ANY JSON Pointer and unreferenced non-keyword
+    // subtrees ride the transport verbatim, so the scan must cover every
+    // node of the document, not just keyword-reachable schema positions.
     expect(() =>
       normalizeUserOutputSchema({
         type: "object",
         properties: { x: { $ref: "#/junk" } },
         junk: { $dynamicRef: "#foo", type: "object" },
       }),
-    ).toThrow(/\$ref target contains \$dynamicRef/);
+    ).toThrow(/\$dynamicRef is unsupported/);
 
     // Same class, one level deeper: the dynamic keyword hides under a
     // non-keyword key INSIDE the referenced subtree.
@@ -209,7 +210,17 @@ describe("strictifyOutputSchema", () => {
         properties: { x: { $ref: "#/junk" } },
         junk: { type: "object", inner: { $dynamicRef: "#foo" } },
       }),
-    ).toThrow(/\$ref target contains \$dynamicRef/);
+    ).toThrow(/\$dynamicRef is unsupported/);
+
+    // Unreferenced ad-hoc subtree: still refused (it would be copied
+    // verbatim into the vendor transport).
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        junk: { $dynamicRef: "#foo" },
+      }),
+    ).toThrow(/\$dynamicRef is unsupported/);
 
     expect(() =>
       normalizeUserOutputSchema({
@@ -217,7 +228,60 @@ describe("strictifyOutputSchema", () => {
         properties: { x: { $ref: "#/junk" } },
         junk: { $id: "junk.json", type: "object" },
       }),
-    ).toThrow(/\$ref target carries an \$id scope/);
+    ).toThrow(/nested \$id scopes/);
+  });
+
+  it("rejects a nested $id even without any $ref in the document", () => {
+    // The scoped-$id refusal must not be conditional on a $ref being present:
+    // an un-referenced nested $id would still ride the transport copy.
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: {
+          nested: { $id: "nested.json", type: "object", properties: { v: { type: "string" } } },
+        },
+      }),
+    ).toThrow(/nested \$id scopes/);
+  });
+
+  it("shape refusals carry the typed invalid_output_schema contract", () => {
+    // Fail-closed refusals must flow the daemon's W24 errorCode/errorStatus
+    // path exactly like compile failures — never an untyped 500.
+    try {
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { x: { $ref: "https://example.test/remote.json#/x" } },
+      });
+      expect.unreachable("external $ref must be refused");
+    } catch (err) {
+      expect(err).toBeInstanceOf(UnsupportedOutputSchemaError);
+      const typed = err as UnsupportedOutputSchemaError;
+      expect(typed.code).toBe("invalid_output_schema");
+      expect(typed.status).toBe(400);
+      expect(typed.retryable).toBe(false);
+      expect(typed.requiredActions).toEqual(["fix the output schema and retry the run"]);
+    }
+  });
+
+  it("round-trips an own __proto__ key as data instead of dropping it", () => {
+    // JSON.parse creates "__proto__" as an OWN property; plain assignment in
+    // the transport copy would hit the Object.prototype setter and silently
+    // drop the key (and locally repoint the transient object's prototype).
+    const schema = JSON.parse(
+      '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"],"__proto__":{"marker":1}}',
+    ) as Record<string, unknown>;
+    const transport = strictifyOutputSchema(schema);
+    expect(Object.getOwnPropertyNames(transport)).toContain("__proto__");
+    expect(Object.getPrototypeOf(transport)).toBe(Object.prototype);
+    expect(JSON.stringify(transport)).toContain('"__proto__":{"marker":1}');
+  });
+
+  it("refuses schema nesting past the typed depth ceiling", () => {
+    let leaf: Record<string, unknown> = { type: "boolean" };
+    for (let i = 0; i < 300; i++) {
+      leaf = { type: "object", properties: { next: leaf } };
+    }
+    expect(() => normalizeUserOutputSchema(leaf)).toThrow(/nesting exceeds/);
   });
 
   it("refuses a local-ref expansion that exceeds the transport budget", () => {
