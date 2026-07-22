@@ -31,8 +31,9 @@ extension AppModel {
     }
 
     func refreshSettings() async {
+        let epoch = settingsEpoch
         await enqueueSettingsOperation { [weak self] in
-            guard let self, let client = self.client else { return }
+            guard let self, self.settingsEpoch == epoch, let client = self.client else { return }
             do {
                 self.settingsSnapshot = try await client.settings()
             } catch {
@@ -42,8 +43,9 @@ extension AppModel {
     }
 
     func saveSettings(_ patch: SettingsUpdateRequest) async -> Bool {
-        await enqueueSettingsOperation { [weak self] in
-            guard let self else { return false }
+        let epoch = settingsEpoch
+        return await enqueueSettingsOperation { [weak self] in
+            guard let self, self.settingsEpoch == epoch else { return false }
             guard let client = self.client else {
                 self.settingsStatus = "Engine offline: reconnect before saving settings."
                 return false

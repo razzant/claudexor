@@ -282,6 +282,10 @@ final class AppModel {
         client = nil
         authSheetTarget = nil
         cancelAllStreams()
+        // Retire queued settings ops: one enqueued just before offline must
+        // not fire against a future reconnected client (X20).
+        settingsEpoch += 1
+        settingsChain = nil
 
         route = .threads
         liveTasks.removeAll()
@@ -395,9 +399,12 @@ final class AppModel {
         return try? await client.harnessModels(harnessId: family.rawValue, route: route)
     }
 
-    /// Tail of the serialized settings-operation chain (consumed by
-    /// AppModel+Settings.swift; stored properties cannot live in extensions).
+    /// Tail of the serialized settings-operation chain + its offline epoch
+    /// (consumed by AppModel+Settings.swift; stored properties cannot live in
+    /// extensions). enterHardOffline bumps the epoch so already-queued ops
+    /// retire instead of firing against a reconnected client (X20).
     var settingsChain: Task<Void, Never>?
+    var settingsEpoch = 0
 
     func refreshQuota(force: Bool = false) async {
         guard health == .connected, let client else {
