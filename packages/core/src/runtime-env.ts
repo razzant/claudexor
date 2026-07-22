@@ -127,6 +127,7 @@ export function brokenInstallAdvisory(
       `reinstall ${name} or point the binary override at a working install`;
     return `${where} exists but ${how} — ${fix}`;
   }
+  if (!SAFE_BREW_NAME.test(name)) return null;
   for (const prefix of brewPrefixes) {
     for (const [room, flag] of [
       ["Caskroom", " --cask"],
@@ -134,7 +135,12 @@ export function brokenInstallAdvisory(
     ] as const) {
       const dir = join(prefix, room, name);
       if (lstatKind(dir) === "dir") {
-        return `Homebrew still lists ${name} as installed (${dir}) but no runnable binary is on the harness PATH — broken install; run \`brew reinstall${flag} ${name}\``;
+        // An absolute override never scanned PATH, so say what was actually
+        // checked instead of claiming a PATH sweep that did not happen.
+        const evidence = isAbsolute(bin)
+          ? `the configured override ${bin} does not exist`
+          : `no runnable binary is on the harness PATH`;
+        return `Homebrew still lists ${name} as installed (${dir}) but ${evidence} — broken install; run \`brew reinstall${flag} ${name}\`${isAbsolute(bin) ? " or fix the binary override" : ""}`;
       }
     }
   }
@@ -158,8 +164,14 @@ function readlinkOrNull(path: string): string | null {
   }
 }
 
+/** A copyable `brew` command is emitted only for names shaped like real
+ *  Homebrew tokens: a configured override whose basename carries whitespace,
+ *  quotes, or shell metacharacters must never become a pasteable command. */
+const SAFE_BREW_NAME = /^[A-Za-z0-9][A-Za-z0-9@+._-]*$/;
+
 /** Attribute a broken entry to Homebrew via its canonical payload dirs. */
 function brewRemediation(pathish: string, name: string): string | null {
+  if (!SAFE_BREW_NAME.test(name)) return null;
   if (pathish.includes("/Caskroom/")) return `run \`brew reinstall --cask ${name}\``;
   if (pathish.includes("/Cellar/")) return `run \`brew reinstall ${name}\``;
   return null;

@@ -601,4 +601,26 @@ describe("Codex missing-CLI diagnosis", () => {
     });
     await expect(adapter.discover()).rejects.toThrow(ADVISORY);
   });
+
+  it("doctor probes AND diagnoses in the scoped spec env (INV-067 same-env doctrine)", async () => {
+    const probeEnvs: Array<Record<string, string | null | undefined> | undefined> = [];
+    const advisoryPaths: Array<string | undefined> = [];
+    const adapter = createCodexAdapter({
+      detectVersion: async (_signal, env) => {
+        probeEnvs.push(env);
+        return null;
+      },
+      brokenInstallAdvisory: (_bin, source) => {
+        advisoryPaths.push(source?.PATH);
+        return null;
+      },
+    });
+    await adapter.doctor({ cwd: "/repo", env: { PATH: "/scoped/bin" }, fresh: true });
+    // The version probe receives the raw spec patch (runCapture merges it);
+    // the advisory receives the MERGED effective env — both name the same
+    // scoped PATH, so the diagnosis can never describe a different env than
+    // the probe that failed.
+    expect(probeEnvs).toEqual([{ PATH: "/scoped/bin" }]);
+    expect(advisoryPaths).toEqual(["/scoped/bin"]);
+  });
 });
