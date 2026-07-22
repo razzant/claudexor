@@ -804,6 +804,42 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("runs: a terminal refusal with an out-of-range errorStatus still fails as 500", async () => {
+    const defectiveWriter: DaemonFacadeClient = {
+      async enqueue() {
+        return { id: "job-bad-status", state: "queued" };
+      },
+      async status() {
+        return {
+          id: "job-bad-status",
+          state: "failed",
+          error: "refused before start",
+          errorCode: "unsupported_schema_dialect",
+          errorStatus: 200,
+        };
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+
+    await withDaemonServer(defectiveWriter, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: startAgentBody(),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({
+        code: "unsupported_schema_dialect",
+        retryable: false,
+      });
+    });
+  });
+
   it("producedRepoRoot uses the typed scope and NEVER resolves a no-project run to the home dir", () => {
     expect(
       producedRepoRoot({

@@ -106,8 +106,18 @@ export function unboundRunStartResponse(
   rec: DaemonRunRecord,
   terminal: boolean,
 ): { status: number; body: Record<string, unknown> } {
+  // errorStatus is served verbatim only inside the failure range; anything
+  // else (absent, or a non-4xx/5xx value from a defective writer) must not
+  // turn a terminal failure body into a 2xx/3xx response.
+  const errorStatus =
+    typeof rec.errorStatus === "number" &&
+    Number.isInteger(rec.errorStatus) &&
+    rec.errorStatus >= 400 &&
+    rec.errorStatus <= 599
+      ? rec.errorStatus
+      : 500;
   return {
-    status: terminal ? (rec.errorStatus ?? 500) : 202,
+    status: terminal ? errorStatus : 202,
     body: {
       ...ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
       ...(rec.errorCode ? { code: rec.errorCode } : {}),
