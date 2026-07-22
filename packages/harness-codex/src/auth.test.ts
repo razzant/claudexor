@@ -559,3 +559,46 @@ describe("Codex transport-aware native doctor", () => {
     expect(cliOptions?.env?.OPENAI_API_KEY).toBeNull();
   });
 });
+
+describe("Codex missing-CLI diagnosis", () => {
+  const ADVISORY =
+    "Homebrew still lists codex as installed (/opt/homebrew/Caskroom/codex) but no runnable binary is on the harness PATH — broken install; run `brew reinstall --cask codex`";
+
+  it("doctor surfaces the broken-install advisory in the installed check and reasons", async () => {
+    const adapter = createCodexAdapter({
+      detectVersion: async () => null,
+      brokenInstallAdvisory: () => ADVISORY,
+    });
+    const report = await adapter.doctor({ cwd: "/repo", env: {}, fresh: true });
+    expect(report.status).toBe("unavailable");
+    expect(report.checks).toEqual([
+      { id: "installed", status: "fail", detail: `codex not found on PATH — ${ADVISORY}` },
+    ]);
+    expect(report.reasons).toEqual([
+      "codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)",
+      ADVISORY,
+    ]);
+  });
+
+  it("doctor keeps the plain dead-end wording when there is no advisory evidence", async () => {
+    const adapter = createCodexAdapter({
+      detectVersion: async () => null,
+      brokenInstallAdvisory: () => null,
+    });
+    const report = await adapter.doctor({ cwd: "/repo", env: {}, fresh: true });
+    expect(report.checks).toEqual([
+      { id: "installed", status: "fail", detail: "codex not found on PATH" },
+    ]);
+    expect(report.reasons).toEqual([
+      "codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)",
+    ]);
+  });
+
+  it("discover appends the advisory to the unavailable error", async () => {
+    const adapter = createCodexAdapter({
+      detectVersion: async () => null,
+      brokenInstallAdvisory: () => ADVISORY,
+    });
+    await expect(adapter.discover()).rejects.toThrow(ADVISORY);
+  });
+});

@@ -21,6 +21,7 @@ import {
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
 import {
   abortSignalFromSpec,
+  brokenInstallAdvisory,
   browserMcpCommand,
   HarnessUnavailableError,
   normalizeEffort,
@@ -368,6 +369,7 @@ export type CodexProfileRuntimeDeps = Pick<CodexRuntimeDeps, "probeLogin" | "res
 
 type CodexRuntimeDeps = {
   detectVersion: typeof detectVersion;
+  brokenInstallAdvisory: typeof brokenInstallAdvisory;
   probeLogin: typeof probeLogin;
   hasApiKey: typeof hasApiKey;
   codexApiKey: typeof codexApiKey;
@@ -381,6 +383,7 @@ type CodexRuntimeDeps = {
 export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): HarnessAdapter {
   const runtime: CodexRuntimeDeps = {
     detectVersion,
+    brokenInstallAdvisory,
     probeLogin,
     hasApiKey,
     codexApiKey,
@@ -395,8 +398,9 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
       if (version === null) {
+        const advisory = runtime.brokenInstallAdvisory(BIN);
         throw new HarnessUnavailableError(
-          "codex CLI not found on PATH (set CLAUDEXOR_CODEX_BIN to override)",
+          `codex CLI not found on PATH (set CLAUDEXOR_CODEX_BIN to override)${advisory ? ` — ${advisory}` : ""}`,
         );
       }
       const apiKey = runtime.hasApiKey();
@@ -483,11 +487,23 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
       const version = await runtime.detectVersion(_spec.abortSignal);
       if (version === null) {
+        const advisory = runtime.brokenInstallAdvisory(BIN);
         return ConformanceReportSchema.parse({
           harness_id: "codex",
           status: "unavailable",
-          checks: [{ id: "installed", status: "fail", detail: "codex not found on PATH" }],
-          reasons: ["codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)"],
+          checks: [
+            {
+              id: "installed",
+              status: "fail",
+              detail: advisory
+                ? `codex not found on PATH — ${advisory}`
+                : "codex not found on PATH",
+            },
+          ],
+          reasons: [
+            "codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)",
+            ...(advisory ? [advisory] : []),
+          ],
         });
       }
       const requestedSource = _spec.authSource;
