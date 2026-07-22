@@ -882,6 +882,39 @@ describe("Orchestrator", () => {
     expect(taskYaml).toContain("claude: model-x");
   });
 
+  it("infers an explicit singleton pool as primary ahead of a conflicting configured primary", async () => {
+    const repo = await initRepo();
+    const seen: { id: string; model: string | null }[] = [];
+    const observedAdapter = (id: string, family: ProviderFamily): HarnessAdapter => ({
+      ...realLikeAdapter(id, family),
+      async *run(spec) {
+        seen.push({ id, model: spec.model_hint });
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    });
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", observedAdapter("codex", "openai")],
+      ["claude", observedAdapter("claude", "anthropic")],
+    ]);
+    const res = await withScopedConfigDir(async () => {
+      writeFileSync(
+        join(process.env.CLAUDEXOR_CONFIG_DIR!, "config.yaml"),
+        "routing:\n  primary_harness: codex\n",
+      );
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      return orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["claude"],
+        model: "model-x",
+        n: 1,
+      });
+    });
+    expect(res.lifecycle).toBe("succeeded");
+    expect(seen).toEqual([{ id: "claude", model: "model-x" }]);
+  });
+
   it("REFUSES a run whose resolved model fails the harness truth source (typed preflight, no CLI spawn)", async () => {
     const repo = await initRepo();
     let spawned = false;
@@ -1331,16 +1364,35 @@ describe("Orchestrator", () => {
 
   it("fails loudly when no available harness can perform the intent", async () => {
     const repo = await initRepo();
-    const registry = new Map<string, HarnessAdapter>([["raw-ish", noImplementAdapter("raw-ish")]]);
-    const orch = new Orchestrator({ registry, reviewers: [] });
-    const res = await orch.run({
-      repoRoot: repo,
-      prompt: "x",
-      mode: "agent",
-      harnesses: ["raw-ish"],
-      n: 1,
+    let configuredPrimaryRan = false;
+    const configuredPrimary: HarnessAdapter = {
+      ...realLikeAdapter("codex"),
+      async *run(spec) {
+        configuredPrimaryRan = true;
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["raw-ish", noImplementAdapter("raw-ish")],
+      ["codex", configuredPrimary],
+    ]);
+    const res = await withScopedConfigDir(async () => {
+      writeFileSync(
+        join(process.env.CLAUDEXOR_CONFIG_DIR!, "config.yaml"),
+        "routing:\n  primary_harness: codex\n",
+      );
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      return orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["raw-ish"],
+        n: 1,
+      });
     });
     expect(legacyOutcome(res)).toBe("failed");
+    expect(res.candidates).toEqual([]);
+    expect(configuredPrimaryRan).toBe(false);
     expect(res.summary).toMatch(/perform 'implement'/);
     expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(
       /perform 'implement'/,

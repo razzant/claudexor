@@ -81,7 +81,11 @@ const FROZEN_REVIEW_FLAGS: readonly CliFlagSpec[] = [
 export const FROZEN_REVIEW_FLAG_NAMES = FROZEN_REVIEW_FLAGS.map((flag) => flag.name);
 
 export const CLI_FLAGS: readonly CliFlagSpec[] = [
-  valueFlag("harness", "<id[,id...]>", "Force harness(es)"),
+  valueFlag(
+    "harness",
+    "<id[,id...]>",
+    "Force the eligible pool; one explicit harness also becomes the effective primary",
+  ),
   valueFlag(
     "route",
     "<local_session|api_key>",
@@ -159,7 +163,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
   valueFlag("web", "<mode>", "External web/search policy: off|auto|cached|live"),
   valueFlag("model", "<id>", "Model hint forwarded to the selected harness route"),
   valueFlag("effort", "<level>", "Reasoning effort hint: low|medium|high|xhigh|max"),
-  valueFlag("primary-harness", "<id>", "Bias single-route modes and first candidate choice"),
+  valueFlag(
+    "primary-harness",
+    "<id>",
+    "Explicitly bias single-route modes and first candidate choice; must belong to the pool",
+  ),
   valueFlag("portfolio", "<id>", "Removed in v2; always errors (use --routing-goal)"),
   valueFlag("routing-goal", "<goal>", "Routing goal: auto|quality|economy"),
   valueFlag(

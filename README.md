@@ -375,7 +375,9 @@ access profile changes. The full semantics live in
 Routing is `Pool + Primary + Routing Goal`: selected harnesses are the
 eligible pool, `--primary-harness <id>` biases single-route modes, and
 `--routing-goal auto|quality|economy` picks the pacing. In chat this is sticky
-per thread — the thread remembers its primary, pool, and (since 2.1) its
+per thread. An explicit one-harness pool infers that harness as primary unless
+`--primary-harness` is supplied; an explicit primary must belong to the pool.
+The thread remembers its primary, pool, and (since 2.1) its
 credential profile; the engine owns routing, surfaces only send the choice.
 Reviewer panels are explicit when needed (`--reviewer-panel
 "claude=claude-opus-4-8:max,cursor=gemini-3.5-flash"`); a clean verified

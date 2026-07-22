@@ -157,6 +157,8 @@ Routing is `Pool + Primary + Routing Goal`:
 
 - selected harness ids are the eligible pool;
 - `primaryHarness` is a bias/ordering hint, not a privileged semantic role;
+- one explicitly selected harness becomes the effective primary when no explicit
+  primary is supplied; an explicit primary must belong to the selected pool;
 - `routingGoal` is recorded as `TaskContract.budget.routing_goal`, default
   `auto`; the other goals are `quality` and `economy`. The v1 portfolio ids
   have no aliases and fail at every boundary.
