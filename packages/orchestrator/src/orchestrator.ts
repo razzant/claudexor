@@ -964,7 +964,11 @@ export class Orchestrator {
     const configuredPool = cfg?.global.routing.eligible_harnesses;
     const harnesses =
       input.harnesses ?? (configuredPool && configuredPool.length > 0 ? configuredPool : undefined);
-    const primaryHarness = input.primaryHarness ?? cfg?.global.routing.primary_harness ?? undefined;
+    const primaryHarness =
+      input.primaryHarness ??
+      (input.harnesses?.length === 1 ? input.harnesses[0] : undefined) ??
+      cfg?.global.routing.primary_harness ??
+      undefined;
     if (
       primaryHarness &&
       harnesses &&
@@ -981,14 +985,8 @@ export class Orchestrator {
       );
     }
     const web = input.web ?? input.externalContextPolicy ?? "auto";
-    // INV-103: model choice is harness-scoped end-to-end. The scalar
-    // `model` is a convenience that expands to the RESOLVED PRIMARY only —
-    // never the whole pool (the old global fallback poisoned every pool
-    // member with one vendor's model id). Specific beats general: an explicit
-    // per-harness map entry wins over the scalar.
-    //
-    // Map KEYS fail loudly (INV-021): a typo'd harness id ("claud") must
-    // never silently no-op into "the run used defaults and nothing said why".
+    // INV-103: scalar `model` expands only to the resolved primary, never the pool;
+    // an explicit per-harness map wins. Unknown map keys fail loudly (INV-021).
     const knownHarnessIds = new Set(this.deps.registry.keys());
     for (const key of Object.keys(input.models ?? {})) {
       if (!knownHarnessIds.has(key)) {

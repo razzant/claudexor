@@ -119,6 +119,35 @@ describe("canary golden stories", () => {
     }
   });
 
+  it("[INV-013:explicit-singleton-primary] every run verb routes an explicit singleton ahead of a conflicting configured primary", () => {
+    writeFileSync(join(sb.configDir, "config.yaml"), "routing:\n  primary_harness: codex\n");
+    const commands: Array<{ args: string[]; mode: string; harness: string }> = [
+      { args: ["ask", "answer"], mode: "ask", harness: "fake-success" },
+      { args: ["plan", "plan"], mode: "plan", harness: "fake-success" },
+      { args: ["agent", "change"], mode: "agent", harness: "fake-success" },
+      { args: ["create", "scaffold"], mode: "agent", harness: "fake-implement" },
+    ];
+    for (const command of commands) {
+      const result = cli(sb, [
+        ...command.args,
+        "--harness",
+        command.harness,
+        "--model",
+        "fake-model",
+        "--json",
+      ]);
+      expect(result.code, `${command.args[0]}: ${result.stdout}${result.stderr}`).toBe(0);
+      const output = result.json() as { mode?: string; runDir: string };
+      expect(output.mode).toBe(command.mode);
+      expect(output.runDir).toBeTruthy();
+      const startedHarnesses = readEvents(output.runDir)
+        .filter((event) => event["type"] === "harness.started")
+        .map((event) => (event["payload"] as Record<string, unknown>)["harness_id"]);
+      expect(startedHarnesses).toContain(command.harness);
+      expect(startedHarnesses).not.toContain("codex");
+    }
+  });
+
   it("[INV-062:prompt-secret-block] a secret-like value in the prompt is hard-blocked before any run starts (no bypass)", () => {
     const secret = "sk-" + "z".repeat(24);
     const r = cli(sb, [
