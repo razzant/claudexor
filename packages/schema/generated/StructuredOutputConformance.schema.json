@@ -1,0 +1,83 @@
+{
+  "$ref": "#/definitions/StructuredOutputConformance",
+  "definitions": {
+    "StructuredOutputConformance": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "number",
+          "const": 2,
+          "description": "Schema version of the artifact; bumped on breaking ABI changes."
+        },
+        "schema_dialect": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "draft-07",
+                "draft-2020-12"
+              ],
+              "description": "JSON Schema dialect selected for structured-output validation."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Dialect used to compile and validate the caller schema; null only for legacy receipts.",
+          "default": null
+        },
+        "schema_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Content hash in algo:hex form, e.g. \"sha256:abcd...\"."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable hash of the original caller schema; null only for legacy receipts written before schema identity was recorded.",
+          "default": null
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed"
+          ],
+          "description": "Whether the final answer conformed to the run's output schema."
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Why conformance failed (missing/unparsable answer, validator errors); null on pass."
+        },
+        "output_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Artifact path of the materialized structured output (final/output.json); null when the answer never parsed."
+        },
+        "generated_at": {
+          "type": "string",
+          "minLength": 1,
+          "description": "When the receipt was generated."
+        }
+      },
+      "required": [
+        "schema_version",
+        "status",
+        "generated_at"
+      ],
+      "additionalProperties": false,
+      "description": "Structured-output conformance receipt (final/structured_output.yaml): the single engine validator's verdict on the final answer."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

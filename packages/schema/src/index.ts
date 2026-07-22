@@ -7,6 +7,7 @@
  */
 export * from "./primitives.js";
 export * from "./output-schema.js";
+export * from "./output-schema-dialect.js";
 export * from "./auth.js";
 export * from "./credential-profile.js";
 export * from "./tool-ref.js";

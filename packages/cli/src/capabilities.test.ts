@@ -18,6 +18,18 @@ describe("AgentCapabilityCatalog surfaces", () => {
       availableHarnesses: [],
       modes: ["ask", "plan", "agent"],
       runControlKeys: ["prompt"],
+      outputSchemaDialects: [
+        {
+          dialect: "draft-07",
+          uri: "http://json-schema.org/draft-07/schema#",
+          defaultWhenOmitted: true,
+        },
+        {
+          dialect: "draft-2020-12",
+          uri: "https://json-schema.org/draft/2020-12/schema",
+          defaultWhenOmitted: false,
+        },
+      ],
       mutability: {
         readOnlyModes: ["ask", "plan"],
         writeModes: ["agent"],
@@ -37,6 +49,7 @@ describe("AgentCapabilityCatalog surfaces", () => {
       runApplyStates: ["not_applied", "applied", "applied_review_blocked", "reverted"],
     };
     expect(AgentCapabilityCatalog.parse(minimal).ok).toBe(true);
+    expect(AgentCapabilityCatalog.parse(minimal).outputSchemaDialects).toHaveLength(2);
     // An invented isolation kind must be refused, not passed through.
     expect(() =>
       AgentCapabilityCatalog.parse({

@@ -3,6 +3,7 @@ import { AccessProfile, ModeKind, ProviderFamily } from "./primitives.js";
 import { AdapterStatus, EffortHint, ReadonlyMechanism } from "./harness.js";
 import { WorkspaceMode } from "./thread.js";
 import { AttachmentInputClass } from "./attachment.js";
+import { OutputSchemaDialect } from "./output-schema-dialect.js";
 
 /**
  * AgentCapabilityCatalog — the machine-readable answer to "what can this
@@ -171,6 +172,17 @@ export const CatalogMutabilityMatrix = z
   );
 export type CatalogMutabilityMatrix = z.infer<typeof CatalogMutabilityMatrix>;
 
+export const CatalogOutputSchemaDialect = z
+  .object({
+    dialect: OutputSchemaDialect.describe("Stable dialect id used in structured-output receipts."),
+    uri: z.string().url().describe("Canonical $schema URI accepted for this dialect."),
+    defaultWhenOmitted: z
+      .boolean()
+      .describe("True when this dialect is selected for schemas without a $schema declaration."),
+  })
+  .describe("One JSON Schema dialect accepted by the structured-output validator.");
+export type CatalogOutputSchemaDialect = z.infer<typeof CatalogOutputSchemaDialect>;
+
 export const AgentCapabilityCatalog = z
   .object({
     ok: z.literal(true).describe("Envelope marker (matches the CLI JSON convention)."),
@@ -192,6 +204,10 @@ export const AgentCapabilityCatalog = z
       .describe(
         "Accepted POST /runs request keys (derived from the ControlRunStartRequest schema; the CLI/MCP/ACP surfaces project subsets of these).",
       ),
+    outputSchemaDialects: z
+      .array(CatalogOutputSchemaDialect)
+      .min(1)
+      .describe("Supported structured-output JSON Schema dialects and canonical $schema URIs."),
     mutability: CatalogMutabilityMatrix,
     cliCommands: z
       .array(CatalogCliCommand)

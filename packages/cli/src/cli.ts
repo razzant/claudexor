@@ -59,6 +59,7 @@ import {
 } from "./local-attachment.js";
 import {
   connectDaemonIfRunning,
+  daemonOutcomeProblemFields,
   daemonOutcomeSummary,
   ensureDaemon,
   enqueueAndAwait,
@@ -66,6 +67,7 @@ import {
   fetchApplyEligibility,
   fetchCouncil,
   fetchOutcomeBanner,
+  mergeDaemonRunOutcome,
 } from "./daemon-run.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
 import { resolveDecisionBody } from "./decision.js";
@@ -660,6 +662,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
           jobId: started.jobId,
           mode: p.mode,
           ...(started.error ? { error: started.error } : {}),
+          ...daemonOutcomeProblemFields(started),
         });
         return exitCodeForState(started.status);
       }
@@ -674,14 +677,8 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // per event via print(JSON.stringify(ev)).
       await followRun(started.runId, true);
       const final = started.jobId ? await client.status(started.jobId) : null;
-      const status = final?.state ?? started.status;
-      const out = {
-        runId: started.runId,
-        runDir: final?.runDir ?? started.runDir,
-        status: status,
-        jobId: started.jobId,
-        error: final?.error ?? started.error,
-      };
+      const out = mergeDaemonRunOutcome(started, final);
+      const status = out.status;
       const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
       const applyEligibility = await fetchApplyEligibility(addr, started.runId);
       const outcomeBanner = await fetchOutcomeBanner(addr, started.runId);
@@ -693,6 +690,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         jobId: out.jobId,
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
+        ...daemonOutcomeProblemFields(out),
         ...(reason ? { summary: reason } : {}),
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
@@ -716,6 +714,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         jobId: out.jobId,
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
+        ...daemonOutcomeProblemFields(out),
         ...(reason ? { summary: reason } : {}),
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),

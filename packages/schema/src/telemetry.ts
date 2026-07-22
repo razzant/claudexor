@@ -1,12 +1,14 @@
 import { z } from "zod";
 import {
   AccessProfile,
+  ContentHash,
   ExternalContextPolicy,
   Id,
   IsoTimestamp,
   ModeKind,
   SchemaVersion,
 } from "./primitives.js";
+import { OutputSchemaDialect } from "./output-schema-dialect.js";
 import { ToolKind } from "./tool-ref.js";
 import { AuthMode } from "./budget.js";
 import { AuthPreference } from "./primitives.js";
@@ -152,6 +154,16 @@ export type AttemptOutcome = z.infer<typeof AttemptOutcome>;
 export const StructuredOutputConformance = z
   .object({
     schema_version: SchemaVersion,
+    schema_dialect: OutputSchemaDialect.nullable()
+      .default(null)
+      .describe(
+        "Dialect used to compile and validate the caller schema; null only for legacy receipts.",
+      ),
+    schema_hash: ContentHash.nullable()
+      .default(null)
+      .describe(
+        "Stable hash of the original caller schema; null only for legacy receipts written before schema identity was recorded.",
+      ),
     status: z
       .enum(["passed", "failed"])
       .describe("Whether the final answer conformed to the run's output schema."),

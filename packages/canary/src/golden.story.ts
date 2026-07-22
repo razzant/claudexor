@@ -137,6 +137,43 @@ describe("canary golden stories", () => {
     expect(runDirs.length).toBe(0);
   });
 
+  it("[INV-023:output-schema-dialect] an unknown dialect is a typed JSON refusal", () => {
+    const schemaPath = join(sb.repo, "unknown-dialect.schema.json");
+    writeFileSync(
+      schemaPath,
+      JSON.stringify({
+        $schema: "https://example.test/custom-json-schema",
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+      }),
+    );
+
+    const r = cli(sb, [
+      "ask",
+      "return ok=true",
+      "--harness",
+      "fake-success",
+      "--output-schema",
+      schemaPath,
+      "--json",
+    ]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe("");
+    expect(r.json()).toMatchObject({
+      status: "failed",
+      code: "unsupported_schema_dialect",
+      errorStatus: 400,
+      retryable: false,
+      supportedDialects: [
+        { dialect: "draft-07", uri: "http://json-schema.org/draft-07/schema#" },
+        {
+          dialect: "draft-2020-12",
+          uri: "https://json-schema.org/draft/2020-12/schema",
+        },
+      ],
+    });
+  });
+
   it("[INV-093:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
     const r = cli(sb, [
       "plan",

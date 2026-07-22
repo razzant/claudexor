@@ -91,7 +91,6 @@ import {
   ControlSetupJobListResponse,
   ControlRunStartInfo,
   type ControlRunStartRequest,
-  ControlQueuedRunInfo,
   ControlRunControlRequest,
   ControlRunControlResponse,
   ControlReviewerPanelEntry,
@@ -1813,8 +1812,7 @@ export class DaemonControlApiServer {
         }),
       );
     }
-    const status = TERMINAL_STATES.has(rec.state) ? 500 : 202;
-    const body = ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error });
+    const { status, body } = runStart.unboundRunStartResponse(rec, TERMINAL_STATES.has(rec.state));
     return this.json(res, status, body);
   }
 
