@@ -395,14 +395,10 @@ final class AppModel {
         return try? await client.harnessModels(harnessId: family.rawValue, route: route)
     }
 
-    func refreshSettings() async {
-        guard let client else { return }
-        do {
-            settingsSnapshot = try await client.settings()
-        } catch {
-            settingsStatus = "Could not load settings: \(error)"
-        }
-    }
+    /// Monotonic issue-order of settings saves (consumed by saveSettings in
+    /// AppModel+Settings.swift; stored properties cannot live in extensions).
+    var settingsSaveGeneration = 0
+
     func refreshQuota(force: Bool = false) async {
         guard health == .connected, let client else {
             quotaResponse = nil; quotaStatus = "Quota is unavailable while the engine is offline."
@@ -488,22 +484,6 @@ final class AppModel {
         turnSubmitting = true
         defer { turnSubmitting = false }
         return await body()
-    }
-
-    func saveSettings(_ patch: SettingsUpdateRequest) async -> Bool {
-        guard let client else {
-            settingsStatus = "Engine offline: reconnect before saving settings."
-            return false
-        }
-        do {
-            settingsSnapshot = try await client.updateSettings(patch)
-            settingsStatus = "Saved engine defaults."
-            await refreshHarnesses()
-            return true
-        } catch {
-            settingsStatus = "Could not save settings: \(error)"
-            return false
-        }
     }
 
     private static func liveTask(from s: RunSummary) -> TaskRun {

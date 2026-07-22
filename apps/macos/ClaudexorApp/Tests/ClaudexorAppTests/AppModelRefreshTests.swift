@@ -1127,6 +1127,64 @@ struct AppModelRefreshTests {
         #expect(model.settingsSnapshot?.interactionTimeoutMs == 900000)
         #expect(model.settingsSnapshot?.routing.envInheritance == "mirror_native")
     }
+
+    /// Two concurrent saves whose responses arrive OUT of issue order: the
+    /// older save's late answer carries older daemon truth and must never
+    /// overwrite the newer save's applied snapshot (the saveSettings
+    /// generation guard; INV-002 — the app projects server truth).
+    @MainActor
+    @Test func concurrentSavesApplyOnlyTheNewestAnswer() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+
+        func snapshot(timeoutMs: Int) -> String {
+            #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":"# + String(timeoutMs) + "}"
+        }
+        let saveAArrived = AppRefreshCallCounter()
+        // Save A (patches "codex") BLOCKS in the stub until save B's answer is
+        // on the wire, forcing A's answer to arrive after B's despite A being
+        // issued first. The handler runs off the main actor, so a semaphore
+        // wait cannot deadlock the model's continuations.
+        let releaseSaveA = DispatchSemaphore(value: 0)
+        AppRequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v2/settings"):
+                guard let body = appTestRequestBody(request),
+                      let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                      let harnesses = obj["harnesses"] as? [String: Any] else {
+                    throw AppRefreshTestError.badRequest
+                }
+                if harnesses["codex"] != nil {
+                    saveAArrived.increment()
+                    _ = releaseSaveA.wait(timeout: .now() + 5)
+                    return (appResponse(for: request), Data(snapshot(timeoutMs: 111_000).utf8))
+                }
+                releaseSaveA.signal()
+                return (appResponse(for: request), Data(snapshot(timeoutMs: 222_000).utf8))
+            case (_, "/v2/harnesses"):
+                return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
+            default:
+                throw AppRefreshTestError.badRequest
+            }
+        }
+
+        let saveA = Task { await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["codex": HarnessSettingsPatch(effort: "high")])) }
+        // Guarantee A is ISSUED (its request reached the stub) before B starts.
+        while saveAArrived.count == 0 { await Task.yield() }
+        let saveB = Task { await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["claude": HarnessSettingsPatch(effort: "low")])) }
+        let okB = await saveB.value
+        let okA = await saveA.value
+        #expect(okA && okB)
+        // B (issued last) won even though A's response arrived last.
+        #expect(model.settingsSnapshot?.interactionTimeoutMs == 222_000)
+    }
 }
 
 private func appSetupJob(
@@ -1195,15 +1253,20 @@ private final class AppRequestStubURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    // Each request is handled on its own global-queue thread so a handler
+    // that intentionally BLOCKS (the response-reorder race tests) cannot
+    // stall the loading queue and serialize sibling requests.
     override func startLoading() {
-        do {
-            guard let handler = Self.handler else { throw AppRefreshTestError.badRequest }
-            let (response, data) = try handler(request)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocol(self, didLoad: data)
-            client?.urlProtocolDidFinishLoading(self)
-        } catch {
-            client?.urlProtocol(self, didFailWithError: error)
+        DispatchQueue.global().async { [self] in
+            do {
+                guard let handler = Self.handler else { throw AppRefreshTestError.badRequest }
+                let (response, data) = try handler(request)
+                client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: data)
+                client?.urlProtocolDidFinishLoading(self)
+            } catch {
+                client?.urlProtocol(self, didFailWithError: error)
+            }
         }
     }
 
