@@ -137,7 +137,7 @@ describe("canary golden stories", () => {
     expect(runDirs.length).toBe(0);
   });
 
-  it("[INV-023:output-schema-dialect] an unknown dialect is a typed JSON refusal", () => {
+  it("[INV-021:output-schema-dialect] an unknown dialect is a typed JSON refusal", () => {
     const schemaPath = join(sb.repo, "unknown-dialect.schema.json");
     writeFileSync(
       schemaPath,

@@ -189,4 +189,54 @@ describe("strictifyOutputSchema", () => {
       }),
     ).toThrow(/unevaluatedProperties can be transported only/);
   });
+
+  it("rejects dynamic scope reachable only through a non-keyword $ref target", () => {
+    // The keyword-driven document scan never visits ad-hoc container keys, so
+    // the resolved target itself must be re-checked before it is inlined.
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { x: { $ref: "#/junk" } },
+        junk: { $dynamicRef: "#foo", type: "object" },
+      }),
+    ).toThrow(/\$ref target contains \$dynamicRef/);
+
+    // Same class, one level deeper: the dynamic keyword hides under a
+    // non-keyword key INSIDE the referenced subtree.
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { x: { $ref: "#/junk" } },
+        junk: { type: "object", inner: { $dynamicRef: "#foo" } },
+      }),
+    ).toThrow(/\$ref target contains \$dynamicRef/);
+
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { x: { $ref: "#/junk" } },
+        junk: { $id: "junk.json", type: "object" },
+      }),
+    ).toThrow(/\$ref target carries an \$id scope/);
+  });
+
+  it("refuses a local-ref expansion that exceeds the transport budget", () => {
+    // Each layer references the previous one twice: ~2^N nodes when inlined.
+    const schema: Record<string, unknown> = {
+      type: "object",
+      properties: { root: { $ref: "#/$defs/layer24" } },
+      $defs: { layer0: { type: "object", properties: { leaf: { type: "boolean" } } } },
+    };
+    const defs = schema["$defs"] as Record<string, unknown>;
+    for (let i = 1; i <= 24; i++) {
+      defs[`layer${i}`] = {
+        type: "object",
+        properties: {
+          a: { $ref: `#/$defs/layer${i - 1}` },
+          b: { $ref: `#/$defs/layer${i - 1}` },
+        },
+      };
+    }
+    expect(() => strictifyOutputSchema(schema)).toThrow(/exceeds the transport budget/);
+  });
 });

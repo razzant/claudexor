@@ -204,15 +204,72 @@ function assertSupportedReferenceScope(root: Record<string, unknown>): void {
 }
 
 /**
+ * A $ref may point at ANY JSON Pointer in the document — including subtrees
+ * stored under non-keyword keys that assertSupportedReferenceScope's
+ * keyword-driven scan never visits. Re-check the RAW resolved target with a
+ * generic deep walk so dynamic/recursive/scoped semantics cannot ride an
+ * inlined target into the vendor transport. Map-keyword containers skip the
+ * key check itself (property NAMES may legitimately collide with keywords);
+ * everything else fails closed, including keyword-shaped keys inside data
+ * values of a referenced subtree.
+ */
+function assertInlinableRefTarget(target: unknown, ref: string): void {
+  const scan = (value: unknown): void => {
+    if (typeof value === "boolean" || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(scan);
+      return;
+    }
+    const schema = value as Record<string, unknown>;
+    for (const keyword of ["$dynamicRef", "$recursiveRef", "$dynamicAnchor", "$recursiveAnchor"]) {
+      if (keyword in schema) {
+        throw new UnsupportedOutputSchemaError(
+          `outputSchema $ref target contains ${keyword}, which is unsupported by native structured-output transport: ${ref}`,
+        );
+      }
+    }
+    if (typeof schema["$id"] === "string") {
+      throw new UnsupportedOutputSchemaError(
+        `outputSchema $ref target carries an $id scope and cannot be inlined for native transport: ${ref}`,
+      );
+    }
+    for (const [key, child] of Object.entries(schema)) {
+      if (
+        SCHEMA_MAP_KEYWORDS.has(key) &&
+        child &&
+        typeof child === "object" &&
+        !Array.isArray(child)
+      ) {
+        for (const entry of Object.values(child as Record<string, unknown>)) scan(entry);
+      } else {
+        scan(child);
+      }
+    }
+  };
+  scan(target);
+}
+
+/** Fail-closed ceiling for transport dereference work: each $ref occurrence
+ *  re-copies its target, so N doubling layers expand ~2^N nodes and an
+ *  adversarial schema could exhaust the daemon during preflight. */
+const MAX_DEREFERENCE_NODES = 10_000;
+
+/**
  * Build the provider transport authority by inlining resolvable local refs.
  * The caller's original schema remains untouched for Ajv conformance and
  * hashing. Native transports never see `$ref`, `$defs`, or `definitions`.
  */
 function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<string, unknown> {
   assertSupportedReferenceScope(root);
+  let visitedNodes = 0;
   const walkSchema = (value: unknown, resolving: readonly string[]): unknown => {
     if (typeof value === "boolean") return value;
     if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    if (++visitedNodes > MAX_DEREFERENCE_NODES) {
+      throw new UnsupportedOutputSchemaError(
+        "outputSchema local $ref expansion exceeds the transport budget; inline or simplify the shared definitions",
+      );
+    }
     const source = value as Record<string, unknown>;
     const refValue = source["$ref"];
     if (refValue !== undefined) {
@@ -232,7 +289,9 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
           `outputSchema $ref siblings are unsupported for native transport (${unsupportedSiblings.join(", ")}); inline the combined constraints`,
         );
       }
-      const target = walkSchema(localRefTarget(root, refValue), [...resolving, refValue]);
+      const rawTarget = localRefTarget(root, refValue);
+      assertInlinableRefTarget(rawTarget, refValue);
+      const target = walkSchema(rawTarget, [...resolving, refValue]);
       if (!target || typeof target !== "object" || Array.isArray(target)) {
         throw new UnsupportedOutputSchemaError(
           `outputSchema local $ref must resolve to an object schema for native transport: ${refValue}`,
