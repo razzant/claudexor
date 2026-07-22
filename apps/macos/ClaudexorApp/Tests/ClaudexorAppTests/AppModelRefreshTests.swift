@@ -1128,12 +1128,12 @@ struct AppModelRefreshTests {
         #expect(model.settingsSnapshot?.routing.envInheritance == "mirror_native")
     }
 
-    /// Two concurrent saves whose responses arrive OUT of issue order: the
-    /// older save's late answer carries older daemon truth and must never
-    /// overwrite the newer save's applied snapshot (the saveSettings
-    /// generation guard; INV-002 — the app projects server truth).
+    /// Concurrent saves are SERIALIZED (X10/X14): the second save's POST must
+    /// not reach the wire while the first is in flight, answers apply in issue
+    /// order (= daemon commit order under the config lock), and the last
+    /// save's answer is the surviving projection (INV-002).
     @MainActor
-    @Test func concurrentSavesApplyOnlyTheNewestAnswer() async throws {
+    @Test func concurrentSavesSerializeAndApplyInIssueOrder() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [AppRequestStubURLProtocol.self]
@@ -1146,10 +1146,11 @@ struct AppModelRefreshTests {
             #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":"# + String(timeoutMs) + "}"
         }
         let saveAArrived = AppRefreshCallCounter()
-        // Save A (patches "codex") BLOCKS in the stub until save B's answer is
-        // on the wire, forcing A's answer to arrive after B's despite A being
-        // issued first. The handler runs off the main actor, so a semaphore
-        // wait cannot deadlock the model's continuations.
+        let saveBArrived = AppRefreshCallCounter()
+        // Save A (patches "codex") BLOCKS in the stub until the TEST releases
+        // it (the handler runs off the main actor, so the wait cannot deadlock
+        // the model's continuations); the serialization contract says B's POST
+        // must not arrive while A holds the chain.
         let releaseSaveA = DispatchSemaphore(value: 0)
         AppRequestStubURLProtocol.handler = { request in
             switch (request.httpMethod, request.url?.path) {
@@ -1164,7 +1165,7 @@ struct AppModelRefreshTests {
                     _ = releaseSaveA.wait(timeout: .now() + 5)
                     return (appResponse(for: request), Data(snapshot(timeoutMs: 111_000).utf8))
                 }
-                releaseSaveA.signal()
+                saveBArrived.increment()
                 return (appResponse(for: request), Data(snapshot(timeoutMs: 222_000).utf8))
             case (_, "/v2/harnesses"):
                 return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
@@ -1175,15 +1176,67 @@ struct AppModelRefreshTests {
 
         let saveA = Task { await model.saveSettings(SettingsUpdateRequest(
             harnesses: ["codex": HarnessSettingsPatch(effort: "high")])) }
-        // Guarantee A is ISSUED (its request reached the stub) before B starts.
-        while saveAArrived.count == 0 { await Task.yield() }
+        // Bounded wait (no unbounded-hang loop): A's request must reach the
+        // stub within ~5s so A is provably issued before B.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while saveAArrived.count == 0 {
+            try #require(ContinuousClock.now <= deadline, "save A never reached the stub")
+            await Task.yield()
+        }
         let saveB = Task { await model.saveSettings(SettingsUpdateRequest(
             harnesses: ["claude": HarnessSettingsPatch(effort: "low")])) }
-        let okB = await saveB.value
+        // Serialization fence: while A is blocked in the stub, B's POST must
+        // NOT arrive — give the scheduler real chances to violate it.
+        for _ in 0..<200 { await Task.yield() }
+        #expect(saveBArrived.count == 0)
+        releaseSaveA.signal()
         let okA = await saveA.value
+        let okB = await saveB.value
         #expect(okA && okB)
-        // B (issued last) won even though A's response arrived last.
+        #expect(saveBArrived.count == 1)
+        // Issue order == apply order: the LAST save's answer survives.
         #expect(model.settingsSnapshot?.interactionTimeoutMs == 222_000)
+        #expect(model.settingsStatus == "Saved engine defaults.")
+    }
+
+    /// A newer save that FAILS must keep its failure status: the serialized
+    /// chain means an earlier success can never land after it and mask it.
+    @MainActor
+    @Test func failedNewerSaveKeepsItsFailureStatusAndOlderTruth() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        let okSnapshot = #"{"sources":[],"routing":{"goal":"auto","paidFallback":"when_unavailable","qualityTiers":{},"primaryHarness":null,"eligibleHarnesses":[],"envInheritance":"mirror_native","authPreference":"auto"},"budget":{"paidBudgetPerRun":{"kind":"unlimited"}},"runtime":null,"harnesses":{},"interactionTimeoutMs":111000}"#
+        AppRequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v2/settings"):
+                guard let body = appTestRequestBody(request),
+                      let obj = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+                      let harnesses = obj["harnesses"] as? [String: Any] else {
+                    throw AppRefreshTestError.badRequest
+                }
+                if harnesses["codex"] != nil {
+                    return (appResponse(for: request), Data(okSnapshot.utf8))
+                }
+                throw AppRefreshTestError.badRequest
+            case (_, "/v2/harnesses"):
+                return (appResponse(for: request), Data(#"{"harnesses":[]}"#.utf8))
+            default:
+                throw AppRefreshTestError.badRequest
+            }
+        }
+        let okA = await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["codex": HarnessSettingsPatch(effort: "high")]))
+        let okB = await model.saveSettings(SettingsUpdateRequest(
+            harnesses: ["claude": HarnessSettingsPatch(effort: "low")]))
+        #expect(okA && !okB)
+        // A's applied truth survives; B's FAILURE status is not masked.
+        #expect(model.settingsSnapshot?.interactionTimeoutMs == 111_000)
+        #expect(model.settingsStatus?.hasPrefix("Could not save settings") == true)
     }
 }
 

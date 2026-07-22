@@ -150,3 +150,9 @@ deferred; they are recorded here now.
   shape the daemon stopped sending) stays reachable there. Grow coverage
   endpoint-by-endpoint, maximal-variant first, decoder-map + handledSchemas in
   lockstep (the manifest-driven Swift test fails loudly on a missed entry).
+
+- W-j (from the v3.0.4 round-3 review): ControlSettingsSnapshot has no
+  server-side monotonic revision, so a client can only order answers by its
+  own issue order (v3.0.4 serializes all settings ops client-side, one POST
+  in flight). A daemon-stamped revision/etag on the snapshot would let any
+  client discard stale answers by server truth instead of client ordering.

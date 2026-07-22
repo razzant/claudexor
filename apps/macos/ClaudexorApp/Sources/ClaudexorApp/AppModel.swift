@@ -395,9 +395,9 @@ final class AppModel {
         return try? await client.harnessModels(harnessId: family.rawValue, route: route)
     }
 
-    /// Monotonic issue-order of settings saves (consumed by saveSettings in
+    /// Tail of the serialized settings-operation chain (consumed by
     /// AppModel+Settings.swift; stored properties cannot live in extensions).
-    var settingsSaveGeneration = 0
+    var settingsChain: Task<Void, Never>?
 
     func refreshQuota(force: Bool = false) async {
         guard health == .connected, let client else {
