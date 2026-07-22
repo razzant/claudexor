@@ -193,6 +193,16 @@ function assertSupportedReferenceScope(root: Record<string, unknown>): void {
         "outputSchema cannot carry nested $id scopes for native transport; inline the scoped schema or remove the nested $id",
       );
     }
+    // $ref values are validated document-wide, not just in schema positions:
+    // an external ref anywhere would otherwise ride a verbatim-copied subtree
+    // into the vendor transport instead of failing closed here.
+    const refValue = schema["$ref"];
+    if (refValue !== undefined) {
+      if (typeof refValue !== "string") {
+        throw new UnsupportedOutputSchemaError("outputSchema $ref must be a string");
+      }
+      localRefTokens(refValue);
+    }
     for (const [key, child] of Object.entries(schema)) {
       if (
         SCHEMA_MAP_KEYWORDS.has(key) &&
@@ -214,6 +224,14 @@ function assertSupportedReferenceScope(root: Record<string, unknown>): void {
  *  adversarial schema could exhaust the daemon during preflight. */
 const MAX_DEREFERENCE_NODES = 10_000;
 
+function containsRefDeep(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(containsRefDeep);
+  const obj = value as Record<string, unknown>;
+  if ("$ref" in obj) return true;
+  return Object.values(obj).some(containsRefDeep);
+}
+
 /**
  * Build the provider transport authority by inlining resolvable local refs.
  * The caller's original schema remains untouched for Ajv conformance and
@@ -222,12 +240,21 @@ const MAX_DEREFERENCE_NODES = 10_000;
 function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<string, unknown> {
   assertSupportedReferenceScope(root);
   let visitedNodes = 0;
-  const walkSchema = (value: unknown, resolving: readonly string[]): unknown => {
+  const walkSchema = (value: unknown, resolving: readonly string[], depth: number): unknown => {
     if (typeof value === "boolean") return value;
     if (!value || typeof value !== "object" || Array.isArray(value)) return value;
     if (++visitedNodes > MAX_DEREFERENCE_NODES) {
       throw new UnsupportedOutputSchemaError(
         "outputSchema local $ref expansion exceeds the transport budget; inline or simplify the shared definitions",
+      );
+    }
+    // The EXPANDED tree is capped too: a flat $defs chain of single-level
+    // refs keeps the source shallow while resolution recurses one frame per
+    // link — that must be a typed refusal, never stack exhaustion, and it
+    // also bounds every later walk over the transport copy (strictify).
+    if (depth > MAX_SCHEMA_DEPTH) {
+      throw new UnsupportedOutputSchemaError(
+        `outputSchema local $ref expansion nests past ${MAX_SCHEMA_DEPTH} levels; flatten the reference chain`,
       );
     }
     const source = value as Record<string, unknown>;
@@ -249,7 +276,11 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
           `outputSchema $ref siblings are unsupported for native transport (${unsupportedSiblings.join(", ")}); inline the combined constraints`,
         );
       }
-      const target = walkSchema(localRefTarget(root, refValue), [...resolving, refValue]);
+      const target = walkSchema(
+        localRefTarget(root, refValue),
+        [...resolving, refValue],
+        depth + 1,
+      );
       if (!target || typeof target !== "object" || Array.isArray(target)) {
         throw new UnsupportedOutputSchemaError(
           `outputSchema local $ref must resolve to an object schema for native transport: ${refValue}`,
@@ -318,21 +349,21 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
           Object.fromEntries(
             Object.entries(child as Record<string, unknown>).map(([name, schema]) => [
               name,
-              walkSchema(schema, resolving),
+              walkSchema(schema, resolving, depth + 2),
             ]),
           ),
         );
       } else if (SCHEMA_ARRAY_KEYWORDS.has(key) && Array.isArray(child)) {
         setOwn(
           key,
-          child.map((schema) => walkSchema(schema, resolving)),
+          child.map((schema) => walkSchema(schema, resolving, depth + 2)),
         );
       } else if (key === "items") {
         setOwn(
           key,
           Array.isArray(child)
-            ? child.map((schema) => walkSchema(schema, resolving))
-            : walkSchema(child, resolving),
+            ? child.map((schema) => walkSchema(schema, resolving, depth + 2))
+            : walkSchema(child, resolving, depth + 1),
         );
       } else if (
         key === "dependencies" &&
@@ -345,20 +376,27 @@ function dereferenceLocalOutputSchema(root: Record<string, unknown>): Record<str
           Object.fromEntries(
             Object.entries(child as Record<string, unknown>).map(([name, dependency]) => [
               name,
-              Array.isArray(dependency) ? dependency : walkSchema(dependency, resolving),
+              Array.isArray(dependency) ? dependency : walkSchema(dependency, resolving, depth + 2),
             ]),
           ),
         );
       } else if (SCHEMA_VALUE_KEYWORDS.has(key)) {
-        setOwn(key, walkSchema(child, resolving));
+        setOwn(key, walkSchema(child, resolving, depth + 1));
       } else {
+        // Verbatim-copied subtrees (unknown/non-schema keys) never get their
+        // refs resolved, and the native routes 400 on any $ref they see.
+        if (containsRefDeep(child)) {
+          throw new UnsupportedOutputSchemaError(
+            `outputSchema $ref under non-schema key ${JSON.stringify(key)} cannot be resolved for native transport; move the reference under a schema keyword or inline it`,
+          );
+        }
         setOwn(key, child);
       }
     }
     return output;
   };
 
-  return walkSchema(root, []) as Record<string, unknown>;
+  return walkSchema(root, [], 0) as Record<string, unknown>;
 }
 
 /**

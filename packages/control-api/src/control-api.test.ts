@@ -8,6 +8,7 @@ import {
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
 import { producedRepoRoot } from "./artifact-serve-routes.js";
+import { unboundRunStartResponse } from "./run-start.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
 import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
 import {
@@ -838,6 +839,29 @@ describe("DaemonControlApiServer", () => {
         retryable: false,
       });
     });
+  });
+
+  it("unboundRunStartResponse: an untyped terminal makes no retryability claim of its own", () => {
+    // The wire-level retryable default belongs to the ControlProblem
+    // projection (#28 owns that contract); the run-start body itself must
+    // only assert non-retryability for TYPED refusals it can prove.
+    const untyped = unboundRunStartResponse({ id: "job-cancelled", state: "cancelled" }, true);
+    expect(untyped.status).toBe(500);
+    expect(untyped.body).not.toHaveProperty("retryable");
+    expect(untyped.body).not.toHaveProperty("code");
+
+    const typed = unboundRunStartResponse(
+      {
+        id: "job-schema",
+        state: "failed",
+        error: "refused",
+        errorCode: "invalid_output_schema",
+        errorStatus: 400,
+      },
+      true,
+    );
+    expect(typed.status).toBe(400);
+    expect(typed.body).toMatchObject({ code: "invalid_output_schema", retryable: false });
   });
 
   it("producedRepoRoot uses the typed scope and NEVER resolves a no-project run to the home dir", () => {

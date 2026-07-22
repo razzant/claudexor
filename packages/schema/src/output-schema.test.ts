@@ -276,6 +276,40 @@ describe("strictifyOutputSchema", () => {
     expect(JSON.stringify(transport)).toContain('"__proto__":{"marker":1}');
   });
 
+  it("rejects a $ref hiding under a non-keyword key whether external or local", () => {
+    // walkSchema copies unknown-key subtrees verbatim, so a ref there would
+    // reach the vendor unresolved; the scan must refuse externals anywhere
+    // and the copy step must refuse unresolvable local refs.
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        junk: { $ref: "https://example.test/remote.json" },
+      }),
+    ).toThrow(/external refs are unsupported/);
+
+    expect(() =>
+      normalizeUserOutputSchema({
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        junk: { $ref: "#/properties/ok" },
+        holder: { keep: { $ref: "#/properties/ok" } },
+      }),
+    ).toThrow(/\$ref under non-schema key/);
+  });
+
+  it("refuses a flat linear $ref chain as a typed depth refusal, not stack exhaustion", () => {
+    const defs: Record<string, unknown> = { link0: { type: "boolean" } };
+    for (let i = 1; i <= 300; i++) defs[`link${i}`] = { $ref: `#/$defs/link${i - 1}` };
+    expect(() =>
+      strictifyOutputSchema({
+        type: "object",
+        properties: { x: { $ref: "#/$defs/link300" } },
+        $defs: defs,
+      }),
+    ).toThrow(/nests past 256 levels/);
+  });
+
   it("refuses schema nesting past the typed depth ceiling", () => {
     let leaf: Record<string, unknown> = { type: "boolean" };
     for (let i = 0; i < 300; i++) {
