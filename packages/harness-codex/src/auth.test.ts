@@ -23,6 +23,7 @@ import {
   probeLogin,
   selectCodexRunAuthRoute,
 } from "./index.js";
+import { missingCliError, missingCliReport } from "./missing-cli.js";
 
 describe("Codex strict runtime auth routing", () => {
   it("defaults native subscription state under Claudexor, never ordinary ~/.codex", () => {
@@ -622,5 +623,19 @@ describe("Codex missing-CLI diagnosis", () => {
     // the probe that failed.
     expect(probeEnvs).toEqual([{ PATH: "/scoped/bin" }]);
     expect(advisoryPaths).toEqual(["/scoped/bin"]);
+  });
+
+  it("an absolute override is described as a broken override, never as a PATH miss", () => {
+    const report = missingCliReport(null, "/custom/codex");
+    expect(report.checks[0]?.detail).toBe("codex override /custom/codex is not runnable");
+    expect(report.reasons).toEqual([
+      "codex CLI override /custom/codex is not runnable (fix CLAUDEXOR_CODEX_BIN)",
+    ]);
+    expect(JSON.stringify(report)).not.toContain("not found on PATH");
+
+    const error = missingCliError("advisory detail", "/custom/codex");
+    expect(error.message).toBe(
+      "codex CLI override /custom/codex is not runnable (fix CLAUDEXOR_CODEX_BIN) — advisory detail",
+    );
   });
 });

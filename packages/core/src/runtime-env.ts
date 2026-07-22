@@ -123,7 +123,7 @@ export function brokenInstallAdvisory(
           ? "it is a directory, not a binary"
           : "it is not executable";
     const fix =
-      brewRemediation(target ?? candidate, name) ??
+      brewRemediation(target ?? candidate) ??
       `reinstall ${name} or point the binary override at a working install`;
     return `${where} exists but ${how} — ${fix}`;
   }
@@ -169,11 +169,23 @@ function readlinkOrNull(path: string): string | null {
  *  quotes, or shell metacharacters must never become a pasteable command. */
 const SAFE_BREW_NAME = /^[A-Za-z0-9][A-Za-z0-9@+._-]*$/;
 
+/** The brew package token is the path segment AFTER Caskroom/Cellar — a
+ *  binary's name can differ from the package that ships it, and the
+ *  remediation must name the package. */
+function brewToken(pathish: string, room: "Caskroom" | "Cellar"): string | null {
+  const marker = `/${room}/`;
+  const idx = pathish.indexOf(marker);
+  if (idx === -1) return null;
+  const token = pathish.slice(idx + marker.length).split("/")[0] ?? "";
+  return SAFE_BREW_NAME.test(token) ? token : null;
+}
+
 /** Attribute a broken entry to Homebrew via its canonical payload dirs. */
-function brewRemediation(pathish: string, name: string): string | null {
-  if (!SAFE_BREW_NAME.test(name)) return null;
-  if (pathish.includes("/Caskroom/")) return `run \`brew reinstall --cask ${name}\``;
-  if (pathish.includes("/Cellar/")) return `run \`brew reinstall ${name}\``;
+function brewRemediation(pathish: string): string | null {
+  const cask = brewToken(pathish, "Caskroom");
+  if (cask) return `run \`brew reinstall --cask ${cask}\``;
+  const formula = brewToken(pathish, "Cellar");
+  if (formula) return `run \`brew reinstall ${formula}\``;
   return null;
 }
 

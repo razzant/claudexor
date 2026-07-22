@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { runCapture } from "@claudexor/core";
 import { HarnessUnavailableError } from "@claudexor/core";
 import { ConformanceReport as ConformanceReportSchema } from "@claudexor/schema";
@@ -38,17 +39,26 @@ export async function detectVersion(
   }
 }
 
+/** An absolute override was never a PATH lookup — say what actually failed. */
+function deadEnd(bin: string): string {
+  return isAbsolute(bin) ? `codex override ${bin} is not runnable` : "codex not found on PATH";
+}
+
 /** The discover() dead-end for a missing CLI, advisory-enriched when the
  *  filesystem still holds evidence of a broken install. */
-export function missingCliError(advisory: string | null): HarnessUnavailableError {
-  return new HarnessUnavailableError(
-    `codex CLI not found on PATH (set CLAUDEXOR_CODEX_BIN to override)${advisory ? ` — ${advisory}` : ""}`,
-  );
+export function missingCliError(
+  advisory: string | null,
+  bin: string = BIN,
+): HarnessUnavailableError {
+  const summary = isAbsolute(bin)
+    ? `codex CLI override ${bin} is not runnable (fix CLAUDEXOR_CODEX_BIN)`
+    : "codex CLI not found on PATH (set CLAUDEXOR_CODEX_BIN to override)";
+  return new HarnessUnavailableError(`${summary}${advisory ? ` — ${advisory}` : ""}`);
 }
 
 /** The doctor() unavailable report for a missing CLI; wording is unchanged
  *  when there is no advisory evidence. */
-export function missingCliReport(advisory: string | null): ConformanceReport {
+export function missingCliReport(advisory: string | null, bin: string = BIN): ConformanceReport {
   return ConformanceReportSchema.parse({
     harness_id: "codex",
     status: "unavailable",
@@ -56,11 +66,13 @@ export function missingCliReport(advisory: string | null): ConformanceReport {
       {
         id: "installed",
         status: "fail",
-        detail: advisory ? `codex not found on PATH — ${advisory}` : "codex not found on PATH",
+        detail: advisory ? `${deadEnd(bin)} — ${advisory}` : deadEnd(bin),
       },
     ],
     reasons: [
-      "codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)",
+      isAbsolute(bin)
+        ? `codex CLI override ${bin} is not runnable (fix CLAUDEXOR_CODEX_BIN)`
+        : "codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)",
       ...(advisory ? [advisory] : []),
     ],
   });

@@ -155,6 +155,24 @@ describe("resolveHarnessBinary", () => {
     expect(advisory).toContain("point the binary override at a working install");
   });
 
+  it("brokenInstallAdvisory recommends the brew PACKAGE token, not the binary basename", () => {
+    if (process.platform === "win32") return;
+    // A package can ship a binary under a different name; `brew reinstall`
+    // must name the package (the Caskroom/Cellar path segment).
+    const home = join(root, "adv-home8");
+    const prefix = join(root, "adv-brew8");
+    const binDir = join(prefix, "bin");
+    mkdirSync(binDir, { recursive: true });
+    symlinkSync(
+      join(prefix, "Caskroom", "vendor-package", "1.0", "tool-k"),
+      join(binDir, "tool-k"),
+    );
+    const env = { HOME: home, PATH: binDir } as NodeJS.ProcessEnv;
+    const advisory = brokenInstallAdvisory("tool-k", env, [prefix]);
+    expect(advisory).toContain("brew reinstall --cask vendor-package");
+    expect(advisory).not.toContain("--cask tool-k");
+  });
+
   it("brokenInstallAdvisory names the missing absolute override instead of claiming a PATH sweep", () => {
     const home = join(root, "adv-home7");
     const prefix = join(root, "adv-brew7");
