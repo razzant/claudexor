@@ -1,5 +1,6 @@
+import { existsSync, lstatSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 import { isLaunchableExecutable } from "./executable-inspection.js";
 
 /**
@@ -74,6 +75,94 @@ function binaryNameCandidates(bin: string, source: NodeJS.ProcessEnv): string[] 
   const lower = bin.toLowerCase();
   if (exts.some((e) => lower.endsWith(e.toLowerCase()))) return [bin];
   return [bin, ...exts.map((e) => bin + e)];
+}
+
+const HOMEBREW_PREFIXES = ["/opt/homebrew", "/usr/local", "/home/linuxbrew/.linuxbrew"];
+
+/**
+ * Advisory explaining WHY a harness binary failed to resolve when the
+ * filesystem still holds evidence of an install. The live incident this
+ * guards: Homebrew's codex cask stayed registered (Caskroom dir present,
+ * version pinned) while its payload and bin link had vanished, so every
+ * surface dead-ended at "not found on PATH"/ENOENT with no path to repair.
+ * Two evidence classes, checked in order:
+ *
+ *  1. an entry named like the binary exists on the harness PATH (or at the
+ *     configured absolute override) but is not spawnable — dangling symlink,
+ *     exec bit stripped, or a directory shadowing the name;
+ *  2. nothing is on PATH at all, but a Homebrew Caskroom/Cellar dir still
+ *     lists the binary as installed.
+ *
+ * Diagnostic only (doctor/discover append it); never gates a run and never
+ * executes a package manager. Returns null when the binary resolves or when
+ * there is nothing better to say than "not installed".
+ */
+export function brokenInstallAdvisory(
+  bin: string,
+  source: NodeJS.ProcessEnv = process.env,
+  brewPrefixes: readonly string[] = HOMEBREW_PREFIXES,
+): string | null {
+  if (resolveHarnessBinary(bin, source) !== null) return null;
+  const name = basename(bin);
+  const names = binaryNameCandidates(bin, source);
+  const candidates = isAbsolute(bin)
+    ? names
+    : normalizedHarnessPath(source)
+        .split(delimiter)
+        .filter(Boolean)
+        .flatMap((dir) => names.map((n) => join(dir, n)));
+  for (const candidate of candidates) {
+    const kind = lstatKind(candidate);
+    if (kind === null) continue;
+    const target = kind === "symlink" ? readlinkOrNull(candidate) : null;
+    const where = target === null ? candidate : `${candidate} (symlink to ${target})`;
+    const how =
+      kind === "symlink" && !existsSync(candidate)
+        ? "its target is missing"
+        : kind === "dir"
+          ? "it is a directory, not a binary"
+          : "it is not executable";
+    const fix =
+      brewRemediation(target ?? candidate, name) ??
+      `reinstall ${name} or point the binary override at a working install`;
+    return `${where} exists but ${how} — ${fix}`;
+  }
+  for (const prefix of brewPrefixes) {
+    for (const [room, flag] of [
+      ["Caskroom", " --cask"],
+      ["Cellar", ""],
+    ] as const) {
+      const dir = join(prefix, room, name);
+      if (lstatKind(dir) === "dir") {
+        return `Homebrew still lists ${name} as installed (${dir}) but no runnable binary is on the harness PATH — broken install; run \`brew reinstall${flag} ${name}\``;
+      }
+    }
+  }
+  return null;
+}
+
+function lstatKind(path: string): "symlink" | "dir" | "file" | null {
+  try {
+    const s = lstatSync(path);
+    return s.isSymbolicLink() ? "symlink" : s.isDirectory() ? "dir" : "file";
+  } catch {
+    return null;
+  }
+}
+
+function readlinkOrNull(path: string): string | null {
+  try {
+    return readlinkSync(path);
+  } catch {
+    return null;
+  }
+}
+
+/** Attribute a broken entry to Homebrew via its canonical payload dirs. */
+function brewRemediation(pathish: string, name: string): string | null {
+  if (pathish.includes("/Caskroom/")) return `run \`brew reinstall --cask ${name}\``;
+  if (pathish.includes("/Cellar/")) return `run \`brew reinstall ${name}\``;
+  return null;
 }
 
 /**
