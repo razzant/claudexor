@@ -23,11 +23,9 @@ import {
   abortSignalFromSpec,
   brokenInstallAdvisory,
   browserMcpCommand,
-  HarnessUnavailableError,
   normalizeEffort,
   providerScrubEnv,
   resolveHarnessBinary,
-  runCapture,
   runCliHarness,
   selectStrictAuthRoute,
   selectedAuthAvailable,
@@ -42,7 +40,8 @@ export { canonicalCodexProfileHome, codexAccountIdentity } from "./profile.js";
 import { estimateCodexCostUsd } from "./pricing.js";
 import { codexImageArgs } from "./attachments.js";
 
-export const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
+import { BIN, detectVersion, missingCliError, missingCliReport, probeEnv } from "./missing-cli.js";
+export { BIN } from "./missing-cli.js";
 
 /**
  * Ordered (weakest→strongest) reasoning-effort levels codex's
@@ -112,20 +111,6 @@ function sandboxArgs(access: AccessProfile): string[] {
       return ["--sandbox", "danger-full-access"];
     case "inherit_native":
       return [];
-  }
-}
-
-async function detectVersion(abortSignal?: AbortSignal): Promise<string | null> {
-  try {
-    const r = await runCapture(BIN, ["--version"], {
-      timeoutMs: 10_000,
-      abortSignal,
-      cancelSignal: "SIGTERM",
-      cancelKillDelayMs: 0,
-    });
-    return r.stdout.trim() || `${BIN} (version unknown)`;
-  } catch {
-    return null;
   }
 }
 
@@ -397,12 +382,7 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
 
     async discover(): Promise<HarnessManifest> {
       const version = await runtime.detectVersion();
-      if (version === null) {
-        const advisory = runtime.brokenInstallAdvisory(BIN);
-        throw new HarnessUnavailableError(
-          `codex CLI not found on PATH (set CLAUDEXOR_CODEX_BIN to override)${advisory ? ` — ${advisory}` : ""}`,
-        );
-      }
+      if (version === null) throw missingCliError(runtime.brokenInstallAdvisory(BIN));
       const apiKey = runtime.hasApiKey();
       const login = await runtime.probeLogin(BIN, { env: codexNativeEnv() });
       const nativeSessionAvailable = login.method === "chatgpt";
@@ -485,26 +465,11 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
     },
 
     async doctor(_spec: DoctorSpec): Promise<ConformanceReport> {
-      const version = await runtime.detectVersion(_spec.abortSignal);
+      // The scoped env drives BOTH the version probe and the advisory, so the
+      // diagnosis always describes the exact env the probe failed in.
+      const version = await runtime.detectVersion(_spec.abortSignal, _spec.env);
       if (version === null) {
-        const advisory = runtime.brokenInstallAdvisory(BIN);
-        return ConformanceReportSchema.parse({
-          harness_id: "codex",
-          status: "unavailable",
-          checks: [
-            {
-              id: "installed",
-              status: "fail",
-              detail: advisory
-                ? `codex not found on PATH — ${advisory}`
-                : "codex not found on PATH",
-            },
-          ],
-          reasons: [
-            "codex CLI not found (install Codex or set CLAUDEXOR_CODEX_BIN)",
-            ...(advisory ? [advisory] : []),
-          ],
-        });
+        return missingCliReport(runtime.brokenInstallAdvisory(BIN, probeEnv(_spec.env)));
       }
       const requestedSource = _spec.authSource;
       const probeNative = requestedSource === undefined || requestedSource === "native_session";

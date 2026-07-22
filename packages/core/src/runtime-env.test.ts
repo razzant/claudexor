@@ -138,6 +138,38 @@ describe("resolveHarnessBinary", () => {
     expect(advisory).toContain("reinstall tool-h");
   });
 
+  it("brokenInstallAdvisory never emits a brew command for a shell-unsafe basename", () => {
+    if (process.platform === "win32") return;
+    // A configured override like CLAUDEXOR_CODEX_BIN with metacharacters in
+    // its basename must not turn into a pasteable `brew reinstall $(...)`.
+    const home = join(root, "adv-home6");
+    const prefix = join(root, "adv-brew6");
+    const binDir = join(prefix, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const evil = "tool-i;$(rm x)";
+    symlinkSync(join(prefix, "Caskroom", evil, "1.0", evil), join(binDir, evil));
+    const env = { HOME: home, PATH: binDir } as NodeJS.ProcessEnv;
+    const advisory = brokenInstallAdvisory(evil, env, [prefix]);
+    expect(advisory).toContain("its target is missing");
+    expect(advisory).not.toContain("brew reinstall");
+    expect(advisory).toContain("point the binary override at a working install");
+  });
+
+  it("brokenInstallAdvisory names the missing absolute override instead of claiming a PATH sweep", () => {
+    const home = join(root, "adv-home7");
+    const prefix = join(root, "adv-brew7");
+    mkdirSync(join(prefix, "Caskroom", "tool-j", "2.0"), { recursive: true });
+    const emptyDir = join(root, "adv-empty7");
+    mkdirSync(emptyDir, { recursive: true });
+    const override = join(root, "adv-missing", "tool-j");
+    const env = { HOME: home, PATH: emptyDir } as NodeJS.ProcessEnv;
+    const advisory = brokenInstallAdvisory(override, env, [prefix]);
+    expect(advisory).toContain(`the configured override ${override} does not exist`);
+    expect(advisory).not.toContain("no runnable binary is on the harness PATH");
+    expect(advisory).toContain("brew reinstall --cask tool-j");
+    expect(advisory).toContain("or fix the binary override");
+  });
+
   it("skips non-executable files and directories shadowing the name (spawn-faithful)", () => {
     const home = join(root, "home4");
     const shadowDir = join(root, "shadow");
