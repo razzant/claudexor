@@ -71,7 +71,8 @@ exemptions):
   embedder to retry. Caller schemas may omit `$schema` (draft-07, retained for
   compatibility) or declare draft-07 / draft 2020-12 explicitly; any other
   dialect is refused at preflight with `unsupported_schema_dialect`. Local
-  JSON Pointer `$ref`s (`#/...`) are accepted and inlined into the provider
+  JSON Pointer `$ref`s (`#/...`) to object-schema targets are accepted and
+  inlined into the provider
   transport copy; external, cyclic, dynamic/recursive, and nested-`$id`
   references, `$ref` siblings, `unevaluatedItems`, and non-equivalent
   `unevaluatedProperties` shapes are refused at preflight with the typed
