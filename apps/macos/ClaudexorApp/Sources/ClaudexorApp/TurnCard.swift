@@ -51,12 +51,13 @@ struct TurnCard: View {
                 // not lay out unbounded on the main thread.
                 Text(turn.prompt.count > 8_000 ? String(turn.prompt.prefix(8_000)) + "…" : turn.prompt)
                     .font(.body)
-                    // Owner-tuned bubble (round 4): the solid-accent version out-
-                    // shouted the assistant's answer, so the user bubble is a QUIET
-                    // faintly-tinted fill with PRIMARY text (ChatGPT/Claude-desktop
-                    // convention; HIG reserves accent for interactive elements).
-                    // No stroke; identity = right alignment + fill. The final
-                    // answer bubble stays the loudest element in the feed.
+                    // D-12 (owner dogfood): the user bubble is a clearly accent-
+                    // TINTED steel-blue fill with PRIMARY text — the sender/receiver
+                    // convention (tinted sender vs the assistant's NEUTRAL answer
+                    // bubble). Not a saturated accent slab: that outshouted the
+                    // answer and broke light-theme contrast. No stroke; identity =
+                    // right alignment + the blue tint. The final answer bubble
+                    // stays the loudest element in the feed.
                     .foregroundStyle(.primary)
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
@@ -64,7 +65,7 @@ struct TurnCard: View {
                     // D-12: calibrated translucency over the ambient backdrop — solid
                     // under Reduce Transparency.
                     .background(
-                        Theme.bubbleUser.opacity(reduceTransparency ? 1 : Theme.bubbleTranslucency),
+                        Theme.bubbleUser.opacity(Theme.bubbleFillOpacity(reduceTransparency: reduceTransparency)),
                         in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
             }
             assistantSection
@@ -199,7 +200,7 @@ struct TurnCard: View {
             // translucency over the frosted card material — solid under Reduce
             // Transparency so the answer's contrast is never traded away.
             .background(
-                Theme.surfaceRaisedHi.opacity(reduceTransparency ? 1 : Theme.bubbleTranslucency),
+                Theme.surfaceRaisedHi.opacity(Theme.bubbleFillOpacity(reduceTransparency: reduceTransparency)),
                 in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             .overlay(alignment: .leading) {
                 UnevenRoundedRectangle(

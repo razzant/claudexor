@@ -540,21 +540,34 @@ frequency and volume are. The contracts:
     and the choice persists through the thread DTO, never local-only UI state.
   - **Conversation (a message feed; code solid):** each turn is a right-aligned
     accent USER BUBBLE over the assistant's frosted card (Chat-V2, F2.5). The
-    user bubble is the QUIET `Theme.bubbleUser` fill (a faintly accent-tinted
-    raised surface, owner round-4) with the PRIMARY label color, continuous
-    `Radius.bubble` corners and NO stroke — identity comes from right alignment
-    + fill. Never a saturated accent block (it outshouted the answer). Both
-    conversation bubbles — the user bubble and the assistant's final-answer
-    `surfaceRaisedHi` bubble — carry a CALIBRATED translucency (D-12):
-    `Theme.bubbleTranslucency` (~0.92 of the solid color) so the ambient glow
-    reads faintly through them and they belong to the same frosted-material
-    family as the cards, WITHOUT the old "translucent wash" that killed light-
-    theme contrast (0.92 is barely off solid; primary/near-primary text stays
-    WCAG-legible in both themes). The translucency lives ONLY at the two bubble
-    call sites and is GATED by `accessibilityReduceTransparency`, which restores
-    a fully SOLID fill — exactly like `CardSurfaceModifier`'s fallback; the
-    tokens themselves stay solid everywhere else. The final answer bubble
-    stays the loudest element in the feed. The assistant stays a neutral
+    user bubble and the assistant's answer bubble MUST differ by HUE, not just
+    by alignment (D-12, owner dogfood — the earlier near-neutral pair read
+    "almost identical"). The user bubble is the accent-TINTED steel-blue
+    `Theme.bubbleUser` fill (`dark (0.22, 0.28, 0.42)` / `light (0.80, 0.86,
+    0.98)`) with the PRIMARY label color, continuous `Radius.bubble` corners and
+    NO stroke — identity comes from right alignment + the blue tint (the
+    iMessage/Claude-desktop sender-vs-receiver convention). Never a saturated
+    accent block with white text: that outshouted the answer AND broke
+    light-theme contrast. The assistant's final-answer bubble stays the NEUTRAL
+    graphite `surfaceRaisedHi` — the visible hue gap between the two is the
+    differentiator (`BubbleTokenTests` pins their sRGB separation and the user
+    bubble's blue-lead in both themes). **Calibrated translucency + AA guarantee:**
+    both bubbles carry `Theme.bubbleTranslucency` (`0.82` — 18% backdrop bleed,
+    PERCEPTIBLE where the old 0.92 read solid) on the FILL/BACKGROUND only, never
+    the text (which stays fully opaque). Because a translucent fill sits over a
+    variable frosted backdrop, the tints are chosen so the effective worst-case
+    contrast of the primary label still clears WCAG AA (≥4.5:1) in BOTH themes —
+    computed at the nominal frost AND the pessimistic full-desktop-bleed corner:
+    dark user 8.8 nominal / 4.6 worst, dark answer 9.4 / 4.9; light user 15.8 /
+    10.0, light answer 19.4 / 12.8. (This is why a FULLY-translucent low-alpha
+    fill is rejected — the DESIGN_SYSTEM's original light-theme worry: 0.82 keeps
+    enough of the tint to stay AA-safe while still reading as translucent.) The
+    translucency lives ONLY at the two bubble call sites via
+    `Theme.bubbleFillOpacity(reduceTransparency:)`, the ONE owner of the fallback:
+    under `accessibilityReduceTransparency` it restores a fully SOLID fill —
+    exactly like `CardSurfaceModifier`'s fallback; the tokens themselves stay
+    solid everywhere else. The final answer bubble stays the loudest element in
+    the feed. The assistant stays a neutral
     frosted `cardSurface` with one subtle accent hairline (`accent.opacity(0.22)`)
     so it belongs to the same family. Then the assistant reads top-down: the
     FINAL ANSWER bubble (loudest element — solid `surfaceRaisedHi` inset, 2 pt

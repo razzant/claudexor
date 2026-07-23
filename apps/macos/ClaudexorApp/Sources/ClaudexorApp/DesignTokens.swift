@@ -44,23 +44,40 @@ enum Theme {
     static let surfaceRaised = Color(dark: (0.205, 0.216, 0.240), light: (1.0, 1.0, 1.0))
     static let surfaceRaisedHi = Color(dark: (0.250, 0.264, 0.294), light: (0.965, 0.967, 0.974))
     static let surfaceCode = Color(dark: (0.060, 0.064, 0.076), light: (0.968, 0.969, 0.976))
-    /// The USER message bubble: a QUIET, faintly accent-tinted raised fill read
-    /// with the primary label color — the ChatGPT/Claude-desktop convention for
-    /// content-heavy prompts. Identity comes from right-alignment + this fill;
-    /// the ASSISTANT's final answer stays the loudest element in the feed
-    /// (HIG: accent is for interactive elements, not text slabs).
-    static let bubbleUser = Color(dark: (0.235, 0.252, 0.298), light: (0.878, 0.898, 0.938))
+    /// The USER message bubble: a clearly accent-tinted STEEL-BLUE raised fill
+    /// read with the primary label color (D-12, owner dogfood). Its hue is the
+    /// visible differentiator from the assistant's NEUTRAL-graphite answer
+    /// bubble (`surfaceRaisedHi`) — the iMessage/Claude-desktop convention: the
+    /// sender bubble is tinted, the receiver is neutral, and right-alignment is
+    /// the non-color cue. It is tinted toward `brand/accent` but NOT a saturated
+    /// accent slab with white text (HIG: accent is for interactive elements, and
+    /// a saturated fill outshouted the answer + broke light-theme contrast) —
+    /// the primary label color stays WCAG-legible over it in both themes. The
+    /// blue channel is well clear of the answer's neutral so the two never read
+    /// "almost identical" (the pre-D-12 defect).
+    static let bubbleUser = Color(dark: (0.22, 0.28, 0.42), light: (0.80, 0.86, 0.98))
     /// D-12 calibrated translucency for the conversation bubbles (user bubble +
     /// the assistant's final-answer `surfaceRaisedHi` bubble). The fills sit at
-    /// this fraction of their solid color OVER the frosted card material, so the
-    /// ambient glow reads faintly through them and they belong to the same
-    /// frosted-material family as the cards — WITHOUT the old "translucent wash"
-    /// that killed contrast (0.92 is barely off solid, both themes stay WCAG-legible
-    /// with their primary/near-primary text). Applied ONLY at the two bubble call
-    /// sites, gated by `accessibilityReduceTransparency` (which restores a fully
-    /// SOLID fill), exactly like `CardSurfaceModifier`'s fallback — never baked
-    /// into the token, so every other `bubbleUser`/`surfaceRaisedHi` use stays solid.
-    static let bubbleTranslucency: Double = 0.92
+    /// this fraction of their solid color OVER the frosted backdrop, so the
+    /// ambient glow reads visibly through the BACKGROUND (never the text) and
+    /// they belong to the same frosted-material family as the cards. 0.82 (18%
+    /// backdrop bleed) is perceptible — the earlier 0.92 read as solid — while
+    /// the tuned tints keep the primary label color at WCAG AA (≥4.5:1) over the
+    /// effective fill in BOTH themes, even in the pessimistic bright-desktop
+    /// bleed corner (verified: BubbleTokenTests / DESIGN_SYSTEM §4). Applied ONLY
+    /// at the two bubble call sites via `bubbleFillOpacity(reduceTransparency:)`,
+    /// which restores a fully SOLID fill under Reduce Transparency exactly like
+    /// `CardSurfaceModifier`'s fallback — never baked into the token, so every
+    /// other `bubbleUser`/`surfaceRaisedHi` use stays solid.
+    static let bubbleTranslucency: Double = 0.82
+
+    /// The fill opacity for the two conversation bubbles (D-12): the calibrated
+    /// translucency normally, a fully SOLID `1` under Reduce Transparency. ONE
+    /// owner of the fallback rule so the user bubble and the answer bubble can
+    /// never drift apart (and it is unit-testable without a view host).
+    static func bubbleFillOpacity(reduceTransparency: Bool) -> Double {
+        reduceTransparency ? 1 : bubbleTranslucency
+    }
     static let separator = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.14)
     static let hairline = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.08)
     /// Card border — a touch stronger than separator for crisp card edges on the glow.
