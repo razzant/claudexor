@@ -2624,7 +2624,7 @@ export class Orchestrator {
     const diff = await wsm.diff(envelope);
     // D-16: un-nest the {work_report, output} envelope so answer.md persists the
     // OUTPUT (never the envelope) and the WorkReport folds into work_state.
-    const unwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", workReportMode, {
+    const unwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", workReportMode, {
       sideToolReport: telemetry.sideToolWorkReport ?? undefined,
     });
     const answerText = unwrapped.deliverable.trim().length > 0 ? unwrapped.deliverable : undefined;
@@ -5830,7 +5830,7 @@ export class Orchestrator {
     }
     // D-16: unwrap the envelope and require PLAN TEXT — the planner outlier
     // (no-error ⇒ delivered) is fixed: a plan with no text is not delivered.
-    const planUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", planWorkMode, {
+    const planUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", planWorkMode, {
       sideToolReport: telemetry.sideToolWorkReport ?? undefined,
     });
     const planText = planUnwrapped.deliverable.trim();
@@ -6945,7 +6945,7 @@ export class Orchestrator {
       }
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
       // D-16: un-nest the {work_report, output} envelope; the OUTPUT is the report.
-      const roUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", readonlyWorkMode, {
+      const roUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", readonlyWorkMode, {
         sideToolReport: telemetry.sideToolWorkReport ?? undefined,
       });
       const report = redactSecrets(roUnwrapped.deliverable);

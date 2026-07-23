@@ -7,6 +7,17 @@
 export class AnswerAssembly {
   private readonly parts: string[] = [];
   private finalText?: string;
+  /**
+   * MACHINE-truth final, decoupled from the DISPLAY final (codex #19816 /
+   * QA-009). A codex constrained WorkReport route pre-unwraps its final
+   * message's DISPLAY text to the `output` (so the answer bubble + the app's
+   * twin-removal see the unwrapped output, not raw JSON) and carries the raw
+   * `{work_report, output}` envelope on `payload.work_report_envelope`. The
+   * orchestrator un-nests machine truth via `machineText()`, so the display
+   * unwrap never breaks the envelope parse; adapters that leave the raw envelope
+   * IN the final text (claude) never set this, so `machineText()` === `text()`.
+   */
+  private machineFinalText?: string;
 
   /** Feed one already-sanitized harness event; non-answer events are ignored. */
   observe(ev: {
@@ -26,6 +37,9 @@ export class AnswerAssembly {
       // kept VERBATIM (the documented contract) — no trimming.
       if (ev.text.trim().length === 0) return;
       this.finalText = ev.text;
+      // The raw envelope the adapter split off the display text, when present.
+      const raw = ev.payload?.["work_report_envelope"];
+      this.machineFinalText = typeof raw === "string" ? raw : undefined;
     } else {
       pushUniqueText(this.parts, ev.text);
     }
@@ -36,9 +50,17 @@ export class AnswerAssembly {
     return this.finalText !== undefined;
   }
 
-  /** The assembled answer: the typed final verbatim, else joined narration. */
+  /** The assembled answer for DISPLAY: the typed final verbatim, else joined
+   * narration. For codex constrained routes this is the UNWRAPPED output. */
   text(): string {
     return this.finalText ?? this.parts.join("\n").trim();
+  }
+
+  /** The assembled answer for MACHINE consumption (the WorkReport un-nest): the
+   * raw envelope when the adapter pre-unwrapped the display copy, else identical
+   * to `text()`. The orchestrator passes THIS to `unwrapWorkReportEnvelope`. */
+  machineText(): string {
+    return this.machineFinalText ?? this.text();
   }
 }
 

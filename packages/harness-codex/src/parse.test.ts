@@ -361,9 +361,10 @@ describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
     expect(state.lastAgentMessage).toContain("work_report");
   });
 
-  it("finalizes the LAST envelope message RAW on turn.completed (orchestrator unwrap unchanged)", () => {
+  it("QA-009: the FINAL string-output envelope displays UNWRAPPED, carrying the raw envelope on a typed field", () => {
     const state: CodexParseState = { envelopeActive: true };
-    const finalEnvelope = ENVELOPE("Ask — read-only; Plan — planning; Agent — edits.");
+    const finalOutput = "Ask — read-only; Plan — planning; Agent — edits.";
+    const finalEnvelope = ENVELOPE(finalOutput);
     const events = [
       {
         type: "item.completed",
@@ -373,14 +374,36 @@ describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
       { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
     ].flatMap((o) => parseCodexEvent(o, "s1", state) ?? []);
     const final = events.find((e) => e.type === "message" && e.final === true);
-    // The final message carries the RAW envelope verbatim (orchestrator unwraps it).
-    expect(final?.text).toBe(finalEnvelope);
+    // DISPLAY truth: the final's text is the UNWRAPPED output — identical to the
+    // intermediate visible copy, so the reducer's exact-identity twin-removal
+    // matches and Activity never duplicates the answer bubble (QA-009).
+    expect(final?.text).toBe(finalOutput);
+    expect(final?.text).not.toContain("work_report");
+    // MACHINE truth: the RAW envelope rides a typed payload field for the
+    // orchestrator's downstream unwrap (no raw JSON in the visible stream).
+    expect(final?.payload?.["work_report_envelope"]).toBe(finalEnvelope);
     expect(final?.payload?.["final_source"]).toBe("last_agent_message");
-    // No VISIBLE intermediate message leaked the raw envelope: the mid-run one
-    // was unwrapped to its output, and the pre-final one likewise.
+    // No VISIBLE intermediate message leaked the raw envelope.
     const visible = events.filter((e) => e.type === "message" && e.final !== true);
     for (const v of visible) expect(v.text).not.toContain("work_report");
     expect(visible.map((v) => v.text)).toContain("mid-run narration");
+  });
+
+  it("keeps the FINAL RAW when the envelope output is non-string (no visible twin; orchestrator unwraps answer text)", () => {
+    const state: CodexParseState = { envelopeActive: true };
+    const finalEnvelope = ENVELOPE({ table: [1, 2] });
+    const events = [
+      { type: "item.completed", item: { type: "agent_message", text: finalEnvelope } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    ].flatMap((o) => parseCodexEvent(o, "s1", state) ?? []);
+    const final = events.find((e) => e.type === "message" && e.final === true);
+    // A structured output has no plain-string display and its intermediate copy
+    // was SUPPRESSED (no visible twin), so the final keeps the raw envelope as its
+    // text and the orchestrator un-nests `answer.text()` exactly as before — no
+    // typed envelope field is attached (the answer text IS the envelope).
+    expect(final?.text).toBe(finalEnvelope);
+    expect(final?.payload?.["work_report_envelope"]).toBeUndefined();
+    expect(final?.payload?.["final_source"]).toBe("last_agent_message");
   });
 
   it("passes a plain (non-envelope) message through untouched even when envelope is active", () => {

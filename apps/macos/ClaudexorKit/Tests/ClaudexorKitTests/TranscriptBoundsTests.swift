@@ -288,6 +288,34 @@ import Testing
         #expect(r.textChars == 0)
     }
 
+    /// QA-009 in the DEFAULT constrained WorkReport route: codex unwraps the
+    /// envelope's `output` for BOTH the intermediate visible message and the typed
+    /// final (the raw `{work_report, output}` envelope rides a typed payload field
+    /// for the orchestrator, never the visible `text`). The final's display text
+    /// therefore equals the intermediate's, so the exact-identity twin-removal
+    /// leaves Activity with no dim copy of the answer bubble — the regression the
+    /// raw-final form reintroduced.
+    @Test func constrainedEnvelopeFinalRemovesTheUnwrappedTwin() {
+        var r = TranscriptReducer()
+        let unwrapped = "Ask — read-only; Plan — planning; Agent — edits."
+        r.apply(message(1, unwrapped))   // codex intermediate agent message, unwrapped
+        r.apply(BusEnvelope(seq: 2, kind: "harness.event", event: .object([
+            "type": .string("harness.event"),
+            "payload": .object([
+                "type": .string("message"),
+                "text": .string(unwrapped),   // DISPLAY truth: the unwrapped output
+                "final": .bool(true),
+                "final_source": .string("last_agent_message"),
+                // MACHINE truth carried alongside; the reducer ignores it and
+                // correlates on the visible text.
+                "work_report_envelope": .string(
+                    "{\"work_report\":{\"state\":\"completed\",\"required_inputs\":[]},\"output\":\"\(unwrapped)\"}")
+            ])
+        ])))
+        #expect(r.blocks.isEmpty)
+        #expect(r.textChars == 0)
+    }
+
     /// A delta-streamed then finalized message (Claude/Cursor result shape): the
     /// reconciled streamed block is the twin and is removed on the identical
     /// final; accounting stays consistent.

@@ -86,6 +86,49 @@ import ClaudexorKit
         let root = makeRoot()   // never created
         #expect(ExternalArtifactHandoff(root: root).sweepStale() == 0)
     }
+
+    @Test func stageCreatesTheTrackedRootPrivate() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try ExternalArtifactHandoff(root: root).stage(data: Data("x".utf8), suggestedName: "a.txt")
+        let attrs = try FileManager.default.attributesOfItem(atPath: root.path)
+        #expect((attrs[.type] as? FileAttributeType) == .typeDirectory)
+        #expect((attrs[.posixPermissions] as? Int) == 0o700)
+    }
+
+    @Test func stageRefusesASymlinkedRoot() throws {
+        let base = makeRoot()
+        defer { try? FileManager.default.removeItem(at: base) }
+        // The "attacker" destination the planted symlink points at.
+        let target = base.appendingPathComponent("victim", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let linkedRoot = base.appendingPathComponent("claudexor-open", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkedRoot, withDestinationURL: target)
+
+        let handoff = ExternalArtifactHandoff(root: linkedRoot)
+        #expect(throws: ExternalArtifactHandoff.HandoffError.self) {
+            _ = try handoff.stage(data: Data("secret".utf8), suggestedName: "a.txt")
+        }
+        // Nothing was written THROUGH the symlink into the target dir.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
+    }
+
+    @Test func sweepFailsClosedOnASymlinkedRoot() throws {
+        let base = makeRoot()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let target = base.appendingPathComponent("victim", isDirectory: true)
+        // A stale UUID-named dir a followed symlink would otherwise reclaim.
+        let bait = target.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: bait, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-30 * 24 * 60 * 60)], ofItemAtPath: bait.path)
+        let linkedRoot = base.appendingPathComponent("claudexor-open", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkedRoot, withDestinationURL: target)
+
+        let reclaimed = ExternalArtifactHandoff(root: linkedRoot).sweepStale(now: Date(), maxAge: 24 * 60 * 60)
+        #expect(reclaimed == 0)
+        #expect(FileManager.default.fileExists(atPath: bait.path))   // never followed
+    }
 }
 
 /// QA-067: a server 409 sensitive-file refusal renders as its typed reason, not a

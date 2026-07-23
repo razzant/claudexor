@@ -32,8 +32,13 @@ writeFileSync(
 );
 chmodSync(stubBin, 0o755);
 process.env["CLAUDEXOR_CODEX_BIN"] = stubBin;
-const { applyHarnessSettingsPatches, assertSettingsPatchValid } =
-  await import("./settings-service.js");
+const {
+  applyHarnessSettingsPatches,
+  assertSettingsPatchValid,
+  assertRoutingGoalTiersConsistent,
+  commitSettingsUpdate,
+} = await import("./settings-service.js");
+const { loadConfig, updateGlobalConfig } = await import("@claudexor/config");
 
 /** The daemon POST /settings validation core, tested offline
  * against the codex manifest truth source (static known_models). */
@@ -129,6 +134,18 @@ describe("assertSettingsPatchValid", () => {
     ).resolves.toBeUndefined();
   }, 30_000); // codex discover() spawns the vendor CLI to validate the tier route
 
+  it("assertRoutingGoalTiersConsistent discriminates the unroutable quality/zero-tier combo", () => {
+    const oneTier = ControlSettingsUpdateRequest.parse({
+      qualityTiers: { implement: [[{ harness: "codex", model: "gpt-5.5", effort: "high" }]] },
+    }).qualityTiers!;
+    const emptyTiers = ControlSettingsUpdateRequest.parse({}).qualityTiers ?? {};
+    expect(() => assertRoutingGoalTiersConsistent("quality", emptyTiers)).toThrow(
+      /quality routing requires at least one configured quality tier/,
+    );
+    expect(() => assertRoutingGoalTiersConsistent("quality", oneTier)).not.toThrow();
+    expect(() => assertRoutingGoalTiersConsistent("auto", emptyTiers)).not.toThrow();
+  });
+
   it("rejects the retired Active-account patch key at the strict schema (F1: Active removed)", () => {
     // The Active account concept is gone: the per-harness patch no longer
     // accepts activeProfileId, so a strict parse 400s rather than persisting it.
@@ -185,5 +202,87 @@ describe("profileLimitAction (INV-135 auto-switch toggle)", () => {
       }).harnesses!["codex"]!,
     });
     expect(untouched["codex"]?.profile_policy.limit_action).toBe("rotate");
+  });
+});
+
+describe("commitSettingsUpdate atomic validate+write (A-1 TOCTOU race)", () => {
+  const oneTierPatch = () =>
+    ControlSettingsUpdateRequest.parse({
+      qualityTiers: { implement: [[{ harness: "codex", model: "gpt-5.5", effort: "high" }]] },
+    });
+
+  /** Run `fn` against a FRESH isolated config dir seeded with `seedRouting`. */
+  async function withSeededConfig(
+    seedRouting: { goal: "auto" | "economy" | "quality"; qualityTiers: unknown },
+    fn: (root: string) => Promise<void>,
+  ): Promise<void> {
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    const dir = reapMk(join(tmpdir(), "claudexor-settings-race-"));
+    process.env.CLAUDEXOR_CONFIG_DIR = dir;
+    try {
+      updateGlobalConfig((cfg) => ({
+        ...cfg,
+        routing: {
+          ...cfg.routing,
+          goal: seedRouting.goal,
+          quality_tiers: seedRouting.qualityTiers as typeof cfg.routing.quality_tiers,
+        },
+      }));
+      // The repo root only supplies (absent) project config; global config lives
+      // in the isolated dir above.
+      await fn(dir);
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    }
+  }
+
+  it("two concurrent writes can never persist quality-with-zero-tiers", async () => {
+    await withSeededConfig(
+      { goal: "auto", qualityTiers: oneTierPatch().qualityTiers },
+      async (root) => {
+        // A flips the goal to quality (valid against the seed: the tier is still
+        // present). B clears the tiers (valid against the seed: the goal is still
+        // auto). Fired together, B validates the STALE auto snapshot but commits
+        // AFTER A — the exact A-1 interleaving. Before the fix this persisted
+        // quality-with-zero-tiers; the under-lock re-validation now refuses it.
+        const results = await Promise.allSettled([
+          commitSettingsUpdate(
+            root,
+            ControlSettingsUpdateRequest.parse({ routingGoal: "quality" }),
+          ),
+          commitSettingsUpdate(root, ControlSettingsUpdateRequest.parse({ qualityTiers: {} })),
+        ]);
+        const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+        // Exactly one writer is refused — the one whose commit would have left the
+        // invalid final combination — with the typed config_error.
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0]!.reason).toMatchObject({ status: 400, code: "config_error" });
+        // The persisted config is ALWAYS a valid combination.
+        const final = loadConfig(root).global.routing;
+        const tierCount = Object.values(final.quality_tiers).reduce(
+          (n, list) => n + (list?.length ?? 0),
+          0,
+        );
+        expect(final.goal === "quality" && tierCount === 0).toBe(false);
+      },
+    );
+  });
+
+  it("a lone valid write still persists (fix does not over-refuse)", async () => {
+    // Seed already carries a tier, so flipping the goal to quality is valid and
+    // must persist — the atomic re-check must not reject a legitimate write.
+    await withSeededConfig(
+      { goal: "auto", qualityTiers: oneTierPatch().qualityTiers },
+      async (root) => {
+        await commitSettingsUpdate(
+          root,
+          ControlSettingsUpdateRequest.parse({ routingGoal: "quality" }),
+        );
+        const final = loadConfig(root).global.routing;
+        expect(final.goal).toBe("quality");
+        expect(Object.keys(final.quality_tiers)).toContain("implement");
+      },
+    );
   });
 });

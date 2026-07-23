@@ -180,24 +180,43 @@ function git(args) {
   return execFileSync("git", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
-/** Enumerate changed files (base..candidate), marking deletions. */
-function changedFiles(base, candidate) {
-  const out = git(["diff", "--name-status", `${base}..${candidate}`]).trim();
-  if (!out) return [];
+/**
+ * Parse the NUL-delimited records of `git diff -z --name-status`. `-z` makes git
+ * NUL-terminate every field (status AND each path get their OWN NUL — verified:
+ * `A\0path\0`, not `A\tpath\0`) and disables path munging, so a path containing
+ * a space, tab, newline, quote, or non-ASCII byte is preserved VERBATIM. The old
+ * newline-split + tab-split parse silently mangled every such path (dropped or
+ * misread the changed file, and would have split a legitimate tab-in-path). NUL
+ * cannot occur in a POSIX filename, so it is the only safe delimiter. Field
+ * stream (status is always a standalone token — a short A/M/D/T/R###/C### code):
+ *   `<status>\0<path>\0`            A/M/D/T (add/modify/delete/typechange)
+ *   `<Rxxx|Cxxx>\0<old>\0<new>\0`   rename/copy (the NEW path holds the bytes)
+ * Parsing is POSITIONAL: status is only ever read at the record boundary, so a
+ * path that itself begins with "R"/"C" (consumed at an odd position) is never
+ * mistaken for a status.
+ */
+export function parseNameStatusZ(raw) {
+  const fields = raw.split("\0").filter((f) => f !== ""); // drop the trailing NUL
   const files = [];
-  for (const line of out.split("\n")) {
-    const parts = line.split("\t");
-    const status = parts[0];
+  for (let i = 0; i < fields.length;) {
+    const status = fields[i];
     if (status.startsWith("R") || status.startsWith("C")) {
-      // rename/copy: the new path (last field) carries the current bytes.
-      files.push({ path: parts[parts.length - 1], deleted: false });
-    } else if (status === "D") {
-      files.push({ path: parts[1], deleted: true });
+      // rename/copy carries old + new; the NEW path (2nd) has the current bytes.
+      const newPath = fields[i + 2];
+      if (newPath !== undefined) files.push({ path: newPath, deleted: false });
+      i += 3;
     } else {
-      files.push({ path: parts[1], deleted: false });
+      const path = fields[i + 1];
+      if (path !== undefined) files.push({ path, deleted: status === "D" });
+      i += 2;
     }
   }
   return files;
+}
+
+/** Enumerate changed files (base..candidate), marking deletions. */
+function changedFiles(base, candidate) {
+  return parseNameStatusZ(git(["diff", "-z", "--name-status", `${base}..${candidate}`]));
 }
 
 function main() {
@@ -255,6 +274,45 @@ function main() {
   process.exit(report.ok ? 0 : 1);
 }
 
+/**
+ * Embedded negative control (staged-field-check pattern): prove the `-z` parser
+ * still discriminates the path classes that the old newline/tab split mangled,
+ * BEFORE trusting any real verdict. Runs on every invocation.
+ */
+function selfTest() {
+  // Exact `git diff -z --name-status` framing: NUL after status and after each
+  // path; a rename carries two paths. Paths exercise a space, unicode, a literal
+  // TAB, and an embedded NEWLINE — every class the old line/tab split mangled. A
+  // path beginning with "R" proves the positional parse never reads it as a
+  // rename status.
+  const raw =
+    "A\0plain.txt\0" +
+    "M\0dir/café file.txt\0" +
+    "D\0old gone.txt\0" +
+    "R100\0src/before.ts\0src/after café.ts\0" +
+    "M\0has\ttab.txt\0" +
+    "A\0line\none.txt\0" +
+    "M\0Rocket.md\0";
+  const got = parseNameStatusZ(raw);
+  const expected = [
+    { path: "plain.txt", deleted: false },
+    { path: "dir/café file.txt", deleted: false },
+    { path: "old gone.txt", deleted: true },
+    { path: "src/after café.ts", deleted: false },
+    { path: "has\ttab.txt", deleted: false },
+    { path: "line\none.txt", deleted: false },
+    { path: "Rocket.md", deleted: false },
+  ];
+  if (JSON.stringify(got) !== JSON.stringify(expected)) {
+    console.error(
+      "review-coverage-check SELF-TEST FAILED: the -z name-status parser no longer " +
+        `handles space/unicode/tab/newline/rename paths.\n  expected: ${JSON.stringify(expected)}\n  got:      ${JSON.stringify(got)}`,
+    );
+    process.exit(2);
+  }
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
+  selfTest();
   main();
 }

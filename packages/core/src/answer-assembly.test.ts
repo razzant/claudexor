@@ -60,4 +60,31 @@ describe("AnswerAssembly (F2.5 W-C1 typed finality)", () => {
     a.observe({ type: "message", text: "real answer" });
     expect(a.text()).toBe("real answer");
   });
+
+  it("QA-009: machineText() yields the raw envelope while text() stays the unwrapped display", () => {
+    // codex constrained route: the final message DISPLAY text is the unwrapped
+    // output; the raw `{work_report, output}` envelope rides a typed payload
+    // field. text() is display truth (answer bubble / twin-removal); machineText()
+    // is the envelope the orchestrator un-nests.
+    const raw = JSON.stringify({
+      work_report: { state: "completed", required_inputs: [] },
+      output: "the unwrapped answer",
+    });
+    const a = new AnswerAssembly();
+    a.observe({
+      type: "message",
+      text: "the unwrapped answer",
+      final: true,
+      payload: { final_source: "last_agent_message", work_report_envelope: raw },
+    });
+    expect(a.text()).toBe("the unwrapped answer");
+    expect(a.machineText()).toBe(raw);
+  });
+
+  it("machineText() falls back to text() when no raw envelope is attached (claude/plain finals)", () => {
+    const a = new AnswerAssembly();
+    a.observe({ type: "message", text: "plain final", final: true });
+    expect(a.machineText()).toBe("plain final");
+    expect(a.machineText()).toBe(a.text());
+  });
 });

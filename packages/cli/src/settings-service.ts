@@ -16,7 +16,7 @@ import type {
 } from "@claudexor/schema";
 import { GlobalConfig } from "@claudexor/schema";
 import { validateModel } from "@claudexor/core";
-import { loadConfig } from "@claudexor/config";
+import { loadConfig, updateGlobalConfig } from "@claudexor/config";
 import { buildRegistry, harnessModels } from "./registry.js";
 
 export function settingsSnapshot(repoRoot: string) {
@@ -86,6 +86,22 @@ function configError(message: string): never {
  * preflight), so persisting `goal: quality` with zero tiers is unroutable. */
 function totalQualityTierCount(tiers: QualityTierSet): number {
   return Object.values(tiers).reduce((sum, list) => sum + (list?.length ?? 0), 0);
+}
+
+/**
+ * The ONE cross-field routing invariant (D-9/#22): `goal: quality` with zero
+ * configured quality tiers across every intent is unroutable — the router
+ * refuses EVERY quality run at preflight. Extracted so BOTH the pre-lock
+ * fast-fail (assertSettingsPatchValid) and the AUTHORITATIVE re-check under the
+ * config lock (commitSettingsUpdate's mutator) enforce the exact same rule.
+ * Pure + synchronous so it can run inside the locked read-mutate-write cycle.
+ */
+export function assertRoutingGoalTiersConsistent(goal: RoutingGoal, tiers: QualityTierSet): void {
+  if (goal === "quality" && totalQualityTierCount(tiers) === 0) {
+    configError(
+      "quality routing requires at least one configured quality tier; configure a tier (via `claudexor settings`) or choose auto/economy routing — nothing was saved",
+    );
+  }
 }
 
 /**
@@ -197,12 +213,90 @@ export async function assertSettingsPatchValid(
   if (current) {
     const effectiveGoal = p.routingGoal ?? current.goal;
     const effectiveTiers = p.qualityTiers ?? current.qualityTiers;
-    if (effectiveGoal === "quality" && totalQualityTierCount(effectiveTiers) === 0) {
-      configError(
-        "quality routing requires at least one configured quality tier; configure a tier (via `claudexor settings`) or choose auto/economy routing — nothing was saved",
-      );
-    }
+    assertRoutingGoalTiersConsistent(effectiveGoal, effectiveTiers);
   }
+}
+
+const nullableSettingName = (
+  value: string | null | undefined,
+  current: string | null,
+): string | null => {
+  if (value === undefined) return current;
+  if (value === null) return null;
+  return value;
+};
+
+/**
+ * Merge a validated settings patch into the snake_case GlobalConfig shape. Pure
+ * fold of patch-over-current — no I/O, no validation — so the ONLY authority
+ * that decides what gets persisted is `commitSettingsUpdate` under the lock.
+ * `qualityTiers` REPLACES wholesale (a `{}` patch clears every tier).
+ */
+export function mergeSettingsPatch(
+  cfg: GlobalConfigT,
+  p: ControlSettingsUpdateRequest,
+): GlobalConfigT {
+  return {
+    ...cfg,
+    interaction_timeout_ms: p.interactionTimeoutMs ?? cfg.interaction_timeout_ms,
+    routing: {
+      ...cfg.routing,
+      primary_harness: nullableSettingName(p.primaryHarness, cfg.routing.primary_harness),
+      env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
+      eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
+      auth_preference: p.authPreference ?? cfg.routing.auth_preference,
+      goal: p.routingGoal ?? cfg.routing.goal,
+      paid_fallback: p.paidFallback ?? cfg.routing.paid_fallback,
+      quality_tiers: p.qualityTiers ?? cfg.routing.quality_tiers,
+    },
+    budget: {
+      ...cfg.budget,
+      paid_budget_per_run: p.paidBudgetPerRun ?? cfg.budget.paid_budget_per_run,
+    },
+    harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
+  };
+}
+
+/**
+ * The daemon's settings-write OWNER: the COMPLETE read → validate → write
+ * transaction for POST /settings, made atomic (A-1 race fix).
+ *
+ * The bug this closes: `assertSettingsPatchValid` used to validate against a
+ * snapshot read BEFORE the write, and the write committed under a SEPARATE
+ * lock. Two concurrent requests could each validate a stale combination and
+ * commit an invalid FINAL one (A sets goal=quality; B — validated while the
+ * goal was still auto — clears qualityTiers; B commits after A ⇒ quality with
+ * zero tiers persists, defeating the D-9 fence).
+ *
+ * The fix serializes the whole transaction on the ONE config lock
+ * (`updateGlobalConfig` holds it across the read-mutate-write): the pre-lock
+ * `assertSettingsPatchValid` still runs the async patch-local truth checks
+ * (harness ids, model, effort — these never race) and a fast-fail, but the
+ * cross-field goal/tiers invariant is RE-CHECKED against the EXACT merged
+ * config under the lock, so the invalid final combination can never be
+ * persisted regardless of interleaving.
+ */
+export async function commitSettingsUpdate(
+  repoRoot: string,
+  p: ControlSettingsUpdateRequest,
+): Promise<void> {
+  const currentRouting = loadConfig(repoRoot).global.routing;
+  // Pre-lock: the patch-local truth (harness ids, models, effort ladders) and a
+  // fast-fail on the goal/tiers invariant against the current snapshot.
+  await assertSettingsPatchValid(p, {
+    goal: currentRouting.goal,
+    qualityTiers: currentRouting.quality_tiers,
+  });
+  // Atomic write: the merge + the cross-field re-validation both run INSIDE the
+  // config lock against the state actually being mutated. A racing writer that
+  // committed between the pre-lock snapshot and here is seen by `cfg`, so a
+  // final quality-with-zero-tiers combination throws here (before any bytes are
+  // written) instead of silently persisting.
+  updateGlobalConfig((cfg) => {
+    const next = mergeSettingsPatch(cfg, p);
+    assertRoutingGoalTiersConsistent(next.routing.goal, next.routing.quality_tiers);
+    return next;
+  });
 }
 
 /** Merge camelCase per-harness patches into the snake_case GlobalConfig shape. */

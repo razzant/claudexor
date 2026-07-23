@@ -45,11 +45,7 @@ import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import { AuthReadinessService, normalizeReadiness } from "@claudexor/gateway";
 import { buildGateway, harnessModels } from "./registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
-import {
-  applyHarnessSettingsPatches,
-  assertSettingsPatchValid,
-  settingsSnapshot,
-} from "./settings-service.js";
+import { commitSettingsUpdate, settingsSnapshot } from "./settings-service.js";
 import { createSetupJobManager } from "./setup-jobs.js";
 import { ACTIVE_SETUP_STATES, SetupJobStore } from "./setup-job-store.js";
 import { SetupLifecycleBinding } from "./setup-lifecycle-binding.js";
@@ -530,41 +526,13 @@ export function controlServices(
     },
     updateSettings: async (patch: unknown) => {
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
-      // Validate the MERGED EFFECTIVE routing (D-9/#22 server half): the current
-      // stored goal/tiers are folded with the patch so a quality goal left with
-      // zero tiers is refused at write with a typed config_error.
-      const currentRouting = loadConfig(NO_PROJECT_ROOT).global.routing;
-      await assertSettingsPatchValid(p, {
-        goal: currentRouting.goal,
-        qualityTiers: currentRouting.quality_tiers,
-      });
-      const nullableName = (
-        value: string | null | undefined,
-        current: string | null,
-      ): string | null => {
-        if (value === undefined) return current;
-        if (value === null) return null;
-        return value;
-      };
-      updateGlobalConfig((cfg) => ({
-        ...cfg,
-        interaction_timeout_ms: p.interactionTimeoutMs ?? cfg.interaction_timeout_ms,
-        routing: {
-          ...cfg.routing,
-          primary_harness: nullableName(p.primaryHarness, cfg.routing.primary_harness),
-          env_inheritance: p.envInheritance ?? cfg.routing.env_inheritance,
-          eligible_harnesses: p.eligibleHarnesses ?? cfg.routing.eligible_harnesses,
-          auth_preference: p.authPreference ?? cfg.routing.auth_preference,
-          goal: p.routingGoal ?? cfg.routing.goal,
-          paid_fallback: p.paidFallback ?? cfg.routing.paid_fallback,
-          quality_tiers: p.qualityTiers ?? cfg.routing.quality_tiers,
-        },
-        budget: {
-          ...cfg.budget,
-          paid_budget_per_run: p.paidBudgetPerRun ?? cfg.budget.paid_budget_per_run,
-        },
-        harnesses: applyHarnessSettingsPatches(cfg.harnesses, p.harnesses),
-      }));
+      // A-1 race fix: the COMPLETE read → validate → write is one atomic
+      // transaction under the config lock (see commitSettingsUpdate). The
+      // merged-effective goal/tiers invariant (D-9/#22 server half) is
+      // re-validated against the exact state being persisted, so two concurrent
+      // settings requests can never each pass on a stale snapshot and commit an
+      // invalid final combination (quality goal with zero tiers).
+      await commitSettingsUpdate(NO_PROJECT_ROOT, p);
       invalidateDoctorCache();
       return settingsSnapshot(NO_PROJECT_ROOT);
     },

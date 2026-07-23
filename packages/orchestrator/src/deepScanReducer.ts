@@ -290,7 +290,7 @@ export async function runDeepScanReducer(
   // accepted as a clean synthesis; the caller then degrades to an honest raw
   // bundle. On an inactive-transport route the unwrap passes the report through
   // untouched (unchanged behavior for schema-free reducer harnesses).
-  const unwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", built.workReportMode, {
+  const unwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", built.workReportMode, {
     sideToolReport: telemetry.sideToolWorkReport ?? undefined,
   });
   const report = redactSecrets(unwrapped.deliverable);

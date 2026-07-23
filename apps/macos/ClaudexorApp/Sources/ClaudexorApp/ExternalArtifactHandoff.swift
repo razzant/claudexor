@@ -17,6 +17,14 @@ import Foundation
 /// UUID subdirectory, basename-only naming (no path traversal), and an atomic
 /// write (the v2.1.2 symlink-overwrite fence).
 ///
+/// Both paths first prove the shared root itself is safe (`ensureSecureRoot`):
+/// the tracked root sits in the world-writable temp hierarchy, so before a copy
+/// is written THROUGH it or children are swept FROM it, it must be a real,
+/// non-symlink directory owned by the current user (created 0700 if absent, then
+/// re-validated to close the create-time TOCTOU). A symlinked or foreign-owned
+/// root is refused — `stage` throws, `sweepStale` returns 0 — so a planted
+/// symlink can never redirect a private artifact copy or a deletion.
+///
 /// The sweep fails CLOSED: it only removes real, non-symlink directories whose
 /// name is a valid UUID directly under the canonical root and older than
 /// `maxAge`. A same-user process could in principle create a matching path, but
@@ -29,9 +37,54 @@ struct ExternalArtifactHandoff {
     let root: URL
     let fileManager: FileManager
 
+    /// A refusal to trust the shared handoff root (fails stage; fails sweep
+    /// closed). The root lives in the world-writable temp hierarchy, so before
+    /// anything writes a private artifact copy THROUGH it — or sweeps children
+    /// FROM it — it must be proven a real, non-symlink directory owned by us.
+    enum HandoffError: Error, Equatable {
+        case insecureRoot(String)
+    }
+
     init(root: URL, fileManager: FileManager = .default) {
         self.root = root
         self.fileManager = fileManager
+    }
+
+    /// Fail-closed validation of the tracked root before any stage/sweep touches
+    /// it. `$TMPDIR/claudexor-open` sits in a world-writable hierarchy, so a
+    /// planted SYMLINK there would otherwise redirect private artifact copies (or
+    /// a sweep's deletions) to an attacker-chosen directory. The root must be a
+    /// REAL directory (attributesOfItem uses lstat semantics — a symlink reports
+    /// `.typeSymbolicLink`, never its target), owned by the current user; it is
+    /// created 0700 when absent and RE-VALIDATED afterward to close the
+    /// create-time TOCTOU (createDirectory would have silently followed a symlink
+    /// planted between the check and the create).
+    private func ensureSecureRoot() throws {
+        let path = root.path
+        if let attrs = try? fileManager.attributesOfItem(atPath: path) {
+            try assertSecureRoot(attrs, path: path)
+            return
+        }
+        // Absent (or unreadable): create OUR private leaf. The intermediate temp
+        // dirs are the OS's; only this leaf is created, at 0700.
+        try fileManager.createDirectory(
+            at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try assertSecureRoot(try fileManager.attributesOfItem(atPath: path), path: path)
+    }
+
+    /// A root is trustworthy only if it is a plain directory (never a symlink)
+    /// owned by the current user.
+    private func assertSecureRoot(_ attrs: [FileAttributeKey: Any], path: String) throws {
+        let type = attrs[.type] as? FileAttributeType
+        if type == .typeSymbolicLink {
+            throw HandoffError.insecureRoot("handoff root \(path) is a symlink")
+        }
+        guard type == .typeDirectory else {
+            throw HandoffError.insecureRoot("handoff root \(path) is not a directory")
+        }
+        if let owner = attrs[.ownerAccountID] as? NSNumber, owner.uint32Value != getuid() {
+            throw HandoffError.insecureRoot("handoff root \(path) is not owned by the current user")
+        }
     }
 
     /// The standard owner: `<user temp dir>/claudexor-open`.
@@ -48,9 +101,12 @@ struct ExternalArtifactHandoff {
     func stage(data: Data, suggestedName: String) throws -> URL {
         let base = ((suggestedName as NSString).lastPathComponent as NSString).lastPathComponent
         let safeName = base.isEmpty || base == "." || base == ".." ? "artifact" : base
+        // Prove the shared root is a real, user-owned, non-symlink directory
+        // (created 0700 if absent) BEFORE writing a private copy through it — a
+        // symlinked or foreign-owned root is refused, never followed.
+        try ensureSecureRoot()
         // The tracked root is shared across copies; each copy still gets its own
         // private UUID dir so two same-basename artifacts can't overwrite.
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         let dir = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(
             at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -64,6 +120,10 @@ struct ExternalArtifactHandoff {
     /// UUID-named, non-symlink directory, or that is not yet past the age bound.
     @discardableResult
     func sweepStale(now: Date = Date(), maxAge: TimeInterval = 24 * 60 * 60) -> Int {
+        // Fail CLOSED: a symlinked / foreign-owned / non-directory root is never
+        // enumerated or swept (a planted symlink must not redirect deletions).
+        // An absent root is created and yields an empty, harmless sweep.
+        guard (try? ensureSecureRoot()) != nil else { return 0 }
         let keys: [URLResourceKey] = [
             .isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey, .creationDateKey,
         ]

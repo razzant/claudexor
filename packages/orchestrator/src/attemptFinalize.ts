@@ -226,6 +226,12 @@ function lastFencedBlock(text: string): string | null {
  * A non-active mode passes the answer through untouched. The WorkReport
  * cross-field rules (completed ⇒ no required_inputs; needs_input ⇒ ≥1) are
  * enforced HERE so a broken report is a typed contract violation.
+ *
+ * For a `constrained_json` route `answerText` is the raw `{work_report, output}`
+ * envelope (codex #19816 / QA-009: the orchestrator passes `answer.machineText()`,
+ * which yields the raw envelope even when the codex adapter pre-unwrapped the
+ * DISPLAY copy of the final message — the visible stream sees the output, the
+ * un-nest here still sees the envelope).
  */
 export function unwrapWorkReportEnvelope(
   answerText: string,

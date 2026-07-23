@@ -114,14 +114,35 @@ export function parseCodexEvent(
     // (vendor semantics — see CodexParseState). Emitted as a `final` message
     // so the engine takes it verbatim; the narration copy already streamed.
     if (state?.lastAgentMessage) {
-      out.push({
+      const raw = state.lastAgentMessage;
+      const finalEvent: HarnessEvent = {
         type: "message",
         session_id: sessionId,
         ts,
-        text: state.lastAgentMessage,
+        text: raw,
         final: true,
         payload: { final_source: "last_agent_message" },
-      });
+      };
+      // codex #19816 / QA-009: with an armed WorkReport envelope, the FINAL agent
+      // message is itself the raw `{work_report, output}` envelope. When its
+      // `output` is a plain string, emit the UNWRAPPED output as the final's
+      // DISPLAY text — so the answer bubble and the reducer's twin-removal see the
+      // SAME unwrapped text the intermediate visible copy carried (the raw-vs-
+      // unwrapped mismatch was the QA-009 twin regression) — and carry the RAW
+      // envelope on a TYPED payload field so the orchestrator's downstream unwrap
+      // still reads machine truth (display truth + machine truth, both typed, no
+      // double-unwrap). A non-string / non-envelope final keeps its raw text: its
+      // intermediate copy was suppressed (no visible twin), no envelope field is
+      // attached, and `answer.machineText()` falls back to that raw text so the
+      // orchestrator un-nests exactly as before.
+      if (state.envelopeActive) {
+        const display = detectEnvelopeOutput(raw);
+        if (typeof display === "string") {
+          finalEvent.text = display;
+          finalEvent.payload = { final_source: "last_agent_message", work_report_envelope: raw };
+        }
+      }
+      out.push(finalEvent);
       state.lastAgentMessage = undefined;
     }
     return out;
