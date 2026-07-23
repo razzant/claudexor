@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { armOrphanExit, labelStreams, spawnProcess } from "./proc.js";
+import { armOrphanExit, labelStreams, runCaptureRaw, spawnProcess } from "./proc.js";
 import { ProcessGroupService } from "./process-group.js";
 import type { ProcessIdentity, ProcessIdentityReader } from "./process-identity.js";
 
@@ -296,6 +296,47 @@ describe("spawnProcess identity-proven cancel belt", () => {
     // delayed SIGKILL fallback signalled the (now-recycled) group.
     expect(signalled).toEqual([]);
     expect(reads).toBeGreaterThan(1); // proves the belt DID attempt (and was refused)
+  });
+
+  it("runCaptureRaw signals its group only through the identity-verified handle", async () => {
+    // Round-4 #1 residue: capture children must never get a raw kill(-pid)
+    // either. With a spy service the timeout SIGKILL must ride the handle;
+    // with an unknown identity no group signal may be emitted at all.
+    const identity: ProcessIdentityReader = {
+      read: (pid): ProcessIdentity => ({
+        status: "known",
+        pid,
+        platform: "linux",
+        source: "procfs_stat",
+        startToken: "linux:capture-leader",
+        processGroupId: pid,
+      }),
+      self: () => ({ status: "missing", pid: 1, platform: "linux" }),
+    };
+    const { groups, signalled } = spyGroupService(identity);
+    // The spy service records but does not really signal, so the child ends by
+    // its own 800ms timer; the assertion is purely "which channel was used".
+    const result = await runCaptureRaw(process.execPath, ["-e", "setTimeout(() => {}, 800)"], {
+      timeoutMs: 50,
+      processGroups: groups,
+    });
+    expect(result.code).toBe(0);
+    expect(signalled.length).toBeGreaterThan(0);
+    expect(signalled.every((s) => s.signal === "SIGKILL")).toBe(true);
+
+    const unknownIdentity: ProcessIdentityReader = {
+      read: (pid) => ({ status: "unknown", pid, platform: "linux", reason: "io_error" }),
+      self: () => ({ status: "missing", pid: 1, platform: "linux" }),
+    };
+    const unknownSpy = spyGroupService(unknownIdentity);
+    const second = await runCaptureRaw(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
+      timeoutMs: 50,
+      processGroups: unknownSpy.groups,
+    });
+    // No proven handle -> no group signal; the direct child.kill fallback (an
+    // object-pinned signal that cannot hit a recycled PID) still ends the child.
+    expect(second.signal).toBe("SIGKILL");
+    expect(unknownSpy.signalled).toEqual([]);
   });
 });
 

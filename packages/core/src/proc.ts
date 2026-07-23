@@ -252,8 +252,9 @@ export async function* spawnProcess(
           : {}),
       });
     }
-    // Direct-group belt: a raw cooperative nudge + SIGKILL escalation to the
-    // immediate child group, covering the case where identity capture raced.
+    // Direct-group belt: an identity-verified cooperative nudge + SIGKILL
+    // escalation to the immediate child group (no proven handle = no signal;
+    // the whole-tree reap stays the fail-closed disclosure channel).
     killTree(coop);
     if (killDelay >= 0 && !killTimer) {
       // NOT unref'd: the escalation must actually fire (a prior unref let an
@@ -438,16 +439,27 @@ export async function runCaptureRaw(
     detached: true,
   });
   if (typeof child.pid === "number") registerChildProcess(child.pid, cmd);
+  // Identity-proven-only group signalling for capture children too (round-4 #1
+  // residue): a raw `process.kill(-pid)` after the short-lived capture child
+  // exited could hit an unrelated recycled group. Group signals go only through
+  // the identity-verified handle captured at spawn; without a proven handle we
+  // fall back to `child.kill` — the ChildProcess OBJECT is pinned to this exact
+  // process by Node, so a direct-child signal can never target a recycled PID.
+  const captureGroupService = opts.processGroups ?? defaultProcessGroupService;
+  let captureGroupHandle: ProcessGroupHandle | undefined;
+  if (typeof child.pid === "number") {
+    const capture = captureGroupService.captureLeader(child.pid);
+    if (capture.status === "known") captureGroupHandle = capture.handle;
+  }
   const killTree = (signal: NodeJS.Signals): void => {
+    if (captureGroupHandle) {
+      captureGroupService.signal(captureGroupHandle, signal);
+      return;
+    }
     try {
-      if (typeof child.pid === "number") process.kill(-child.pid, signal);
-      else child.kill(signal);
+      child.kill(signal);
     } catch {
-      try {
-        child.kill(signal);
-      } catch {
-        /* already gone */
-      }
+      /* already gone */
     }
   };
   child.stdin.on("error", () => {});
