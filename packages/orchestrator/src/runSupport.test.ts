@@ -63,10 +63,13 @@ describe("promptWithGateArgvDisclosure (QA-022 FIX B: candidate sees the exact g
   });
 
   it("redacts a secret-like argv token with the same fence as the contract", () => {
+    // Assembled at runtime so the source (and any sealed review diff of it)
+    // never contains a contiguous secret-like token at rest.
+    const fakeToken = ["sk-ant", "1234567890abcdefghij"].join("-");
     const out = promptWithGateArgvDisclosure("x", [
-      { program: "deploy", args: ["--token", "sk-ant-1234567890abcdefghij"] },
+      { program: "deploy", args: ["--token", fakeToken] },
     ]);
-    expect(out).not.toContain("sk-ant-1234567890abcdefghij");
+    expect(out).not.toContain(fakeToken);
   });
 });
 
