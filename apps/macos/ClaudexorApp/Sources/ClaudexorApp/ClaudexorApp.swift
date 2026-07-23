@@ -100,6 +100,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = img
         }
         applyDebugSizeIfRequested()
+        // QA-062: reclaim stale "Open externally" artifact copies from the tracked
+        // handoff root on launch (bounded age; never deletes copies a receiver may
+        // still hold open this session). Off the main thread — it walks the temp
+        // dir. This is the lifecycle owner the scattered per-click copies lacked.
+        DispatchQueue.global(qos: .utility).async {
+            ExternalArtifactHandoff.standard().sweepStale()
+        }
         // Make the window non-opaque so the behind-window material (GlassBackground)
         // blends with the DESKTOP, not a solid panel — the "desktop shows faintly
         // through the window" look. Done reliably here (the window exists by now);

@@ -21,10 +21,15 @@ extension AppModel {
         return try? await client.artifactData(runId: runId, path: path)
     }
 
-    /// Text content of one artifact (markdown / code / json / log).
-    func artifactTextContent(runId: String, path: String) async -> String? {
-        guard let client else { return nil }
-        return try? await client.artifactText(runId: runId, path: path)
+    /// Text content of one artifact (markdown / code / json / log), typed so a
+    /// server refusal renders honestly (QA-067). A 409 sensitive-file / patch
+    /// refusal becomes a `.notRenderable` reason the viewer shows verbatim, a 413
+    /// oversize its own reason, and anything else `.offline` — never a silent nil
+    /// the row would paint as a generic "engine offline" blob.
+    func artifactTextOutcome(runId: String, path: String) async -> Result<String, PayloadError> {
+        guard let client else { return .failure(.offline) }
+        do { return .success(try await client.artifactText(runId: runId, path: path)) }
+        catch { return .failure(ArtifactFetchError.payloadError(from: error)) }
     }
 
     // MARK: - Produced outputs (project artifacts/, not the run tree)
@@ -42,10 +47,56 @@ extension AppModel {
         return try? await client.producedData(runId: runId, path: path)
     }
 
-    /// Text content of one produced output (markdown / code / json / log).
-    func producedTextContent(runId: String, path: String) async -> String? {
-        guard let client else { return nil }
-        guard let data = try? await client.producedData(runId: runId, path: path) else { return nil }
-        return String(decoding: data, as: UTF8.self)
+    /// Text content of one produced output (markdown / code / json / log), typed
+    /// like `artifactTextOutcome` so a 409 sensitive-file refusal renders as its
+    /// typed reason (QA-067).
+    func producedTextOutcome(runId: String, path: String) async -> Result<String, PayloadError> {
+        guard let client else { return .failure(.offline) }
+        do {
+            let data = try await client.producedData(runId: runId, path: path)
+            return .success(String(decoding: data, as: UTF8.self))
+        } catch { return .failure(ArtifactFetchError.payloadError(from: error)) }
+    }
+}
+
+/// Maps a `GatewayError` from an artifact/produced fetch onto the typed
+/// `PayloadError` the gallery renders (QA-067). Pure + testable — no network.
+enum ArtifactFetchError {
+    static func payloadError(from error: Error) -> PayloadError {
+        guard let gateway = error as? GatewayError, case .http(let status, let body) = gateway else {
+            return .offline
+        }
+        switch status {
+        case 409: return .notRenderable(sensitiveRefusalMessage(body: body))
+        case 413: return .notRenderable("Too large to preview here — open it from the run folder.")
+        default: return .offline
+        }
+    }
+
+    /// Human refusal for a server 409 (the `sensitive_file_refused` credential
+    /// fence or the patch secret-like-token fence). Prefers the typed
+    /// `sensitiveClass`, then the server `error` string, then a generic refusal —
+    /// never the raw JSON problem body.
+    static func sensitiveRefusalMessage(body: String) -> String {
+        struct Body: Decodable {
+            var error: String?
+            var code: String?
+            var sensitiveClass: String?
+        }
+        let decoded = body.data(using: .utf8).flatMap { try? JSONDecoder().decode(Body.self, from: $0) }
+        if let cls = decoded?.sensitiveClass {
+            let human: String
+            switch cls {
+            case "dotenv": human = "a dotenv (.env) file"
+            case "package_registry_credentials": human = "a package-registry credentials file"
+            case "credentials_file": human = "a credentials file"
+            default: human = "a credential-bearing file"
+            }
+            return "Refused — Claudexor does not serve \(human)."
+        }
+        if let err = decoded?.error, !err.isEmpty {
+            return "Refused — \(err)"
+        }
+        return "The engine refused to serve this file."
     }
 }

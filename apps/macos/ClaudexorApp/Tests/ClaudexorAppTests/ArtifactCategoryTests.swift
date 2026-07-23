@@ -33,6 +33,31 @@ import Testing
         #expect(ArtifactCategory.of(mime: nil, path: "archive.zip") == .other)
     }
 
+    // QA-067 parity: every extension the SERVER treats as semantic TEXT (redacts
+    // + 4 MiB cap) must also be `.text` in the App, so an eager preview never
+    // takes the raw-binary "open externally" path for a class the server redacts.
+    @Test func codeAndConfigFilesAreTextMatchingServer() {
+        // Source code (octet-stream MIME from the server → extension fallback).
+        for path in ["main.py", "app.ts", "index.js", "mod.rs", "svc.go", "Main.java", "q.sql", "run.sh"] {
+            #expect(ArtifactCategory.of(mime: "application/octet-stream", path: path) == .text)
+        }
+        // Config / markup.
+        for path in ["cfg.toml", "app.ini", "opts.cfg", "site.conf", "style.css", "data.json5"] {
+            #expect(ArtifactCategory.of(mime: nil, path: path) == .text)
+        }
+    }
+
+    @Test func swiftTextSetMatchesServerSemanticTextExtensions() {
+        // The Swift set is kept in lockstep with the server's SEMANTIC_TEXT_EXTENSIONS
+        // (plus the always-text md/txt/yaml/json/log). A drift here is the QA-067
+        // parity defect — surface it as a failing table, not a silent gap.
+        let serverSemanticText: Set<String> = [
+            "csv", "xml", "svg", "markdown", "text", "json5", "toml", "ini", "cfg", "conf", "css",
+            "js", "mjs", "cjs", "ts", "tsx", "jsx", "sh", "py", "rb", "go", "rs", "java", "c", "h", "cpp", "sql",
+        ]
+        #expect(serverSemanticText.isSubset(of: ArtifactCategory.semanticTextExtensions))
+    }
+
     @Test func sizeTextIsHumanOrNilWhenUnknown() {
         #expect(artifactSizeText(nil) == nil)
         #expect(artifactSizeText(0) != nil)

@@ -249,14 +249,28 @@ enum ArtifactCategory {
         if m.hasPrefix("image/") && m != "image/svg+xml" { return .image }
         if m.hasPrefix("text/") || m == "application/json"
             || m == "application/x-yaml" || m == "application/yaml" { return .text }
-        // Generic/absent mime: fall back to the extension for the common
-        // text-like evidence formats (md/txt/yaml/json/log/csv/xml/svg).
+        // Generic/absent mime: fall back to the extension.
         let ext = (path as NSString).pathExtension.lowercased()
-        if ["md", "markdown", "txt", "text", "yaml", "yml", "json", "log", "csv", "xml", "svg"].contains(ext) {
-            return .text
-        }
+        if semanticTextExtensions.contains(ext) { return .text }
         return .other
     }
+
+    /// QA-067 (issue-067) PARITY: the App's text set MUST match the server's
+    /// `SEMANTIC_TEXT_EXTENSIONS` (`packages/control-api/src/artifact-serve-routes.ts`),
+    /// which grew in Ф2 to cover source code + config/markup. The server now
+    /// routes these through the redacting, 4-MiB-capped TEXT path; the App must
+    /// agree so an eager preview treats them as (redaction-aware) text in the
+    /// in-app viewer instead of sending them down the raw-binary "open
+    /// externally" path. Truly-binary types (images, PDFs, archives) stay
+    /// `.other`. Keep this in lockstep with the server set.
+    static let semanticTextExtensions: Set<String> = [
+        // markup / structured data (server text/* MIME or semantic-text)
+        "md", "markdown", "txt", "text", "yaml", "yml", "json", "log",
+        "csv", "xml", "svg", "json5", "toml", "ini", "cfg", "conf", "css",
+        // source code
+        "js", "mjs", "cjs", "ts", "tsx", "jsx", "sh", "py", "rb", "go",
+        "rs", "java", "c", "h", "cpp", "sql",
+    ]
 }
 
 /// Human file-size for a row's metadata line, or nil when the size is unknown.
@@ -269,22 +283,18 @@ func artifactSizeText(_ bytes: Int?) -> String? {
 /// opener (pdf, binaries, oversize images). Shared by the image card and the
 /// document row. Release-wave sol #4: the artifact name is agent-controlled, so
 /// a basename-only name under a fresh private dir + `.atomic` write closes the
-/// symlink-overwrite primitive.
+/// symlink-overwrite primitive. QA-062: the copy now lives under the single
+/// TRACKED handoff root (`ExternalArtifactHandoff`) so a bounded-age startup
+/// sweep can reclaim it — the write-side hardening is unchanged.
 @MainActor
 func openArtifactExternally(model: AppModel, runId: String, path: String, produced: Bool) async {
     let data = produced
         ? await model.producedBytes(runId: runId, path: path)
         : await model.artifactBytes(runId: runId, path: path)
     guard let data else { return }
-    let base = ((path as NSString).lastPathComponent as NSString).lastPathComponent
-    let safeName = base.isEmpty || base == "." || base == ".." ? "artifact" : base
-    let dir = FileManager.default.temporaryDirectory
-        .appendingPathComponent("claudexor-open-\(UUID().uuidString)", isDirectory: true)
     do {
-        try FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let url = dir.appendingPathComponent(safeName)
-        try data.write(to: url, options: [.atomic])
+        let url = try ExternalArtifactHandoff.standard()
+            .stage(data: data, suggestedName: (path as NSString).lastPathComponent)
         NSWorkspace.shared.open(url)
     } catch { /* opening a preview is best-effort */ }
 }
@@ -510,13 +520,16 @@ private struct ArtifactRow: View {
         textSlot.begin(id)
         // Already terminal for this identity (a warmed preview) — don't refetch.
         if !force, textSlot.state.isTerminal { return }
-        let content = produced
-            ? await model.producedTextContent(runId: runId, path: art.path)
-            : await model.artifactTextContent(runId: runId, path: art.path)
-        guard let content else {
-            textSlot.commit(.failed(.offline), for: id)
-            return
+        // QA-067: typed outcome so a 409 sensitive-file refusal renders as its
+        // typed reason (not a generic offline blob or a perpetual spinner).
+        let outcome = produced
+            ? await model.producedTextOutcome(runId: runId, path: art.path)
+            : await model.artifactTextOutcome(runId: runId, path: art.path)
+        switch outcome {
+        case .success(let content):
+            textSlot.commit(content.isEmpty ? .empty : .loaded(content), for: id)
+        case .failure(let error):
+            textSlot.commit(.failed(error), for: id)
         }
-        textSlot.commit(content.isEmpty ? .empty : .loaded(content), for: id)
     }
 }
