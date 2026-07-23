@@ -1,8 +1,9 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { PassThrough, Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { noProjectRepoRoot } from "@claudexor/util";
 import { describe, expect, it } from "vitest";
 import { ACP_PROTOCOL_VERSION, AcpServer, type RunnerFn } from "./index.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -77,7 +78,13 @@ describe("AcpServer official SDK projection", () => {
             ],
           };
         case "__acp_session_load":
-          return { sessionId: "thread-1", cwd, turns: [{ summary: "restored answer" }] };
+          return {
+            sessionId: "thread-1",
+            cwd,
+            turns: [
+              { prompt: "the question", output: { kind: "answer", text: "restored answer" } },
+            ],
+          };
         case "__acp_session_resume":
         case "__acp_session_close":
           return { sessionId: "thread-1", cwd };
@@ -123,6 +130,76 @@ describe("AcpServer official SDK projection", () => {
       "__acp_session_resume",
       "__acp_session_close",
     ]);
+  });
+
+  it("session/load replays the full history as ordered user/agent pairs before responding (QA-020)", async () => {
+    const cwd = project();
+    const runner: RunnerFn = async (params) => {
+      if (params.mode !== "__acp_session_load") throw new Error(`unexpected ${params.mode}`);
+      return {
+        sessionId: "thread-h",
+        cwd,
+        turns: [
+          { prompt: "create counter lab", output: { kind: "answer", text: "created 7 files" } },
+          { prompt: "what is the project name?", output: { kind: "answer", text: "Counter Lab" } },
+        ],
+      };
+    };
+    await withClient(runner, async (agent, updates) => {
+      // The load request resolves ONLY after the entire conversation has been
+      // streamed, so by here `updates` holds every replay notification in order.
+      await agent.request(acp.methods.agent.session.load, {
+        sessionId: "thread-h",
+        cwd,
+        mcpServers: [],
+      });
+      const replay = updates.map((u) => [
+        u.update.sessionUpdate,
+        (u.update as { content?: { text?: string } }).content?.text,
+      ]);
+      expect(replay).toEqual([
+        ["user_message_chunk", "create counter lab"],
+        ["agent_message_chunk", "created 7 files"],
+        ["user_message_chunk", "what is the project name?"],
+        ["agent_message_chunk", "Counter Lab"],
+      ]);
+    });
+  });
+
+  it("round-trips a no-project session: list emits the absolute synthetic cwd and load accepts it (QA-068)", async () => {
+    // The daemon owns and materializes this canonical no-project execution root
+    // at startup; ensure it here so the server's load cwd validation passes.
+    const noProjectCwd = noProjectRepoRoot();
+    mkdirSync(noProjectCwd, { recursive: true });
+    const calls: any[] = [];
+    const runner: RunnerFn = async (params) => {
+      calls.push(params);
+      switch (params.mode) {
+        case "__acp_session_list":
+          // The CLI runner maps a no-project thread's null repoRoot to this
+          // canonical absolute synthetic root — never the invalid empty string.
+          return { sessions: [{ sessionId: "np-1", cwd: noProjectCwd, title: "2+2?" }] };
+        case "__acp_session_load":
+          expect(params.repoPath).toBe(noProjectCwd);
+          return { sessionId: "np-1", cwd: noProjectCwd, turns: [] };
+        default:
+          throw new Error(`unexpected ${params.mode}`);
+      }
+    };
+    await withClient(runner, async (agent) => {
+      const listed = await agent.request(acp.methods.agent.session.list, {});
+      const row = listed.sessions[0]!;
+      expect(isAbsolute(row.cwd)).toBe(true);
+      expect(row.cwd).toBe(noProjectCwd);
+      // The advertised row is loadable: its exact cwd passes load validation and
+      // the runner's same-cwd equality check — no more `-32603` unloadable row.
+      await agent.request(acp.methods.agent.session.load, {
+        sessionId: row.sessionId,
+        cwd: row.cwd,
+        mcpServers: [],
+      });
+    });
+    expect(calls.map((c) => c.mode)).toEqual(["__acp_session_list", "__acp_session_load"]);
   });
 
   it("uses the daemon thread id for prompts and exposes run/status/apply truth in response metadata", async () => {

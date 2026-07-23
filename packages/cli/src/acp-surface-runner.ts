@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { noProjectRepoRoot } from "@claudexor/util";
 import { TERMINAL_LIFECYCLES } from "@claudexor/schema";
 import {
   daemonOutcomeSummary,
@@ -89,16 +90,54 @@ export async function acpSessionQuery(
   if (p.repoPath && session.cwd !== p.repoPath) {
     throw new Error(`ACP session ${sessionId} belongs to a different cwd`);
   }
-  if (p.mode === "__acp_session_load" || p.mode === "__acp_session_resume") {
-    const turns = (Array.isArray(detail["turns"]) ? detail["turns"] : []).map((turn) => {
+  if (p.mode === "__acp_session_resume") {
+    // ACP resume MUST NOT replay conversation history — it is the no-history
+    // continuation capability. Return the session shell only; the server emits
+    // zero session/update notifications for resume.
+    return { ...session };
+  }
+  if (p.mode === "__acp_session_load") {
+    // ACP loadSession MUST replay the ENTIRE conversation before responding
+    // (QA-020). Build ordered {prompt, output} entries from the durable turns:
+    // the user half is ControlThreadTurn.prompt; the agent half is the Control
+    // API's OWN typed primary-output owner (ControlRunDetail.primaryOutput) —
+    // the same artifact macOS/run-detail render — never the non-existent
+    // `run.result.summary`. A runless (refused/preflight-failed) turn keeps its
+    // user prompt and discloses its typed enqueue error so it never vanishes.
+    // This per-turn run-detail read happens only on reopen (bounded to the
+    // thread's own turns), not on the hot thread-hydration path where INV-136's
+    // no-N+1 compact-card contract still holds.
+    const rawTurns = Array.isArray(detail["turns"]) ? detail["turns"] : [];
+    const turns: Array<{
+      prompt: string;
+      output: { kind: string; text: string; truncated: boolean } | null;
+    }> = [];
+    for (const turn of rawTurns) {
       const value = turn as Record<string, unknown>;
-      const result = (value["run"] as Record<string, unknown> | null)?.["result"] as
-        Record<string, unknown> | undefined;
-      return {
-        prompt: typeof value["prompt"] === "string" ? value["prompt"] : "",
-        summary: typeof result?.["summary"] === "string" ? result["summary"] : null,
-      };
-    });
+      const prompt = typeof value["prompt"] === "string" ? value["prompt"] : "";
+      const runId = typeof value["runId"] === "string" ? value["runId"] : "";
+      let output: { kind: string; text: string; truncated: boolean } | null = null;
+      if (runId) {
+        const run = (await request(`/runs/${encodeURIComponent(runId)}`).catch(
+          () => ({}),
+        )) as Record<string, unknown>;
+        const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
+        const text = typeof primary?.["text"] === "string" ? primary["text"].trim() : "";
+        if (text) {
+          output = {
+            kind: typeof primary?.["kind"] === "string" ? (primary["kind"] as string) : "answer",
+            text,
+            truncated: primary?.["truncated"] === true,
+          };
+        }
+      } else {
+        const enqueueError = value["enqueueError"] as Record<string, unknown> | null | undefined;
+        const message =
+          typeof enqueueError?.["message"] === "string" ? enqueueError["message"].trim() : "";
+        if (message) output = { kind: "diagnostic", text: message, truncated: false };
+      }
+      turns.push({ prompt, output });
+    }
     return { ...session, turns };
   }
   if (p.mode !== "__acp_session_prompt") throw new Error(`unknown ACP action ${p.mode}`);
@@ -174,9 +213,15 @@ function sessionRecord(thread: Record<string, unknown>): {
   title: string | null;
   updatedAt: string | null;
 } {
+  const repoRoot = typeof thread["repoRoot"] === "string" ? thread["repoRoot"] : "";
   return {
     sessionId: String(thread["id"] ?? ""),
-    cwd: String(thread["repoRoot"] ?? ""),
+    // No-project threads persist repoRoot:null. ACP requires an absolute cwd on
+    // BOTH list and load (load also equality-checks it), so map a null/empty
+    // scope to the canonical no-project synthetic root the daemon already owns
+    // and materializes (~/.cache/claudexor/no-project) rather than the invalid
+    // empty string no conforming client could ever load back (QA-068).
+    cwd: repoRoot || noProjectRepoRoot(),
     title: typeof thread["title"] === "string" ? thread["title"] : null,
     updatedAt: typeof thread["updatedAt"] === "string" ? thread["updatedAt"] : null,
   };

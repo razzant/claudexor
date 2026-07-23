@@ -38,7 +38,13 @@ type AcpSessionRecord = {
   cwd: string;
   title?: string | null;
   updatedAt?: string | null;
-  turns?: Array<{ prompt?: string; summary?: string | null }>;
+  // Ordered replay history for session/load: each turn carries the user prompt
+  // and the agent's typed primary output (null when a turn produced none, e.g.
+  // a runless refusal). Absent for resume, which never replays.
+  turns?: Array<{
+    prompt?: string;
+    output?: { kind?: string; text?: string; truncated?: boolean } | null;
+  }>;
 };
 
 /**
@@ -100,9 +106,18 @@ export class AcpServer {
       .onRequest(acp.methods.agent.session.load, async ({ params, client }) => {
         this.assertProjectRoot(params.cwd);
         const record = await this.sessionCall("load", params);
+        // ACP loadSession MUST replay the ENTIRE conversation via session/update
+        // BEFORE responding (QA-020). Emit the ordered user/agent pair per turn:
+        // the stored user prompt as a user_message_chunk, then the run's typed
+        // primary output as an agent_message_chunk. Neither half is dropped
+        // silently — a runless turn still shows its prompt, and its disclosed
+        // failure text rides the agent half.
         for (const turn of record.turns ?? []) {
-          if (turn.summary?.trim()) {
-            await this.agentMessage(client, record.sessionId, turn.summary.trim());
+          if (turn.prompt?.trim()) {
+            await this.userMessage(client, record.sessionId, turn.prompt.trim());
+          }
+          if (turn.output?.text?.trim()) {
+            await this.agentMessage(client, record.sessionId, turn.output.text.trim());
           }
         }
         return {};
@@ -237,6 +252,20 @@ export class AcpServer {
       sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text },
+      },
+    });
+  }
+
+  private async userMessage(
+    client: acp.AgentContext,
+    sessionId: string,
+    text: string,
+  ): Promise<void> {
+    await client.notify(acp.methods.client.session.update, {
+      sessionId,
+      update: {
+        sessionUpdate: "user_message_chunk",
         content: { type: "text", text },
       },
     });
