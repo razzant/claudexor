@@ -121,7 +121,10 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["true", "false"],
+          "enum": [
+            "true",
+            "false"
+          ],
           "schema_ref": null,
           "description": "Request a fresh readiness/status projection instead of only cached truth."
         },
@@ -130,7 +133,10 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["true", "false"],
+          "enum": [
+            "true",
+            "false"
+          ],
           "schema_ref": null,
           "description": "Include fake/test harness adapters in the listing."
         },
@@ -173,7 +179,10 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["local_session", "api_key"],
+          "enum": [
+            "local_session",
+            "api_key"
+          ],
           "schema_ref": null,
           "description": "Filter enumerated models to the given credential route (models foreign to the route are hidden)."
         }
@@ -394,7 +403,14 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["queued", "running", "succeeded", "failed", "cancelled", "interrupted"],
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
           "schema_ref": null,
           "description": "Return only runs in this lifecycle state."
         },
@@ -672,7 +688,11 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["codex", "claude", "cursor"],
+          "enum": [
+            "codex",
+            "claude",
+            "cursor"
+          ],
           "schema_ref": "ControlSetupJobListFilter#/properties/harness",
           "description": "Filter setup jobs to one harness."
         },
@@ -681,7 +701,9 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["login"],
+          "enum": [
+            "login"
+          ],
           "schema_ref": "ControlSetupJobListFilter#/properties/action",
           "description": "Filter setup jobs to one action."
         },
@@ -690,7 +712,10 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": ["true", "false"],
+          "enum": [
+            "true",
+            "false"
+          ],
           "schema_ref": "ControlSetupJobListFilter#/properties/active",
           "description": "Filter to active (in-flight) jobs only, or terminal jobs only."
         },
