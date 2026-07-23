@@ -61,7 +61,7 @@ export const CLAUDE_PROVIDER_ENV_DENYLIST = PROVIDER_SECRET_ENV.filter(
  * ladder is low|medium|high|max. SINGLE source for the manifest's
  * `effort_levels` and the run-time normalizer (which now clamps nothing away).
  */
-const CLAUDE_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "max"];
+const CLAUDE_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh", "max"];  // xhigh exists since CLI >2.1.165 (official default rec)
 
 /** Exported for focused route-policy tests; runtime uses this exact selector. */
 export const selectClaudeRunAuthRoute = selectStrictAuthRoute;
