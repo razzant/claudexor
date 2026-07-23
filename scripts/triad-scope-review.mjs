@@ -22,6 +22,12 @@
  *     --panel-lock <path>     # pre-created panel lock outside the candidate worktree
  *     --round <n>             # round number for the output dir
  *     --out <dir>             # output root outside candidate and sealed packet
+ *     --pack-subset <file>    # optional packet-split sub-wave: path/prefix
+ *                             # selectors naming the changed-file AREA this wave
+ *                             # renders in FULL text (docs/CHECKLISTS.md). The
+ *                             # full diff stays in every wave; run
+ *                             # scripts/review-coverage-check.mjs over ALL
+ *                             # sub-wave packs to prove the union is exhaustive.
  *
  * The release panel and transport are immutable in source:
  *   triad: openai/gpt-5.6-sol, anthropic/claude-fable-5,
@@ -310,13 +316,38 @@ function changedFiles(base) {
 }
 
 /**
+ * Read a packet-split sub-wave's full-text SUBSET selector (audit A-8). Each
+ * non-empty, non-comment line is a path or a path PREFIX (top-level area, e.g.
+ * `apps/macos/ClaudexorApp/`) naming which changed files this sub-wave renders
+ * in FULL. The union of all sub-waves' subsets must equal the full changed set
+ * — scripts/review-coverage-check.mjs asserts that as a required pre-seal gate.
+ * The full diff and full changed-file list stay in every sub-wave's prompt; only
+ * the full-TEXT pack is partitioned so each wave fits TRIAD_MAX_PACK_BYTES.
+ */
+function readPackSubset(path) {
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+}
+
+function inPackSubset(file, selectors) {
+  return selectors.some((sel) => (sel.endsWith("/") ? file.startsWith(sel) : file === sel));
+}
+
+/**
  * Files whose FULL current text goes into the review pack: the union of the
  * base..HEAD changed files and the sealed packet's FILES_TO_READ_WHOLE.txt.
  * The list can name files changed BEFORE the review base (e.g. docs commits
  * folded into the base and text-reviewed via a sidecar diff) — without the
  * union those never reach reviewers in full (v3.0.1 wave r6 critical).
+ *
+ * When `subsetSelectors` is supplied (a packet-split sub-wave), the union is
+ * filtered to the named area so buildTouchedFilePack supplies FULL text within
+ * budget; the sibling sub-waves cover the rest and the coverage checker proves
+ * the union is exhaustive.
  */
-function reviewPackFiles(base, packetDir) {
+function reviewPackFiles(base, packetDir, subsetSelectors = null) {
   const changed = changedFiles(base).split("\n").filter(Boolean);
   let listed = [];
   try {
@@ -327,7 +358,9 @@ function reviewPackFiles(base, packetDir) {
   } catch {
     // Optional packet file; absence means the changed set alone is the pack.
   }
-  return [...new Set([...changed, ...listed])];
+  const union = [...new Set([...changed, ...listed])];
+  if (!subsetSelectors) return union;
+  return union.filter((file) => inPackSubset(file, subsetSelectors));
 }
 
 /** Compact whole-repo atlas: every tracked path + byte size (scope reviewer's map). */
@@ -350,13 +383,24 @@ function checklistSection(title) {
   return m ? m[0] : `(section "${title}" not found in docs/CHECKLISTS.md)`;
 }
 
-function buildTriadPrompt(base, packetPrompt, diff, packFiles) {
+function subsetNote(subsetSelectors) {
+  if (!subsetSelectors) return "";
+  return (
+    `\n\nPACKET-SPLIT SUB-WAVE: this wave's FULL-TEXT pack below covers exactly ` +
+    `the changed files under [${subsetSelectors.join(", ")}]. Every changed file ` +
+    `still appears in the diff and the changed-files list; the remaining areas are ` +
+    `reviewed in full text in their own sibling sub-waves, and a deterministic ` +
+    `coverage checker asserts the union of sub-waves covers every changed file.`
+  );
+}
+
+function buildTriadPrompt(base, packetPrompt, diff, packFiles, subsetSelectors) {
   return `${PREAMBLE}
 ## Review instructions
 
 Read the diff and full current text of every changed file. Review every
 checklist item, report every distinct current problem, and make every FAIL
-actionable with file/symbol evidence and a concrete fix.
+actionable with file/symbol evidence and a concrete fix.${subsetNote(subsetSelectors)}
 
 ${THOROUGHNESS}
 
@@ -399,7 +443,7 @@ ${readDoc("docs/ARCHITECTURE.md")}
 
 ## Current touched files (full content)
 
-${buildTouchedFilePack(packFiles, git, MAX_FILE_BYTES, MAX_PACK_BYTES)}
+${buildTouchedFilePack(packFiles, git, MAX_FILE_BYTES, MAX_PACK_BYTES, { onOmission: "throw" })}
 
 ## Diff under review
 
@@ -411,7 +455,7 @@ ${changedFiles(base)}
 `;
 }
 
-function buildScopePrompt(base, packetPrompt, diff, packFiles) {
+function buildScopePrompt(base, packetPrompt, diff, packFiles, subsetSelectors) {
   return `${PREAMBLE}
 ## Your role
 
@@ -470,8 +514,9 @@ ${readDoc("docs/ARCHITECTURE.md")}
 ${repoAtlas()}
 
 ## Current touched files (post-change)
+${subsetNote(subsetSelectors)}
 
-${buildTouchedFilePack(packFiles, git, MAX_FILE_BYTES, MAX_PACK_BYTES)}
+${buildTouchedFilePack(packFiles, git, MAX_FILE_BYTES, MAX_PACK_BYTES, { onOmission: "throw" })}
 
 ## Diff under review
 
@@ -709,9 +754,33 @@ async function main() {
   if (!outputCheck.ok) {
     throw new Error(`invalid review output '${outDir}': ${outputCheck.reasons.join("; ")}`);
   }
-  const packFiles = reviewPackFiles(base, frozen.packet);
-  const triadPrompt = buildTriadPrompt(base, frozen.prompt, frozen.diff, packFiles);
-  const scopePrompt = buildScopePrompt(base, frozen.prompt, frozen.diff, packFiles);
+  // Packet-split sub-wave (audit A-8): --pack-subset names the changed-file
+  // AREA this wave renders in full text. Absent = the whole changed set in one
+  // wave (buildTouchedFilePack then throws loudly if it would exceed the pack
+  // budget, forcing a split — a disclosed omission can no longer pass).
+  const packSubsetPath = arg("pack-subset");
+  let subsetSelectors = null;
+  if (typeof packSubsetPath === "string" && packSubsetPath.trim()) {
+    subsetSelectors = readPackSubset(resolve(packSubsetPath));
+    if (subsetSelectors.length === 0) {
+      throw new Error("--pack-subset file lists no path/prefix selectors");
+    }
+  }
+  const packFiles = reviewPackFiles(base, frozen.packet, subsetSelectors);
+  const triadPrompt = buildTriadPrompt(
+    base,
+    frozen.prompt,
+    frozen.diff,
+    packFiles,
+    subsetSelectors,
+  );
+  const scopePrompt = buildScopePrompt(
+    base,
+    frozen.prompt,
+    frozen.diff,
+    packFiles,
+    subsetSelectors,
+  );
   // Fail BEFORE remote submission if the evidence contains a token-like value:
   // a leaked secret must not reach OpenRouter or the persisted artifacts.
   if (containsSecretLikeToken(triadPrompt) || containsSecretLikeToken(scopePrompt)) {

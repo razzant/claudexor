@@ -1,0 +1,187 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildTouchedFilePack,
+  touchedFileSection,
+} from "../../../scripts/lib/release-review-contract.mjs";
+import {
+  GENERATED_ARTIFACT_ALLOWLIST,
+  checkCoverage,
+  diffAuthoritativeRule,
+  fileCoverage,
+} from "../../../scripts/review-coverage-check.mjs";
+
+/** Build a realistic touched-file pack from a {path: currentText} map. */
+function packOf(files: Record<string, string>): string {
+  return Object.entries(files)
+    .map(([path, text]) => touchedFileSection(path, text))
+    .join("\n\n");
+}
+
+describe("review-coverage-check", () => {
+  const sources = {
+    "packages/cli/src/a.ts": "export const a = 1;\n",
+    "docs/GUIDE.md": "# Guide\n\nsome text\n",
+  };
+  const readCurrentText = (path: string): string => {
+    const map: Record<string, string> = { ...sources };
+    if (!(path in map)) throw new Error(`no fixture for ${path}`);
+    return map[path];
+  };
+
+  it("passes when every hand-written file's full text is present", () => {
+    const pack = packOf(sources);
+    const report = checkCoverage({
+      files: [{ path: "packages/cli/src/a.ts" }, { path: "docs/GUIDE.md" }],
+      readCurrentText,
+      packContents: [pack],
+    });
+    expect(report.ok).toBe(true);
+    expect(report.covered.sort()).toEqual(["docs/GUIDE.md", "packages/cli/src/a.ts"]);
+    expect(report.uncovered).toEqual([]);
+  });
+
+  it("fails when a source file is missing from every pack", () => {
+    // Pack omits docs/GUIDE.md entirely.
+    const pack = packOf({ "packages/cli/src/a.ts": sources["packages/cli/src/a.ts"] });
+    const report = checkCoverage({
+      files: [{ path: "packages/cli/src/a.ts" }, { path: "docs/GUIDE.md" }],
+      readCurrentText,
+      packContents: [pack],
+    });
+    expect(report.ok).toBe(false);
+    expect(report.uncovered.map((u) => u.path)).toEqual(["docs/GUIDE.md"]);
+  });
+
+  it("fails a truncated file even when its header is present (omission note)", () => {
+    // buildTouchedFilePack drops the big file past the pack budget -> omission note.
+    const big = "x".repeat(400);
+    const git = (args: string[]): string => {
+      const path = args[1].replace(/^HEAD:/, "");
+      if (path === "packages/cli/src/a.ts") return sources["packages/cli/src/a.ts"];
+      if (path === "docs/GUIDE.md") return big;
+      throw new Error("missing");
+    };
+    const pack = buildTouchedFilePack(
+      ["packages/cli/src/a.ts", "docs/GUIDE.md"],
+      git,
+      1_000_000,
+      100, // pack budget forces docs/GUIDE.md into the omission note
+    );
+    expect(pack).toContain("OMISSION NOTE");
+    const report = checkCoverage({
+      files: [{ path: "packages/cli/src/a.ts" }, { path: "docs/GUIDE.md" }],
+      readCurrentText: (p) => (p === "docs/GUIDE.md" ? big : readCurrentText(p)),
+      packContents: [pack],
+    });
+    expect(report.ok).toBe(false);
+    const g = report.uncovered.find((u) => u.path === "docs/GUIDE.md");
+    expect(g?.reason).toMatch(/OMISSION NOTE/);
+  });
+
+  it("fails a file whose section is present but bytes are altered/truncated", () => {
+    // Header present, but the fenced body is not the complete current text.
+    const truncated = `### docs/GUIDE.md\n\n\`\`\`\n# Guide\n\`\`\``;
+    const report = checkCoverage({
+      files: [{ path: "docs/GUIDE.md" }],
+      readCurrentText,
+      packContents: [truncated],
+    });
+    expect(report.ok).toBe(false);
+    expect(report.uncovered[0].reason).toMatch(/truncated\/altered/);
+  });
+
+  it("treats generated/fixture files as diff-authoritative and never requires their full text", () => {
+    const report = checkCoverage({
+      files: [
+        { path: "packages/schema/generated/BudgetLease.schema.json" },
+        { path: "docs/reference/endpoints.json" },
+        {
+          path: "apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/wire/manifest.json",
+        },
+        { path: "packages/harness-codex/fixtures/transcript.jsonl" },
+        { path: "pnpm-lock.yaml" },
+        { path: "packages/util/src/version.ts" },
+      ],
+      readCurrentText: () => {
+        throw new Error("diff-authoritative files must not be read for coverage");
+      },
+      packContents: [""], // empty pack: their absence must still pass
+    });
+    expect(report.ok).toBe(true);
+    expect(report.skipped.map((s) => s.path).sort()).toEqual([
+      "apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/wire/manifest.json",
+      "docs/reference/endpoints.json",
+      "packages/harness-codex/fixtures/transcript.jsonl",
+      "packages/schema/generated/BudgetLease.schema.json",
+      "packages/util/src/version.ts",
+      "pnpm-lock.yaml",
+    ]);
+  });
+
+  it("never requires coverage for deleted files", () => {
+    const report = checkCoverage({
+      files: [{ path: "packages/cli/src/gone.ts", deleted: true }],
+      readCurrentText: () => {
+        throw new Error("deleted files have no current text");
+      },
+      packContents: [""],
+    });
+    expect(report.ok).toBe(true);
+    expect(report.deleted).toEqual(["packages/cli/src/gone.ts"]);
+  });
+
+  it("classifies hand-written source as requiring coverage (null rule)", () => {
+    expect(diffAuthoritativeRule("packages/cli/src/index.ts")).toBeNull();
+    expect(diffAuthoritativeRule("apps/macos/ClaudexorApp/Sources/App.swift")).toBeNull();
+    expect(diffAuthoritativeRule("packages/schema/src/index.ts")).toBeNull();
+    expect(diffAuthoritativeRule("packages/schema/generated/X.schema.json")).toBe(
+      "generated-schema",
+    );
+    expect(diffAuthoritativeRule("packages/harness-claude/fixtures/x.json")).toBe(
+      "harness-fixture",
+    );
+    for (const p of GENERATED_ARTIFACT_ALLOWLIST) {
+      expect(diffAuthoritativeRule(p)).toBe("generated-artifact-allowlist");
+    }
+  });
+
+  it("covers a file when any one of several packs contains it (union of sub-waves)", () => {
+    const packA = packOf({ "packages/cli/src/a.ts": sources["packages/cli/src/a.ts"] });
+    const packB = packOf({ "docs/GUIDE.md": sources["docs/GUIDE.md"] });
+    const report = checkCoverage({
+      files: [{ path: "packages/cli/src/a.ts" }, { path: "docs/GUIDE.md" }],
+      readCurrentText,
+      packContents: [packA, packB],
+    });
+    expect(report.ok).toBe(true);
+  });
+
+  it("fileCoverage reports the covered path directly", () => {
+    const pack = touchedFileSection("x/y.ts", "body\n");
+    expect(fileCoverage("x/y.ts", "body\n", [pack]).covered).toBe(true);
+    expect(fileCoverage("x/y.ts", "different\n", [pack]).covered).toBe(false);
+  });
+});
+
+describe("buildTouchedFilePack strict omission", () => {
+  const git = (args: string[]): string => {
+    const path = args[1].replace(/^HEAD:/, "");
+    if (path === "small.ts") return "ok\n";
+    if (path === "big.ts") return "x".repeat(500);
+    throw new Error("missing");
+  };
+
+  it("throws instead of silently emitting an omission note under { onOmission: 'throw' }", () => {
+    expect(() =>
+      buildTouchedFilePack(["small.ts", "big.ts"], git, 1_000_000, 100, {
+        onOmission: "throw",
+      }),
+    ).toThrow(/would drop 1 hand-written file/);
+  });
+
+  it("still emits a disclosed note by default (backward compatible)", () => {
+    const pack = buildTouchedFilePack(["small.ts", "big.ts"], git, 1_000_000, 100);
+    expect(pack).toContain("OMISSION NOTE");
+    expect(pack).toContain("ok\n");
+  });
+});

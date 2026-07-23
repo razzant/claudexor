@@ -94,11 +94,15 @@ export function validateFrozenReviewBinding(input: {
   actualTree: string;
   dirty: boolean;
 }): { ok: boolean; reasons: string[] };
+export function touchedFileSection(path: string, text: string): string;
+export function touchedFileHeader(path: string): string;
+export const TOUCHED_FILE_OMISSION_MARKER: string;
 export function buildTouchedFilePack(
   paths: readonly string[],
   git: (args: string[]) => string,
   maxFileBytes: number,
   maxPackBytes: number,
+  options?: { onOmission?: "note" | "throw" },
 ): string;
 export function completionTermination(finishReason: unknown): {
   complete: boolean;

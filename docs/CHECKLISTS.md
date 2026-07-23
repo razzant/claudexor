@@ -442,6 +442,38 @@ itself). The v3 protocol bounds the loop mechanically.
   in CI against synthetic fixtures (deep multi-row review, hostile JSON,
   empty output, instant null verdict). Two identical failures from
   different models mean the PROTOCOL is wrong, not the models.
+- **Full-text coverage is a deterministic pre-seal gate (audit A-8).** Every
+  reviewer is told to read the FULL CURRENT TEXT of every changed file. A
+  disclosed "omission note" is NOT that guarantee: on a large phase (e.g. Ф3,
+  ~157 changed source files, ~3.68MB) the touched-file pack silently dropped
+  files past its byte budget, so reviewers did not receive every changed
+  file's full text. The posture "an omission note is acceptable" is retired.
+  Instead:
+  - `buildTouchedFilePack` in the release transport runs in strict mode: a
+    would-be omission FAILS LOUDLY (non-zero) instead of emitting a note, so no
+    wave can under-cover without the operator noticing.
+  - Large phases run as N **packet-split sub-waves**. Each sub-wave keeps the
+    full sealed diff and the full changed-file list, but renders the FULL TEXT
+    of only a NAMED SUBSET of the changed files, selected with
+    `--pack-subset <file>` (a list of paths or top-level area prefixes, e.g.
+    `orchestrator/`, `packages/control-api/`, `apps/macos/ClaudexorApp/`,
+    `apps/macos/ClaudexorKit/`, `packages/schema/`, `docs/`). Size each subset
+    so `buildTouchedFilePack` supplies full text within `TRIAD_MAX_PACK_BYTES`
+    (no omission). Every sub-wave keeps the identical reviewer contract — same
+    triad + scope models, same blocker contract, its own per-sub-wave findings.
+  - The **union of every sub-wave's full-text subset MUST equal the full
+    changed-file set.** `scripts/review-coverage-check.mjs --base <sha>
+    --candidate <sha> --pack <each sub-wave's prompt/pack> …` proves this
+    deterministically and is a REQUIRED gate before the seal: it enumerates
+    `git diff --name-only base..candidate`, classifies each file as
+    hand-written source vs DIFF-AUTHORITATIVE (generated schema under
+    `packages/schema/generated/`, `docs/reference/endpoints.json`, swift wire
+    fixtures `apps/macos/**/Tests/**/Fixtures/wire/**`, harness fixtures
+    `packages/harness-*/fixtures/**`, and a small documented generated-artifact
+    allowlist), and exits non-zero unless every hand-written file's complete
+    current bytes appear (untruncated) in at least one supplied pack. A file
+    listed only in an omission note, or present with altered/truncated bytes,
+    counts as NOT covered.
 - **Attestation:** `scripts/run-full-gate-receipt.mjs` runs
   `pnpm release:verify` and seals the hash-bound gate receipt;
   `scripts/seal-owner-review-attestation.mjs` signs the attestation (exact

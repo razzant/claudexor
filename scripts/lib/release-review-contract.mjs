@@ -357,8 +357,36 @@ export function validateFrozenReviewBinding(input) {
   return { ok: reasons.length === 0, reasons };
 }
 
-/** Build changed-file context from committed Git objects, never live paths. */
-export function buildTouchedFilePack(paths, git, maxFileBytes, maxPackBytes) {
+/**
+ * The exact per-file section a covered file gets inside a touched-file pack.
+ * The deterministic coverage checker (scripts/review-coverage-check.mjs)
+ * matches this byte-for-byte to prove a file's COMPLETE current text reached
+ * reviewers — so this format is a contract, not an implementation detail.
+ */
+export function touchedFileSection(path, text) {
+  return `### ${path}\n\n\`\`\`\n${text}\n\`\`\``;
+}
+
+/** Stable prefix of a touched-file section header (used to spot truncated sections). */
+export function touchedFileHeader(path) {
+  return `### ${path}\n`;
+}
+
+export const TOUCHED_FILE_OMISSION_MARKER = "⚠️ OMISSION NOTE:";
+
+/**
+ * Build changed-file context from committed Git objects, never live paths.
+ *
+ * By default a file past the per-file cap or the pack budget is dropped with a
+ * disclosed OMISSION NOTE. Audit A-8 proved a disclosed omission is not a
+ * full-context guarantee: on a large phase reviewers silently did NOT get every
+ * changed file's full text. Pass `{ onOmission: "throw" }` (the release
+ * transport does) so a would-be omission FAILS LOUDLY instead — the operator
+ * must then split the wave into packet-split sub-waves (docs/CHECKLISTS.md)
+ * small enough that every hand-written file fits in full.
+ */
+export function buildTouchedFilePack(paths, git, maxFileBytes, maxPackBytes, options = {}) {
+  const onOmission = options.onOmission ?? "note";
   let total = 0;
   const out = [];
   const omitted = [];
@@ -379,11 +407,17 @@ export function buildTouchedFilePack(paths, git, maxFileBytes, maxPackBytes) {
       continue;
     }
     total += text.length;
-    out.push(`### ${path}\n\n\`\`\`\n${text}\n\`\`\``);
+    out.push(touchedFileSection(path, text));
+  }
+  if (omitted.length > 0 && onOmission === "throw") {
+    throw new Error(
+      `touched-file pack would drop ${omitted.length} hand-written file(s) past the byte budget — ` +
+        `split this wave into smaller packet-split sub-waves so every file fits in full: ${omitted.join(", ")}`,
+    );
   }
   let pack = out.join("\n\n");
   if (omitted.length > 0) {
-    pack += `\n\n⚠️ OMISSION NOTE: ${omitted.length} file(s) omitted from direct context: ${omitted.join(", ")}`;
+    pack += `\n\n${TOUCHED_FILE_OMISSION_MARKER} ${omitted.length} file(s) omitted from direct context: ${omitted.join(", ")}`;
   }
   return pack || "(no touched files could be read)";
 }
