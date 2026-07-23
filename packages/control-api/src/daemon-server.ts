@@ -142,6 +142,7 @@ import {
   type WorkState,
   isTerminalLifecycle,
   needsDecision,
+  needsOperatorAttention,
   outcomeBanner,
   outcomeFactsFromFailure,
   TestCommandInvocation,
@@ -914,7 +915,7 @@ export class DaemonControlApiServer {
       const { threads, problems } = await svc();
       const runs = await this.opts.daemon.list();
       const blocked = new Set(
-        runs.filter((r) => this.runNeedsDecision(r)).map((r) => r.runId ?? r.id),
+        runs.filter((r) => this.runNeedsAttention(r)).map((r) => r.runId ?? r.id),
       );
       return this.json(
         res,
@@ -947,7 +948,7 @@ export class DaemonControlApiServer {
           }
         }
         const headRec = byRun.get(thread.head_run_id ?? "");
-        const headNeedsHuman = headRec ? this.runNeedsDecision(headRec) : false;
+        const headNeedsHuman = headRec ? this.runNeedsAttention(headRec) : false;
         return this.json(
           res,
           200,
@@ -1059,6 +1060,21 @@ export class DaemonControlApiServer {
         const decisionAction: "accept_risk" | "override_needs_human" = body.action;
         try {
           return await this.chainRunMutation(rec, async () => {
+            // D-16: a work_state veto (the model attested needs_input / incomplete)
+            // is NON-OVERRIDABLE — a risk acceptance cannot supply missing input,
+            // and the delivery gate refuses the override on that axis. Reject
+            // accept_risk with a TYPED problem here instead of recording a false
+            // "Apply is now available" ACK that the gate would then refuse.
+            const workVeto = this.runWorkStateVeto(rec);
+            if (workVeto) {
+              return this.json(res, 409, {
+                error:
+                  workVeto === "needs_input"
+                    ? "run reported it needs more input; a risk override cannot supply the missing input — re-run with the input (rerun_with_feedback)"
+                    : "run reported the work is incomplete; a risk override cannot finish it — re-run until it completes (rerun_with_feedback)",
+                code: "work_state_needs_input",
+              });
+            }
             // The override unblocks a NEEDS-DECISION run (review blocked /
             // checks failed, D8); recording one elsewhere would claim an apply
             // permission that does not exist.
@@ -1865,14 +1881,38 @@ export class DaemonControlApiServer {
     return patch !== null && decision.patchSha256 === sha256(patch) ? decision : null;
   }
 
-  /** The needs-me / inbox signal (D8), via the ONE projection owner: a terminal
-   * run whose review is blocked or checks failed, with no valid operator
-   * decision recorded — the axes replacement for the ex state==="blocked". */
+  /** The RISK-OVERRIDABLE needs-decision signal: a terminal run whose review is
+   * blocked or checks failed, with no valid operator decision recorded. This is
+   * the gate for accept_risk / override_needs_human — a D-16 work_state veto is
+   * NOT included here (a risk override cannot supply missing input); see
+   * `runWorkStateVeto`. */
   private runNeedsDecision(rec: DaemonRunRecord): boolean {
     const arb = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
     const facts = runOutcomeFacts(rec, arb, readFailure(rec), winnerWorkStateFor(rec));
     if (!facts) return false;
     return needsDecision(facts, this.validOperatorDecisionFor(rec) !== null);
+  }
+
+  /** The needs-me / inbox signal (D8): EITHER a risk-overridable needs-decision
+   * OR a non-overridable D-16 work_state needs-input veto. Inbox/head surfaces
+   * fold both so a needs_input run still surfaces as needing the operator. */
+  private runNeedsAttention(rec: DaemonRunRecord): boolean {
+    const arb = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+    const facts = runOutcomeFacts(rec, arb, readFailure(rec), winnerWorkStateFor(rec));
+    if (!facts) return false;
+    return needsOperatorAttention(facts, this.validOperatorDecisionFor(rec) !== null);
+  }
+
+  /** D-16: the non-overridable work_state veto on a succeeded run — the model
+   * attested it needs input / is incomplete. A risk override cannot resolve it,
+   * so the decision endpoint rejects accept_risk with a typed problem instead of
+   * a false "Apply is now available" ACK the delivery gate would then refuse. */
+  private runWorkStateVeto(rec: DaemonRunRecord): "needs_input" | "incomplete" | null {
+    const arb = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
+    const facts = runOutcomeFacts(rec, arb, readFailure(rec), winnerWorkStateFor(rec));
+    if (!facts || facts.lifecycle !== "succeeded") return null;
+    const state = facts.work_state?.state;
+    return state === "needs_input" || state === "incomplete" ? state : null;
   }
 
   private recordOperatorDecision(

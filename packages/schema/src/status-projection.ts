@@ -176,15 +176,44 @@ export function continuityLabel(disclosure: {
   return line;
 }
 
-/** True when a terminal run is waiting on a human decision: finished work
- * whose review blocked or checks failed, with no valid operator decision
- * recorded yet. The ONE producer of the needs-me/inbox signal. */
+/**
+ * The RISK-OVERRIDABLE needs-decision predicate: a finished run whose REVIEW
+ * blocked or CHECKS failed, with no valid operator decision recorded yet — the
+ * ONLY conditions an operator risk override (accept_risk / override_needs_human)
+ * can unblock for apply.
+ *
+ * A D-16 work_state veto (needs_input / incomplete) is DELIBERATELY EXCLUDED
+ * here: the model itself attested the work needs input or is unfinished, which no
+ * risk acceptance can supply (the delivery gate refuses the override on that
+ * axis). Folding it in made the decision endpoint ACK a false "Apply is now
+ * available" that the gate then refused — a decision ACK hiding required input.
+ * The non-overridable needs-input case is `needsOperatorInput`; surfaces that
+ * show a needs-me/inbox signal fold both via `needsOperatorAttention`.
+ */
 export function needsDecision(facts: RunOutcomeFacts, hasValidOperatorDecision: boolean): boolean {
   return (
     facts.lifecycle === "succeeded" &&
-    (facts.review === "blocked" || facts.checks === "failed" || workStateVetoes(facts)) &&
+    (facts.review === "blocked" || facts.checks === "failed") &&
     !hasValidOperatorDecision
   );
+}
+
+/** D-16: the NON-OVERRIDABLE needs-input projection — a succeeded run whose
+ * work_state vetoes (needs_input / incomplete). It needs the operator, but a risk
+ * override cannot resolve it; the model must be re-run with the input. Not gated
+ * on an operator decision because no decision can satisfy it. */
+export function needsOperatorInput(facts: RunOutcomeFacts): boolean {
+  return facts.lifecycle === "succeeded" && workStateVetoes(facts);
+}
+
+/** The combined needs-me / inbox signal: EITHER a risk-overridable needs-decision
+ * OR a non-overridable work_state needs-input veto. Inbox/attention surfaces show
+ * THIS; the risk-override decision gate consults `needsDecision` alone. */
+export function needsOperatorAttention(
+  facts: RunOutcomeFacts,
+  hasValidOperatorDecision: boolean,
+): boolean {
+  return needsDecision(facts, hasValidOperatorDecision) || needsOperatorInput(facts);
 }
 
 /** ACP stop-reason projection (3-bucket collapse, unchanged semantics). */

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   makeOutcomeFacts,
   needsDecision,
+  needsOperatorAttention,
+  needsOperatorInput,
   outcomeBanner,
   outcomeExitCode,
   processExitCode,
@@ -125,9 +127,30 @@ describe("D-16 work_state veto projections (INV-116)", () => {
     expect(outcomeExitCode(null)).toBe(1);
   });
 
-  it("needsDecision fires for a work_state veto (a needs-me terminal)", () => {
+  it("needsDecision (the risk-override predicate) does NOT fire for a work_state veto", () => {
+    // D-16 wave-1 fix: a work_state veto is non-overridable, so it must stay OUT
+    // of the risk-override needsDecision predicate — else the decision endpoint
+    // ACKs a false "Apply is available" that the gate then refuses.
     const veto = makeOutcomeFacts("succeeded", { work_state: needsInputState });
-    expect(needsDecision(veto, false)).toBe(true);
-    expect(needsDecision(veto, true)).toBe(false); // an operator decision clears it
+    expect(needsDecision(veto, false)).toBe(false);
+    // Review/checks vetoes DO remain risk-override needs-decision conditions.
+    const reviewBlocked = makeOutcomeFacts("succeeded", { review: "blocked" });
+    expect(needsDecision(reviewBlocked, false)).toBe(true);
+    expect(needsDecision(reviewBlocked, true)).toBe(false); // an operator decision clears it
+  });
+
+  it("needsOperatorInput / needsOperatorAttention fire for a work_state veto (a needs-me terminal)", () => {
+    const veto = makeOutcomeFacts("succeeded", { work_state: needsInputState });
+    expect(needsOperatorInput(veto)).toBe(true);
+    // The inbox/attention signal folds it in (regardless of any operator decision,
+    // which cannot resolve a needs-input veto).
+    expect(needsOperatorAttention(veto, false)).toBe(true);
+    expect(needsOperatorAttention(veto, true)).toBe(true);
+    const incompleteVeto = makeOutcomeFacts("succeeded", { work_state: incompleteState });
+    expect(needsOperatorInput(incompleteVeto)).toBe(true);
+    // A clean succeeded run needs neither.
+    const clean = makeOutcomeFacts("succeeded");
+    expect(needsOperatorInput(clean)).toBe(false);
+    expect(needsOperatorAttention(clean, false)).toBe(false);
   });
 });

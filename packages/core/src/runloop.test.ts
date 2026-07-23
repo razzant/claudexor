@@ -109,3 +109,57 @@ describe("runCliHarness session mode", () => {
     expect(completed?.payload?.["exit_code"]).toBe(0);
   }, 15_000);
 });
+
+// QA-027: a cancellation whose whole-tree death proof cannot confirm death must
+// surface as a typed terminal fact — an error event AND a `termination_unconfirmed`
+// payload on the terminal completed — never a silent clean cancel.
+describe("runCliHarness proven-death terminal", () => {
+  const quickBin = [
+    "console.log(JSON.stringify({ type: 'ready' }))",
+    "process.on('SIGINT', () => process.exit(0))",
+    "setTimeout(() => {}, 5000)",
+  ].join(";");
+
+  it("emits an error + termination_unconfirmed completed payload when death is unconfirmed", async () => {
+    const ac = new AbortController();
+    const runSpec = HarnessRunSpec.parse({
+      session_id: "ses-unconfirmed",
+      intent: "implement",
+      prompt: "hi",
+      cwd: process.cwd(),
+    });
+    runSpec.extra["abortSignal"] = ac.signal;
+    const events: HarnessEvent[] = [];
+    for await (const ev of runCliHarness({
+      bin: process.execPath,
+      args: ["-e", quickBin],
+      spec: runSpec,
+      parseEvent: (obj) => {
+        const o = obj as Record<string, unknown>;
+        if (o["type"] === "ready") {
+          ac.abort();
+          return [];
+        }
+        return null;
+      },
+      reap: async () => ({
+        state: "unconfirmed",
+        survivors: [424242],
+        unresolved: [{ pgid: 999, reason: "leader identity unreadable" }],
+      }),
+    })) {
+      events.push(ev);
+    }
+    // Disclosed as an error event (non-clean) ...
+    const err = events.find((e) => e.type === "error");
+    expect(err, "unconfirmed death error emitted").toBeTruthy();
+    expect(err?.error).toMatch(/could not confirm process death/i);
+    // ... and as a typed field on the terminal completed event.
+    const completed = events.at(-1);
+    expect(completed?.type).toBe("completed");
+    const tu = completed?.payload?.["termination_unconfirmed"] as
+      { survivors?: number[]; unresolved?: unknown[] } | undefined;
+    expect(tu?.survivors).toEqual([424242]);
+    expect(tu?.unresolved).toHaveLength(1);
+  }, 15_000);
+});

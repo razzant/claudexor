@@ -121,6 +121,77 @@ describe("spawnProcess", () => {
   });
 });
 
+// QA-027 fail-closed disclosure: when the whole-tree death proof cannot confirm
+// death, spawnProcess must DISCLOSE it as a typed `termination_unconfirmed` event
+// on the active stream (not only the optional callback). The reap is injected so
+// the unconfirmed outcome is deterministic.
+describe("spawnProcess termination_unconfirmed disclosure", () => {
+  const quickChild = [
+    "console.log('ready')",
+    "process.on('SIGINT', () => process.exit(0))",
+    "setTimeout(() => {}, 5000)",
+  ].join(";");
+
+  it("yields a typed termination_unconfirmed event for a surviving group (after the exit event)", async () => {
+    const ac = new AbortController();
+    const events: Array<{ type: string; survivors?: number[]; unresolved?: unknown[] }> = [];
+    for await (const ev of spawnProcess(process.execPath, ["-e", quickChild], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 50,
+      reap: async () => ({ state: "unconfirmed", survivors: [424242], unresolved: [] }),
+    })) {
+      events.push(ev);
+      if (ev.type === "stdout" && ev.line === "ready") ac.abort();
+    }
+    const disc = events.find((e) => e.type === "termination_unconfirmed");
+    expect(disc, "termination_unconfirmed disclosed").toBeTruthy();
+    expect(disc?.survivors).toEqual([424242]);
+    // It rides AFTER the terminal exit event.
+    const exitIdx = events.findIndex((e) => e.type === "exit");
+    const discIdx = events.findIndex((e) => e.type === "termination_unconfirmed");
+    expect(exitIdx).toBeGreaterThanOrEqual(0);
+    expect(discIdx).toBeGreaterThan(exitIdx);
+  });
+
+  it("discloses an unreadable-identity group (unresolved) as termination_unconfirmed", async () => {
+    const ac = new AbortController();
+    const events: Array<{
+      type: string;
+      survivors?: number[];
+      unresolved?: Array<{ pgid: number }>;
+    }> = [];
+    for await (const ev of spawnProcess(process.execPath, ["-e", quickChild], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 50,
+      reap: async () => ({
+        state: "unconfirmed",
+        survivors: [],
+        unresolved: [{ pgid: 999, reason: "leader identity unreadable" }],
+      }),
+    })) {
+      events.push(ev);
+      if (ev.type === "stdout" && ev.line === "ready") ac.abort();
+    }
+    const disc = events.find((e) => e.type === "termination_unconfirmed");
+    expect(disc, "termination_unconfirmed disclosed").toBeTruthy();
+    expect(disc?.unresolved?.[0]?.pgid).toBe(999);
+  });
+
+  it("does NOT disclose termination_unconfirmed when the reap confirms death", async () => {
+    const ac = new AbortController();
+    const events: Array<{ type: string }> = [];
+    for await (const ev of spawnProcess(process.execPath, ["-e", quickChild], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 50,
+      reap: async () => ({ state: "confirmed", pgids: [] }),
+    })) {
+      events.push(ev);
+      if (ev.type === "stdout" && ev.line === "ready") ac.abort();
+    }
+    expect(events.some((e) => e.type === "termination_unconfirmed")).toBe(false);
+  });
+});
+
 describe("labelStreams", () => {
   it("returns null when both streams are blank", () => {
     expect(labelStreams("", "  \n")).toBeNull();

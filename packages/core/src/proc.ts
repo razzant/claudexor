@@ -2,7 +2,11 @@ import { spawn } from "node:child_process";
 import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { createInterface } from "node:readline";
 import { composeBaseEnv } from "./env-scope.js";
-import { reapProcessTree, type ProcessTreeTerminationOutcome } from "./process-tree.js";
+import {
+  reapProcessTree,
+  type ProcessTreeTerminationOutcome,
+  type ReapProcessTreeOptions,
+} from "./process-tree.js";
 
 export interface SpawnOptions {
   cwd?: string;
@@ -26,15 +30,24 @@ export interface SpawnOptions {
    */
   cancelDeadlineMs?: number;
   /**
-   * Fail-closed disclosure (QA-027): called once when a proven-alive descendant
-   * group survives the bounded TERM->KILL escalation, so a cancel that could not
-   * confirm death is never silent. The caller decides how to surface it.
+   * Fail-closed disclosure (QA-027) for a consumer that broke the stream EARLY
+   * (it is no longer iterating, so the typed `termination_unconfirmed` event
+   * cannot be delivered): called once when a proven-alive descendant group
+   * survives the bounded TERM->KILL escalation. An actively-iterating consumer
+   * receives the typed `termination_unconfirmed` ProcEvent instead — the primary,
+   * non-optional disclosure channel.
    */
   onTerminationUnconfirmed?: (info: {
     rootPid: number;
     survivors: number[];
     unresolved: Array<{ pgid: number; reason: string }>;
   }) => void;
+  /**
+   * Injection seam for the whole-tree death proof (deterministic tests of the
+   * termination_unconfirmed disclosure). Defaults to the real `reapProcessTree`.
+   * Production callers never set this.
+   */
+  reap?: (opts: ReapProcessTreeOptions) => Promise<ProcessTreeTerminationOutcome>;
   /** Runtime abort signal for active daemon/orchestrator cancellation. */
   abortSignal?: AbortSignal;
   /**
@@ -58,7 +71,20 @@ export interface ChildStdin {
 export type ProcEvent =
   | { type: "stdout"; line: string }
   | { type: "stderr"; line: string }
-  | { type: "exit"; code: number | null; signal: NodeJS.Signals | null };
+  | { type: "exit"; code: number | null; signal: NodeJS.Signals | null }
+  /**
+   * QA-027 fail-closed death-proof disclosure: the process was cancelled and the
+   * whole-tree reap could NOT confirm death — a descendant group is proven-alive
+   * (`survivors`) or its leader identity was unreadable (`unresolved`). Emitted
+   * once, AFTER the terminal `exit`, so an actively-iterating consumer terminalizes
+   * over a typed unconfirmed-death fact instead of a silent clean cancel.
+   */
+  | {
+      type: "termination_unconfirmed";
+      rootPid: number;
+      survivors: number[];
+      unresolved: Array<{ pgid: number; reason: string }>;
+    };
 
 /**
  * Spawn a process and stream stdout/stderr lines as they arrive, ending with an
@@ -187,7 +213,7 @@ export async function* spawnProcess(
     // group is torn down is what catches an ESCAPED descendant group while its
     // ppid chain is still intact — the QA-027 orphan.
     if (!cancelReap && typeof child.pid === "number") {
-      cancelReap = reapProcessTree({
+      cancelReap = (opts.reap ?? reapProcessTree)({
         rootPid: child.pid,
         cooperativeSignal: coop,
         graceMs: killDelay,
@@ -217,6 +243,28 @@ export async function* spawnProcess(
     else abortSignal.addEventListener("abort", onAbort, { once: true });
   }
 
+  // Memoized whole-tree death proof: `cancelReap` is assigned inside the
+  // requestCancel closure, so narrow it through an explicitly-typed read (CFA
+  // otherwise collapses it to null). Awaited exactly once — from the normal
+  // completion path (so the typed event can be yielded to an active consumer) or
+  // the early-break finally (consumer gone → the optional callback fallback).
+  let reapSettled = false;
+  let reapOutcome: ProcessTreeTerminationOutcome | null = null;
+  let disclosedUnconfirmed = false;
+  const settleReap = async (): Promise<ProcessTreeTerminationOutcome | null> => {
+    if (reapSettled) return reapOutcome;
+    reapSettled = true;
+    const pendingReap = cancelReap as Promise<ProcessTreeTerminationOutcome> | null;
+    if (pendingReap) {
+      try {
+        reapOutcome = await pendingReap;
+      } catch {
+        /* the reap is best-effort death proof; never throw out of cleanup */
+      }
+    }
+    return reapOutcome;
+  };
+
   try {
     for (;;) {
       if (queue.length > 0) {
@@ -224,10 +272,26 @@ export async function* spawnProcess(
         continue;
       }
       if (spawnError) throw spawnError;
-      if (finished) return;
+      if (finished) break;
       await new Promise<void>((resolve) => {
         wake = resolve;
       });
+    }
+    // Death proof (QA-027): the process closed, but an ESCAPED descendant group
+    // may survive. Await the whole-tree reap and DISCLOSE an unconfirmed survival
+    // as a typed event on the active stream (not merely the optional callback),
+    // so a consumer that terminalizes on our completion cannot silently do so over
+    // a proven-alive survivor or an unreadable-identity group.
+    if (killTimer) clearTimeout(killTimer);
+    const outcome = await settleReap();
+    if (outcome?.state === "unconfirmed" && typeof child.pid === "number") {
+      disclosedUnconfirmed = true;
+      yield {
+        type: "termination_unconfirmed",
+        rootPid: child.pid,
+        survivors: outcome.survivors,
+        unresolved: outcome.unresolved,
+      };
     }
   } finally {
     if (timer) clearTimeout(timer);
@@ -237,26 +301,20 @@ export async function* spawnProcess(
       requestCancel();
     }
     if (finished && killTimer) clearTimeout(killTimer);
-    // Death proof: block the generator's return until the whole tree — direct
-    // group AND any escaped descendant group — is dead (or bounded-unconfirmed),
-    // so a consumer that awaits this cleanup never terminalizes over a live
-    // descendant. Unconfirmed survival is disclosed, never silent.
-    // `cancelReap` is assigned inside the requestCancel closure, so narrow it
-    // through an explicitly-typed read (CFA otherwise collapses it to null).
-    const pendingReap = cancelReap as Promise<ProcessTreeTerminationOutcome> | null;
-    if (pendingReap) {
-      try {
-        const outcome = await pendingReap;
-        if (outcome.state === "unconfirmed" && typeof child.pid === "number") {
-          opts.onTerminationUnconfirmed?.({
-            rootPid: child.pid,
-            survivors: outcome.survivors,
-            unresolved: outcome.unresolved,
-          });
-        }
-      } catch {
-        /* the reap is best-effort death proof; never throw out of cleanup */
-      }
+    // Early-break path: the consumer is no longer iterating, so the typed
+    // termination_unconfirmed event above could not be delivered — fall back to
+    // the optional disclosure callback (only when it was not already yielded).
+    const outcome = await settleReap();
+    if (
+      !disclosedUnconfirmed &&
+      outcome?.state === "unconfirmed" &&
+      typeof child.pid === "number"
+    ) {
+      opts.onTerminationUnconfirmed?.({
+        rootPid: child.pid,
+        survivors: outcome.survivors,
+        unresolved: outcome.unresolved,
+      });
     }
     rlOut.close();
     rlErr.close();
@@ -313,10 +371,12 @@ export async function runCapture(
   for await (const ev of spawnProcess(cmd, args, opts)) {
     if (ev.type === "stdout") stdout += ev.line + "\n";
     else if (ev.type === "stderr") stderr += ev.line + "\n";
-    else {
+    else if (ev.type === "exit") {
       code = ev.code;
       signal = ev.signal;
     }
+    // termination_unconfirmed is a disclosure-only event; runCapture callers do
+    // not carry cancellation death-proof state (they run to completion).
   }
   return { code, signal, stdout, stderr };
 }

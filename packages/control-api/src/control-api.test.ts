@@ -5428,6 +5428,54 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("POST /runs/:id/decision REJECTS accept_risk on a work_state-only needs_input veto with a typed problem (no false ACK)", async () => {
+    // D-16 wave-1 fix: a work_state veto is non-overridable. The decision endpoint
+    // previously ACKed accept_risk ("Apply is now available") because needsDecision
+    // folded work_state in — then the gate refused. Now the endpoint rejects the
+    // override up front with a typed problem, so there is no false ACK to hide the
+    // required input.
+    const { daemon, record } = fakeDaemon();
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      [
+        "winner: a01",
+        "facts:",
+        "  lifecycle: succeeded",
+        "  review: approved",
+        "  checks: passed",
+        "  noChanges: false",
+        "  reason: input_required",
+        "  work_state:",
+        "    state: needs_input",
+        "    source: constrained",
+        "    required_inputs:",
+        "      - kind: decision",
+        "        locator: null",
+        "        description: which database backend?",
+        "verification_basis: none",
+        "final_verify:",
+        "  attempted: true",
+        "  applied_cleanly: true",
+        "  gates_passed: true",
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const decision = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "workstate-refuse-1" },
+        body: JSON.stringify({ action: "accept_risk" }),
+      });
+      expect(decision.status).toBe(409);
+      // 4xx bodies are ControlProblem: the typed `code` + the human `message`.
+      const body = (await decision.json()) as { message: string; code?: string };
+      expect(body.code).toBe("work_state_needs_input");
+      expect(body.message).toMatch(/needs more input|cannot supply the missing input/i);
+      // The false ACK phrasing is NOT present.
+      expect(body.message).not.toMatch(/Apply is now available/i);
+    });
+  });
+
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";

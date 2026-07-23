@@ -24,6 +24,7 @@ export type FakeKind =
   // D-16 WorkReport / context-signal emit knobs (drive the finalizer canaries).
   | "fake-work-complete"
   | "fake-needs-input"
+  | "fake-work-incomplete"
   | "fake-work-malformed"
   | "fake-context-exhausted"
   | "fake-context-then-complete";
@@ -40,6 +41,7 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-reviewer-without-evidence",
   "fake-work-complete",
   "fake-needs-input",
+  "fake-work-incomplete",
   "fake-work-malformed",
   "fake-context-exhausted",
   "fake-context-then-complete",
@@ -50,6 +52,7 @@ export const FAKE_KINDS: FakeKind[] = [
 const WORK_REPORT_KINDS = new Set<FakeKind>([
   "fake-work-complete",
   "fake-needs-input",
+  "fake-work-incomplete",
   "fake-work-malformed",
   "fake-context-exhausted",
   "fake-context-then-complete",
@@ -264,6 +267,7 @@ async function* runFake(
     // exactly what a constrained final_message route surfaces.
     case "fake-work-complete":
     case "fake-needs-input":
+    case "fake-work-incomplete":
     case "fake-work-malformed": {
       maybeWriteFakeChange(spec);
       const deliverable = "Implemented by the fake harness.";
@@ -285,7 +289,9 @@ async function* runFake(
                   },
                 ],
               }
-            : { state: "completed", required_inputs: [] };
+            : kind === "fake-work-incomplete"
+              ? { state: "incomplete", required_inputs: [] }
+              : { state: "completed", required_inputs: [] };
         finalText = JSON.stringify({ work_report: workReport, output: deliverable });
       }
       yield ev(s, "message", { text: finalText, final: true, payload: { final_source: "fake" } });
@@ -318,6 +324,9 @@ async function* runFake(
       // exhausted → continuation disclosed → completes.
       const isContinuation = spec.prompt.includes(CONTINUATION_SENTINEL);
       if (isContinuation) {
+        // The continuation completes the work — for a producing intent it writes
+        // the real worktree file so an enveloped agent run has a diff to deliver.
+        maybeWriteFakeChange(spec);
         yield ev(s, "message", {
           text: JSON.stringify({
             work_report: { state: "completed", required_inputs: [] },

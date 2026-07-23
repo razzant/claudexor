@@ -14,6 +14,11 @@ import type { EventLog } from "@claudexor/event-log";
 import { buildDeepScanReducerPrompt } from "@claudexor/synthesis";
 import { type BudgetDenial, classifyBudgetFailure } from "./budgetFailure.js";
 import type { RoutedAdapter } from "./orchestrator.js";
+import {
+  finalizeAttempt,
+  unwrapWorkReportEnvelope,
+  type WorkReportEnvelopeMode,
+} from "./attemptFinalize.js";
 import { redactHarnessEvent, harnessEventPayload, observeBudgetSignals } from "./runSupport.js";
 import {
   type AttemptTelemetry,
@@ -113,6 +118,11 @@ export interface DeepScanReducerDeps {
     webPolicy: ExternalContextPolicy;
     effectiveWeb: ExternalContextPolicy;
     model: string | null;
+    /** D-16: the WorkReport transport mode compiled onto the reducer spec, so the
+     * reducer output is unwrapped + finalized through the SAME contract as every
+     * other attempt (never a fourth divergent deliverable predicate). Inactive on
+     * a route with no work_report transport (the report passes through untouched). */
+    workReportMode: WorkReportEnvelopeMode;
   };
   /** Hard (total) timeout for the single bounded pass. */
   hardTimeoutMs: number;
@@ -274,16 +284,44 @@ export async function runDeepScanReducer(
       ),
     );
   }
-  const report = redactSecrets(answer.text() ?? "");
-  const reportPresent = report.trim().length > 0;
+  // D-16: unwrap the WorkReport envelope and finalize through the SAME contract as
+  // every other attempt — a capable reducer route that broke its WorkReport
+  // contract (or reported needs_input/incomplete/context-exhausted) must NEVER be
+  // accepted as a clean synthesis; the caller then degrades to an honest raw
+  // bundle. On an inactive-transport route the unwrap passes the report through
+  // untouched (unchanged behavior for schema-free reducer harnesses).
+  const unwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", built.workReportMode, {
+    sideToolReport: telemetry.sideToolWorkReport ?? undefined,
+  });
+  const report = redactSecrets(unwrapped.deliverable);
+  const finalized = finalizeAttempt({
+    deliverableEvidence: report.trim().length > 0,
+    harnessErrored: harnessError !== null,
+    workReport: unwrapped.workReport,
+    workReportSource: unwrapped.source,
+    workReportViolation: unwrapped.contractViolation,
+    contextTerminalExhausted: telemetry.contextExhausted,
+  });
   if (timedOut && !harnessError)
     harnessError = `deep-scan reducer timed out after ${deps.hardTimeoutMs}ms`;
+  // A reducer must produce a CLEAN merged synthesis: a broken WorkReport contract,
+  // a needs_input/incomplete attestation, or a terminal context exhaustion is a
+  // typed reducer failure (degrade to the raw bundle), never a laundered success.
+  if (!harnessError && finalized.outcomeClass === "contract_failure") {
+    harnessError = `deep-scan reducer work_report contract: ${unwrapped.contractViolation}`;
+  } else if (!harnessError && finalized.outcomeClass === "veto") {
+    harnessError = `deep-scan reducer reported ${finalized.workState.state} instead of a merged synthesis`;
+  } else if (!harnessError && finalized.outcomeClass === "interrupted") {
+    harnessError = "deep-scan reducer ran out of context before completing the synthesis";
+  }
+  const reportPresent = finalized.deliverablePresent && report.trim().length > 0;
   if (!harnessError && !reportPresent) harnessError = "deep-scan reducer produced no synthesis";
   setAttemptOutcome(telemetry, {
     deliverablePresent: reportPresent,
     gatesPassed: null,
     harnessErrored: harnessError !== null,
     webRequiredUnsatisfied: false,
+    workState: finalized.workState,
   });
   // Roster/cost visible: the reducer is a normal attempt in run telemetry.
   args.attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });

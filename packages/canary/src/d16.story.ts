@@ -102,4 +102,56 @@ describe("D-16 WorkReport + work_state canaries", () => {
     expect(answer).toContain("Completed after a one-shot continuation.");
     expect(answer).not.toContain("work_report");
   });
+
+  it("[INV-116:plan-needs-input] a needs_input WorkReport on the winning PLANNER vetoes the plan terminal — succeeded lifecycle, exit non-zero", () => {
+    // Wave-1 parity fix: the plan finalizer previously ALWAYS emitted a clean
+    // succeeded and ignored the winner's work_state. A plan whose capable route
+    // reports needs_input must exit non-zero and disclose the veto.
+    const r = cli(sb, ["plan", "do the thing", "--harness", "fake-needs-input", "--json"]);
+    expect(r.code, r.stdout + r.stderr).not.toBe(0);
+    const out = r.json() as { runDir: string; status: string };
+    expect(out.status).toBe("succeeded");
+    const telemetry = readRunFile(out.runDir, "final/telemetry.yaml");
+    expect(telemetry).toMatch(/needs_input/);
+    const events = readEvents(out.runDir);
+    expect(events.some((e) => e["type"] === "run.blocked")).toBe(true);
+  });
+
+  it("[INV-116:plan-incomplete] an incomplete WorkReport on the winning PLANNER vetoes the plan terminal — succeeded lifecycle, exit non-zero", () => {
+    const r = cli(sb, ["plan", "do the thing", "--harness", "fake-work-incomplete", "--json"]);
+    expect(r.code, r.stdout + r.stderr).not.toBe(0);
+    const out = r.json() as { runDir: string; status: string };
+    expect(out.status).toBe("succeeded");
+    const telemetry = readRunFile(out.runDir, "final/telemetry.yaml");
+    expect(telemetry).toMatch(/incomplete/);
+  });
+
+  it("[INV-116:plan-context] a terminal context exhaustion on the winning PLANNER ⇒ interrupted plan, exit non-zero", () => {
+    const r = cli(sb, ["plan", "do the thing", "--harness", "fake-context-exhausted", "--json"]);
+    expect(r.code, r.stdout + r.stderr).not.toBe(0);
+    const out = r.json() as { status: string };
+    expect(out.status).toBe("interrupted");
+  });
+
+  it("[INV-116:agent-continuation] an eligible context exhaustion on an ENVELOPED candidate triggers a one-shot continuation that completes ⇒ succeeded, exit 0", () => {
+    // Wave-1 parity fix: the continuation controller was wired only into the
+    // read-only loop. An enveloped candidate that exhausts context (repeated_refill)
+    // must get the SAME one-shot fresh-session continuation and supersede the
+    // exhausted attempt only after the continuation completes.
+    const r = cli(sb, [
+      "agent",
+      "do the thing",
+      "--harness",
+      "fake-context-then-complete",
+      "--json",
+    ]);
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    const out = r.json() as { runDir: string; status: string };
+    expect(out.status).toBe("succeeded");
+    const events = readEvents(out.runDir);
+    const cont = events.find((e) => e["type"] === "run.continuation");
+    expect(cont, "run.continuation event present").toBeTruthy();
+    expect((cont?.["payload"] as Record<string, unknown>)?.["cause"]).toBe("repeated_refill");
+    expect((cont?.["payload"] as Record<string, unknown>)?.["continuation_count"]).toBe(1);
+  });
 });

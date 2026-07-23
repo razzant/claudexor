@@ -1,5 +1,6 @@
 import type { HarnessEvent, HarnessRunSpec } from "@claudexor/schema";
 import { spawnProcess, type ChildStdin } from "./proc.js";
+import type { ProcessTreeTerminationOutcome, ReapProcessTreeOptions } from "./process-tree.js";
 
 /**
  * Shared CLI adapter run loop.
@@ -61,6 +62,10 @@ export interface CliRunLoopOptions {
     handle: (obj: unknown, io: ChildStdin) => AsyncGenerator<HarnessEvent>;
     closeStdinOn?: (obj: unknown) => boolean;
   };
+  /** Injection seam for the whole-tree death proof (deterministic tests of the
+   * termination_unconfirmed terminal fact). Forwarded to spawnProcess; production
+   * callers never set this. */
+  reap?: (opts: ReapProcessTreeOptions) => Promise<ProcessTreeTerminationOutcome>;
 }
 
 export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<HarnessEvent> {
@@ -75,6 +80,12 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
   let spawnFailed = false;
   let exitCode: number | null = null;
   let exitSignal: NodeJS.Signals | null = null;
+  // QA-027: a cancellation whose whole-tree death proof could not confirm death
+  // (a proven-alive survivor group or an unreadable-identity group). Never silent.
+  let terminationUnconfirmed: {
+    survivors: number[];
+    unresolved: Array<{ pgid: number; reason: string }>;
+  } | null = null;
   const abortSignal = abortSignalFromSpec(spec);
 
   const stderrTail = (): string => redact(stderrRing.join("\n")).slice(-STDERR_DETAIL_MAX).trim();
@@ -88,6 +99,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
       env: opts.env,
       inheritEnv: spec.env_inheritance,
       abortSignal,
+      ...(opts.reap ? { reap: opts.reap } : {}),
       ...(opts.session
         ? {
             keepStdinOpen: true,
@@ -106,6 +118,13 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
       if (ev.type === "exit") {
         exitCode = ev.code;
         exitSignal = ev.signal;
+        continue;
+      }
+      if (ev.type === "termination_unconfirmed") {
+        // Death could not be proven — a fail-closed terminal fact (QA-027). Mark
+        // the attempt non-clean so it can never launder as a clean success.
+        terminationUnconfirmed = { survivors: ev.survivors, unresolved: ev.unresolved };
+        sawError = true;
         continue;
       }
       let obj: unknown;
@@ -153,6 +172,21 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
   }
 
   const aborted = abortSignal?.aborted === true;
+  // QA-027 fail-closed: an unconfirmed death is disclosed as its own typed terminal
+  // fact EVEN on an aborted run (a default cancellation that could not prove death
+  // is exactly the silent-survivor case) — emitted regardless of `aborted`.
+  if (terminationUnconfirmed) {
+    yield {
+      type: "error",
+      session_id: spec.session_id,
+      ts: ts(),
+      error: `${label} cancellation could not confirm process death: ${terminationUnconfirmed.survivors.length} surviving group(s)${
+        terminationUnconfirmed.unresolved.length
+          ? `, ${terminationUnconfirmed.unresolved.length} group(s) with unreadable identity`
+          : ""
+      }`,
+    };
+  }
   if (!sawError && !aborted && exitCode !== null && exitCode !== 0) {
     const tail = stderrTail();
     yield {
@@ -176,6 +210,15 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
     payload["dropped_unrecognized_events"] = droppedUnrecognizedEvents;
   if (aborted) payload["aborted"] = true;
   if (exitCode !== null) payload["exit_code"] = exitCode;
+  // Typed unconfirmed-death terminal fact (QA-027): the run cannot read as a clean
+  // cancel/success while a proven survivor lives — the disclosure rides the
+  // terminal completed event (and the error above), never a silent drop.
+  if (terminationUnconfirmed) {
+    payload["termination_unconfirmed"] = {
+      survivors: terminationUnconfirmed.survivors,
+      unresolved: terminationUnconfirmed.unresolved,
+    };
+  }
   // Typed crash evidence (GH #31): a non-aborted signal kill or spawn failure is
   // a process crash the orchestrator classifies without parsing prose.
   if (!aborted && exitSignal) payload["exit_signal"] = exitSignal;

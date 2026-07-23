@@ -2207,6 +2207,10 @@ export class Orchestrator {
     runInput?: RunInput,
     streamDeltas = false,
     fileBackedContext?: string,
+    /** D-16d: when set, the mechanical continuation checkpoint pointer for a
+     * one-shot fresh-session continuation — appended to the prompt so the model
+     * (and the offline fake) re-grounds in the exhausted attempt's partial work. */
+    continuationPointer?: string,
   ): Promise<CandidateRun> {
     const adapter = routed.adapter;
     const knobs = this.routeSpecKnobs(routed, contract, modelHint, effortHint);
@@ -2236,7 +2240,9 @@ export class Orchestrator {
       // Engine-derived read-only prompt constraints: protected/auto-protected
       // paths PLUS the exact typed gate argv the run will execute (QA-022 FIX B).
       prompt: promptWithEngineConstraints(
-        laneContinuity?.pointerLine ? `${prompt}\n\n${laneContinuity.pointerLine}` : prompt,
+        [prompt, laneContinuity?.pointerLine, continuationPointer]
+          .filter((s): s is string => typeof s === "string" && s.length > 0)
+          .join("\n\n"),
         contract.constraints.protected_paths,
         contract.constraints.auto_protected_paths,
         contract.constraints.protected_path_approvals,
@@ -3016,6 +3022,11 @@ export class Orchestrator {
     }
 
     const runsBySlot = new Array<CandidateRun | undefined>(slots.length);
+    // D-16d: one-shot continuation budget shared across the concurrent candidate
+    // slots (parity with the read-only chain's single counter). Claimed
+    // synchronously (check-then-increment with no await between), so two slots
+    // that both exhaust cannot both consume the single continuation.
+    let candidateContinuationCount = 0;
     const runSlot = async (slot: CandidateSlot, slotIdx: number): Promise<void> => {
       if (input.signal?.aborted) {
         ledger.cancel(slot.leaseId);
@@ -3156,7 +3167,141 @@ export class Orchestrator {
           cost_usd: run.cost,
           ...telemetrySummary(run.telemetry),
         });
-        runsBySlot[slotIdx] = run;
+        // D-16d one-shot continuation for an ENVELOPED candidate (parity with the
+        // read-only loop, which had the ONLY continuation wiring). An eligible
+        // terminal context exhaustion (repeated_refill, no completed report) gets
+        // ONE fresh-session re-run in the SAME envelope, re-grounded by a
+        // mechanical checkpoint packet; the exhausted candidate is superseded ONLY
+        // after the continuation completes. In-place candidates are excluded (a
+        // fresh session cannot safely resume mutation of the live tree).
+        let effectiveRun = run;
+        const envInPlace = envelope.worktree_path === envelope.repo_root;
+        if (!run.errored && !input.signal?.aborted && candidateContinuationCount === 0) {
+          const contDecision = decideContinuation({
+            contextExhausted: run.telemetry.contextExhausted,
+            contextExhaustedCause: run.telemetry.contextExhaustedCause,
+            workStateCompleted: run.telemetry.outcome?.workState?.state === "completed",
+            continuationCount: candidateContinuationCount,
+            runKind: envInPlace ? "in_place" : "enveloped",
+          });
+          if (contDecision.eligible) {
+            candidateContinuationCount += 1; // claim the one-shot synchronously
+            const contAttemptId = `${slot.attemptId}c`;
+            const packet = buildContinuationPacket(
+              synthesizeContinuationRequest({
+                harness: adapter.id,
+                profileId: input.credentialProfileId ?? null,
+                priorPrompt: input.prompt,
+                priorOutput: run.answerText ?? run.diff ?? "",
+              }),
+            );
+            log.emit("run.continuation", {
+              from_attempt: run.attemptId,
+              cause: run.telemetry.contextExhaustedCause,
+              continuation_count: candidateContinuationCount,
+              packet_turns: packet.continuity.disclosure.packetTurns,
+            });
+            const contLease = ledger.reserve({
+              taskId,
+              attemptId: contAttemptId,
+              intent: this.candidateIntent(input),
+              harnessId: adapter.id,
+              cost: attemptCostEvidence(
+                adapter.id,
+                contAttemptId,
+                this.estimateUsdFloor(input.repoRoot),
+                this.routeBillingKnowledge(input, adapter.id),
+              ),
+            });
+            if (contLease.granted) {
+              const contLeaseId = contLease.lease?.lease_id ?? "";
+              try {
+                const contRun = await this.runCandidateInEnvelope(
+                  slot.routed,
+                  envelope,
+                  contAttemptId,
+                  slot.label,
+                  contract,
+                  input.prompt,
+                  store,
+                  paths,
+                  wsm,
+                  ledger,
+                  candidateAccess,
+                  (ev) => {
+                    const safeEv = redactHarnessEvent(ev);
+                    safeInvoke(input.onHarnessEvent, safeEv);
+                    log.emit(
+                      "harness.event",
+                      harnessEventPayload(adapter.id, contAttemptId, safeEv),
+                    );
+                  },
+                  input.signal,
+                  downgradeModel ?? undefined,
+                  input.effort,
+                  this.candidateIntent(input),
+                  log,
+                  effectiveWeb,
+                  this.interactionChannelFor(
+                    input,
+                    log,
+                    runId,
+                    taskId,
+                    contAttemptId,
+                    adapter.id,
+                    slot.routed.supportsInteractive,
+                  ),
+                  (streamedUsd) => {
+                    ledger.updateHold(contLeaseId, streamedUsd);
+                    if (ledger.tier() !== "hard") return false;
+                    budgetStopped = true;
+                    return true;
+                  },
+                  input,
+                  requestedSingleCandidate,
+                  undefined,
+                  packet.pointerLine ?? undefined,
+                );
+                ledger.settle(
+                  contLeaseId,
+                  attemptUsageCostSettlement(
+                    contRun.cost,
+                    contRun.costEstimated,
+                    contRun.attemptId,
+                    contRun.harnessId,
+                    contRun.telemetry.authMode,
+                    contRun.telemetry.usageCost,
+                  ),
+                );
+                log.emit("harness.completed", {
+                  harness_id: adapter.id,
+                  attempt_id: contAttemptId,
+                  status: input.signal?.aborted
+                    ? "cancelled"
+                    : contRun.errored
+                      ? "failed"
+                      : "success",
+                  cost_usd: contRun.cost,
+                  ...telemetrySummary(contRun.telemetry),
+                });
+                // Supersede the exhausted candidate ONLY after the continuation
+                // actually completes cleanly (never over a torn-off/aborted stream).
+                if (!contRun.errored && !input.signal?.aborted) effectiveRun = contRun;
+              } catch (err) {
+                ledger.settle(contLeaseId, unknownCostSettlement("continuation-error", 0));
+                log.emit("harness.completed", {
+                  harness_id: adapter.id,
+                  attempt_id: contAttemptId,
+                  status: "failed",
+                  error: safeErrorMessage(err),
+                });
+              }
+            } else {
+              ledger.cancel(contLease.lease?.lease_id ?? "");
+            }
+          }
+        }
+        runsBySlot[slotIdx] = effectiveRun;
         reviewEnvelopes.push(envelope);
         envelope = undefined;
       } catch (err) {
@@ -6127,7 +6272,20 @@ export class Orchestrator {
           env_inheritance: envInheritance(this.config(input.repoRoot)),
           env: homeEnv,
         });
-        return { spec, webPolicy: knobs.webPolicy, effectiveWeb, model: knobs.model };
+        // D-16: compile the WorkReport transport onto the reducer spec (the
+        // reducer is non-interactive) so its output is unwrapped + finalized
+        // through the shared attempt contract, not a fourth deliverable predicate.
+        const workReportMode = this.applyWorkEnvelope(
+          spec,
+          this.workReportEnvelopeFor(routed, contract, false),
+        );
+        return {
+          spec,
+          webPolicy: knobs.webPolicy,
+          effectiveWeb,
+          model: knobs.model,
+          workReportMode,
+        };
       },
       hardTimeoutMs: reviewerTimeoutMs(this.config(input.repoRoot)),
       inactivityTimeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),

@@ -15,6 +15,7 @@ import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { cancelledResult, writeFailure } from "./runTerminals.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import { extractPlanQuestions } from "./planQuestions.js";
+import { emitPlanTerminal, resolvePlanTerminalFacts } from "./planTerminal.js";
 import {
   buildCouncilProjection,
   councilDegradationNote,
@@ -33,9 +34,8 @@ import type {
 /**
  * Council plan strategy (INV-031 / D31) + the shared plan-run finalize/failure
  * tails, extracted from orchestrator.ts so the god-file does not absorb the new
- * behavior (complexity ratchet). These are FREE functions that receive the few
- * orchestrator methods they need via `PlanRunDeps`; every other collaborator is
- * a module-level import, identical to what the orchestrator used inline.
+ * behavior (complexity ratchet). FREE functions that receive the few orchestrator
+ * methods they need via `PlanRunDeps`; every other collaborator is a module import.
  */
 export interface PlanRunDeps {
   /** One planner spawn (native plan mode, read-only) — the SAME machinery the
@@ -338,10 +338,9 @@ export async function runCouncilPlan(
   });
 }
 
-/** Write final plan artifacts (plan.md, questions.json, work_product,
- * summary, telemetry) and the terminal event, then return the result. ONE
- * owner for both the solo and council success tails so the artifacts are
- * shape-identical (downstream readiness/freeze/implement never branch). */
+/** Write final plan artifacts (plan.md, questions.json, work_product, summary,
+ * telemetry) and the terminal event, then return the result. ONE owner for both
+ * the solo and council success tails so the artifacts are shape-identical. */
 export function finalizePlanRun(
   deps: PlanRunDeps,
   args: {
@@ -383,20 +382,16 @@ export function finalizePlanRun(
   const winnerHarness = winner?.id ?? "(none)";
   const winnerAttemptId =
     args.winnerAttemptId ?? planAttempts.find((p) => p.status === "success")?.attemptId ?? null;
-  // final/plan.md is the PURE plan body (the winning planner's / merger's own
-  // text): implement freezes and hashes THIS file, so wrapper prose lives in
-  // summary.md instead (advisor pass, V6a).
+  // final/plan.md is the PURE plan body (implement freezes+hashes it; V6a).
   const planDoc = redactSecrets(winner?.text ?? "(no output)");
   store.writeText(join(paths.finalDir, "plan.md"), planDoc + "\n");
-  // Engine-parsed open questions (final/questions.json): the ONE artifact
-  // plan readiness derives from. For council this runs on the MERGE output
-  // only — draft questions never leak into the final set.
+  // Engine-parsed open questions (final/questions.json): the ONE artifact plan
+  // readiness derives from. For council this runs on the MERGE output only.
   const parsedQuestions = extractPlanQuestions(planDoc);
   store.writeJson(join(paths.finalDir, "questions.json"), parsedQuestions);
   if (council) store.writeYaml(join(paths.root, "council", "membership.yaml"), council);
-  // A plan is a delivered work product (a report), even with risks — parity
-  // with the other read-only modes. result_kind=plan tells surfaces NO files
-  // changed.
+  // A plan is a delivered work product (a report); result_kind=plan tells
+  // surfaces NO files changed.
   store.writeYaml(join(paths.finalDir, "work_product.yaml"), {
     id: newId("wp"),
     kind: "report",
@@ -413,12 +408,17 @@ export function finalizePlanRun(
   });
   const readiness = derivePlanReadiness(PlanQuestionsArtifact.parse(parsedQuestions));
   const councilNote = council ? councilDegradationNote(council) : "";
+  // D-16: fold the WINNING attempt's work_state into the plan terminal (INV-116; see planTerminal.ts).
+  const { planFacts, planVetoed, lifecycleLine, summarySuffix } = resolvePlanTerminalFacts(
+    args.attemptTelemetries,
+    winnerAttemptId,
+  );
   store.writeText(
     join(paths.finalDir, "summary.md"),
     [
       `# Run ${runId} (plan)`,
       "",
-      `- Lifecycle: succeeded (plan only — no files changed)`,
+      lifecycleLine,
       council
         ? `- Council: merged by ${council.mergedBy ?? "(none)"} from ${council.drafted} of ${council.requested} member(s)`
         : `- Planner: ${winnerHarness}`,
@@ -450,8 +450,8 @@ export function finalizePlanRun(
     question_count: readiness.questionCount,
     readiness: readiness.state,
   });
-  const planFacts = makeOutcomeFacts("succeeded", { noChanges: true });
-  log.emit("run.completed", { lifecycle: planFacts.lifecycle, facts: planFacts, reason: null });
+  // D-16 terminal disclosure keyed on the folded facts (see planTerminal.ts).
+  emitPlanTerminal(store, paths, log, planFacts, planVetoed);
   return {
     spendUsd: ledger.spend(),
     runId,
@@ -461,7 +461,7 @@ export function finalizePlanRun(
     facts: planFacts,
     winner: null,
     runDir: paths.root,
-    summary: `${council ? `Council plan (merged by ${winnerHarness})` : `Plan by ${winnerHarness}`}; ${readiness.questionCount} open question(s)${parsedQuestions.parse === "none_found" ? " (untagged plan — unverified)" : ""}.`,
+    summary: `${council ? `Council plan (merged by ${winnerHarness})` : `Plan by ${winnerHarness}`}; ${readiness.questionCount} open question(s)${parsedQuestions.parse === "none_found" ? " (untagged plan — unverified)" : ""}${summarySuffix}.`,
     candidates: planAttempts.map((p) => ({
       attemptId: p.attemptId,
       harnessId: p.harnessId,
