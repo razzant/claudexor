@@ -1261,6 +1261,43 @@ tie-breaker. Credential transport alone never proves a route free. Typed rate
 limits create cooldowns; unknown quota remains eligible and is never rendered
 as full headroom.
 
+Routing rationale: pool ordering records a typed `RouteRankingRationale` ONCE as
+run evidence (`RunTelemetry.routing_rationale`), not an event — the ordered pool,
+the ids dropped by `paid_fallback`/cooldown, the decisive `reason`
+(`subscription_entitlement_first` / `lowest_incremental_cash` / `quality_tier` /
+`expiring_quota_slack` / `all_incremental_cash_unknown` / `declared_order`), and a
+per-candidate `{billing_knowledge, incremental_cost_usd, eligible}` tuple. The
+rationale is axis-aligned with the ranker, so it can never disagree with the order
+actually taken, and it is derived from typed auth-route evidence: a doctor-VERIFIED
+vendor-native source proves `subscription_entitlement`, so that route survives
+`paid_fallback: never` and ranks with a real economy tuple instead of reading as
+unknown/paid. Surfaces project the rationale verbatim (run detail) and never
+reconstruct the order from prose. A deep-scan swarm reserves n>1 subscription
+scouts under a finite cap against the per-run estimate floor (mirroring the
+candidate loop), so later scouts are not refused for lacking a per-attempt cash
+quote; a scout the gate still refuses before spawn is recorded as a failed attempt
+with a budget-denied marker so the denominator stays honest (1/2, not 1/1),
+omissions and telemetry disclose it, and an all-denied scan still terminalizes
+through the shared budget classifier (never harness_error).
+
+Transient-failure taxonomy (adapter→orchestrator boundary): every
+adapter/stream failure is classified into a typed `HarnessFailureCategory`
+(`timeout` / `rate_limited` / `auth_failed` / `capability_refused` /
+`process_crash` / `config_error` / `unknown_harness_error`) alongside the
+fine-grained `kind`, with the safe provider metadata preserved (retry delay,
+vendor HTTP/adapter code, kill signal). The classifier reads only typed event
+fields — an adapter-declared `transient`/`rate_limit` signal, the vendor's typed
+`status.error_category`, and the run loop's typed exit disclosure (signal /
+spawn-failure) — never prose. The centralized retry policy gates on the
+category's `retryable` verdict rather than a bare "saw a transient" boolean:
+adapter-disclosed transients and rate limits retry with backoff (rate limits also
+feed W5.4 profile rotation), while deterministic refusals (auth/capability/config)
+and give-ups (a crashed child, an inactivity-watchdog abort) terminate. The typed
+category rides `route.transient.detected`/`exhausted`, is persisted on the attempt
+telemetry's `transient_failures`, and drives required-actions — authentication
+guidance appears ONLY on a classified `auth_failed`, never on a timeout, rate
+limit, or crash.
+
 Structured output: routes whose manifest declares `json_schema_output`
 receive `HarnessRunSpec.output_schema` — a CALLER-supplied per-run schema the
 run's final answer must conform to (agent race / ask answers), normalized and

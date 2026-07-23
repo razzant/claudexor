@@ -9,7 +9,14 @@ import {
   OutputReadyState,
   ProviderFamily,
 } from "./primitives.js";
-import { AuthMode, PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
+import {
+  AuthMode,
+  PaidBudget,
+  PaidFallback,
+  QualityTierSet,
+  RouteRankingRationale,
+  RoutingGoal,
+} from "./budget.js";
 export { ControlQuotaResponse } from "./quota.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RunOutcomeFacts } from "./decision.js";
@@ -778,6 +785,15 @@ export const ControlRunSummary = z
     route: ControlRouteInfo.nullable()
       .default(null)
       .describe("Route evidence from telemetry; null when no telemetry exists (legacy runs)."),
+    /** QA-034: typed routing rationale projected verbatim from
+     * telemetry.routing_rationale — the ordered/dropped pool, decisive reason,
+     * and per-candidate billing/cost tuples. Null when no ranking was computed
+     * (explicit single-harness pool) or on legacy runs. */
+    routingRationale: RouteRankingRationale.nullable()
+      .default(null)
+      .describe(
+        "Typed routing rationale (QA-034) projected from telemetry; null when no ranking was computed or on legacy runs.",
+      ),
     tests: z.array(TestCommandInvocation).optional().describe("Typed argv gates."),
     createdAt: z.string().optional().describe("When the run was created."),
     startedAt: z.string().optional().describe("When the run started."),

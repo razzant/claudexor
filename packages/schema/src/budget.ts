@@ -40,6 +40,58 @@ export const PaidFallback = z
   .describe("When a route with incremental paid spend may be used.");
 export type PaidFallback = z.infer<typeof PaidFallback>;
 
+/** The typed reason a pool ranked the way it did (QA-034); prose-free. */
+export const RouteRankingReason = z
+  .enum([
+    "subscription_entitlement_first",
+    "lowest_incremental_cash",
+    "quality_tier",
+    "expiring_quota_slack",
+    "all_incremental_cash_unknown",
+    "declared_order",
+  ])
+  .describe("Typed decisive reason the pool ranked the way it did (QA-034).");
+export type RouteRankingReason = z.infer<typeof RouteRankingReason>;
+
+/** Per-candidate billing/cost tuple projected onto the routing evidence (QA-034). */
+export const RouteRankingEntry = z
+  .object({
+    harness_id: Id.describe("Candidate harness id."),
+    billing_knowledge: BillingKnowledge.describe("Effective billing knowledge used to rank it."),
+    incremental_cost_usd: z
+      .number()
+      .nonnegative()
+      .nullable()
+      .default(null)
+      .describe("Known incremental cash cost, when any; null when unknown."),
+    eligible: z
+      .boolean()
+      .describe("Whether the candidate survived paid_fallback/cooldown filtering."),
+  })
+  .describe("Per-candidate billing/cost tuple in the routing rationale (QA-034).");
+export type RouteRankingEntry = z.infer<typeof RouteRankingEntry>;
+
+/**
+ * Typed routing rationale (QA-034): the ordered pool, dropped ids, the decisive
+ * reason, and the per-candidate billing/cost tuples. Recorded ONCE at pool
+ * ordering as run evidence (RunTelemetry.routing_rationale); surfaces project it
+ * and never reconstruct the order from prose.
+ */
+export const RouteRankingRationale = z
+  .object({
+    goal: RoutingGoal,
+    paid_fallback: PaidFallback,
+    order: z.array(Id).default([]).describe("Final ranked order, harness ids."),
+    dropped: z
+      .array(Id)
+      .default([])
+      .describe("Ids removed by paid_fallback or cooldown before ranking."),
+    reason: RouteRankingReason,
+    entries: z.array(RouteRankingEntry).default([]),
+  })
+  .describe("Typed routing rationale recorded once at pool ordering (QA-034).");
+export type RouteRankingRationale = z.infer<typeof RouteRankingRationale>;
+
 export const QualityTierRoute = z
   .object({
     harness: Id,

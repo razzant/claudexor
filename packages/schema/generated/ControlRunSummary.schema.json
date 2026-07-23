@@ -1053,6 +1053,117 @@
           "description": "Route evidence from telemetry; null when no telemetry exists (legacy runs).",
           "default": null
         },
+        "routingRationale": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "goal": {
+                  "$ref": "#/definitions/ControlRunSummary/properties/routingGoal"
+                },
+                "paid_fallback": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "when_unavailable",
+                    "allowed_within_cap"
+                  ],
+                  "description": "When a route with incremental paid spend may be used."
+                },
+                "order": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Non-empty identifier string."
+                  },
+                  "default": [],
+                  "description": "Final ranked order, harness ids."
+                },
+                "dropped": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/ControlRunSummary/properties/routingRationale/anyOf/0/properties/order/items"
+                  },
+                  "default": [],
+                  "description": "Ids removed by paid_fallback or cooldown before ranking."
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "subscription_entitlement_first",
+                    "lowest_incremental_cash",
+                    "quality_tier",
+                    "expiring_quota_slack",
+                    "all_incremental_cash_unknown",
+                    "declared_order"
+                  ],
+                  "description": "Typed decisive reason the pool ranked the way it did (QA-034)."
+                },
+                "entries": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "harness_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Candidate harness id."
+                      },
+                      "billing_knowledge": {
+                        "type": "string",
+                        "enum": [
+                          "proven_zero",
+                          "subscription_entitlement",
+                          "metered",
+                          "unknown"
+                        ],
+                        "description": "Effective billing knowledge used to rank it."
+                      },
+                      "incremental_cost_usd": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Known incremental cash cost, when any; null when unknown."
+                      },
+                      "eligible": {
+                        "type": "boolean",
+                        "description": "Whether the candidate survived paid_fallback/cooldown filtering."
+                      }
+                    },
+                    "required": [
+                      "harness_id",
+                      "billing_knowledge",
+                      "eligible"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Per-candidate billing/cost tuple in the routing rationale (QA-034)."
+                  },
+                  "default": []
+                }
+              },
+              "required": [
+                "goal",
+                "paid_fallback",
+                "reason"
+              ],
+              "additionalProperties": false,
+              "description": "Typed routing rationale recorded once at pool ordering (QA-034)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Typed routing rationale (QA-034) projected from telemetry; null when no ranking was computed or on legacy runs.",
+          "default": null
+        },
         "tests": {
           "type": "array",
           "items": {

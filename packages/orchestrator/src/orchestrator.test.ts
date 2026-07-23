@@ -3603,6 +3603,156 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "omissions.md"))).toBe(true);
   });
 
+  it("QA-019: n>1 subscription deep-scan scouts admit under a finite cap via the estimate floor (both scouts run)", async () => {
+    const repo = await initRepo();
+    // A subscription scout: vendor-native route, no cash usage. Without the
+    // estimate floor the SECOND parallel scout reserves an unknown-cost paid unit
+    // under the finite cap and is refused (unknown_paid_in_flight); the idx>0
+    // floor gives it a bounded estimate so it admits.
+    const subScout = (id: string): HarnessAdapter =>
+      askAdapter(id, function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts, credential_route: "vendor_native" };
+        yield {
+          type: "message",
+          session_id: sessionId,
+          ts,
+          text: "Subscription scout analysis.",
+          credential_route: "vendor_native",
+        };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+    const registry = new Map<string, HarnessAdapter>([["sub-scout", subScout("sub-scout")]]);
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [],
+      paidBudget: { kind: "finite", maxUsd: 5 },
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["sub-scout"],
+      n: 2,
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    const findings = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    expect(findings).toContain("Explorers succeeded: 2/2");
+  });
+
+  it("QA-019: a still-denied scout in a partial scan is disclosed in the denominator (1/2) and omissions", async () => {
+    const repo = await initRepo();
+    // Subscription scouts (vendor-native, no cash). A cap BELOW the estimate
+    // floor (0.05) admits the first unknown-cost scout but refuses the second
+    // even with its floor estimate (estimate_headroom) — a genuine 1/2 partial.
+    const subScout = (id: string): HarnessAdapter =>
+      askAdapter(id, function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts, credential_route: "vendor_native" };
+        yield {
+          type: "message",
+          session_id: sessionId,
+          ts,
+          text: "Subscription scout analysis.",
+          credential_route: "vendor_native",
+        };
+        yield { type: "completed", session_id: sessionId, ts };
+      });
+    const registry = new Map<string, HarnessAdapter>([["sub-scout", subScout("sub-scout")]]);
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [],
+      paidBudget: { kind: "finite", maxUsd: 0.04 },
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["sub-scout"],
+      n: 2,
+    });
+    // Denominator is honest: 1 of 2, not 1 of 1 — the denied scout is disclosed.
+    const report = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    expect(report).toContain("Explorers succeeded: 1/2");
+    const omissions = readFileSync(join(res.runDir, "final", "omissions.md"), "utf8");
+    expect(omissions).toContain("budget denied before spawn");
+    const findings = readFileSync(join(res.runDir, "final", "explore-findings.yaml"), "utf8");
+    expect(findings).toMatch(/status: failed/);
+  });
+
+  it("QA-019/QA-050: an all-denied scan names budget in the terminal (classifier), never harness_error/auth", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [],
+      // A $0 finite cap refuses every non-proven-free scout before spawn.
+      paidBudget: { kind: "finite", maxUsd: 0 },
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["fake-success"],
+      n: 2,
+    });
+    expect(legacyOutcome(res)).not.toBe("success");
+    // The terminal routes through the QA-050 budget classifier: phase budget and
+    // budget remediation — never a harness auth/setup template. The budget-denied
+    // markers on the recorded attempts keep this classifier eligible.
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toMatch(/phase: budget/);
+    expect(failure).not.toMatch(/harness authentication/);
+  });
+
+  it("QA-034: the pool ordering rationale is recorded once as run telemetry evidence (order + decisive reason + per-candidate entries)", async () => {
+    const repo = await initRepo();
+    const a = askAdapter("route-a", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "message", session_id: sessionId, ts, text: "Answer from route-a." };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    const b = askAdapter(
+      "route-b",
+      function* (sessionId) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: sessionId, ts };
+        yield { type: "message", session_id: sessionId, ts, text: "Answer from route-b." };
+        yield { type: "completed", session_id: sessionId, ts };
+      },
+      "anthropic",
+    );
+    const registry = new Map<string, HarnessAdapter>([
+      ["route-a", a],
+      ["route-b", b],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "2+2?",
+      mode: "ask",
+      routingGoal: "economy",
+      harnesses: ["route-a", "route-b"],
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("routing_rationale");
+    // A real typed tuple: goal, a decisive reason, and per-candidate entries for
+    // BOTH pooled routes — not a reconstruction from prose.
+    expect(telemetry).toMatch(/goal: economy/);
+    expect(telemetry).toMatch(
+      /reason: (subscription_entitlement_first|lowest_incremental_cash|all_incremental_cash_unknown|declared_order)/,
+    );
+    expect(telemetry).toContain("route-a");
+    expect(telemetry).toContain("route-b");
+  });
+
   it("keeps warning-bearing explorers in deep-scan synthesis when they produced a report", async () => {
     const repo = await initRepo();
     const warned = askAdapter("warned", function* (sessionId) {

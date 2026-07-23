@@ -896,7 +896,7 @@ describe("routing telemetry", () => {
       });
       expect(r.reason).toBe("all_incremental_cash_unknown");
       expect(r.order).toEqual(["codex", "claude"]);
-      expect(r.entries.every((e) => e.billingKnowledge === "unknown")).toBe(true);
+      expect(r.entries.every((e) => e.billing_knowledge === "unknown")).toBe(true);
 
       // A verified native route flips the decisive reason to entitlement-first.
       const r2 = explainRanking(

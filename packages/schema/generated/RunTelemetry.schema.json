@@ -430,7 +430,26 @@
                         "unknown"
                       ],
                       "default": "unknown",
-                      "description": "Kind of transient failure."
+                      "description": "Fine-grained kind of transient failure (adapter-declared)."
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "timeout",
+                        "rate_limited",
+                        "auth_failed",
+                        "capability_refused",
+                        "process_crash",
+                        "config_error",
+                        "unknown_harness_error"
+                      ],
+                      "description": "Typed failure category (GH #31) the retry policy and required-actions read; orthogonal to kind.",
+                      "default": "unknown_harness_error"
+                    },
+                    "retryable": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Whether the classified category is retryable (the centralized retry-policy gate)."
                     },
                     "retry_delay_ms": {
                       "anyOf": [
@@ -444,6 +463,34 @@
                       ],
                       "default": null,
                       "description": "Suggested retry delay in milliseconds, when reported."
+                    },
+                    "http_status": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "description": "Vendor HTTP status code disclosed by the error, when any; null otherwise."
+                    },
+                    "signal": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null,
+                      "description": "Process termination signal (e.g. SIGKILL) when a crash killed the child; null otherwise."
+                    },
+                    "adapter_code": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null,
+                      "description": "Vendor/adapter error-category code passed verbatim as evidence; null when none."
                     }
                   },
                   "additionalProperties": false,
@@ -800,6 +847,121 @@
           ],
           "default": null,
           "description": "Auth route receipt: requested preference, disclosed effective route/source, deterministic reason, and the disclosing attempt; surfaces project it verbatim."
+        },
+        "routing_rationale": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "goal": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "quality",
+                    "economy"
+                  ],
+                  "description": "Routing objective: pace expiring quota, choose the highest declared quality tier, or minimize incremental paid spend."
+                },
+                "paid_fallback": {
+                  "type": "string",
+                  "enum": [
+                    "never",
+                    "when_unavailable",
+                    "allowed_within_cap"
+                  ],
+                  "description": "When a route with incremental paid spend may be used."
+                },
+                "order": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                  },
+                  "default": [],
+                  "description": "Final ranked order, harness ids."
+                },
+                "dropped": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/RunTelemetry/properties/final_attempt_id/anyOf/0"
+                  },
+                  "default": [],
+                  "description": "Ids removed by paid_fallback or cooldown before ranking."
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "subscription_entitlement_first",
+                    "lowest_incremental_cash",
+                    "quality_tier",
+                    "expiring_quota_slack",
+                    "all_incremental_cash_unknown",
+                    "declared_order"
+                  ],
+                  "description": "Typed decisive reason the pool ranked the way it did (QA-034)."
+                },
+                "entries": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "harness_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Candidate harness id."
+                      },
+                      "billing_knowledge": {
+                        "type": "string",
+                        "enum": [
+                          "proven_zero",
+                          "subscription_entitlement",
+                          "metered",
+                          "unknown"
+                        ],
+                        "description": "Effective billing knowledge used to rank it."
+                      },
+                      "incremental_cost_usd": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null,
+                        "description": "Known incremental cash cost, when any; null when unknown."
+                      },
+                      "eligible": {
+                        "type": "boolean",
+                        "description": "Whether the candidate survived paid_fallback/cooldown filtering."
+                      }
+                    },
+                    "required": [
+                      "harness_id",
+                      "billing_knowledge",
+                      "eligible"
+                    ],
+                    "additionalProperties": false,
+                    "description": "Per-candidate billing/cost tuple in the routing rationale (QA-034)."
+                  },
+                  "default": []
+                }
+              },
+              "required": [
+                "goal",
+                "paid_fallback",
+                "reason"
+              ],
+              "additionalProperties": false,
+              "description": "Typed routing rationale recorded once at pool ordering (QA-034)."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Typed routing rationale recorded once at pool ordering (QA-034); null on legacy artifacts or when no ranking was computed.",
+          "default": null
         },
         "generated_at": {
           "type": "string",

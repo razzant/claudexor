@@ -6,6 +6,9 @@ import type {
   Intent,
   PaidFallback,
   QualityTierSet,
+  RouteRankingEntry,
+  RouteRankingRationale,
+  RouteRankingReason,
   RoutingGoal,
 } from "@claudexor/schema";
 import type { BudgetLedger } from "./ledger.js";
@@ -155,43 +158,13 @@ export function selectHarness(
   return rankHarnesses(candidates, ctx)[0] ?? null;
 }
 
-/** Per-candidate billing/cost tuple projected onto the routing evidence. */
-export interface RouteRankingEntry {
-  harnessId: string;
-  billingKnowledge: BillingKnowledge;
-  incrementalCostUsd: number | null;
-  eligible: boolean;
-}
-
-/** Typed reason the pool ranked the way it did — the machine-readable
- * replacement for the missing routing rationale (QA-034 report: an all-native
- * Economy pool must not read as "chose the cheapest" when it merely preserved
- * declared order). Producer: budget router. Consumer/emitter: orchestrator
- * routing evidence (seam). */
-export type RouteRankingReason =
-  | "subscription_entitlement_first"
-  | "lowest_incremental_cash"
-  | "quality_tier"
-  | "expiring_quota_slack"
-  | "all_incremental_cash_unknown"
-  | "declared_order";
-
-export interface RouteRankingRationale {
-  goal: RoutingGoal;
-  paidFallback: PaidFallback;
-  /** Final ranked order, harness ids. */
-  order: string[];
-  /** Ids removed by paid_fallback or cooldown before ranking. */
-  dropped: string[];
-  reason: RouteRankingReason;
-  entries: RouteRankingEntry[];
-}
-
 /**
  * Explain a ranking as a typed record (QA-034): the per-candidate billing/cost
  * tuple, the eligible/dropped split, and the DECISIVE reason. Kept axis-aligned
  * with rankHarnesses so the recorded rationale can never disagree with the
  * order actually taken. Prose-free; a surface projects it, never reconstructs it.
+ * The shape is the schema-owned RouteRankingRationale (snake_case) so it can be
+ * persisted verbatim as RunTelemetry.routing_rationale.
  */
 export function explainRanking(
   candidates: RouterCandidate[],
@@ -200,15 +173,15 @@ export function explainRanking(
   const order = rankHarnesses(candidates, ctx).map((c) => c.harnessId);
   const eligibleIds = new Set(order);
   const entries: RouteRankingEntry[] = candidates.map((c) => ({
-    harnessId: c.harnessId,
-    billingKnowledge: effectiveBilling(c),
-    incrementalCostUsd: c.incrementalCostUsd ?? null,
+    harness_id: c.harnessId,
+    billing_knowledge: effectiveBilling(c),
+    incremental_cost_usd: c.incrementalCostUsd ?? null,
     eligible: eligibleIds.has(c.harnessId),
   }));
   const dropped = candidates.filter((c) => !eligibleIds.has(c.harnessId)).map((c) => c.harnessId);
   const ranked = entries.filter((e) => e.eligible);
   const reason = rankingReason(ctx, ranked);
-  return { goal: ctx.goal, paidFallback: ctx.paidFallback, order, dropped, reason, entries };
+  return { goal: ctx.goal, paid_fallback: ctx.paidFallback, order, dropped, reason, entries };
 }
 
 function rankingReason(ctx: RouteContext, ranked: RouteRankingEntry[]): RouteRankingReason {
@@ -218,11 +191,11 @@ function rankingReason(ctx: RouteContext, ranked: RouteRankingEntry[]): RouteRan
   if (
     ranked.some(
       (e) =>
-        e.billingKnowledge === "subscription_entitlement" || e.billingKnowledge === "proven_zero",
+        e.billing_knowledge === "subscription_entitlement" || e.billing_knowledge === "proven_zero",
     )
   )
     return "subscription_entitlement_first";
-  if (ranked.some((e) => e.incrementalCostUsd !== null)) return "lowest_incremental_cash";
+  if (ranked.some((e) => e.incremental_cost_usd !== null)) return "lowest_incremental_cash";
   if (ranked.length > 0) return "all_incremental_cash_unknown";
   return "declared_order";
 }

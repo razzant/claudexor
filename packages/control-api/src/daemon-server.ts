@@ -2454,6 +2454,9 @@ function summarizeRun(
         : null,
     ),
     route: controlRoute(telemetry, p),
+    // QA-034: routing rationale projected verbatim from the engine telemetry —
+    // surfaces never reconstruct the order from prose.
+    routingRationale: telemetry?.routing_rationale ?? null,
     tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
     createdAt: rec.createdAt,
     startedAt: rec.startedAt,

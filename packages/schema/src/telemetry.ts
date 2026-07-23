@@ -10,7 +10,7 @@ import {
 } from "./primitives.js";
 import { OutputSchemaDialect } from "./output-schema-dialect.js";
 import { ToolKind } from "./tool-ref.js";
-import { AuthMode } from "./budget.js";
+import { AuthMode, RouteRankingRationale } from "./budget.js";
 import { AuthPreference } from "./primitives.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
@@ -295,7 +295,9 @@ export const DelegationBeltEvidence = z
       .string()
       .nullable()
       .default(null)
-      .describe("The injected belt MCP server name (as the harness reports it); null when unknown."),
+      .describe(
+        "The injected belt MCP server name (as the harness reports it); null when unknown.",
+      ),
     ready: z
       .boolean()
       .default(false)
@@ -510,6 +512,15 @@ export const RunTelemetry = z
       .default(null)
       .describe(
         "Auth route receipt: requested preference, disclosed effective route/source, deterministic reason, and the disclosing attempt; surfaces project it verbatim.",
+      ),
+    /** Typed routing rationale (QA-034) recorded ONCE at pool ordering: the
+     * ordered/dropped pool, the decisive reason, and per-candidate billing/cost
+     * tuples. Run evidence, not an event. Null on legacy artifacts and on runs
+     * with an explicit single-harness pool where no ranking was computed. */
+    routing_rationale: RouteRankingRationale.nullable()
+      .default(null)
+      .describe(
+        "Typed routing rationale recorded once at pool ordering (QA-034); null on legacy artifacts or when no ranking was computed.",
       ),
     generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
   })

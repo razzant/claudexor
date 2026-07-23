@@ -24,6 +24,8 @@ import { policyFindings } from "./policyFindings.js";
 import { join } from "node:path";
 import type {
   AccessProfile,
+  AuthSourceReadiness,
+  RouteRankingRationale,
   Attachment,
   ControlReviewerPanelEntry,
   EffortHint,
@@ -208,7 +210,9 @@ import {
   attemptUsageCostSettlement,
   BudgetLedger,
   isBudgetTerminal,
+  type RouteAuthEvidence,
   type RouterCandidate,
+  explainRanking,
   loadHarnessMetrics,
   promptFingerprint,
   unknownCostSettlement,
@@ -598,6 +602,11 @@ export interface PlannerAttemptArgs {
 export class Orchestrator {
   private readonly gateway: HarnessGateway;
   private readonly requestRequirements = new RequestRequirementsResolver();
+  /** QA-034: the typed routing rationale computed ONCE at pool ordering, keyed
+   * by run id so the terminal telemetry writer can record it as run evidence
+   * (RunTelemetry.routing_rationale). Cleared when the run's telemetry is
+   * written. Absent for runs with an explicit single-harness pool (no ranking). */
+  private readonly routingRationaleByRun = new Map<string, RouteRankingRationale>();
   /** Per-attempt cap on forwarded live delta chunks (W-C4 flood guard, sol
    * #10): past this the deltas are dropped and the cutoff is disclosed once;
    * the complete message always still lands. */
@@ -1061,6 +1070,9 @@ export class Orchestrator {
     ledger?: BudgetLedger,
     log?: EventLog,
     routeContext?: ResolvedRouteContext,
+    /** QA-034: when provided, the pool-ordering rationale is recorded under this
+     * run id so the terminal telemetry writer can persist it. */
+    runId?: string,
   ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
@@ -1335,7 +1347,7 @@ export class Orchestrator {
         `no harness can perform '${intent}' for this mode${dropped.length ? ` (skipped: ${dropped.join(", ")})` : ""}`,
       );
     }
-    const ordered = this.orderPool(pool, input, intent, statusById, ledger);
+    const ordered = this.orderPool(pool, input, intent, statusById, ledger, runId);
     if (ordered.length === 0) {
       throw new HarnessUnavailableError(
         `no harness remains eligible for '${intent}' after budget and quota routing`,
@@ -1417,8 +1429,12 @@ export class Orchestrator {
     pool: RoutedAdapter[],
     input: RunInput,
     intent: Intent,
-    statusById: Map<string, { manifest?: { auth_modes?: string[] } | null }>,
+    statusById: Map<
+      string,
+      { manifest?: { auth_modes?: string[] } | null; authSources?: AuthSourceReadiness[] }
+    >,
     ledger?: BudgetLedger,
+    runId?: string,
   ): RoutedAdapter[] {
     let ordered = pool;
     if (pool.length > 0) {
@@ -1429,7 +1445,8 @@ export class Orchestrator {
       // Settled cost is evidence for economy routing, never a provider quality prior.
       const metrics = loadHarnessMetrics(globalConfigDir());
       const remaining: RouterCandidate[] = pool.map((r) => {
-        const authModes = statusById.get(r.adapter.id)?.manifest?.auth_modes ?? [];
+        const status = statusById.get(r.adapter.id);
+        const authModes = status?.manifest?.auth_modes ?? [];
         const metric = metrics[r.adapter.id];
         // Auth mode for routing: prefer the ROUTE EVIDENCE from the
         // last settled attempt (adapter-disclosed, persisted in metrics) over
@@ -1462,6 +1479,13 @@ export class Orchestrator {
         } catch {
           credentialSubjectId = undefined;
         }
+        // QA-034: the typed auth-route evidence (doctor source verification x the
+        // resolved route) is AUTHORITATIVE for billing knowledge in the router —
+        // a VERIFIED native route proves subscription_entitlement, so it survives
+        // paid_fallback:never and ranks with a real economy tuple instead of
+        // reading as unknown/paid. Absent (unknown route) falls back to the
+        // metric-derived billingKnowledge below.
+        const authRoute = this.authRouteEvidenceFor(authMode, status?.authSources ?? []);
         return {
           harnessId: r.adapter.id,
           available: true,
@@ -1478,18 +1502,24 @@ export class Orchestrator {
               : authMode === "local_session"
                 ? "vendor_native"
                 : undefined,
+          ...(authRoute ? { authRoute } : {}),
           credentialSubjectId,
         };
       });
-      const ranked = rankHarnesses(remaining, {
+      const routeCtx = {
         goal,
         paidFallback: config.routing.paid_fallback,
         intent,
         qualityTiers: config.routing.quality_tiers,
         ledger: routeLedger,
-      })
+      };
+      const ranked = rankHarnesses(remaining, routeCtx)
         .map((candidate) => byId.get(candidate.harnessId))
         .filter((candidate): candidate is RoutedAdapter => Boolean(candidate));
+      // QA-034: record the typed rationale ONCE at pool ordering (run evidence,
+      // not an event). Axis-aligned with rankHarnesses above so the persisted
+      // reason can never disagree with the order actually taken.
+      if (runId) this.routingRationaleByRun.set(runId, explainRanking(remaining, routeCtx));
       ordered = ranked;
     }
     if (input.primaryHarness) {
@@ -1497,6 +1527,40 @@ export class Orchestrator {
       if (primary) ordered = [primary, ...ordered.filter((r) => r !== primary)];
     }
     return ordered;
+  }
+
+  /**
+   * Typed auth-route evidence for one candidate (QA-034): the concrete
+   * credential route the resolved auth mode maps to, plus the doctor's
+   * verification for the source that route runs under. `local_session` →
+   * vendor_native + the native/OAuth source verification; `api_key` →
+   * managed_api_key + the key source verification. Unknown route → no evidence
+   * (the router keeps its conservative metric-derived billing). Verification is
+   * the source's typed verdict — never inferred from mere availability.
+   */
+  private authRouteEvidenceFor(
+    authMode: "local_session" | "api_key" | "unknown",
+    sources: AuthSourceReadiness[],
+  ): RouteAuthEvidence | undefined {
+    const usable = (s: AuthSourceReadiness): boolean =>
+      s.availability === "available" && s.verification !== "failed";
+    if (authMode === "local_session") {
+      const native = sources.find(
+        (s) => usable(s) && (s.source === "native_session" || s.source === "oauth_token_env"),
+      );
+      return { route: "vendor_native", verification: native?.verification ?? "not_run" };
+    }
+    if (authMode === "api_key") {
+      const key = sources.find(
+        (s) =>
+          usable(s) &&
+          (s.source === "api_key_env" ||
+            s.source === "api_key_flag" ||
+            s.source === "provider_auth_file"),
+      );
+      return { route: "managed_api_key", verification: key?.verification ?? "not_run" };
+    }
+    return undefined;
   }
 
   /**
@@ -2721,7 +2785,14 @@ export class Orchestrator {
     let adapters: RoutedAdapter[];
     try {
       // Best-of races the whole pool (no divergence `log`: the pool still runs).
-      adapters = await this.resolveCandidateAdapters(input, this.candidateIntent(input), ledger);
+      adapters = await this.resolveCandidateAdapters(
+        input,
+        this.candidateIntent(input),
+        ledger,
+        undefined,
+        undefined,
+        runId,
+      );
     } catch (err) {
       const message = safeErrorMessage(err);
       store.writeText(
@@ -3092,7 +3163,8 @@ export class Orchestrator {
           ? classifyBudgetFailure({ denial: budgetDenial, terminal: budgetReason })
           : null;
       const facts = makeOutcomeFacts("failed", {
-        reason: agentBudgetMapping?.reason ?? (budgetStopped ? "budget_exhausted" : "harness_failed"),
+        reason:
+          agentBudgetMapping?.reason ?? (budgetStopped ? "budget_exhausted" : "harness_failed"),
         noChanges: true,
       });
       const why = agentBudgetMapping?.safeMessage ?? "no candidates produced";
@@ -3889,6 +3961,10 @@ export class Orchestrator {
     attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[],
     finalAttemptId: string | null,
   ): void {
+    // QA-034: attach the routing rationale recorded at pool ordering (if this
+    // run computed one), then clear it — telemetry is written once at terminal.
+    const routingRationale = this.routingRationaleByRun.get(runId) ?? null;
+    this.routingRationaleByRun.delete(runId);
     writeRunTelemetryArtifact({
       store,
       finalDir: paths.finalDir,
@@ -3898,6 +3974,7 @@ export class Orchestrator {
       mode,
       attempts,
       finalAttemptId,
+      routingRationale,
       resolveAuthPreference: (harnessId) =>
         this.authPreferenceForHarness(contract.repo.root, harnessId, contract.auth_preference),
     });
@@ -4227,6 +4304,8 @@ export class Orchestrator {
         this.candidateIntent(input),
         ledger,
         log,
+        undefined,
+        runId,
       );
       this.requestRequirements.assertConvergenceWorkspace(input.inPlace === true, adapterPool);
     } catch (err) {
@@ -5397,6 +5476,7 @@ export class Orchestrator {
         ledger,
         log,
         roHome,
+        runId,
       );
     } catch (err) {
       roHome.dispose();
@@ -5870,6 +5950,7 @@ export class Orchestrator {
         ledger,
         log,
         roHome,
+        runId,
       );
       if (!opts.deepScan) {
         const seen = new Set<string>();
@@ -5924,6 +6005,10 @@ export class Orchestrator {
       report: string;
       error: string | null;
       telemetry: AttemptTelemetry;
+      /** QA-019: this scout was refused BEFORE spawn by the budget gate — it
+       * belongs in the denominator/omissions but never ran the harness, so the
+       * all-denied terminal still routes through the QA-050 budget classifier. */
+      budgetDenied?: boolean;
     }
     const attempts: ReadonlyAttempt[] = [];
     const attemptTelemetries: {
@@ -5943,6 +6028,46 @@ export class Orchestrator {
     // (and is semantically wrong — N explorers continuing one conversation).
     // Grant resume to the first slot of each harness only; the rest run fresh.
     const resumeGranted = new Set<string>();
+
+    // QA-019 disclosure: a scout the budget gate refused before spawn is
+    // recorded as a failed attempt with a placeholder telemetry and a
+    // budget_denied marker. It enters the denominator (honest 1/2), omissions,
+    // and telemetry.yaml, and the marker lets the all-denied terminal still
+    // route through the QA-050 budget classifier (never harness_error).
+    const recordBudgetDeniedScout = (
+      harnessId: string,
+      attemptId: string,
+      reason: string,
+    ): void => {
+      const telemetry = createAttemptTelemetry(
+        contract.external_context.policy,
+        contract.external_context.web_required,
+        contract.external_context.effective_mode,
+      );
+      const error = `budget denied before spawn: ${reason}`;
+      setAttemptOutcome(telemetry, {
+        deliverablePresent: false,
+        gatesPassed: null,
+        harnessErrored: false,
+        webRequiredUnsatisfied: false,
+      });
+      attempts.push({
+        attemptId,
+        harnessId,
+        status: "failed",
+        report: "",
+        error,
+        telemetry,
+        budgetDenied: true,
+      });
+      attemptTelemetries.push({ attemptId, harnessId, telemetry });
+      if (opts.deepScan) {
+        store.writeText(
+          join(paths.findingsDir, `${attemptId}-budget-denied.md`),
+          `# Explorer ${attemptId} not started\n\n${error}\n`,
+        );
+      }
+    };
 
     const runReadonlyAttempt = async (
       routed: RoutedAdapter,
@@ -5965,10 +6090,14 @@ export class Orchestrator {
         attemptId,
         intent: opts.intent,
         harnessId: adapter.id,
+        // QA-019: an n>1 deep-scan scout admits under a FINITE estimate floor
+        // (mirror of the candidate loop): the first scout reserves without a
+        // floor, but later scouts pass the repo's usd floor so a subscription
+        // swarm is not refused for lacking a per-attempt cash quote under a cap.
         cost: attemptCostEvidence(
           adapter.id,
           attemptId,
-          undefined,
+          opts.deepScan && idx > 0 ? this.estimateUsdFloor(input.repoRoot) : undefined,
           this.routeBillingKnowledge(input, adapter.id),
         ),
       });
@@ -5987,6 +6116,16 @@ export class Orchestrator {
           harnessId: adapter.id,
           attemptId,
         };
+        // QA-019 disclosure: a still-denied deep-scan scout must not vanish from
+        // the denominator. Record a placeholder failed attempt with a
+        // budget_denied marker so the explore-findings map counts it (1/2, not
+        // 1/1), omissions and telemetry record the denial, and the all-denied
+        // terminal still routes through the QA-050 budget classifier. The
+        // sequential ask/audit path has no denominator — a denial there stays a
+        // pure budget stop (no phantom failed attempt), preserving its terminal.
+        if (opts.deepScan) {
+          recordBudgetDeniedScout(adapter.id, attemptId, lease.reason ?? "budget lease denied");
+        }
         return;
       }
       const knobs = this.routeSpecKnobs(routed, contract, modelOverride, input.effort);
@@ -6017,11 +6156,7 @@ export class Orchestrator {
         : null;
       // D-16d: the continuation packet pointer rides after the lane pointer so
       // the fresh session is re-grounded in the exhausted attempt's work.
-      const promptWithPointers = [
-        explorerPrompt,
-        laneContinuity?.pointerLine,
-        continuationPointer,
-      ]
+      const promptWithPointers = [explorerPrompt, laneContinuity?.pointerLine, continuationPointer]
         .filter((p): p is string => Boolean(p))
         .join("\n\n");
       let spec = HarnessRunSpec.parse({
@@ -6640,7 +6775,7 @@ export class Orchestrator {
       // the shared classifier. Only a pure-denial scan (no scout actually errored
       // in the harness) qualifies, so a real explorer failure is never masked.
       const scanBudgetMapping =
-        budgetStopped && !blocked && attempts.length === 0
+        budgetStopped && !blocked && attempts.every((a) => a.budgetDenied === true)
           ? classifyBudgetFailure({ denial: budgetDenial, terminal: ledger.terminal() })
           : null;
       const message = scanBudgetMapping
@@ -6854,7 +6989,8 @@ export class Orchestrator {
     if (terminalFacts.lifecycle !== "succeeded") {
       writeFailure(store, paths, {
         phase: "executor",
-        category: terminalFacts.reason === "context_capacity_exhausted" ? "harness_error" : "budget",
+        category:
+          terminalFacts.reason === "context_capacity_exhausted" ? "harness_error" : "budget",
         safeMessage: `read-only report ended ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason.replaceAll("_", " ")})` : ""}`,
         runDir: paths.root,
         nextActions:

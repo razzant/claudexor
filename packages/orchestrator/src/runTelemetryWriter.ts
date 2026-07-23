@@ -4,6 +4,7 @@ import {
   deriveAuthRouteReason,
   RunTelemetry as RunTelemetrySchema,
   type ModeKind,
+  type RouteRankingRationale,
   type TaskContract,
 } from "@claudexor/schema";
 import type { ArtifactStore } from "@claudexor/artifact-store";
@@ -25,6 +26,9 @@ export function writeRunTelemetryArtifact(args: {
   mode: ModeKind;
   attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[];
   finalAttemptId: string | null;
+  /** QA-034: typed routing rationale recorded at pool ordering; null when no
+   * ranking was computed (explicit single-harness pool) or on legacy runs. */
+  routingRationale?: RouteRankingRationale | null;
   resolveAuthPreference: (harnessId: string) => TaskContract["auth_preference"];
 }): void {
   const { store, finalDir, contract, runId, taskId, mode, attempts, finalAttemptId } = args;
@@ -88,6 +92,7 @@ export function writeRunTelemetryArtifact(args: {
               : null,
         };
       })(),
+      routing_rationale: args.routingRationale ?? null,
       generated_at: nowIso(),
     });
     store.writeYaml(join(finalDir, "telemetry.yaml"), telemetry);
