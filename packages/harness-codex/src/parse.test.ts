@@ -318,6 +318,94 @@ describe("plan progress", () => {
   });
 });
 
+describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
+  const ENVELOPE = (output: unknown) =>
+    JSON.stringify({ work_report: { state: "completed", required_inputs: [] }, output });
+
+  it("unwraps an intermediate envelope to its output for the VISIBLE stream (never raw JSON)", () => {
+    const state = { envelopeActive: true };
+    const out = parseCodexEvent(
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: ENVELOPE("Использую навык OpenAI Docs, чтобы сопоставить режимы."),
+        },
+      },
+      "s1",
+      state,
+    );
+    expect(out).toHaveLength(1);
+    expect(out?.[0]?.type).toBe("message");
+    // The visible text is the UNWRAPPED output — no `{work_report` prefix leaks.
+    expect(out?.[0]?.text).toBe("Использую навык OpenAI Docs, чтобы сопоставить режимы.");
+    expect(out?.[0]?.text).not.toContain("work_report");
+    // The RAW envelope is retained as the finality candidate so the orchestrator
+    // still un-nests the FINAL envelope downstream.
+    expect(state.lastAgentMessage).toContain("work_report");
+  });
+
+  it("suppresses an intermediate envelope whose output is non-string (never leaks the object)", () => {
+    const state = { envelopeActive: true };
+    const out = parseCodexEvent(
+      {
+        type: "item.completed",
+        item: { type: "agent_message", text: ENVELOPE({ table: [1, 2] }) },
+      },
+      "s1",
+      state,
+    );
+    // Recognized-but-suppressed: no visible message carrying the raw envelope.
+    expect(out).toEqual([]);
+    // Raw text still captured for downstream finalization.
+    expect(state.lastAgentMessage).toContain("work_report");
+  });
+
+  it("finalizes the LAST envelope message RAW on turn.completed (orchestrator unwrap unchanged)", () => {
+    const state = { envelopeActive: true };
+    const finalEnvelope = ENVELOPE("Ask — read-only; Plan — planning; Agent — edits.");
+    const events = [
+      {
+        type: "item.completed",
+        item: { type: "agent_message", text: ENVELOPE("mid-run narration") },
+      },
+      { type: "item.completed", item: { type: "agent_message", text: finalEnvelope } },
+      { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+    ].flatMap((o) => parseCodexEvent(o, "s1", state) ?? []);
+    const final = events.find((e) => e.type === "message" && e.final === true);
+    // The final message carries the RAW envelope verbatim (orchestrator unwraps it).
+    expect(final?.text).toBe(finalEnvelope);
+    expect(final?.payload?.["final_source"]).toBe("last_agent_message");
+    // No VISIBLE intermediate message leaked the raw envelope: the mid-run one
+    // was unwrapped to its output, and the pre-final one likewise.
+    const visible = events.filter((e) => e.type === "message" && e.final !== true);
+    for (const v of visible) expect(v.text).not.toContain("work_report");
+    expect(visible.map((v) => v.text)).toContain("mid-run narration");
+  });
+
+  it("passes a plain (non-envelope) message through untouched even when envelope is active", () => {
+    const state = { envelopeActive: true };
+    const out = parseCodexEvent(
+      { type: "item.completed", item: { type: "agent_message", text: "just a normal answer" } },
+      "s1",
+      state,
+    );
+    expect(out?.[0]?.text).toBe("just a normal answer");
+  });
+
+  it("does NOT unwrap when the run armed no envelope (typed-shape match still gated)", () => {
+    const raw = ENVELOPE("would-be output");
+    const out = parseCodexEvent(
+      { type: "item.completed", item: { type: "agent_message", text: raw } },
+      "s1",
+      {}, // envelopeActive falsy
+    );
+    // Without an armed envelope the message is surfaced verbatim (a user could
+    // legitimately want that literal JSON) — the gate prevents false unwrapping.
+    expect(out?.[0]?.text).toBe(raw);
+  });
+});
+
 describe("structured output flag", () => {
   it("codexExecArgs adds --output-schema <file> in both fresh and resume branches", async () => {
     const { codexExecArgs } = await import("./index.js");

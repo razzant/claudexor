@@ -773,7 +773,7 @@ async function* runCodex(
   // codex recorded in its own rollout transcript; cache that one read.
   let codexThreadId: string | undefined;
   let transcriptModel: string | undefined;
-  const parseState: CodexParseState = {}; // per-run finality (see CodexParseState)
+  const parseState: CodexParseState = { envelopeActive: !!spec.output_schema }; // finality + #19816
 
   try {
     yield* runtime.runCliHarness({

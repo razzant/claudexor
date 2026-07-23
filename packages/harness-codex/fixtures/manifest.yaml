@@ -47,6 +47,26 @@ fixtures:
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: true
+  # D-16 / codex #19816: `--output-schema` constrains INTERMEDIATE agent
+  # messages too, so each mid-run narration arrives as a raw
+  # `{work_report, output}` envelope (owner dogfood: the raw envelope streamed
+  # into the PROGRESS bubble before the final answer). The parser unwraps the
+  # envelope to its `output` (or suppresses a non-string one) for the VISIBLE
+  # stream when the run armed the envelope (CodexParseState.envelopeActive);
+  # the FINAL message keeps the raw envelope so the orchestrator's unwrap runs
+  # unchanged. This conformance loop runs WITHOUT envelopeActive, so the raw
+  # envelope messages pass through as ordinary text here — the unwrap/suppress
+  # behavior is asserted in parse.test.ts. Output values are Russian to mirror
+  # the live dogfood capture.
+  structured-envelope-intermediate.jsonl:
+    source: synthetic
+    expectations:
+      final_messages: 1
+      final_source: "last_agent_message"
+      final_is_last_message: true
+      thinking_events: 0
+      delta_messages: 0
+      typed_rate_limit: false
   # D-16 CONTEXT-EXHAUSTION EVIDENCE (live, codex-cli 0.144.1, 2026-07-23).
   # Lives in context/ (NOT top-level) because the top-level conformance loop
   # asserts tool_call/tool_result/usage on every fixture and this capture has

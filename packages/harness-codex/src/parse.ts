@@ -1,4 +1,4 @@
-import type { HarnessEvent, ToolRef } from "@claudexor/schema";
+import { WorkReport, type HarnessEvent, type ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
 
 type Json = any;
@@ -21,6 +21,52 @@ const CODEX_TRANSIENT_RE =
  */
 export interface CodexParseState {
   lastAgentMessage?: string;
+  /**
+   * D-16 / codex #19816: true when THIS run armed a WorkReport output-schema
+   * envelope (`--output-schema` present). codex applies the schema to
+   * INTERMEDIATE agent messages too, not just the final one, so a mid-run
+   * narration arrives as the raw `{work_report, output}` envelope. When set, an
+   * intermediate agent message that typed-matches the envelope is unwrapped to
+   * its `output` (or suppressed) for the VISIBLE stream — never surfaced raw.
+   * The FINAL message keeps the raw envelope so the orchestrator's unwrap runs
+   * unchanged.
+   */
+  envelopeActive?: boolean;
+}
+
+/**
+ * Typed detection of the D-16 `{work_report, output}` transport envelope in an
+ * intermediate codex agent message (codex #19816). Returns:
+ * - `undefined`: the text is NOT a WorkReport envelope — display it verbatim.
+ * - a string: the envelope's `output` narration — display it UNWRAPPED.
+ * - `null`: an envelope whose `output` is not a plain string (structured/partial)
+ *   — SUPPRESS it from the visible stream rather than leak raw JSON.
+ *
+ * The check is TYPED (INV-049), not a prose/regex match: the text must parse to
+ * a JSON object with EXACTLY `work_report` + `output`, and `work_report` must
+ * satisfy the WorkReport schema. This never mutates the raw `lastAgentMessage`
+ * the turn finalizes — the orchestrator still un-nests the FINAL envelope.
+ */
+function detectEnvelopeOutput(text: string): string | null | undefined {
+  const trimmed = text.trim();
+  // Fast reject: an envelope is a JSON object literal.
+  if (trimmed.length === 0 || trimmed[0] !== "{") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 2 || !("work_report" in obj) || !("output" in obj)) return undefined;
+  if (!WorkReport.safeParse(obj["work_report"]).success) return undefined;
+  const output = obj["output"];
+  // A string `output` is the no-caller-schema narration codex wraps: show it
+  // unwrapped. A non-string `output` is a caller-schema partial we cannot safely
+  // render as progress text — suppress rather than leak the envelope JSON.
+  return typeof output === "string" ? output : null;
 }
 
 /**
@@ -202,7 +248,20 @@ export function parseCodexEvent(
     switch (item.type) {
       case "agent_message": {
         const text = String(item.text ?? "");
+        // Keep the RAW text as the turn's finality candidate: the orchestrator
+        // un-nests the FINAL `{work_report, output}` envelope downstream, so the
+        // final message must stay raw. Only the VISIBLE intermediate copy below
+        // is unwrapped/suppressed.
         if (state && text.trim()) state.lastAgentMessage = text;
+        // codex #19816: with `--output-schema` armed, an intermediate agent
+        // message is itself the envelope. Unwrap it to its `output` for display,
+        // or suppress a non-string `output` — never surface raw `{work_report}`.
+        if (state?.envelopeActive) {
+          const display = detectEnvelopeOutput(text);
+          if (display === null) return []; // suppressed: partial/structured envelope
+          if (display !== undefined)
+            return [{ type: "message", session_id: sessionId, ts, text: display }];
+        }
         return [{ type: "message", session_id: sessionId, ts, text }];
       }
       case "reasoning":
