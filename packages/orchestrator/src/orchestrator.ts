@@ -5105,9 +5105,11 @@ export class Orchestrator {
     }
     const unrecovered = unrecoveredToolErrors(telemetry);
     const webBlocked = webUnsatisfied(telemetry);
-    // Same deliverable-presence signal as the explorer path: the planner's
-    // contracted deliverable is the text it produced.
-    const deliverablePresent = answer.text().length > 0;
+    // Same deliverable-presence signal as the explorer path (which computes
+    // it from the redacted report): the planner's contracted deliverable is
+    // the text it produced. redactSecrets never empties a non-empty string,
+    // so this stays byte-faithful to the explorer's boolean.
+    const deliverablePresent = redactSecrets(answer.text()).length > 0;
     if (!harnessError && webBlocked) {
       harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
     }

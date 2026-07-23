@@ -137,6 +137,12 @@ describe("parseCodexEvent", () => {
     expect(result("rg --bogus src", 2)?.tool?.status).toBe("error");
     // Non-search commands keep exit 1 = error.
     expect(result("pnpm test", 1)?.tool?.status).toBe("error");
+    // `find` is NOT grep-family: it exits 0 on a genuine no-match and
+    // reserves exit 1 for REAL errors (bad path, permission denied) — the
+    // carve-out must not mask those (INV-043).
+    const findError = result("find /nonexistent -name x", 1);
+    expect(findError?.tool?.status).toBe("error");
+    expect(findError?.tool?.error_summary).toBeDefined();
     // Leading token only: a chain fronted by a non-search command stays error.
     expect(result("cd src && rg TODO", 1)?.tool?.status).toBe("error");
   });

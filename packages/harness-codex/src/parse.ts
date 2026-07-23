@@ -348,8 +348,11 @@ function applyCodexTransient(ev: HarnessEvent, message: string): void {
 }
 
 // Search commands whose documented exit code 1 means "ran fine, found
-// nothing" (their real errors exit >= 2).
-const SEARCH_NO_MATCH_COMMANDS = new Set(["rg", "grep", "egrep", "fgrep", "find"]);
+// nothing" (their real errors exit >= 2). grep-family ONLY: `find` does NOT
+// share this contract — it exits 0 on a genuine no-match and reserves exit 1
+// for REAL errors (bad path, permission denied), so it must stay out of this
+// set or real failures get reclassified as benign empties (INV-043).
+const SEARCH_NO_MATCH_COMMANDS = new Set(["rg", "grep", "egrep", "fgrep"]);
 
 /** True when the command's LEADING argv token is a search-family tool. No
  *  deep parsing of shell chains: a chain is judged by its first token like
