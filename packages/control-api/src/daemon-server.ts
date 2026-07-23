@@ -1102,7 +1102,10 @@ export class DaemonControlApiServer {
               ControlRunDecisionResponse.parse({
                 accepted: true,
                 status: "applied",
-                message: `${decisionAction} recorded; apply is now permitted for this exact patch`,
+                // Honest ACK (QA-032B): nothing is mutated at decision time. The
+                // risk is accepted for this exact patch; Apply is now available
+                // and a fresh final check runs just-in-time before any mutation.
+                message: `${decisionAction} recorded for this exact patch; Apply is now available and will run a fresh final check before changing the project`,
               }),
             );
           });
@@ -1925,6 +1928,7 @@ export class DaemonControlApiServer {
       chainMutation: (record, work) => this.chainRunMutation(record, work),
       appendAudit: appendRunAuditEvent,
       markApplied: (record) => markRunApplyState(record, "applied"),
+      deliveredApplyState: (record) => controlRunResult(record).applyState,
     };
   }
 
@@ -2700,6 +2704,11 @@ function applyGateInputFor(
     operatorDecision: operatorDecision
       ? { action: operatorDecision.action, patch_sha256: operatorDecision.patchSha256 }
       : null,
+    // Effective mutable delivery/apply state from the SAME owner that projects
+    // summary.result.applyState (delivery_state overlay → work_product snapshot):
+    // an already-applied / reverted run gets a terminal eligibility disposition
+    // instead of a stale "rerun a fresh check" (QA-021).
+    applyState: controlRunResult(rec).applyState,
   };
 }
 

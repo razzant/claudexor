@@ -1,11 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { checkPatch, verifyAndDeliver } from "@claudexor/delivery";
+import { checkPatch, checkPatchReverse, verifyAndDeliver } from "@claudexor/delivery";
 import {
   ControlApplyCheckRequest,
   ControlApplyCheckResponse,
   ControlApplyRequest,
   ControlDeliveryResponse,
   type FinalVerifyRecord,
+  type RunApplyState,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, containsSecretLikeToken, sha256 } from "@claudexor/util";
 import type { DaemonRunRecord } from "./daemon-server.js";
@@ -120,6 +121,11 @@ export interface RunApplyRouteContext {
   /** Persist applyState=applied on the run's delivery-state artifact after a
    * delivery reports applied=true (round-15 #2) — idempotent, best-effort. */
   markApplied(record: DaemonRunRecord): void;
+  /** The run's effective MUTABLE delivery/apply state (delivery_state overlay →
+   * work_product snapshot) — the same authority that projects
+   * summary.result.applyState. An already-delivered run answers apply/check as
+   * a typed idempotent no-op instead of "patch does not apply" (#26). */
+  deliveredApplyState(record: DaemonRunRecord): RunApplyState;
 }
 
 /** Own the generic manual run apply/check routes outside the daemon server shell. */
@@ -153,6 +159,28 @@ export async function handleRunApplyRoutes(
         throw Object.assign(new Error("project root is required for apply check"), { status: 400 });
       const rootError = validateAbsoluteRepoRoot(root);
       if (rootError) throw Object.assign(new Error(rootError), { status: 400 });
+      // Idempotent replay (#26 dry-run): an already-delivered run cannot pass a
+      // forward `git apply --check` (the tree is the postimage), which would
+      // read as "patch does not apply". When the recorded delivery state says
+      // the change is in place AND the reverse check confirms the tree is this
+      // patch's exact postimage, report the safe already-applied no-op instead
+      // of a false conflict. A diverged tree falls through to the honest gate.
+      const applyState = ctx.deliveredApplyState(record);
+      if (
+        (applyState === "applied" || applyState === "applied_review_blocked") &&
+        (await checkPatchReverse(root, patch)).ok
+      ) {
+        ctx.json(
+          res,
+          200,
+          ControlApplyCheckResponse.parse({
+            ok: true,
+            code: 0,
+            stderr: "already applied; idempotent no-op (no files would change)",
+          }),
+        );
+        return true;
+      }
       const gateError = ctx.gateError(record, patch, root);
       if (gateError) throw Object.assign(new Error(gateError), { status: 409 });
       ctx.json(res, 200, ControlApplyCheckResponse.parse(await checkPatch(root, patch)));

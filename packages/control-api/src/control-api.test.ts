@@ -5200,6 +5200,181 @@ describe("DaemonControlApiServer", () => {
     }
   });
 
+  // Shared git-project fixture for the delivery-truth apply tests (QA-021 / #26).
+  async function withAppliableProject(
+    fn: (base: string, project: string, record: DaemonRunRecord) => Promise<void>,
+  ): Promise<void> {
+    const { daemon, record } = fakeDaemon();
+    const project = reapMk(join(tmpdir(), "claudexor-delivery-truth-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: project });
+      execFileSync("git", ["config", "user.name", "Claudexor Test"], { cwd: project });
+      execFileSync("git", ["config", "user.email", "test@example.invalid"], { cwd: project });
+      writeFileSync(join(project, "x"), "old\n");
+      execFileSync("git", ["add", "x"], { cwd: project });
+      execFileSync("git", ["commit", "-qm", "base"], { cwd: project });
+      record.params = {
+        ...(record.params as Record<string, unknown>),
+        scope: { kind: "project", root: project, context: "auto" },
+      };
+      const taskPath = join(record.runDir as string, "context", "task.yaml");
+      writeFileSync(
+        taskPath,
+        readFileSync(taskPath, "utf8").replace(
+          JSON.stringify(record.runDir),
+          JSON.stringify(project),
+        ),
+      );
+      const patch = [
+        "diff --git a/x b/x",
+        "--- a/x",
+        "+++ b/x",
+        "@@ -1 +1 @@",
+        "-old",
+        "+new",
+        "",
+      ].join("\n");
+      writeFileSync(join(record.runDir as string, "final", "patch.diff"), patch);
+      writeFileSync(
+        join(record.runDir as string, "final", "work_product.yaml"),
+        `id: wp-test\nkind: patch\nsource_task_id: task-d1\nmeta:\n  patch_sha256: ${sha256(patch)}\n`,
+      );
+      await withDaemonServer(
+        daemon,
+        async (base) => fn(base, project, record),
+        undefined,
+        inMemoryDeliveryServices(),
+      );
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  }
+
+  it("replaying apply on an already-delivered run is a typed idempotent no-op, not a 409 conflict (#26)", async () => {
+    await withAppliableProject(async (base, project) => {
+      const apply = () =>
+        apiFetch(`${base}/runs/run-d1/apply`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ mode: "apply" }),
+        });
+      // apiFetch injects a UNIQUE Idempotency-Key per call, so the second apply
+      // is a fresh command (the exact #26 repro: separate CLI invocations).
+      const first = await apply();
+      expect(first.status).toBe(200);
+      expect(((await first.json()) as { applied?: boolean }).applied).toBe(true);
+      expect(readFileSync(join(project, "x"), "utf8")).toBe("new\n");
+
+      const second = await apply();
+      expect(second.status).toBe(200); // was 409 "patch does not apply"
+      const receipt = (await second.json()) as {
+        applied: boolean;
+        treeMutated?: boolean;
+        detail?: string;
+      };
+      expect(receipt.applied).toBe(true);
+      expect(receipt.treeMutated).toBe(false);
+      expect(receipt.detail).toMatch(/already applied/i);
+      // No second physical delivery: the file is unchanged.
+      expect(readFileSync(join(project, "x"), "utf8")).toBe("new\n");
+    });
+  });
+
+  it("apply --dry-run after delivery reports the already-applied no-op instead of 'patch does not apply' (#26)", async () => {
+    await withAppliableProject(async (base) => {
+      await apiFetch(`${base}/runs/run-d1/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({}),
+      });
+      expect(check.status).toBe(200); // was 409 fresh-final-check / patch-does-not-apply
+      const body = (await check.json()) as { ok: boolean; stderr: string };
+      expect(body.ok).toBe(true);
+      expect(body.stderr).toMatch(/already applied/i);
+    });
+  });
+
+  it("GET /runs/:id applyEligibility is already_applied after a manual apply, never 'rerun a fresh check' (QA-021)", async () => {
+    await withAppliableProject(async (base) => {
+      await apiFetch(`${base}/runs/run-d1/apply`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: "apply" }),
+      });
+      const detail = (await (
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+      ).json()) as {
+        applyEligibility: {
+          eligible: boolean;
+          state: string;
+          reason: string;
+          requiredAction: string | null;
+        };
+        summary: { result: { applyState: string } };
+      };
+      expect(detail.summary.result.applyState).toBe("applied");
+      expect(detail.applyEligibility.eligible).toBe(false);
+      expect(detail.applyEligibility.state).toBe("already_applied");
+      expect(detail.applyEligibility.requiredAction).toBeNull();
+      expect(detail.applyEligibility.reason).not.toMatch(/fresh final check|re-?run/i);
+    });
+  });
+
+  it("an authorized accept_risk on a blocked run makes GET applyEligibility eligible (JIT verify at apply), not a dead end (QA-032)", async () => {
+    const { daemon, record } = fakeDaemon();
+    // A review-blocked run skips FinalVerifier by construction: final_verify is null.
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      [
+        "winner: a01",
+        "facts:",
+        "  lifecycle: succeeded",
+        "  review: blocked",
+        "  checks: passed",
+        "  noChanges: false",
+        "  reason: review_blocked",
+        "verification_basis: none",
+        "final_verify: null",
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      // Before the decision: dead-ended (needs review / fresh check).
+      const before = (await (
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+      ).json()) as {
+        applyEligibility: { eligible: boolean; state: string; requiredAction: string | null };
+      };
+      expect(before.applyEligibility.eligible).toBe(false);
+      // Remediation no longer loops back to running a review that already ran.
+      expect(before.applyEligibility.requiredAction).not.toMatch(/run a review/i);
+
+      const decision = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "qa032-accept-risk" },
+        body: JSON.stringify({ action: "accept_risk" }),
+      });
+      expect(decision.status).toBe(200);
+      const ack = (await decision.json()) as { message: string };
+      expect(ack.message).toMatch(/fresh final check/i);
+      expect(ack.message).not.toMatch(/review queue/i);
+
+      const after = (await (
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+      ).json()) as {
+        applyEligibility: { eligible: boolean; state: string; requiredAction: string | null };
+      };
+      expect(after.applyEligibility.eligible).toBe(true); // was false: fresh-check dead end
+      expect(after.applyEligibility.state).toBe("verify_pending");
+      expect(after.applyEligibility.requiredAction).toBeNull();
+    });
+  });
+
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";

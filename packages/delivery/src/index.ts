@@ -66,6 +66,18 @@ export async function checkPatch(repoRoot: string, patch: string): Promise<Apply
   return { ok: r.code === 0, code: r.code, stderr: r.stderr };
 }
 
+/**
+ * Reverse dry-run: is the tree ALREADY this patch's exact postimage? (#26)
+ * `git apply --reverse --check` succeeds only when every hunk's postimage
+ * context is present — a strong fingerprint that the delivered result is in the
+ * tree. Used to distinguish an idempotent already-applied replay (forward
+ * refuses, reverse applies) from a real conflict (both refuse).
+ */
+export async function checkPatchReverse(repoRoot: string, patch: string): Promise<ApplyResult> {
+  const r = await git(repoRoot, ["apply", "--reverse", "--check", "-"], patch);
+  return { ok: r.code === 0, code: r.code, stderr: r.stderr };
+}
+
 export type DeliverMode = "apply" | "branch" | "commit" | "pr";
 export const DELIVER_MODES = new Set<DeliverMode>(["apply", "branch", "commit", "pr"]);
 
@@ -129,6 +141,25 @@ async function verifyAndDeliverUnlocked(
   );
   let refusal: string | null;
   if (finalVerify.applied_cleanly === false) {
+    // Idempotent replay (#26): the forward patch no longer applies onto a fresh
+    // copy. That is EITHER a real conflict OR an already-delivered no-op — the
+    // tree is already this patch's exact postimage. Distinguish the two by a
+    // reverse --check against the current tree (the same preimage/postimage
+    // comparison the revert machinery uses): reverse-clean proves the delivered
+    // result is present, so return a typed already-applied no-op (applied:true,
+    // NO mutation) instead of failing "patch does not apply" on every replay.
+    // A partial/diverged tree (reverse also refuses) still refuses as a real
+    // conflict — never a false success.
+    if ((await checkPatchReverse(repoRoot, patch)).ok) {
+      return {
+        mode: options.mode,
+        applied: true,
+        treeMutated: false,
+        detail: "already applied; idempotent no-op (no files changed)",
+        finalVerify,
+        targetPreimageSha,
+      };
+    }
     // Mechanical applicability is never waivable, even when a caller owns the
     // semantic risk decision for failed gates or verifier infrastructure.
     refusal = finalVerify.reason ?? "final verify failed: patch did not apply cleanly";

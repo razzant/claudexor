@@ -161,8 +161,10 @@ const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/runs/:id": "Read a run's full detail snapshot.",
   "POST /v2/runs/:id/retry": "Retry a run, returning a new durable handle.",
   "GET /v2/runs/:id/run-again": "Draft a run-again request from a prior run.",
-  "POST /v2/runs/:id/apply": "Apply a run's work product to the live tree.",
-  "POST /v2/runs/:id/apply/check": "Dry-check whether a run's patch would apply.",
+  "POST /v2/runs/:id/apply":
+    "Apply a run's work product to the live tree; replay of an already-delivered run is a typed idempotent no-op.",
+  "POST /v2/runs/:id/apply/check":
+    "Dry-check whether a run's patch would apply; an already-delivered run reports the safe already-applied no-op.",
   "GET /v2/runs/:id/artifacts": "List a run tree's technical artifacts.",
   "GET /v2/runs/:id/artifacts/<path>": "Fetch one artifact file from a run tree.",
   "POST /v2/runs/:id/control": "Send a control signal (cancel/pause) to a run.",

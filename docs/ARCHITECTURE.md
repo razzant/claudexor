@@ -1118,6 +1118,16 @@ recovers the model it actually ran from its own session rollout transcript
 `accepted_model_arg` and does not satisfy the cross-family gate. For `ungated` /
 `review_not_run` outcomes the apply gate states the real path forward (add a gate
 or obtain a verified review) — the risk override applies only to `blocked` runs.
+The derived `ApplyEligibility` verdict is delivery-state aware: it consults the
+effective `RunApplyState` BEFORE the pre-delivery gate, so a change already in
+the live tree answers a terminal `already_applied` (and a deliberately reverted
+one `reverted`) with no `requiredAction` — never "run a fresh final check" for
+finished work. Because a review-`blocked` run skips the FinalVerifier by
+construction (`final_verify: null`), a hash-bound `accept_risk` /
+`override_needs_human` decision does NOT dead-end that verdict: the read-only
+projection reports `verify_pending` and stays eligible, and the fresh final
+check runs just-in-time on the apply path (the same gate, now handed the fresh
+verifier result) — a mechanical conflict there still fails closed.
 `TaskContract.constraints.protected_paths` holds config-owned **approval globs**
 — path globs (e.g. `migrations/**`, `**/*.env`) whose changes escalate a run to
 a human-approval gate before it can be applied — while
@@ -1139,6 +1149,12 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    `claudexor apply` both go through the delivery-owned `verifyAndDeliver`:
    the shared apply gate authorizes the run, a fresh verifier checks the exact
    patch, and an unchanged target preimage is required before mutation.
+   Replaying apply on an already-delivered run (a fresh invocation with a new
+   idempotency key) is a typed idempotent no-op: when the forward patch no
+   longer applies but the reverse check proves the tree is already this patch's
+   exact postimage, delivery returns `applied` with no mutation instead of a
+   `patch does not apply` failure; a diverged target still refuses as a
+   conflict, never a false success.
 2. **In-place thread turns** — a write turn executes directly in the thread's
    execution tree. Fences: a pre-turn snapshot is taken at turn start and a
    post-turn snapshot at turn end (the per-turn diff base, so prior dirty state

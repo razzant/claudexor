@@ -17,7 +17,9 @@ import { DecisionRecord, makeOutcomeFacts } from "@claudexor/schema";
 import {
   blockedDecisionOverride,
   checkPatch,
+  checkPatchReverse,
   deliver,
+  deriveApplyEligibility,
   validateApplyGate,
   verifyAndDeliver,
 } from "./index.js";
@@ -486,6 +488,148 @@ describe("final_verify apply-gate consumer (INV-115)", () => {
       operatorDecision: { action: "accept_risk", patch_sha256: sha256(patch) },
     });
     expect(overridden).toBeNull();
+  });
+});
+
+describe("apply eligibility reflects the effective delivery state (QA-021)", () => {
+  const patch = "diff --git a/x b/x\n";
+  const approvedDecision = DecisionRecord.parse({
+    winner: "a01",
+    facts: makeOutcomeFacts("succeeded", { review: "approved" }),
+    final_verify: null,
+  });
+  const baseInput = {
+    state: "succeeded" as const,
+    decision: approvedDecision,
+    workProduct: { kind: "patch", meta: { patch_sha256: sha256(patch) } } as never,
+    patch,
+    originalRepoRoot: process.cwd(),
+    targetRepoRoot: process.cwd(),
+  };
+
+  it("an ALREADY-APPLIED run is a terminal disposition, not 'rerun a fresh check'", () => {
+    const verdict = deriveApplyEligibility({ ...baseInput, applyState: "applied" });
+    expect(verdict).toEqual({
+      eligible: false,
+      state: "already_applied",
+      reason: "This change is already applied.",
+      requiredAction: null,
+    });
+  });
+
+  it("an applied_review_blocked run is already applied (review outcome lives elsewhere)", () => {
+    const verdict = deriveApplyEligibility({ ...baseInput, applyState: "applied_review_blocked" });
+    expect(verdict.state).toBe("already_applied");
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.requiredAction).toBeNull();
+    // Never the false 'accept risk to apply anyway' guidance on already-applied work.
+    expect(verdict.reason).not.toMatch(/apply it anyway|fresh final check|re-?run/i);
+  });
+
+  it("a REVERTED run is a terminal disposition with no stale Apply action", () => {
+    const verdict = deriveApplyEligibility({ ...baseInput, applyState: "reverted" });
+    expect(verdict).toEqual({
+      eligible: false,
+      state: "reverted",
+      reason: "This change was reverted.",
+      requiredAction: null,
+    });
+  });
+
+  it("a not_applied pending patch still runs the normal gate (fresh check missing here)", () => {
+    const verdict = deriveApplyEligibility({ ...baseInput, applyState: "not_applied" });
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.reason).toContain("fresh final check");
+  });
+});
+
+describe("authorized override unlocks the JIT final verify at apply (QA-032)", () => {
+  const patch = "diff --git a/x b/x\n";
+  // A review-blocked run skips FinalVerifier by construction: final_verify is null.
+  const blockedDecision = DecisionRecord.parse({
+    winner: "a01",
+    facts: makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" }),
+    final_verify: null,
+  });
+  const readOnlyInput = {
+    state: "succeeded" as const,
+    decision: blockedDecision,
+    workProduct: { kind: "patch", meta: { patch_sha256: sha256(patch) } } as never,
+    patch,
+    originalRepoRoot: process.cwd(),
+    targetRepoRoot: process.cwd(),
+    operatorDecision: { action: "accept_risk", patch_sha256: sha256(patch) },
+  };
+
+  it("read-only projection of a hash-bound accept_risk is eligible (verify runs at apply)", () => {
+    const verdict = deriveApplyEligibility(readOnlyInput);
+    expect(verdict.eligible).toBe(true);
+    expect(verdict.state).toBe("verify_pending");
+    // Not the dead-end 'fresh final check' refusal, and no loop back to a review.
+    expect(verdict.requiredAction).toBeNull();
+  });
+
+  it("the read-only apply gate no longer dead-ends after a valid override", () => {
+    expect(validateApplyGate(readOnlyInput)).toBeNull();
+  });
+
+  it("WITHOUT an override the blocked run stays fail-closed (not eligible)", () => {
+    const { operatorDecision: _omit, ...noOverride } = readOnlyInput;
+    // No hash-bound override -> the blocked run is refused as not-ready, and the
+    // verify-pending unlock does NOT fire.
+    expect(validateApplyGate(noOverride)).toContain("isn't ready to apply");
+    const verdict = deriveApplyEligibility(noOverride);
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.state).toBe("needs_review");
+  });
+
+  it("at APPLY time a supplied fresh verify is gated normally, not treated as pending", () => {
+    // finalVerify explicitly supplied (the apply path) and still unattempted -> refuse.
+    expect(
+      validateApplyGate({ ...readOnlyInput, finalVerify: { attempted: false } as never }),
+    ).toContain("fresh final check");
+  });
+
+  it("the blocked-run hint no longer loops back to 'run a review first'", () => {
+    const { operatorDecision: _omit, ...noOverride } = readOnlyInput;
+    const verdict = deriveApplyEligibility(noOverride);
+    expect(verdict.requiredAction).not.toMatch(/run a review/i);
+    expect(verdict.requiredAction).toMatch(/accept the risk/i);
+  });
+});
+
+describe("idempotent replay is a typed no-op, divergence is a conflict (#26)", () => {
+  it("reverse-checks the exact postimage the tree already holds", async () => {
+    const { repo, patch } = await makePatchRepo();
+    // Apply once: the tree becomes the patch's postimage.
+    const first = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+    expect(first.applied).toBe(true);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+    // Forward no longer applies; reverse applies cleanly -> tree IS the postimage.
+    expect((await checkPatch(repo, patch)).ok).toBe(false);
+    expect((await checkPatchReverse(repo, patch)).ok).toBe(true);
+  });
+
+  it("replaying apply on an already-delivered tree is applied:true with NO mutation", async () => {
+    const { repo, patch } = await makePatchRepo();
+    await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+    const replay = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+    expect(replay.applied).toBe(true);
+    expect(replay.treeMutated).toBe(false);
+    expect(replay.refused).not.toBe(true);
+    expect(replay.detail).toMatch(/already applied/i);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+  });
+
+  it("a diverged target (neither pre- nor postimage) still refuses as a typed conflict", async () => {
+    const { repo, patch } = await makePatchRepo();
+    // Diverge the target so neither the forward nor the reverse patch applies.
+    writeFileSync(join(repo, "a.txt"), "three\n");
+    const res = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+    expect(res.applied).toBe(false);
+    expect(res.refused).toBe(true);
+    expect(res.treeMutated).toBe(false);
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("three\n");
   });
 });
 
