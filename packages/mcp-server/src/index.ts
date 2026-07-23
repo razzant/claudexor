@@ -306,6 +306,9 @@ function structuredRunResult(result: unknown): Record<string, unknown> {
     outcomeBanner: typeof r["outcomeBanner"] === "string" ? r["outcomeBanner"] : null,
     planReadiness:
       r["planReadiness"] && typeof r["planReadiness"] === "object" ? r["planReadiness"] : null,
+    // Council membership + merge disclosure (QA-023b): the SAME facts the run
+    // detail owns, so a host can machine-verify a `--council` plan's roster.
+    council: r["council"] && typeof r["council"] === "object" ? r["council"] : null,
   };
 }
 

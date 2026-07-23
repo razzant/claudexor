@@ -432,6 +432,46 @@ describe("Claudexor MCP server (SDK v2)", () => {
     }
   });
 
+  it("a council plan carries its membership roster in structuredContent (QA-023b)", async () => {
+    // The SDK strict-validates structuredContent against the declared
+    // outputSchema, so a council roster surviving here proves the McpRunToolResult
+    // schema carries it AND the structured mirror projects it — an MCP host can
+    // machine-verify "Council was 2/2, merged by cursor" with no local artifacts.
+    const tools = defaultClaudexorTools(async () => ({
+      runId: "r-council",
+      runDir: "/tmp/r-council",
+      status: "succeeded",
+      summary: "Council drafted a plan.",
+      council: {
+        requested: 2,
+        drafted: 2,
+        degraded: false,
+        mergedBy: "cursor",
+        members: [
+          { harnessId: "cursor", role: "primary", status: "merged" },
+          { harnessId: "codex", role: "member", status: "drafted" },
+        ],
+      },
+    }));
+    const w = wire(tools);
+    await w.initialize();
+    w.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "claudexor_plan", arguments: { prompt: "plan it", council: true } },
+    });
+    await sleep(150);
+    await w.close();
+    const res = w.responses.find((r) => r.id === 1)?.result;
+    expect(res?.isError).not.toBe(true);
+    const sc = res?.structuredContent as Record<string, any>;
+    expect(sc?.council?.requested).toBe(2);
+    expect(sc?.council?.drafted).toBe(2);
+    expect(sc?.council?.mergedBy).toBe("cursor");
+    expect(sc?.council?.members).toHaveLength(2);
+  });
+
   it("host notifications/cancelled aborts the runner's signal (typed cancel, like Ctrl-C)", async () => {
     let sawAbort = false;
     const runner: RunnerFn = async (_p, hooks) =>
