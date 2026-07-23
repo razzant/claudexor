@@ -117,8 +117,21 @@ async function mutateProject(json: boolean, path: string, body: unknown): Promis
   return 0;
 }
 
+/** Human `project list` lines for one project: the id/root row plus a disclosed
+ * (never refused) nesting line per overlap with another registered project, so
+ * the operator is not confused by two projects whose files overlap (QA-072). */
+export function projectListLines(project: ControlProjectType): string[] {
+  const lines = [`${project.id}  ${project.root}`];
+  for (const n of project.nesting) {
+    lines.push(
+      `    ${n.relation === "inside" ? "nested inside" : "contains"} ${n.root}  (${n.projectId})`,
+    );
+  }
+  return lines;
+}
+
 function printProject(project: ControlProjectType): void {
-  print(`${project.id}  ${project.root}`);
+  for (const line of projectListLines(project)) print(line);
 }
 
 /** Percent-encode each path segment while preserving the `/` separators the

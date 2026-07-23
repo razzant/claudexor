@@ -121,6 +121,38 @@ describe("checkRuntimeUpdate", () => {
     expect(check.source).toBe("unavailable");
     expect(check.detail).toContain("ENOTFOUND");
   });
+
+  // QA-033a: the update decision must compare the RUNNING engine (handshake),
+  // never relabel the executing CLI package as the running engine.
+  it("uses the handshake running-engine version, not the CLI package (QA-033a)", async () => {
+    const { fetchImpl } = stubFetch([
+      { match: "/releases/latest", respond: latestRelease },
+      { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
+    ]);
+    const check = await checkRuntimeUpdate({ fetchImpl, runningEngineVersion: "3.0.3" });
+    expect(check.runningEngineVersion).toBe("3.0.3");
+    expect(check.runningEngineSource).toBe("handshake");
+    expect(check.updateAvailable).toBe(true);
+    expect(check.detail).toContain("running 3.0.3");
+  });
+
+  // QA-033a/#3: an unreachable daemon leaves the running engine UNKNOWN — the
+  // check must not silently substitute the CLI version nor say "running ... is
+  // current".
+  it("reports an unknown running engine and honest copy when no daemon is reachable", async () => {
+    const { fetchImpl } = stubFetch([
+      { match: "/releases/latest", respond: latestRelease },
+      { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
+    ]);
+    const check = await checkRuntimeUpdate({ fetchImpl, runningEngineVersion: null });
+    expect(check.runningEngineVersion).toBeNull();
+    expect(check.runningEngineSource).toBe("unavailable");
+    // Never the false-negative "running <v> is current" the CLI-version relabel produced.
+    expect(check.detail).not.toContain("is current");
+    expect(check.detail.toLowerCase()).toContain("engine not running");
+    // cliVersion is always the executing package constant, never relabelled.
+    expect(typeof check.cliVersion).toBe("string");
+  });
 });
 
 describe("releaseStats", () => {

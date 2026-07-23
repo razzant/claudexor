@@ -95,7 +95,19 @@ export interface RuntimeManifest {
 }
 
 export interface RuntimeUpdateCheck {
+  /** The version the update decision compares against: the RUNNING engine when a
+   * daemon handshake resolved it, else the CLI package version (QA-033a). Its
+   * source is disclosed in `runningEngineSource`. */
   currentVersion: string;
+  /** The executing CLI package version — always the `@claudexor/cli` constant,
+   * never relabelled as the running engine. */
+  cliVersion: string;
+  /** The live daemon engine version from the handshake; null when no daemon was
+   * reachable (npm-only user or a stopped daemon). */
+  runningEngineVersion: string | null;
+  /** Where `runningEngineVersion` came from: "handshake" (authoritative live
+   * process identity) or "unavailable" (no daemon reached). */
+  runningEngineSource: "handshake" | "unavailable";
   latestVersion: string | null;
   updateAvailable: boolean;
   minAppVersion: string | null;
@@ -145,12 +157,34 @@ function parseRuntimeManifest(value: unknown): RuntimeManifest | null {
  */
 export async function checkRuntimeUpdate(opts?: {
   fetchImpl?: FetchLike;
+  /** Legacy alias for the resolved running engine version (kept for callers/
+   * tests that pass the running version directly). */
   currentVersion?: string;
+  /** The running engine version resolved from a live daemon handshake; null
+   * means no daemon was reachable. Wins over `currentVersion` when provided. */
+  runningEngineVersion?: string | null;
 }): Promise<RuntimeUpdateCheck> {
   const fetchImpl = opts?.fetchImpl ?? fetch;
-  const currentVersion = opts?.currentVersion ?? CLAUDEXOR_VERSION;
+  const cliVersion = CLAUDEXOR_VERSION;
+  // The RUNNING engine identity is authoritative (QA-033a): an explicit
+  // handshake result wins; the legacy `currentVersion` opt is treated as the
+  // running version; absent both, the engine is unknown (no daemon reached).
+  const runningEngineVersion =
+    opts?.runningEngineVersion !== undefined
+      ? opts.runningEngineVersion
+      : (opts?.currentVersion ?? null);
+  const runningEngineSource: "handshake" | "unavailable" =
+    runningEngineVersion !== null ? "handshake" : "unavailable";
+  // The comparison never invents a running engine: when the daemon is
+  // unreachable we compare the CLI package (the honest npm-user signal) and
+  // label it as such, never as "running ... is current".
+  const comparisonVersion = runningEngineVersion ?? cliVersion;
+  const currentVersion = comparisonVersion;
   const unavailable = (detail: string): RuntimeUpdateCheck => ({
     currentVersion,
+    cliVersion,
+    runningEngineVersion,
+    runningEngineSource,
     latestVersion: null,
     updateAvailable: false,
     minAppVersion: null,
@@ -190,17 +224,29 @@ export async function checkRuntimeUpdate(opts?: {
   if (!manifest) return unavailable("runtime-manifest.json is malformed");
 
   const updateAvailable =
-    isSemver(currentVersion) && compareSemver(manifest.version, currentVersion) > 0;
+    isSemver(comparisonVersion) && compareSemver(manifest.version, comparisonVersion) > 0;
+  // Honest copy that never calls the CLI package the running engine (QA-033a):
+  // when the daemon is reachable the verdict is about the running engine; when
+  // it is not, it is explicitly about the CLI package, engine unknown.
+  const detail =
+    runningEngineVersion !== null
+      ? updateAvailable
+        ? `engine runtime ${manifest.version} is available (running ${runningEngineVersion}; CLI ${cliVersion})`
+        : `running engine runtime ${runningEngineVersion} is current`
+      : updateAvailable
+        ? `engine runtime ${manifest.version} is available (engine not running; CLI package ${cliVersion})`
+        : `CLI package ${cliVersion} matches the latest engine runtime (engine not running)`;
   return {
     currentVersion,
+    cliVersion,
+    runningEngineVersion,
+    runningEngineSource,
     latestVersion: manifest.version,
     updateAvailable,
     minAppVersion: manifest.minAppVersion,
     notes: manifest.notes,
     source: "github",
-    detail: updateAvailable
-      ? `engine runtime ${manifest.version} is available (running ${currentVersion})`
-      : `running engine runtime ${currentVersion} is current`,
+    detail,
   };
 }
 

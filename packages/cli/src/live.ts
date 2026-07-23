@@ -50,12 +50,20 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `initialized git repository at ${String(p["repo_root"] ?? "?")} (baseline commit)`;
     case "project.claude_bridge.created":
       return `bridged ${String(p["source"] ?? "AGENTS.md")} → ${String(p["path"] ?? "CLAUDE.md")} for Claude Code`;
-    case "harness.started":
+    case "harness.started": {
+      // INV-105 (QA-070): disclose any unsupported per-harness knob the route
+      // could not honor as a visible warning suffix — a silent benign "started"
+      // row would hide that a requested cost/safety bound had no effect.
+      const ignored = Array.isArray(p["ignored_settings"])
+        ? (p["ignored_settings"] as unknown[]).filter((s): s is string => typeof s === "string")
+        : [];
+      const warn = ignored.length > 0 ? ` — WARNING ignored: ${ignored.join("; ")}` : "";
       if (p["request_requirement"] && typeof p["request_requirement"] === "object") {
         const requirement = p["request_requirement"] as Record<string, unknown>;
-        return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")}, browser=${requirement["effective"] === true ? "effective" : `unavailable:${String(requirement["reason"] ?? "unknown")}`})`;
+        return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")}, browser=${requirement["effective"] === true ? "effective" : `unavailable:${String(requirement["reason"] ?? "unknown")}`})${warn}`;
       }
-      return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")})`;
+      return `[${who}] started (web=${String(p["external_context_policy"] ?? "auto")})${warn}`;
+    }
     case "harness.event": {
       const sub = String(p["type"] ?? "");
       if (sub === "message" && typeof p["title"] === "string")
@@ -109,6 +117,14 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `arbitration: winner=${String(p["winner"] ?? "none")} lifecycle=${String(
         p["lifecycle"] ?? "?",
       )}${p["decisive_axis"] ? ` decisive=${String(p["decisive_axis"])}` : ""}`;
+    case "plan.brief.materialized": {
+      // INV-081 provenance (QA-046): the frozen plan's source run + SHA-256 the
+      // engine re-hashed before any harness started — a compact receipt so an
+      // Implement follow proves which exact plan bytes ran.
+      const sha = typeof p["sha256"] === "string" ? p["sha256"] : "";
+      const shortSha = sha ? sha.slice(0, 12) : "unknown";
+      return `plan materialized from ${String(p["plan_run_id"] ?? "?")} · sha256 ${shortSha} → ${String(p["path"] ?? "context/PLAN.md")}`;
+    }
     case "output.ready":
       return `output ready: ${String(p["path"] ?? "?")}${p["state"] ? ` (${String(p["state"])})` : ""}`;
     case "budget.observation":
@@ -320,10 +336,18 @@ export function controlApiFetch(
   return fetch(`${addr.baseUrl}${externalPath}`, { ...init, headers });
 }
 
+/** The daemon's validated build identity from a successful handshake. The
+ * engine version is the AUTHORITATIVE running-engine version (QA-033a): a
+ * `release check` must trust this live process identity over the executing CLI
+ * package constant. Null when the daemon did not report a well-formed version. */
+export interface EngineIdentity {
+  engineVersion: string | null;
+}
+
 export async function handshakeControlApi(
   addr: ControlApiAddress,
   client = "claudexor-cli",
-): Promise<void> {
+): Promise<EngineIdentity> {
   const response = await controlApiFetch(addr, "/v2/handshake", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -339,7 +363,8 @@ export async function handshakeControlApi(
   // stale daemon is visible HERE instead of guessed later — consume it. A
   // version skew is advisory (the protocol major gate above is the hard
   // fence): disclose with the remedy. A CLI process handshakes once, so no
-  // dedup state is needed.
+  // dedup state is needed. The validated version is ALSO returned so callers
+  // (release check) can adopt the running engine's identity (QA-033a).
   try {
     const body = (await response.json()) as { engine?: { version?: string } };
     const raw = body.engine?.version;
@@ -352,8 +377,10 @@ export async function handshakeControlApi(
           `run \`claudexor daemon stop\` and rerun the command so a matching daemon starts\n`,
       );
     }
+    return { engineVersion: daemonVersion ?? null };
   } catch {
     // Identity is advisory; a body parse failure never fails the handshake.
+    return { engineVersion: null };
   }
 }
 

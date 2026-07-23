@@ -93,6 +93,39 @@ describe("claudexor follow", () => {
     ).toContain("browser=unavailable:manifest_unsupported");
   });
 
+  it("discloses ignored_settings as a WARNING suffix on harness.started (QA-070)", () => {
+    const line = formatRunEventLine({
+      type: "harness.started",
+      payload: {
+        harness_id: "codex",
+        attempt_id: "a01",
+        external_context_policy: "auto",
+        ignored_settings: ["max_turns=5 (manifest capabilities.max_turns=false for codex)"],
+      },
+    });
+    expect(line).toContain("WARNING ignored: max_turns=5");
+    // An ordinary start (nothing dropped) stays quiet — no false warning.
+    expect(
+      formatRunEventLine({
+        type: "harness.started",
+        payload: { harness_id: "codex", attempt_id: "a01", external_context_policy: "auto" },
+      }),
+    ).not.toContain("WARNING");
+  });
+
+  it("renders plan.brief.materialized with source run + short sha (QA-046)", () => {
+    expect(
+      formatRunEventLine({
+        type: "plan.brief.materialized",
+        payload: {
+          plan_run_id: "run-47882099f27b",
+          sha256: "00a73aeac4e4a11b81cb2d82fb94ac7f7c1fe086ff516972ebfb28c02f358511",
+          path: "context/PLAN.md",
+        },
+      }),
+    ).toBe("plan materialized from run-47882099f27b · sha256 00a73aeac4e4 → context/PLAN.md");
+  });
+
   it("renders run.continuation, delegation.belt.unavailable, and route.pool.degraded", () => {
     expect(
       formatRunEventLine({

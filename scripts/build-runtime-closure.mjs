@@ -99,17 +99,33 @@ function compareSemver(a, b) {
   return 0;
 }
 
-/** Short release note for the manifest: the CHANGELOG's first line for this
- * version, so `claudexor release check` and the app chip can show WHAT changed
- * without shipping the whole entry. Falls back to a neutral line. */
+/** Short release note for the manifest: the CHANGELOG's WHOLE logical entry for
+ * this version, so `claudexor release check` and the app chip can show WHAT
+ * changed. The changelog wraps one entry across many physical lines (QA-033b);
+ * reading a single physical line truncated the note mid-sentence, so this
+ * collects every continuation line up to the next `- **vX.Y.Z**` entry, joins
+ * them, strips the leading "(date) — " prefix, and bounds the length. Falls
+ * back to a neutral line. */
 function readNotes(version) {
   try {
     const log = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
-    const escaped = version.replace(/\./g, "\\.");
-    const re = new RegExp(String.raw`^- \*\*v${escaped}\*\*[^\n]*\n?([^\n]*)`, "m");
-    const match = re.exec(log);
-    const firstLine = (match?.[1] ?? "").trim();
-    if (firstLine) return firstLine.replace(/\s+/g, " ").slice(0, 400);
+    const lines = log.split(/\r?\n/);
+    const header = `- **v${version}**`;
+    const start = lines.findIndex((line) => line.startsWith(header));
+    if (start >= 0) {
+      const collected = [lines[start].slice(header.length)];
+      for (let i = start + 1; i < lines.length; i += 1) {
+        if (/^- \*\*v\d/.test(lines[i])) break; // next changelog entry
+        collected.push(lines[i]);
+      }
+      const entry = collected
+        .join(" ")
+        .replace(/^\s*\([^)]*\)\s*[—-]\s*/, "") // drop a leading "(date) — "
+        .replace(/^\s*[—-]\s*/, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (entry) return entry.slice(0, 400);
+    }
   } catch {
     /* fall through to the neutral note */
   }

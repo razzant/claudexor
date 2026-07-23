@@ -77,6 +77,31 @@ describe("build-runtime-closure", () => {
     expect(listing).not.toContain("AppIcon.icns");
   });
 
+  it("captures the WHOLE multiline changelog entry as notes, not one physical line (QA-033b)", () => {
+    const app = fakeAppBundle(work);
+    const out = join(work, "out");
+    run(app, out);
+    const manifest = JSON.parse(readFileSync(join(out, "runtime-manifest.json"), "utf8"));
+    // The real CHANGELOG entry the script read wraps across physical lines.
+    const changelog = readFileSync(
+      resolve(import.meta.dirname, "../../../CHANGELOG.md"),
+      "utf8",
+    ).split(/\r?\n/);
+    const headerIdx = changelog.findIndex((l) => l.startsWith(`- **v${version}**`));
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    // A token from the HEADER line and from the FIRST continuation line must BOTH
+    // survive: the old one-physical-line regex dropped the header entirely and
+    // truncated the note mid-quote.
+    const headerTail = changelog[headerIdx]!.replace(/^- \*\*v[^*]+\*\*\s*\([^)]*\)\s*[—-]\s*/, "");
+    const headerWord = headerTail.trim().split(/\s+/)[0]!;
+    const continuationWord = changelog[headerIdx + 1]!.trim().split(/\s+/)[0]!;
+    expect(manifest.notes).toContain(headerWord);
+    expect(manifest.notes).toContain(continuationWord);
+    // Bounded and whitespace-collapsed — never an unbounded dump.
+    expect(manifest.notes.length).toBeLessThanOrEqual(400);
+    expect(manifest.notes).not.toMatch(/\n/);
+  });
+
   it("fails when a closure entry is missing from the app bundle", () => {
     const app = fakeAppBundle(work, { omit: "setup-login-runner.cjs" });
     const out = join(work, "out");

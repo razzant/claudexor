@@ -1,12 +1,21 @@
-import { ModeKind } from "@claudexor/schema";
+import { ModeKind, CouncilProjection } from "@claudexor/schema";
 import {
   connectDaemonIfRunning,
   daemonOutcomeSummary,
   ensureDaemon,
   enqueueAndAwait,
   fetchApplyEligibility,
+  fetchRunDetail,
   fetchRunSpendUsd,
 } from "./daemon-run.js";
+
+/** Council membership + merge disclosure (QA-023b) from a run's detail, so the
+ * MCP immediate-run result carries machine-verifiable Council evidence with no
+ * local artifact read; null for solo/non-plan runs or a deferred handle. */
+async function fetchRunCouncil(addr: ControlApiAddress, runId: string): Promise<unknown> {
+  const parsed = CouncilProjection.safeParse((await fetchRunDetail(addr, runId))?.["council"]);
+  return parsed.success ? parsed.data : null;
+}
 import { primaryOutputForCli } from "./primary-output.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import { acpSessionQuery } from "./acp-surface-runner.js";
@@ -127,6 +136,10 @@ export function mcpSurfaceRunner() {
     // (single producer: the run-detail budget projection). Deferred calls return
     // before terminal, so spend is not yet settled — null.
     const spendUsd = p?.deferred === true ? null : await fetchRunSpendUsd(addr, out.runId);
+    // Council membership + merge disclosure (QA-023b) rides the result so an MCP
+    // host that asked for `--council` can machine-verify it was really N/N and
+    // who merged. Terminal projection — null on a deferred (still-live) handle.
+    const council = p?.deferred === true ? null : await fetchRunCouncil(addr, out.runId);
     return {
       runId: out.runId,
       runDir: out.runDir,
@@ -135,6 +148,7 @@ export function mcpSurfaceRunner() {
       summary,
       applyEligibility,
       spendUsd,
+      council,
     };
   };
 }
@@ -231,6 +245,13 @@ async function recoveryQuery(
       outcomeBanner: typeof detail["outcomeBanner"] === "string" ? detail["outcomeBanner"] : null,
       applyEligibility: detail["applyEligibility"] ?? null,
       planReadiness: detail["planReadiness"] ?? null,
+      // Council membership (QA-023b) + budget cash/valuation (QA-023c) ride the
+      // same detail every read surface projects, so an MCP host can machine-verify
+      // "Council was N/N, merged by X" and "$0 cash but $Y subscription valuation"
+      // without reading local artifacts.
+      council:
+        detail["council"] && typeof detail["council"] === "object" ? detail["council"] : null,
+      budget: detail["budget"] && typeof detail["budget"] === "object" ? detail["budget"] : null,
     };
     if (mode === "__run_result") {
       const primaryOutput =
