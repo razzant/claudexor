@@ -34,7 +34,7 @@ export type SignalQuality = z.infer<typeof SignalQuality>;
  * (e.g. a future `ultra`) extend this union without touching adapter logic.
  */
 export const EffortHint = z
-  .enum(["low", "medium", "high", "xhigh", "max"])
+  .enum(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
   .describe(
     "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level.",
   );

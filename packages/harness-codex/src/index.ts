@@ -49,7 +49,7 @@ export { BIN } from "./missing-cli.js";
  * `effort_levels` and the run-time normalizer both read this. The cross-harness
  * `max` hint clamps to `xhigh` (the ceiling) via the shared normalizer.
  */
-const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh", "max"];  // max LIVE-VERIFIED on gpt-5.6-sol 2026-07-23
+const CODEX_EFFORT_LEVELS: readonly EffortHint[] = ["low", "medium", "high", "xhigh", "max", "ultra"];  // max & ultra LIVE-VERIFIED on gpt-5.6-sol 2026-07-23; "minimal" REJECTED by gpt-5.6-sol (unsupported_value) — stays in the vocabulary, clamps to low here
 
 /** Exported for focused route-policy tests; runtime uses this exact selector. */
 export const selectCodexRunAuthRoute = selectStrictAuthRoute;
