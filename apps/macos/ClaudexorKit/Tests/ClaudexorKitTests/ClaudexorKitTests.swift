@@ -1725,6 +1725,28 @@ import Testing
         RequestStubURLProtocol.handler = nil
     }
 
+    @Test func gatewayHarnessModelsRouteRidesAsAQueryItemNotAPercentEncodedPath() throws {
+        // QA-055b: the model-route filter MUST be a real query item. The prior
+        // spelling appended "models?route=api_key" as a PATH segment, so
+        // `appendingPathComponent` percent-encoded the `?` into `%3F` and the
+        // daemon 404'd (per-turn model rows hung on "Loading models…").
+        let client = GatewayClient(baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t")
+
+        let unfiltered = client.harnessModelsRequest(harnessId: "claude", route: nil)
+        #expect(unfiltered.url?.path == "/v2/harnesses/claude/models")
+        #expect(unfiltered.url?.query == nil)
+
+        let filtered = client.harnessModelsRequest(harnessId: "claude", route: "api_key")
+        // The `?` and query live in the QUERY, never encoded into the path.
+        #expect(filtered.url?.path == "/v2/harnesses/claude/models")
+        let items = URLComponents(url: filtered.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(items == [URLQueryItem(name: "route", value: "api_key")])
+        let absolute = filtered.url?.absoluteString ?? ""
+        #expect(!absolute.contains("%3F"))
+        #expect(!absolute.contains("models%3F"))
+        #expect(absolute.hasSuffix("/v2/harnesses/claude/models?route=api_key"))
+    }
+
     @Test func gatewayHandshakeRetainsEngineBuildIdentity() async throws {
         // QA-002: the handshake helper must RETAIN the typed engine {version,sha}
         // instead of discarding it — the About panel needs it. `ok` still gates

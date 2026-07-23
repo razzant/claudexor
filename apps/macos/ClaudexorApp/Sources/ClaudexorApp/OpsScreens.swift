@@ -18,6 +18,18 @@ struct SettingsScreen: View {
     @State private var engineDraftsDirty = false
     @State private var syncedSnapshot: [String] = []
     private var runCapValid: Bool { budgetUnlimited || ComposerOptionParser.parseNonnegativeFiniteDouble(maxUsdPerRun) != nil }
+    /// Configured quality-tier count across intents (server truth; no UI tier
+    /// editor — D-22 backlog).
+    private var qualityTierCount: Int {
+        model.settingsSnapshot?.routing.qualityTiers.values.reduce(0) { $0 + $1.count } ?? 0
+    }
+    /// GH #22 pre-guard: Quality routing with ZERO configured tiers can never
+    /// route — the engine refuses every quality run at preflight ("quality
+    /// routing requires a comparable user-declared tier"). Block Save so the UI
+    /// never persists an unroutable goal (and a quality run never traps the user
+    /// later). Configure tiers via `claudexor settings` until the tier editor
+    /// ships (D-22).
+    private var qualityTierGuardTripped: Bool { routingGoal == "quality" && qualityTierCount == 0 }
     private var interactionTimeoutValid: Bool {
         let trimmed = interactionTimeoutMinutes.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return true }
@@ -150,9 +162,19 @@ struct SettingsScreen: View {
                     HStack {
                         Button { Task { await saveEngineDefaults() } } label: { Label("Save engine defaults", systemImage: "checkmark.circle") }
                             .buttonStyle(.borderedProminent).tint(Theme.accent)
+                            .disabled(qualityTierGuardTripped)
+                            .help(qualityTierGuardTripped
+                                  ? "Quality routing needs at least one configured quality tier; configure tiers with `claudexor settings` first."
+                                  : "Persist the routing, harness pool, auth-route, and env-inheritance defaults.")
                         if let status = model.settingsStatus {
                             Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                         }
+                    }
+                    if qualityTierGuardTripped {
+                        Label("Quality routing has no configured tiers, so every quality run would be refused at preflight. Add a quality tier (via `claudexor settings`) or choose Auto/Economy.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Theme.status(.caution))
                     }
                 }
     }
@@ -374,6 +396,12 @@ struct SettingsScreen: View {
     private func saveEngineDefaults() async {
         guard runCapValid else {
             model.settingsStatus = "Budget defaults were not saved: enter non-negative USD numbers or leave fields empty."
+            return
+        }
+        // Defense-in-depth behind the disabled Save button (GH #22): never send a
+        // quality goal that has no configured tiers to the engine.
+        guard !qualityTierGuardTripped else {
+            model.settingsStatus = "Quality routing needs at least one configured quality tier; nothing was saved."
             return
         }
         let paidBudget: PaidBudget = budgetUnlimited

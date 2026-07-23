@@ -23,7 +23,9 @@ struct HarnessReadinessPresentation: Equatable {
         // M5c: the daemon can emit the same finding more than once (aggregated
         // across probes) — dedupe here, the ONE readiness render owner, so a
         // repeated check/reason never shows twice (owner-reported).
-        let rows = dedupeChecks(info?.readiness ?? [])
+        let rows = neutralizeAbsentOptionalKey(
+            dedupeChecks(info?.readiness ?? []),
+            authSources: info?.authSources ?? [])
         let reasons = dedupeOrdered(info?.reasons ?? [])
         return HarnessReadinessPresentation(
             family: family,
@@ -38,6 +40,32 @@ struct HarnessReadinessPresentation: Equatable {
                     }
             ).joined(separator: "\n")
         )
+    }
+
+    /// QA-005: an ABSENT OPTIONAL API-key fallback must read neutral, never a red
+    /// failure. The native adapters emit a presence-only `stored_key` conformance
+    /// check that flips to `fail` merely because no key is configured — but on a
+    /// healthy native harness the API key is an unused fallback, not a failure.
+    /// The authority is the TYPED auth-source verdict, not the row's status
+    /// string (ARCHITECTURE §5): when the `api_key_env` source is
+    /// `unavailable + not_run` the fallback is simply not configured, so the
+    /// `stored_key` fail is rewritten to a neutral `skip` ("not configured").
+    /// A present-but-broken key never reaches this rewrite (its `stored_key` is
+    /// `pass`; the real failure surfaces via the `isolated_api_smoke` row), so
+    /// genuine failures still render red.
+    static func neutralizeAbsentOptionalKey(
+        _ checks: [ReadinessCheck], authSources: [HarnessAuthSource]
+    ) -> [ReadinessCheck] {
+        let keyAbsent = authSources.contains {
+            $0.source == "api_key_env" && $0.availability == "unavailable" && $0.verification == "not_run"
+        }
+        guard keyAbsent else { return checks }
+        return checks.map { row in
+            guard row.id == "stored_key", row.status == "fail" else { return row }
+            return ReadinessCheck(
+                kind: row.kind, id: row.id, title: row.title,
+                status: "skip", detail: "not configured (optional API-key fallback)")
+        }
     }
 
     /// Order-preserving de-duplication of readiness checks by id (first wins).

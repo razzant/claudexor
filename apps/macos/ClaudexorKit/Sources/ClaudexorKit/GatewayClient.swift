@@ -223,16 +223,28 @@ public final class GatewayClient: Sendable {
     /// models() producer). `source == "none"` (or an empty list) means the
     /// harness cannot enumerate — the caller should fall back to free text.
     public func harnessModels(harnessId: String, route: String? = nil) async throws -> HarnessModelsResponse {
-        let escaped = harnessId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? harnessId
-        // ?route= filters manifest-annotated models by credential route (W11/W20).
-        let query = route.map { "?route=\($0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0)" } ?? ""
-        let req = request("harnesses/\(escaped)/models\(query)", method: "GET")
+        let req = harnessModelsRequest(harnessId: harnessId, route: route)
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
             let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
             throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
         }
         return try Self.decoder.decode(HarnessModelsResponse.self, from: data)
+    }
+
+    /// Build the `GET /harnesses/:id/models[?route=]` request. Extracted so the
+    /// URL construction is unit-testable (QA-055b): the `route` filter MUST ride
+    /// as a real URLComponents query item. The prior spelling appended
+    /// `"models?route=api_key"` as a PATH segment, so `appendingPathComponent`
+    /// percent-encoded the `?` into `%3F` — the daemon then saw a literal path
+    /// `models%3Froute=api_key`, 404'd, and every per-turn model row hung on
+    /// "Loading models…". `queryItems` routes through URLComponents, which never
+    /// touches the path.
+    func harnessModelsRequest(harnessId: String, route: String?) -> URLRequest {
+        let escaped = harnessId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? harnessId
+        // ?route= filters manifest-annotated models by credential route (W11/W20).
+        let query = route.map { [URLQueryItem(name: "route", value: $0)] } ?? []
+        return request("harnesses/\(escaped)/models", method: "GET", queryItems: query)
     }
 
     public func createSetupJob(_ body: SetupJobCreateRequest) async throws -> SetupJob {

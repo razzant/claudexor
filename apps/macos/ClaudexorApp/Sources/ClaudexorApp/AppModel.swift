@@ -413,7 +413,16 @@ final class AppModel {
     @discardableResult
     func harnessModels(for family: HarnessFamily, route: String? = nil) async -> HarnessModelsResponse? {
         guard let client else { return nil }
-        return try? await client.harnessModels(harnessId: family.rawValue, route: route)
+        // A nil return is a MEANINGFUL failure signal (QA-055b): the composer's
+        // per-harness model row turns it into an honest "Couldn't load · Retry"
+        // instead of hanging forever on "Loading models…". The explicit catch
+        // (not a swallowing `try?`) makes that failure path deliberate — the
+        // caller surfaces the retry state.
+        do {
+            return try await client.harnessModels(harnessId: family.rawValue, route: route)
+        } catch {
+            return nil
+        }
     }
 
     /// Tail of the serialized settings-operation chain + its offline epoch

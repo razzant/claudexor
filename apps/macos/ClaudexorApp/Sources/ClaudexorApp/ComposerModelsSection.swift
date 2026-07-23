@@ -26,6 +26,11 @@ struct ComposerModelsSection: View {
     @Binding var catalogs: [String: HarnessModelsResponse]
     let fetch: (HarnessFamily) async -> HarnessModelsResponse?
 
+    /// Families whose LAST fetch failed (keyed by `catalogKey`). A failed fetch
+    /// is no longer swallowed into a perpetual "Loading models…" (QA-055b): the
+    /// row shows an honest "Couldn't load" state with a Retry action instead.
+    @State private var failedKeys: Set<String> = []
+
     /// Composite cache key: the same harness under another auth route is a
     /// DIFFERENT truth source, never a cache hit.
     static func catalogKey(_ family: HarnessFamily, route: String?) -> String {
@@ -65,10 +70,21 @@ struct ComposerModelsSection: View {
         // a failed fetch leaves the key missing so the next open retries.
         .task(id: families.map(\.rawValue).joined(separator: ",") + ":" + (route ?? "any")) {
             for family in Self.familiesToFetch(families, route: route, cached: catalogs.keys) {
-                if let fetched = await fetch(family) {
-                    catalogs[Self.catalogKey(family, route: route)] = fetched
-                }
+                await load(family)
             }
+        }
+    }
+
+    /// Fetch one family's catalog, recording an honest failure state (QA-055b):
+    /// success caches the catalog and clears any prior failure; a nil (thrown /
+    /// unreachable) fetch marks the key failed so the row can offer Retry.
+    private func load(_ family: HarnessFamily) async {
+        let key = Self.catalogKey(family, route: route)
+        if let fetched = await fetch(family) {
+            catalogs[key] = fetched
+            failedKeys.remove(key)
+        } else {
+            failedKeys.insert(key)
         }
     }
 
@@ -109,10 +125,21 @@ struct ComposerModelsSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .help("\(family.label) exposes no model truth source, so this turn uses its default model; an explicit model would be refused (strict model governance).")
+        } else if failedKeys.contains(key) {
+            // The fetch FAILED (unreachable / errored) — do NOT claim the harness
+            // has no truth source (the server's call), and do NOT hang forever on
+            // a "Loading…" that will never resolve. Surface it with a Retry.
+            HStack(spacing: Theme.Spacing.xs) {
+                Text("Couldn't load models")
+                    .font(.caption)
+                    .foregroundStyle(Theme.status(.caution))
+                Button("Retry") { Task { await load(family) } }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+            }
+            .help("\(family.label)'s models endpoint was unreachable. Retry, or check the engine connection.")
         } else {
-            // Not loaded yet (or the fetch failed) — do NOT claim the harness
-            // has no truth source; that is the server's call, not a network
-            // hiccup's.
+            // Not loaded yet — a fetch is in flight.
             Text("Loading models…")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
