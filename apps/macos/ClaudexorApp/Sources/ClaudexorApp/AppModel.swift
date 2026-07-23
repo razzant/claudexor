@@ -372,12 +372,12 @@ final class AppModel {
     }
 
     /// Single-flight + coalescing runs-list refresh (QA-052), mirroring the
-    /// threads refresh: `GET /v2/runs` returns the WHOLE retained run registry
-    /// (an O(total runs) request), so overlapping lifecycle/event triggers must
-    /// SHARE one in-flight request rather than fan out N parallel full-history
-    /// refetches. A trigger that lands while a refresh runs folds into exactly ONE
-    /// trailing pass (so the settled list still reflects it). Every caller awaits
-    /// the coalesced result.
+    /// threads refresh: `GET /v2/runs` serves a bounded newest-first page
+    /// (default limit + hard cap, run-list.ts), yet overlapping lifecycle/event
+    /// triggers must still SHARE one in-flight request rather than fan out N
+    /// parallel refetches. A trigger that lands while a refresh runs folds into
+    /// exactly ONE trailing pass (so the settled list still reflects it). Every
+    /// caller awaits the coalesced result.
     func refreshRuns() async {
         if let inFlight = runsRefreshTask {
             runsRefreshPending = true      // fold this trigger into the single trailing pass
