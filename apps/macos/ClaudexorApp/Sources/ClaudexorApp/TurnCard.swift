@@ -203,6 +203,10 @@ struct TurnCard: View {
                            trimmedOlder: model.transcriptTrimmedCount(runId),
                            truncatedChars: model.transcriptTruncatedChars(runId),
                            fileScopeRoots: [run.repoRoot, run.runDir].compactMap { $0 })
+                // D-13 E: skip the up-to-200-row transcript re-layout when an
+                // unrelated AppModel write re-ran this card's body but the blocks
+                // are byte-identical (EquatableView compares before re-evaluating).
+                .equatable()
         }
     }
 

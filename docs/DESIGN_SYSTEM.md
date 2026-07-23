@@ -284,7 +284,13 @@ ONCE at the ROOT content view of every window/popover/sheet
 composer options popover, the thread-workspace panel), where it propagates to
 every descendant `Text`. This is THE mechanism — do NOT sprinkle per-`Text`
 `.textSelection(.enabled)`; a genuinely non-text control opts OUT locally, and
-nothing opts in. Persistent banners (thread status line and equivalents)
+nothing opts in. The ONE documented exception is the CONVERSATION FEED (D-13 B,
+a performance scope): the scrolled column overrides the root global to
+`.textSelection(.disabled)` so the receipts / chips / status containers carry no
+selectable NSText backing, and the message / answer / transcript PROSE nodes
+re-enable it locally (a descendant `.enabled` wins over the ancestor
+`.disabled`) — selection is preserved exactly where users select, backing cost
+removed where they never do. Persistent banners (thread status line and equivalents)
 additionally carry an explicit copy button (`doc.on.doc`, `.plain` style, "Copy
 message" help). An unselectable content surface is a defect, not a style choice.
 
@@ -421,9 +427,33 @@ frequency and volume are. The contracts:
   metadata, not the loaded `[DiffFile]`; a pre-metadata tab open retriggers when
   metadata lands, while 413/network/non-text failures show the reason, artifact
   path, and Retry instead of a perpetual spinner.
-- **Lazy timelines.** The inline activity transcript (in the chat receipt)
-  renders through a lazy collection inside `LazyVStack` — no materialized
-  reversed copies, no eagerly-built thousand-row stacks.
+- **No nested lazy; the per-turn transcript is a PLAIN VStack (D-13 A).** The
+  conversation FEED is the outer `LazyVStack` (one row per turn). The inline
+  activity transcript INSIDE a receipt is a plain `VStack`, NOT a second
+  `LazyVStack`: it is a single turn's transcript and the reducer hard-caps it at
+  200 blocks, so laziness buys nothing — while a `LazyVStack` nested inside the
+  feed's `LazyVStack` was the nested-lazy pattern behind GH #23's runaway layout
+  loop. No materialized reversed copies, no eagerly-built thousand-row stacks.
+- **Per-card equatable containment (D-13 E).** `AppModel` is one coarse
+  `@Observable`, so a low-frequency write to the `liveTasks` array (a status flip
+  on one run, a list refresh) re-runs EVERY mounted `TurnCard.body`. The dominant
+  cost of that re-run — re-laying-out the up-to-200-row transcript — is contained
+  by making `TranscriptView: Equatable` and guarding it with `.equatable()`: when
+  the card's body re-runs but the transcript blocks are unchanged, the transcript
+  body is SKIPPED. High-frequency per-run state still routes through `RunLiveBox`
+  (above); the equatable guard covers the residual whole-array invalidations. A
+  debug-only `RenderProbe` (env `CLAUDEXOR_RENDER_PROBE`) counts transcript body
+  evaluations so the containment is measurable in Instruments / manual QA.
+- **Selection backing is scoped in the feed (D-13 B).** `.textSelection` creates
+  selectable NSText backing for every enabled descendant `Text`. The conversation
+  feed OVERRIDES the window-root global (§2.9) to `.textSelection(.disabled)` and
+  re-enables it only on the message / answer / transcript prose nodes that users
+  actually select — the receipts, chips, and status containers carry no backing.
+- **Per-row readable measure (D-13 C).** The 680pt conversation measure
+  (`conversationMeasure()`) is applied PER ROW (each `TurnCard`), not as a
+  double-frame around the whole feed `LazyVStack`; a sidebar drag / width change
+  then no longer relayouts the entire scrolled column as one framed unit. The
+  composer keeps its own measure.
 - **Off-screen eviction.** Terminal runs outside the open thread / inspected
   run release their heavy feed and transcript arrays on route/thread change;
   reopening reloads the feed from the server timeline (`loadRunDetail`).
@@ -1044,6 +1074,26 @@ state, glass behind dense output, hardcoded colors outside tokens, weak contrast
 fixed-width overflow, technical artifacts shown as user plans/outcomes, or UI
 semantics that disagree with CLI/Control API projections for output, web
 evidence, tool errors, budget, access, fallback, setup jobs, or artifacts.
+
+**Manual Visual-QA stories (live scroll cannot be unit-tested).** SwiftUI layout
+and scroll behavior have no headless test, so these are checked by hand on a real
+thread (the Counter Lab long thread) and stand in for the deterministic gates:
+
+- **Long-transcript toggle — no runaway layout/memory (GH #23, D-13 A).** Open a
+  thread with a long, tool-heavy turn; expand and collapse its receipt transcript
+  repeatedly while scrolling. Memory must stay flat and the frame rate steady —
+  no unbounded growth (the nested `LazyVStack`-in-`LazyVStack` loop). The
+  deterministic backstop is `expandedTranscriptReadPathIsAlwaysReducerCapped`
+  (the rendered array is reducer-capped at 200 blocks).
+- **Sidebar drag / width change stays smooth (D-13 C/E).** Drag the sidebar
+  resize handle across a long thread: the scroll position stays anchored and the
+  whole column does not visibly reflow as one unit (per-row measure), and a
+  background list/quota refresh mid-scroll does not stutter every card (equatable
+  transcript containment; set `CLAUDEXOR_RENDER_PROBE=1` to watch the counts).
+- **Bubble translucency + Reduce Transparency (D-12).** In Light and Dark, the
+  user and final-answer bubbles read faintly frosted (glow through) with text
+  fully legible; toggling System Settings → Reduce Transparency snaps both back
+  to solid fills with no contrast change.
 
 ---
 

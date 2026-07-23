@@ -7,7 +7,13 @@ import ClaudexorKit
 /// duration, mid-run narration reads DIMMED (the final answer is the W22
 /// bubble — it never appears here), and tool rows lead with a humane short
 /// title; the raw command/target stays one disclosure away, never lost.
-struct TranscriptView: View {
+///
+/// `Equatable` (D-13 E): the transcript is the dominant per-card re-layout cost
+/// (up to the reducer's 200-block cap). Conforming lets the call site guard it
+/// with `.equatable()` so an UNRELATED AppModel invalidation (a background
+/// threads/quota/other-run write that re-runs `TurnCard.body`) does NOT re-lay
+/// out this transcript when its blocks are unchanged — the body is skipped.
+struct TranscriptView: View, Equatable {
     let blocks: [TranscriptBlock]
     /// Oldest blocks the reducer's cap dropped (honest truncation marker).
     var trimmedOlder: Int = 0
@@ -17,11 +23,21 @@ struct TranscriptView: View {
     var fileScopeRoots: [String] = []
 
     var body: some View {
+        // D-13 E: debug-only render-count hook (no-op unless CLAUDEXOR_RENDER_PROBE
+        // is set). With the `.equatable()` guard above, this fires only when the
+        // blocks actually changed — the measurable proof that unrelated card
+        // invalidations no longer re-lay-out every mounted transcript.
+        let _ = RenderProbe.record("TranscriptView")
         let chat = TranscriptPresentation.chatRows(blocks)
         // W4.4 (V9a): a FLAT log — one line per tool, grouped runs, a single
         // timer line for thinking. Zero inline chevrons; the raw reasoning
         // text and full tool output live in the run inspector only.
-        LazyVStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+        //
+        // D-13 A: a PLAIN VStack — NOT LazyVStack. This is a per-turn transcript
+        // and the reducer hard-caps it at 200 blocks, so laziness buys nothing;
+        // the inner LazyVStack nested inside the conversation's outer LazyVStack
+        // was the nested-lazy pattern behind GH #23's runaway layout loop.
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
             if trimmedOlder > 0 || truncatedChars > 0 || chat.omitted > 0 {
                 Text(truncationNote(chatOmitted: chat.omitted))
                     .font(.caption2).foregroundStyle(.tertiary)

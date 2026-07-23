@@ -292,21 +292,29 @@ struct ThreadsScreen: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
                             ForEach(detail.turns) { turn in
+                                // C (D-13): the readable 680pt measure is applied PER
+                                // ROW, not as a double-frame around the whole LazyVStack
+                                // — a sidebar drag / width change no longer relayouts the
+                                // entire scrolled column as one framed unit; each row
+                                // measures independently (scroll position stays anchored).
                                 TurnCard(turn: turn)
+                                    .conversationMeasure()
                                     .id(turn.id)
                             }
                             if !detail.sessions.isEmpty {
                                 sessionsFooter(detail.sessions)
+                                    .conversationMeasure()
                             }
                         }
-                        // F10: readable measure — wide content lives in the inspector.
-                        .conversationMeasure()
                         .padding(Theme.Spacing.lg)
-                        // Global text selection (M5c): the environment modifier
-                        // propagates to every descendant Text — messages, turn
-                        // cards, and progress cards become selectable. Buttons and
-                        // menus keep their own gestures.
-                        .textSelection(.enabled)
+                        // B (D-13): selection backing is SCOPED to the text nodes users
+                        // actually select (message / answer / transcript Text carry their
+                        // own `.textSelection(.enabled)`). Overriding the window-root
+                        // global (RootView, §2.9) to DISABLED here strips the selectable
+                        // NSText backing from the feed's receipts / chips / status
+                        // containers, which never needed it; a descendant `.enabled` on
+                        // real prose still wins locally.
+                        .textSelection(.disabled)
                     }
                     .onChange(of: detail.turns.count) {
                         if let last = detail.turns.last { proxy.scrollTo(last.id, anchor: .bottom) }
