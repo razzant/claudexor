@@ -612,13 +612,17 @@ describe("idempotent replay is a typed no-op, divergence is a conflict (#26)", (
 
   it("replaying apply on an already-delivered tree is applied:true with NO mutation", async () => {
     const { repo, patch } = await makePatchRepo();
-    await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+    const first = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
     const replay = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
     expect(replay.applied).toBe(true);
     expect(replay.treeMutated).toBe(false);
     expect(replay.refused).not.toBe(true);
+    // #26: the idempotent no-op is now typed on the receipt, not just prose.
+    expect(replay.alreadyApplied).toBe(true);
     expect(replay.detail).toMatch(/already applied/i);
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+    // A fresh apply is NOT flagged already-applied.
+    expect(first.alreadyApplied ?? false).toBe(false);
   });
 
   it("a diverged target (neither pre- nor postimage) still refuses as a typed conflict", async () => {

@@ -1316,10 +1316,17 @@ async function main(): Promise<number> {
       if (json) printJson({ runId, ...(dryRun ? { dryRun: true } : {}), ...result });
       else if (!response.ok) print(String(result["message"] ?? result["error"] ?? text));
       else if (dryRun)
-        print(result["ok"] === true ? "patch applies cleanly" : "patch does not apply");
+        print(
+          result["alreadyApplied"] === true
+            ? "already applied; nothing would change"
+            : result["ok"] === true
+              ? "patch applies cleanly"
+              : "patch does not apply",
+        );
       else
         print(
           `${String(result["mode"] ?? rawMode)}: applied=${String(result["applied"] ?? false)}` +
+            (result["alreadyApplied"] === true ? " (already applied; no files changed)" : "") +
             (typeof result["commit"] === "string"
               ? ` commit=${result["commit"].slice(0, 8)}`
               : "") +

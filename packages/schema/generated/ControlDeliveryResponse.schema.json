@@ -34,6 +34,20 @@
         "refused": {
           "type": "boolean"
         },
+        "alreadyApplied": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when delivery was an idempotent already-applied no-op (no files changed)."
+        },
+        "deliveryStatus": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "already_applied",
+            "refused"
+          ],
+          "description": "Coarse typed delivery disposition (applied / already_applied / refused)."
+        },
         "finalVerify": {
           "type": "object",
           "properties": {

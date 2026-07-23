@@ -35,7 +35,20 @@ export const ControlProjectOutputsResponse = z
 export type ControlProjectOutputsResponse = z.infer<typeof ControlProjectOutputsResponse>;
 
 export const ControlApplyCheckResponse = z
-  .object({ ok: z.boolean(), code: z.number().int().nullable(), stderr: z.string() })
+  .object({
+    ok: z.boolean(),
+    code: z.number().int().nullable(),
+    stderr: z.string(),
+    /** #26: TRUE when `ok` is a typed already-applied no-op (the run is
+     * delivered and the tree is this patch's exact postimage) rather than a
+     * fresh clean forward check. Lets a dry-run consumer distinguish "would
+     * apply cleanly" from "already applied; nothing would change". Defaults
+     * false. */
+    alreadyApplied: z
+      .boolean()
+      .default(false)
+      .describe("True when the clean check is an already-applied idempotent no-op."),
+  })
   .strict()
   .describe("Mechanical git apply --check result.");
 export type ControlApplyCheckResponse = z.infer<typeof ControlApplyCheckResponse>;

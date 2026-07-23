@@ -177,6 +177,7 @@ export async function handleRunApplyRoutes(
             ok: true,
             code: 0,
             stderr: "already applied; idempotent no-op (no files would change)",
+            alreadyApplied: true,
           }),
         );
         return true;
@@ -245,7 +246,24 @@ export async function handleRunApplyRoutes(
     // this flip, retention keeps classifying the delivered patch as
     // actionable and preserves the run indefinitely.
     if (delivered.applied) ctx.markApplied(record);
-    ctx.json(res, 200, ControlDeliveryResponse.parse(delivered));
+    // #26: type the coarse delivery disposition on the wire so a consumer reads
+    // the outcome without parsing `detail` prose. `alreadyApplied` rides on the
+    // receipt already; deliveryStatus is its enum projection.
+    const deliveryStatus = delivered.refused
+      ? "refused"
+      : delivered.alreadyApplied
+        ? "already_applied"
+        : delivered.applied
+          ? "applied"
+          : undefined;
+    ctx.json(
+      res,
+      200,
+      ControlDeliveryResponse.parse({
+        ...delivered,
+        ...(deliveryStatus ? { deliveryStatus } : {}),
+      }),
+    );
   } catch (error) {
     ctx.requestError(res, error);
   }

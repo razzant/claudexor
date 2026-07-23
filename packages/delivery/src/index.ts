@@ -98,6 +98,9 @@ export interface DeliverResult {
   /** True when a FAILED delivery left the tree mutated (restore failed);
    * `applied:false, treeMutated:false` guarantees the tree is untouched. */
   treeMutated?: boolean;
+  /** #26: TRUE when delivery was an idempotent already-applied no-op (the tree
+   * was already this patch's exact postimage). `applied:true` with no mutation. */
+  alreadyApplied?: boolean;
 }
 
 export interface VerifiedDeliverResult extends DeliverResult {
@@ -155,6 +158,7 @@ async function verifyAndDeliverUnlocked(
         mode: options.mode,
         applied: true,
         treeMutated: false,
+        alreadyApplied: true,
         detail: "already applied; idempotent no-op (no files changed)",
         finalVerify,
         targetPreimageSha,

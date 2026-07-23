@@ -19,6 +19,11 @@
         },
         "stderr": {
           "type": "string"
+        },
+        "alreadyApplied": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the clean check is an already-applied idempotent no-op."
         }
       },
       "required": [

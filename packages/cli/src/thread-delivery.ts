@@ -93,6 +93,8 @@ export async function applyThreadDiff(
     status,
     headMoved,
     detail: delivered.detail ?? null,
-    delivery: delivered,
+    // #26: the receipt now carries a typed alreadyApplied flag (default false
+    // for a fresh apply); normalize the optional producer field to the receipt.
+    delivery: { ...delivered, alreadyApplied: delivered.alreadyApplied ?? false },
   };
 }
