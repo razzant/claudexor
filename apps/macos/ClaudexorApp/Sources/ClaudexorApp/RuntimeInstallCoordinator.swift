@@ -153,9 +153,19 @@ public actor RuntimeInstallCoordinator {
             throw RuntimeInstallError.io("could not write current.json: \(error.localizedDescription)")
         }
 
-        // 9. Relaunch against the new pointer.
+        // 9. Relaunch against the new pointer. If the relaunch THROWS (audit 6),
+        // the swap already happened — roll back to the previous pointer and leave
+        // a working engine (bundled fallback if there was no previous) rather
+        // than stranding a broken pointer.
         onPhase(.relaunching)
-        try daemon.start()
+        do {
+            try daemon.start()
+        } catch {
+            await rollback(to: previous, reason: "engine relaunch failed after swap")
+            throw RuntimeInstallError.io(
+                "engine relaunch failed after swap; rolled back to the previous runtime: \(error.localizedDescription)"
+            )
+        }
 
         // 10. Handshake-verify the new engine; rollback on ANY mismatch.
         let running = await daemon.handshakeVersion()

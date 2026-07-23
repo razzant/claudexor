@@ -26,17 +26,27 @@ private final class PhaseRecorder: @unchecked Sendable {
     func contains(_ p: RuntimeInstallPhase) -> Bool { lock.withLock { phases.contains(p) } }
 }
 
+private struct StubStartError: Error {}
+
 private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
     private let lock = NSLock()
     var busy: Bool? = false
     var probeReturns: String?
     var handshakeReturns: String?
+    /// When true, the FIRST start() throws (the relaunch), later starts (rollback)
+    /// succeed — the audit-6 relaunch-fails-after-swap case.
+    var startThrowsOnce = false
     var stops = 0
     var starts = 0
 
     func isBusy() async -> Bool? { lock.withLock { busy } }
     func stop() async throws { lock.withLock { stops += 1 } }
-    func start() throws { lock.withLock { starts += 1 } }
+    func start() throws {
+        try lock.withLock {
+            starts += 1
+            if startThrowsOnce && starts == 1 { throw StubStartError() }
+        }
+    }
     func probeVersion(scriptURL: URL) async -> String? { lock.withLock { probeReturns } }
     func handshakeVersion() async -> String? { lock.withLock { handshakeReturns } }
 }
@@ -212,6 +222,41 @@ private final class StubDaemon: RuntimeDaemonControl, @unchecked Sendable {
         #expect(installer.readLastKnownGood()?.version == "3.2.0")
         // Stopped for the swap AND again for the rollback; relaunched twice.
         #expect(daemon.stops == 2)
+        #expect(daemon.starts == 2)
+    }
+
+    @Test func rollsBackWhenRelaunchStartThrowsAfterSwap() async throws {
+        // Audit 6: daemon.start() THROWS on the post-swap relaunch. The
+        // coordinator must roll back to the previous pointer and end
+        // failed-but-safe, never strand the newly-swapped-but-unlaunchable
+        // pointer.
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        let previous = RuntimeCurrent(
+            version: "3.2.0", path: "versions/3.2.0",
+            sha256: String(repeating: "a", count: 64), installedAt: "old", engineSha: "prevsha")
+        let prevDir = root.appendingPathComponent("versions/3.2.0", isDirectory: true)
+        try FileManager.default.createDirectory(at: prevDir, withIntermediateDirectories: true)
+        try Data("// prev".utf8).write(to: prevDir.appendingPathComponent("claudexord.bundle.cjs"))
+        try installer.writeCurrentAtomic(previous)
+
+        let (bytes, sha) = try fixtureClosure()
+        let daemon = StubDaemon()
+        daemon.probeReturns = "3.4.0"  // probe OK → we reach the swap
+        daemon.handshakeReturns = "3.4.0"
+        daemon.startThrowsOnce = true  // the relaunch throws
+        let coord = RuntimeInstallCoordinator(
+            installer: installer, transport: LocalTransport(bytes), daemon: daemon)
+
+        await #expect(throws: RuntimeInstallError.self) {
+            try await coord.install(manifest: manifest(version: "3.4.0", sha: sha), assetURL: assetURL)
+        }
+        // Rolled BACK: the active pointer is the previous 3.2.0, engine works.
+        let current = try #require(installer.readCurrent())
+        #expect(current.version == "3.2.0")
+        #expect(current.engineSha == "prevsha")
+        // start() was attempted for the failed relaunch AND again in rollback.
         #expect(daemon.starts == 2)
     }
 }
