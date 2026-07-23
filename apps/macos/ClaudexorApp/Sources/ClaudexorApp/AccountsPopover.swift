@@ -223,7 +223,7 @@ struct AccountsPopover: View {
                 AccountsSurface(family: nil) { row in
                     // Routed model-level so the AuthSheet survives this popover
                     // dismissing.
-                    model.authSheetTarget = AuthSheetTarget(family: row.family, profileId: row.profileId)
+                    model.authSheetTarget = AuthSheetTarget(family: row.family, profileId: row.profileId, autoStartLogin: true)
                     isPresented = false
                 }
                 autoBalanceToggle

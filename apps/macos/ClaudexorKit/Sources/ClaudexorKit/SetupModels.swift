@@ -22,15 +22,20 @@ public struct SetupJobCreateRequest: Codable, Sendable, Equatable {
     /// Target credential profile (INV-135). nil = the engine-default store; the
     /// key is emitted ONLY when set so a default login keeps the exact legacy body.
     public let profileId: String?
+    /// D-17 codex-only login flow selection. Emitted ONLY when set so a default
+    /// login keeps the exact legacy body (absent = app-server device-code).
+    public let loginFlow: SetupCodexLoginFlow?
 
-    public init(harness: SetupHarness, action: SetupJobAction, profileId: String? = nil) {
+    public init(harness: SetupHarness, action: SetupJobAction, profileId: String? = nil,
+                loginFlow: SetupCodexLoginFlow? = nil) {
         self.harness = harness
         self.action = action
         self.authRequest = .subscription
         self.profileId = profileId
+        self.loginFlow = loginFlow
     }
 
-    enum CodingKeys: String, CodingKey { case harness, action, authRequest, profileId }
+    enum CodingKeys: String, CodingKey { case harness, action, authRequest, profileId, loginFlow }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -38,7 +43,42 @@ public struct SetupJobCreateRequest: Codable, Sendable, Equatable {
         try container.encode(action, forKey: .action)
         try container.encode(authRequest, forKey: .authRequest)
         try container.encodeIfPresent(profileId, forKey: .profileId)
+        try container.encodeIfPresent(loginFlow, forKey: .loginFlow)
     }
+}
+
+/// D-17 codex login flow selection (request-side). Absent = the app-server
+/// device-code default; `browserCallback` = the app-server browser-callback
+/// opt-in; `browserRedirect` = the legacy Terminal localhost-callback fallback.
+public enum SetupCodexLoginFlow: String, Codable, Sendable, CaseIterable {
+    case deviceAuth = "device_auth"
+    case browserCallback = "browser_callback"
+    case browserRedirect = "browser_redirect"
+}
+
+/// The two app-server device-code flows surfaced on a disclosure.
+public enum SetupAppServerLoginFlow: String, Codable, Sendable, CaseIterable {
+    case chatgptDeviceCode
+    case chatgpt
+}
+
+/// TRANSIENT device-code disclosure overlaid on a setup-job snapshot / SSE frame
+/// at read time (D-17). Never part of the journaled `SetupJob`; the one-time
+/// `userCode` is empty for the browser-callback flow.
+public struct SetupDeviceCodeDisclosure: Codable, Sendable, Equatable {
+    public let flow: SetupAppServerLoginFlow
+    public let verificationUrl: String
+    public let userCode: String
+
+    public init(flow: SetupAppServerLoginFlow, verificationUrl: String, userCode: String) {
+        self.flow = flow
+        self.verificationUrl = verificationUrl
+        self.userCode = userCode
+    }
+
+    /// Whether this disclosure carries a one-time code (device-code flow) vs a
+    /// URL-only browser-callback flow.
+    public var hasUserCode: Bool { !userCode.isEmpty }
 }
 
 public enum SetupJobState: String, Codable, Sendable, CaseIterable {
@@ -330,11 +370,16 @@ public struct SetupJobSnapshot: Codable, Sendable, Equatable {
     public let job: SetupJob
     public let cursor: String
     public let sequence: Int
+    /// D-17 transient device-code disclosure overlaid at read time; never part
+    /// of the journaled `job`.
+    public let deviceCode: SetupDeviceCodeDisclosure?
 
-    public init(job: SetupJob, cursor: String, sequence: Int) {
+    public init(job: SetupJob, cursor: String, sequence: Int,
+                deviceCode: SetupDeviceCodeDisclosure? = nil) {
         self.job = job
         self.cursor = cursor
         self.sequence = sequence
+        self.deviceCode = deviceCode
     }
 }
 
@@ -366,13 +411,17 @@ public struct SetupJobEvent: Codable, Sendable, Equatable {
     public let state: SetupJobState
     public let message: String
     public let job: SetupJob
+    /// D-17 transient device-code disclosure overlaid at read time; never part
+    /// of the journaled `job`.
+    public let deviceCode: SetupDeviceCodeDisclosure?
 
     enum CodingKeys: String, CodingKey {
-        case jobId, cursor, previousCursor, sequence, time, kind, state, message, job
+        case jobId, cursor, previousCursor, sequence, time, kind, state, message, job, deviceCode
     }
 
     public init(jobId: String, cursor: String, previousCursor: String?, sequence: Int, time: String,
-                kind: SetupJobEventKind = .status, state: SetupJobState, message: String, job: SetupJob) {
+                kind: SetupJobEventKind = .status, state: SetupJobState, message: String, job: SetupJob,
+                deviceCode: SetupDeviceCodeDisclosure? = nil) {
         self.jobId = jobId
         self.cursor = cursor
         self.previousCursor = previousCursor
@@ -382,6 +431,7 @@ public struct SetupJobEvent: Codable, Sendable, Equatable {
         self.state = state
         self.message = message
         self.job = job
+        self.deviceCode = deviceCode
     }
 
     public init(from decoder: Decoder) throws {
@@ -399,6 +449,7 @@ public struct SetupJobEvent: Codable, Sendable, Equatable {
         state = try container.decode(SetupJobState.self, forKey: .state)
         message = try container.decode(String.self, forKey: .message)
         job = try container.decode(SetupJob.self, forKey: .job)
+        deviceCode = try container.decodeIfPresent(SetupDeviceCodeDisclosure.self, forKey: .deviceCode)
         guard !jobId.isEmpty, !cursor.isEmpty, sequence > 0, previousCursor != cursor,
               job.jobId == jobId, job.state == state, job.message == message else {
             throw DecodingError.dataCorrupted(.init(codingPath: container.codingPath,
@@ -421,5 +472,6 @@ public struct SetupJobEvent: Codable, Sendable, Equatable {
         try container.encode(state, forKey: .state)
         try container.encode(message, forKey: .message)
         try container.encode(job, forKey: .job)
+        try container.encodeIfPresent(deviceCode, forKey: .deviceCode)
     }
 }

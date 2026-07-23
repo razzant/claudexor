@@ -34,6 +34,10 @@ enum Health: Equatable {
 struct AuthSheetTarget: Identifiable, Hashable {
     let family: HarnessFamily
     var profileId: String? = nil
+    /// D-17: open the sheet AND immediately start the native login (the
+    /// "Add & log in" / account-row one-action flow). The sheet consumes this
+    /// once on appear so a manual reopen never re-triggers a login.
+    var autoStartLogin: Bool = false
     var id: String { profileId.map { "\(family.rawValue)#\($0)" } ?? family.rawValue }
 }
 
