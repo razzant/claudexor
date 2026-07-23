@@ -50,6 +50,17 @@ enum Theme {
     /// the ASSISTANT's final answer stays the loudest element in the feed
     /// (HIG: accent is for interactive elements, not text slabs).
     static let bubbleUser = Color(dark: (0.235, 0.252, 0.298), light: (0.878, 0.898, 0.938))
+    /// D-12 calibrated translucency for the conversation bubbles (user bubble +
+    /// the assistant's final-answer `surfaceRaisedHi` bubble). The fills sit at
+    /// this fraction of their solid color OVER the frosted card material, so the
+    /// ambient glow reads faintly through them and they belong to the same
+    /// frosted-material family as the cards — WITHOUT the old "translucent wash"
+    /// that killed contrast (0.92 is barely off solid, both themes stay WCAG-legible
+    /// with their primary/near-primary text). Applied ONLY at the two bubble call
+    /// sites, gated by `accessibilityReduceTransparency` (which restores a fully
+    /// SOLID fill), exactly like `CardSurfaceModifier`'s fallback — never baked
+    /// into the token, so every other `bubbleUser`/`surfaceRaisedHi` use stays solid.
+    static let bubbleTranslucency: Double = 0.92
     static let separator = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.14)
     static let hairline = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.08)
     /// Card border — a touch stronger than separator for crisp card edges on the glow.

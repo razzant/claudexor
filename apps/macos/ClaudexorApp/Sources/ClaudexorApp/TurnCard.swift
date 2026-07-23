@@ -15,6 +15,9 @@ import ClaudexorKit
 
 struct TurnCard: View {
     @Environment(AppModel.self) private var model
+    /// D-12: Reduce Transparency restores fully SOLID bubble fills (the
+    /// calibrated translucency is a visual affordance, never a legibility cost).
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let turn: ThreadTurnInfo
     @State private var actionError: String?
     /// Set after a successful accept-risk decision so the apply affordance appears
@@ -58,8 +61,10 @@ struct TurnCard: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.sm)
+                    // D-12: calibrated translucency over the ambient backdrop — solid
+                    // under Reduce Transparency.
                     .background(
-                        Theme.bubbleUser,
+                        Theme.bubbleUser.opacity(reduceTransparency ? 1 : Theme.bubbleTranslucency),
                         in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
             }
             assistantSection
@@ -181,8 +186,11 @@ struct TurnCard: View {
             }
             .padding(Theme.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // D-12: the loudest element in the feed carries the same calibrated
+            // translucency over the frosted card material — solid under Reduce
+            // Transparency so the answer's contrast is never traded away.
             .background(
-                Theme.surfaceRaisedHi,
+                Theme.surfaceRaisedHi.opacity(reduceTransparency ? 1 : Theme.bubbleTranslucency),
                 in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             .overlay(alignment: .leading) {
                 UnevenRoundedRectangle(

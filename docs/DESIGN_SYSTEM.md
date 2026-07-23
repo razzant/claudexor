@@ -519,8 +519,17 @@ frequency and volume are. The contracts:
     user bubble is the QUIET `Theme.bubbleUser` fill (a faintly accent-tinted
     raised surface, owner round-4) with the PRIMARY label color, continuous
     `Radius.bubble` corners and NO stroke — identity comes from right alignment
-    + fill. Never a saturated accent block (it outshouted the answer) and never
-    a translucent wash (unreadable in light theme); the final answer bubble
+    + fill. Never a saturated accent block (it outshouted the answer). Both
+    conversation bubbles — the user bubble and the assistant's final-answer
+    `surfaceRaisedHi` bubble — carry a CALIBRATED translucency (D-12):
+    `Theme.bubbleTranslucency` (~0.92 of the solid color) so the ambient glow
+    reads faintly through them and they belong to the same frosted-material
+    family as the cards, WITHOUT the old "translucent wash" that killed light-
+    theme contrast (0.92 is barely off solid; primary/near-primary text stays
+    WCAG-legible in both themes). The translucency lives ONLY at the two bubble
+    call sites and is GATED by `accessibilityReduceTransparency`, which restores
+    a fully SOLID fill — exactly like `CardSurfaceModifier`'s fallback; the
+    tokens themselves stay solid everywhere else. The final answer bubble
     stays the loudest element in the feed. The assistant stays a neutral
     frosted `cardSurface` with one subtle accent hairline (`accent.opacity(0.22)`)
     so it belongs to the same family. Then the assistant reads top-down: the
