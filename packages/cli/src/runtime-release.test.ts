@@ -215,7 +215,7 @@ describe("checkRuntimeUpdate", () => {
 });
 
 describe("releaseStats", () => {
-  it("sums GitHub asset downloads and reads the npm last-month point", async () => {
+  it("reports the app-installer allowlist sum plus the raw all-asset total", async () => {
     const { fetchImpl } = stubFetch([
       {
         match: "/releases?",
@@ -233,11 +233,21 @@ describe("releaseStats", () => {
       { match: "api.npmjs.org", respond: () => jsonResponse({ downloads: 123 }) },
     ]);
     const stats = await releaseStats({ fetchImpl });
+    // The honest install count is the DMG/ZIP allowlist only (5), while the raw
+    // all-asset total (17 runtime tarball + 5 dmg = 22) stays as a diagnostic.
+    expect(stats.github.appInstallerDownloads).toBe(5);
     expect(stats.github.totalDownloads).toBe(22);
     expect(stats.github.releases).toBe(2);
+    // perAsset is the raw all-asset breakdown, each row tagged by policy.
     expect(stats.github.perAsset[0]).toEqual({
       name: "claudexor-runtime-3.4.0.tar.gz",
       downloads: 17,
+      appInstaller: false,
+    });
+    expect(stats.github.perAsset).toContainEqual({
+      name: "Claudexor-3.4.0.dmg",
+      downloads: 5,
+      appInstaller: true,
     });
     expect(stats.npm.lastMonth).toBe(123);
   });
@@ -248,6 +258,7 @@ describe("releaseStats", () => {
       { match: "api.npmjs.org", respond: () => jsonResponse({}, 500) },
     ]);
     const stats = await releaseStats({ fetchImpl });
+    expect(stats.github.appInstallerDownloads).toBeNull();
     expect(stats.github.totalDownloads).toBeNull();
     expect(stats.github.detail).toContain("403");
     expect(stats.npm.lastMonth).toBeNull();

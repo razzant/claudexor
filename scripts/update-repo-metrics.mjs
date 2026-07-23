@@ -28,6 +28,28 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { get as httpsGet } from "node:https";
 
+// Single shared collector / asset-authority (D-15 reuse-lock; audit A-6). This
+// same module backs the CLI `claudexor release stats`, so the app-installer
+// allowlist, the npm daily-delta math, the stars extraction, and the CSV ledger
+// logic have exactly ONE definition. Imported unbuilt via Node's native
+// TypeScript type stripping (the workflow runs plain `node`; .node-version pins
+// the type-stripping runtime) — so this file stays dependency-free and only IO,
+// SVG rendering, and orchestration live here.
+import {
+  isAppInstallerAsset,
+  sumAppInstallerDownloads,
+  extractStargazers,
+  hasMoreReleasePages,
+  sumNpmDeltaAfter,
+  utcDate,
+  addDaysUtc,
+  parseCsv,
+  serializeCsv,
+  upsertRow,
+  priorRowBefore,
+  formatThousands,
+} from "../packages/cli/src/repo-asset-authority.ts";
+
 const REPO = "razzant/claudexor";
 const NPM_PACKAGE = "claudexor";
 // npm registry "created" time for the package; the lifetime point range starts
@@ -42,108 +64,12 @@ const assetsDir = join(repoRoot, "docs", "assets");
 const csvPath = join(assetsDir, "repo-metrics.csv");
 const badgePath = join(assetsDir, "downloads-badge.json");
 
-const CSV_HEADER = "date,star_total,npm_total,gh_app_downloads,combined";
 const CHART_ACCENT = "#6366f1"; // brand-neutral indigo, identical in both themes
 
-// ---------------------------------------------------------------------------
-// Pure helpers (all self-tested under --check)
-// ---------------------------------------------------------------------------
-
-// App-install allowlist: only the signed DMG/ZIP the user actually downloads to
-// install the app. Everything else a release carries (SBOM `.spdx.json`,
-// `runtime-manifest.json`, the lowercase `claudexor-runtime-*.tar.gz` engine
-// closure, `SHA256SUMS`, `*.sha256` checksums, `REVIEW_ATTESTATION.json`) is
-// tooling, not an install, and would overcount humans.
-export function isAppAsset(name) {
-  return typeof name === "string" && /^Claudexor-[^/]*\.(?:dmg|zip)$/.test(name);
-}
-
-export function computeGhAppDownloads(releases) {
-  let total = 0;
-  for (const release of releases ?? []) {
-    for (const asset of release.assets ?? []) {
-      if (!isAppAsset(asset?.name)) continue;
-      const count = typeof asset.download_count === "number" ? asset.download_count : 0;
-      total += count;
-    }
-  }
-  return total;
-}
-
-export function parseCsv(text) {
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  if (lines.length === 0) return { header: CSV_HEADER, rows: [] };
-  const header = lines[0];
-  const rows = lines.slice(1).map((line) => {
-    const [date, star_total, npm_total, gh_app_downloads, combined] = line.split(",");
-    return {
-      date,
-      star_total: Number(star_total),
-      npm_total: Number(npm_total),
-      gh_app_downloads: Number(gh_app_downloads),
-      combined: Number(combined),
-    };
-  });
-  return { header, rows };
-}
-
-export function serializeCsv(rows) {
-  const body = rows
-    .map((r) => [r.date, r.star_total, r.npm_total, r.gh_app_downloads, r.combined].join(","))
-    .join("\n");
-  return body.length > 0 ? `${CSV_HEADER}\n${body}\n` : `${CSV_HEADER}\n`;
-}
-
-// Insert or replace the row for its date, keeping the ledger sorted by date.
-// Idempotent: re-running the same day updates that day's row, never duplicates.
-export function upsertRow(rows, row) {
-  const next = rows.filter((r) => r.date !== row.date);
-  next.push(row);
-  next.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  return next;
-}
-
-// The last row whose date is strictly before `date` (the cumulative baseline a
-// same-day rerun rewinds to before re-summing the tail delta).
-export function priorRowBefore(rows, date) {
-  let prior = null;
-  for (const r of rows) {
-    if (r.date < date) prior = r;
-  }
-  return prior;
-}
-
-export function formatThousands(n) {
-  return Math.round(n)
-    .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-// UTC day strings so cron time zone can never split a run across two dates.
-export function utcDate(d = new Date()) {
-  return d.toISOString().slice(0, 10);
-}
-
-function addDaysUtc(dateStr, days) {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
-}
-
-// Sum npm daily downloads for days strictly after `afterDate` through `through`
-// inclusive. `daily` is the npm range payload's `downloads: [{day, downloads}]`.
-export function sumNpmDeltaAfter(daily, afterDate, through) {
-  let sum = 0;
-  for (const point of daily ?? []) {
-    if (point.day > afterDate && point.day <= through) {
-      sum += typeof point.downloads === "number" ? point.downloads : 0;
-    }
-  }
-  return sum;
-}
+// The asset allowlist, npm daily-delta math, stars extraction, CSV ledger
+// helpers, pagination stop condition, and number formatting now live in the
+// shared authority (imported above). Only IO, SVG rendering, and orchestration
+// remain in this script.
 
 // ---------------------------------------------------------------------------
 // SVG chart rendering (deterministic: identical CSV -> identical bytes)
@@ -240,7 +166,10 @@ export function renderChart({ rows, valueKey, title, theme }) {
   }
 
   const markers = points
-    .map((p) => `<circle cx="${round(p.x)}" cy="${round(p.y)}" r="${n === 1 ? 4 : 3}" fill="${CHART_ACCENT}"/>`)
+    .map(
+      (p) =>
+        `<circle cx="${round(p.x)}" cy="${round(p.y)}" r="${n === 1 ? 4 : 3}" fill="${CHART_ACCENT}"/>`,
+    )
     .join("");
 
   // Current value label near the last point.
@@ -305,20 +234,22 @@ async function fetchAllReleases() {
     );
     if (!Array.isArray(batch) || batch.length === 0) break;
     releases.push(...batch);
-    if (batch.length < 100) break;
+    if (!hasMoreReleasePages(batch)) break;
   }
   return releases;
 }
 
 async function fetchStars() {
   const repo = await fetchJson(`https://api.github.com/repos/${REPO}`);
-  const stars = repo?.stargazers_count;
-  if (typeof stars !== "number") throw new Error("repo API returned no stargazers_count");
+  const stars = extractStargazers(repo);
+  if (stars === null) throw new Error("repo API returned no stargazers_count");
   return stars;
 }
 
 async function fetchNpmRange(from, to) {
-  const data = await fetchJson(`https://api.npmjs.org/downloads/range/${from}:${to}/${NPM_PACKAGE}`);
+  const data = await fetchJson(
+    `https://api.npmjs.org/downloads/range/${from}:${to}/${NPM_PACKAGE}`,
+  );
   if (!Array.isArray(data?.downloads)) throw new Error("npm range API returned no downloads array");
   return data.downloads;
 }
@@ -343,7 +274,7 @@ async function main() {
 
   const stars = await fetchStars();
   const releases = await fetchAllReleases();
-  const ghAppDownloads = computeGhAppDownloads(releases);
+  const ghAppDownloads = sumAppInstallerDownloads(releases);
 
   let npmTotal;
   if (prior === null) {
@@ -408,30 +339,56 @@ function runSelfTests() {
     }
   };
 
-  // 1. Allowlist: real v3.0.4 asset names.
-  ok(isAppAsset("Claudexor-3.0.4.dmg"), "dmg is an app asset");
-  ok(isAppAsset("Claudexor-3.0.4.zip"), "zip is an app asset");
-  ok(isAppAsset("Claudexor-1.0.0-unsigned.dmg"), "unsigned dmg is an app asset");
-  ok(!isAppAsset("Claudexor-3.0.4.spdx.json"), "SBOM excluded");
-  ok(!isAppAsset("claudexor-runtime-3.0.4.tar.gz"), "runtime tarball excluded");
-  ok(!isAppAsset("runtime-manifest.json"), "runtime manifest excluded");
-  ok(!isAppAsset("REVIEW_ATTESTATION.json"), "attestation excluded");
-  ok(!isAppAsset("SHA256SUMS"), "checksums file excluded");
-  ok(!isAppAsset("Claudexor-1.0.0-unsigned.dmg.sha256"), "per-asset checksum excluded");
+  // 1. Shared asset authority reachable + correct through the plain-node,
+  //    type-stripped import path the workflow uses (parity smoke — the full
+  //    allowlist matrix lives in packages/cli/src/repo-asset-authority.test.ts).
+  ok(isAppInstallerAsset("Claudexor-3.0.4.dmg"), "dmg is an app asset");
+  ok(!isAppInstallerAsset("claudexor-runtime-3.0.4.tar.gz"), "runtime tarball excluded");
+  ok(!isAppInstallerAsset("SHA256SUMS"), "checksums file excluded");
 
-  const gh = computeGhAppDownloads([
-    { assets: [{ name: "Claudexor-3.0.4.dmg", download_count: 69 }, { name: "Claudexor-3.0.4.zip", download_count: 42 }, { name: "claudexor-runtime-3.0.4.tar.gz", download_count: 999 }, { name: "SHA256SUMS", download_count: 4 }] },
-    { assets: [{ name: "Claudexor-3.0.3.dmg", download_count: 16 }, { name: "Claudexor-3.0.3.zip", download_count: 7 }] },
+  const gh = sumAppInstallerDownloads([
+    {
+      assets: [
+        { name: "Claudexor-3.0.4.dmg", download_count: 69 },
+        { name: "Claudexor-3.0.4.zip", download_count: 42 },
+        { name: "claudexor-runtime-3.0.4.tar.gz", download_count: 999 },
+        { name: "SHA256SUMS", download_count: 4 },
+      ],
+    },
+    {
+      assets: [
+        { name: "Claudexor-3.0.3.dmg", download_count: 16 },
+        { name: "Claudexor-3.0.3.zip", download_count: 7 },
+      ],
+    },
   ]);
   ok(gh === 69 + 42 + 16 + 7, `gh app sum excludes tooling (got ${gh})`);
 
   // 2. CSV idempotency: same day upsert -> one row, updated value.
   let rows = [];
-  rows = upsertRow(rows, { date: "2026-07-23", star_total: 1, npm_total: 2, gh_app_downloads: 3, combined: 5 });
-  rows = upsertRow(rows, { date: "2026-07-23", star_total: 9, npm_total: 2, gh_app_downloads: 3, combined: 5 });
+  rows = upsertRow(rows, {
+    date: "2026-07-23",
+    star_total: 1,
+    npm_total: 2,
+    gh_app_downloads: 3,
+    combined: 5,
+  });
+  rows = upsertRow(rows, {
+    date: "2026-07-23",
+    star_total: 9,
+    npm_total: 2,
+    gh_app_downloads: 3,
+    combined: 5,
+  });
   ok(rows.length === 1, "same-day rerun does not duplicate rows");
   ok(rows[0].star_total === 9, "same-day rerun updates the row in place");
-  rows = upsertRow(rows, { date: "2026-07-22", star_total: 0, npm_total: 0, gh_app_downloads: 0, combined: 0 });
+  rows = upsertRow(rows, {
+    date: "2026-07-22",
+    star_total: 0,
+    npm_total: 0,
+    gh_app_downloads: 0,
+    combined: 0,
+  });
   ok(rows[0].date === "2026-07-22", "rows stay sorted by date");
 
   const round1 = serializeCsv(rows);
@@ -442,7 +399,10 @@ function runSelfTests() {
   const prior = priorRowBefore(rows, "2026-07-23");
   ok(prior && prior.date === "2026-07-22", "priorRowBefore skips the same-day row");
   const delta = sumNpmDeltaAfter(
-    [{ day: "2026-07-22", downloads: 100 }, { day: "2026-07-23", downloads: 50 }],
+    [
+      { day: "2026-07-22", downloads: 100 },
+      { day: "2026-07-23", downloads: 50 },
+    ],
     "2026-07-22",
     "2026-07-23",
   );
@@ -454,11 +414,26 @@ function runSelfTests() {
     { date: "2026-07-21", star_total: 210, npm_total: 1000, gh_app_downloads: 360, combined: 1360 },
     { date: "2026-07-22", star_total: 226, npm_total: 1250, gh_app_downloads: 410, combined: 1660 },
   ];
-  const a = renderChart({ rows: demo, valueKey: "combined", title: "Total downloads", theme: "dark" });
-  const b = renderChart({ rows: demo, valueKey: "combined", title: "Total downloads", theme: "dark" });
+  const a = renderChart({
+    rows: demo,
+    valueKey: "combined",
+    title: "Total downloads",
+    theme: "dark",
+  });
+  const b = renderChart({
+    rows: demo,
+    valueKey: "combined",
+    title: "Total downloads",
+    theme: "dark",
+  });
   ok(a === b, "SVG generation is deterministic");
   ok(a.startsWith("<svg"), "SVG output is an svg element");
-  const single = renderChart({ rows: demo.slice(0, 1), valueKey: "combined", title: "T", theme: "light" });
+  const single = renderChart({
+    rows: demo.slice(0, 1),
+    valueKey: "combined",
+    title: "T",
+    theme: "light",
+  });
   ok(single.includes("<svg"), "single-point chart renders without error");
 
   // 5. Formatting.

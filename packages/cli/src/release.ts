@@ -6,6 +6,7 @@ import {
   type RuntimeUpdateAuthority,
   type SignedRuntimeManifest,
 } from "@claudexor/util";
+import { computeReleaseAssetTotals, type ReleaseSummary } from "./repo-asset-authority.js";
 
 export type NameAvailability = "free" | "taken" | "unknown";
 export interface NameCheck {
@@ -271,10 +272,18 @@ export async function checkRuntimeUpdate(opts?: {
 export interface AssetDownloads {
   name: string;
   downloads: number;
+  /** Whether this asset counts as an app install under the shared allowlist. */
+  appInstaller: boolean;
 }
 
 export interface InstallStats {
   github: {
+    /** Honest install count: the app-installer (DMG/ZIP) allowlist sum. This is
+     * the figure the README badge and the metrics workflow also report — the
+     * single shared asset authority (D-15/A-6). */
+    appInstallerDownloads: number | null;
+    /** Raw sum across ALL release assets (installers + tooling). Diagnostic
+     * only; kept so the owner can still see runtime-tarball/SBOM pulls. */
     totalDownloads: number | null;
     perAsset: AssetDownloads[];
     releases: number | null;
@@ -287,14 +296,18 @@ export interface InstallStats {
 }
 
 /**
- * Owner-facing install counter (D23): GitHub asset download_count summed across
- * releases + the npm last-month downloads point. Read-only, no infra, no ping.
+ * Owner-facing install counter (D23): GitHub release-asset downloads + the npm
+ * last-month downloads point. Read-only, no infra, no ping. The GitHub side runs
+ * through the shared asset authority (packages/cli/src/repo-asset-authority),
+ * so the app-installer figure here is byte-for-byte the same policy the daily
+ * metrics workflow uses — one allowlist, no drift (D-15 reuse-lock, audit A-6).
  * A failed source reports null + a reason — never a fabricated zero.
  */
 export async function releaseStats(opts?: { fetchImpl?: FetchLike }): Promise<InstallStats> {
   const fetchImpl = opts?.fetchImpl ?? fetch;
 
   const github: InstallStats["github"] = {
+    appInstallerDownloads: null,
     totalDownloads: null,
     perAsset: [],
     releases: null,
@@ -310,25 +323,15 @@ export async function releaseStats(opts?: { fetchImpl?: FetchLike }): Promise<In
     if (!res.ok) {
       github.detail = `GitHub releases API returned HTTP ${res.status}`;
     } else {
-      const releases = (await res.json()) as {
-        assets?: { name?: string; download_count?: number }[];
-      }[];
-      const perAsset = new Map<string, number>();
-      let total = 0;
-      for (const release of releases) {
-        for (const asset of release.assets ?? []) {
-          const count = typeof asset.download_count === "number" ? asset.download_count : 0;
-          const name = typeof asset.name === "string" ? asset.name : "(unnamed)";
-          perAsset.set(name, (perAsset.get(name) ?? 0) + count);
-          total += count;
-        }
-      }
-      github.totalDownloads = total;
+      const releases = (await res.json()) as ReleaseSummary[];
+      const totals = computeReleaseAssetTotals(releases);
+      github.appInstallerDownloads = totals.appInstallerDownloads;
+      github.totalDownloads = totals.rawTotalDownloads;
       github.releases = releases.length;
-      github.perAsset = [...perAsset.entries()]
-        .map(([name, downloads]) => ({ name, downloads }))
-        .sort((a, b) => b.downloads - a.downloads);
-      github.detail = `${total} asset downloads across ${releases.length} releases`;
+      github.perAsset = totals.perAsset;
+      github.detail =
+        `${totals.appInstallerDownloads} app-installer downloads ` +
+        `(${totals.rawTotalDownloads} raw across all assets) in ${releases.length} releases`;
     }
   } catch (error) {
     github.detail = `could not reach the GitHub releases API (${describeError(error)})`;
