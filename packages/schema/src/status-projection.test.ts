@@ -7,6 +7,7 @@ import {
   outcomeBanner,
   outcomeExitCode,
   processExitCode,
+  requiredActionsFor,
   runOutcomeLabel,
   workStateVetoes,
 } from "./status-projection.js";
@@ -152,5 +153,58 @@ describe("D-16 work_state veto projections (INV-116)", () => {
     const clean = makeOutcomeFacts("succeeded");
     expect(needsOperatorInput(clean)).toBe(false);
     expect(needsOperatorAttention(clean, false)).toBe(false);
+  });
+});
+
+// GH #29: a succeeded-but-BLOCKED run must carry minimal typed required-actions
+// with STABLE machine ids for (i) review-blocked, (ii) needs-decision,
+// (iii) failed-gate, and (iv) work_state needs_input — so automation can act
+// without re-deriving the block class. Clean/decided/failed runs carry none.
+describe("requiredActionsFor (GH #29 minimal typed required actions)", () => {
+  const ids = (facts: RunOutcomeFacts, decided = false): string[] =>
+    requiredActionsFor(facts, decided).map((a) => a.id);
+
+  it("(i)+(ii) review blocked, no decision → resolve_review_block + record_operator_decision", () => {
+    const facts = makeOutcomeFacts("succeeded", { checks: "passed", review: "blocked" });
+    expect(ids(facts)).toEqual(["resolve_review_block", "record_operator_decision"]);
+  });
+
+  it("(iii) a failed gate yields fix_failed_checks + the operator-decision affordance", () => {
+    const facts = makeOutcomeFacts("succeeded", { checks: "failed", review: "approved" });
+    expect(ids(facts)).toEqual(["fix_failed_checks", "record_operator_decision"]);
+  });
+
+  it("a recorded valid operator decision clears the risk-overridable actions", () => {
+    const facts = makeOutcomeFacts("succeeded", { checks: "passed", review: "blocked" });
+    expect(ids(facts, true)).toEqual([]);
+  });
+
+  it("(iv) a work_state needs_input veto is NON-overridable: provide_required_input only", () => {
+    const facts = makeOutcomeFacts("succeeded", {
+      checks: "passed",
+      review: "blocked",
+      work_state: needsInputState,
+    });
+    // The needs-input veto wins over review; no operator-decision affordance.
+    expect(ids(facts)).toEqual(["provide_required_input"]);
+    expect(requiredActionsFor(facts, false)[0]?.detail).toContain("config.yaml");
+  });
+
+  it("an incomplete work_state yields complete_incomplete_work", () => {
+    const facts = makeOutcomeFacts("succeeded", { work_state: incompleteState });
+    expect(ids(facts)).toEqual(["complete_incomplete_work"]);
+  });
+
+  it("a clean succeeded run and a failed run both carry no required actions", () => {
+    expect(
+      requiredActionsFor(
+        makeOutcomeFacts("succeeded", { checks: "passed", review: "approved" }),
+        false,
+      ),
+    ).toEqual([]);
+    expect(
+      requiredActionsFor(makeOutcomeFacts("failed", { reason: "harness_failed" }), false),
+    ).toEqual([]);
+    expect(requiredActionsFor(null, false)).toEqual([]);
   });
 });

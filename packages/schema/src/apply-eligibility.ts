@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RunOutcomeFacts } from "./decision.js";
-import { PlanReadiness } from "./plan.js";
+import { PlanReadiness, CouncilProjection } from "./plan.js";
+import { ControlBudgetSnapshot } from "./control.js";
 
 /**
  * ApplyEligibility — the derived "can this run's WorkProduct be applied RIGHT
@@ -78,6 +79,14 @@ export const McpRunToolResult = z
     planReadiness: PlanReadiness.nullable()
       .default(null)
       .describe("Derived plan readiness for plan tools (D17); null for non-plan tools."),
+    /** Council membership + merge disclosure (QA-023b) so an MCP host can
+     * machine-verify a `--council` plan was really N/N and who merged, without
+     * reading local artifacts; null for solo/non-plan tools and deferred handles. */
+    council: CouncilProjection.nullable()
+      .default(null)
+      .describe(
+        "Council membership + merge disclosure (QA-023b); null for solo/non-plan tools or deferred handles.",
+      ),
   })
   .describe("Structured MCP tool result for Claudexor run tools.");
 export type McpRunToolResult = z.infer<typeof McpRunToolResult>;
@@ -127,6 +136,20 @@ export const McpRunHandleResult = z
     planReadiness: PlanReadiness.nullable()
       .default(null)
       .describe("Derived plan readiness (plan runs only, D17); null otherwise."),
+    /** Council membership + merge disclosure (QA-023b), projected from the same
+     * GET /runs/:id detail every read surface shares; null for solo/non-plan runs. */
+    council: CouncilProjection.nullable()
+      .default(null)
+      .describe("Council membership + merge disclosure (QA-023b); null for solo/non-plan runs."),
+    /** Run budget snapshot (QA-023c) carrying BOTH exact billed cash and the
+     * separate subscription valuation, so an MCP host learns a native-subscription
+     * run's real resource cost (cash $0 + non-null valuation) without reading
+     * local artifacts; null when no budget snapshot is available. */
+    budget: ControlBudgetSnapshot.nullable()
+      .default(null)
+      .describe(
+        "Run budget snapshot (cash + subscription valuation, QA-023c); null when unavailable.",
+      ),
   })
   .strict()
   .describe("Structured MCP result for Claudexor durable-run read tools (inspect/status/result).");

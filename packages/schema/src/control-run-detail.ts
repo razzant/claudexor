@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CouncilProjection, PlanQuestion, PlanReadiness } from "./plan.js";
 import { ApplyEligibility } from "./apply-eligibility.js";
+import { RequiredAction } from "./status-projection.js";
 import { DecisionRecord } from "./decision.js";
 import { WorkProduct } from "./workproduct.js";
 import { ReviewFinding } from "./review.js";
@@ -255,6 +256,18 @@ export const ControlRunDetail = z
     failure: RunFailure.nullable()
       .default(null)
       .describe("Typed failure info; null unless the run failed."),
+    /** Minimal typed required-operator-actions for a succeeded-but-BLOCKED run
+     * (GH #29): stable-id actions derived by the single status-projection owner
+     * (requiredActionsFor) from the terminal outcome facts + operator-decision
+     * state — review blocked, checks failed, needs-decision, or a work_state
+     * needs_input/incomplete veto. Empty for clean, already-decided, and failed
+     * runs (a failed run's remediation rides RunFailure.nextActions). */
+    requiredActions: z
+      .array(RequiredAction)
+      .default([])
+      .describe(
+        "Stable-id required operator actions for a succeeded-but-blocked run (GH #29); empty for clean/decided/failed runs.",
+      ),
   })
   .describe(
     "Full run detail snapshot served by GET /runs/:id: summary, artifacts, timeline, decision, findings, and progress.",

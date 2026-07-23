@@ -301,6 +301,211 @@
           ],
           "description": "Derived plan readiness (plan runs only, D17); null otherwise.",
           "default": null
+        },
+        "council": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "requested": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "description": "Requested member count (n; 2..4)."
+                },
+                "drafted": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Members whose draft survived to the merge."
+                },
+                "degraded": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True when fewer members drafted than requested (failures disclosed per member)."
+                },
+                "mergedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Harness that produced the unified plan (the primary); null if the merge failed."
+                },
+                "members": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "harnessId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Harness that drafted (or merged) this member's plan."
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "primary",
+                          "member"
+                        ],
+                        "description": "primary = the merger that synthesizes the unified plan; member = draft only."
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "drafted",
+                          "failed",
+                          "merged"
+                        ],
+                        "description": "drafted = draft landed; merged = this member produced the unified plan; failed."
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "default": null,
+                        "description": "First redacted draft error; null unless the member failed."
+                      }
+                    },
+                    "required": [
+                      "harnessId",
+                      "role",
+                      "status"
+                    ],
+                    "additionalProperties": false,
+                    "description": "One council member's role and draft/merge outcome."
+                  },
+                  "default": [],
+                  "description": "Per-member role and outcome."
+                }
+              },
+              "required": [
+                "requested",
+                "drafted"
+              ],
+              "additionalProperties": false,
+              "description": "Council membership + merge disclosure for a --council plan run."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Council membership + merge disclosure (QA-023b); null for solo/non-plan runs.",
+          "default": null
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "paidBudget": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "unlimited"
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "finite"
+                        },
+                        "maxUsd": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "maxUsd"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "description": "Incremental-cash budget: explicitly unlimited or a finite non-negative USD cap.",
+                  "default": {
+                    "kind": "unlimited"
+                  }
+                },
+                "spendUsd": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "CASH spend so far in USD; null when unknown."
+                },
+                "valuationUsd": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Subscription valuation in USD (separate from billed cash); null when unknown — never a fabricated $0 (QA-023c)."
+                },
+                "valuationKnowledge": {
+                  "type": "string",
+                  "enum": [
+                    "exact",
+                    "estimated",
+                    "unknown"
+                  ],
+                  "default": "unknown",
+                  "description": "Confidence of valuationUsd: 'estimated' when token-derived, 'unknown' when no usage was reported (valuationUsd is then null), 'exact' when natively priced."
+                },
+                "remainingUsd": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Remaining budget in USD; null when no cap or unknown spend."
+                },
+                "estimated": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "True when spend is token-derived rather than natively reported."
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "decision",
+                    "events",
+                    "settings",
+                    "unknown"
+                  ],
+                  "default": "unknown",
+                  "description": "Where the snapshot came from: the decision record, live events, settings, or unknown."
+                },
+                "evidence": {
+                  "type": "string",
+                  "enum": [
+                    "complete",
+                    "incomplete",
+                    "unavailable"
+                  ],
+                  "description": "Integrity of the canonical events this spend fallback read: 'incomplete' when malformed/non-object event lines were skipped, 'unavailable' when the events file was unreadable, else 'complete'. A non-complete value means the projected spend may disagree with disk truth.",
+                  "default": "complete"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Budget snapshot for a run: cap, spend, and provenance."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Run budget snapshot (cash + subscription valuation, QA-023c); null when unavailable.",
+          "default": null
         }
       },
       "required": [

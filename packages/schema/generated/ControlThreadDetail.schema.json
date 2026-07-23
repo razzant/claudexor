@@ -296,6 +296,19 @@
                 "description": "Set when this turn implements an approved plan from an earlier run.",
                 "default": null
               },
+              "planHash": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "default": null,
+                "description": "SHA-256 of the frozen plan bytes this Implement turn materialized (INV-081); null on non-Implement/legacy turns (QA-046)."
+              },
+              "planReadinessOverridden": {
+                "type": "boolean",
+                "default": false,
+                "description": "True when the operator implemented a not-ready plan over open questions (INV-081); recorded for provenance, rendered on the card (QA-046)."
+              },
               "kind": {
                 "type": "string",
                 "enum": [

@@ -1409,6 +1409,14 @@
                 "default": null,
                 "description": "Redacted error detail for error events."
               },
+              "ignoredSettings": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "Unsupported per-harness knobs the route could not honor (INV-105), disclosed on harness.started; empty when nothing was dropped (QA-070)."
+              },
               "rawRef": {
                 "type": [
                   "string",
@@ -1445,6 +1453,24 @@
               ],
               "default": null,
               "description": "CASH spend so far in USD; null when unknown."
+            },
+            "valuationUsd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null,
+              "description": "Subscription valuation in USD (separate from billed cash); null when unknown — never a fabricated $0 (QA-023c)."
+            },
+            "valuationKnowledge": {
+              "type": "string",
+              "enum": [
+                "exact",
+                "estimated",
+                "unknown"
+              ],
+              "default": "unknown",
+              "description": "Confidence of valuationUsd: 'estimated' when token-derived, 'unknown' when no usage was reported (valuationUsd is then null), 'exact' when natively priced."
             },
             "remainingUsd": {
               "type": [
@@ -2679,6 +2705,37 @@
           ],
           "description": "Typed failure info; null unless the run failed.",
           "default": null
+        },
+        "requiredActions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "enum": [
+                  "provide_required_input",
+                  "complete_incomplete_work",
+                  "resolve_review_block",
+                  "fix_failed_checks",
+                  "record_operator_decision"
+                ],
+                "description": "Stable machine id for a required operator action on a blocked terminal run."
+              },
+              "detail": {
+                "type": "string",
+                "description": "Human-readable guidance for this action (English-only, INV-141)."
+              }
+            },
+            "required": [
+              "id",
+              "detail"
+            ],
+            "additionalProperties": false,
+            "description": "One typed required operator action derived from a run's terminal outcome facts."
+          },
+          "default": [],
+          "description": "Stable-id required operator actions for a succeeded-but-blocked run (GH #29); empty for clean/decided/failed runs."
         }
       },
       "required": [

@@ -833,6 +833,17 @@ export const ControlTimelineEvent = z
       .nullable()
       .default(null)
       .describe("Redacted error detail for error events."),
+    /** Unsupported per-harness knobs the selected route silently could not honor
+     * (INV-105): the engine discloses them on `harness.started`, and this
+     * projection carries them so the row can render a visible warning ("max_turns
+     * was ignored") instead of an indistinguishable benign start (QA-070). Empty
+     * for every event that dropped nothing. */
+    ignoredSettings: z
+      .array(z.string())
+      .default([])
+      .describe(
+        "Unsupported per-harness knobs the route could not honor (INV-105), disclosed on harness.started; empty when nothing was dropped (QA-070).",
+      ),
     rawRef: z
       .string()
       .nullable()
@@ -857,6 +868,25 @@ export const ControlBudgetSnapshot = z
       .nullable()
       .default(null)
       .describe("CASH spend so far in USD; null when unknown."),
+    /** Subscription VALUATION in USD (QA-023c/QA-017b): what this run's
+     * native-subscription work would approximately have cost by token valuation,
+     * accumulated separately from real billed cash. Null when no valuation is
+     * known — an UNKNOWN valuation (e.g. a harness that never reported usage)
+     * stays null and is NEVER coerced to a fake $0. Cash exact $0 + a non-null
+     * valuation is the honest subscription shape. */
+    valuationUsd: z
+      .number()
+      .nullable()
+      .default(null)
+      .describe(
+        "Subscription valuation in USD (separate from billed cash); null when unknown — never a fabricated $0 (QA-023c).",
+      ),
+    valuationKnowledge: z
+      .enum(["exact", "estimated", "unknown"])
+      .default("unknown")
+      .describe(
+        "Confidence of valuationUsd: 'estimated' when token-derived, 'unknown' when no usage was reported (valuationUsd is then null), 'exact' when natively priced.",
+      ),
     remainingUsd: z
       .number()
       .nullable()
@@ -1239,6 +1269,27 @@ export const ControlThreadTurn = z
     planRunId: Id.nullable()
       .default(null)
       .describe("Set when this turn implements an approved plan from an earlier run."),
+    /** The SHA-256 of the exact plan bytes this Implement turn froze (INV-081),
+     * persisted on the durable turn but historically dropped by the projection
+     * (QA-046). Surfaces render a compact "implemented plan <run> · sha256 <hash>"
+     * receipt; null on non-Implement turns and legacy turns predating the freeze. */
+    planHash: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "SHA-256 of the frozen plan bytes this Implement turn materialized (INV-081); null on non-Implement/legacy turns (QA-046).",
+      ),
+    /** True when the operator chose "Implement anyway" over a plan that still had
+     * open questions (INV-081 provenance); the durable turn records it but the
+     * projection dropped it (QA-046). Surfaces render a persistent warning receipt
+     * so the destructive-override choice survives reload. Defaults false. */
+    planReadinessOverridden: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True when the operator implemented a not-ready plan over open questions (INV-081); recorded for provenance, rendered on the card (QA-046).",
+      ),
     kind: ThreadTurnKind.default("followup"),
     prompt: z.string().default("").describe("The user's message for this turn."),
     /** Embedded run card (outcome/state) so the chat renders without N+1 fetches. */

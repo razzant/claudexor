@@ -216,6 +216,95 @@ export function needsOperatorAttention(
   return needsDecision(facts, hasValidOperatorDecision) || needsOperatorInput(facts);
 }
 
+/**
+ * STABLE machine action-id vocabulary for the terminal-fact required-actions
+ * projection (GH #29 minimal requiredActions; the full RunFacts layer is
+ * backlog D-22). Each id names WHAT must happen to unblock a succeeded-but-
+ * blocked run, keyed off the independent outcome axes — surfaces branch on the
+ * id, never on the human `detail`. New ids are additive; never rename an
+ * existing one (it is a wire contract automation keys on).
+ */
+export const RequiredActionId = z
+  .enum([
+    "provide_required_input",
+    "complete_incomplete_work",
+    "resolve_review_block",
+    "fix_failed_checks",
+    "record_operator_decision",
+  ])
+  .describe("Stable machine id for a required operator action on a blocked terminal run.");
+export type RequiredActionId = z.infer<typeof RequiredActionId>;
+
+export const RequiredAction = z
+  .object({
+    id: RequiredActionId,
+    detail: z.string().describe("Human-readable guidance for this action (English-only, INV-141)."),
+  })
+  .strict()
+  .describe("One typed required operator action derived from a run's terminal outcome facts.");
+export type RequiredAction = z.infer<typeof RequiredAction>;
+
+/**
+ * THE single owner of a blocked terminal run's required-actions list (GH #29):
+ * a minimal, stable-id projection derived ONLY from the independent outcome
+ * axes + whether a valid operator risk-decision is already recorded. It does
+ * NOT re-derive lifecycle/review/checks and adds no new fact layer.
+ *
+ * - A work_state veto (needs_input / incomplete) is NON-overridable: the model
+ *   attested the work is unfinished, so the only action is to supply the input
+ *   or re-run — never an operator risk decision (mirrors `needsOperatorInput`).
+ * - A risk-overridable block (review blocked / checks failed with no valid
+ *   decision) yields the specific axis action(s) PLUS `record_operator_decision`
+ *   (the accept_risk/override affordance the apply gate honors).
+ * - A clean, already-decided, or non-succeeded terminal yields []; a failed run's
+ *   remediation lives on `RunFailure.nextActions`, not here.
+ */
+export function requiredActionsFor(
+  facts: RunOutcomeFacts | null | undefined,
+  hasValidOperatorDecision: boolean,
+): RequiredAction[] {
+  if (!facts || facts.lifecycle !== "succeeded") return [];
+  if (needsOperatorInput(facts)) {
+    if (facts.work_state?.state === "needs_input") {
+      const label = needsInputLabel(facts);
+      return [
+        {
+          id: "provide_required_input",
+          detail:
+            label === "Needs input"
+              ? "The model attested it needs input; answer the open question(s) and re-run — a risk override cannot supply the missing input."
+              : `The model needs input (${label.replace(/^Needs input: /, "")}); supply it and re-run — a risk override cannot resolve it.`,
+        },
+      ];
+    }
+    return [
+      {
+        id: "complete_incomplete_work",
+        detail:
+          "The model attested its work is incomplete; re-run to finish it — a risk override cannot complete unfinished work.",
+      },
+    ];
+  }
+  if (!needsDecision(facts, hasValidOperatorDecision)) return [];
+  const actions: RequiredAction[] = [];
+  if (facts.review === "blocked")
+    actions.push({
+      id: "resolve_review_block",
+      detail: "Review is blocked; address the blocking findings, or record an operator decision.",
+    });
+  if (facts.checks === "failed")
+    actions.push({
+      id: "fix_failed_checks",
+      detail: "A required check failed; fix it and re-run, or record an operator decision.",
+    });
+  actions.push({
+    id: "record_operator_decision",
+    detail:
+      "Record a typed operator decision (accept risk / override) to unblock apply, if the risk is acceptable.",
+  });
+  return actions;
+}
+
 /** ACP stop-reason projection (3-bucket collapse, unchanged semantics). */
 export function acpStopReason(lifecycle: string): "cancelled" | "refusal" | "end_turn" {
   if (lifecycle === "cancelled") return "cancelled";
