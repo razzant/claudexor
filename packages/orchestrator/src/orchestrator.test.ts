@@ -3898,7 +3898,7 @@ describe("Orchestrator", () => {
     ).rejects.toThrow("contextMode 'off' is only supported for Ask without a repoRoot");
   });
 
-  it("runs deep scan as a bounded read-only scout sweep with synthesis and per-explorer artifacts", async () => {
+  it("runs deep scan as a bounded read-only scout sweep with a synthesis reducer and per-explorer artifacts", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
       ["fake-success", createFakeHarness("fake-success")],
@@ -3913,14 +3913,20 @@ describe("Orchestrator", () => {
       n: 2,
     });
     expect(legacyOutcome(res)).toBe("success");
+    // The scouts are the run's candidate roster (the reducer is a telemetry-only
+    // attempt, not a scout candidate).
     expect(res.candidates).toHaveLength(2);
+    // The raw scout reports remain as per-attempt artifacts.
     expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
     expect(existsSync(join(res.runDir, "findings", "a02.md"))).toBe(true);
-    expect(readFileSync(join(res.runDir, "final", "report.md"), "utf8")).toContain(
-      "Explorers succeeded: 2/2",
-    );
+    // The final report is the reducer's real merge, not a raw concatenation.
+    const report = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    expect(report).toContain("Merged synthesis");
+    expect(report).not.toContain("Raw scout bundle");
     expect(existsSync(join(res.runDir, "final", "explore-findings.yaml"))).toBe(true);
     expect(existsSync(join(res.runDir, "final", "omissions.md"))).toBe(true);
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("status: succeeded");
   });
 
   it("QA-019: n>1 subscription deep-scan scouts admit under a finite cap via the estimate floor (both scouts run)", async () => {
@@ -4132,6 +4138,198 @@ describe("Orchestrator", () => {
     expect(explore).toContain("Tool warnings");
     const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
     expect(telemetry).toContain("tool_warnings_total: 1");
+  });
+
+  // A synthesize-capable read-only adapter (#27 / D-6). It answers the audit
+  // (scout) intent with a distinct per-scout report and, on the synthesize
+  // (reducer) intent, either merges or errors — driving the reducer stories.
+  function reducerAdapter(
+    id: string,
+    opts: { synthOutcome: "merge" | "error"; scoutCostUsd?: number },
+  ): HarnessAdapter {
+    return {
+      id,
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { plan: true, review: true, read_files: true, synthesize: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: id,
+          status: "ok",
+          enabled_intents: ["explain", "audit", "plan", "review", "synthesize"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          credential_route: "managed_api_key",
+        } as never;
+        if (spec.intent === "synthesize") {
+          if (opts.synthOutcome === "error") {
+            yield {
+              type: "error",
+              session_id: spec.session_id,
+              ts,
+              error: "reducer model crashed",
+              credential_route: "managed_api_key",
+            } as never;
+          } else {
+            yield {
+              type: "message",
+              session_id: spec.session_id,
+              ts,
+              text: "MERGED-SYNTHESIS: deduped scout findings, attributed disagreements, kept omissions.",
+              credential_route: "managed_api_key",
+            } as never;
+          }
+          yield { type: "completed", session_id: spec.session_id, ts } as never;
+          return;
+        }
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: `Scout analysis from ${spec.session_id}.`,
+          credential_route: "managed_api_key",
+        } as never;
+        if (opts.scoutCostUsd)
+          yield {
+            type: "usage",
+            session_id: spec.session_id,
+            ts,
+            usage: { cost_usd: opts.scoutCostUsd },
+            credential_route: "managed_api_key",
+          } as never;
+        yield { type: "completed", session_id: spec.session_id, ts } as never;
+      },
+    };
+  }
+
+  it("#27: a multi-scout deep scan runs a bounded synthesis reducer whose merge becomes the final report", async () => {
+    const repo = await initRepo();
+    // fake-implement declares synthesize; its reducer branch emits a distinct
+    // MERGED report when it sees the deep-scan reducer marker.
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["fake-implement"],
+      n: 2,
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    // The reducer output IS the final report — not a raw concatenation.
+    const report = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    expect(report).toContain("Merged synthesis");
+    expect(report).not.toContain("Explorers succeeded");
+    expect(report).not.toContain("Raw scout bundle");
+    // Raw scout reports remain as per-attempt artifacts.
+    expect(existsSync(join(res.runDir, "findings", "a01.md"))).toBe(true);
+    expect(existsSync(join(res.runDir, "findings", "a02.md"))).toBe(true);
+    // The reducer is a normal attempt in telemetry (roster/cost visible) and the
+    // typed synthesis status is succeeded.
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("status: succeeded");
+    expect(telemetry).toContain("reducer_attempt_id: synth");
+    expect(telemetry).toMatch(/attempt_id: synth/);
+  });
+
+  it("#27: a failed reducer degrades to an HONEST raw scout bundle, never a fake synthesis", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["synth-crash", reducerAdapter("synth-crash", { synthOutcome: "error" })],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["synth-crash"],
+      n: 2,
+    });
+    // The run still SUCCEEDS — the scouts produced reports; only the merge failed.
+    expect(legacyOutcome(res)).toBe("success");
+    const report = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    expect(report).toContain("Raw scout bundle — NOT a merged synthesis");
+    expect(report).toContain("Explorers succeeded: 2/2");
+    expect(report).toContain("Scout analysis from");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("status: failed");
+    expect(telemetry).toContain("reducer model crashed");
+    // The reducer attempt is still on the roster (its cost/route are visible).
+    expect(telemetry).toMatch(/attempt_id: synth/);
+  });
+
+  it("#27/QA-050: a budget-denied reducer degrades honestly with a budget reason (classifier)", async () => {
+    const repo = await initRepo();
+    // Two metered scouts settle 4.98 of a $5 cap; the reducer's finite estimate
+    // floor (0.05) then exceeds the 0.02 headroom and is refused before spawn.
+    const registry = new Map<string, HarnessAdapter>([
+      [
+        "metered-synth",
+        reducerAdapter("metered-synth", { synthOutcome: "merge", scoutCostUsd: 2.49 }),
+      ],
+    ]);
+    const orch = new Orchestrator({
+      registry,
+      reviewers: [],
+      paidBudget: { kind: "finite", maxUsd: 5 },
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["metered-synth"],
+      n: 2,
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    const report = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    expect(report).toContain("Raw scout bundle — NOT a merged synthesis");
+    expect(report).toContain("Explorers succeeded: 2/2");
+    // The merged text must NOT appear — the reducer never spawned.
+    expect(report).not.toContain("MERGED-SYNTHESIS");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("status: failed");
+    expect(telemetry).toMatch(/reason:.*budget/i);
+  });
+
+  it("#27: a width-1 deep scan skips the reducer (single report needs no merge)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["fake-implement"],
+      n: 1,
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    const report = readFileSync(join(res.runDir, "final", "report.md"), "utf8");
+    // No reducer ran; the single scout report is presented honestly, not as a merge.
+    expect(report).not.toContain("Merged synthesis");
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("status: skipped");
+    expect(telemetry).not.toMatch(/attempt_id: synth/);
   });
 
   it("runs deterministic gates from the tests input (test-driven, not vacuous)", async () => {

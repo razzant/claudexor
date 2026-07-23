@@ -1016,6 +1016,50 @@
           "description": "Typed routing rationale recorded once at pool ordering (QA-034); null on legacy artifacts or when no ranking was computed.",
           "default": null
         },
+        "deep_scan_synthesis": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "succeeded",
+                    "failed",
+                    "skipped"
+                  ],
+                  "description": "succeeded = reducer merged the scouts; failed = honest raw bundle; skipped = single report, no merge."
+                },
+                "reducer_attempt_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "The reducer attempt id (roster/cost visible); null when no reducer attempt ran."
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "default": null,
+                  "description": "Why the reducer failed or was skipped; null on a clean merge."
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "additionalProperties": false,
+              "description": "Deep-scan reducer outcome: whether the scout reports were merged into a real synthesis, degraded to an honest raw bundle, or skipped as a single report."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Deep-scan reducer outcome (#27); null on non-deep-scan runs and legacy artifacts.",
+          "default": null
+        },
         "generated_at": {
           "type": "string",
           "minLength": 1,

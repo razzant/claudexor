@@ -25,6 +25,7 @@ import { join } from "node:path";
 import type {
   AccessProfile,
   AuthSourceReadiness,
+  DeepScanSynthesis,
   RouteRankingRationale,
   RouteDropStage,
   Attachment,
@@ -138,6 +139,11 @@ import {
   workspaceAnchor,
 } from "./continuity-facts.js";
 import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./diffReview.js";
+import {
+  type DeepScanReducerDeps,
+  rawScoutBundle,
+  resolveDeepScanSynthesis,
+} from "./deepScanReducer.js";
 import {
   type AttemptTelemetry,
   type ToolErrorRecord,
@@ -510,6 +516,9 @@ export interface RoutedAdapter {
   /** Pre-spawn credential-route estimate (INV-061 projection of preference x
    * doctor source readiness); null = undecidable, model gates stay fail-closed. */
   authRouteEstimate: "local_session" | "api_key" | null;
+  /** Manifest `synthesize` capability (#27 / D-6): only such routes are eligible
+   * to run the deep-scan bounded synthesis reducer over the scout reports. */
+  supportsSynthesize: boolean;
   /** Manifest `interactive` capability: only such routes are OFFERED an
    * InteractionChannel (gate). */
   supportsInteractive: boolean;
@@ -1369,6 +1378,7 @@ export class Orchestrator {
               this.authPreferenceForHarness(input.repoRoot, id, input.authPreference),
               status.authSources,
             ),
+          supportsSynthesize: manifest.capabilities.synthesize,
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
           workReportTransport: manifest.capabilities.work_report_transport,
@@ -4118,6 +4128,7 @@ export class Orchestrator {
     mode: ModeKind,
     attempts: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[],
     finalAttemptId: string | null,
+    deepScanSynthesis?: DeepScanSynthesis | null,
   ): void {
     // QA-034: attach the routing rationale recorded at pool ordering (if this
     // run computed one), then clear it — telemetry is written once at terminal.
@@ -4133,6 +4144,7 @@ export class Orchestrator {
       attempts,
       finalAttemptId,
       routingRationale,
+      deepScanSynthesis: deepScanSynthesis ?? null,
       resolveAuthPreference: (harnessId) =>
         this.authPreferenceForHarness(contract.repo.root, harnessId, contract.auth_preference),
     });
@@ -6072,6 +6084,58 @@ export class Orchestrator {
       : "unknown";
   }
 
+  /**
+   * #27 / D-6: build the engine-side deps closure for the deep-scan bounded
+   * synthesis reducer (packages/orchestrator/src/deepScanReducer.ts owns the
+   * spawn/stream/settle machinery). The closure keeps the private
+   * route/session/knob machinery HERE and hands the module only finished public
+   * types (a `HarnessRunSpec`, cost evidence, a disposable home).
+   */
+  private deepScanReducerDeps(
+    input: RunInput,
+    contract: TaskContract,
+    log: EventLog,
+  ): DeepScanReducerDeps {
+    return {
+      newReadOnlyHome: () => resolveReadOnlyRouteContext(this.execRootOf(input)),
+      costEvidence: (harnessId, attemptId) =>
+        // The reducer admits under a finite estimate floor (mirror of the n>1
+        // scout reserve) so a subscription route is not refused for lacking a
+        // cash quote.
+        attemptCostEvidence(
+          harnessId,
+          attemptId,
+          this.estimateUsdFloor(input.repoRoot),
+          this.routeBillingKnowledge(input, harnessId),
+        ),
+      buildSpec: (routed, homeEnv, prompt, attemptId) => {
+        const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
+        const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
+        const sessionFields = this.sessionSpecFields(input, routed.adapter.id, log);
+        const spec = HarnessRunSpec.parse({
+          session_id: newId("ses"),
+          intent: "synthesize",
+          prompt,
+          cwd: this.execRootOf(input),
+          access: "readonly",
+          attachments: [],
+          auth_preference: sessionFields.auth_preference,
+          credential_profile: sessionFields.credential_profile,
+          // A FRESH session — the reducer never resumes a scout's conversation.
+          resume_session_id: null,
+          ...this.harnessSpecKnobs(contract, knobs, "synthesize"),
+          env_inheritance: envInheritance(this.config(input.repoRoot)),
+          env: homeEnv,
+        });
+        return { spec, webPolicy: knobs.webPolicy, effectiveWeb, model: knobs.model };
+      },
+      hardTimeoutMs: reviewerTimeoutMs(this.config(input.repoRoot)),
+      inactivityTimeoutMs: harnessInactivityTimeoutMs(this.config(input.repoRoot)),
+      webRequired: contract.external_context.web_required,
+      quotaEventSink: this.deps.quotaEventSink,
+    };
+  }
+
   private async runReadOnlyReport(
     input: RunInput,
     opts: {
@@ -7056,42 +7120,50 @@ export class Orchestrator {
       };
     }
     const unsuccessful = attempts.filter((a) => a.status !== "success");
-    const report = opts.deepScan
-      ? [
-          `Explorers succeeded: ${succeeded.length}/${attempts.length}.`,
-          "",
-          "## Synthesis",
-          ...succeeded.map((a) => {
-            const warnings = toolWarnings(a.telemetry);
-            const warningText = warnings.length
-              ? `\n\n> Tool warnings: ${warnings.map((e) => `${e.tool}: ${e.summary}`).join("; ")}`
-              : "";
-            return `\n### ${a.attemptId} / ${a.harnessId}\n\n${a.report}${warningText}`;
-          }),
-          "",
-          "## Omissions / Uncertainty",
-          ...(unsuccessful.length
-            ? unsuccessful.map((a) => `- ${a.attemptId} / ${a.harnessId} ${a.status}: ${a.error}`)
-            : [
-                "- No explorer failures recorded. Claims still need evidence review before edit execution.",
-              ]),
-          "",
-          "## Follow-up Questions",
-          "- Which findings should become a frozen implementation spec?",
-          "- Should web research be allowed for a second Explore pass?",
-        ].join("\n")
-      : (succeeded[0]?.report ?? "(no output)");
+    // #27 / D-6: a multi-scout deep scan runs ONE bounded synthesis reducer over
+    // the raw scout reports so the final artifact is a real merge, not a
+    // concatenation. A single report (width-1) needs no merge; a failed/denied
+    // reducer degrades to an HONEST raw scout bundle, never a fake synthesis. The
+    // whole decision + reducer spawn lives in deepScanReducer.ts (its owner).
+    let deepScanSynthesis: DeepScanSynthesis | null = null;
+    let reducedReport: string | null = null;
+    if (opts.deepScan) {
+      ({ deepScanSynthesis, reducedReport } = await resolveDeepScanSynthesis(
+        this.deepScanReducerDeps(input, contract, log),
+        {
+          succeeded,
+          adapters,
+          budgetStopped,
+          aborted: Boolean(input.signal?.aborted),
+          taskId,
+          goal: prompt,
+          findingsDir: paths.findingsDir,
+          ledger,
+          log,
+          paths,
+          signal: input.signal,
+          onHarnessEvent: input.onHarnessEvent,
+          attemptTelemetries,
+        },
+      ));
+    }
+    const report = !opts.deepScan
+      ? (succeeded[0]?.report ?? "(no output)")
+      : reducedReport !== null
+        ? reducedReport
+        : rawScoutBundle({ succeeded, unsuccessful, status: deepScanSynthesis });
     store.writeText(join(paths.finalDir, opts.artifactName), `# ${opts.title}\n\n${report}\n`);
     // ask is the only read-only strategy that can carry a structured-output
-    // contract (the boundary refuses the rest); validate the RAW answer text,
-    // not the titled artifact wrapper.
+    // contract (the boundary refuses the rest); validate the FINAL aggregate
+    // (the reduced synthesis, or the honest bundle for a degraded scan) — never
+    // the first scout's raw report — and never the titled artifact wrapper.
     if (opts.mode === "ask" && contract.output_schema) {
       finalizeStructuredOutput({
         store,
         finalDir: paths.finalDir,
         log,
         schema: contract.output_schema,
-        answerText: succeeded[0]?.report ?? "",
+        answerText: opts.deepScan ? report : (succeeded[0]?.report ?? ""),
       });
     }
     this.writeRunTelemetry(
@@ -7103,6 +7175,7 @@ export class Orchestrator {
       opts.mode,
       attemptTelemetries,
       opts.deepScan ? null : (succeeded[0]?.attemptId ?? null),
+      deepScanSynthesis,
     );
     log.emit("output.ready", {
       kind: opts.mode === "ask" ? "answer" : "report",

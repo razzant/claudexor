@@ -529,11 +529,33 @@ artifact when one exists.
 
 Runs a bounded read-only swarm (`intent: audit`, default width 4, cap 8; the
 CLI `claudexor ask --deep-scan` maps here). Each explorer writes a per-attempt
-event stream and a findings markdown artifact. Sweep final artifacts include
-`final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
-Partial explorer failures are recorded as omissions when at least one explorer
-succeeds; if all explorers fail, the run emits `run.failed` with
-`final/failure.yaml`.
+event stream and a findings markdown artifact (`findings/<attempt>.md`). Sweep
+final artifacts include `final/report.md`, `final/explore-findings.yaml`, and
+`final/omissions.md`. Partial explorer failures are recorded as omissions when
+at least one explorer succeeds; if all explorers fail, the run emits
+`run.failed` with `final/failure.yaml`.
+
+**Synthesis reducer (#27 / D-6).** When two or more scouts succeed, the sweep
+does NOT concatenate their reports. After the scouts finish, ONE bounded
+synthesis reducer runs — a single `intent: synthesize` attempt on a
+synthesize-capable scout route. It is read-only and file-backed: the raw scout
+report files are pointed at by absolute path (the argv-size law — reports ride a
+file, never argv), reserves a budget lease like any attempt, and is bounded by a
+hard timeout. Its job is to deduplicate claims, surface disagreements with
+per-scout attribution, and preserve every scout's omissions. The reducer's merge
+becomes `final/report.md`; the raw scout reports remain as per-attempt
+artifacts. The reducer is emitted as a normal attempt (`synth`) in the run
+telemetry roster, so its route and cost are visible. If a caller
+`--output-schema` is set, it validates against this FINAL reduced aggregate, not
+the first scout.
+
+The reducer is honest about failure: on reducer error, timeout, budget denial,
+or when no scout route can synthesize, the final artifact is an explicitly
+labeled raw scout bundle (a marker heading, the scout reports verbatim, the
+honest roster denominator) — never a fake synthesis. A single-scout (width-1)
+scan skips the reducer entirely. The typed outcome is recorded on
+`RunTelemetry.deep_scan_synthesis` (`succeeded` = merged, `failed` = honest
+bundle with a reason, `skipped` = single report).
 
 ### Agent
 

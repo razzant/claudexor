@@ -1,6 +1,29 @@
 import { describe, expect, it } from "vitest";
 import type { CandidateEvidence } from "@claudexor/arbitration";
-import { buildSynthesisPlan, decideSynthesis } from "./index.js";
+import {
+  DEEP_SCAN_REDUCER_MARKER,
+  buildDeepScanReducerPrompt,
+  buildSynthesisPlan,
+  decideSynthesis,
+} from "./index.js";
+
+describe("buildDeepScanReducerPrompt", () => {
+  it("opens with the reducer marker and points at scout report files by absolute path (never inlines them)", () => {
+    const prompt = buildDeepScanReducerPrompt("map auth", [
+      { attemptId: "a01", harnessId: "codex", absPath: "/runs/r1/findings/a01.md" },
+      { attemptId: "a02", harnessId: "claude", absPath: "/runs/r1/findings/a02.md" },
+    ]);
+    expect(prompt).toContain(DEEP_SCAN_REDUCER_MARKER);
+    // Reports ride a FILE (absolute path pointer), never argv.
+    expect(prompt).toContain("/runs/r1/findings/a01.md");
+    expect(prompt).toContain("/runs/r1/findings/a02.md");
+    // The instructed merge contract: dedup, surface disagreements w/ attribution,
+    // preserve omissions, stay read-only.
+    expect(prompt.toLowerCase()).toContain("deduplicate");
+    expect(prompt.toLowerCase()).toContain("disagree");
+    expect(prompt.toLowerCase()).toContain("read-only");
+  });
+});
 
 function cand(label: string, over: Partial<CandidateEvidence> = {}): CandidateEvidence {
   return {

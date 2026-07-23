@@ -3,6 +3,7 @@ import {
   SCHEMA_VERSION,
   deriveAuthRouteReason,
   RunTelemetry as RunTelemetrySchema,
+  type DeepScanSynthesis,
   type ModeKind,
   type RouteRankingRationale,
   type TaskContract,
@@ -29,6 +30,8 @@ export function writeRunTelemetryArtifact(args: {
   /** QA-034: typed routing rationale recorded at pool ordering; null when no
    * ranking was computed (explicit single-harness pool) or on legacy runs. */
   routingRationale?: RouteRankingRationale | null;
+  /** Deep-scan reducer outcome (#27); null/omitted on non-deep-scan runs. */
+  deepScanSynthesis?: DeepScanSynthesis | null;
   resolveAuthPreference: (harnessId: string) => TaskContract["auth_preference"];
 }): void {
   const { store, finalDir, contract, runId, taskId, mode, attempts, finalAttemptId } = args;
@@ -93,6 +96,7 @@ export function writeRunTelemetryArtifact(args: {
         };
       })(),
       routing_rationale: args.routingRationale ?? null,
+      deep_scan_synthesis: args.deepScanSynthesis ?? null,
       generated_at: nowIso(),
     });
     store.writeYaml(join(finalDir, "telemetry.yaml"), telemetry);

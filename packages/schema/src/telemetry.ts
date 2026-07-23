@@ -9,6 +9,7 @@ import {
   SchemaVersion,
 } from "./primitives.js";
 import { OutputSchemaDialect } from "./output-schema-dialect.js";
+import { DeepScanSynthesis } from "./deep-scan.js";
 import { ToolKind } from "./tool-ref.js";
 import { AuthMode, RouteRankingRationale } from "./budget.js";
 import { AuthPreference } from "./primitives.js";
@@ -583,6 +584,12 @@ export const RunTelemetry = z
       .default(null)
       .describe(
         "Typed routing rationale recorded once at pool ordering (QA-034); null on legacy artifacts or when no ranking was computed.",
+      ),
+    /** Deep-scan reducer outcome (#27 / D-6); null on non-deep-scan/legacy runs. */
+    deep_scan_synthesis: DeepScanSynthesis.nullable()
+      .default(null)
+      .describe(
+        "Deep-scan reducer outcome (#27); null on non-deep-scan runs and legacy artifacts.",
       ),
     generated_at: IsoTimestamp.describe("When the telemetry artifact was generated."),
   })

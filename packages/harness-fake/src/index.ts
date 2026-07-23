@@ -63,6 +63,16 @@ const WORK_REPORT_KINDS = new Set<FakeKind>([
  */
 const CONTINUATION_SENTINEL = "one-shot continuation after context exhaustion";
 
+/**
+ * The marker the deep-scan bounded reducer prompt opens with (#27 / D-6; mirrors
+ * `DEEP_SCAN_REDUCER_MARKER` in @claudexor/synthesis). A synthesize-capable fake
+ * that sees it emits a deterministic MERGED report so the reducer-success canary
+ * has a distinguishable output. Kept as a literal to avoid a package dep, like
+ * the continuation sentinel above. Ordinary `synthesize` (best-of) runs never
+ * carry this marker, so their behavior is unchanged.
+ */
+const DEEP_SCAN_REDUCER_MARKER = "DEEP-SCAN SYNTHESIS REDUCER";
+
 /** Producing intents write a real file so the run->apply->deliver chain has a diff. */
 const PRODUCING_INTENTS = new Set<Intent>(["implement", "create_from_scratch", "repair"]);
 
@@ -146,6 +156,18 @@ async function* runFake(
 ): AsyncIterable<HarnessEvent> {
   const s = spec.session_id;
   yield ev(s, "started", { observed_model: observedModel });
+  // #27 / D-6: a synthesize-intent spawn carrying the deep-scan reducer marker is
+  // the bounded reducer merging scout reports. Emit a deterministic MERGED report
+  // (distinct from raw scout output) so the reducer-success canary is verifiable.
+  // Gated on the marker so ordinary best-of `synthesize` runs are unaffected.
+  if (spec.intent === "synthesize" && spec.prompt.includes(DEEP_SCAN_REDUCER_MARKER)) {
+    yield ev(s, "message", {
+      text: "Merged synthesis: deduplicated the scout findings, surfaced disagreements with per-scout attribution, and preserved every scout's omissions.",
+    });
+    yield ev(s, "usage", { usage: { input_tokens: 120, output_tokens: 60, cost_usd: 0.012 } });
+    yield ev(s, "completed", { observed_model: observedModel });
+    return;
+  }
   switch (kind) {
     case "fake-success":
       // Prompt-free deterministic text: the raw prompt must never be echoed into a

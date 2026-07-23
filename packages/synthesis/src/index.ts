@@ -92,6 +92,46 @@ export function decideSynthesis(
   };
 }
 
+/**
+ * The stable marker phrase the deep-scan reducer prompt opens with. A fake
+ * harness keys on this substring to emit a deterministic merged report for the
+ * reducer-success canary WITHOUT changing its ordinary `synthesize` behavior
+ * (best-of synthesis, which never carries this marker, stays untouched).
+ */
+export const DEEP_SCAN_REDUCER_MARKER = "DEEP-SCAN SYNTHESIS REDUCER";
+
+/**
+ * Build the read-only bounded reducer prompt for `ask --deep-scan` (#27 / D-6).
+ * Like the plan-council merge, it POINTS at the raw scout report FILES by
+ * absolute path (the argv-size law: reports ride a file, never argv) and asks
+ * for ONE deduplicated synthesis that surfaces disagreements with per-scout
+ * attribution and preserves omissions — never a concatenation. Read-only: the
+ * reducer must not edit files or output implementations.
+ */
+export function buildDeepScanReducerPrompt(
+  goal: string,
+  scouts: readonly { attemptId: string; harnessId: string; absPath: string }[],
+): string {
+  const pointerLines = scouts.map((s) => `- ${s.attemptId} (${s.harnessId}): ${s.absPath}`);
+  return [
+    `You are the ${DEEP_SCAN_REDUCER_MARKER}. You are MERGING ${scouts.length} independent scout research reports into ONE synthesis. Work read-only: do not edit files, run tools that mutate, or output implementations.`,
+    ``,
+    `## Original research goal`,
+    goal,
+    ``,
+    `## Scout reports to merge (read each file before merging)`,
+    ...pointerLines,
+    ``,
+    `Read every scout report above by its absolute path. Then produce a SINGLE coherent synthesis, not a list of the reports:`,
+    `1. Deduplicate claims that multiple scouts made — state each finding once.`,
+    `2. Where scouts DISAGREE or conflict, surface the disagreement explicitly and attribute each side to the scout(s) that made it (name them, e.g. "a01 vs a03").`,
+    `3. Preserve anything only one scout found, and preserve every scout's stated unknowns/omissions — do not silently drop a minority finding.`,
+    `4. Keep evidence citations (file paths, symbols) that the scouts provided.`,
+    ``,
+    `Ground every claim in THIS repository. Do NOT paste large code blocks; describe findings and reference real paths. Keep it concise and well-structured in Markdown.`,
+  ].join("\n");
+}
+
 export interface SynthesisPlan {
   baseFrom: string;
   borrowTestsFrom: string | null;
