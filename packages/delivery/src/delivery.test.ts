@@ -720,6 +720,34 @@ describe("idempotent replay is a typed no-op, divergence is a conflict (#26)", (
     expect(res.treeMutated).toBe(false);
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("three\n");
   });
+
+  // Round-2 #2: the reverse-clean no-op shortcut is honest ONLY for mode='apply'.
+  // A commit/branch/pr requested over an already-applied working tree must NOT
+  // report success without creating the commit/branch/PR.
+  for (const mode of ["commit", "branch", "pr"] as const) {
+    it(`apply then --mode ${mode} on the applied tree is an honest typed refusal, not a false success`, async () => {
+      const { repo, patch } = await makePatchRepo();
+      // First deliver the patch to the working tree (mode='apply').
+      const applied = await verifyAndDeliver(repo, patch, { mode: "apply", protectedApply: true });
+      expect(applied.applied).toBe(true);
+      expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("two\n");
+
+      // Now request a fenced commit/branch/pr over that already-applied tree.
+      // The forward patch no longer applies (tree is the postimage) and reverse
+      // is clean — the OLD code returned mode='<mode>' applied:true /
+      // alreadyApplied:true while creating NOTHING.
+      const res = await verifyAndDeliver(repo, patch, { mode });
+      expect(res.applied).toBe(false);
+      expect(res.alreadyApplied ?? false).toBe(false);
+      expect(res.refused).toBe(true);
+      expect(res.treeMutated ?? false).toBe(false);
+      expect(res.detail).toMatch(/already present in the working tree/i);
+      // No commit was fabricated: HEAD still points at the single init commit.
+      const log = (await git(repo, ["log", "--oneline"])).stdout.trim().split("\n");
+      expect(log).toHaveLength(1);
+      expect(log[0]).toMatch(/init$/);
+    });
+  }
 });
 
 describe("blocked decision fact overrides", () => {

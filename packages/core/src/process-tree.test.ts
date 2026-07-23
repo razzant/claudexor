@@ -250,4 +250,44 @@ describe("reapProcessTree", () => {
       expect(outcome.survivors).not.toContain(100); // the killable group did die
     }
   });
+
+  // Round-2 #3: the group LEADER exited between the ps snapshot and captureLeader
+  // (status='missing'), but a non-leader member is still alive under that pgid.
+  // The old code dropped the pgid entirely -> reapProcessTree returned
+  // `confirmed` while the group survived. A raw signal-0 probe must keep it
+  // `unresolved` until it is proven gone.
+  it("keeps a leaderless-but-alive group unresolved instead of falsely confirming (round-2 #3)", async () => {
+    // The escaped group 300's leader (pid 300) is NOT alive, but member 200 is
+    // still running under pgid 300. Only the direct group 100 has a live leader.
+    const world = fakeWorld({
+      alive: [100],
+      coopLethal: true, // group 100 dies on the cooperative signal
+      snapshots: [
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 200, ppid: 100, pgid: 300 }, // member of pgid 300; leader 300 gone
+        ],
+      ],
+    });
+    const liveGroups = new Set([300]); // raw probe still sees 300 alive
+    const outcome = await reapProcessTree({
+      rootPid: 100,
+      groups: world.groups,
+      tree: world.tree,
+      now: world.now,
+      sleep: world.sleep,
+      graceMs: 10,
+      deadlineMs: 40,
+      probeIntervalMs: 5,
+      probeGroupAlive: (pgid) => liveGroups.has(pgid),
+    });
+    expect(outcome.state).toBe("unconfirmed");
+    if (outcome.state === "unconfirmed") {
+      expect(outcome.survivors).toEqual([]); // 100 died; 300 was never signalled
+      expect(outcome.unresolved.map((u) => u.pgid)).toContain(300);
+      expect(outcome.unresolved.find((u) => u.pgid === 300)?.reason).toBe(
+        "leader_exited_group_alive",
+      );
+    }
+  });
 });

@@ -1445,19 +1445,18 @@ as last-wins `plan.progress` run events and projected on the run detail as
 `planProgress`; per-candidate evidence cards are projected on the run
 detail as `candidates` from attempt/review/decision artifacts.
 
-Repository release review is cumulative and SHA-bound. Under the owner-review
-protocol (INV-125, CHECKLISTS), at least two independent reviewer subagents
-inspect the exact clean committed candidate against the checklists and docs in
-at most OWNER_REVIEW_MAX_ROUNDS rounds (10 as of v3.0.0 — raised from 3 by
-owner decision: owner scope injections mid-review legitimately extend
-convergence); any tracked mutation invalidates every result and starts
-a new freeze, and the signed schemaVersion-3 attestation binds the candidate
-SHA/tree, gate receipt digest, and reviewer report digests + verdicts. (The
-retired six-slot triad/scope panel's schemaVersion-2 attestations stay
-verifiable for already-sealed releases.) The old per-commit staged-diff hook,
-bypass log, and installer are removed so they cannot compete with or be
-mistaken for release authority. Product command `claudexor review --diff
-<file>` remains a normal engine capability; it is not this repository's
+Repository release review is cumulative and SHA-bound. The panel reviews the
+exact clean committed candidate against the checklists and docs; any tracked
+mutation invalidates every result and starts a new freeze, and the signed
+schemaVersion-3 attestation binds the candidate SHA/tree, gate receipt digest,
+and reviewer report digests + verdicts. (The retired six-slot triad/scope
+panel's schemaVersion-2 attestations stay verifiable for already-sealed
+releases.) The operational protocol — panel composition, wave discipline,
+structural floors, and round bound — is defined ONCE in `docs/CHECKLISTS.md`
+(Release review protocol); this map does not restate it. The old per-commit
+staged-diff hook, bypass log, and installer are removed so they cannot compete
+with or be mistaken for release authority. Product command `claudexor review
+--diff <file>` remains a normal engine capability; it is not this repository's
 release attestation.
 
 Runtime resilience is typed. Adapters translate native transient failures

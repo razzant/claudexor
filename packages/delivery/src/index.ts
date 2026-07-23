@@ -148,14 +148,19 @@ async function verifyAndDeliverUnlocked(
     // copy. That is EITHER a real conflict OR an already-delivered no-op — the
     // tree is already this patch's exact postimage. Distinguish the two by a
     // reverse --check against the current tree (the same preimage/postimage
-    // comparison the revert machinery uses): reverse-clean proves the delivered
-    // result is present, so return a typed already-applied no-op (applied:true,
-    // NO mutation) instead of failing "patch does not apply" on every replay.
-    // A partial/diverged tree (reverse also refuses) still refuses as a real
-    // conflict — never a false success.
-    if ((await checkPatchReverse(repoRoot, patch)).ok) {
+    // comparison the revert machinery uses).
+    const reverseClean = (await checkPatchReverse(repoRoot, patch)).ok;
+    // The reverse-clean no-op shortcut is ONLY honest for mode='apply' (round-2
+    // #2): reverse-clean proves the WORKTREE holds the postimage, which is
+    // exactly what an idempotent `apply` replay claims. It does NOT prove a
+    // commit/branch/PR exists. Reporting mode='commit|branch|pr' as
+    // applied/alreadyApplied here would claim a fenced mutation the machinery
+    // never performed (the tree already holds the patch, so the forward apply
+    // that would stage+commit it cannot run). Take the no-op only for `apply`;
+    // for the other modes fall through to an honest typed non-success.
+    if (reverseClean && options.mode === "apply") {
       return {
-        mode: options.mode,
+        mode: "apply",
         applied: true,
         treeMutated: false,
         alreadyApplied: true,
@@ -165,8 +170,14 @@ async function verifyAndDeliverUnlocked(
       };
     }
     // Mechanical applicability is never waivable, even when a caller owns the
-    // semantic risk decision for failed gates or verifier infrastructure.
-    refusal = finalVerify.reason ?? "final verify failed: patch did not apply cleanly";
+    // semantic risk decision for failed gates or verifier infrastructure. A
+    // reverse-clean commit/branch/pr request is refused (not a false success):
+    // the patch is already present in the tree, so there is nothing left for the
+    // fenced commit/branch/pr path to apply — deliver the change from a clean
+    // base, or commit the already-applied working tree directly.
+    refusal = reverseClean
+      ? `patch already present in the working tree; '${options.mode}' needs an unapplied patch (an earlier apply already delivered these changes — commit them directly or revert first)`
+      : (finalVerify.reason ?? "final verify failed: patch did not apply cleanly");
   } else if (authorize) {
     // A supplied policy owns the semantic verdict. In particular, null is an
     // affirmative allow after a hash-bound accept_risk decision; do not replace

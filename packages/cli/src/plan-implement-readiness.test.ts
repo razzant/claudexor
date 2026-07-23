@@ -58,7 +58,7 @@ describe("plan-implement-readiness — run-start readiness gate (QA-045)", () =>
     ).toEqual({ state: "unverified", questionCount: 0 });
   });
 
-  it("assertPlanImplementReady throws a typed 409 plan_not_ready only when questions remain", () => {
+  it("assertPlanImplementReady throws a typed 409 NON-retryable plan_not_ready only when questions remain", () => {
     const notReady = planRefWithQuestions(
       JSON.stringify({
         parse: "found",
@@ -72,11 +72,17 @@ describe("plan-implement-readiness — run-start readiness gate (QA-045)", () =>
       assertPlanImplementReady("run-plan-1", notReady);
       throw new Error("expected assertPlanImplementReady to throw");
     } catch (err) {
-      const e = err as Error & { status?: number; code?: string };
+      const e = err as Error & { status?: number; code?: string; retryable?: boolean };
       expect(e.status).toBe(409);
       expect(e.code).toBe("plan_not_ready");
+      // Round-2 #4: Exact Retry replays the frozen planRef verbatim (INV-081),
+      // so its questions.json can never become answered — the refusal is NOT
+      // retryable, and the remediation is a NEW Implement turn against the
+      // latest plan.
+      expect(e.retryable).toBe(false);
       expect(e.message).toContain("run-plan-1");
       expect(e.message).toContain("2 open question(s)");
+      expect(e.message).toContain("NEW Implement turn");
       expect(e.message).toContain("overridePlanReadiness");
     }
 

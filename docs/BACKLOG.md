@@ -108,10 +108,6 @@ deferred; they are recorded here now.
 - W-d: redaction straddle — a secret split exactly at the 4096/4000 tail
   boundaries escapes prefix-anchored rules; consider redacting pre-slice or
   overlap-aware slicing.
-- W-g: ARCHITECTURE.md/DEVELOPMENT.md restate the workflow's structural
-  review floors (>=2 reviewers / <=OWNER_REVIEW_MAX_ROUNDS) next to the exact
-  triad+scope protocol; collapse to a single pointer at docs/CHECKLISTS.md and
-  keep only the attestation-transport mechanics in DEVELOPMENT.
 - W-f: `claudexor profiles login` runs the vendor login outside the daemon,
   so noteCredentialChange never fires and a previously logged-out subject's
   quota can stay absent for up to 15 minutes; expose a credential-changed

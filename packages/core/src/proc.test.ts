@@ -177,6 +177,28 @@ describe("spawnProcess termination_unconfirmed disclosure", () => {
     expect(disc?.unresolved?.[0]?.pgid).toBe(999);
   });
 
+  it("seeds the direct child's process group identity into the whole-tree reap (round-2 #3)", async () => {
+    // The direct child can exit before the cancel-time tree snapshot while a
+    // same-pgid grandchild survives; the seeded direct handle keeps that group
+    // reapable even though its ppid chain to the root is already gone.
+    const ac = new AbortController();
+    let seeded: { rootPid?: number; seedHandles?: Array<{ pgid: number }> } | null = null;
+    for await (const ev of spawnProcess(process.execPath, ["-e", quickChild], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 50,
+      reap: async (opts) => {
+        seeded = opts;
+        return { state: "confirmed", pgids: [] };
+      },
+    })) {
+      if (ev.type === "stdout" && ev.line === "ready") ac.abort();
+    }
+    expect(seeded).toBeTruthy();
+    expect(seeded!.seedHandles).toHaveLength(1);
+    // detached => the direct child is its own group leader (pgid == pid == rootPid).
+    expect(seeded!.seedHandles?.[0]?.pgid).toBe(seeded!.rootPid);
+  });
+
   it("does NOT disclose termination_unconfirmed when the reap confirms death", async () => {
     const ac = new AbortController();
     const events: Array<{ type: string }> = [];

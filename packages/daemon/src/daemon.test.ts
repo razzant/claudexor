@@ -346,7 +346,10 @@ describe("DaemonServer", () => {
         state: "failed",
         errorCode: "trust_required",
       });
-      expect(failures).toEqual([["turn-1", "preflight refused", "trust_required"]]);
+      // The 4th arg is the throw's explicit retryability claim; an untyped
+      // refusal (no `retryable` on the throw) passes `undefined`, so the
+      // refused-turn recorder keeps its retryable=true default (round-2 #4).
+      expect(failures).toEqual([["turn-1", "preflight refused", "trust_required", undefined]]);
       await expect(client.enqueue({ prompt: `use sk-${"a".repeat(32)}` })).rejects.toThrow(
         /secret-like/i,
       );

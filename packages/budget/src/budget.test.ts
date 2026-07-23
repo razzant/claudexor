@@ -936,6 +936,55 @@ describe("routing telemetry", () => {
     });
   });
 
+  // Round-2 #1: the recorded auto rationale must mirror the comparator branch
+  // that actually ran, never claim `expiring_quota_slack` unconditionally.
+  describe("auto ranking rationale mirrors the comparator branch (round-2 #1)", () => {
+    it("reports expiring_quota_slack ONLY when a binding pace slack ordered the pool", () => {
+      const led = new BudgetLedger();
+      const reset = new Date(Date.now() + 9_000_000).toISOString();
+      for (const [harness_id, used_ratio] of [
+        ["codex", 0.1],
+        ["claude", 0.45],
+      ] as const) {
+        led.observe({
+          harness_id,
+          ts: new Date().toISOString(),
+          quality: "native",
+          kind: "quota_constraint",
+          constraint_id: "five-hour",
+          used_ratio,
+          window_seconds: 18_000,
+          resets_at: reset,
+        });
+      }
+      const r = explainRanking([cand("claude"), cand("codex")], routeContext(led, "auto"));
+      expect(r.reason).toBe("expiring_quota_slack");
+      // codex has the larger positive slack -> it leads.
+      expect(r.order).toEqual(["codex", "claude"]);
+    });
+
+    it("falls to quality_tier when no quota slack exists but declared tiers separate the pool", () => {
+      const led = new BudgetLedger();
+      // No quota observed -> bindingPaceSlack is null for both, so the auto sort
+      // falls through to the tier comparator (claude tier 0, codex tier 1).
+      const r = explainRanking([cand("codex"), cand("claude")], routeContext(led, "auto"));
+      expect(r.reason).toBe("quality_tier");
+      expect(r.order).toEqual(["claude", "codex"]);
+    });
+
+    it("falls to declared_order when neither quota slack nor a tier distinguishes the pool", () => {
+      const led = new BudgetLedger();
+      // Untiered candidates (not in qualityTiers) and no quota -> nothing decided
+      // the order; the reason is honest declared_order, not quota slack.
+      const r = explainRanking([cand("alpha"), cand("beta")], {
+        ...routeContext(led, "auto"),
+        qualityTiers: {},
+      });
+      expect(r.reason).toBe("declared_order");
+      expect(r.order).toEqual(["alpha", "beta"]);
+    });
+  });
+
   it("quota cooldown integration: an observed rate-limit removes the harness from selection until reset", async () => {
     const { BudgetLedger } = await import("./ledger.js");
     const { selectHarness } = await import("./router.js");

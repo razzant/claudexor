@@ -42,8 +42,14 @@ export interface DaemonOptions {
    * settles failure-shaped WITHOUT ever binding a run — i.e. the refusal
    * happened before the run materialized (trust gate, preflight validation).
    * The observer persists the reason on the turn so it is never a silent
-   * orphan bubble. `code` is the typed throw's machine code (null if none). */
-  onTurnEnqueueFailed?: (turnId: string, error: string, code: string | null) => void;
+   * orphan bubble. `code` is the typed throw's machine code (null if none);
+   * `retryable` is its explicit retryability claim (undefined = no claim). */
+  onTurnEnqueueFailed?: (
+    turnId: string,
+    error: string,
+    code: string | null,
+    retryable?: boolean,
+  ) => void;
   /** Composition-root shutdown hook. When present, RPC shutdown must drain
    * every daemon-owned subsystem, not only this socket queue. */
   onShutdownRequested?: () => Promise<void>;
@@ -82,6 +88,10 @@ export interface JobRecord {
    * a bare errno-style `code` without a status is an infra failure and must
    * not masquerade as a client-actionable 4xx. */
   errorStatus?: number;
+  /** Retryability from a typed throw. `false` marks a refusal Exact Retry can
+   * never repair by replaying the recorded params (plan_not_ready: the frozen
+   * planRef keeps its open questions, INV-081); absent = no claim. */
+  errorRetryable?: boolean;
   createdAt: string;
   /** Surfaced as soon as the run starts so a client can tail the external run's events.jsonl. */
   runId?: string;
@@ -505,11 +515,18 @@ export class DaemonServer {
         typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
           ? status
           : undefined;
+      // Carry a typed throw's non-retryability (plan_not_ready) to the
+      // refused-turn recorder; only an explicit boolean is a claim (round-2 #4).
+      const retryable =
+        err && typeof err === "object" && "retryable" in err
+          ? (err as { retryable: unknown }).retryable
+          : undefined;
       rec = this.updateRecord(rec, {
         state: controller.signal.aborted ? "cancelled" : "failed",
         error: redactSecrets(err instanceof Error ? err.message : String(err)),
         ...(typeof code === "string" && code ? { errorCode: code } : {}),
         ...(typedStatus !== undefined ? { errorStatus: typedStatus } : {}),
+        ...(typeof retryable === "boolean" ? { errorRetryable: retryable } : {}),
         finishedAt: nowIso(),
       });
     } finally {
@@ -528,7 +545,12 @@ export class DaemonServer {
         const turnId = (rec.params as { turnId?: unknown } | null | undefined)?.turnId;
         if (typeof turnId === "string" && turnId) {
           try {
-            this.opts.onTurnEnqueueFailed?.(turnId, rec.error, rec.errorCode ?? null);
+            this.opts.onTurnEnqueueFailed?.(
+              turnId,
+              rec.error,
+              rec.errorCode ?? null,
+              rec.errorRetryable,
+            );
           } catch {
             /* observer failure must not corrupt terminal bookkeeping */
           }

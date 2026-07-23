@@ -127,17 +127,33 @@ export interface CapturedProcessGroups {
  */
 export function captureProcessTreeGroups(
   rootPid: number,
-  deps: { tree?: ProcessTreeReader; groups?: ProcessGroupService } = {},
+  deps: {
+    tree?: ProcessTreeReader;
+    groups?: ProcessGroupService;
+    probeGroupAlive?: (pgid: number) => boolean;
+  } = {},
 ): CapturedProcessGroups {
   const tree = deps.tree ?? defaultProcessTreeReader;
   const groups = deps.groups ?? defaultProcessGroupService;
+  const probeGroupAlive = deps.probeGroupAlive ?? defaultProbeGroupAlive;
   const handles: ProcessGroupHandle[] = [];
   const unresolved: Array<{ pgid: number; reason: string }> = [];
   for (const pgid of descendantProcessGroupIds(rootPid, tree.snapshot())) {
     const capture = groups.captureLeader(pgid);
     if (capture.status === "known") handles.push(capture.handle);
     else if (capture.status === "unknown") unresolved.push({ pgid, reason: capture.reason });
-    // `missing` = the leader already exited; nothing to reap for that pgid.
+    else {
+      // `missing` = the group LEADER exited between the ps snapshot and this
+      // capture. That does NOT prove the group empty: a non-leader member can
+      // still be alive under the leaderless pgid (round-2 #3). A raw signal-0
+      // group probe is the honest liveness check — if the group is still alive we
+      // record it as unresolved (we can never signal it without a proven leader,
+      // but reapProcessTree must NOT report `confirmed` while it survives). ESRCH
+      // (truly gone) is the only outcome that lets the pgid drop silently.
+      if (probeGroupAlive(pgid)) {
+        unresolved.push({ pgid, reason: "leader_exited_group_alive" });
+      }
+    }
   }
   return { handles, unresolved };
 }
@@ -227,7 +243,7 @@ export async function reapProcessTree(
   };
 
   const capture = (): void => {
-    const snap = captureProcessTreeGroups(opts.rootPid, { tree, groups });
+    const snap = captureProcessTreeGroups(opts.rootPid, { tree, groups, probeGroupAlive });
     for (const handle of snap.handles) {
       if (!handles.has(handle.pgid)) {
         handles.set(handle.pgid, handle);

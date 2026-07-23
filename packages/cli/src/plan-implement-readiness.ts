@@ -32,11 +32,16 @@ export function planImplementReadiness(planRefPath: string): {
  * still has open owner questions is refused HERE — pre-worktree, pre-spawn,
  * pre-spend — with a typed `plan_not_ready` (HTTP 409). Refusing at run-start,
  * rather than with a bespoke early return in the control API, is what makes the
- * refusal a DURABLE, replayable refused turn: the daemon settles the job
- * terminal with no run bound, records `enqueue_error = plan_not_ready` on the
- * turn (INV-093), and `POST /threads/:id/turns/:turnId/retry` replays the
- * recorded params through THIS same fresh preflight once the plan is ready —
- * exactly like the trust gate. The operator's explicit override
+ * refusal a DURABLE refused turn: the daemon settles the job terminal with no
+ * run bound and records `enqueue_error = plan_not_ready` on the turn (INV-093).
+ *
+ * The refusal is `retryable=false` (round-2 #4). Exact Retry replays the
+ * recorded params VERBATIM, and INV-081 freezes the planRef to the ORIGINAL
+ * plan whose `questions.json` still carries the open questions — so a retry can
+ * never become ready no matter how many times it runs this preflight. Answering
+ * the questions produces a LATER plan turn; the honest remediation is to answer
+ * them and create a NEW Implement turn against the latest plan (or pass
+ * `overridePlanReadiness:true`). The operator's explicit override
  * (`plan_readiness_overridden`, recorded on the turn at create) skips this gate
  * and is unchanged.
  */
@@ -45,9 +50,9 @@ export function assertPlanImplementReady(planRunId: string, planRefPath: string)
   if (readiness.state === "needs_answers") {
     throw Object.assign(
       new Error(
-        `plan ${planRunId} is not ready: ${readiness.questionCount} open question(s) — answer them in a follow-up plan turn, or pass overridePlanReadiness:true`,
+        `plan ${planRunId} is not ready: ${readiness.questionCount} open question(s) — answer them and create a NEW Implement turn against the latest plan, or pass overridePlanReadiness:true`,
       ),
-      { status: 409, code: "plan_not_ready" },
+      { status: 409, code: "plan_not_ready", retryable: false },
     );
   }
 }

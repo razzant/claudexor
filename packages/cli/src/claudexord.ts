@@ -175,8 +175,8 @@ async function main(): Promise<void> {
         // ride — the terminal changes the thread's presented state, so ping.
         if (threadId) threads.pingThreadHead(threadId);
       },
-      onTurnEnqueueFailed: (turnId, error, code) =>
-        threads.setTurnEnqueueError(turnId, error, code),
+      onTurnEnqueueFailed: (turnId, error, code, retryable) =>
+        threads.setTurnEnqueueError(turnId, error, code, retryable),
       onShutdownRequested: () =>
         shutdownRuntime?.beginShutdown("socket-rpc stop") ??
         Promise.reject(new Error("daemon shutdown coordinator is not initialized")),

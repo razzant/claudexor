@@ -2167,7 +2167,7 @@ describe("DaemonControlApiServer", () => {
       const threadObj = planThread(repo, "run-plan");
       const turns: Record<string, unknown>[] = [];
       const refusalMsg =
-        "plan run-plan is not ready: 1 open question(s) — answer them in a follow-up plan turn, or pass overridePlanReadiness:true";
+        "plan run-plan is not ready: 1 open question(s) — answer them and create a NEW Implement turn against the latest plan, or pass overridePlanReadiness:true";
       // Job registry: the completed PLAN run (so readRunArtifactText/resolve can
       // find final/plan.md) plus the implement job the runner refuses pre-start.
       const jobs = new Map<string, DaemonRunRecord>([
@@ -2192,6 +2192,9 @@ describe("DaemonControlApiServer", () => {
             error: refusalMsg,
             errorCode: "plan_not_ready",
             errorStatus: 409,
+            // Round-2 #4: the runner's typed throw declares retryable=false; the
+            // daemon carries it onto the record and into the refused-turn record.
+            errorRetryable: false,
             params,
             createdAt: now,
           });
@@ -2204,8 +2207,10 @@ describe("DaemonControlApiServer", () => {
           const rec = jobs.get(id);
           if (!rec) throw new Error(`missing job ${id}`);
           // The daemon's own finally-hook persists the pre-start refusal on the
-          // turn (onTurnEnqueueFailed -> setTurnEnqueueError, retryable default
-          // true — a job WAS recorded, so retry can replay it).
+          // turn (onTurnEnqueueFailed -> setTurnEnqueueError). plan_not_ready is
+          // retryable=false (round-2 #4): the frozen planRef would replay the
+          // same open questions, so retry can never repair it — the remediation
+          // is a NEW Implement turn against the latest plan.
           if (id === "job-impl" && rec.state === "failed" && rec.errorCode === "plan_not_ready") {
             const turnId = (rec.params as { turnId?: string }).turnId;
             const turn = turns.find((t) => t["id"] === turnId);
@@ -2213,7 +2218,7 @@ describe("DaemonControlApiServer", () => {
               turn["enqueue_error"] = {
                 message: rec.error,
                 code: "plan_not_ready",
-                retryable: true,
+                retryable: rec.errorRetryable ?? true,
                 failed_at: now,
               };
             }
@@ -2292,7 +2297,9 @@ describe("DaemonControlApiServer", () => {
           expect(durable?.runId).toBeNull();
           expect(durable?.planRunId).toBe("run-plan");
           expect(durable?.enqueueError?.code).toBe("plan_not_ready");
-          expect(durable?.enqueueError?.retryable).toBe(true);
+          // Round-2 #4: the refusal is NOT retryable — the frozen plan keeps its
+          // open questions, so Exact Retry could never make it ready.
+          expect(durable?.enqueueError?.retryable).toBe(false);
           expect(detail.thread.headRunId).toBe("run-plan"); // unchanged (plan run)
 
           // Idempotent: the SAME key returns the SAME durable turn and creates
@@ -2309,7 +2316,7 @@ describe("DaemonControlApiServer", () => {
       );
     });
 
-    it("retry replays a plan_not_ready refusal through fresh preflight and succeeds once the plan is ready", async () => {
+    it("retry of a plan_not_ready refusal is REFUSED as non-retryable (round-2 #4): answer + new turn, never a verbatim replay", async () => {
       const repo = reapMk(join(tmpdir(), "claudexor-plan-retry-"));
       const planRunDir = makePlanRunDir();
       const now = new Date().toISOString();
@@ -2321,8 +2328,12 @@ describe("DaemonControlApiServer", () => {
         planRunId: "run-plan",
         turnId: "tn-impl",
       };
-      // Pre-seed the durable refused turn (as the first not-ready implement left
-      // it) and the recorded implement job in the registry.
+      // Pre-seed the durable refused turn (as the not-ready implement left it):
+      // enqueue_error.retryable is FALSE. Exact Retry replays the recorded
+      // params VERBATIM with the planRef frozen to the ORIGINAL plan (INV-081),
+      // whose questions.json still has the open question — so a retry could
+      // never become ready. The remediation is a NEW Implement turn against the
+      // latest plan, so the retry endpoint must refuse immediately.
       const turns: Record<string, unknown>[] = [
         {
           id: "tn-impl",
@@ -2336,7 +2347,7 @@ describe("DaemonControlApiServer", () => {
           enqueue_error: {
             message: "plan run-plan is not ready: 1 open question(s)",
             code: "plan_not_ready",
-            retryable: true,
+            retryable: false,
             failed_at: now,
           },
           created_at: now,
@@ -2352,6 +2363,7 @@ describe("DaemonControlApiServer", () => {
             error: "plan run-plan is not ready: 1 open question(s)",
             errorCode: "plan_not_ready",
             errorStatus: 409,
+            errorRetryable: false,
             params: implParams,
             createdAt: now,
           },
@@ -2359,27 +2371,11 @@ describe("DaemonControlApiServer", () => {
       ]);
       const enqueued: unknown[] = [];
       const retryDaemon: DaemonFacadeClient = {
-        // The retry replays the recorded params through the runner's FRESH
-        // preflight; the plan is now ready, so the run binds (no duplicate turn).
+        // A non-retryable refusal must be rejected BEFORE any enqueue/registry
+        // replay — nothing may be re-run.
         async enqueue(params: unknown) {
           enqueued.push(params);
-          const rec: DaemonRunRecord = {
-            id: "job-impl-retry",
-            state: "running",
-            runId: "run-impl",
-            taskId: "task-impl",
-            runDir: planRunDir,
-            params,
-            createdAt: new Date().toISOString(),
-          };
-          jobs.set(rec.id, rec);
-          const turnId = (params as { turnId?: string }).turnId;
-          const turn = turns.find((t) => t["id"] === turnId);
-          if (turn) {
-            turn["run_id"] = "run-impl";
-            turn["enqueue_error"] = null;
-          }
-          return { id: rec.id, state: "queued" };
+          throw new Error("enqueue must not be called for a non-retryable refusal");
         },
         async status(id: string) {
           const rec = jobs.get(id);
@@ -2408,13 +2404,21 @@ describe("DaemonControlApiServer", () => {
             method: "POST",
             headers: { authorization: `Bearer ${token}` },
           });
-          expect(res.status).toBe(200);
-          const body = (await res.json()) as { runId: string; turnId: string; threadId: string };
-          expect(body.runId).toBe("run-impl");
-          expect(body.turnId).toBe("tn-impl"); // SAME turn, no duplicate bubble
-          expect(body.threadId).toBe("th-plan");
-          // Replayed the recorded params verbatim through fresh preflight.
-          expect(enqueued).toEqual([implParams]);
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as {
+            code?: string;
+            message?: string;
+            retryable?: boolean;
+          };
+          expect(body.message).toMatch(/no recorded enqueue attempt to replay|send a new message/i);
+          expect(body.retryable).toBe(false);
+          // Nothing was replayed and the refused turn is untouched.
+          expect(enqueued).toEqual([]);
+          const turn = turns.find((t) => t["id"] === "tn-impl");
+          expect(turn?.["run_id"]).toBeNull();
+          expect((turn?.["enqueue_error"] as { retryable?: boolean } | null)?.retryable).toBe(
+            false,
+          );
         },
         undefined,
         services,

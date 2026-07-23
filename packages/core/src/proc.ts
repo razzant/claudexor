@@ -7,6 +7,7 @@ import {
   type ProcessTreeTerminationOutcome,
   type ReapProcessTreeOptions,
 } from "./process-tree.js";
+import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
 
 export interface SpawnOptions {
   cwd?: string;
@@ -113,6 +114,19 @@ export async function* spawnProcess(
   });
   if (typeof child.pid === "number") registerChildProcess(child.pid, cmd);
 
+  // Seed the DIRECT group identity NOW, while the child is provably alive and is
+  // its own group leader (detached => pgid == pid). If the direct child later
+  // exits before the cancel-time tree snapshot but a grandchild survives in the
+  // SAME pgid, that pgid is no longer reachable by ppid BFS (its chain to the
+  // root is gone) and would never be enumerated — so reapProcessTree could
+  // falsely report `confirmed` (round-2 #3). A seeded handle keeps the direct
+  // group tracked (and raw-probeable) until it is proven empty.
+  let directGroupHandle: ProcessGroupHandle | undefined;
+  if (typeof child.pid === "number") {
+    const capture = defaultProcessGroupService.captureLeader(child.pid);
+    if (capture.status === "known") directGroupHandle = capture.handle;
+  }
+
   // Signal the child's process GROUP (negative pid) so grandchildren die too;
   // fall back to the direct child if the group is already gone.
   const killTree = (signal: NodeJS.Signals): void => {
@@ -218,6 +232,9 @@ export async function* spawnProcess(
         cooperativeSignal: coop,
         graceMs: killDelay,
         deadlineMs: opts.cancelDeadlineMs ?? killDelay + 4_000,
+        // Seed the direct group so a surviving same-pgid grandchild is proven
+        // dead even if the direct child's ppid chain is already gone.
+        ...(directGroupHandle ? { seedHandles: [directGroupHandle] } : {}),
       });
     }
     // Direct-group belt: a raw cooperative nudge + SIGKILL escalation to the

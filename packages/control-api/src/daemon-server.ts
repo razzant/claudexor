@@ -173,6 +173,10 @@ export interface DaemonRunRecord {
   /** HTTP status persisted from the typed throw (refusal semantics are born
    * at the throw); the turn route serves it verbatim when 400-599. */
   errorStatus?: number;
+  /** Retryability persisted from the typed throw. `false` marks a pre-start
+   * refusal that Exact Retry can never repair (plan_not_ready — the frozen
+   * planRef replays the same open questions, INV-081); absent = no claim. */
+  errorRetryable?: boolean;
   params?: unknown;
   createdAt?: string;
   startedAt?: string;

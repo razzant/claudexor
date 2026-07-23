@@ -170,7 +170,8 @@ export function explainRanking(
   candidates: RouterCandidate[],
   ctx: RouteContext,
 ): RouteRankingRationale {
-  const order = rankHarnesses(candidates, ctx).map((c) => c.harnessId);
+  const rankedCandidates = rankHarnesses(candidates, ctx);
+  const order = rankedCandidates.map((c) => c.harnessId);
   const eligibleIds = new Set(order);
   const entries: RouteRankingEntry[] = candidates.map((c) => ({
     harness_id: c.harnessId,
@@ -179,23 +180,49 @@ export function explainRanking(
     eligible: eligibleIds.has(c.harnessId),
   }));
   const dropped = candidates.filter((c) => !eligibleIds.has(c.harnessId)).map((c) => c.harnessId);
-  const ranked = entries.filter((e) => e.eligible);
-  const reason = rankingReason(ctx, ranked);
+  const reason = rankingReason(ctx, rankedCandidates);
   return { goal: ctx.goal, paid_fallback: ctx.paidFallback, order, dropped, reason, entries };
 }
 
-function rankingReason(ctx: RouteContext, ranked: RouteRankingEntry[]): RouteRankingReason {
+/** Do the ranked candidates carry two distinct user-declared tier indices? Only
+ * then did the tier comparator (the auto/economy tie-break) actually decide the
+ * order; a single candidate or a uniform tier index leaves the declared order. */
+function tiersDistinguish(ranked: RouterCandidate[], ctx: RouteContext): boolean {
+  const indices = ranked.map((c) => tierIndex(c, ctx) ?? Number.MAX_SAFE_INTEGER);
+  return indices.some((value) => value !== indices[0]);
+}
+
+/**
+ * The DECISIVE comparator axis, mirrored EXACTLY from rankHarnesses so the
+ * recorded rationale can never claim a factor the sort did not use (round-2 #1):
+ * `expiring_quota_slack` is reported for `auto` ONLY when a binding pace slack
+ * was present to order by; with no slack the auto sort falls through to the
+ * tier comparator, so the reason is `quality_tier` when tiers separated the
+ * pool and `declared_order` when nothing distinguished it.
+ */
+function rankingReason(ctx: RouteContext, ranked: RouterCandidate[]): RouteRankingReason {
   if (ctx.goal === "quality") return "quality_tier";
-  if (ctx.goal === "auto") return "expiring_quota_slack";
+  if (ctx.goal === "auto") {
+    // The auto branch sorts by binding pace slack whenever any candidate has a
+    // non-null slack; otherwise it compares tier indices. Report the axis that
+    // was live, never quota-slack unconditionally.
+    const slackDecided = ranked.some(
+      (c) =>
+        ctx.ledger.bindingPaceSlack(c.harnessId, c.credentialRoute, c.credentialSubjectId) !== null,
+    );
+    if (slackDecided) return "expiring_quota_slack";
+    if (tiersDistinguish(ranked, ctx)) return "quality_tier";
+    return "declared_order";
+  }
   // economy
   if (
-    ranked.some(
-      (e) =>
-        e.billing_knowledge === "subscription_entitlement" || e.billing_knowledge === "proven_zero",
-    )
+    ranked.some((c) => {
+      const billing = effectiveBilling(c);
+      return billing === "subscription_entitlement" || billing === "proven_zero";
+    })
   )
     return "subscription_entitlement_first";
-  if (ranked.some((e) => e.incremental_cost_usd !== null)) return "lowest_incremental_cash";
+  if (ranked.some((c) => c.incrementalCostUsd != null)) return "lowest_incremental_cash";
   if (ranked.length > 0) return "all_incremental_cash_unknown";
   return "declared_order";
 }
