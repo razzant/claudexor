@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { codexExecArgs } from "./index.js";
 
 // Build control/backslash characters by code point so this SOURCE never carries
@@ -14,6 +18,24 @@ const base = {
   prompt: "go",
   attachments: [],
   browser: null,
+};
+
+// A real on-disk image attachment so codex emits a variadic `-i <path>` — the
+// `-c` overrides must precede it. `readVerifiedAttachmentBytes` re-hashes the
+// file, so the fixture's sha256/size_bytes must match the bytes exactly.
+const tmpDir = mkdtempSync(join(tmpdir(), "claudexor-codex-instr-"));
+afterAll(() => rmSync(tmpDir, { recursive: true, force: true }));
+const IMG_BYTES = "png";
+const imagePath = join(tmpDir, "shot.png");
+writeFileSync(imagePath, IMG_BYTES);
+const imageAttachment = {
+  resource_id: "res-instr-1",
+  kind: "image" as const,
+  mime: "image/png",
+  name: "shot.png",
+  path: imagePath,
+  sha256: `sha256:${createHash("sha256").update(IMG_BYTES).digest("hex")}`,
+  size_bytes: IMG_BYTES.length,
 };
 
 describe("codex developer_instructions (W5)", () => {
@@ -37,16 +59,25 @@ describe("codex developer_instructions (W5)", () => {
   // D-14 layer 1: every codex route carries the CLAUDE.md project-doc fallback so
   // a Claude-Code-only project works on codex with zero project writes. It rides
   // the stateless `-c` transport (the user's config.toml is never touched).
+  // An attachment IS present in this fixture, so `-i` is emitted and the
+  // ordering pin below is exercised (not vacuously skipped as it was with an
+  // empty-attachments base).
   for (const resume of [null, "ses-1"]) {
-    it(`seeds -c project_doc_fallback_filenames=["CLAUDE.md"]${resume ? " (resume)" : ""}`, () => {
-      const args = codexExecArgs({ ...base, resume_session_id: resume });
+    it(`seeds -c project_doc_fallback_filenames=["CLAUDE.md"] before -i${resume ? " (resume)" : ""}`, () => {
+      const args = codexExecArgs({
+        ...base,
+        attachments: [imageAttachment],
+        resume_session_id: resume,
+      });
       const idx = args.findIndex((a) => a === 'project_doc_fallback_filenames=["CLAUDE.md"]');
       expect(idx).toBeGreaterThan(0);
       expect(args[idx - 1]).toBe("-c"); // it is a config override
-      // The override precedes any variadic `-i` image args (parity with the other
-      // `-c` overrides) so codex never eats it as an image path.
+      // The variadic `-i` image arg MUST be present (otherwise the pin is
+      // vacuous), and every `-c` override must precede it so codex never eats
+      // the override as an image path.
       const dashI = args.indexOf("-i");
-      if (dashI >= 0) expect(idx).toBeLessThan(dashI);
+      expect(dashI).toBeGreaterThanOrEqual(0);
+      expect(idx).toBeLessThan(dashI);
     });
   }
 
