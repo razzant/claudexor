@@ -19,6 +19,11 @@ struct AuthSheetJobPanel: View {
     let cancelJob: () -> Void
     let retryJob: () -> Void
     let reconnect: () -> Void
+    /// D-17 audit point 8: a first-class native action for the codex
+    /// device-code `not_supported` (device_auth_unsupported) state — starts the
+    /// legacy Terminal (browser_redirect) sign-in. nil unless that state holds.
+    var deviceAuthFallback: AuthSheetPresentation.DeviceAuthFallback? = nil
+    var startTerminalFallback: () -> Void = {}
 
     /// M9-UX item 4: the terminal command + Guide/Retry are secondary detail,
     /// collapsed by default so the live-login controls stay the clear focus.
@@ -64,6 +69,22 @@ struct AuthSheetJobPanel: View {
                         .font(.caption2)
                         .foregroundStyle(Theme.status(.caution))
                         .textSelection(.enabled)
+                }
+
+                // D-17 audit point 8: device_auth_unsupported is actionable, not
+                // a dead end — a first-class button STARTS the Terminal sign-in.
+                if deviceAuthFallback == .terminalLogin {
+                    VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+                        Text("This codex build does not support in-app device-code sign-in. Use the Terminal sign-in instead.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(action: startTerminalFallback) {
+                            Label("Open Terminal sign-in", systemImage: "terminal")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accentSolid)
+                        .disabled(actionInFlight || activeStateUnknown)
+                        .help("Start the legacy Terminal (browser-redirect) codex login.")
+                    }
                 }
 
                 primaryActionsRow

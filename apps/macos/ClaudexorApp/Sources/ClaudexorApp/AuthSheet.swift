@@ -289,7 +289,9 @@ struct AuthSheet: View {
             extendDeadline: { Task { await extendDeadline() } },
             cancelJob: { Task { await cancelJob() } },
             retryJob: { Task { await retryJob() } },
-            reconnect: { Task { await reconnectSetupState() } }
+            reconnect: { Task { await reconnectSetupState() } },
+            deviceAuthFallback: AuthSheetPresentation.deviceAuthFallback(job: job),
+            startTerminalFallback: { Task { await startTerminalFallback() } }
         )
     }
 
@@ -408,6 +410,18 @@ struct AuthSheet: View {
         actionInFlight = true
         defer { actionInFlight = false }
         await controller.start(harness: family.setupHarnessId, action: "login", profileId: profileId)
+    }
+
+    /// D-17 audit point 8: the first-class Terminal fallback for the codex
+    /// device-code `not_supported` (device_auth_unsupported) state. A real
+    /// transition — starts a fresh browser_redirect login — not a text hint. The
+    /// prior job is terminal, so no cancel is needed.
+    private func startTerminalFallback() async {
+        guard let controller else { return }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        await controller.start(harness: family.setupHarnessId, action: "login",
+                               profileId: profileId, loginFlow: .browserRedirect)
     }
 
     /// D-17 explicit browser-callback opt-in (device-auth-disabled orgs). The

@@ -2153,6 +2153,11 @@ describe("D-17 codex device-code login", () => {
     const done = manager.status({ jobId: job.jobId });
     expect(done.outcome?.reason).toBe("not_supported");
     expect(done.message).toMatch(/browser-redirect/);
+    // Audit point 8: the specific typed code rides the native-command receipt
+    // consistently (runner result → journaled receipt → control DTO → Swift/CLI
+    // read it), while the coarse outcome stays not_supported.
+    expect(done.nativeCommand?.errorCode).toBe("device_auth_unsupported");
+    expect(done.nativeCommand?.commandStarted).toBe(false);
     await manager.shutdown();
   });
 });

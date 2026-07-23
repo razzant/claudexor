@@ -9,6 +9,26 @@ enum AuthSheetPresentation {
         profileId == nil && secretName != nil
     }
 
+    /// D-17 audit point 8: the codex device-code `not_supported` terminal state
+    /// is NOT a dead-end message. It offers a first-class native action.
+    enum DeviceAuthFallback: Equatable {
+        /// Start the legacy Terminal localhost-callback (browser_redirect) login.
+        case terminalLogin
+    }
+
+    /// When a codex device-code login terminalizes as `not_supported` because the
+    /// installed app-server lacks the typed auth methods, the daemon carries the
+    /// consistent typed code `device_auth_unsupported` on the native-command
+    /// receipt (the SAME code the runner result, journal, control DTO, and Swift
+    /// surface all use). That state exposes a real transition — start the legacy
+    /// Terminal (browser_redirect) sign-in — never merely a CLI instruction.
+    static func deviceAuthFallback(job: SetupJob) -> DeviceAuthFallback? {
+        guard job.harness == .codex,
+              job.state == .notSupported,
+              job.nativeCommand?.errorCode == .deviceAuthUnsupported else { return nil }
+        return .terminalLogin
+    }
+
     enum PrimaryCTA: Equatable {
         /// Start the native login flow (no verified session yet).
         case login

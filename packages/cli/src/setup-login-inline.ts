@@ -11,12 +11,40 @@
 import {
   ControlSetupJobSnapshot,
   isTerminalControlSetupJobState,
+  type ControlSetupJob,
   type ControlSetupJobState,
 } from "@claudexor/schema";
 import { print } from "./cli-io.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 
 const POLL_MS = 1_000;
+
+/**
+ * D-17 audit point 8: the terminal report for a durable codex login. The
+ * `not_supported` state is actionable, not a dead-end message: when the daemon
+ * carries the consistent typed code `device_auth_unsupported` on the
+ * native-command receipt (the SAME code the runner result, journal, control
+ * DTO, and Swift surface use), the CLI names the code AND the exact next step
+ * (the legacy Terminal sign-in), and exits non-zero.
+ */
+export function terminalLoginReport(
+  job: Pick<ControlSetupJob, "state" | "message" | "nativeCommand">,
+  label: string,
+): { lines: string[]; exitCode: number } {
+  if (job.state === "not_supported" && job.nativeCommand?.errorCode === "device_auth_unsupported") {
+    return {
+      lines: [
+        `${label} login not_supported (device_auth_unsupported): this codex build has no in-app device-code sign-in.`,
+        "Next: run `claudexor auth login codex --browser-redirect` for the Terminal sign-in.",
+      ],
+      exitCode: 1,
+    };
+  }
+  return {
+    lines: [`${label} login ${job.state}: ${job.message}`],
+    exitCode: job.state === "succeeded" ? 0 : 1,
+  };
+}
 
 /** Poll a device-code login job to its terminal outcome, printing the inline
  * disclosure once. Returns the process exit code (0 on success). */
@@ -65,8 +93,9 @@ export async function streamDurableCodexLogin(
         print("");
       }
       if (isTerminalControlSetupJobState(job.state as ControlSetupJobState)) {
-        print(`${opts.label} login ${job.state}: ${job.message}`);
-        return job.state === "succeeded" ? 0 : 1;
+        const report = terminalLoginReport(job, opts.label);
+        for (const line of report.lines) print(line);
+        return report.exitCode;
       }
       await sleep(pollMs);
     }
