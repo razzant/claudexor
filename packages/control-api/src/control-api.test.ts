@@ -620,6 +620,46 @@ describe("DaemonControlApiServer", () => {
         ]),
       );
 
+      // QA-054: the catalog emits `project` applicability for project-family
+      // routes (previously every project route falsely reported `global`).
+      const ops = body.operations as unknown as {
+        method: string;
+        path: string;
+        applicability: string;
+        idempotency: string;
+        parameters: { name: string; location: string; required: boolean; enum: string[] | null }[];
+      }[];
+      const projectApplicable = ops.filter((o) => o.applicability === "project");
+      expect(projectApplicable.length).toBeGreaterThanOrEqual(6);
+      expect(
+        ops.find((o) => o.method === "POST" && o.path === "/v2/projects/:id/relink")?.applicability,
+      ).toBe("project");
+      expect(ops.find((o) => o.method === "GET" && o.path === "/v2/projects")?.applicability).toBe(
+        "project",
+      );
+      // Run/thread families keep their planes.
+      expect(ops.find((o) => o.path === "/v2/runs/:id/events")?.applicability).toBe("run");
+
+      // QA-055: located query/header parameter metadata on the descriptors.
+      const harnesses = ops.find((o) => o.method === "GET" && o.path === "/v2/harnesses");
+      expect(harnesses?.parameters.map((p) => p.name)).toEqual(["fresh", "all", "harness"]);
+      expect(harnesses?.parameters.every((p) => p.location === "query")).toBe(true);
+      const models = ops.find((o) => o.path === "/v2/harnesses/:id/models");
+      expect(models?.parameters[0]).toMatchObject({
+        name: "route",
+        location: "query",
+        enum: ["local_session", "api_key"],
+      });
+      const runEvents = ops.find((o) => o.path === "/v2/runs/:id/events");
+      expect(runEvents?.parameters.map((p) => `${p.name}:${p.location}`)).toEqual([
+        "Last-Event-ID:header",
+        "lastEventId:query",
+      ]);
+      // QA-075: extend is honestly key_required, not natural.
+      expect(ops.find((o) => o.path === "/v2/setup/jobs/:id/extend")?.idempotency).toBe(
+        "key_required",
+      );
+
       const missingIdempotencyKey = await globalThis.fetch(`${base}/v2/runs`, {
         method: "POST",
         headers: {
@@ -634,6 +674,116 @@ describe("DaemonControlApiServer", () => {
         code: "idempotency_key_required",
         fieldErrors: { "Idempotency-Key": ["required for create operations"] },
       });
+    });
+  });
+
+  it("projects request-validation errors as typed fieldErrors, not a Zod dump (QA-053)", async () => {
+    const { daemon } = fakeDaemon();
+    let createCalls = 0;
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const res = await apiFetch(`${base}/threads`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ workspace: { mode: "in_place" } }),
+        });
+        expect(res.status).toBe(400);
+        expect(res.headers.get("content-type")).toContain("application/problem+json");
+        const body = (await res.json()) as {
+          code: string;
+          message: string;
+          fieldErrors: Record<string, string[]>;
+          context: { issueCount: number; omittedIssueCount: number };
+        };
+        expect(body.code).toBe("invalid_request");
+        // Single-line human summary, NOT the multiline Zod issue array.
+        expect(body.message).toBe("Request validation failed for 1 field.");
+        expect(body.message).not.toContain("\n");
+        expect(body.message).not.toContain("invalid_type");
+        expect(Object.keys(body.fieldErrors)).toContain("/workspace");
+        expect(body.context).toMatchObject({ issueCount: 1, omittedIssueCount: 0 });
+        // Validation precedes the mutation: the service is never called.
+        expect(createCalls).toBe(0);
+      },
+      undefined,
+      {
+        createThread: async () => {
+          createCalls += 1;
+          return {};
+        },
+      },
+    );
+  });
+
+  it("rejects invalid UTF-8 request bytes with a typed 400 before parsing (QA-056)", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const prefix = Buffer.from('{"protocolMajor":3,"client":"', "utf8");
+      const bad = Buffer.from([0xff]);
+      const suffix = Buffer.from('"}', "utf8");
+      const res = await globalThis.fetch(`${base}/v2/handshake`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: new Uint8Array(Buffer.concat([prefix, bad, suffix])),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { code: string; compatible?: boolean };
+      expect(body.code).toBe("invalid_encoding");
+      expect(body.compatible).toBeUndefined();
+    });
+  });
+
+  it("classifies malformed percent-encoded paths as 400, not 500 (QA-066)", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      for (const p of [
+        "/v2/runs/%ZZ/artifacts",
+        "/v2/projects/%C0%AF/outputs",
+        "/v2/setup/jobs/%ZZ",
+        "/v2/threads/%ZZ",
+      ]) {
+        const res = await globalThis.fetch(`${base}${p}`, {
+          headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+        });
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { code: string };
+        expect(body.code).toBe("malformed_request_path");
+      }
+      // A validly-encoded literal percent still routes (then 404s as unknown id).
+      const ok = await globalThis.fetch(`${base}/v2/runs/%2542/artifacts`, {
+        headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+      });
+      expect(ok.status).not.toBe(500);
+      expect(ok.status).not.toBe(400);
+    });
+  });
+
+  it("rejects malformed run SSE cursors before opening the stream (QA-061)", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      for (const cursor of ["abc", "-1", "1.5", "0x1f", "3.1e1"]) {
+        const res = await globalThis.fetch(`${base}/v2/runs/run-any/events`, {
+          headers: {
+            authorization: `Bearer ${token}`,
+            "X-Claudexor-Protocol-Major": "3",
+            "Last-Event-ID": cursor,
+          },
+        });
+        expect(res.status).toBe(400);
+        expect(res.headers.get("content-type")).toContain("application/problem+json");
+        expect(((await res.json()) as { code: string }).code).toBe("invalid_run_event_cursor");
+      }
+      // A malformed query alias is an error too (no silent fallback to replay).
+      const aliasBad = await globalThis.fetch(`${base}/v2/runs/run-any/events?lastEventId=abc`, {
+        headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+      });
+      expect(aliasBad.status).toBe(400);
+      // An unknown query parameter is rejected.
+      const unknownQuery = await globalThis.fetch(`${base}/v2/runs/run-any/events?bogus=1`, {
+        headers: { authorization: `Bearer ${token}`, "X-Claudexor-Protocol-Major": "3" },
+      });
+      expect(unknownQuery.status).toBe(400);
     });
   });
 
@@ -3866,9 +4016,19 @@ describe("DaemonControlApiServer", () => {
         expect(sseText).not.toContain("event: end");
         sseAbort.abort();
 
-        const extended = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
+        // QA-075: extend is key_required; a missing key is a typed 400.
+        const extendNoKey = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
+        });
+        expect(extendNoKey.status).toBe(400);
+        expect(((await extendNoKey.json()) as { code: string }).code).toBe(
+          "idempotency_key_required",
+        );
+
+        const extended = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "idempotency-key": "extend-once" },
         });
         expect(extended.status).toBe(200);
         expect(await extended.json()).toMatchObject({

@@ -68,8 +68,12 @@ import {
   type ResolvedThreadWorkspace,
 } from "./artifact-serve-routes.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
-import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
-import { controlProblemError } from "./problem-response.js";
+import { assertOnlyQueryParams, optionalBooleanQuery, singleQuery } from "./query.js";
+import {
+  controlProblemError,
+  normalizeRequestValidationError,
+  revertRefusedProblem,
+} from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import {
   PlanQuestionsArtifact,
@@ -354,6 +358,14 @@ function setupEventProtocolError(
   });
 }
 
+function invalidRunCursor(message: string): Error & { status: number; code: string } {
+  return Object.assign(new Error(message), {
+    status: 400,
+    code: "invalid_run_event_cursor",
+    requiredActions: ["resnapshot"],
+  });
+}
+
 function finiteHttpStatus(error: unknown, fallback: number): number {
   if (!error || typeof error !== "object" || !("status" in error)) return fallback;
   const value = Number((error as { status: unknown }).status);
@@ -581,7 +593,18 @@ export class DaemonControlApiServer {
   }
 
   private requestError(res: ServerResponse, err: unknown): void {
-    this.problem(res, finiteHttpStatus(err, 400), err, "invalid_request", false, "bad request");
+    // QA-053: at the request boundary, project a raw ZodError into structured
+    // fieldErrors + a single-line human message (see normalizeRequestValidationError).
+    // Typed errors and non-Zod errors pass through unchanged.
+    const normalized = normalizeRequestValidationError(err);
+    this.problem(
+      res,
+      finiteHttpStatus(normalized, 400),
+      normalized,
+      "invalid_request",
+      false,
+      "bad request",
+    );
   }
 
   private json(
@@ -628,7 +651,24 @@ export class DaemonControlApiServer {
       chunks.push(chunk as Buffer);
     }
     if (chunks.length === 0) return {};
-    const raw = Buffer.concat(chunks).toString("utf8").trim();
+    // QA-056: decode the complete byte body STRICTLY. `Buffer.toString("utf8")`
+    // is non-fatal — it silently replaces malformed bytes with U+FFFD, so an
+    // invalid octet (FF, a lone continuation byte, overlong/ truncated sequence)
+    // would slip through as a valid JS string and could pass Zod, the secret
+    // fence, idempotency hashing and a durable mutation storing a value that
+    // differs from the wire bytes. TextDecoder({fatal:true}) throws on any
+    // malformed byte; concatenating first keeps valid multibyte chars split
+    // across HTTP chunks intact.
+    let decoded: string;
+    try {
+      decoded = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+    } catch {
+      throw Object.assign(new Error("request body must be valid UTF-8"), {
+        status: 400,
+        code: "invalid_encoding",
+      });
+    }
+    const raw = decoded.trim();
     if (!raw) return {};
     try {
       return JSON.parse(raw);
@@ -1169,13 +1209,23 @@ export class DaemonControlApiServer {
                 }
                 const revert = await revertInPlaceFromAnchor(repoRoot, result.revertAnchorId);
                 if (!revert.reverted) {
+                  // QA-051: emit a FULL ControlProblem. The raw workspace reason
+                  // concatenates a stable English explanation with locale-
+                  // dependent Git stderr; that vendor diagnostic must not BE the
+                  // semantic message. Present a stable English message + typed
+                  // reason code, and keep the redacted, bounded stderr as
+                  // context evidence the client can inspect deliberately.
+                  const problem = revertRefusedProblem(revert.reason);
                   appendRunAuditEvent(rec, "control.rejected", {
                     decision: "revert_run",
-                    reason: revert.reason ?? "revert refused",
+                    reason: problem.context.reason,
+                    detail: problem.context.detail,
                   });
-                  throw Object.assign(new Error(revert.reason ?? "revert refused"), {
+                  throw Object.assign(new Error(problem.message), {
                     status: 409,
                     code: "revert_refused",
+                    retryable: false,
+                    context: problem.context,
                   });
                 }
                 markRunApplyState(rec, "reverted");
@@ -1415,10 +1465,19 @@ export class DaemonControlApiServer {
     }
     const setupJobExtendMatch = /^\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
     if (method === "POST" && setupJobExtendMatch) {
+      // QA-075: extension is additive (+15 min), so it binds an Idempotency-Key
+      // — the same key returns the same extension (replay-safe), a new key
+      // authorizes a distinct extension.
+      let idempotencyKey: string;
+      try {
+        idempotencyKey = runStart.requiredIdempotencyKey(req);
+      } catch (err) {
+        return this.requestError(res, err);
+      }
       return this.service(
         res,
         "extendSetupJob",
-        { jobId: decodeURIComponent(setupJobExtendMatch[1] as string) },
+        { jobId: decodeURIComponent(setupJobExtendMatch[1] as string), idempotencyKey },
         ControlSetupJob,
       );
     }
@@ -1570,7 +1629,14 @@ export class DaemonControlApiServer {
     const eventsMatch = /^\/runs\/([^/]+)\/events$/.exec(path);
     if (method === "GET" && eventsMatch) {
       const id = decodeURIComponent(eventsMatch[1] as string);
-      const last = this.lastEventId(req, url);
+      let last: number;
+      try {
+        last = this.lastEventId(req, url);
+      } catch (err) {
+        // Validate the resume cursor BEFORE committing SSE headers so a
+        // malformed cursor is a typed 400, not a silent full replay (QA-061).
+        return this.requestError(res, err);
+      }
       return this.streamEvents(id, last, req, res);
     }
 
@@ -2061,12 +2127,31 @@ export class DaemonControlApiServer {
     }
   }
 
+  /**
+   * Strict per-run SSE resume cursor (QA-061). The run cursor is the durable
+   * nonnegative integer event `seq` (ControlRunDetail.lastSeq). Mirrors the
+   * global/project/setup streams' typed contract instead of permissive
+   * `Number()` + fallback-0:
+   *   absent                -> 0 (intentional full replay)
+   *   canonical decimal 0+  -> that safe integer
+   *   present but invalid   -> typed HTTP 400 (before SSE headers)
+   * A present-but-invalid header is NOT silently erased in favour of the query
+   * alias; the header wins when present, the query is used only when it is absent.
+   */
   private lastEventId(req: IncomingMessage, url: URL): number {
+    assertOnlyQueryParams(url, ["lastEventId"]);
     const rawHeader = req.headers["last-event-id"];
-    const headerId = rawHeader !== undefined ? Number(rawHeader) : Number.NaN;
-    const rawQuery = url.searchParams.get("lastEventId");
-    const queryId = rawQuery !== null ? Number(rawQuery) : Number.NaN;
-    return Number.isFinite(headerId) ? headerId : Number.isFinite(queryId) ? queryId : 0;
+    if (Array.isArray(rawHeader))
+      throw invalidRunCursor("Last-Event-ID may be specified only once");
+    const rawQuery = singleQuery(url, "lastEventId");
+    const raw = rawHeader !== undefined ? rawHeader : rawQuery;
+    if (raw === undefined) return 0;
+    if (!/^(0|[1-9][0-9]*)$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+      throw invalidRunCursor(
+        "run event cursor must be a nonnegative integer event seq; refetch the run snapshot and resume from its lastSeq",
+      );
+    }
+    return Number(raw);
   }
 
   private async streamEvents(
