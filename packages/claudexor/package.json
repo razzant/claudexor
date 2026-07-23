@@ -1,7 +1,7 @@
 {
   "name": "claudexor",
   "version": "3.0.4",
-  "description": "Harness-agnostic AI coding control plane — one CLI over Codex, Claude Code, Cursor, and OpenCode with cross-family review, best-of-N runs, and typed apply gates.",
+  "description": "Local-first multi-harness control plane for Claude Code, Codex, Cursor, and OpenCode with quota-aware rotation across multiple Claude Code and Codex subscriptions.",
   "type": "module",
   "bin": {
     "claudexor": "./bin/claudexor.js",
@@ -15,20 +15,32 @@
   },
   "keywords": [
     "ai",
-    "agents",
+    "ai-agents",
+    "ai-coding",
+    "ai-coding-assistant",
+    "agent-orchestration",
+    "best-of-n",
+    "claude-code",
     "cli",
+    "code-review",
     "codex",
-    "claude",
+    "codex-cli",
     "cursor",
+    "developer-tools",
     "mcp",
-    "orchestration"
+    "mcp-server",
+    "multi-account",
+    "multi-agent",
+    "opencode",
+    "quota-management",
+    "subscription-management"
   ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/razzant/claudexor.git",
     "directory": "packages/claudexor"
   },
-  "homepage": "https://github.com/razzant/claudexor#readme",
+  "homepage": "https://razzant.github.io/claudexor/",
   "bugs": {
     "url": "https://github.com/razzant/claudexor/issues"
   },
