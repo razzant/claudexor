@@ -24,10 +24,13 @@ import { TERMINAL_STATES } from "./sse-shared.js";
 import { streamRunEvents } from "./run-events-stream.js";
 import { boundedArtifactText, outputReadyState, primaryOutput } from "./primary-output.js";
 import {
+  type RunEventsIntegrity,
   controlWebEvidence,
   eventPayload,
+  evidenceLevel,
   latestPlanProgress,
   readRunEvents,
+  readRunEventsWithIntegrity,
   timelineEvents,
 } from "./run-timeline.js";
 import { projectSession, projectThread, projectTurn, turnRunCard } from "./thread-projection.js";
@@ -2511,7 +2514,9 @@ function detailFor(
   // RunDetail perf (D15): parse events.jsonl ONCE per detail request and thread
   // the snapshot through every event-consuming projection (timeline, budget
   // fallback, plan progress) — before this each field re-parsed the whole log.
-  const events = rec.runDir ? readRunEvents(rec) : [];
+  const { events, integrity } = rec.runDir
+    ? readRunEventsWithIntegrity(rec)
+    : { events: [] as Record<string, unknown>[], integrity: undefined };
   const summary = summarizeRun(rec, events);
   // Non-null exactly when the run has an applyable patch — the authoritative
   // "something to apply" banner signal (a convergence patch may carry kind:patch
@@ -2529,8 +2534,8 @@ function detailFor(
     lastSeq,
     artifacts: rec.runDir ? listArtifacts(rec.runDir) : [],
     primaryOutput: primaryOutput(rec, summary.mode, failure),
-    timeline: timelineEvents(rec, events),
-    budget: budgetSnapshot(rec, decision, events),
+    timeline: timelineEvents(rec, events, integrity),
+    budget: budgetSnapshot(rec, decision, events, integrity),
     finalSummary: boundedArtifactText(rec, "final/summary.md"),
     decision,
     operatorDecision: operatorDecisionRaw,
@@ -2547,7 +2552,7 @@ function detailFor(
     // review artifacts; empty for single-envelope modes.
     candidates: rec.runDir ? candidatesFor(rec.runDir, decision) : [],
     // Live plan checklist: the winner's (else last) plan.progress items.
-    planProgress: latestPlanProgress(rec, decision?.winner ?? null, events),
+    planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
     failure,
   });
 }
@@ -2577,6 +2582,7 @@ function budgetSnapshot(
   rec: DaemonRunRecord,
   decision: DecisionRecord | null,
   eventsSnapshot?: Record<string, unknown>[],
+  integrity?: RunEventsIntegrity,
 ): ControlBudgetSnapshot {
   const p = paramsRecord(rec);
   // The ENGINE-EFFECTIVE cap lives in the immutable contract (request input,
@@ -2654,7 +2660,18 @@ function budgetSnapshot(
     paidBudget.kind === "finite" && spendUsd !== null
       ? Math.max(0, paidBudget.maxUsd - spendUsd)
       : null;
-  return ControlBudgetSnapshot.parse({ paidBudget, spendUsd, remainingUsd, estimated, source });
+  // Disclose when the spend fallback read incomplete/unreadable canonical
+  // events (QA-074): a partial event set can silently drop a spend tick, so the
+  // projected spend must never present as clean when its evidence was not.
+  const evidence = integrity ? evidenceLevel(integrity) : "complete";
+  return ControlBudgetSnapshot.parse({
+    paidBudget,
+    spendUsd,
+    remainingUsd,
+    estimated,
+    source,
+    evidence,
+  });
 }
 
 function readStructured<T>(

@@ -5,15 +5,17 @@
  * event-reading helpers the budget snapshot reuses.
  */
 import { closeSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { join } from "node:path";
 import {
   ControlTimelineEvent,
+  type ControlEvidenceIntegrity,
   ControlWebEvidence,
   FallbackReason,
   type RunTelemetry,
   type TaskContract,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
-import { safeArtifactPath } from "./artifact-paths.js";
+import { safeArtifactPath, safeArtifactRoot } from "./artifact-paths.js";
 
 const TIMELINE_EVENTS_MAX = 500;
 
@@ -45,15 +47,89 @@ export interface RunDirCarrier {
   runDir?: string;
 }
 
-export function readRunEvents(rec: RunDirCarrier): Record<string, unknown>[] {
-  if (!rec.runDir) return [];
+/**
+ * Typed record of what the single lenient events.jsonl parser had to skip.
+ * QA-074: a lenient reader that silently drops malformed/unreadable lines
+ * turns incomplete canonical evidence into an apparently clean partial set.
+ * This counts every non-intentional omission so the projections that already
+ * disclose intentional bounding (timeline truncation) can also disclose
+ * corruption, and distinguishes a legitimately-absent file (queued run) from a
+ * genuinely unreadable one.
+ */
+export interface RunEventsIntegrity {
+  /** File is absent (ENOENT) — a legitimate empty state for a queued/aborted-before-first-event run, NOT corruption. */
+  absent: boolean;
+  /** File exists but could not be read (permission/IO error, or a symlink/directory in place of the file). Evidence is UNAVAILABLE. */
+  unreadable: boolean;
+  /** Non-empty lines that failed JSON.parse and were dropped. */
+  malformedLines: number;
+  /** JSON values that parsed but were not plain objects (arrays/scalars/null) and were dropped. */
+  nonObjectLines: number;
+  /** The bounded-tail read intentionally dropped a torn first line (D15). Intentional bounding — NOT a corruption signal. */
+  tailTruncated: boolean;
+}
+
+export interface RunEventsRead {
+  events: Record<string, unknown>[];
+  integrity: RunEventsIntegrity;
+}
+
+const COMPLETE_INTEGRITY: RunEventsIntegrity = {
+  absent: false,
+  unreadable: false,
+  malformedLines: 0,
+  nonObjectLines: 0,
+  tailTruncated: false,
+};
+
+/**
+ * Collapse a typed integrity record to the three-state evidence level the DTOs
+ * disclose. Intentional bounding (tailTruncated / absent-for-queued) is NOT an
+ * integrity problem, so it maps to `complete` — only genuine unreadable files
+ * and skipped corrupt lines degrade the level.
+ */
+export function evidenceLevel(i: RunEventsIntegrity): ControlEvidenceIntegrity {
+  if (i.unreadable) return "unavailable";
+  if (i.malformedLines > 0 || i.nonObjectLines > 0) return "incomplete";
+  return "complete";
+}
+
+/**
+ * The ONE lenient events.jsonl reader for Control projections. Returns the
+ * parsed objects AND a typed count of everything it skipped, so no caller can
+ * mistake a partial/empty set for complete evidence (QA-074). `readRunEvents`
+ * preserves the historical array-only shape for callers that do not disclose
+ * integrity.
+ */
+export function readRunEventsWithIntegrity(rec: RunDirCarrier): RunEventsRead {
+  const integrity: RunEventsIntegrity = { ...COMPLETE_INTEGRITY };
+  if (!rec.runDir) return { events: [], integrity };
   const path = safeArtifactPath(rec.runDir, "events.jsonl");
-  if (!path) return [];
+  // safeArtifactPath returns null for a MISSING file (ENOENT — the legitimate
+  // queued/never-written case) AND for an unsafe one (symlink/traversal). Only
+  // the latter is an integrity problem: an absent file is honestly empty, an
+  // unsafe/unreadable one must disclose as unavailable rather than empty-clean.
+  if (!path) {
+    const base = safeArtifactRoot(rec.runDir);
+    if (base) {
+      try {
+        // lstat does NOT follow symlinks: any existing node here (symlink/other)
+        // was refused by the path guard and is genuinely unreadable-as-events.
+        lstatSync(join(base, "events.jsonl"));
+        return { events: [], integrity: { ...integrity, unreadable: true } };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT")
+          return { events: [], integrity: { ...integrity, absent: true } };
+      }
+    }
+    return { events: [], integrity: { ...integrity, unreadable: true } };
+  }
   let raw: string;
   let tailed = false;
   try {
     const st = lstatSync(path);
-    if (st.isSymbolicLink() || st.isDirectory()) return [];
+    if (st.isSymbolicLink() || st.isDirectory())
+      return { events: [], integrity: { ...integrity, unreadable: true } };
     if (st.size > EVENTS_READ_TAIL_BYTES) {
       // Bounded tail: read only the final window; drop the first (partial) line.
       const fd = openSync(path, "r");
@@ -68,25 +144,42 @@ export function readRunEvents(rec: RunDirCarrier): Record<string, unknown>[] {
     } else {
       raw = readFileSync(path, "utf8");
     }
-  } catch {
-    return [];
+  } catch (err) {
+    // ENOENT is the legitimate queued/never-written case: an empty event set is
+    // the honest truth, NOT corruption. Every other read failure (EACCES, EIO…)
+    // is a real integrity problem the projections must disclose as unavailable.
+    if ((err as NodeJS.ErrnoException | null)?.code === "ENOENT")
+      return { events: [], integrity: { ...integrity, absent: true } };
+    return { events: [], integrity: { ...integrity, unreadable: true } };
   }
   eventsParseCount++;
+  integrity.tailTruncated = tailed;
   const out: Record<string, unknown>[] = [];
   const lines = raw.split(/\r?\n/);
   // A tailed read almost certainly starts mid-record; drop that torn first line.
   for (let i = tailed ? 1 : 0; i < lines.length; i++) {
     const line = lines[i] as string;
     if (!line.trim()) continue;
+    let parsed: unknown;
     try {
-      const obj = JSON.parse(line);
-      if (obj && typeof obj === "object" && !Array.isArray(obj))
-        out.push(obj as Record<string, unknown>);
+      parsed = JSON.parse(line);
     } catch {
-      /* malformed line remains in events.jsonl; omit from projections */
+      // Malformed line stays in events.jsonl on disk; COUNT the omission so the
+      // projections can disclose that canonical evidence is incomplete.
+      integrity.malformedLines++;
+      continue;
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      out.push(parsed as Record<string, unknown>);
+    } else {
+      integrity.nonObjectLines++;
     }
   }
-  return out;
+  return { events: out, integrity };
+}
+
+export function readRunEvents(rec: RunDirCarrier): Record<string, unknown>[] {
+  return readRunEventsWithIntegrity(rec).events;
 }
 
 export function eventPayload(ev: Record<string, unknown>): Record<string, unknown> {
@@ -164,6 +257,7 @@ function timelineSeverity(
 export function timelineEvents(
   rec: RunDirCarrier,
   events?: Record<string, unknown>[],
+  integrity?: RunEventsIntegrity,
 ): ControlTimelineEvent[] {
   const out: ControlTimelineEvent[] = [];
   for (const ev of events ?? readRunEvents(rec)) {
@@ -209,10 +303,11 @@ export function timelineEvents(
     );
   }
   // Bounded projection with an EXPLICIT truncation marker — no silent truncation.
+  let rows = out;
   if (out.length > TIMELINE_EVENTS_MAX) {
     const omitted = out.length - TIMELINE_EVENTS_MAX;
-    const tail = out.slice(-TIMELINE_EVENTS_MAX);
-    tail.unshift(
+    rows = out.slice(-TIMELINE_EVENTS_MAX);
+    rows.unshift(
       ControlTimelineEvent.parse({
         type: "timeline.truncated",
         title: `${omitted} earlier event(s) omitted from this projection`,
@@ -221,9 +316,43 @@ export function timelineEvents(
         rawRef: "events.jsonl",
       }),
     );
-    return tail;
   }
-  return out;
+  // Corruption/unavailability is a DIFFERENT class from intentional volume
+  // bounding above: malformed or unreadable canonical evidence must announce
+  // itself so a partial timeline can never read as clean (QA-074). Prepended
+  // last so it sits at the very top, most prominent.
+  const marker = incompletenessMarker(integrity);
+  if (marker) rows.unshift(marker);
+  return rows;
+}
+
+/**
+ * The explicit timeline row for non-intentional evidence loss, or null when the
+ * events were fully readable. Mirrors the `timeline.truncated` disclosure
+ * pattern: a synthetic row whose title carries the omitted-line count.
+ */
+function incompletenessMarker(integrity?: RunEventsIntegrity): ControlTimelineEvent | null {
+  if (!integrity) return null;
+  const level = evidenceLevel(integrity);
+  if (level === "complete") return null;
+  if (level === "unavailable") {
+    return ControlTimelineEvent.parse({
+      type: "timeline.evidence_unavailable",
+      title: "Canonical run events could not be read",
+      detail:
+        "events.jsonl is present but unreadable; this timeline is projected from no events and may be missing the entire run history.",
+      severity: "error",
+      rawRef: "events.jsonl",
+    });
+  }
+  const omitted = integrity.malformedLines + integrity.nonObjectLines;
+  return ControlTimelineEvent.parse({
+    type: "timeline.evidence_incomplete",
+    title: `${omitted} malformed run event line(s) omitted from this projection`,
+    detail: `events.jsonl had ${integrity.malformedLines} unparseable and ${integrity.nonObjectLines} non-object line(s); this timeline is incomplete — canonical evidence remains on disk.`,
+    severity: "warning",
+    rawRef: "events.jsonl",
+  });
 }
 
 /** The LAST plan.progress event's typed items (the live plan checklist), or
@@ -235,10 +364,16 @@ export function latestPlanProgress(
   rec: RunDirCarrier,
   winnerAttemptId?: string | null,
   eventsSnapshot?: Record<string, unknown>[],
+  integrity?: RunEventsIntegrity,
 ): {
   items: Array<{ id: string; title: string; status: "pending" | "in_progress" | "completed" }>;
+  evidence: ControlEvidenceIntegrity;
 } | null {
-  const events = eventsSnapshot ?? readRunEvents(rec);
+  const read = eventsSnapshot
+    ? { events: eventsSnapshot, integrity: integrity ?? COMPLETE_INTEGRITY }
+    : readRunEventsWithIntegrity(rec);
+  const events = read.events;
+  const evidence = evidenceLevel(read.integrity);
   const pick = (matchWinner: boolean): Record<string, unknown> | null => {
     for (let i = events.length - 1; i >= 0; i--) {
       const ev = events[i];
@@ -251,7 +386,12 @@ export function latestPlanProgress(
   const chosen = (winnerAttemptId ? pick(true) : null) ?? pick(false);
   {
     const ev = chosen;
-    if (!ev) return null;
+    if (!ev) {
+      // No plan.progress event survived the read. When evidence is incomplete/
+      // unavailable, a plan event may have been the dropped line, so disclose a
+      // non-complete empty checklist rather than the "never emitted one" null.
+      return evidence === "complete" ? null : { items: [], evidence };
+    }
     const payload = eventPayload(ev);
     const rawItems = Array.isArray(payload["items"]) ? (payload["items"] as unknown[]) : [];
     const items = rawItems
@@ -274,6 +414,6 @@ export function latestPlanProgress(
         (x): x is { id: string; title: string; status: "pending" | "in_progress" | "completed" } =>
           x !== null,
       );
-    return { items };
+    return { items, evidence };
   }
 }

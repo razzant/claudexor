@@ -797,6 +797,13 @@ export const ControlTimelineEvent = z
   .describe("One projected timeline row of a run for display.");
 export type ControlTimelineEvent = z.infer<typeof ControlTimelineEvent>;
 
+export const ControlEvidenceIntegrity = z
+  .enum(["complete", "incomplete", "unavailable"])
+  .describe(
+    "Integrity of the canonical events.jsonl a projection was derived from: complete (every line parsed), incomplete (malformed or non-object lines were skipped and evidence is partial), or unavailable (the file existed but could not be read). Intentional volume/tail bounding is NOT reported here — it carries its own explicit marker.",
+  );
+export type ControlEvidenceIntegrity = z.infer<typeof ControlEvidenceIntegrity>;
+
 export const ControlBudgetSnapshot = z
   .object({
     paidBudget: PaidBudget.default({ kind: "unlimited" }),
@@ -820,6 +827,9 @@ export const ControlBudgetSnapshot = z
       .describe(
         "Where the snapshot came from: the decision record, live events, settings, or unknown.",
       ),
+    evidence: ControlEvidenceIntegrity.default("complete").describe(
+      "Integrity of the canonical events this spend fallback read: 'incomplete' when malformed/non-object event lines were skipped, 'unavailable' when the events file was unreadable, else 'complete'. A non-complete value means the projected spend may disagree with disk truth.",
+    ),
   })
   .describe("Budget snapshot for a run: cap, spend, and provenance.");
 export type ControlBudgetSnapshot = z.infer<typeof ControlBudgetSnapshot>;

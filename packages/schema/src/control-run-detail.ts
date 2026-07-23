@@ -7,6 +7,7 @@ import { ReviewFinding } from "./review.js";
 import {
   ControlArtifactInfo,
   ControlBudgetSnapshot,
+  ControlEvidenceIntegrity,
   ControlPendingInteraction,
   ControlRunSummary,
   ControlTimelineEvent,
@@ -226,11 +227,14 @@ export const ControlRunDetail = z
           )
           .default([])
           .describe("Plan items, last-wins."),
+        evidence: ControlEvidenceIntegrity.default("complete").describe(
+          "Integrity of the canonical events this checklist was projected from: 'incomplete'/'unavailable' warns that a plan.progress event may have been lost to a malformed or unreadable events file, so the checklist may be stale or empty; 'complete' otherwise.",
+        ),
       })
       .nullable()
       .default(null)
       .describe(
-        "Live plan checklist from the last plan.progress event; null when the run never emitted one.",
+        "Live plan checklist from the last plan.progress event; null when the run never emitted one AND its canonical events were fully readable. Non-null with empty items + non-complete evidence discloses that a plan event may have been dropped.",
       ),
     failure: RunFailure.nullable()
       .default(null)

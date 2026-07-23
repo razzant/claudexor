@@ -1337,6 +1337,16 @@
               ],
               "default": "unknown",
               "description": "Where the snapshot came from: the decision record, live events, settings, or unknown."
+            },
+            "evidence": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "incomplete",
+                "unavailable"
+              ],
+              "description": "Integrity of the canonical events this spend fallback read: 'incomplete' when malformed/non-object event lines were skipped, 'unavailable' when the events file was unreadable, else 'complete'. A non-complete value means the projected spend may disagree with disk truth.",
+              "default": "complete"
             }
           },
           "additionalProperties": false,
@@ -2479,6 +2489,11 @@
                   },
                   "default": [],
                   "description": "Plan items, last-wins."
+                },
+                "evidence": {
+                  "$ref": "#/definitions/ControlRunDetail/properties/budget/properties/evidence",
+                  "default": "complete",
+                  "description": "Integrity of the canonical events this checklist was projected from: 'incomplete'/'unavailable' warns that a plan.progress event may have been lost to a malformed or unreadable events file, so the checklist may be stale or empty; 'complete' otherwise."
                 }
               },
               "additionalProperties": false
@@ -2488,7 +2503,7 @@
             }
           ],
           "default": null,
-          "description": "Live plan checklist from the last plan.progress event; null when the run never emitted one."
+          "description": "Live plan checklist from the last plan.progress event; null when the run never emitted one AND its canonical events were fully readable. Non-null with empty items + non-complete evidence discloses that a plan event may have been dropped."
         },
         "failure": {
           "anyOf": [

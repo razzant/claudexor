@@ -5634,6 +5634,117 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("QA-074: malformed/non-object event lines surface a typed incompleteness marker, never silent partial", async () => {
+    const { daemon, record } = fakeDaemon();
+    const evPath = join(record.runDir!, "events.jsonl");
+    const ev = (o: Record<string, unknown>) =>
+      JSON.stringify({ ts: new Date().toISOString(), run_id: "run-d1", task_id: "task-d1", ...o });
+    // One valid header, one unparseable line, one non-object (array) line, a
+    // valid plan.progress, and a valid harness.event. The two bad lines must be
+    // COUNTED and disclosed, not silently dropped, while the valid ones project.
+    writeFileSync(
+      evPath,
+      [
+        ev({ seq: 1, type: "run.created", payload: {} }),
+        "{ this is not valid json",
+        "[1, 2, 3]",
+        ev({
+          seq: 2,
+          type: "plan.progress",
+          payload: { items: [{ id: "p0", title: "do the thing", status: "pending" }] },
+        }),
+        ev({ seq: 3, type: "harness.event", payload: { harness_id: "codex", type: "tool" } }),
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        timeline: { type: string; title: string; severity: string }[];
+        budget: { evidence: string };
+        planProgress: { items: { id: string }[]; evidence: string } | null;
+      };
+      const marker = body.timeline.find((e) => e.type === "timeline.evidence_incomplete");
+      expect(marker).toBeDefined();
+      // The two skipped lines (1 unparseable + 1 non-object) are counted exactly.
+      expect(marker!.title).toContain("2 malformed");
+      expect(marker!.severity).toBe("warning");
+      // The marker is the most prominent row (top of the timeline).
+      expect(body.timeline[0]!.type).toBe("timeline.evidence_incomplete");
+      // Valid lines still project alongside the disclosure.
+      expect(body.timeline.some((e) => e.type === "harness.event")).toBe(true);
+      // Budget and plan folds disclose partial evidence, never a clean shape.
+      expect(body.budget.evidence).toBe("incomplete");
+      expect(body.planProgress).not.toBeNull();
+      expect(body.planProgress!.items.map((i) => i.id)).toEqual(["p0"]);
+      expect(body.planProgress!.evidence).toBe("incomplete");
+    });
+  });
+
+  it("QA-074: an unreadable events file discloses evidence_unavailable, not empty-success", async () => {
+    const { daemon, record } = fakeDaemon();
+    const evPath = join(record.runDir!, "events.jsonl");
+    // A directory in place of the file is unreadable-as-events; the projection
+    // must announce the whole run history is unavailable, not present as clean.
+    rmSync(evPath, { force: true });
+    mkdirSync(evPath, { recursive: true });
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        timeline: { type: string; severity: string }[];
+        budget: { evidence: string };
+        planProgress: { items: unknown[]; evidence: string } | null;
+      };
+      const marker = body.timeline.find((e) => e.type === "timeline.evidence_unavailable");
+      expect(marker).toBeDefined();
+      expect(marker!.severity).toBe("error");
+      expect(body.budget.evidence).toBe("unavailable");
+      expect(body.planProgress).not.toBeNull();
+      expect(body.planProgress!.items).toEqual([]);
+      expect(body.planProgress!.evidence).toBe("unavailable");
+    });
+  });
+
+  it("QA-074: an ABSENT events file (queued run) is complete/empty, not evidence_unavailable", async () => {
+    const { daemon, record } = fakeDaemon();
+    // ENOENT is the legitimate never-written case — no marker, evidence complete.
+    rmSync(join(record.runDir!, "events.jsonl"), { force: true });
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        timeline: { type: string }[];
+        budget: { evidence: string };
+        planProgress: unknown | null;
+      };
+      expect(body.timeline.some((e) => e.type.startsWith("timeline.evidence_"))).toBe(false);
+      expect(body.budget.evidence).toBe("complete");
+      expect(body.planProgress).toBeNull();
+    });
+  });
+
+  it("QA-074: a fully-readable events file keeps a clean, unmarked projection", async () => {
+    const { daemon } = fakeDaemon();
+    await withDaemonServer(daemon, async (base) => {
+      const detail = await apiFetch(`${base}/runs/run-d1`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      const body = (await detail.json()) as {
+        timeline: { type: string }[];
+        budget: { evidence: string };
+        planProgress: { evidence: string } | null;
+      };
+      expect(body.timeline.some((e) => e.type.startsWith("timeline.evidence_"))).toBe(false);
+      expect(body.budget.evidence).toBe("complete");
+      if (body.planProgress) expect(body.planProgress.evidence).toBe("complete");
+    });
+  });
+
   it("projects candidate evidence cards from attempts/reviews/decision artifacts", async () => {
     const { daemon } = fakeDaemon();
     await withDaemonServer(daemon, async (base) => {
