@@ -68,7 +68,7 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
     expect(existsSync(target)).toBe(false);
   });
 
-  it("two concurrent preps yield exactly one file and one created=true", async () => {
+  it("two concurrent preps yield exactly one file, one created=true, and a typed refusal for the loser", async () => {
     writeFileSync(join(dir, "AGENTS.md"), "# a\n");
     const results = await Promise.all([
       Promise.resolve().then(() => ensureClaudeBridge(dir)),
@@ -76,7 +76,11 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
     ]);
     const created = results.filter((r) => r.created);
     expect(created).toHaveLength(1);
-    expect(results.filter((r) => !r.created)).toHaveLength(1);
+    expect(created[0]?.reason).toBe("created");
+    const losers = results.filter((r) => !r.created);
+    expect(losers).toHaveLength(1);
+    // The loser reports a TYPED refusal, never a create or a throw.
+    expect(["race_lost", "claude_exists"]).toContain(losers[0]?.reason);
     expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(CLAUDE_BRIDGE_CONTENT);
   });
 });
