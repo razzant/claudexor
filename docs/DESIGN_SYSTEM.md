@@ -504,9 +504,10 @@ frequency and volume are. The contracts:
     carries ONE compact accounts control (Claude-Code style, INV-135): a quiet
     single-line trigger — worst-readiness dot + the account name (or "N
     accounts") + worst quota % + chevron — that opens a popover to manage
-    accounts in-app — no commands to copy; the native login itself still runs
-    the official vendor CLI in an auto-opened Terminal window (the setup-job
-    handoff below). Each popover row is one account (a
+    accounts in-app — no commands to copy. Codex native login runs the official
+    codex app-server device-code flow in-app with NO Terminal (D-17 AuthSheet
+    story below); Claude/Cursor still run the official vendor CLI in an
+    auto-opened Terminal window (the setup-job handoff below). Each popover row is one account (a
     default vendor login labeled with the harness name, or a registered
     credential profile): a readiness dot (ready means that exact source is
     `available + passed`, never aggregate harness health), its name, ONE compact
@@ -523,7 +524,9 @@ frequency and volume are. The contracts:
     is never Claudexor's to delete); delete also clears matching thread pins,
     native-session caches, and quota rows. The popover adds accounts inline
     (harness + optional name → `POST /v2/credential-profiles`, then that
-    account's native login) and toggles "Auto-switch accounts at quota limit"
+    account's native login in ONE action — "Add & log in" and every account-row
+    login open the AuthSheet already starting the login, no second click) and
+    toggles "Auto-switch accounts at quota limit"
     (the per-harness `profileLimitAction` rotate/fail); a quota refresh and
     the full per-window quota detail stay one click away. Two subscriptions
     of one vendor NEVER merge — quota keys on
@@ -944,6 +947,20 @@ views in the shared design-system files; screens compose them.
   **Done** button (not an unlabeled x). Back is disabled while an active login
   requires keep-running/cancel confirmation. Owner mapper:
   `AuthSheetPresentation`.
+- **AuthSheet codex device-code card (D-17).** While a codex device-code login
+  awaits the user, a dedicated card (`AuthSheetDeviceCodeCard`) shows the
+  large one-time code in a monospaced style with an explicit **Copy** button
+  (the code is NEVER auto-copied), an **Open private sign-in** primary that
+  starts an ephemeral `ASWebAuthenticationSession`
+  (`prefersEphemeralWebBrowserSession`), a **Cancel**, and a "Waiting for
+  OpenAI…" state. The privacy copy is honest and NON-GUARANTEED — "Claudexor
+  requested a private browser session" (Safari honors the request; another
+  default browser may not) — because the app cannot force a private session and
+  must never claim to prevent vendor-side session invalidation. A device-auth
+  disabled org gets an EXPLICIT "Use browser sign-in instead" opt-in (the
+  app-server `browser_callback` flow), never a silent fallback. The one-time
+  code is transient — read from the snapshot/SSE overlay only, never persisted
+  by the app.
 - **Thread workspace (trailing `.inspector`).** ONE panel whose identity is the
   CURRENT THREAD's workspace (D42), with exactly three tabs (`WorkspaceTab`:
   `changes`, `artifacts`, `evidence`, via the shared `SegmentedTabs`) aggregated
