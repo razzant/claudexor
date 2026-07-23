@@ -569,8 +569,8 @@ invariant or owner decision before proceeding.
   `[INV-116:cancel-fast]`, `[INV-116:stream-watchdog]`,
   `[INV-116:blockers-visible]`, `[INV-116:work-complete]`,
   `[INV-116:work-state-veto]`, `[INV-116:work-report-contract]`,
-  `[INV-116:context-interrupted]`; the whole-strategy terminal net and
-  interrupt-stamping tests.
+  `[INV-116:context-interrupted]`, `[INV-116:continuation]`; the
+  whole-strategy terminal net and interrupt-stamping tests.
 
 ## 12. Keep The Codebase Small And Direct
 

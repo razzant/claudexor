@@ -78,12 +78,14 @@ export interface ResolvedWorkReportEnvelope {
  * caller's ORIGINAL schema stays the conformance authority for `output` (it is
  * NOT passed here strictified for validation — only the transport copy is).
  *
- * Activated ONLY for `constrained` routes that natively constrain output and
- * are not interactive-gated, and — for `side_tool` routes (claude) — only when
- * a caller schema is present (a no-caller WorkReport-only envelope on claude
- * would hijack the markdown final; that is the D-16c seam). `validated` routes
- * (cursor) and claude's no-caller case are left inactive here (disclosed
- * `absent` work_state) and activated by the D-16c adapter instruction layer.
+ * Activated HERE directly for `constrained` routes that natively constrain
+ * output and are not interactive-gated (the WorkReport rides the
+ * `{work_report, output}` envelope; claude's no-caller `side_tool` case instead
+ * arms a `{work_report}`-only schema on the StructuredOutput tool so the markdown
+ * final stays the deliverable — the D-16c seam), and for `validated` routes
+ * (cursor), where the report rides an INSTRUCTED fenced envelope. Only
+ * interactive-gated and schema-incapable routes stay inactive here (disclosed
+ * `absent` work_state).
  */
 export function resolveWorkReportEnvelope(opts: {
   transport: HarnessCapabilities["work_report_transport"];

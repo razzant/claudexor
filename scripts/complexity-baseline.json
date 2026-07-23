@@ -26,5 +26,5 @@
   "packages/orchestrator/src/orchestrator.ts": 7325,
   "packages/review/src/reviewEngine.ts": 1396,
   "packages/schema/src/control.ts": 1676,
-  "packages/schema/src/harness.ts": 1071
+  "packages/schema/src/harness.ts": 1077
 }
