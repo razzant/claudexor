@@ -139,13 +139,16 @@ export function gateProtectedPaths(commandTokens: string[]): string[] {
   return [...paths];
 }
 
-export function promptWithProtectedPathConstraint(
+export function promptWithEngineConstraints(
   prompt: string,
   protectedPaths: string[],
   autoProtectedPaths: string[] = [],
   approvals: ProtectedPathApproval[] = [],
+  gates: ReadonlyArray<{ program: string; args: readonly string[] }> = [],
 ): string {
-  if (protectedPaths.length === 0 && autoProtectedPaths.length === 0) return prompt;
+  if (protectedPaths.length === 0 && autoProtectedPaths.length === 0) {
+    return promptWithGateArgvDisclosure(prompt, gates);
+  }
   const specLines = protectedPaths.length
     ? [
         "",
@@ -168,7 +171,34 @@ export function promptWithProtectedPathConstraint(
         ...approvalLines,
       ]
     : [];
-  return [prompt, ...specLines, ...autoLines].join("\n");
+  return promptWithGateArgvDisclosure([prompt, ...specLines, ...autoLines].join("\n"), gates);
+}
+
+/**
+ * QA-022 (FIX B): disclose to the candidate the EXACT typed argv of the
+ * deterministic gates the engine will run again after the attempt. The typed
+ * `operatorCommands`/project test gates already live in the frozen TaskContract
+ * (`contract.tests.commands`) and the deterministic gate runner executes them as
+ * `program + args` with NO implicit shell (QA-010's typed-argv rule) — but until
+ * now the model never saw them, so a "run the provided gate" intent left it
+ * guessing `npm test` / bare `node`, which on an at-risk machine dies `Killed: 9`.
+ *
+ * Rendered as a read-only JSON argv list (same `[program, ...args]` shape the
+ * gate runner and review packet use), redacted with the same fence as the rest
+ * of the contract so a secret-like token can never surface in the prompt. Never
+ * a shell string — the model must reuse the exact argv, not re-parse it.
+ */
+export function promptWithGateArgvDisclosure(
+  prompt: string,
+  gates: ReadonlyArray<{ program: string; args: readonly string[] }>,
+): string {
+  if (gates.length === 0) return prompt;
+  const lines = [
+    "",
+    "Engine-configured deterministic gates (the engine will run these EXACT typed argv again to verify the run). Use them verbatim for local verification; do not substitute a bare `node`/`npm`, a package script, or a shell string:",
+    ...gates.slice(0, 20).map((g) => `- ${redactSecrets(JSON.stringify([g.program, ...g.args]))}`),
+  ];
+  return [prompt, ...lines].join("\n");
 }
 
 export function sleep(ms: number): Promise<void> {

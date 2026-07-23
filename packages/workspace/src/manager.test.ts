@@ -10,9 +10,9 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { summarizeDiffPaths } from "@claudexor/core";
+import { composeBaseEnv, summarizeDiffPaths } from "@claudexor/core";
 import { projectRuntimeDir } from "@claudexor/util";
 import {
   applyPatchProtected,
@@ -133,6 +133,44 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.worktree_path)).toBe(false);
     // Dispose also removes the scoped dirs (no lingering credentials).
     expect(existsSync(env.home_dir)).toBe(false);
+  });
+
+  it("every lane env (envelope / read-only scoped / durable thread lane) rides the managed-runner Node prepend (QA-022, INV-067)", async () => {
+    const repo = await initRepo();
+    const mgr = new WorkspaceManager(repo);
+
+    // A fake, spawnable, non-Homebrew Node standing in for the daemon's own
+    // notarized runtime; its dir must win over an ad-hoc Homebrew Node.
+    const runnerDir = mkdtempSync(join(tmpdir(), "lane-runner-"));
+    const fakeNode = join(runnerDir, "node");
+    writeFileSync(fakeNode, "#!/bin/sh\nexit 0\n");
+    chmodSync(fakeNode, 0o755);
+    const hostileParent = { HOME: "/parent", PATH: "/opt/homebrew/bin:/usr/bin" };
+
+    const envelope = await mgr.create({ taskId: "lane-env", attemptId: "a01", baseRef: "HEAD" });
+    const readOnly = mgr.readOnlyHomeEnv();
+    const laneHome = mgr.laneHomeEnv("thread-1", "codex", null);
+
+    const laneEnvs: Array<[string, Record<string, string>]> = [
+      ["isolated envelope", mgr.envFor(envelope)],
+      ["read-only scoped HOME", readOnly.env],
+      ["durable thread lane", laneHome.env],
+    ];
+
+    for (const mode of ["mirror_native", "clean"] as const) {
+      for (const [label, laneEnv] of laneEnvs) {
+        // The spawn layer merges the lane's scoped env ON TOP of composeBaseEnv;
+        // no lane env sets PATH, so the prepend must survive for every lane.
+        const spawnEnv = { ...composeBaseEnv(mode, hostileParent, fakeNode, "darwin"), ...laneEnv };
+        const first = (spawnEnv.PATH ?? "").split(delimiter)[0];
+        expect(first, `${mode} / ${label}`).toBe(dirname(fakeNode));
+        expect(spawnEnv.HOME).toBe(laneEnv.HOME);
+      }
+    }
+
+    await mgr.dispose(envelope);
+    readOnly.dispose();
+    rmSync(runnerDir, { recursive: true, force: true });
   });
 
   it("excludes the claudexor-owned artifact dir from the candidate diff but keeps real code (F4)", async () => {

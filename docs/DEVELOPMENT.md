@@ -191,7 +191,12 @@ the system ones, so CI and other machines work unchanged:
   (`PATH="$HOME/.swiftly/bin:$PATH" swift build`).
 - `claudexor doctor` surfaces a non-gating advisory when the running Node is an
   at-risk Homebrew build on macOS; set `CLAUDEXOR_NODE_BIN` (or put a notarized
-  Node first on `PATH`) to silence it.
+  Node first on `PATH`) to silence it. At run time the harness spawn PATH also
+  prepends the directory of the Node the daemon itself runs on (the notarized
+  app-bundled runtime), so a vendor CLI's inner login shell resolves that same
+  working Node instead of an ad-hoc Homebrew one it would otherwise SIGKILL; see
+  `docs/ARCHITECTURE.md`. The prepend is skipped when the daemon's own Node is
+  the at-risk build.
 
 ### Deterministic / hermetic testing
 

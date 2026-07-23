@@ -383,6 +383,18 @@ Scoped harness homes/config dirs live outside worktree `tree/`, so `git add -A`
 cannot capture auth files, sqlite logs, plugin downloads, or transcripts into
 `patch.diff`.
 
+Every harness child — across all lane classes (read-only scoped home, isolated
+envelope, in-place) — spawns with a normalized PATH from one producer: the
+directory of the Node the daemon itself runs on (the notarized app-bundled
+runtime in production) is prepended ahead of the guessed managed/system entries,
+and no inherited entry is ever dropped. This keeps a vendor tool's inner
+`/bin/bash -lc` grandchild — which re-sources login profiles (`path_helper`,
+`brew shellenv`) — from resolving an ad-hoc Homebrew Node that macOS's
+code-signing monitor SIGKILLs (`Killed: 9`); the daemon proved its own Node
+runnable by executing on it. The prepend is skipped when that Node is itself an
+at-risk Homebrew build, so a killable runtime never poisons the shell, and
+`claudexor doctor` still surfaces the non-gating at-risk-Node advisory.
+
 ### Credential profiles (INV-135)
 
 A credential profile is an ADDITIVE identity for one harness beyond its

@@ -4,6 +4,7 @@ import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   brokenInstallAdvisory,
+  managedRunnerNodeDir,
   normalizedHarnessPath,
   resolveHarnessBinary,
 } from "./runtime-env.js";
@@ -37,7 +38,9 @@ describe("resolveHarnessBinary", () => {
     const shim = fakeBin(shimDir, "codex-x");
     fakeBin(laterDir, "codex-x");
     const env = { HOME: home, PATH: laterDir } as NodeJS.ProcessEnv;
-    expect(normalizedHarnessPath(env).split(delimiter)[0]).toBe(shimDir);
+    // Pin a non-launchable runner so the QA-022 managed-runner prepend is
+    // suppressed and this case keeps asserting shim resolution order.
+    expect(normalizedHarnessPath(env, "/no/such/node").split(delimiter)[0]).toBe(shimDir);
     expect(resolveHarnessBinary("codex-x", env)).toBe(shim);
   });
 
@@ -204,5 +207,72 @@ describe("resolveHarnessBinary", () => {
     if (process.platform !== "win32") {
       expect(resolveHarnessBinary("tool-d", env)).toBeNull();
     }
+  });
+});
+
+describe("managedRunnerNodeDir (QA-022 grandchild-shell Node anchor)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "runner-node-"));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function fakeNode(dir: string): string {
+    mkdirSync(dir, { recursive: true });
+    const p = join(dir, "node");
+    writeFileSync(p, "#!/bin/sh\nexit 0\n");
+    chmodSync(p, 0o755);
+    return p;
+  }
+
+  it("returns the dir of a spawnable, non-Homebrew running Node", () => {
+    const dir = join(root, "app", "Resources");
+    const exec = fakeNode(dir);
+    expect(managedRunnerNodeDir(exec, "darwin")).toBe(dir);
+  });
+
+  it("returns null for an at-risk Homebrew Node (prepending it would poison the shell)", () => {
+    // Not on disk here, but the path shape alone is the at-risk signal.
+    expect(managedRunnerNodeDir("/opt/homebrew/bin/node", "darwin")).toBeNull();
+    expect(managedRunnerNodeDir("/opt/homebrew/Cellar/node/25.8.1/bin/node", "darwin")).toBeNull();
+  });
+
+  it("returns null for a non-absolute or non-launchable execPath", () => {
+    expect(managedRunnerNodeDir("node", "darwin")).toBeNull();
+    expect(managedRunnerNodeDir(join(root, "missing", "node"), "darwin")).toBeNull();
+  });
+
+  it("normalizedHarnessPath prepends the managed-runner dir ahead of every guessed entry", () => {
+    const home = join(root, "home");
+    const dir = join(root, "app", "Resources");
+    const exec = fakeNode(dir);
+    const env = { HOME: home, PATH: "/opt/homebrew/bin:/usr/bin" } as NodeJS.ProcessEnv;
+    const entries = normalizedHarnessPath(env, exec, "darwin").split(delimiter);
+    expect(entries[0]).toBe(dir);
+    // The guessed managed-bin dir still follows; nothing inherited is dropped.
+    expect(entries).toContain(join(home, ".claudexor", "node", "bin"));
+    expect(entries).toContain("/opt/homebrew/bin");
+    expect(entries).toContain("/usr/bin");
+  });
+
+  it("normalizedHarnessPath de-dupes when the runner dir equals the managed-bin dir", () => {
+    const home = join(root, "home2");
+    const managedBin = join(home, ".claudexor", "node", "bin");
+    const exec = fakeNode(managedBin);
+    const env = { HOME: home, PATH: "/usr/bin" } as NodeJS.ProcessEnv;
+    const entries = normalizedHarnessPath(env, exec, "darwin").split(delimiter);
+    expect(entries[0]).toBe(managedBin);
+    expect(entries.filter((e) => e === managedBin)).toHaveLength(1);
+  });
+
+  it("normalizedHarnessPath falls back to the guessed order when no safe runner exists", () => {
+    const home = join(root, "home3");
+    const env = { HOME: home, PATH: "/usr/bin" } as NodeJS.ProcessEnv;
+    const entries = normalizedHarnessPath(env, "/opt/homebrew/bin/node", "darwin").split(delimiter);
+    expect(entries[0]).toBe(join(home, ".claudexor", "node", "bin"));
   });
 });

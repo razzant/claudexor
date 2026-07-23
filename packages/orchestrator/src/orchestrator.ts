@@ -102,7 +102,7 @@ import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from ".
 import { assertOutputSchemaCompiles, finalizeStructuredOutput } from "./structuredOutput.js";
 import {
   transientRetryDelayMs,
-  promptWithProtectedPathConstraint,
+  promptWithEngineConstraints,
   sleep,
   redactHarnessEvent,
   harnessEventPayload,
@@ -2230,17 +2230,17 @@ export class Orchestrator {
           log,
         )
       : null;
-    const promptWithContinuity = laneContinuity?.pointerLine
-      ? `${prompt}\n\n${laneContinuity.pointerLine}`
-      : prompt;
     let spec = HarnessRunSpec.parse({
       session_id: newId("ses"),
       intent,
-      prompt: promptWithProtectedPathConstraint(
-        promptWithContinuity,
+      // Engine-derived read-only prompt constraints: protected/auto-protected
+      // paths PLUS the exact typed gate argv the run will execute (QA-022 FIX B).
+      prompt: promptWithEngineConstraints(
+        laneContinuity?.pointerLine ? `${prompt}\n\n${laneContinuity.pointerLine}` : prompt,
         contract.constraints.protected_paths,
         contract.constraints.auto_protected_paths,
         contract.constraints.protected_path_approvals,
+        contract.tests.commands,
       ),
       attachments: runInput?.attachments ?? [],
       browser: this.requestRequirements.browserSpec(

@@ -1,16 +1,54 @@
 import { existsSync, lstatSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, isAbsolute, join } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { isLaunchableExecutable } from "./executable-inspection.js";
+
+/**
+ * The directory of the Node binary Claudexor ITSELF is running on, when that
+ * binary is safe to expose to a harness's inner login shell. In production this
+ * is the notarized app-bundled runtime
+ * (`.../Claudexor.app/Contents/Resources`); a CLI/dev daemon runs on the
+ * managed `~/.claudexor/node/bin/node`. Putting this dir FIRST on the harness
+ * PATH is the QA-022 fix: a vendor tool's inner `/bin/bash -lc` grandchild
+ * re-sources login profiles (`path_helper`, `brew shellenv`) and would
+ * otherwise resolve an ad-hoc Homebrew Node that macOS's code-signing monitor
+ * SIGKILLs (`Killed: 9`). Anchoring the SAME Node the daemon already proved
+ * runnable — by executing on it — lets the grandchild resolve a working Node
+ * even after the login shell reshuffles PATH.
+ *
+ * Guarded so the prepend can never make things worse:
+ *  - the path must be absolute and a spawnable regular file (the running
+ *    process is itself proof the bytes launch — "self-contained/valid");
+ *  - it must NOT itself be an at-risk Homebrew Node — prepending a killable
+ *    Node's dir would poison the very shell we are trying to protect.
+ * Returns null when the guard fails; the guessed `preferred` entries still apply.
+ */
+export function managedRunnerNodeDir(
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (!execPath || !isAbsolute(execPath)) return null;
+  if (atRiskNodeAdvisory(execPath, platform) !== null) return null;
+  if (!isLaunchableExecutable(execPath)) return null;
+  return dirname(execPath);
+}
 
 /**
  * Single producer for the PATH every local harness discovery/run surface should
  * use. Surfaces may still inherit other env vars, but binary resolution must not
  * depend on whether the daemon was launched from a GUI app, login shell, or CLI.
+ * Existing inherited entries are never dropped (only de-duplicated); the only
+ * additions are the trusted `preferred` prefixes.
  */
-export function normalizedHarnessPath(source: NodeJS.ProcessEnv = process.env): string {
+export function normalizedHarnessPath(
+  source: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): string {
   const home = source.HOME || homedir();
+  const runnerDir = managedRunnerNodeDir(execPath, platform);
   const preferred = [
+    ...(runnerDir ? [runnerDir] : []),
     join(home, ".claudexor", "node", "bin"),
     join(home, ".local", "bin"),
     join(home, ".npm-global", "bin"),
@@ -33,8 +71,12 @@ export function normalizedHarnessPath(source: NodeJS.ProcessEnv = process.env): 
     .join(delimiter);
 }
 
-export function harnessRuntimeEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...source, PATH: normalizedHarnessPath(source) };
+export function harnessRuntimeEnv(
+  source: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+  return { ...source, PATH: normalizedHarnessPath(source, execPath, platform) };
 }
 
 /**

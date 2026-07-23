@@ -145,8 +145,10 @@ export const CLEAN_ENV_ALLOWLIST: readonly string[] = [
 export function composeBaseEnv(
   inheritance: "mirror_native" | "clean",
   source: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
-  const normalizedSource = harnessRuntimeEnv(source);
+  const normalizedSource = harnessRuntimeEnv(source, execPath, platform);
   if (inheritance !== "clean") return normalizedSource;
   const out: NodeJS.ProcessEnv = {};
   for (const key of CLEAN_ENV_ALLOWLIST) {
