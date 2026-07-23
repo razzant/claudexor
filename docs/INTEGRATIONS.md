@@ -362,6 +362,14 @@ resources are uploaded/finalized into immutable daemon resource IDs before the
 turn enqueues. Blocked/failed daemon outcomes return ACP `refusal` plus typed
 `_meta.claudexor` run/status/apply evidence rather than a false `end_turn`.
 
+`session/load` replays the conversation on reopen by fetching one run detail
+per turn. That fan-out is bounded to the most recent 50 turns: an older thread
+replays only its tail, and the omitted count is disclosed as a leading
+diagnostic line rather than starting the conversation silently mid-stream. If a
+turn's run detail cannot be fetched (for example its artifacts were reclaimed by
+retention, a typed `410 run_expired_by_retention`), the agent half is rendered
+as `[output unavailable: <typed reason>]` instead of vanishing.
+
 Questions the surface can answer:
 
 - **End-of-turn plan questions** (a plan turn that ends `needs_answers`) render

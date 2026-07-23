@@ -15,6 +15,37 @@ import { primaryOutputForCli } from "./primary-output.js";
 // projection-owned TERMINAL_LIFECYCLES, never a local re-derivation.
 const TERMINALS: ReadonlySet<string> = TERMINAL_LIFECYCLES;
 
+// W5: an ACP session/load replays the conversation by fetching one run detail
+// per turn. Cap that fan-out to the most recent N turns so reopening a long
+// thread cannot issue thousands of per-reopen detail fetches; older turns are
+// disclosed as omitted rather than silently dropped.
+export const ACP_MAX_REPLAY_TURNS = 50;
+
+/** Bound the load-replay to the most recent ACP_MAX_REPLAY_TURNS turns, and
+ *  report how many older turns were omitted (disclosed to the client, never
+ *  silently dropped). Pure + exported for test. */
+export function selectReplayTurns<T>(rawTurns: readonly T[]): {
+  replayTurns: T[];
+  omittedTurnCount: number;
+} {
+  return {
+    replayTurns: rawTurns.slice(-ACP_MAX_REPLAY_TURNS),
+    omittedTurnCount: Math.max(0, rawTurns.length - ACP_MAX_REPLAY_TURNS),
+  };
+}
+
+/** A machine-ish reason for a failed per-turn run-detail fetch: prefer the
+ *  typed control-API `code` (e.g. run_expired_by_retention), then the HTTP
+ *  status, then a generic marker — never the raw English message. */
+export function typedFetchReason(error: unknown): string {
+  if (error && typeof error === "object") {
+    const e = error as { code?: unknown; status?: unknown };
+    if (typeof e.code === "string" && e.code) return e.code;
+    if (typeof e.status === "number") return `http_${e.status}`;
+  }
+  return "detail_unavailable";
+}
+
 type Hooks = {
   onInteraction?: (ctx: any) => Promise<any | null>;
   signal?: AbortSignal;
@@ -45,12 +76,20 @@ export async function acpSessionQuery(
     const response = await controlApiFetch(addr, path, init);
     const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
     if (!response.ok) {
-      throw new Error(
-        typeof body["message"] === "string"
-          ? (body["message"] as string)
-          : typeof body["error"] === "string"
-            ? (body["error"] as string)
-            : `control API ${path} failed (HTTP ${response.status})`,
+      // Preserve the typed code/status on the throwable so callers can disclose
+      // a MACHINE reason (e.g. run_expired_by_retention) rather than only prose.
+      throw Object.assign(
+        new Error(
+          typeof body["message"] === "string"
+            ? (body["message"] as string)
+            : typeof body["error"] === "string"
+              ? (body["error"] as string)
+              : `control API ${path} failed (HTTP ${response.status})`,
+        ),
+        {
+          status: response.status,
+          ...(typeof body["code"] === "string" ? { code: body["code"] as string } : {}),
+        },
       );
     }
     return body;
@@ -106,28 +145,53 @@ export async function acpSessionQuery(
     // user prompt and discloses its typed enqueue error so it never vanishes.
     // This per-turn run-detail read happens only on reopen (bounded to the
     // thread's own turns), not on the hot thread-hydration path where INV-136's
-    // no-N+1 compact-card contract still holds.
+    // no-N+1 compact-card contract still holds. The reads are further BOUNDED to
+    // the most recent ACP_MAX_REPLAY_TURNS turns (W5): an old thread with
+    // thousands of turns must not fan out one detail fetch per turn on reopen. A
+    // failed per-turn detail fetch DISCLOSES a typed reason instead of vanishing.
     const rawTurns = Array.isArray(detail["turns"]) ? detail["turns"] : [];
+    const { replayTurns, omittedTurnCount } = selectReplayTurns(rawTurns);
     const turns: Array<{
       prompt: string;
       output: { kind: string; text: string; truncated: boolean } | null;
     }> = [];
-    for (const turn of rawTurns) {
+    // Disclose the cap so the reopened conversation never silently starts
+    // mid-stream as if the earlier turns never existed.
+    if (omittedTurnCount > 0) {
+      turns.push({
+        prompt: "",
+        output: {
+          kind: "diagnostic",
+          text: `[replaying the most recent ${ACP_MAX_REPLAY_TURNS} turns; ${omittedTurnCount} earlier turn(s) omitted]`,
+          truncated: true,
+        },
+      });
+    }
+    for (const turn of replayTurns) {
       const value = turn as Record<string, unknown>;
       const prompt = typeof value["prompt"] === "string" ? value["prompt"] : "";
       const runId = typeof value["runId"] === "string" ? value["runId"] : "";
       let output: { kind: string; text: string; truncated: boolean } | null = null;
       if (runId) {
-        const run = (await request(`/runs/${encodeURIComponent(runId)}`).catch(
-          () => ({}),
-        )) as Record<string, unknown>;
-        const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
-        const text = typeof primary?.["text"] === "string" ? primary["text"].trim() : "";
-        if (text) {
+        try {
+          const run = await request(`/runs/${encodeURIComponent(runId)}`);
+          const primary = run["primaryOutput"] as Record<string, unknown> | null | undefined;
+          const text = typeof primary?.["text"] === "string" ? primary["text"].trim() : "";
+          if (text) {
+            output = {
+              kind: typeof primary?.["kind"] === "string" ? (primary["kind"] as string) : "answer",
+              text,
+              truncated: primary?.["truncated"] === true,
+            };
+          }
+        } catch (error) {
+          // The run detail could not be fetched (e.g. artifacts reclaimed by
+          // retention -> typed 410 run_expired_by_retention). Disclose the typed
+          // reason; do NOT drop the agent half silently.
           output = {
-            kind: typeof primary?.["kind"] === "string" ? (primary["kind"] as string) : "answer",
-            text,
-            truncated: primary?.["truncated"] === true,
+            kind: "diagnostic",
+            text: `[output unavailable: ${typedFetchReason(error)}]`,
+            truncated: false,
           };
         }
       } else {
