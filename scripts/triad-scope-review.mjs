@@ -368,7 +368,18 @@ function reviewPackFiles(base, packetDir, subsetSelectors = null) {
   }
   const union = [...new Set([...changed, ...listed])];
   if (!subsetSelectors) return union;
-  return union.filter((file) => inPackSubset(file, subsetSelectors));
+  const selected = union.filter((file) => inPackSubset(file, subsetSelectors));
+  // A packet-split sub-wave whose selectors match NOTHING would silently
+  // review its area with diff-only text (the exact A-8 failure). A bare
+  // directory selector missing its trailing slash is the common cause
+  // (inPackSubset treats a slash-less selector as an EXACT file match), so
+  // fail loudly instead of shipping an empty full-text pack.
+  if (selected.length === 0) {
+    throw new Error(
+      `--pack-subset selected 0 of ${union.length} changed files; a directory selector needs a trailing slash (e.g. "apps/macos/"). Selectors: ${subsetSelectors.join(", ")}`,
+    );
+  }
+  return selected;
 }
 
 /** Compact whole-repo atlas: every tracked path + byte size (scope reviewer's map). */
