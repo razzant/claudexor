@@ -82,8 +82,11 @@ export async function* withInactivityWatchdog<T>(
     }
   } finally {
     if (timer) clearTimeout(timer);
-    // Release a source still mid-iteration (also triggers spawnProcess's
-    // finally -> requestCancel when the caller exits the loop early).
-    void iterator.return?.(undefined as never);
+    // AWAIT the source's cleanup (QA-027): iterator.return() drives
+    // spawnProcess's finally -> requestCancel, i.e. the process teardown. It
+    // used to be fire-and-forgotten, so the agent loop could break on abort and
+    // the run could reach its `cancelled` terminal BEFORE the child was proven
+    // dead. Awaiting makes the terminal strictly follow the death proof.
+    await iterator.return?.(undefined as never);
   }
 }

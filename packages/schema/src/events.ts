@@ -107,6 +107,13 @@ export const RunEventType = z
     "gate.started",
     "gate.completed",
     "review.started",
+    /** QA-025: the paid reviewer panel was intentionally NOT run — every working
+     * candidate had an empty diff, or no reviewers were configured. Emitted
+     * INSTEAD of review.started so the audit trail never claims a review began
+     * that was skipped. Payload:
+     * {reason: "no_changes"|"no_reviewers", reviewable_candidates,
+     *  configured_reviewers, configured_provider_families}. */
+    "review.skipped",
     "reviewer.started",
     "reviewer.first_event",
     "reviewer.auth_switched",

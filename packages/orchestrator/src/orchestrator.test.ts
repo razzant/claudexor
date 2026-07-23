@@ -627,6 +627,37 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
 
+  it("no-diff candidate emits review.skipped, never review.started or review_verified (QA-025)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-success", createFakeHarness("fake-success")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "just answer",
+      mode: "agent",
+      harnesses: ["fake-success"],
+    });
+    expect(res.facts.noChanges).toBe(true);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { type: string; payload?: Record<string, unknown> });
+    const started = events.filter((e) => e.type === "review.started");
+    const skipped = events.filter((e) => e.type === "review.skipped");
+    expect(started.length).toBe(0);
+    expect(skipped.length).toBe(1);
+    expect(skipped[0].payload?.["reason"]).toBe("no_changes");
+    // The false preliminary `review_verified:true` claim must not appear on any
+    // review lifecycle event.
+    for (const e of [...started, ...skipped]) {
+      expect(e.payload?.["review_verified"]).toBeUndefined();
+    }
+    // No reviewer actually ran.
+    expect(events.filter((e) => e.type === "reviewer.started").length).toBe(0);
+  });
+
   it("max-attempts converges and delivers to final/ (apply/inspect can use it)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
@@ -685,6 +716,57 @@ describe("Orchestrator", () => {
     expect(summary).toContain("No-progress reason");
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).toContain("stuck_no_progress");
+  }, 20000);
+
+  it("until-clean deadline abort ends cancelled with wall_clock_exceeded, never user_cancelled (QA-041)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const ac = new AbortController();
+    // The daemon's maxSeconds deadline controller aborts with a STRING reason
+    // carried through AbortSignal.any; convergence must read it at the source
+    // and not hard-code every abort to user_cancelled.
+    ac.abort("wall_clock_exceeded");
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      mode: "agent",
+      untilClean: true,
+      harnesses: ["fake-implement"],
+      signal: ac.signal,
+    });
+    expect(legacyOutcome(res)).toBe("cancelled");
+    expect(res.facts.reason).toBe("wall_clock_exceeded");
+    expect(res.facts.reason).not.toBe("user_cancelled");
+    expect(res.cancelReason).toBe("wall_clock_exceeded");
+    const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
+    expect(summary).toContain("wall_clock_exceeded");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).not.toContain("Retry if cancellation was accidental");
+    expect(failure).toContain("max-seconds");
+  }, 20000);
+
+  it("until-clean plain user cancel stays user_cancelled (QA-041)", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const ac = new AbortController();
+    ac.abort();
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write deterministic file",
+      mode: "agent",
+      untilClean: true,
+      harnesses: ["fake-implement"],
+      signal: ac.signal,
+    });
+    expect(legacyOutcome(res)).toBe("cancelled");
+    expect(res.facts.reason).toBe("user_cancelled");
+    expect(res.cancelReason).toBeUndefined();
   }, 20000);
 
   it("retries a typed transient candidate failure when no deliverable was produced", async () => {
@@ -6726,6 +6808,54 @@ describe("Orchestrator", () => {
     });
     expect(legacyOutcome(race)).toBe("cancelled");
   });
+
+  it("harness.completed after a mid-stream cancel is status=cancelled, never success (QA-027)", async () => {
+    const repo = await initRepo();
+    const midAbort: HarnessAdapter = {
+      ...createFakeHarness("fake-success"),
+      id: "mid-abort",
+      async *run(spec) {
+        yield { type: "started", session_id: spec.session_id, ts: new Date().toISOString() };
+        yield {
+          type: "tool_call",
+          session_id: spec.session_id,
+          ts: new Date().toISOString(),
+          text: "sleep",
+          tool: { name: "command", kind: "command", target: "sleep 60" },
+        };
+        const signal = spec.extra["abortSignal"] as AbortSignal | undefined;
+        await new Promise<void>((resolve) => {
+          if (!signal || signal.aborted) return resolve();
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const controller = new AbortController();
+    const orch = new Orchestrator({
+      registry: new Map([["mid-abort", midAbort]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "long tool",
+      mode: "agent",
+      harnesses: ["mid-abort"],
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (event.type === "harness.event") controller.abort();
+      },
+    });
+    expect(legacyOutcome(res)).toBe("cancelled");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l) as { type: string; payload?: Record<string, unknown> });
+    const completed = events.filter((e) => e.type === "harness.completed");
+    for (const e of completed) {
+      expect(e.payload?.["status"]).not.toBe("success");
+      expect(e.payload?.["status"]).toBe("cancelled");
+    }
+  }, 15000);
 
   it("cancels plan mode mid-planner instead of writing a success plan", async () => {
     const repo = await initRepo();

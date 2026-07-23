@@ -3132,7 +3132,11 @@ export class Orchestrator {
         log.emit("harness.completed", {
           harness_id: adapter.id,
           attempt_id: slot.attemptId,
-          status: run.errored ? "failed" : "success",
+          // QA-027: never claim `success` over an attempt the operator/deadline
+          // cut short. An abort makes the run non-successful; the top-level
+          // status axis must say `cancelled` (the nested outcome axis already
+          // rides in telemetrySummary), not launder a torn-off stream as clean.
+          status: input.signal?.aborted ? "cancelled" : run.errored ? "failed" : "success",
           cost_usd: run.cost,
           ...telemetrySummary(run.telemetry),
         });
@@ -3402,7 +3406,30 @@ export class Orchestrator {
       };
     }
 
-    log.emit("review.started", { reviewers: reviewers.length, review_verified: reviewVerified });
+    // QA-025: only announce that review STARTED when the panel will actually
+    // run. A candidate that changed no files is skipped inside reviewRuns; a
+    // start event before that check falsely claims a paid review began (and its
+    // `review_verified` payload was the PRELIMINARY route-family count, not any
+    // real verification). Compute the reviewable set first and emit a typed
+    // `review.skipped` when nothing is reviewable, so every start has a matching
+    // terminal and the no-diff path records `not_run` consistently.
+    const reviewableRuns = workingRuns.filter((r) => r.diff.trim().length > 0);
+    const configuredFamilies = new Set(reviewers.map((r) => r.providerFamily)).size;
+    if (reviewableRuns.length === 0 || reviewers.length === 0) {
+      log.emit("review.skipped", {
+        reason: reviewers.length === 0 ? "no_reviewers" : "no_changes",
+        reviewable_candidates: reviewableRuns.length,
+        configured_reviewers: reviewers.length,
+        configured_provider_families: configuredFamilies,
+      });
+    } else {
+      log.emit("review.started", {
+        reviewers: reviewers.length,
+        reviewable_candidates: reviewableRuns.length,
+        configured_provider_families: configuredFamilies,
+        cross_family_route_eligible: reviewVerified,
+      });
+    }
     let evidences: CandidateEvidence[];
     try {
       // reviewRuns internally SKIPS the paid reviewer call for empty-diff
@@ -3975,9 +4002,8 @@ export class Orchestrator {
         runDir: paths.root,
         nextActions: needsHuman
           ? [
-              "Open the review queue",
-              "Decide the NEEDS_HUMAN findings",
-              "Re-run after the decision",
+              "Review the blocking findings on the run's turn",
+              "Accept the risk to apply this exact patch, or discard the change",
             ]
           : [
               "Open diagnostics",
@@ -4656,7 +4682,8 @@ export class Orchestrator {
           log.emit("harness.completed", {
             harness_id: adapter.id,
             attempt_id: attemptId,
-            status: run.errored ? "failed" : "success",
+            // QA-027: an aborted attempt is `cancelled`, never a clean `success`.
+            status: input.signal?.aborted ? "cancelled" : run.errored ? "failed" : "success",
             cost_usd: run.cost,
             ...telemetrySummary(run.telemetry),
           });
@@ -4965,12 +4992,32 @@ export class Orchestrator {
     // Base terminal AXES (D8) from the convergence loop outcome. Attempts-cap
     // exhaustion maps to budget_exhausted (an attempt budget); the give-up
     // states map to their matching RunReason.
-    let facts: RunOutcomeFacts = input.signal?.aborted
-      ? makeOutcomeFacts("cancelled", { reason: "user_cancelled" })
-      : converged
-        ? makeOutcomeFacts("succeeded")
-        : stuckNoProgress
-          ? makeOutcomeFacts("failed", { reason: "stuck_no_progress" })
+    //
+    // QA-041 terminal-causality precedence: convergence used to hard-code EVERY
+    // aborted signal to `user_cancelled`, which (a) fabricated an operator action
+    // that never happened when the maxSeconds wall-clock deadline fired, and
+    // (b) discarded an already-proven `stuck_no_progress` terminal. The typed
+    // abort reason (`wall_clock_exceeded` from the deadline controller, carried
+    // on `input.signal.reason` via AbortSignal.any) is now read at the source,
+    // and an established semantic terminal (stuck_no_progress) wins over the
+    // abort so the deadline that only ended a redundant post-proof panel does
+    // not overwrite the actionable no-progress reason. `user_cancelled` is
+    // emitted ONLY for a real control cancel (no typed deadline reason).
+    const convAbortReason =
+      typeof input.signal?.reason === "string" && input.signal.reason
+        ? input.signal.reason
+        : undefined;
+    const convCancelFacts = () =>
+      makeOutcomeFacts("cancelled", {
+        reason:
+          convAbortReason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
+      });
+    let facts: RunOutcomeFacts = converged
+      ? makeOutcomeFacts("succeeded")
+      : stuckNoProgress
+        ? makeOutcomeFacts("failed", { reason: "stuck_no_progress" })
+        : input.signal?.aborted
+          ? convCancelFacts()
           : exhausted
             ? makeOutcomeFacts("failed", { reason: "budget_exhausted" })
             : makeOutcomeFacts("failed", { reason: "not_converged" });
@@ -5142,12 +5189,16 @@ export class Orchestrator {
         runDir: paths.root,
         nextActions:
           facts.lifecycle === "cancelled"
-            ? ["Retry if cancellation was accidental"]
+            ? facts.reason === "wall_clock_exceeded"
+              ? [
+                  "Inspect the partial work kept from before the deadline",
+                  "Increase --max-seconds or narrow the scope, then re-run",
+                ]
+              : ["Retry if cancellation was accidental"]
             : convNeedsDecision
               ? [
-                  "Open the review queue",
-                  "Decide the NEEDS_HUMAN findings",
-                  "Re-run after the decision",
+                  "Review the blocking findings on the run's turn",
+                  "Accept the risk to apply this exact patch, or discard the change",
                 ]
               : facts.reason === "stuck_no_progress"
                 ? [
@@ -5164,7 +5215,7 @@ export class Orchestrator {
       if (!lastRun) {
         store.writeText(
           join(paths.finalDir, "summary.md"),
-          `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}\n- Attempts: ${attempt}\n`,
+          `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n`,
         );
         log.emit("output.ready", {
           kind: "summary",
@@ -5198,6 +5249,11 @@ export class Orchestrator {
         attempts: attempt,
         phase: "convergence",
         failure_ref: "final/failure.yaml",
+        // QA-041: surface the typed deadline reason on the terminal event so the
+        // daemon job result / Control API can distinguish it from a user cancel.
+        ...(facts.lifecycle === "cancelled" && convAbortReason
+          ? { cancel_reason: convAbortReason }
+          : {}),
       });
     }
     return {
@@ -5209,6 +5265,11 @@ export class Orchestrator {
       facts,
       winner: lastRun?.attemptId ?? null,
       runDir: paths.root,
+      // QA-041: carry the typed deadline reason on the result so daemon/Control
+      // API/CLI never falsely attribute a maxSeconds deadline to the user.
+      ...(facts.lifecycle === "cancelled" && convAbortReason
+        ? { cancelReason: convAbortReason }
+        : {}),
       summary: converged
         ? `converged in ${attempt} attempt(s)`
         : `${facts.lifecycle} after ${attempt} attempt(s)`,

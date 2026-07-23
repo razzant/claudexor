@@ -95,6 +95,10 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `[${String(p["attempt_id"] ?? "?")}] gates ${p["passed"] ? "passed" : "failed"}`;
     case "review.started":
       return `review started (${String(p["reviewers"] ?? 0)} reviewer(s))`;
+    case "review.skipped":
+      return p["reason"] === "no_reviewers"
+        ? "review skipped (no reviewers configured)"
+        : "review skipped (no file changes)";
     case "reviewer.completed":
       return `reviewer completed (${String(p["harness_id"] ?? "?")})`;
     case "synthesis.started":

@@ -72,6 +72,7 @@
             "gate.started",
             "gate.completed",
             "review.started",
+            "review.skipped",
             "reviewer.started",
             "reviewer.first_event",
             "reviewer.auth_switched",
