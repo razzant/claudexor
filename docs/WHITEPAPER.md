@@ -137,7 +137,13 @@ state), whether review approved, and whether anything was delivered are
 separate facts with separate vocabularies, projected identically by every
 surface from one server-owned mapper. "The model says Implemented" is never
 allowed to outrank the engine's delivery record: the banner above the prose
-belongs to the server.
+belongs to the server. The agent's own honesty is captured too, as a typed
+WorkReport it emits in a schema-constrained channel: a run whose process ran
+clean but whose model reported it still needs input or left the work
+incomplete is disclosed as exactly that — non-applyable, banner "Needs input"
+or "Incomplete", and a non-zero shell exit — without pretending the process
+failed. A blocked read-only run that produced no answer can no longer read as
+"done"; the deliverable is re-checked, so an empty run exits non-zero.
 
 No regex governance: risk, permissions, winners, web evidence, and
 tests-passed come from typed contracts and events, never from string-matching

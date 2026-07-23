@@ -27,6 +27,7 @@ import type {
   Attachment,
   ControlReviewerPanelEntry,
   EffortHint,
+  HarnessCapabilities,
   KnownModelEntry,
   ExternalContextPolicy,
   HarnessEvent,
@@ -143,6 +144,14 @@ import {
   unrecoveredToolErrors,
   webUnsatisfied,
 } from "./attemptTelemetry.js";
+import {
+  finalizeAttempt,
+  readOnlyNoSuccessTerminal,
+  resolveWorkReportEnvelope,
+  unwrapWorkReportEnvelope,
+  type ResolvedWorkReportEnvelope,
+  type WorkReportEnvelopeMode,
+} from "./attemptFinalize.js";
 import { interactionChannelFor } from "./interaction.js";
 import {
   gateSpecsFromContract,
@@ -493,6 +502,14 @@ export interface RoutedAdapter {
   /** Manifest `json_schema_output`: only such routes receive
    * HarnessRunSpec.output_schema (gate); others keep fenced-JSON parsing. */
   supportsJsonSchemaOutput: boolean;
+  /** Manifest `work_report_transport` (D-16): whether/how this route carries a
+   * WorkReport envelope. `unsupported` leaves the attempt's work_state
+   * `unverified` (a disclosed absence). */
+  workReportTransport: HarnessCapabilities["work_report_transport"];
+  /** Manifest `structured_output_channel` (D-16): decides the no-caller-schema
+   * envelope shape (side_tool = `{work_report}`; final_message = `{work_report,
+   * output:string}`). */
+  structuredOutputChannel: HarnessCapabilities["structured_output_channel"];
   /** Manifest `capability_profile.mcp_injection`: only such routes can receive
    * engine-injected MCP servers (browser, delegation belt). Delegate on a lane
    * without it is a typed preflight refusal. */
@@ -1277,6 +1294,8 @@ export class Orchestrator {
             ),
           supportsInteractive: manifest.capabilities.interactive,
           supportsJsonSchemaOutput: manifest.capabilities.json_schema_output,
+          workReportTransport: manifest.capabilities.work_report_transport,
+          structuredOutputChannel: manifest.capabilities.structured_output_channel,
           supportsMcpInjection: manifest.capability_profile.mcp_injection,
           mcpInjectionRequiresFullAccess:
             manifest.capability_profile.mcp_injection_requires_full_access,
@@ -1760,6 +1779,27 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * D-16: the WorkReport transport envelope for one route. Called at every
+   * task-producing spec-build site AFTER harnessSpecKnobs so it OVERRIDES the
+   * plain caller-schema transport with the compiled `{work_report, output}`
+   * envelope on capable routes. The returned `mode` is retained by the caller
+   * and handed to `unwrapWorkReportEnvelope` when the answer is finalized.
+   */
+  private workReportEnvelopeFor(
+    routed: RoutedAdapter,
+    contract: TaskContract,
+    interactive: boolean,
+  ): ResolvedWorkReportEnvelope {
+    return resolveWorkReportEnvelope({
+      transport: routed.workReportTransport,
+      channel: routed.structuredOutputChannel,
+      supportsJsonSchemaOutput: routed.supportsJsonSchemaOutput,
+      interactive,
+      callerSchema: contract.output_schema ?? null,
+    });
+  }
+
   private routeSpecKnobs(
     routed: RoutedAdapter,
     contract: TaskContract,
@@ -2034,6 +2074,11 @@ export class Orchestrator {
       stream_deltas: streamDeltas,
     });
     if (interaction) spec.extra["interactionChannel"] = interaction;
+    // D-16: compile the WorkReport envelope onto the spec (overriding the plain
+    // caller-schema transport) and keep the mode for the answer unwrap.
+    const workEnvelope = this.workReportEnvelopeFor(routed, contract, Boolean(interaction));
+    if (workEnvelope.outputSchema !== undefined) spec.output_schema = workEnvelope.outputSchema;
+    const workReportMode: WorkReportEnvelopeMode = workEnvelope.mode;
     const inactivityMs = harnessInactivityTimeoutMs(this.config(contract.repo.root));
 
     const attemptStartedMs = Date.now();
@@ -2301,8 +2346,11 @@ export class Orchestrator {
     }
 
     const diff = await wsm.diff(envelope);
-    const answerText = answer.text() || undefined;
-    const deliverablePresent = diff.trim().length > 0 || Boolean(answerText);
+    // D-16: un-nest the {work_report, output} envelope so answer.md persists the
+    // OUTPUT (never the envelope) and the WorkReport folds into work_state.
+    const unwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", workReportMode);
+    const answerText = unwrapped.deliverable.trim().length > 0 ? unwrapped.deliverable : undefined;
+    const deliverableEvidence = diff.trim().length > 0 || Boolean(answerText);
     // Cancelled attempts skip gates entirely: the operator asked to
     // stop NOW; running a 600s-per-gate suite after the abort delays the ack
     // and burns compute on a result nobody will adopt. Diff/attempt.yaml
@@ -2337,12 +2385,28 @@ export class Orchestrator {
       });
     }
     const webBlocked = webUnsatisfied(telemetry);
+    // D-16 unified finalizer: fold the WorkReport / context signals into the
+    // deliverable + work_state. A broken contract on a constrained route
+    // elevates harnessErrored (never a prose success).
+    const finalized = finalizeAttempt({
+      deliverableEvidence,
+      harnessErrored,
+      workReport: unwrapped.workReport,
+      workReportSource: unwrapped.source,
+      workReportViolation: unwrapped.contractViolation,
+      contextTerminalExhausted: telemetry.contextExhausted,
+    });
+    harnessErrored = finalized.harnessErrored;
+    if (finalized.outcomeClass === "contract_failure" && unwrapped.contractViolation)
+      errors.push(`work_report contract: ${unwrapped.contractViolation}`);
+    const deliverablePresent = finalized.deliverablePresent;
     const errored = harnessErrored || webBlocked;
     setAttemptOutcome(telemetry, {
       deliverablePresent,
       gatesPassed: gates.length > 0 ? gatesPassed(gates) : null,
       harnessErrored,
       webRequiredUnsatisfied: webBlocked,
+      workState: finalized.workState,
     });
 
     const attemptDir = join(paths.attemptsDir, attemptId);
@@ -5036,6 +5100,12 @@ export class Orchestrator {
       routed.supportsInteractive,
     );
     if (planInteraction) spec.extra["interactionChannel"] = planInteraction;
+    // D-16: compile the WorkReport envelope for the plan lane (require plan text
+    // below folds the deliverable; the veto rides work_state).
+    const planWorkEnvelope = this.workReportEnvelopeFor(routed, contract, Boolean(planInteraction));
+    if (planWorkEnvelope.outputSchema !== undefined)
+      spec.output_schema = planWorkEnvelope.outputSchema;
+    const planWorkMode: WorkReportEnvelopeMode = planWorkEnvelope.mode;
     const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
     const answer = new AnswerAssembly();
     const telemetry = createAttemptTelemetry(
@@ -5140,12 +5210,33 @@ export class Orchestrator {
       const first = unrecovered[0] as ToolErrorRecord;
       harnessError = `${first.tool} failed without recovery: ${first.summary}`;
     }
-    const attemptError = harnessError ?? (input.signal?.aborted ? "planner cancelled" : null);
-    setAttemptOutcome(telemetry, {
-      deliverablePresent: attemptError === null,
-      gatesPassed: null,
+    // D-16: unwrap the envelope and require PLAN TEXT — the planner outlier
+    // (no-error ⇒ delivered) is fixed: a plan with no text is not delivered.
+    const planUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", planWorkMode);
+    const planText = planUnwrapped.deliverable.trim();
+    const planFinalized = finalizeAttempt({
+      deliverableEvidence: planText.length > 0,
       harnessErrored: harnessError !== null && !webBlocked,
+      workReport: planUnwrapped.workReport,
+      workReportSource: planUnwrapped.source,
+      workReportViolation: planUnwrapped.contractViolation,
+      contextTerminalExhausted: telemetry.contextExhausted,
+    });
+    // A broken WorkReport contract is a hard failure only when the finalizer
+    // ranked it so (a terminal context exhaustion outranks it).
+    if (!harnessError && planFinalized.outcomeClass === "contract_failure") {
+      harnessError = `work_report contract: ${planUnwrapped.contractViolation}`;
+    }
+    const attemptError =
+      harnessError ??
+      (planFinalized.deliverablePresent ? null : "planner produced no plan text") ??
+      (input.signal?.aborted ? "planner cancelled" : null);
+    setAttemptOutcome(telemetry, {
+      deliverablePresent: planFinalized.deliverablePresent,
+      gatesPassed: null,
+      harnessErrored: (harnessError !== null && !webBlocked) || planFinalized.harnessErrored,
       webRequiredUnsatisfied: webBlocked,
+      workState: planFinalized.workState,
     });
     if (attemptError) {
       log.emit("harness.completed", {
@@ -5165,7 +5256,7 @@ export class Orchestrator {
         budgetDenied: false,
       };
     }
-    const text = answer.text() || "(no output)";
+    const text = planText || "(no output)";
     log.emit("harness.completed", {
       harness_id: adapter.id,
       attempt_id: attemptId,
@@ -5850,6 +5941,15 @@ export class Orchestrator {
         routed.supportsInteractive,
       );
       if (reportInteraction) spec.extra["interactionChannel"] = reportInteraction;
+      // D-16: compile the WorkReport envelope for the read-only lane.
+      const readonlyWorkEnvelope = this.workReportEnvelopeFor(
+        routed,
+        contract,
+        Boolean(reportInteraction),
+      );
+      if (readonlyWorkEnvelope.outputSchema !== undefined)
+        spec.output_schema = readonlyWorkEnvelope.outputSchema;
+      const readonlyWorkMode: WorkReportEnvelopeMode = readonlyWorkEnvelope.mode;
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const answer = new AnswerAssembly();
       const telemetry = createAttemptTelemetry(
@@ -6035,22 +6135,39 @@ export class Orchestrator {
         });
       }
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
-      const report = redactSecrets(answer.text());
+      // D-16: un-nest the {work_report, output} envelope; the OUTPUT is the report.
+      const roUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", readonlyWorkMode);
+      const report = redactSecrets(roUnwrapped.deliverable);
       const unrecovered = unrecoveredToolErrors(telemetry);
       const webBlocked = webUnsatisfied(telemetry);
-      const deliverablePresent = report.length > 0;
+      const reportPresent = report.length > 0;
       if (!harnessError && webBlocked) {
         harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
       }
-      if (!harnessError && unrecovered.length > 0 && !deliverablePresent) {
+      if (!harnessError && unrecovered.length > 0 && !reportPresent) {
         const first = unrecovered[0] as ToolErrorRecord;
         harnessError = `${first.tool} failed without recovery: ${first.summary}`;
       }
+      const roFinalized = finalizeAttempt({
+        deliverableEvidence: reportPresent,
+        harnessErrored: harnessError !== null && !webBlocked,
+        workReport: roUnwrapped.workReport,
+        workReportSource: roUnwrapped.source,
+        workReportViolation: roUnwrapped.contractViolation,
+        contextTerminalExhausted: telemetry.contextExhausted,
+      });
+      // A broken WorkReport contract is a hard failure ONLY when the finalizer
+      // ranked it so — a concurrent terminal context exhaustion outranks it
+      // (interrupted, not a contract failure). Let the finalizer own precedence.
+      if (!harnessError && roFinalized.outcomeClass === "contract_failure") {
+        harnessError = `work_report contract: ${roUnwrapped.contractViolation}`;
+      }
       setAttemptOutcome(telemetry, {
-        deliverablePresent,
+        deliverablePresent: roFinalized.deliverablePresent,
         gatesPassed: null,
         harnessErrored: harnessError !== null && !webBlocked,
         webRequiredUnsatisfied: webBlocked,
+        workState: roFinalized.workState,
       });
       if (harnessError) {
         log.emit("harness.completed", {
@@ -6269,11 +6386,19 @@ export class Orchestrator {
         runDir: paths.root,
         nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
       });
-      const terminalFacts = webBlocked
-        ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
-        : budgetStopped && attempts.length === 0
-          ? makeOutcomeFacts("failed", { reason: "budget_exhausted" })
-          : makeOutcomeFacts("failed", { reason: "harness_failed" });
+      // QA-036: re-check the DELIVERABLE through the shared finalizer helper —
+      // a blocked Ask that produced NO answer can no longer read as a succeeded
+      // "Needs review" run (exit 0); it is an honest failure (exit 1).
+      const roTerminal = readOnlyNoSuccessTerminal({
+        webBlocked,
+        hasDeliverable: partialReport.trim().length > 0,
+        budgetStopped,
+        attemptsCount: attempts.length,
+      });
+      const terminalFacts = makeOutcomeFacts(roTerminal.lifecycle, {
+        ...(roTerminal.review ? { review: roTerminal.review } : {}),
+        reason: roTerminal.reason,
+      });
       store.writeText(
         join(paths.finalDir, "summary.md"),
         `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${singleError}\n`,
@@ -6343,31 +6468,24 @@ export class Orchestrator {
           "Retry after setup",
         ],
       });
+      // QA-036: with ZERO successful explorers there is no synthesizable
+      // deliverable, so a blocked scan can no longer read as a succeeded
+      // "needs review" run (exit 0). An empty scan is a failure whether the
+      // explorers were blocked or errored.
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${opts.mode})\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : "failed"}\n\n${message}\n`,
+        `# Run ${runId} (${opts.mode})\n\n- Lifecycle: failed\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      const scanFailFacts = blocked
-        ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
-        : makeOutcomeFacts("failed", { reason: "harness_failed" });
-      if (blocked)
-        log.emit("run.blocked", {
-          lifecycle: scanFailFacts.lifecycle,
-          facts: scanFailFacts,
-          phase: "harness",
-          error: message,
-          failure_ref: "final/failure.yaml",
-        });
-      else
-        log.emit("run.failed", {
-          lifecycle: scanFailFacts.lifecycle,
-          facts: scanFailFacts,
-          reason: scanFailFacts.reason,
-          phase: "harness",
-          error: message,
-          failure_ref: "final/failure.yaml",
-        });
+      const scanFailFacts = makeOutcomeFacts("failed", { reason: "harness_failed" });
+      log.emit("run.failed", {
+        lifecycle: scanFailFacts.lifecycle,
+        facts: scanFailFacts,
+        reason: scanFailFacts.reason,
+        phase: "harness",
+        error: message,
+        failure_ref: "final/failure.yaml",
+      });
       return {
         spendUsd: ledger.spend(),
         runId,
@@ -6467,8 +6585,30 @@ export class Orchestrator {
     // non-clean terminal is an aggregate paid-budget stop.
     let terminalFacts: RunOutcomeFacts = makeOutcomeFacts("succeeded");
     const reportBudgetTerminal = ledger.terminal();
-    if (reportBudgetTerminal)
+    if (reportBudgetTerminal) {
       terminalFacts = makeOutcomeFacts("failed", { reason: reportBudgetTerminal });
+    } else if (!opts.deepScan) {
+      // D-16: fold the winning read-only attempt's work_state into the terminal.
+      // A terminal context exhaustion with no completed report ⇒ interrupted;
+      // a needs_input/incomplete report ⇒ a succeeded run whose work_state
+      // vetoes applyability and a clean exit (INV-116). answer.md was already
+      // persisted from the unwrapped OUTPUT.
+      const winnerTelemetry = succeeded[0]?.telemetry;
+      const winnerWorkState = winnerTelemetry?.outcome?.workState;
+      if (winnerTelemetry?.contextExhausted && winnerWorkState?.state !== "completed") {
+        terminalFacts = makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" });
+      } else if (
+        winnerWorkState?.state === "needs_input" ||
+        winnerWorkState?.state === "incomplete"
+      ) {
+        terminalFacts = makeOutcomeFacts("succeeded", {
+          reason: winnerWorkState.state === "needs_input" ? "input_required" : "work_incomplete",
+          work_state: winnerWorkState,
+        });
+      } else if (winnerWorkState) {
+        terminalFacts = makeOutcomeFacts("succeeded", { work_state: winnerWorkState });
+      }
+    }
     const harnessLabel = attempts
       .map((a) => `${a.attemptId}:${a.harnessId}:${a.status}`)
       .join(", ");
@@ -6490,13 +6630,19 @@ export class Orchestrator {
       },
     });
     log.emit("work_product.emitted", { kind: "report", winner: succeeded[0]?.attemptId ?? null });
-    if (terminalFacts.lifecycle === "failed") {
+    const workVetoed =
+      terminalFacts.work_state?.state === "needs_input" ||
+      terminalFacts.work_state?.state === "incomplete";
+    if (terminalFacts.lifecycle !== "succeeded") {
       writeFailure(store, paths, {
         phase: "executor",
-        category: "budget",
+        category: terminalFacts.reason === "context_capacity_exhausted" ? "harness_error" : "budget",
         safeMessage: `read-only report ended ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason.replaceAll("_", " ")})` : ""}`,
         runDir: paths.root,
-        nextActions: ["Inspect the report artifacts", "Adjust the budget and retry"],
+        nextActions:
+          terminalFacts.reason === "context_capacity_exhausted"
+            ? ["Inspect the partial report", "Re-run with a narrower scope"]
+            : ["Inspect the report artifacts", "Adjust the budget and retry"],
       });
       log.emit("run.failed", {
         lifecycle: terminalFacts.lifecycle,
@@ -6504,6 +6650,15 @@ export class Orchestrator {
         reason: terminalFacts.reason,
         phase: "executor",
         failure_ref: "final/failure.yaml",
+      });
+    } else if (workVetoed) {
+      // D-16: a succeeded lifecycle whose work_state vetoes is a needs-me
+      // terminal — run.blocked (not run.completed); the outcome-aware exit
+      // projection returns non-zero from the same facts.
+      log.emit("run.blocked", {
+        lifecycle: terminalFacts.lifecycle,
+        facts: terminalFacts,
+        reason: terminalFacts.reason,
       });
     } else {
       log.emit("run.completed", {

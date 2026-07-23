@@ -13,6 +13,7 @@ import type {
   RequestRequirementResolution,
   TaskContract,
   ToolKind,
+  WorkState,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
 
@@ -35,6 +36,9 @@ export interface AttemptOutcomeState {
   webRequiredUnsatisfied: boolean;
   toolWarningsCount: number;
   status: AttemptOutcomeStatus;
+  /** D-16 model-attested work outcome (from the finalizer); absent on routes
+   * with no work_report transport. */
+  workState?: WorkState;
 }
 
 export interface WebEvidenceState {
@@ -98,6 +102,9 @@ export interface AttemptTelemetry {
   rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
   /** Delegation-belt runtime readiness (QA-024); requested=false on non-delegate attempts. */
   delegationBelt: DelegationBeltState;
+  /** D-16: a terminal `capacity_exhausted` context signal was observed this
+   * attempt (never a transient; consumed by the finalizer, not the retry loop). */
+  contextExhausted: boolean;
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
   /** Token usage summed across this attempt's usage events (money stays in the
@@ -156,6 +163,7 @@ export function createAttemptTelemetry(
       failed: false,
       toolEvidence: false,
     },
+    contextExhausted: false,
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
     usageCost: { cashUsd: 0, valuationUsd: 0, unknownUsd: 0 },
@@ -269,6 +277,10 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       resetsAt: ev.rate_limit.resets_at ?? null,
     });
   }
+  // D-16 context signal: a terminal capacity_exhausted marks the attempt for the
+  // finalizer's interrupted/context_capacity_exhausted mapping. Context signals
+  // NEVER enter the transient-retry loop (they are not transient failures).
+  if (ev.context?.kind === "capacity_exhausted") t.contextExhausted = true;
   // Token usage: SUM across the attempt's usage events (single-event adapters
   // sum == last-wins; codex per-turn needs the sum). Money is the ledger's job.
   if (ev.type === "usage" && ev.usage) {
@@ -397,6 +409,10 @@ export function setAttemptOutcome(
     gatesPassed: boolean | null;
     harnessErrored: boolean;
     webRequiredUnsatisfied: boolean;
+    /** D-16 work_state from the unified finalizer (INV-116): a needs_input/
+     * incomplete veto rides HERE without flipping `status` — the lifecycle
+     * stays succeeded-class; applyability and the CLI exit read the axis. */
+    workState?: WorkState;
   },
 ): void {
   const warnings = toolWarnings(t).length;
@@ -424,6 +440,7 @@ export function setAttemptOutcome(
     webRequiredUnsatisfied: opts.webRequiredUnsatisfied,
     toolWarningsCount: warnings,
     status,
+    ...(opts.workState ? { workState: opts.workState } : {}),
   };
 }
 
@@ -539,6 +556,7 @@ export function attemptTelemetryRecord(
       delegation_belt_unavailable: delegationBeltUnavailable(t),
       tool_warnings_count: t.outcome?.toolWarningsCount ?? warnings.length,
       status: t.outcome?.status ?? (warnings.length > 0 ? "success_with_warnings" : "success"),
+      ...(t.outcome?.workState ? { work_state: t.outcome.workState } : {}),
     },
     // Only present when a belt was actually injected into this attempt (QA-024).
     ...(t.delegationBelt.requested

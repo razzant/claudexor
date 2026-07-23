@@ -67,6 +67,7 @@ import {
   fetchApplyEligibility,
   fetchCouncil,
   fetchOutcomeBanner,
+  fetchRunOutcomeFacts,
   mergeDaemonRunOutcome,
 } from "./daemon-run.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
@@ -695,7 +696,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
       });
-      return exitCodeForState(status);
+      return exitCodeForState(status, await fetchRunOutcomeFacts(addr, out.runId));
     }
     if (json) {
       // Pure machine surface: await the terminal outcome and print one JSON object.
@@ -719,7 +720,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
       });
-      return exitCodeForState(out.status);
+      return exitCodeForState(out.status, await fetchRunOutcomeFacts(addr, out.runId));
     }
     // Text mode: enqueue, then live-stream the run through the shared follow
     // pipeline (replay + push + interactive TTY question answering), then print
@@ -783,7 +784,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         print(`  inspect with: claudexor inspect ${effectiveRunId}`);
       }
     }
-    return exitCodeForState(status);
+    return exitCodeForState(status, await fetchRunOutcomeFacts(addr, effectiveRunId));
   } catch (err) {
     if (json)
       printJson({

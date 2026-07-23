@@ -555,12 +555,21 @@ invariant or owner decision before proceeding.
   to — and this is separate from output readiness
   (`pending|finalizing|ready|diagnostic`). A needs-decision terminal (review
   blocked or checks failed) is a SUCCEEDED lifecycle awaiting a human, not a
-  distinct state. Every announced run reaches a terminal event on every path —
+  distinct state. A further orthogonal axis is the D-16 `work_state` — the
+  model-attested WorkReport outcome (completed / needs_input / incomplete /
+  unverified) — which can VETO applyability and the clean exit without flipping
+  the lifecycle: a needs_input/incomplete run stays a succeeded lifecycle but is
+  non-applyable, labels "Needs input"/"Incomplete", and exits non-zero through
+  the outcome-aware exit projection beside `processExitCode`. A blocked
+  read-only run that delivered nothing is a failure, never a succeeded "needs
+  review" (QA-036). Every announced run reaches a terminal event on every path —
   crash, cancel, pre-loop failure — so no observer waits forever. CLI and UI
   show the axes through the one projection owner (labels, exit code, needs
   decision). verify: canaries `[INV-116:output-ready-before-terminal]`,
   `[INV-116:cancel-fast]`, `[INV-116:stream-watchdog]`,
-  `[INV-116:blockers-visible]`; the whole-strategy terminal net and
+  `[INV-116:blockers-visible]`, `[INV-116:work-complete]`,
+  `[INV-116:work-state-veto]`, `[INV-116:work-report-contract]`,
+  `[INV-116:context-interrupted]`; the whole-strategy terminal net and
   interrupt-stamping tests.
 
 ## 12. Keep The Codebase Small And Direct

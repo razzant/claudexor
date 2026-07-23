@@ -19,8 +19,12 @@ import {
   processExitCodeForRunStatus,
   type ControlApiAddress,
 } from "./live.js";
-import { TERMINAL_LIFECYCLES, type RunOutcomeFacts } from "@claudexor/schema";
-export { daemonOutcomeProblemFields, mergeDaemonRunOutcome } from "./daemon-outcome.js";
+import { TERMINAL_LIFECYCLES, type RunOutcomeFacts, outcomeExitCode } from "@claudexor/schema";
+export {
+  daemonOutcomeProblemFields,
+  fetchRunOutcomeFacts,
+  mergeDaemonRunOutcome,
+} from "./daemon-outcome.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -377,10 +381,14 @@ async function ensureRunProject(
 
 /** Daemon job state (= run lifecycle, D8) -> CLI exit code via the ONE
  * projection owner: a succeeded lifecycle is 0 (a "Done · needs review" run
- * included); everything else is 1. */
-export function exitCodeForState(state: string): number {
+ * included); everything else is 1. When the run's terminal outcome `facts` are
+ * available, the D-16 outcome-aware projection is used instead so a
+ * needs_input/incomplete work_state exits non-zero on a succeeded lifecycle. */
+export function exitCodeForState(state: string, facts?: RunOutcomeFacts | null): number {
+  if (facts) return outcomeExitCode(facts);
   return processExitCodeForRunStatus(state);
 }
+
 
 /**
  * The run's derived apply-gate verdict from GET /runs/:id (single producer:

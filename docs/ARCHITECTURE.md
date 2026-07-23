@@ -1265,7 +1265,22 @@ StructuredOutput TOOL — the constrained JSON rides the tool call while the
 final message stays markdown, so the fenced-JSON path carries claude (and
 every non-capable route). Structured output is also gated OFF when the spec
 will ride the interactive stream-json transport — that vendor combination
-is unverified; fenced parsing carries interactive runs. Live plan checklists ride typed
+is unverified; fenced parsing carries interactive runs.
+
+WorkReport envelope (D-16): on a `work_report_transport: constrained` route the
+engine COMPILES a transport ENVELOPE `{ work_report, output }` that wraps any
+caller `output_schema` and rides `HarnessRunSpec.output_schema`; the caller's
+original schema stays the conformance authority for `output` after unwrap (the
+contract keeps both). With no caller schema a `final_message` route (codex)
+wraps the markdown deliverable as `output: string`, while a `side_tool` route
+(claude's `--json-schema` materializes a StructuredOutput tool) is left to the
+adapter layer so the prose final stays markdown. The unified attempt finalizer
+un-nests the envelope beside `finalizeStructuredOutput` — `answer.md` persists
+the OUTPUT, never the envelope — and validates the model-authored
+`WorkReport { state, required_inputs }`. A missing/malformed report on a
+constrained route is a typed `work_report_contract` failure (never a prose
+success); a valid `needs_input`/`incomplete` report becomes a `work_state`
+veto. Live plan checklists ride typed
 `HarnessEvent.plan_progress` (codex `todo_list` items; claude
 TaskCreate/TaskUpdate accumulation — TodoWrite kept for older CLIs), forwarded
 as last-wins `plan.progress` run events and projected on the run detail as
@@ -1356,7 +1371,13 @@ attempts/aNN/events.jsonl?    (read-only modes)
 record of per-attempt web evidence (requested/effective mode, attempted,
 satisfied, status), unrecovered tool errors, non-blocking tool-warning counts,
 attempt outcome dimensions, statusless results, adapter-declared transient
-failures, and dropped native events.
+failures, and dropped native events. The attempt outcome also carries the D-16
+`work_state` axis (the model-attested WorkReport outcome — completed /
+needs_input / incomplete / unverified — orthogonal to the process status per
+INV-116); the control plane folds the winning attempt's `work_state` into the
+run's `outcomeFacts`, so a needs_input/incomplete run is non-applyable and the
+outcome-aware CLI exit projection returns non-zero even on a succeeded
+lifecycle.
 Surfaces project it; they never recompute evidence from raw events or model prose.
 
 Convergence can also finish as `stuck_no_progress`: the same candidate diff was

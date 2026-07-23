@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { daemonDir, readToken } from "@claudexor/daemon";
 import type { InteractionAnswerSet, InteractionQuestion } from "@claudexor/schema";
+import type { RunOutcomeFacts } from "@claudexor/schema";
 import {
   InteractionQuestion as InteractionQuestionSchema,
+  RunOutcomeFacts as RunOutcomeFactsSchema,
   continuityLabel,
+  outcomeExitCode,
   processExitCode,
 } from "@claudexor/schema";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
@@ -20,6 +23,16 @@ const print = (s: string): void => {
  * code (succeeded => 0; a "Done · needs review" run also exits 0). */
 export function processExitCodeForRunStatus(state: unknown): number {
   return processExitCode(typeof state === "string" ? state : "failed");
+}
+
+/** D-16 outcome-aware exit for a terminal run event: when the terminal carries
+ * full outcome `facts`, the exit follows the OUTCOME (a needs_input/incomplete
+ * work_state exits non-zero even on a succeeded lifecycle) via the ONE
+ * projection owner; otherwise it falls back to the bare-lifecycle policy. */
+export function exitCodeForTerminalPayload(payload: Record<string, unknown>): number {
+  const parsed = RunOutcomeFactsSchema.safeParse(payload["facts"]);
+  if (parsed.success) return outcomeExitCode(parsed.data as RunOutcomeFacts);
+  return processExitCodeForRunStatus(payload["lifecycle"]);
 }
 
 /**
@@ -361,7 +374,7 @@ export async function followRun(runId: string, json: boolean): Promise<number> {
       // The lifecycle IS the exit code (D8): run.blocked fires on a SUCCEEDED
       // lifecycle (needs review) and therefore exits 0 — "Done · needs review".
       const payload = (ev["payload"] ?? {}) as Record<string, unknown>;
-      exitCode = processExitCodeForRunStatus(payload["lifecycle"]);
+      exitCode = exitCodeForTerminalPayload(payload);
     }
     if (type === "interaction.requested" && !json) {
       await answerInteractionFromTty(addr, runId, ev);

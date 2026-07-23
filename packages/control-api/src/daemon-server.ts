@@ -136,6 +136,7 @@ import {
   ProtectedPathApproval,
   type FinalVerifyRecord,
   type RunOutcomeFacts,
+  type WorkState,
   isTerminalLifecycle,
   needsDecision,
   outcomeBanner,
@@ -1831,9 +1832,7 @@ export class DaemonControlApiServer {
    * Trashed/purged threads are retained by getThread (purge nulls worktree_path),
    * so an isolated run's execution tree is diagnosable, never silently the live
    * project. Absent service or an unknown thread ⇒ null (non-thread fallback). */
-  private async resolveThreadWorkspace(
-    threadId: string,
-  ): Promise<ResolvedThreadWorkspace | null> {
+  private async resolveThreadWorkspace(threadId: string): Promise<ResolvedThreadWorkspace | null> {
     const svc = this.opts.services?.threadDetail;
     if (!svc) return null;
     try {
@@ -1868,7 +1867,7 @@ export class DaemonControlApiServer {
    * decision recorded — the axes replacement for the ex state==="blocked". */
   private runNeedsDecision(rec: DaemonRunRecord): boolean {
     const arb = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
-    const facts = runOutcomeFacts(rec, arb, readFailure(rec));
+    const facts = runOutcomeFacts(rec, arb, readFailure(rec), winnerWorkStateFor(rec));
     if (!facts) return false;
     return needsDecision(facts, this.validOperatorDecisionFor(rec) !== null);
   }
@@ -2303,11 +2302,40 @@ function runOutcomeFacts(
   rec: DaemonRunRecord,
   decision: DecisionRecord | null,
   failure: RunFailure | null,
+  /** D-16: the winning read-only/plan attempt's work_state (from telemetry),
+   * folded into a DECISION-LESS terminal so a needs_input/incomplete ask
+   * carries its veto axis just like an arbitrated agent run. */
+  workState: WorkState | null = null,
 ): RunOutcomeFacts | null {
   if (!isTerminalLifecycle(rec.state)) return null;
+  // Arbitrated runs already carry work_state on decision.facts (INV-116).
   if (decision) return decision.facts;
   const lifecycle = rec.state as RunOutcomeFacts["lifecycle"];
-  return outcomeFactsFromFailure(lifecycle, failure?.category);
+  const base = outcomeFactsFromFailure(lifecycle, failure?.category);
+  if (!workState || lifecycle !== "succeeded") return base;
+  const vetoed = workState.state === "needs_input" || workState.state === "incomplete";
+  return {
+    ...base,
+    work_state: workState,
+    ...(vetoed
+      ? {
+          reason:
+            base.reason ??
+            (workState.state === "needs_input" ? "input_required" : "work_incomplete"),
+        }
+      : {}),
+  };
+}
+
+/** D-16: the winning attempt's work_state from a run's telemetry.yaml, used to
+ * fold the veto axis into a decision-less terminal's outcome facts. */
+function winnerWorkStateFor(rec: DaemonRunRecord): WorkState | null {
+  const telemetry = safeReadStructuredArtifact(rec, "final/telemetry.yaml", RunTelemetry);
+  if (!telemetry) return null;
+  const winner = telemetry.final_attempt_id
+    ? telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)
+    : undefined;
+  return winner?.outcome.work_state ?? null;
 }
 
 function summarizeRun(
@@ -2413,7 +2441,15 @@ function summarizeRun(
     ),
     toolWarningsTotal: telemetry?.tool_warnings_total ?? 0,
     result: controlRunResult(rec),
-    outcomeFacts: runOutcomeFacts(rec, decision, readFailure(rec)),
+    outcomeFacts: runOutcomeFacts(
+      rec,
+      decision,
+      readFailure(rec),
+      telemetry?.final_attempt_id
+        ? (telemetry.attempts.find((a) => a.attempt_id === telemetry.final_attempt_id)?.outcome
+            .work_state ?? null)
+        : null,
+    ),
     route: controlRoute(telemetry, p),
     tests: requestTests ?? (contractTests?.length ? contractTests : undefined),
     createdAt: rec.createdAt,

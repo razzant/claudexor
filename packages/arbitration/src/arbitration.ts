@@ -3,6 +3,7 @@ import type {
   GateResult,
   PairwiseComparison,
   ReviewFinding,
+  WorkState,
 } from "@claudexor/schema";
 import { DecisionRecord as DecisionRecordSchema, isBlocking } from "@claudexor/schema";
 
@@ -25,6 +26,10 @@ export interface CandidateEvidence {
   diffSize?: number;
   diffBytes?: number;
   costUsd?: number;
+  /** D-16 model-attested work outcome for this candidate (INV-116): a
+   * needs_input/incomplete state vetoes applyability without flipping the
+   * lifecycle. Absent on routes with no work_report transport. */
+  workState?: WorkState;
 }
 
 function requiredGatesPassed(c: CandidateEvidence): boolean {
@@ -270,16 +275,34 @@ export function arbitrate(
         : "not_run";
   const lifecycle = harnessFailed ? "failed" : "succeeded";
   const noChanges = !hasDiff;
+  // D-16 work_state veto (INV-116): a needs_input/incomplete winner keeps the
+  // succeeded lifecycle but is non-applyable and carries a typed reason — it
+  // only ELEVATES, never masking a harder failure (harness/review/checks win).
+  const workState = winner.workState;
+  const workVeto =
+    lifecycle === "succeeded" &&
+    (workState?.state === "needs_input" || workState?.state === "incomplete");
   const reason = harnessFailed
     ? "harness_failed"
     : review === "blocked"
       ? "review_blocked"
       : checks === "failed"
         ? "checks_failed"
-        : noChanges
-          ? "no_changes"
-          : null;
-  const facts = { lifecycle, noChanges, checks, review, reason } as const;
+        : workVeto
+          ? workState?.state === "needs_input"
+            ? "input_required"
+            : "work_incomplete"
+          : noChanges
+            ? "no_changes"
+            : null;
+  const facts = {
+    lifecycle,
+    noChanges,
+    checks,
+    review,
+    reason,
+    ...(workState ? { work_state: workState } : {}),
+  } as const;
   // Honest disclosure of WHAT verified an applyable run. "both" requires a
   // DETERMINISTIC check — a real test count or a REQUIRED gate that passed —
   // not mere presence. A no-check run adopted on review evidence is
@@ -287,7 +310,8 @@ export function arbitrate(
   const gateVerified =
     (winner.testsTotal > 0 && winner.testsPassed === winner.testsTotal) ||
     realGates.some((g) => g.required && g.status === "passed");
-  const applyable = lifecycle === "succeeded" && review === "approved" && checks !== "failed";
+  const applyable =
+    lifecycle === "succeeded" && review === "approved" && checks !== "failed" && !workVeto;
   const verificationBasis = applyable ? (gateVerified ? "both" : "cross_family_review") : "none";
 
   const whyNot: Record<string, string> = {};
