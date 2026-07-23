@@ -240,7 +240,7 @@ function skillText(host: PluginHost): string {
     "",
     "- NEVER paste live credentials into prompts — every ingress hard-blocks secret-like values (typed `inline_secret_rejected`). Store keys with `claudexor secrets set` and reference them.",
     "- NEVER auto-answer `claudexor decision` for a blocked run: risk acceptance (accept-risk/override) is the HUMAN operator's call. Report the blocked state and the decision options.",
-    "- Exit codes: 0 = success terminal; 1 = failed/blocked/cancelled run; 2 = usage error (unknown verb/flag/mode). `--json` errors come as `{ok:false, exitCode, error}` on stdout.",
+    "- Exit codes: 0 = success terminal; 1 = operational/unexpected failure; 2 = usage/validation failure. `--json` failures use `{ok:false, exitCode, code, message, error, retryable, fieldErrors, requiredActions, evidenceRefs, context}` on stdout.",
     "",
     `Host namespace: ${namespace}`,
     "",

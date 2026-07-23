@@ -1,3 +1,5 @@
+import process from "node:process";
+import { controlProblemError } from "@claudexor/control-api";
 import {
   ControlProject,
   ControlProjectListResponse,
@@ -5,7 +7,7 @@ import {
   type ControlProject as ControlProjectType,
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
-import { print, printJson, printUsageError } from "./cli-io.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 
@@ -81,10 +83,11 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
     }
     return printUsageError(json, "usage: claudexor project list|register|relink|outputs");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (json) printJson({ ok: false, error: message });
-    else process.stderr.write(`claudexor project: ${message}\n`);
-    return 1;
+    return printCliFailure(json, error, {
+      category: "operational",
+      fallbackCode: "project_command_failed",
+      prefix: "claudexor project: ",
+    });
   }
 }
 
@@ -119,10 +122,7 @@ async function responseJson(response: Response): Promise<unknown> {
 }
 
 function failure(json: boolean, status: number, data: unknown): number {
-  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
-  const message = String(record["message"] ?? record["error"] ?? `HTTP ${status}`);
-  if (json) printJson({ ok: false, status, error: message, code: record["code"] ?? null });
-  else process.stderr.write(`claudexor project: ${message}\n`);
-  return 1;
+  return printCliFailure(json, controlProblemError(status, data), {
+    prefix: "claudexor project: ",
+  });
 }
-import process from "node:process";

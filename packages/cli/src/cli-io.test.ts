@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { printJson, printJsonLine } from "./cli-io.js";
+import { printJson, printJsonLine, printUnhandledCliFailure, printUsageError } from "./cli-io.js";
 
 describe("cli-io NDJSON contract (W13/G2)", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -32,5 +32,60 @@ describe("cli-io NDJSON contract (W13/G2)", () => {
     printJson({ a: 1, b: 2 });
     // Pretty output has interior newlines; the two surfaces are distinct.
     expect((chunks[0] as string).slice(0, -1).includes("\n")).toBe(true);
+  });
+
+  it("usage failures emit exactly one complete typed JSON object", () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation((s: unknown) => {
+      stdout.push(String(s));
+      return true;
+    });
+    vi.spyOn(process.stderr, "write").mockImplementation((s: unknown) => {
+      stderr.push(String(s));
+      return true;
+    });
+    expect(
+      printUsageError(
+        true,
+        Object.assign(new Error("--n must be at least 1"), {
+          code: "invalid_argument",
+          status: 400,
+          fieldErrors: { n: ["must be at least 1"] },
+        }),
+      ),
+    ).toBe(2);
+    expect(stdout).toHaveLength(1);
+    expect(stderr).toHaveLength(0);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: false,
+      exitCode: 2,
+      code: "invalid_argument",
+      message: "--n must be at least 1",
+      error: "--n must be at least 1",
+      fieldErrors: { n: ["must be at least 1"] },
+    });
+  });
+
+  it("the top-level fallback remains JSON-aware without parsed args or daemon state", () => {
+    const stdout: string[] = [];
+    const originalArgv = process.argv;
+    process.argv = ["node", "claudexor", "doctor", "--json"];
+    vi.spyOn(process.stdout, "write").mockImplementation((s: unknown) => {
+      stdout.push(String(s));
+      return true;
+    });
+    try {
+      expect(printUnhandledCliFailure(new Error("unexpected boom"))).toBe(1);
+    } finally {
+      process.argv = originalArgv;
+    }
+    expect(stdout).toHaveLength(1);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: false,
+      exitCode: 1,
+      code: "unexpected_error",
+      message: "claudexor: unexpected boom",
+    });
   });
 });

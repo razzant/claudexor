@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
+import { controlProblemError } from "@claudexor/control-api";
 import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
 import { releaseCommand } from "./release-command.js";
 import { serveAcpBridge, serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
@@ -37,7 +38,15 @@ import {
   requiredStringFlagError,
   type ParsedArgs,
 } from "./args.js";
-import { print, printJson, printJsonLine, printUsageError, statusGlyph } from "./cli-io.js";
+import {
+  print,
+  printCliFailure,
+  printJson,
+  printJsonLine,
+  printUnhandledCliFailure,
+  printUsageError,
+  statusGlyph,
+} from "./cli-io.js";
 import { pickResumableThread } from "./thread-select.js";
 import {
   KNOWN_FLAGS,
@@ -59,6 +68,7 @@ import {
 } from "./local-attachment.js";
 import {
   connectDaemonIfRunning,
+  daemonOutcomeFailure,
   daemonOutcomeProblemFields,
   daemonOutcomeSummary,
   ensureDaemon,
@@ -67,6 +77,7 @@ import {
   fetchApplyEligibility,
   fetchCouncil,
   fetchOutcomeBanner,
+  legacyDaemonOutcomeProblemFields,
   mergeDaemonRunOutcome,
 } from "./daemon-run.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
@@ -76,7 +87,6 @@ import {
   PLUGIN_TARGETS,
   PLUGIN_VERBS,
   formatPluginResult,
-  pluginCommandErrorResult,
   runPluginCommand,
   type PluginTarget,
   type PluginVerb,
@@ -86,6 +96,7 @@ import { settingsCommand } from "./settings-command.js";
 import { quotaCommand } from "./quota-command.js";
 import { trustCommand } from "./trust-command.js";
 import { projectCommand } from "./project-command.js";
+import { applyCommand } from "./apply-command.js";
 import { runRepl } from "./repl.js";
 import {
   parseProtectedPathApprovalFlags,
@@ -271,8 +282,14 @@ async function uploadLocalAttachment(
       } as RequestInit & { duplex: "half" },
     );
     if (!response.ok) {
-      const detail = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-      throw new Error(String(detail["message"] ?? detail["error"] ?? `HTTP ${response.status}`));
+      const text = await response.text();
+      let detail: unknown = text;
+      try {
+        detail = text ? (JSON.parse(text) as unknown) : {};
+      } catch {
+        /* preserve the raw non-JSON body for the shared safe projector */
+      }
+      throw controlProblemError(response.status, detail);
     }
     const expectedSha256 = `sha256:${hash.digest("hex")}`;
     const resource = (await controlJson(
@@ -427,7 +444,7 @@ async function orchestrate(
       resolvedOutputSchema = parsedSchema as Record<string, unknown>;
     }
   } catch (err) {
-    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+    return printUsageError(json, err, { prefix: "claudexor: " });
   }
   let tests: TestCommandInvocation[] | undefined;
   try {
@@ -454,7 +471,7 @@ async function orchestrate(
       synthesis: resolvedSynthesis,
     });
   } catch (err) {
-    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+    return printUsageError(json, err, { prefix: "claudexor: " });
   }
 
   if (delegate && mode !== "agent") {
@@ -544,14 +561,11 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   try {
     ({ client, addr } = await ensureDaemon());
   } catch (err) {
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 1;
+    return printCliFailure(json, err, {
+      category: "operational",
+      fallbackCode: "daemon_bootstrap_failed",
+      prefix: "claudexor: ",
+    });
   }
   // Thread continuation (W13/D10): --thread <id> targets a thread explicitly;
   // --resume picks the most recently updated one. When a threadId is present
@@ -564,10 +578,18 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const res = await controlApiFetch(addr, "/threads", {
         headers: { Authorization: `Bearer ${addr.token}` },
       });
-      if (!res.ok) throw new Error(`GET /threads failed: ${res.status}`);
+      const text = await res.text();
+      let payload: unknown = {};
+      try {
+        payload = text ? (JSON.parse(text) as unknown) : {};
+      } catch (error) {
+        if (!res.ok) throw controlProblemError(res.status, text);
+        throw error;
+      }
+      if (!res.ok) throw controlProblemError(res.status, payload);
       // Parse through the typed DTO — the field is camelCase `updatedAt`, and a
       // hand-rolled `updated_at` read silently sorts undefined and throws.
-      const list = ControlThreadListResponse.parse(await res.json());
+      const list = ControlThreadListResponse.parse(payload);
       // Scope to the current project (D28): --resume must never cross into
       // another project's threads.
       const newest = pickResumableThread(list.threads, process.cwd());
@@ -576,7 +598,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         // lines; --json prints its one object; text goes to stderr.
         const message = "claudexor: --resume found no threads to continue in this project";
         if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
-        else if (json) printJson({ ok: false, exitCode: 1, error: message });
+        else if (json) return printCliFailure(true, message, { category: "operational" });
         else process.stderr.write(`${message}\n`);
         return 1;
       }
@@ -584,7 +606,11 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     } catch (err) {
       const message = `claudexor: --resume could not list threads: ${err instanceof Error ? err.message : String(err)}`;
       if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
-      else if (json) printJson({ ok: false, exitCode: 1, error: message });
+      else if (json)
+        return printCliFailure(true, err, {
+          category: "operational",
+          prefix: "claudexor: --resume could not list threads: ",
+        });
       else process.stderr.write(`${message}\n`);
       return 1;
     }
@@ -598,15 +624,13 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       : undefined;
   } catch (err) {
     if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}`,
+      return printCliFailure(true, err, {
+        category: "operational",
+        prefix: "claudexor: attachment upload failed: ",
       });
-    else
-      process.stderr.write(
-        `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+    process.stderr.write(
+      `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return 1;
   }
   const body: Record<string, unknown> = {
@@ -662,7 +686,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
           jobId: started.jobId,
           mode: p.mode,
           ...(started.error ? { error: started.error } : {}),
-          ...daemonOutcomeProblemFields(started),
+          ...legacyDaemonOutcomeProblemFields(started),
         });
         return exitCodeForState(started.status);
       }
@@ -690,7 +714,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         jobId: out.jobId,
         mode: p.mode,
         ...(out.error ? { error: out.error } : {}),
-        ...daemonOutcomeProblemFields(out),
+        ...legacyDaemonOutcomeProblemFields(out),
         ...(reason ? { summary: reason } : {}),
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
@@ -699,7 +723,16 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     }
     if (json) {
       // Pure machine surface: await the terminal outcome and print one JSON object.
-      const out = await enqueueAndAwait(client, addr, body, { waitForTerminal: true });
+      const out = await enqueueAndAwait(client, addr, body, {
+        waitForTerminal: true,
+        machineSignals: true,
+        projectStartFailures: true,
+      });
+      if (!out.runId)
+        return printCliFailure(true, daemonOutcomeFailure(out), {
+          fallbackCode: "daemon_request_failed",
+          prefix: "claudexor: ",
+        });
       // Preserve bench keys while adding mode and honest non-success detail.
       const reason = daemonOutcomeSummary(out);
       // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
@@ -785,14 +818,10 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     }
     return exitCodeForState(status);
   } catch (err) {
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 1;
+    return printCliFailure(json, err, {
+      fallbackCode: "daemon_request_failed",
+      prefix: "claudexor: ",
+    });
   }
 }
 
@@ -826,18 +855,11 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     const text = await res.text();
     const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     if (!res.ok) {
-      // A typed decision rejection (e.g. revert refused: tree diverged) carries
-      // its reason in `message`; transport/gate failures use `error`. Surface
-      // whichever is present so the concrete reason is never lost behind "HTTP 409".
-      const msg =
-        typeof data["error"] === "string"
-          ? (data["error"] as string)
-          : typeof data["message"] === "string"
-            ? (data["message"] as string)
-            : `decision failed (HTTP ${res.status})`;
-      if (json) printJson({ accepted: false, status: "rejected", message: msg });
-      else process.stderr.write(`claudexor decision: ${msg}\n`);
-      return 1;
+      return printCliFailure(json, controlProblemError(res.status, data), {
+        fallbackCode: "decision_failed",
+        prefix: "claudexor decision: ",
+        context: { runId, action },
+      });
     }
     if (json) {
       printJson(data);
@@ -851,10 +873,12 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     }
     return data["accepted"] === true ? 0 : 1;
   } catch (err) {
-    process.stderr.write(
-      `claudexor decision: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    return 1;
+    return printCliFailure(json, err, {
+      category: "operational",
+      fallbackCode: "decision_failed",
+      prefix: "claudexor decision: ",
+      context: { runId, action },
+    });
   }
 }
 
@@ -925,15 +949,10 @@ async function controlJson(
   const text = await response.text();
   const body = text ? (JSON.parse(text) as unknown) : {};
   if (response.ok) return body;
-  const detail = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
-  throw new Error(String(detail["message"] ?? detail["error"] ?? `HTTP ${response.status}`));
+  throw controlProblemError(response.status, body);
 }
 
-function printPreflightError(args: ParsedArgs, json: boolean, error: string): number {
-  if (json && (args._[0] ?? "help") === "plugin") {
-    printJson(pluginCommandErrorResult(args._[1], args._[2], flagBool(args, "dry-run"), 2, error));
-    return 2;
-  }
+function printPreflightError(json: boolean, error: string): number {
   return printUsageError(json, error);
 }
 
@@ -973,16 +992,16 @@ async function main(): Promise<number> {
   const unknownFlags = Object.keys(args.flags).filter((f) => !KNOWN_FLAGS.has(f));
   if (unknownFlags.length > 0) {
     const error = `claudexor: unknown flag(s): ${unknownFlags.map((f) => `--${f}`).join(", ")} (see \`claudexor help\`)`;
-    return printPreflightError(args, json, error);
+    return printPreflightError(json, error);
   }
   const valueFlagError = requiredStringFlagError(args, VALUE_FLAGS);
-  if (valueFlagError) return printPreflightError(args, json, valueFlagError);
+  if (valueFlagError) return printPreflightError(json, valueFlagError);
   // Registry-enforced per-command flag scope: a KNOWN flag outside the
   // command's declared set (e.g. `plan --create`, `ask --force`) fails loudly
   // instead of being silently ignored. Data-driven from CLI_COMMANDS for
   // every verb (this replaced the old hand-listed plugin/--force special cases).
   const scopeError = commandFlagScopeError(cmd, Object.keys(args.flags));
-  if (scopeError) return printPreflightError(args, json, scopeError);
+  if (scopeError) return printPreflightError(json, scopeError);
   // No arguments at all = the interactive REPL: a thread of turns over the
   // current project with native session continuity (chat is the normal loop).
   if (args._.length === 0 && process.stdin.isTTY) {
@@ -1047,7 +1066,6 @@ async function main(): Promise<number> {
                 ? "claudexor plan <prompt> then Implement (the plan lifecycle surfaces open questions and freezes the plan on implement)"
                 : "claudexor ask --deep-scan <prompt>";
       return printPreflightError(
-        args,
         json,
         `claudexor: the '${cmd}' verb was retired; use ${replacement}`,
       );
@@ -1107,9 +1125,11 @@ async function main(): Promise<number> {
       // store, or a daemon-tracked run that started in another project.
       const resolved = await resolveRunStore(runId);
       if (!resolved) {
-        if (json) printJson({ runId, error: `no such run ${runId}` });
-        else print(`no such run ${runId}`);
-        return 1;
+        return printCliFailure(json, `no such run ${runId}`, {
+          category: "operational",
+          fallbackCode: "run_not_found",
+          context: { runId },
+        });
       }
       const store = resolved.store;
       const paths = store.runPaths(runId);
@@ -1277,56 +1297,8 @@ async function main(): Promise<number> {
       return summary || primary ? 0 : 1;
     }
 
-    case "apply": {
-      const runId = args._[1];
-      if (!runId) {
-        return printUsageError(
-          json,
-          "usage: claudexor apply <run_id> [--mode apply|commit|branch|pr] [--dry-run]",
-        );
-      }
-      const rawMode = flagStr(args, "mode") ?? "apply";
-      if (!["apply", "commit", "branch", "pr"].includes(rawMode)) {
-        if (json) printJson({ runId, error: `unsupported apply mode: ${rawMode}` });
-        else print(`unsupported apply mode: ${rawMode}`);
-        return 2;
-      }
-      const { addr } = await ensureDaemon();
-      const dryRun = flagBool(args, "dry-run");
-      const response = await controlApiFetch(
-        addr,
-        `/runs/${encodeURIComponent(runId)}/apply${dryRun ? "/check" : ""}`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(
-            dryRun
-              ? { target: { kind: "original_project" } }
-              : {
-                  target: { kind: "original_project" },
-                  mode: rawMode,
-                  message: `claudexor: apply ${runId}`,
-                },
-          ),
-        },
-      );
-      const text = await response.text();
-      const result = text ? (JSON.parse(text) as Record<string, unknown>) : {};
-      if (json) printJson({ runId, ...(dryRun ? { dryRun: true } : {}), ...result });
-      else if (!response.ok) print(String(result["message"] ?? result["error"] ?? text));
-      else if (dryRun)
-        print(result["ok"] === true ? "patch applies cleanly" : "patch does not apply");
-      else
-        print(
-          `${String(result["mode"] ?? rawMode)}: applied=${String(result["applied"] ?? false)}` +
-            (typeof result["commit"] === "string"
-              ? ` commit=${result["commit"].slice(0, 8)}`
-              : "") +
-            (typeof result["branch"] === "string" ? ` branch=${result["branch"]}` : "") +
-            (typeof result["detail"] === "string" ? ` (${result["detail"]})` : ""),
-        );
-      return response.ok && (dryRun ? result["ok"] === true : result["applied"] === true) ? 0 : 1;
-    }
+    case "apply":
+      return applyCommand(args, json);
 
     case "decision":
       return decisionCommand(args, json);
@@ -1341,21 +1313,24 @@ async function main(): Promise<number> {
       if (!sub || !PLUGIN_VERBS.includes(sub as PluginVerb)) {
         const error =
           "usage: claudexor plugin <install|status|doctor|repair|uninstall> <cursor|claude|codex|opencode|all> [--dry-run] [--force] [--json]";
-        if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
-        else print(error);
-        return 2;
+        return printUsageError(json, error, {
+          fallbackCode: "invalid_plugin_command",
+          context: { verb: sub ?? null, target: target ?? null, dryRun },
+        });
       }
       if (!target || !PLUGIN_TARGETS.includes(target as PluginTarget)) {
         const error = `claudexor: unknown plugin target '${target ?? ""}' (expected ${PLUGIN_TARGETS.join("|")})`;
-        if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
-        else process.stderr.write(`${error}\n`);
-        return 2;
+        return printUsageError(json, error, {
+          fallbackCode: "invalid_plugin_target",
+          context: { verb: sub, target: target ?? null, dryRun },
+        });
       }
       if (args._.length > 3) {
         const error = `claudexor: unexpected plugin argument(s): ${args._.slice(3).join(" ")}`;
-        if (json) printJson(pluginCommandErrorResult(sub, target, dryRun, 2, error));
-        else process.stderr.write(`${error}\n`);
-        return 2;
+        return printUsageError(json, error, {
+          fallbackCode: "invalid_plugin_argument",
+          context: { verb: sub, target, dryRun, arguments: args._.slice(3) },
+        });
       }
       try {
         const r = await runPluginCommand(sub as PluginVerb, target as PluginTarget, {
@@ -1363,23 +1338,20 @@ async function main(): Promise<number> {
           force: flagBool(args, "force"),
           json,
         });
+        // A completed lifecycle/status command is a domain result even when
+        // drift or a blocked host makes its process exit non-zero. Preserve
+        // the stable results[] receipt; only preflight/throws use the shared
+        // failure envelope.
         if (json) printJson(r);
         else print(formatPluginResult(r));
         return r.exitCode;
       } catch (err) {
-        if (json) {
-          printJson(
-            pluginCommandErrorResult(
-              sub,
-              target,
-              dryRun,
-              1,
-              err instanceof Error ? err.message : String(err),
-            ),
-          );
-          return 1;
-        }
-        throw err;
+        return printCliFailure(json, err, {
+          category: "operational",
+          fallbackCode: "plugin_command_failed",
+          prefix: "claudexor plugin: ",
+          context: { verb: sub, target, dryRun },
+        });
       }
     }
 
@@ -1433,14 +1405,11 @@ async function main(): Promise<number> {
       // Unknown command is an ERROR (exit 2), not a silent help print with
       // exit 0 — scripts must not mistake a typo'd verb for success. --json
       // callers get the machine envelope on stdout (stdout purity contract).
-      if (json) {
-        printJson({
-          ok: false,
-          exitCode: 2,
-          error: `claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)`,
-        });
-        return 2;
-      }
+      if (json)
+        return printUsageError(
+          true,
+          `claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)`,
+        );
       process.stderr.write(`claudexor: unknown command '${cmd}'\n\n${HELP}\n`);
       return 2;
   }
@@ -1448,7 +1417,4 @@ async function main(): Promise<number> {
 
 main()
   .then((code) => process.exit(code))
-  .catch((err: unknown) => {
-    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
-  });
+  .catch((err: unknown) => process.exit(printUnhandledCliFailure(err)));

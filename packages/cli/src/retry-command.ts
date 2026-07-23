@@ -1,5 +1,6 @@
+import { controlProblemError } from "@claudexor/control-api";
 import type { ParsedArgs } from "./args.js";
-import { print, printJson, printUsageError } from "./cli-io.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 
@@ -13,17 +14,25 @@ export async function retryCommand(args: ParsedArgs, json: boolean): Promise<num
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
       body: "{}",
     });
-    const data = (await response.json()) as Record<string, unknown>;
-    if (!response.ok) throw new Error(String(data["error"] ?? `HTTP ${response.status}`));
-    if (json) printJson(data);
+    const data: unknown = await response.json();
+    if (!response.ok) {
+      return printCliFailure(json, controlProblemError(response.status, data), {
+        prefix: "claudexor retry: ",
+      });
+    }
+    const result = data as Record<string, unknown>;
+    if (json) printJson(result);
     else
-      print(`retry ${runId}: ${String(data["state"])} (${String(data["runId"] ?? data["jobId"])})`);
+      print(
+        `retry ${runId}: ${String(result["state"])} (${String(result["runId"] ?? result["jobId"])})`,
+      );
     return 0;
   } catch (error) {
-    return printUsageError(
-      json,
-      `claudexor retry: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    return printCliFailure(json, error, {
+      category: "operational",
+      fallbackCode: "retry_failed",
+      prefix: "claudexor retry: ",
+    });
   }
 }
 
@@ -35,13 +44,18 @@ export async function runAgainCommand(args: ParsedArgs, json: boolean): Promise<
     const response = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}/run-again`, {
       headers: { Authorization: `Bearer ${addr.token}` },
     });
-    const data = (await response.json()) as Record<string, unknown>;
-    if (!response.ok) throw new Error(String(data["error"] ?? `HTTP ${response.status}`));
-    if (json) printJson(data);
+    const data: unknown = await response.json();
+    if (!response.ok) {
+      return printCliFailure(json, controlProblemError(response.status, data), {
+        prefix: "claudexor run-again: ",
+      });
+    }
+    const result = data as Record<string, unknown>;
+    if (json) printJson(result);
     else {
       print(`editable Run Again draft from ${runId}:`);
-      print(JSON.stringify(data["request"] ?? {}, null, 2));
-      const differences = Array.isArray(data["differences"]) ? data["differences"] : [];
+      print(JSON.stringify(result["request"] ?? {}, null, 2));
+      const differences = Array.isArray(result["differences"]) ? result["differences"] : [];
       for (const difference of differences) {
         const row = difference as Record<string, unknown>;
         print(`  omitted ${String(row["field"])}: ${String(row["reason"])}`);
@@ -49,9 +63,10 @@ export async function runAgainCommand(args: ParsedArgs, json: boolean): Promise<
     }
     return 0;
   } catch (error) {
-    return printUsageError(
-      json,
-      `claudexor run-again: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    return printCliFailure(json, error, {
+      category: "operational",
+      fallbackCode: "run_again_failed",
+      prefix: "claudexor run-again: ",
+    });
   }
 }

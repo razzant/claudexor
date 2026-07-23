@@ -11,6 +11,7 @@ import {
   type DaemonClient as DaemonClientType,
 } from "@claudexor/daemon";
 import { harnessRuntimeEnv } from "@claudexor/core";
+import { controlProblemError } from "@claudexor/control-api";
 import { hashJson } from "@claudexor/util";
 import {
   controlApiAddress,
@@ -19,8 +20,22 @@ import {
   processExitCodeForRunStatus,
   type ControlApiAddress,
 } from "./live.js";
-import { TERMINAL_LIFECYCLES, type RunOutcomeFacts } from "@claudexor/schema";
-export { daemonOutcomeProblemFields, mergeDaemonRunOutcome } from "./daemon-outcome.js";
+import { TERMINAL_LIFECYCLES, type ControlProblem, type RunOutcomeFacts } from "@claudexor/schema";
+import { cliFailureError } from "./cli-problem.js";
+export {
+  daemonOutcomeFailure,
+  daemonOutcomeProblemFields,
+  legacyDaemonOutcomeProblemFields,
+  mergeDaemonRunOutcome,
+} from "./daemon-outcome.js";
+export {
+  fetchApplyEligibility,
+  fetchCouncil,
+  fetchOutcomeBanner,
+  fetchPlanQuestions,
+  fetchPlanReadiness,
+  fetchRunSpendUsd,
+} from "./daemon-run-details.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -57,6 +72,20 @@ async function controlApiReachable(): Promise<ControlApiAddress | null> {
  */
 export async function ensureDaemon(
   timeoutMs = 30_000,
+): Promise<{ client: DaemonClientType; addr: ControlApiAddress }> {
+  try {
+    return await ensureDaemonUnchecked(timeoutMs);
+  } catch (error) {
+    throw cliFailureError(error, {
+      category: "operational",
+      fallbackCode: "daemon_bootstrap_failed",
+      status: 500,
+    });
+  }
+}
+
+async function ensureDaemonUnchecked(
+  timeoutMs: number,
 ): Promise<{ client: DaemonClientType; addr: ControlApiAddress }> {
   const token = ensureToken();
   const socketPath = defaultSocketPath();
@@ -167,6 +196,7 @@ export interface DaemonRunOutcome {
   errorCode?: string;
   errorStatus?: number;
   errorRetryable?: boolean;
+  problem?: ControlProblem;
 }
 
 /**
@@ -187,6 +217,12 @@ export async function enqueueAndAwait(
      * this to bridge pendingInteractions -> host elicitation). Awaited: a
      * long answer round-trip pauses status polling, never the run itself. */
     onPollTick?: (info: { runId: string }) => void | Promise<void>;
+    /** Machine surfaces suppress diagnostics and turn a second signal into a
+     * typed failure that their caller can serialize before exiting. */
+    machineSignals?: boolean;
+    /** Preserve a pre-start problem as an outcome so a single-object JSON
+     * caller can project it instead of throwing through a text-mode catch. */
+    projectStartFailures?: boolean;
   } = { waitForTerminal: true },
 ): Promise<DaemonRunOutcome> {
   await ensureRunProject(addr, body);
@@ -208,29 +244,44 @@ export async function enqueueAndAwait(
   const startText = await startRes.text();
   const start = startText ? (JSON.parse(startText) as Record<string, unknown>) : {};
   if (!startRes.ok) {
-    const message =
-      typeof start["message"] === "string"
-        ? (start["message"] as string)
-        : `run enqueue failed (HTTP ${startRes.status})`;
-    const code = typeof start["code"] === "string" ? (start["code"] as string) : undefined;
-    // Output-schema refusals are born before a job exists. Preserve their
-    // typed public contract as a terminal outcome instead of throwing through
-    // the CLI's legacy string-only catch; the general problem projector is
-    // intentionally owned by #28.
-    if (code === "unsupported_schema_dialect" || code === "invalid_output_schema") {
-      return {
-        runId: "",
-        runDir: "",
-        status: "failed",
-        jobId: "",
-        error: message,
-        errorCode: code,
-        errorStatus: startRes.status,
-        errorRetryable:
-          typeof start["retryable"] === "boolean" ? (start["retryable"] as boolean) : false,
-      };
+    const failure = controlProblemError(startRes.status, start);
+    if (!opts.projectStartFailures) {
+      if (
+        failure.code === "unsupported_schema_dialect" ||
+        failure.code === "invalid_output_schema"
+      ) {
+        return {
+          runId: "",
+          runDir: "",
+          status: "failed",
+          jobId: "",
+          error: failure.message,
+          errorCode: failure.code,
+          errorStatus: failure.status,
+          errorRetryable: failure.retryable,
+        };
+      }
+      throw new Error(failure.message);
     }
-    throw new Error(message);
+    return {
+      runId: "",
+      runDir: "",
+      status: "failed",
+      jobId: "",
+      error: failure.message,
+      errorCode: failure.code,
+      errorStatus: failure.status,
+      errorRetryable: failure.retryable,
+      problem: {
+        code: failure.code,
+        message: failure.message,
+        retryable: failure.retryable,
+        fieldErrors: failure.fieldErrors,
+        requiredActions: failure.requiredActions,
+        evidenceRefs: failure.evidenceRefs,
+        context: failure.context,
+      },
+    };
   }
   const jobId = String(start["jobId"] ?? "");
   let runId = typeof start["runId"] === "string" ? (start["runId"] as string) : "";
@@ -242,26 +293,41 @@ export async function enqueueAndAwait(
   // typed cancel and keeps waiting for the honest terminal; a second signal
   // force-quits the CLI (the daemon still owns the cancel).
   let sigCount = 0;
+  let forcedSignalError: Error | undefined;
   const onSignal = (): void => {
     sigCount += 1;
-    if (sigCount >= 2) process.exit(130);
-    process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
+    if (sigCount >= 2) {
+      if (opts.machineSignals) {
+        forcedSignalError = cliFailureError(
+          new Error("CLI interrupted while cancelling the daemon run"),
+          {
+            category: "operational",
+            fallbackCode: "cli_interrupted",
+          },
+        );
+        return;
+      }
+      process.exit(130);
+    }
+    if (!opts.machineSignals)
+      process.stderr.write("\ncancelling daemon run (Ctrl-C again to detach)...\n");
     void controlApiFetch(addr, `/runs/${encodeURIComponent(jobId)}/control`, {
       method: "POST",
       headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
       body: JSON.stringify({ control: { kind: "cancel", reason: "ctrl-c on the waiting CLI" } }),
     })
       .then(async (res) => {
-        if (!res.ok) {
+        if (!res.ok && !opts.machineSignals) {
           process.stderr.write(
             `cancel request failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}\n`,
           );
         }
       })
       .catch((err: unknown) => {
-        process.stderr.write(
-          `cancel request failed: ${err instanceof Error ? err.message : String(err)}\n`,
-        );
+        if (!opts.machineSignals)
+          process.stderr.write(
+            `cancel request failed: ${err instanceof Error ? err.message : String(err)}\n`,
+          );
       });
   };
   process.on("SIGINT", onSignal);
@@ -276,8 +342,10 @@ export async function enqueueAndAwait(
     // until the run binds its id/dir (single canonical state source).
     const startDeadline = Date.now() + (opts.startTimeoutMs ?? 30_000);
     while ((!runId || !runDir) && Date.now() < startDeadline) {
+      if (forcedSignalError) throw forcedSignalError;
       if (!jobId) break;
       const rec = await client.status(jobId);
+      if (forcedSignalError) throw forcedSignalError;
       if (rec.runId && rec.runDir) {
         runId = rec.runId;
         runDir = rec.runDir;
@@ -294,10 +362,12 @@ export async function enqueueAndAwait(
           error: rec.error,
           errorCode: rec.errorCode,
           errorStatus: rec.errorStatus,
+          problem: rec.problem,
         };
       }
       await sleep(120);
     }
+    if (forcedSignalError) throw forcedSignalError;
     if (!runId || !runDir) {
       throw new Error(`run did not start within the timeout (jobId ${jobId})`);
     }
@@ -311,7 +381,9 @@ export async function enqueueAndAwait(
 
     // Poll the daemon socket for the terminal job state (the canonical outcome).
     for (;;) {
+      if (forcedSignalError) throw forcedSignalError;
       const rec = await client.status(jobId);
+      if (forcedSignalError) throw forcedSignalError;
       if (TERMINAL_STATES.has(rec.state)) {
         return {
           runId: rec.runId ?? runId,
@@ -321,6 +393,7 @@ export async function enqueueAndAwait(
           error: rec.error,
           errorCode: rec.errorCode,
           errorStatus: rec.errorStatus,
+          problem: rec.problem,
         };
       }
       if (opts.onPollTick) await opts.onPollTick({ runId: rec.runId ?? runId });
@@ -368,10 +441,8 @@ async function ensureRunProject(
     body: JSON.stringify({ root }),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `project registration failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`,
-    );
+    const detail = await response.json().catch(() => ({}));
+    throw controlProblemError(response.status, detail);
   }
 }
 
@@ -380,170 +451,6 @@ async function ensureRunProject(
  * included); everything else is 1. */
 export function exitCodeForState(state: string): number {
   return processExitCodeForRunStatus(state);
-}
-
-/**
- * The run's derived apply-gate verdict from GET /runs/:id (single producer:
- * the delivery gate via the control API). Soft-fails to null — a detail
- * hiccup must never eat a finished run's result. Shared by the CLI post-run
- * hints and the MCP structured results so both surfaces tell the same truth.
- */
-/** Server-derived plan readiness projection (mode=plan runs). */
-export async function fetchPlanReadiness(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<{ state: string; questionCount: number } | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const v = detail["planReadiness"];
-    return v && typeof v === "object" ? (v as { state: string; questionCount: number }) : null;
-  } catch {
-    return null;
-  }
-}
-
-/** The plan run's open questions (D17), projected from GET /runs/:id — the
- * SAME server artifact readiness derives from, never a client re-parse. Empty
- * for ready/unverified plans and every non-plan run. */
-export async function fetchPlanQuestions(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<import("@claudexor/schema").PlanQuestion[]> {
-  if (!runId) return [];
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return [];
-    const detail = (await res.json()) as Record<string, unknown>;
-    const v = detail["planQuestions"];
-    return Array.isArray(v) ? (v as import("@claudexor/schema").PlanQuestion[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-/** Council membership + merge disclosure (INV-031) for a --council plan run;
- * null for solo plans and non-plan runs. Server-projected — the CLI never
- * re-derives membership. */
-export async function fetchCouncil(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<{
-  requested: number;
-  drafted: number;
-  degraded: boolean;
-  mergedBy: string | null;
-  members: { harnessId: string; role: string; status: string; error: string | null }[];
-} | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const v = detail["council"];
-    return v && typeof v === "object"
-      ? (v as {
-          requested: number;
-          drafted: number;
-          degraded: boolean;
-          mergedBy: string | null;
-          members: { harnessId: string; role: string; status: string; error: string | null }[];
-        })
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The sub-run's settled cash spend (USD) as projected by the control-plane
- * budget owner (`GET /runs/:id` → `summary.spendUsd`). Single producer of the
- * real drawn amount the delegation belt reconciles its reservation against;
- * null when the run has no known settled cost yet. Soft-fail — a detail hiccup
- * yields null, never an inflated commit.
- */
-export async function fetchRunSpendUsd(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<number | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const summary = detail["summary"];
-    const spend =
-      summary && typeof summary === "object"
-        ? (summary as { spendUsd?: unknown }).spendUsd
-        : undefined;
-    return typeof spend === "number" && Number.isFinite(spend) ? spend : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function fetchApplyEligibility(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<{
-  eligible: boolean;
-  state: string | null;
-  reason: string | null;
-  requiredAction: string | null;
-} | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const v = detail["applyEligibility"];
-    return v && typeof v === "object"
-      ? (v as {
-          eligible: boolean;
-          state: string | null;
-          reason: string | null;
-          requiredAction: string | null;
-        })
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The server-owned outcome banner for a run (D18): the single honest headline,
- * derived by the control-plane projection owner. The CLI PRINTS it verbatim —
- * it never re-derives a headline of its own, so model prose can never outrank
- * the arbitrated truth. Null while the run is not terminal or unavailable.
- */
-export async function fetchOutcomeBanner(
-  addr: ControlApiAddress,
-  runId: string,
-): Promise<string | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const banner = detail["outcomeBanner"];
-    return typeof banner === "string" && banner.length > 0 ? banner : null;
-  } catch {
-    return null;
-  }
 }
 
 /**

@@ -385,13 +385,17 @@ export function assertNoInlineSecretValues(
 
 /** The machine-readable `code` a typed error carries (e.g. inline_secret_rejected), if any. */
 export function errorCode(err: unknown): string | undefined {
-  if (
-    err &&
-    typeof err === "object" &&
-    "code" in err &&
-    typeof (err as { code: unknown }).code === "string"
-  ) {
-    return (err as { code: string }).code;
+  try {
+    if (
+      err &&
+      typeof err === "object" &&
+      "code" in err &&
+      typeof (err as { code: unknown }).code === "string"
+    ) {
+      return (err as { code: string }).code;
+    }
+  } catch {
+    return undefined;
   }
   return undefined;
 }

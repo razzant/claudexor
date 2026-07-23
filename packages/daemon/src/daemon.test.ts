@@ -116,7 +116,16 @@ describe("DaemonServer", () => {
       const record = await terminal(client, accepted.id);
       expect(record).toMatchObject({ state: "succeeded", result: { echoed: 42 } });
       expect(ran).toBe(1);
-      await expect(new DaemonClient(socketPath, "wrong").health()).rejects.toThrow(/unauthorized/);
+      await expect(new DaemonClient(socketPath, "wrong").health()).rejects.toMatchObject({
+        status: 401,
+        code: "unauthorized",
+        message: "unauthorized",
+        retryable: false,
+        fieldErrors: {},
+        requiredActions: [],
+        evidenceRefs: [],
+        context: {},
+      });
     } finally {
       await server.stop();
       authority.journal.close();
@@ -145,9 +154,84 @@ describe("DaemonServer", () => {
       expect(again.id).toBe(first.id);
       await expect(
         client.enqueue({ value: 2 }, { idempotencyKey: "same", clientId: "ui" }),
-      ).rejects.toMatchObject({ code: "idempotency_conflict", status: 409 });
+      ).rejects.toMatchObject({
+        code: "idempotency_conflict",
+        status: 409,
+        retryable: false,
+        fieldErrors: {},
+        requiredActions: [],
+        evidenceRefs: [],
+        context: {},
+      });
       await terminal(client, first.id);
       expect(calls).toBe(1);
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+  });
+
+  it("round-trips complete RPC problems and clamps invalid error statuses to 500", async () => {
+    const dir = tempDir("rpc-problem");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const originalAccept = authority.store.accept.bind(authority.store);
+    authority.store.accept = (input) => {
+      const variant = (input.params as { variant?: unknown } | null)?.variant;
+      if (variant === "complete") {
+        throw Object.assign(new Error("output schema is unsupported"), {
+          code: "unsupported_schema_dialect",
+          status: 422,
+          retryable: true,
+          fieldErrors: { outputSchema: ["unsupported dialect"] },
+          requiredActions: ["choose_supported_dialect"],
+          evidenceRefs: ["request.outputSchema.$schema"],
+          context: { supportedDialects: ["draft-07", "draft-2020-12"] },
+        });
+      }
+      if (variant === "invalid-status") {
+        throw Object.assign(new Error("defective writer supplied a success status"), {
+          code: "invalid_writer_status",
+          status: 200,
+          retryable: true,
+          fieldErrors: { status: ["must be an error status"] },
+          requiredActions: ["retry_after_upgrade"],
+          evidenceRefs: ["daemon.error.status"],
+          context: { receivedStatus: 200 },
+        });
+      }
+      return originalAccept(input);
+    };
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      runner: async () => ({ lifecycle: "succeeded" }),
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      await expect(client.enqueue({ variant: "complete" })).rejects.toMatchObject({
+        status: 422,
+        code: "unsupported_schema_dialect",
+        message: "output schema is unsupported",
+        retryable: true,
+        fieldErrors: { outputSchema: ["unsupported dialect"] },
+        requiredActions: ["choose_supported_dialect"],
+        evidenceRefs: ["request.outputSchema.$schema"],
+        context: { supportedDialects: ["draft-07", "draft-2020-12"] },
+      });
+      await expect(client.enqueue({ variant: "invalid-status" })).rejects.toMatchObject({
+        status: 500,
+        code: "invalid_writer_status",
+        message: "defective writer supplied a success status",
+        retryable: true,
+        fieldErrors: { status: ["must be an error status"] },
+        requiredActions: ["retry_after_upgrade"],
+        evidenceRefs: ["daemon.error.status"],
+        context: { receivedStatus: 200 },
+      });
+      expect(authority.store.records()).toHaveLength(0);
     } finally {
       await server.stop();
       authority.journal.close();
@@ -320,24 +404,97 @@ describe("DaemonServer", () => {
       onTurnEnqueueFailed: (...args) => failures.push(args),
       runner: async (params) => {
         if ((params as { fail?: boolean }).fail) {
-          throw Object.assign(new Error("preflight refused"), { code: "trust_required" });
+          throw Object.assign(new Error("preflight refused"), {
+            code: "trust_required",
+            status: 403,
+            retryable: false,
+            fieldErrors: { access: ["full access is required"] },
+            requiredActions: ["approve_access"],
+            evidenceRefs: ["request.access"],
+            context: { requestedAccess: "workspace_write" },
+          });
         }
         return { lifecycle: "succeeded" };
       },
     });
     await server.start();
+    let failedId = "";
     try {
       const client = new DaemonClient(socketPath, "token");
       const failed = await client.enqueue({ fail: true, turnId: "turn-1" });
+      failedId = failed.id;
       expect(await terminal(client, failed.id)).toMatchObject({
         state: "failed",
         errorCode: "trust_required",
+        errorStatus: 403,
+        problem: {
+          code: "trust_required",
+          message: "preflight refused",
+          retryable: false,
+          fieldErrors: { access: ["full access is required"] },
+          requiredActions: ["approve_access"],
+          evidenceRefs: ["request.access"],
+          context: { requestedAccess: "workspace_write" },
+        },
       });
       expect(failures).toEqual([["turn-1", "preflight refused", "trust_required"]]);
       await expect(client.enqueue({ prompt: `use sk-${"a".repeat(32)}` })).rejects.toThrow(
         /secret-like/i,
       );
       expect(authority.store.records()).toHaveLength(1);
+    } finally {
+      await server.stop();
+      authority.journal.close();
+    }
+    const reopened = commandAuthority(dir);
+    try {
+      expect(reopened.store.get(failedId)).toMatchObject({
+        state: "failed",
+        errorCode: "trust_required",
+        errorStatus: 403,
+        problem: {
+          code: "trust_required",
+          message: "preflight refused",
+          retryable: false,
+          fieldErrors: { access: ["full access is required"] },
+          requiredActions: ["approve_access"],
+          evidenceRefs: ["request.access"],
+          context: { requestedAccess: "workspace_write" },
+        },
+      });
+    } finally {
+      reopened.journal.close();
+    }
+  });
+
+  it("keeps fallback problem codes out of legacy typed-code fields", async () => {
+    const dir = tempDir("untyped-refusal");
+    const authority = commandAuthority(dir);
+    const socketPath = join(dir, "daemon.sock");
+    const failures: unknown[] = [];
+    const server = new DaemonServer({
+      socketPath,
+      token: "token",
+      commands: authority.slot,
+      onTurnEnqueueFailed: (...args) => failures.push(args),
+      runner: async () => {
+        throw new Error("disk failed before run start");
+      },
+    });
+    await server.start();
+    try {
+      const client = new DaemonClient(socketPath, "token");
+      const failed = await client.enqueue({ turnId: "turn-untyped" });
+      expect(await terminal(client, failed.id)).toMatchObject({
+        state: "failed",
+        error: "disk failed before run start",
+        problem: {
+          code: "daemon_job_failed",
+          message: "disk failed before run start",
+        },
+      });
+      expect(await client.status(failed.id)).not.toHaveProperty("errorCode");
+      expect(failures).toEqual([["turn-untyped", "disk failed before run start", null]]);
     } finally {
       await server.stop();
       authority.journal.close();

@@ -1,8 +1,16 @@
 /**
- * CLI output helpers: one owner for stdout/JSON purity. `--json` mode emits
- * exactly one JSON object on stdout; usage errors go to stderr (text mode)
- * or a typed {ok:false,exitCode,error} object (json mode).
+ * CLI output helpers: one owner for stdout/JSON purity. Non-streaming
+ * `--json` command outcomes emit exactly one JSON object on stdout; usage
+ * errors go to stderr (text mode) or the shared ControlProblem-based failure
+ * envelope (json mode).
  */
+import {
+  argvRequestsJson,
+  projectCliFailure,
+  type CliFailureOptions,
+  type CliFailureEnvelope,
+} from "./cli-problem.js";
+
 export function print(s: string): void {
   process.stdout.write(s + "\n");
 }
@@ -17,10 +25,35 @@ export function printJsonLine(value: unknown): void {
   process.stdout.write(JSON.stringify(value) + "\n");
 }
 
-export function printUsageError(json: boolean, error: string): number {
-  if (json) printJson({ ok: false, exitCode: 2, error });
-  else process.stderr.write(`${error}\n`);
-  return 2;
+export function printCliFailure(
+  json: boolean,
+  error: unknown,
+  options: CliFailureOptions = {},
+): number {
+  const failure: CliFailureEnvelope = projectCliFailure(error, options);
+  if (json) printJson(failure);
+  else process.stderr.write(`${failure.message}\n`);
+  return failure.exitCode;
+}
+
+export function printUsageError(
+  json: boolean,
+  error: unknown,
+  options: Omit<CliFailureOptions, "category"> = {},
+): number {
+  return printCliFailure(json, error, {
+    category: "usage",
+    fallbackCode: "invalid_argument",
+    ...options,
+  });
+}
+
+export function printUnhandledCliFailure(error: unknown): number {
+  return printCliFailure(argvRequestsJson(process.argv.slice(2)), error, {
+    category: "unexpected",
+    fallbackCode: "unexpected_error",
+    prefix: "claudexor: ",
+  });
 }
 
 export function statusGlyph(status: string): string {

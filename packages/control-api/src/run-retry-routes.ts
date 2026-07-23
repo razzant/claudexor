@@ -10,6 +10,7 @@ import type {
   DaemonRunRecord,
 } from "./daemon-server.js";
 import { recordTurnEnqueueFailure } from "./thread-turn-routes.js";
+import { TERMINAL_STATES } from "./sse-shared.js";
 import * as runStart from "./run-start.js";
 
 type RetryServices = Pick<
@@ -110,6 +111,17 @@ async function exactRetry(
     return ctx.requestError(res, error);
   }
   const accepted = await ctx.waitForRunStart(job.id);
+  if (!accepted.runId && TERMINAL_STATES.has(accepted.state)) {
+    const terminal = runStart.unboundRunStartResponse(accepted, true);
+    return ctx.json(res, terminal.status, {
+      ...terminal.body,
+      context: {
+        ...((terminal.body["context"] as Record<string, unknown> | undefined) ?? {}),
+        retryOf: sourceRunId,
+        ...(retryTurnId ? { turnId: retryTurnId } : {}),
+      },
+    });
+  }
   ctx.json(
     res,
     accepted.runId ? 200 : 202,

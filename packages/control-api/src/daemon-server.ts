@@ -65,7 +65,7 @@ import {
 } from "./artifact-serve-routes.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
-import { controlProblemError } from "./problem-response.js";
+import { projectControlProblem } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import {
   PlanQuestionsArtifact,
@@ -74,7 +74,6 @@ import {
   type ApplyEligibility,
   ControlAuthReadinessRefreshRequest,
   ControlAuthReadinessRefreshResponse,
-  ControlProblem,
   AccessProfile,
   ResourceAttachmentRef,
   ControlApplyCheckRequest,
@@ -134,6 +133,7 @@ import {
   TaskContract,
   ProtectedPathApproval,
   type FinalVerifyRecord,
+  type ControlProblem,
   type RunOutcomeFacts,
   isTerminalLifecycle,
   needsDecision,
@@ -146,7 +146,6 @@ import { resolveControlProtocol } from "./operation-catalog.js";
 import {
   assertNoInlineSecretValues,
   containsSecretLikeToken,
-  errorCode,
   noProjectRepoRoot,
   nowIso,
   redactSecrets,
@@ -167,6 +166,8 @@ export interface DaemonRunRecord {
   /** HTTP status persisted from the typed throw (refusal semantics are born
    * at the throw); the turn route serves it verbatim when 400-599. */
   errorStatus?: number;
+  /** Complete typed pre-start problem transported by the durable daemon job. */
+  problem?: ControlProblem;
   params?: unknown;
   createdAt?: string;
   startedAt?: string;
@@ -344,64 +345,6 @@ function setupEventProtocolError(
   });
 }
 
-function finiteHttpStatus(error: unknown, fallback: number): number {
-  if (!error || typeof error !== "object" || !("status" in error)) return fallback;
-  const value = Number((error as { status: unknown }).status);
-  return Number.isInteger(value) && value >= 400 && value <= 599 ? value : fallback;
-}
-
-function stringArrayProperty(error: unknown, key: "requiredActions" | "evidenceRefs"): string[] {
-  if (!error || typeof error !== "object" || !(key in error)) return [];
-  const value = (error as Record<string, unknown>)[key];
-  return Array.isArray(value)
-    ? value
-        .filter((item): item is string => typeof item === "string" && item.length > 0)
-        .map(redactSecrets)
-    : [];
-}
-
-function fieldErrorsProperty(error: unknown): Record<string, string[]> {
-  if (!error || typeof error !== "object" || !("fieldErrors" in error)) return {};
-  const value = (error as { fieldErrors: unknown }).fieldErrors;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const result: Record<string, string[]> = {};
-  for (const [field, messages] of Object.entries(value)) {
-    if (!Array.isArray(messages)) continue;
-    const safeMessages = messages
-      .filter((item): item is string => typeof item === "string")
-      .map(redactSecrets);
-    if (safeMessages.length > 0) result[field] = safeMessages;
-  }
-  return result;
-}
-
-function problemBody(
-  error: unknown,
-  fallbackCode: string,
-  fallbackRetryable: boolean,
-  fallbackMessage?: string,
-): ControlProblem {
-  const retryable =
-    error && typeof error === "object" && "retryable" in error
-      ? (error as { retryable: unknown }).retryable === true
-      : fallbackRetryable;
-  const message = redactSecrets(
-    error instanceof Error ? error.message : (fallbackMessage ?? String(error ?? "request failed")),
-  );
-  return ControlProblem.parse({
-    code: errorCode(error) ?? fallbackCode,
-    message,
-    retryable,
-    fieldErrors: fieldErrorsProperty(error),
-    requiredActions: stringArrayProperty(error, "requiredActions"),
-    evidenceRefs: stringArrayProperty(error, "evidenceRefs"),
-    context:
-      error && typeof error === "object" && "context" in error
-        ? ((error as { context: Record<string, unknown> }).context ?? {})
-        : {},
-  });
-}
-
 /** Validate one whole service batch before exposing any of it on the wire. */
 function validateSetupEventBatch(
   raw: unknown,
@@ -571,7 +514,7 @@ export class DaemonControlApiServer {
   }
 
   private requestError(res: ServerResponse, err: unknown): void {
-    this.problem(res, finiteHttpStatus(err, 400), err, "invalid_request", false, "bad request");
+    this.problem(res, 400, err, "invalid_request", false, "bad request");
   }
 
   private json(
@@ -581,8 +524,14 @@ export class DaemonControlApiServer {
     contentType = "application/json",
   ): void {
     if (status >= 400 && contentType === "application/json") {
-      const error = controlProblemError(status, body);
-      return this.problem(res, status, error, error.code, false, error.message);
+      return this.problem(
+        res,
+        status,
+        body,
+        `http_${status}`,
+        false,
+        `request failed with status ${status}`,
+      );
     }
     const text = JSON.stringify(body);
     res.writeHead(status, {
@@ -596,16 +545,17 @@ export class DaemonControlApiServer {
     res: ServerResponse,
     status: number,
     error: unknown,
-    fallbackCode: string,
+    fallbackCode: string | ((status: number) => string),
     fallbackRetryable: boolean,
     fallbackMessage?: string,
   ): void {
-    this.json(
-      res,
+    const projected = projectControlProblem(error, {
       status,
-      problemBody(error, fallbackCode, fallbackRetryable, fallbackMessage),
-      "application/problem+json",
-    );
+      code: fallbackCode,
+      retryable: fallbackRetryable,
+      message: fallbackMessage,
+    });
+    this.json(res, projected.status, projected.body, "application/problem+json");
   }
 
   private async readBody(req: IncomingMessage): Promise<unknown> {
@@ -633,14 +583,7 @@ export class DaemonControlApiServer {
       .catch((err) => {
         try {
           if (!res.headersSent) {
-            this.problem(
-              res,
-              finiteHttpStatus(err, 500),
-              err,
-              "internal_error",
-              false,
-              "internal server error",
-            );
+            this.problem(res, 500, err, "internal_error", false, "internal server error");
           } else res.end();
         } catch {
           res.destroy();
@@ -1568,14 +1511,7 @@ export class DaemonControlApiServer {
     try {
       value = await fn(arg);
     } catch (err) {
-      return this.problem(
-        res,
-        finiteHttpStatus(err, 500),
-        err,
-        "internal_error",
-        false,
-        "service failed",
-      );
+      return this.problem(res, 500, err, "internal_error", false, "service failed");
     }
     try {
       return this.json(res, 200, schema ? schema.parse(value) : value);
@@ -1613,12 +1549,11 @@ export class DaemonControlApiServer {
     try {
       job = ControlSetupJob.parse(await statusFn({ jobId }));
     } catch (err) {
-      const status = finiteHttpStatus(err, 404);
       return this.problem(
         res,
-        status,
+        404,
         err,
-        status === 404 ? "setup_job_not_found" : "setup_event_stream_unavailable",
+        (status) => (status === 404 ? "setup_job_not_found" : "setup_event_stream_unavailable"),
         false,
       );
     }
@@ -1646,13 +1581,7 @@ export class DaemonControlApiServer {
           lastSequence,
         });
       } catch (err) {
-        return this.problem(
-          res,
-          finiteHttpStatus(err, 500),
-          err,
-          "setup_event_projection_invalid",
-          false,
-        );
+        return this.problem(res, 500, err, "setup_event_projection_invalid", false);
       }
     }
     res.writeHead(200, {
@@ -1716,12 +1645,12 @@ export class DaemonControlApiServer {
       if (closed || terminalizing) return;
       terminalizing = true;
       try {
-        const body = problemBody(
-          error,
-          "setup_event_stream_failed",
-          true,
-          "setup event stream failed",
-        );
+        const body = projectControlProblem(error, {
+          status: 500,
+          code: "setup_event_stream_failed",
+          retryable: true,
+          message: "setup event stream failed",
+        }).body;
         if (body.requiredActions.length === 0) body.requiredActions.push("resnapshot");
         await writeFrame(`event: error\ndata: ${JSON.stringify(body)}\n\n`);
         res.end();

@@ -9,7 +9,9 @@ import type {
   DaemonFacadeClient,
   DaemonRunRecord,
 } from "./daemon-server.js";
+import { projectControlProblem } from "./problem-response.js";
 import { recordTurnEnqueueFailure } from "./thread-turn-routes.js";
+import { TERMINAL_STATES } from "./sse-shared.js";
 import * as runStart from "./run-start.js";
 
 type RerunServices = Pick<
@@ -32,7 +34,11 @@ export async function rerunWithFeedback(
   idempotencyKey: string,
   res: ServerResponse,
 ): Promise<void> {
-  if (!body.feedback?.trim()) return ctx.json(res, 400, { error: "feedback is required" });
+  if (!body.feedback?.trim())
+    return respondProblem(ctx, res, new Error("feedback is required"), {
+      status: 400,
+      code: "feedback_required",
+    });
   const source = paramsRecord(rec);
   const originalPrompt = typeof source["prompt"] === "string" ? source["prompt"] : "";
   const { turnId: _turnId, planRunId: _planRunId, planRef: _planRef, ...original } = source;
@@ -46,8 +52,10 @@ export async function rerunWithFeedback(
       }),
     );
   } catch (error) {
-    return ctx.json(res, 400, {
-      error: `cannot rebuild run params for rerun: ${error instanceof Error ? error.message : String(error)}`,
+    return respondProblem(ctx, res, error, {
+      status: 400,
+      code: "invalid_rerun_request",
+      message: "cannot rebuild run params for rerun",
     });
   }
   const threadId = typeof source["threadId"] === "string" ? source["threadId"] : null;
@@ -77,23 +85,32 @@ export async function rerunWithFeedback(
     );
   } catch (error) {
     recordTurnEnqueueFailure(ctx.services?.setTurnEnqueueError, turnId, error);
-    const status =
-      error && typeof error === "object" && "status" in error
-        ? Number((error as { status: number }).status)
-        : 500;
-    return ctx.json(res, status, {
-      error: error instanceof Error ? error.message : "rerun enqueue failed",
-      ...(turnId ? { turnId, retryable: false } : {}),
+    return respondProblem(ctx, res, error, {
+      status: 500,
+      code: "rerun_enqueue_failed",
+      message: "rerun enqueue failed",
+      context: { ...(turnId ? { turnId } : {}) },
     });
   }
   let run: DaemonRunRecord;
   try {
     run = await ctx.waitForRunStart(job.id);
   } catch (error) {
-    return ctx.json(res, 500, {
-      error: `rerun job ${job.id} was accepted but its start could not be observed: ${error instanceof Error ? error.message : String(error)}`,
-      jobId: job.id,
-      ...(turnId ? { turnId } : {}),
+    return respondProblem(ctx, res, error, {
+      status: 500,
+      code: "rerun_start_unobserved",
+      message: `rerun job ${job.id} was accepted but its start could not be observed`,
+      context: { jobId: job.id, ...(turnId ? { turnId } : {}) },
+    });
+  }
+  if (!run.runId && TERMINAL_STATES.has(run.state)) {
+    const terminal = runStart.unboundRunStartResponse(run, true);
+    return ctx.json(res, terminal.status, {
+      ...terminal.body,
+      context: {
+        ...((terminal.body["context"] as Record<string, unknown> | undefined) ?? {}),
+        ...(turnId ? { turnId } : {}),
+      },
     });
   }
   ctx.appendAudit(rec, { decision: body.action, new_run_id: run.runId ?? run.id });
@@ -107,6 +124,29 @@ export async function rerunWithFeedback(
       message: "follow-up run enqueued with reviewer feedback",
     }),
   );
+}
+
+function respondProblem(
+  ctx: DecisionRerunContext,
+  res: ServerResponse,
+  error: unknown,
+  defaults: {
+    status: number;
+    code: string;
+    message?: string;
+    context?: Record<string, unknown>;
+  },
+): void {
+  const projected = projectControlProblem(error, {
+    status: defaults.status,
+    code: defaults.code,
+    retryable: false,
+    message: defaults.message,
+  });
+  ctx.json(res, projected.status, {
+    ...projected.body,
+    context: { ...projected.body.context, ...defaults.context },
+  });
 }
 
 function paramsRecord(rec: DaemonRunRecord): Record<string, unknown> {

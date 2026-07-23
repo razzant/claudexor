@@ -14,11 +14,12 @@ import {
   ControlSecretMutationResponse,
   ControlSecretSetRequest,
 } from "@claudexor/schema";
+import { controlProblemError } from "@claudexor/control-api";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
 import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
 import { type ParsedArgs, flagStr } from "./args.js";
-import { print, printJson, printUsageError } from "./cli-io.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import { daemonGet } from "./ops-commands.js";
@@ -28,6 +29,16 @@ async function stdinText(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks).toString("utf8").trim();
+}
+
+async function responseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
 }
 
 /**
@@ -46,6 +57,12 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
     const profileId = args._[3];
     if (!harness || !profileId) {
       return printUsageError(json, "usage: claudexor profiles login <harness> <profile-id>");
+    }
+    if (json) {
+      return printUsageError(true, "profiles login is interactive and does not support --json", {
+        fallbackCode: "interactive_json_unsupported",
+        context: { harness, profileId },
+      });
     }
     const listing = ControlCredentialProfilesResponse.parse(
       await daemonGet("/credential-profiles"),
@@ -133,7 +150,22 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       }
       return 0;
     } catch (err) {
-      return printUsageError(json, err instanceof Error ? err.message : String(err));
+      const status =
+        err && typeof err === "object" && "status" in err
+          ? (err as { status?: unknown }).status
+          : undefined;
+      if (status === 400 || status === 409) {
+        return printUsageError(json, err, {
+          fallbackCode: "invalid_credential_profile",
+          context: { harness, profileId, operation: "add" },
+        });
+      }
+      return printCliFailure(json, err, {
+        category: "operational",
+        fallbackCode: "credential_profile_registration_failed",
+        prefix: "claudexor profiles add: ",
+        context: { harness, profileId, operation: "add" },
+      });
     }
   }
   if (sub === "enable" || sub === "disable") {
@@ -157,13 +189,15 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
         body: JSON.stringify({ enabled: sub === "enable" }),
       },
     );
+    const body = await responseBody(response);
     if (!response.ok) {
-      return printUsageError(
-        json,
-        `profile ${sub} failed (${response.status}): ${await response.text()}`,
-      );
+      return printCliFailure(json, controlProblemError(response.status, body), {
+        fallbackCode: "credential_profile_update_failed",
+        prefix: `claudexor profiles ${sub}: `,
+        context: { harness, profileId, operation: sub },
+      });
     }
-    const receipt = ControlCredentialProfileUpdateResponse.parse(await response.json());
+    const receipt = ControlCredentialProfileUpdateResponse.parse(body);
     if (json) printJson(receipt);
     else
       print(
@@ -186,13 +220,15 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       `/credential-profiles/${encodeURIComponent(harness)}/${encodeURIComponent(profileId)}`,
       { method: "DELETE", headers: { Authorization: `Bearer ${addr.token}` } },
     );
+    const body = await responseBody(response);
     if (!response.ok) {
-      return printUsageError(
-        json,
-        `profile removal failed (${response.status}): ${await response.text()}`,
-      );
+      return printCliFailure(json, controlProblemError(response.status, body), {
+        fallbackCode: "credential_profile_remove_failed",
+        prefix: "claudexor profiles remove: ",
+        context: { harness, profileId, operation: "remove" },
+      });
     }
-    const receipt = ControlCredentialProfileDeleteResponse.parse(await response.json());
+    const receipt = ControlCredentialProfileDeleteResponse.parse(body);
     if (json) printJson(receipt);
     else {
       print(`removed ${harness}/${profileId} (${receipt.credentialCleanup})`);
@@ -297,9 +333,15 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
       headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (!response.ok)
-      throw new Error(`secret write failed (${response.status}): ${await response.text()}`);
-    const receipt = ControlSecretMutationResponse.parse(await response.json());
+    const responsePayload = await responseBody(response);
+    if (!response.ok) {
+      return printCliFailure(json, controlProblemError(response.status, responsePayload), {
+        fallbackCode: "secret_write_failed",
+        prefix: "claudexor secrets set: ",
+        context: { name, operation: "set" },
+      });
+    }
+    const receipt = ControlSecretMutationResponse.parse(responsePayload);
     if (json) printJson(receipt);
     else {
       print(`stored ${name} in ${receipt.backend}`);
@@ -323,9 +365,15 @@ export async function secretsCommand(args: ParsedArgs, json: boolean): Promise<n
       method: "DELETE",
       headers: { Authorization: `Bearer ${addr.token}` },
     });
-    if (!response.ok)
-      throw new Error(`secret delete failed (${response.status}): ${await response.text()}`);
-    const receipt = ControlSecretMutationResponse.parse(await response.json());
+    const responsePayload = await responseBody(response);
+    if (!response.ok) {
+      return printCliFailure(json, controlProblemError(response.status, responsePayload), {
+        fallbackCode: "secret_delete_failed",
+        prefix: "claudexor secrets delete: ",
+        context: { name, operation: "delete" },
+      });
+    }
+    const receipt = ControlSecretMutationResponse.parse(responsePayload);
     if (json) printJson(receipt);
     else print(`deleted ${name}`);
     return 0;

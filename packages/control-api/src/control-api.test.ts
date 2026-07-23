@@ -767,7 +767,7 @@ describe("DaemonControlApiServer", () => {
     }
   }
 
-  it("runs: preserves a typed pre-start refusal's code and status", async () => {
+  it("runs: preserves a complete typed pre-start problem and status", async () => {
     const typedFail: DaemonFacadeClient = {
       async enqueue() {
         return { id: "job-schema", state: "queued" };
@@ -779,6 +779,15 @@ describe("DaemonControlApiServer", () => {
           error: "unsupported outputSchema dialect",
           errorCode: "unsupported_schema_dialect",
           errorStatus: 400,
+          problem: {
+            code: "unsupported_schema_dialect",
+            message: "unsupported outputSchema dialect",
+            retryable: false,
+            fieldErrors: { outputSchema: ["unsupported dialect"] },
+            requiredActions: ["choose a supported dialect"],
+            evidenceRefs: ["request.outputSchema.$schema"],
+            context: { supportedDialects: ["draft-07", "draft-2020-12"] },
+          },
         };
       },
       async list() {
@@ -800,7 +809,14 @@ describe("DaemonControlApiServer", () => {
         code: "unsupported_schema_dialect",
         message: "unsupported outputSchema dialect",
         retryable: false,
-        context: { jobId: "job-schema", state: "failed" },
+        fieldErrors: { outputSchema: ["unsupported dialect"] },
+        requiredActions: ["choose a supported dialect"],
+        evidenceRefs: ["request.outputSchema.$schema"],
+        context: {
+          supportedDialects: ["draft-07", "draft-2020-12"],
+          jobId: "job-schema",
+          state: "failed",
+        },
       });
     });
   });
@@ -837,6 +853,74 @@ describe("DaemonControlApiServer", () => {
       expect(await response.json()).toMatchObject({
         code: "unsupported_schema_dialect",
         retryable: false,
+      });
+    });
+  });
+
+  it("runs: enqueue throws preserve complete typed problems and reject invalid success statuses", async () => {
+    const typedEnqueueFailure: DaemonFacadeClient = {
+      async enqueue() {
+        throw Object.assign(new Error("unsupported outputSchema dialect"), {
+          code: "unsupported_schema_dialect",
+          status: 422,
+          retryable: true,
+          fieldErrors: { outputSchema: ["unsupported dialect"] },
+          requiredActions: ["choose_supported_dialect"],
+          evidenceRefs: ["request.outputSchema.$schema"],
+          context: { supportedDialects: ["draft-07", "draft-2020-12"] },
+        });
+      },
+      async status() {
+        throw new Error("not accepted");
+      },
+      async list() {
+        return [];
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    await withDaemonServer(typedEnqueueFailure, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: startAgentBody(),
+      });
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({
+        code: "unsupported_schema_dialect",
+        message: "unsupported outputSchema dialect",
+        retryable: true,
+        fieldErrors: { outputSchema: ["unsupported dialect"] },
+        requiredActions: ["choose_supported_dialect"],
+        evidenceRefs: ["request.outputSchema.$schema"],
+        context: { supportedDialects: ["draft-07", "draft-2020-12"] },
+      });
+    });
+
+    const defectiveEnqueueFailure: DaemonFacadeClient = {
+      ...typedEnqueueFailure,
+      async enqueue() {
+        throw Object.assign(new Error("defective writer supplied a success status"), {
+          code: "invalid_writer_status",
+          status: 200,
+          retryable: true,
+          context: { receivedStatus: 200 },
+        });
+      },
+    };
+    await withDaemonServer(defectiveEnqueueFailure, async (base) => {
+      const response = await apiFetch(`${base}/runs`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: startAgentBody(),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({
+        code: "invalid_writer_status",
+        message: "defective writer supplied a success status",
+        retryable: true,
+        context: { receivedStatus: 200 },
       });
     });
   });
@@ -1272,7 +1356,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("threads: a refused enqueue persists the error on the turn; the detail projection renders enqueueError", async () => {
+  it("threads: refused enqueues preserve full response problems and persist replay honesty", async () => {
     const { daemon } = fakeDaemon();
     const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-refuse-"));
     const now = new Date().toISOString();
@@ -1293,9 +1377,36 @@ describe("DaemonControlApiServer", () => {
       state: "active",
     };
     const turns: Record<string, unknown>[] = [];
+    const secretCodeValue = `ghp_${"s".repeat(36)}`;
     const refusing: DaemonFacadeClient = {
       ...daemon,
-      async enqueue() {
+      async enqueue(params) {
+        const prompt = (params as { prompt?: unknown } | null)?.prompt;
+        if (prompt === "typed work") {
+          throw Object.assign(new Error("workspace policy refused the turn"), {
+            code: "workspace_policy_refused",
+            status: 422,
+            retryable: true,
+            fieldErrors: { access: ["workspace-write is unavailable"] },
+            requiredActions: ["choose_readonly"],
+            evidenceRefs: ["thread.workspace.mode"],
+            context: { workspaceMode: "in_place" },
+          });
+        }
+        if (prompt === "bad status") {
+          throw Object.assign(new Error("defective writer supplied a success status"), {
+            code: "invalid_writer_status",
+            status: 200,
+            retryable: true,
+          });
+        }
+        if (prompt === "secret work") {
+          throw Object.assign(new Error(`workspace x${secretCodeValue} refused the turn`), {
+            code: `typed_x${secretCodeValue}`,
+            status: 500,
+            context: { reason: `x${secretCodeValue}` },
+          });
+        }
         throw new Error("daemon socket is gone");
       },
     };
@@ -1303,7 +1414,7 @@ describe("DaemonControlApiServer", () => {
       threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
       createThreadTurn: async (id, prompt, opts) => {
         const turn = {
-          id: "tn-refused",
+          id: `tn-refused-${turns.length + 1}`,
           thread_id: id,
           run_id: null,
           parent_run_id: opts.parentRunId ?? null,
@@ -1339,7 +1450,7 @@ describe("DaemonControlApiServer", () => {
         };
         // The error response names the recorded turn (no silent orphan) and
         // discloses that retry has nothing to replay (no job was recorded).
-        expect(body.context.turnId).toBe("tn-refused");
+        expect(body.context.turnId).toBe("tn-refused-1");
         expect(body.retryable).toBe(false);
         expect(body.message).toContain("daemon socket is gone");
         // The projection renders the refusal so a reloading client sees it.
@@ -1360,6 +1471,54 @@ describe("DaemonControlApiServer", () => {
         expect(detail.turns[0]?.enqueueError?.code).toBeNull(); // untyped throw
         expect(detail.turns[0]?.enqueueError?.retryable).toBe(false); // nothing to replay
         expect(detail.turns[0]?.enqueueError?.failedAt).toBeTruthy();
+
+        const typed = await apiFetch(`${base}/threads/th-r/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "typed work" }),
+        });
+        expect(typed.status).toBe(422);
+        expect(await typed.json()).toMatchObject({
+          code: "workspace_policy_refused",
+          message: "workspace policy refused the turn",
+          retryable: true,
+          fieldErrors: { access: ["workspace-write is unavailable"] },
+          requiredActions: ["choose_readonly"],
+          evidenceRefs: ["thread.workspace.mode"],
+          context: {
+            workspaceMode: "in_place",
+            turnId: "tn-refused-2",
+          },
+        });
+        expect(turns[1]?.["enqueue_error"]).toMatchObject({
+          code: "workspace_policy_refused",
+          retryable: false,
+        });
+
+        const secretBearing = await apiFetch(`${base}/threads/th-r/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "secret work" }),
+        });
+        expect(secretBearing.status).toBe(500);
+        const secretBody = JSON.stringify(await secretBearing.json());
+        expect(secretBody).not.toContain(secretCodeValue);
+        expect(JSON.stringify(turns[2]?.["enqueue_error"])).not.toContain(secretCodeValue);
+        expect(turns[2]?.["enqueue_error"]).toMatchObject({
+          code: null,
+          retryable: false,
+        });
+
+        const invalidStatus = await apiFetch(`${base}/threads/th-r/turns`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ prompt: "bad status" }),
+        });
+        expect(invalidStatus.status).toBe(500);
+        expect(await invalidStatus.json()).toMatchObject({
+          code: "invalid_writer_status",
+          message: "defective writer supplied a success status",
+        });
       },
       undefined,
       services,
@@ -1478,6 +1637,16 @@ describe("DaemonControlApiServer", () => {
           state: "failed",
           error: "access profile 'full' requires allow_full_access: true",
           errorCode: "trust_full_access_required",
+          errorStatus: 403,
+          problem: {
+            code: "trust_full_access_required",
+            message: "access profile 'full' requires allow_full_access: true",
+            retryable: false,
+            fieldErrors: { access: ["full access requires approval"] },
+            requiredActions: ["approve_full_access"],
+            evidenceRefs: ["thread.access"],
+            context: { requestedAccess: "full" },
+          },
         };
       },
       async list() {
@@ -1505,11 +1674,24 @@ describe("DaemonControlApiServer", () => {
         });
         // trust_full_access_required needs a one-time grant → 403, NOT 500.
         expect(res.status).toBe(403);
-        const raw = await res.text();
+        const problem = (await res.json()) as Record<string, unknown>;
         // The typed code rides the response so the inline card keys its remedy
         // on the CODE (never substring-matching the human message).
-        expect(raw).toContain("trust_full_access_required");
-        expect(raw).toContain("tn-typed");
+        expect(problem).toMatchObject({
+          code: "trust_full_access_required",
+          message: "access profile 'full' requires allow_full_access: true",
+          retryable: false,
+          fieldErrors: { access: ["full access requires approval"] },
+          requiredActions: ["approve_full_access"],
+          evidenceRefs: ["thread.access"],
+          context: {
+            requestedAccess: "full",
+            jobId: "job-typed",
+            turnId: "tn-typed",
+            threadId: "th-typed",
+            state: "failed",
+          },
+        });
       },
       undefined,
       services,
@@ -1539,6 +1721,10 @@ describe("DaemonControlApiServer", () => {
       // A typed 503 (journal recovery) persisted from the throw is served
       // verbatim — retryable infra, never a client-actionable 400.
       { errorCode: "journal_recovery_required", errorStatus: 503, expected: 503 },
+      // A defective writer must never turn a terminal problem into success.
+      { errorCode: "invalid_writer_status", errorStatus: 200, expected: 500 },
+      // Fractional statuses are not legal HTTP statuses either.
+      { errorCode: "invalid_writer_status", errorStatus: 400.5, expected: 500 },
       // A bare errno-style code without a typed status proves nothing: infra 500.
       { errorCode: "ENOENT", errorStatus: undefined, expected: 500 },
     ];
@@ -1830,6 +2016,11 @@ describe("DaemonControlApiServer", () => {
             new Error("access profile 'full' requires allow_full_access: true (still)"),
             {
               code: "trust_full_access_required",
+              retryable: true,
+              fieldErrors: { access: ["full access requires approval"] },
+              requiredActions: ["approve_full_access"],
+              evidenceRefs: ["thread.access"],
+              context: { requestedAccess: "full" },
             },
           );
         }
@@ -1893,6 +2084,18 @@ describe("DaemonControlApiServer", () => {
         // typed trust throw carries no HTTP status -> infra default 500.
         const refused = await retry("tn-1");
         expect(refused.status).toBe(500);
+        expect(await refused.json()).toMatchObject({
+          code: "trust_full_access_required",
+          retryable: true,
+          fieldErrors: { access: ["full access requires approval"] },
+          requiredActions: ["approve_full_access"],
+          evidenceRefs: ["thread.access"],
+          context: {
+            requestedAccess: "full",
+            turnId: "tn-1",
+            threadId: "th-x",
+          },
+        });
         const turn1 = turns.find((t) => t["id"] === "tn-1");
         const freshError = turn1?.["enqueue_error"] as { message: string; code: string | null };
         expect(freshError.message).toContain("(still)");
@@ -5427,6 +5630,102 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("rerun_with_feedback projects a durable pre-start terminal problem instead of requeued success", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    const failed: DaemonRunRecord = {
+      id: "job-rerun-refused",
+      state: "failed",
+      error: "rerun request was rejected",
+      errorCode: "rerun_refused",
+      errorStatus: 422,
+      problem: {
+        code: "rerun_refused",
+        message: "rerun request was rejected",
+        retryable: false,
+        fieldErrors: { feedback: ["must be actionable"] },
+        requiredActions: ["edit_feedback"],
+        evidenceRefs: ["decision.feedback"],
+        context: { sourceRunId: "run-d1" },
+      },
+    };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: failed.id, state: "queued" };
+      },
+      async status(id) {
+        return id === failed.id ? failed : daemon.status(id);
+      },
+    };
+
+    await withDaemonServer(wrapped, async (base) => {
+      const res = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-terminal-1" },
+        body: JSON.stringify({
+          action: "rerun_with_feedback",
+          feedback: "Narrow the diff.",
+        }),
+      });
+      expect(res.status).toBe(422);
+      expect(await res.json()).toMatchObject({
+        code: "rerun_refused",
+        fieldErrors: { feedback: ["must be actionable"] },
+        requiredActions: ["edit_feedback"],
+        evidenceRefs: ["decision.feedback"],
+        context: {
+          sourceRunId: "run-d1",
+          jobId: failed.id,
+          state: "failed",
+        },
+      });
+    });
+  });
+
+  it("rerun_with_feedback clamps an invalid enqueue status and preserves typed recovery fields", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.state = "succeeded";
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      "winner: a01\nfacts:\n  lifecycle: succeeded\n  review: blocked\n  checks: not_configured\n  noChanges: false\n  reason: review_blocked\nfinal_verify:\n  attempted: true\n  applied_cleanly: true\n  gates_passed: true\n",
+    );
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        throw Object.assign(new Error("enqueue refused"), {
+          status: 200,
+          code: "enqueue_refused",
+          retryable: true,
+          requiredActions: ["retry_later"],
+          context: { queue: "primary" },
+        });
+      },
+    };
+
+    await withDaemonServer(wrapped, async (base) => {
+      const res = await apiFetch(`${base}/runs/run-d1/decision`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "decision-enqueue-1" },
+        body: JSON.stringify({
+          action: "rerun_with_feedback",
+          feedback: "Narrow the diff.",
+        }),
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({
+        code: "enqueue_refused",
+        retryable: true,
+        requiredActions: ["retry_later"],
+        context: { queue: "primary" },
+      });
+    });
+  });
+
   it("Exact Retry creates a fresh idempotent command linked to the immutable source request", async () => {
     const { daemon, record } = fakeDaemon();
     let enqueued: Record<string, unknown> | undefined;
@@ -5456,6 +5755,56 @@ describe("DaemonControlApiServer", () => {
         retryOf: "run-d1",
       });
       expect(record.params).not.toHaveProperty("retryOf");
+    });
+  });
+
+  it("Exact Retry projects a complete durable pre-start terminal problem", async () => {
+    const { daemon } = fakeDaemon();
+    const failed: DaemonRunRecord = {
+      id: "job-retry-refused",
+      state: "failed",
+      error: "retry request was invalid",
+      errorCode: "invalid_retry_request",
+      errorStatus: 400,
+      problem: {
+        code: "invalid_retry_request",
+        message: "retry request was invalid",
+        retryable: false,
+        fieldErrors: { prompt: ["must not be empty"] },
+        requiredActions: ["edit_source"],
+        evidenceRefs: ["source:run-d1"],
+        context: { sourceRunId: "run-d1" },
+      },
+    };
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: failed.id, state: "queued" };
+      },
+      async status(id) {
+        return id === failed.id ? failed : daemon.status(id);
+      },
+    };
+
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "exact-retry-terminal" },
+        body: "{}",
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        code: "invalid_retry_request",
+        fieldErrors: { prompt: ["must not be empty"] },
+        requiredActions: ["edit_source"],
+        evidenceRefs: ["source:run-d1"],
+        context: {
+          sourceRunId: "run-d1",
+          jobId: failed.id,
+          state: "failed",
+          retryOf: "run-d1",
+        },
+      });
     });
   });
 
