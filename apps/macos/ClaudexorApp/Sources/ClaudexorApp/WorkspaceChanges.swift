@@ -74,7 +74,10 @@ struct RunDiffSection: View {
             diffBody
             if showActions { actions }
         }
-        .task(id: "\(runId):\(run?.hasPatchArtifact == true)") { await loadDiff() }
+        // Lifecycle phase is part of the invalidation (QA-069): an active run with
+        // no captured final patch is PENDING, and must transition to a terminal
+        // state once the run finishes even if `hasPatchArtifact` stays false.
+        .task(id: "\(runId):\(run?.hasPatchArtifact == true):\(run?.phase.isTerminal == true)") { await loadDiff() }
         // A scoped run needs its detail (eligibility/revertable) to gate apply.
         .task(id: showActions ? runId : "") {
             if showActions, let run, run.applyEligibility == nil || run.isLive { await model.loadRunDetail(runId) }
@@ -111,7 +114,18 @@ struct RunDiffSection: View {
             Text("No changes in this run.")
                 .font(.caption).foregroundStyle(.secondary)
         case .idle, .loading:
-            ProgressView().controlSize(.small)
+            // QA-069: an active run has no final patch yet — say so honestly
+            // instead of borrowing the terminal "No changes" copy. The final diff
+            // is finalization output; its absence mid-run is not a no-change fact.
+            if run?.phase.isActive == true {
+                HStack(spacing: Theme.Spacing.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("Changes will appear after the run captures its final patch.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
         }
     }
 
@@ -163,14 +177,25 @@ struct RunDiffSection: View {
     private func loadDiff() async {
         let id = PayloadIdentity(runId: runId, plane: .diff)
         diffSlot.begin(id)
-        guard let run = model.task(runId), run.hasPatchArtifact else {
+        guard let run = model.task(runId) else {
             diffSlot.commit(.empty, for: id)
             return
         }
         if !run.diff.isEmpty { diffSlot.commit(.loaded(run.diff), for: id); return }
+        // QA-069: an ACTIVE run whose final patch has not been captured yet is
+        // PENDING, not empty — keep the slot in `.loading` (honest pending copy).
+        // When the run reaches terminal the task-id change re-runs this loader.
+        if run.phase.isActive && !run.hasPatchArtifact {
+            diffSlot.commit(.loading, for: id)
+            return
+        }
+        guard run.hasPatchArtifact else {
+            diffSlot.commit(.empty, for: id)
+            return
+        }
         switch await model.loadRunDiff(runId) {
         case .loaded: diffSlot.commit(.loaded(model.task(runId)?.diff ?? []), for: id)
-        case .unavailable: diffSlot.commit(.empty, for: id)
+        case .unavailable, .empty: diffSlot.commit(.empty, for: id)
         case .failed(let message): diffSlot.commit(.failed(.transport(message)), for: id)
         }
     }

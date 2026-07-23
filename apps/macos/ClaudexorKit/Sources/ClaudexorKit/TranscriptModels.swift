@@ -74,6 +74,13 @@ public struct TranscriptReducer: Sendable {
     /// Set once a TYPED final message arrives: seals the delta stream so a
     /// late stray delta never appends after the answer is final (sol #9).
     private var finalized = false
+    /// Block id of the most recent assistant MESSAGE block — the twin the
+    /// harness emits as ordinary narration immediately before repeating it as
+    /// the typed final (Codex last agent message; Claude/Cursor result). A
+    /// non-empty typed final removes THIS block so Activity never duplicates the
+    /// answer bubble (QA-009). Tracked by id — no prose comparison — and it
+    /// survives an intervening tool/thinking block. Cleared on final.
+    private var messageCandidateId: String?
     private let cap: Int
     /// W23 P0-hang bounds: the block COUNT cap alone let a single merged
     /// thinking block grow to megabytes — SwiftUI then laid out that Text on
@@ -140,6 +147,19 @@ public struct TranscriptReducer: Sendable {
                 streamingMessageId = nil
                 pendingFlushId = nil
                 finalized = true
+                // QA-009: Codex/Claude/Cursor emit the to-be-finalized assistant
+                // message as an ordinary block right before repeating it as this
+                // typed final, so Activity would otherwise show a dim twin of the
+                // answer bubble. Drop that tracked candidate — but ONLY when it IS
+                // the final's own text, so a DISTINCT preceding narration
+                // ("Looking…" → "Answer") is preserved. This is the final flag
+                // driving an EXACT identity check on the correlated block, not the
+                // rejected fuzzy row-vs-answer prose heuristic; an EMPTY final has
+                // no twin and only seals (acceptance #2/#6).
+                if let finalText = payload["text"]?.stringValue, !finalText.isEmpty {
+                    removeFinalizedTwin(messageCandidateId, finalText: finalText)
+                }
+                messageCandidateId = nil
                 return true
             }
             guard let text = payload["text"]?.stringValue, !text.isEmpty else { return false }
@@ -163,6 +183,7 @@ public struct TranscriptReducer: Sendable {
                     streamingMessageId = id
                 }
                 pendingFlushId = streamingMessageId
+                messageCandidateId = streamingMessageId
                 return true
             }
             // The complete (non-delta) message REPLACES its delta-built block
@@ -176,12 +197,15 @@ public struct TranscriptReducer: Sendable {
                 blocks[i] = .message(id: id, text: bounded)
                 pendingFlushId = nil
                 streamingMessageId = nil
+                messageCandidateId = id
                 enforceBudget()
                 return true
             }
             // A message is a one-shot: keep the HEAD (the answer's beginning);
             // the full text lives in the run's artifacts.
-            append(.message(id: "msg-\(seqKey)", text: boundHead(text)))
+            let oneShotId = "msg-\(seqKey)"
+            append(.message(id: oneShotId, text: boundHead(text)))
+            messageCandidateId = oneShotId
             return true
         case "tool_call":
             let tool = payload["tool"]
@@ -292,6 +316,27 @@ public struct TranscriptReducer: Sendable {
         // fell out of the window are dropped.
         toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
         lastOpenToolByName = lastOpenToolByName.compactMapValues { $0 - drop >= 0 ? $0 - drop : nil }
+    }
+
+    /// Remove the finalization TWIN — the candidate message block, but only when
+    /// its retained text IS the (head-bounded) final text. The block was stored
+    /// via `boundHead`, so an overlong answer's block equals the final's head;
+    /// comparing against the same bound keeps the identity check exact without
+    /// re-counting a truncation. A distinct narration never matches and stays.
+    /// Keeps every reducer invariant: decrement `textChars` exactly and shift the
+    /// open-tool indices that sat AFTER the removed block so a still-open tool's
+    /// later result still lands on the right row. `trimmed`/`truncatedChars` are
+    /// eviction/overlong disclosures and are left untouched (this is neither). A
+    /// no-op if the id was already evicted or the text diverged.
+    private mutating func removeFinalizedTwin(_ id: String?, finalText: String) {
+        guard let id,
+              let i = blocks.lastIndex(where: { $0.id == id }),
+              case .message(_, let text) = blocks[i],
+              text == String(finalText.prefix(blockCharCap)) else { return }
+        textChars -= text.count
+        blocks.remove(at: i)
+        toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 > i ? $0 - 1 : $0 }
+        lastOpenToolByName = lastOpenToolByName.compactMapValues { $0 > i ? $0 - 1 : $0 }
     }
 
     private mutating func append(_ block: TranscriptBlock) {

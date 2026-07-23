@@ -48,3 +48,31 @@ extension ThreadsScreen {
         }
     }
 }
+
+/// Pure, testable composer input copy (QA-012). The create-vs-continue truth
+/// keys ONLY on selected-thread identity — never on turn count, project scope,
+/// or detail-load success: a non-nil selected thread ALWAYS continues (posts a
+/// follow-up turn), a nil selection starts a new thread. The visible verb is
+/// short so it never truncates behind the shortcut suffix, and the accessible
+/// name is stable while the HINT carries the honest action.
+struct ComposerInputCopy: Equatable {
+    let placeholder: String
+    let accessibilityName: String
+    let accessibilityHint: String
+
+    init(hasSelectedThread: Bool) {
+        if hasSelectedThread {
+            // Existing thread: Send posts another turn to this conversation —
+            // same lane resumes natively, a switched lane hydrates a packet. The
+            // stable product word is "conversation", never "same native session".
+            placeholder = "Continue this conversation…  (⌘↩ to send)"
+            accessibilityName = "Conversation message"
+            accessibilityHint = "Sending adds a turn to this conversation."
+        } else {
+            // Draft: the first message materializes a new thread.
+            placeholder = "Message…  (⌘↩ to send · the first message starts a thread)"
+            accessibilityName = "New thread message"
+            accessibilityHint = "Sending starts a new thread."
+        }
+    }
+}

@@ -82,6 +82,19 @@ struct ThreadsScreen: View {
     var resolvedPoolFamilies: [HarnessFamily] {
         model.effectiveEligiblePool.map { HarnessFamily(rawValue: $0) }
     }
+    /// The families the popover PRESENTS as included in the pool (QA-011): the
+    /// Auto sentinel EXPANDED to the currently available/routable families for
+    /// this intent (matching the highlighted chips), or the explicit subset when
+    /// pinned. The per-harness model rows and the selection pruning both consume
+    /// THIS — so the two Auto projections (chips vs rows) can never disagree. The
+    /// wire pool stays the empty Auto sentinel; Auto is never materialized into an
+    /// explicit harness list merely to render.
+    var effectiveIncludedFamilies: [HarnessFamily] {
+        let available = poolFamilies.filter { model.availability(for: $0, mode: composerMode).available }
+        return HarnessPoolPresentation
+            .includedFamilies(pool: model.effectiveEligiblePool, available: available.map(\.rawValue))
+            .map { HarnessFamily(rawValue: $0) }
+    }
     /// The thread/draft's pinned credential profile (M9-UX item 2): the composer
     /// Harness+Account chip's per-thread override. nil = follow the harness default.
     var composerPinnedProfileId: String? {
@@ -364,7 +377,8 @@ struct ThreadsScreen: View {
                         hasProject: threadHasProject,
                         recent: model.recentProjects,
                         onPick: { model.pickProject($0) },
-                        onBrowse: { model.browseProject() })
+                        onBrowse: { model.browseProject() },
+                        onNoProject: { model.clearProject() })
             if threadHasProject {
                 HarnessAccountChip(
                     current: primaryFamily,
@@ -412,7 +426,15 @@ struct ThreadsScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { if !threadHasProject { composerMode = .ask } }
         .onChange(of: model.selectedThreadId) {
-            if !threadHasProject { composerMode = .ask }
+            // QA-007: a FRESH draft seeds intent from the project default — Agent
+            // for a project, Ask for none — so a stale Ask/Plan from the previous
+            // thread never leaks onto a new project draft. Selecting an EXISTING
+            // thread keeps the current intent (only clamping no-project to Ask).
+            if model.selectedThreadId == nil {
+                composerMode = threadHasProject ? .agent : .ask
+            } else if !threadHasProject {
+                composerMode = .ask
+            }
             // Per-turn knobs are not sticky — don't carry one thread's budget
             // cap / web / repair flags / model into the next thread. Access is
             // the exception (D26): it's sticky per thread, so SEED it from the
@@ -445,9 +467,13 @@ struct ThreadsScreen: View {
             if mode.isReadOnly { browser = false }
         }
         // Models are harness-scoped now: a primary switch keeps each
-        // harness's own selection valid. Only prune entries for harnesses
-        // that LEFT the pool, so a dropped chip can't smuggle a model in.
-        .onChange(of: resolvedPoolFamilies) { _, families in
+        // harness's own selection valid. Prune entries for harnesses NO LONGER
+        // in the presented pool — keyed on the effective INCLUDED set (QA-011),
+        // NOT the raw Auto sentinel: switching an explicit subset back to Auto
+        // then preserves overrides for still-included Auto families instead of
+        // wiping every selection, while a genuinely excluded/unavailable
+        // harness's stale override is dropped (never silently reactivated).
+        .onChange(of: effectiveIncludedFamilies) { _, families in
             let ids = Set(families.map(\.rawValue))
             composerModels = composerModels.filter { ids.contains($0.key) }
         }
@@ -464,8 +490,11 @@ struct ThreadsScreen: View {
                 HStack(alignment: .center, spacing: Theme.Spacing.sm) {
                     attachButton
                     captureButton
+                    let inputCopy = ComposerInputCopy(hasSelectedThread: model.selectedThreadId != nil)
                     GlassField(text: $composerText,
-                               placeholder: "Message…  (⌘↩ to send · the first message starts a thread)",
+                               placeholder: inputCopy.placeholder,
+                               accessibilityName: inputCopy.accessibilityName,
+                               accessibilityHintText: inputCopy.accessibilityHint,
                                onSubmit: send)
                     // While the head turn is still running, a new turn can't start over a
                     // live one (the native session is busy) — swap Send→Stop so the only

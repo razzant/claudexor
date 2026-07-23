@@ -198,7 +198,12 @@ extension ThreadsScreen {
     /// security boundary is unchanged: choosing Full is a REQUEST; the grant
     /// stays a separate explicit act (INV-122).
     @ViewBuilder var composerGrantCTA: some View {
-        if access == .full, let repoRoot = composerRepoRoot,
+        // QA-007: the persistent trust grant is offered ONLY when the CURRENT
+        // intent can actually write. Ask/Plan are engine-clamped to Read-only, so
+        // a sticky/stale Full beside them needs no grant — offering it invites a
+        // durable unsandboxed authorization the read-only turn will never use.
+        if access == .full, !composerMode.isReadOnly,
+           let repoRoot = composerRepoRoot,
            !model.fullAccessGranted(repoRoot: repoRoot) {
             HStack(spacing: Theme.Spacing.sm) {
                 Label("Full access requires a one-time grant for \(URL(fileURLWithPath: repoRoot).lastPathComponent)",

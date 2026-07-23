@@ -183,6 +183,11 @@ extension AppModel {
         threadsRefreshTask = nil
         threadsRefresh = ThreadsRefreshState()   // a fresh client starts with a full snapshot
         threadHeadRevisions.removeAll()
+        // Runs-list single-flight fence (QA-052): drop any in-flight/pending
+        // refresh so a stale pass can't paint over the new client's snapshot.
+        runsRefreshTask?.cancel()
+        runsRefreshTask = nil
+        runsRefreshPending = false
         for task in streamTasks.values { task.cancel() }
         streamTasks.removeAll()
         lastEventIds.removeAll()

@@ -47,6 +47,12 @@ struct ComposerModelsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            // A TYPED empty state (QA-011 acceptance #6): no routable harness for
+            // this intent is not a blank section that reads as a failed load.
+            if families.isEmpty {
+                Text("No routable harnesses for this intent.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             ForEach(families) { family in
                 HStack(spacing: Theme.Spacing.sm) {
                     Label { Text(family.label) } icon: { HarnessIcon(family: family, size: 12) }

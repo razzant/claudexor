@@ -206,6 +206,11 @@ final class AppModel {
     /// of pings must fold into ONE listThreads call.
     @ObservationIgnored var threadsRefreshTask: Task<Void, Never>?
     @ObservationIgnored var threadsRefresh = ThreadsRefreshState()  // dirty-until-success + backoff (AppModel+Streams)
+    /// Runs-list single-flight (QA-052): the one in-flight `refreshRuns` pass;
+    /// `runsRefreshPending` folds any trigger that lands mid-refresh into ONE
+    /// trailing pass. Cleared/cancelled on reconnect so a stale pass never paints.
+    @ObservationIgnored var runsRefreshTask: Task<Void, Never>?
+    @ObservationIgnored var runsRefreshPending = false
     /// TERMINAL chat transcripts per run (live transcripts stream in the run's
     /// RunLiveBox; foldLiveBox moves the final reducer here at terminal).
     var transcripts: [String: TranscriptReducer] = [:]
@@ -355,7 +360,33 @@ final class AppModel {
         return false
     }
 
+    /// Single-flight + coalescing runs-list refresh (QA-052), mirroring the
+    /// threads refresh: `GET /v2/runs` returns the WHOLE retained run registry
+    /// (an O(total runs) request), so overlapping lifecycle/event triggers must
+    /// SHARE one in-flight request rather than fan out N parallel full-history
+    /// refetches. A trigger that lands while a refresh runs folds into exactly ONE
+    /// trailing pass (so the settled list still reflects it). Every caller awaits
+    /// the coalesced result.
     func refreshRuns() async {
+        if let inFlight = runsRefreshTask {
+            runsRefreshPending = true      // one trailing pass will pick up this trigger
+            await inFlight.value
+            return
+        }
+        while true {
+            runsRefreshPending = false
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performRunsRefresh()
+            }
+            runsRefreshTask = task
+            await task.value
+            runsRefreshTask = nil
+            if !runsRefreshPending { break }  // at most one trailing pass per completed refresh
+        }
+    }
+
+    private func performRunsRefresh() async {
         guard let client else { return }
         do {
             let summaries = try await client.listRuns()

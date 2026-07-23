@@ -39,6 +39,22 @@ extension AppModel {
         draftEligiblePool = []
         draftCredentialProfileId = nil
         draftIsolatedWorkspace = false
+        // QA-007: the sticky write scope must NOT leak from an earlier draft into
+        // a fresh one. nil => the new target repo's own trust default is the
+        // baseline; a stale Full is never carried into an unrelated project draft.
+        draftThreadAccess = nil
+    }
+
+    /// Composer project chip — "No project (Ask only)" (QA-006). Returns the draft
+    /// to no-project scope so a general read-only Ask is reachable again after any
+    /// project has been used. A bound thread is immutable: start a NEW draft first,
+    /// then clear its project (never mutate the bound thread). The empty choice
+    /// persists (projectRoot didSet) so relaunch does not silently restore the
+    /// former project; the MRU is preserved — "no project" is a scope choice, not
+    /// an MRU deletion.
+    func clearProject() {
+        if selectedThreadId != nil { startDraftThread() }
+        projectRoot = ""
     }
 
     /// Apply a run's reviewed patch through the server-owned delivery gate.

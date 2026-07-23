@@ -275,6 +275,65 @@ import Testing
         #expect(text == "Hello")
     }
 
+    // MARK: QA-009 — the finalization twin never duplicates the answer bubble
+
+    /// The exact live Codex sequence: a complete non-final agent message, then
+    /// the SAME text repeated as the typed final. The twin must leave the
+    /// transcript entirely so Activity is not a dim copy of the answer bubble.
+    @Test func codexFinalizedTwinLeavesNoTranscriptMessage() {
+        var r = TranscriptReducer()
+        r.apply(message(1, "7"))          // codex last agent message (non-final)
+        r.apply(finalMessage(2, "7"))     // codex turn.completed typed final
+        #expect(r.blocks.isEmpty)
+        #expect(r.textChars == 0)
+    }
+
+    /// A delta-streamed then finalized message (Claude/Cursor result shape): the
+    /// reconciled streamed block is the twin and is removed on the identical
+    /// final; accounting stays consistent.
+    @Test func aDeltaStreamedMessageFinalizedByIdenticalTextIsRemoved() {
+        var r = TranscriptReducer()
+        r.apply(deltaMessage(1, "The "))
+        r.apply(deltaMessage(2, "answer is 42."))
+        r.apply(finalMessage(3, "The answer is 42."))
+        #expect(r.blocks.isEmpty)
+        #expect(r.textChars == 0)
+    }
+
+    /// Distinct narration then a genuinely NEW final: the narration is NOT the
+    /// answer twin and must survive (only the typed final's own text is dropped).
+    @Test func distinctNarrationBeforeANewFinalSurvives() {
+        var r = TranscriptReducer()
+        r.apply(message(1, "Looking into it…"))
+        r.apply(finalMessage(2, "The answer is 42."))
+        #expect(r.blocks.count == 1)
+        guard case .message(_, let text) = r.blocks.first else {
+            Issue.record("expected the distinct narration to remain")
+            return
+        }
+        #expect(text == "Looking into it…")
+    }
+
+    /// A tool/thinking block between the finalized message and the typed final
+    /// (the twin is no longer the tail): it is still removed by id, and the
+    /// intervening tool row and its later result stay correctly correlated.
+    @Test func finalizedTwinIsRemovedAcrossAnInterveningTool() {
+        var r = TranscriptReducer()
+        r.apply(message(1, "done"))                 // the twin (non-final)
+        r.apply(toolCall(2, target: "ls", useId: "u1"))
+        r.apply(finalMessage(3, "done"))            // removes msg-1
+        r.apply(toolResult(4, useId: "u1", detail: "ok"))
+        let messages = r.blocks.filter { if case .message = $0 { return true }; return false }
+        #expect(messages.isEmpty)
+        // The tool result still landed on the intervening tool (index repaired).
+        guard case .tool(_, let block) = r.blocks.last else {
+            Issue.record("expected the intervening tool block")
+            return
+        }
+        #expect(block.status == .ok)
+        #expect(block.detail == "ok")
+    }
+
     @Test func toolFloodRespectsTheTotalBudgetLikeAnyOtherText() {
         var r = TranscriptReducer(cap: 200, blockCharCap: 1_000, totalCharBudget: 3_000, toolFieldCap: 500)
         for i in 1...20 { r.apply(toolCall(i, target: String(repeating: "c", count: 500))) }

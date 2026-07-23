@@ -43,6 +43,15 @@ enum HarnessPoolPresentation {
         isAuto(pool: pool) ? available.contains(family) : pool.contains(family)
     }
 
+    /// The families the popover PRESENTS as included — the SAME set the chips
+    /// highlight, so the per-harness model rows and selection pruning can't drift
+    /// from the chip highlight (QA-011). Auto (empty pool) expands to the ordered
+    /// available families; an explicit subset stays exactly itself. The wire pool
+    /// is never materialized — this is a presentation projection only.
+    static func includedFamilies(pool: [String], available: [String]) -> [String] {
+        isAuto(pool: pool) ? available : pool
+    }
+
     /// The caption that states the semantics under the pool chips.
     static func caption(pool: [String]) -> String {
         isAuto(pool: pool)

@@ -13,6 +13,13 @@ import SwiftUI
 struct GlassField: View {
     @Binding var text: String
     var placeholder: String
+    /// A concise, STABLE accessible name (QA-012): a long punctuation-heavy
+    /// placeholder must not become the control's VoiceOver name. Defaults to the
+    /// placeholder for callers that don't separate name from hint.
+    var accessibilityName: String?
+    /// The accessible HINT — the state-honest action description (create vs
+    /// continue), kept separate from the name so it is not truncated/false.
+    var accessibilityHintText: String?
     var maxLines: Int = 6
     var onSubmit: () -> Void = {}
     @FocusState private var focused: Bool
@@ -41,7 +48,8 @@ struct GlassField: View {
                     .strokeBorder(focused ? Theme.accent.opacity(ringAlpha) : Theme.separator, lineWidth: focused ? ringWidth : 1)
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: focused)
             )
-            .accessibilityLabel(placeholder)
+            .accessibilityLabel(accessibilityName ?? placeholder)
+            .accessibilityHint(accessibilityHintText ?? "")
     }
 }
 
@@ -86,6 +94,10 @@ struct ProjectChip: View {
     let recent: [String]
     let onPick: (String) -> Void
     let onBrowse: () -> Void
+    /// Explicit transition back to no-project Ask (QA-006). Keeps this the ONE
+    /// owner-locked project surface (INV-101); the destination Ask-only state
+    /// already works — this is the missing way INTO it after a project was used.
+    var onNoProject: () -> Void = {}
 
     var body: some View {
         ChipMenu(
@@ -98,6 +110,14 @@ struct ProjectChip: View {
             Image(systemName: hasProject ? "folder.fill" : "folder.badge.questionmark").imageScale(.small)
             Text(name).lineLimit(1)
         } menu: {
+            // A stable row (above the MRU) so no-project stays reachable even with
+            // no recents; disabled when already scopeless so it never no-ops.
+            Button { onNoProject() } label: {
+                Label("No project (Ask only)", systemImage: "questionmark.folder")
+            }
+            .disabled(!hasProject)
+            .help("Start a general read-only Ask with no project scope.")
+            Divider()
             if !recent.isEmpty {
                 Section(bound ? "Switch project — starts a new thread" : "Recent projects") {
                     ForEach(recent, id: \.self) { path in

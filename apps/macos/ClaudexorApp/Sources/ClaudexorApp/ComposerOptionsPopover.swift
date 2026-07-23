@@ -80,7 +80,7 @@ extension ThreadsScreen {
             }
             OptionSection(title: "Models — per harness for THIS turn") {
                 ComposerModelsSection(
-                    families: resolvedPoolFamilies.isEmpty ? [primaryFamily].compactMap { $0 } : resolvedPoolFamilies,
+                    families: effectiveIncludedFamilies,
                     primary: primaryFamily,
                     route: composerModelsRoute,
                     selections: $composerModels,

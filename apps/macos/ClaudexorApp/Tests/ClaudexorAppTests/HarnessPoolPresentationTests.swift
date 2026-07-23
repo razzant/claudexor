@@ -54,4 +54,20 @@ import Testing
         #expect(next.isEmpty)
         #expect(HarnessPoolPresentation.isAuto(pool: next))
     }
+
+    /// QA-011: the included-family set the model rows consume is the SAME set the
+    /// chips highlight — Auto expands to all available, an explicit subset stays
+    /// itself. This is what makes per-harness model rows appear under Auto instead
+    /// of a blank section.
+    @Test func includedFamiliesMirrorsTheChipHighlight() {
+        // Auto (empty pool): every available harness is an included row.
+        #expect(HarnessPoolPresentation.includedFamilies(pool: [], available: available) == available)
+        // Explicit subset: exactly the subset, in its order — no Auto expansion.
+        let subset = ["claude", "codex"]
+        #expect(HarnessPoolPresentation.includedFamilies(pool: subset, available: available) == subset)
+        // Every included family is also chip-highlighted (the two never disagree).
+        for id in HarnessPoolPresentation.includedFamilies(pool: [], available: available) {
+            #expect(HarnessPoolPresentation.isIncluded(id, pool: [], available: available))
+        }
+    }
 }
