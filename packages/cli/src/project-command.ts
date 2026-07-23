@@ -69,14 +69,28 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
             );
         return 0;
       }
-      // Fetch a single durable output file; stream its bytes to stdout.
+      // Fetch a single durable output file. Text mode streams the raw bytes to
+      // stdout; `--json` mode must keep the exactly-one-JSON-object contract, so
+      // the bytes ride as base64 inside a self-contained envelope rather than
+      // corrupting stdout with raw (possibly binary) content (QA-060).
       const response = await controlApiFetch(addr, `${base}/${encodeURIComponentPath(outputPath)}`);
       if (!response.ok) {
         const data = await responseJson(response);
         return failure(json, response.status, data);
       }
       const bytes = Buffer.from(await response.arrayBuffer());
-      process.stdout.write(bytes);
+      if (json) {
+        printJson({
+          ok: true,
+          projectId: id,
+          path: outputPath,
+          encoding: "base64",
+          byteLength: bytes.length,
+          content: bytes.toString("base64"),
+        });
+      } else {
+        process.stdout.write(bytes);
+      }
       return 0;
     }
     return printUsageError(json, "usage: claudexor project list|register|relink|outputs");

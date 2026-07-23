@@ -30,6 +30,7 @@ import {
   ControlSetupJob,
 } from "@claudexor/schema";
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
+import { controlProblemError } from "./cli-error.js";
 import { profilesCommand, secretsCommand } from "./credential-commands.js";
 import {
   authSourceAvailability,
@@ -464,11 +465,15 @@ export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<
     const response = await controlApiFetch(addr, path, init);
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      const detail =
-        body && typeof body === "object" && "message" in body
-          ? String((body as { message: unknown }).message)
-          : `HTTP ${response.status}`;
-      throw new Error(`journal recovery request failed: ${detail}`);
+      // Preserve the typed server problem (code/retryable/fieldErrors/context)
+      // through the ONE projector instead of flattening it to a bare string
+      // (QA-063): the top-level projector renders the JSON envelope even when
+      // the run fails.
+      throw controlProblemError(
+        response.status,
+        body,
+        `journal recovery request failed (HTTP ${response.status})`,
+      );
     }
     return body;
   };

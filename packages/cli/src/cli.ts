@@ -38,6 +38,8 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { print, printJson, printJsonLine, printUsageError, statusGlyph } from "./cli-io.js";
+import { controlProblemError, minIntError, renderCliFailure } from "./cli-error.js";
+import { handleHelpRequest } from "./command-help.js";
 import { pickResumableThread } from "./thread-select.js";
 import {
   KNOWN_FLAGS,
@@ -399,7 +401,10 @@ async function orchestrate(
     const maxUsd = floatFlag(args, "max-usd");
     paidBudget = maxUsd === undefined ? undefined : { kind: "finite", maxUsd };
     nFlag = intFlag(args, "n");
+    // Structured min-value validation (GH #28): `--n 0` is a usage field error, not a Zod dump.
+    if (nFlag !== undefined && nFlag < 1) throw minIntError("n", 1);
     attemptsFlag = intFlag(args, "attempts");
+    if (attemptsFlag !== undefined && attemptsFlag < 1) throw minIntError("attempts", 1);
     delegate = flagBool(args, "delegate") ? true : undefined;
     council = flagBool(args, "council") ? true : undefined;
     resolvedSynthesis = synthesisMode(args);
@@ -432,7 +437,8 @@ async function orchestrate(
       resolvedOutputSchema = parsedSchema as Record<string, unknown>;
     }
   } catch (err) {
-    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+    // Projector: typed field errors / domain codes survive; a plain flag-parse Error is usage (exit 2).
+    return renderCliFailure(json, err, { defaultCategory: "usage", messagePrefix: "claudexor:" });
   }
   let tests: TestCommandInvocation[] | undefined;
   try {
@@ -459,7 +465,8 @@ async function orchestrate(
       synthesis: resolvedSynthesis,
     });
   } catch (err) {
-    return printUsageError(json, `claudexor: ${err instanceof Error ? err.message : String(err)}`);
+    // Preserves the typed `inline_secret_rejected` code (never echoing the token).
+    return renderCliFailure(json, err, { defaultCategory: "usage", messagePrefix: "claudexor:" });
   }
 
   if (delegate && mode !== "agent") {
@@ -835,18 +842,13 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     const text = await res.text();
     const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
     if (!res.ok) {
-      // A typed decision rejection (e.g. revert refused: tree diverged) carries
-      // its reason in `message`; transport/gate failures use `error`. Surface
-      // whichever is present so the concrete reason is never lost behind "HTTP 409".
-      const msg =
-        typeof data["error"] === "string"
-          ? (data["error"] as string)
-          : typeof data["message"] === "string"
-            ? (data["message"] as string)
-            : `decision failed (HTTP ${res.status})`;
-      if (json) printJson({ accepted: false, status: "rejected", message: msg });
-      else process.stderr.write(`claudexor decision: ${msg}\n`);
-      return 1;
+      // A typed decision rejection (revert_refused: tree diverged) rides through
+      // the projector with its code/retryable/bounded git-stderr context intact.
+      return renderCliFailure(
+        json,
+        controlProblemError(res.status, data, `decision failed (HTTP ${res.status})`),
+        { messagePrefix: "claudexor decision:" },
+      );
     }
     if (json) {
       printJson(data);
@@ -860,10 +862,7 @@ async function decisionCommand(args: ParsedArgs, json: boolean): Promise<number>
     }
     return data["accepted"] === true ? 0 : 1;
   } catch (err) {
-    process.stderr.write(
-      `claudexor decision: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
-    return 1;
+    return renderCliFailure(json, err, { messagePrefix: "claudexor decision:" });
   }
 }
 
@@ -966,19 +965,11 @@ function listCliArtifacts(root: string): string[] {
 // are projections of the command registry. Unknown flags FAIL LOUDLY: `--harnes
 // codex` must never silently run all harnesses.
 
-async function main(): Promise<number> {
-  const args = parseArgs(process.argv.slice(2));
-  // --version / --help are standard CLI affordances, not unknown flags.
-  if (flagBool(args, "version")) {
-    process.stdout.write(`${CLI_VERSION}\n`);
-    return 0;
-  }
-  if (flagBool(args, "help")) {
-    process.stdout.write(HELP);
-    return 0;
-  }
-  const json = flagBool(args, "json");
+async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
   const cmd = args._[0] ?? "help";
+  // `--help` resolves the COMMAND first (QA-057): scoped usage for a known verb,
+  // global help for a bare/`help` verb, a usage error (exit 2) for a typo.
+  if (flagBool(args, "help")) return handleHelpRequest(cmd, args._.length, json, CLI_VERSION);
   const unknownFlags = Object.keys(args.flags).filter((f) => !KNOWN_FLAGS.has(f));
   if (unknownFlags.length > 0) {
     const error = `claudexor: unknown flag(s): ${unknownFlags.map((f) => `--${f}`).join(", ")} (see \`claudexor help\`)`;
@@ -1462,9 +1453,27 @@ async function main(): Promise<number> {
   }
 }
 
+// The ONE top-level result/error projector (D-7, GH #28): any throw from any
+// command path is rendered by renderCliFailure (see cli-error.ts) into exactly
+// one JSON envelope or one stderr line, via the central category->exit-code
+// table. Commands that already print and return a code are unaffected.
+async function main(): Promise<number> {
+  const args = parseArgs(process.argv.slice(2));
+  if (flagBool(args, "version")) {
+    process.stdout.write(`${CLI_VERSION}\n`);
+    return 0;
+  }
+  const json = flagBool(args, "json");
+  try {
+    return await dispatch(args, json);
+  } catch (err) {
+    return renderCliFailure(json, err);
+  }
+}
+
 main()
   .then((code) => process.exit(code))
   .catch((err: unknown) => {
-    process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exit(1);
+    // Last-resort projector: still emit ONE envelope if the parse threw before json was known.
+    process.exit(renderCliFailure(process.argv.includes("--json"), err));
   });
