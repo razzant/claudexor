@@ -182,6 +182,7 @@ export function controlServices(
         primaryHarness?: string | null;
         credentialProfileId?: string | null;
         eligibleHarnesses?: string[];
+        access?: string | null;
       },
     ) => {
       const current = threads.getThread(id);
@@ -211,6 +212,12 @@ export function controlServices(
         primaryHarness: patch.primaryHarness,
         credentialProfileId: patch.credentialProfileId,
         eligibleHarnesses: patch.eligibleHarnesses,
+        // Sticky write scope: forward exactly like the sibling fields so an
+        // omitted access leaves it unchanged, a concrete value sets it, and null
+        // clears it back to the repo trust default. Dropping it here silently
+        // voided every access PATCH at HTTP 200 and let a de-escalated thread
+        // keep its stale scope for the next omitted-body turn (QA-037).
+        access: patch.access as any,
       });
     },
     trashThread: async (id: string) => threads.trashThread(id),

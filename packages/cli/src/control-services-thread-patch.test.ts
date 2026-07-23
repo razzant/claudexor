@@ -59,6 +59,50 @@ describe("thread PATCH forwarding (release wave round-7 tier1 blocker)", () => {
     rmSync(configDir, { recursive: true, force: true });
   });
 
+  it("updateThread forwards sticky access — set and null-clear reach the store (QA-037)", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "claudexor-thread-access-"));
+    const previous = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    let seen: Record<string, unknown> | undefined;
+    const threads = {
+      getThread: () => ({
+        credential_profile_id: null,
+        eligible_harnesses: [],
+        primary_harness: null,
+        access: "readonly",
+      }),
+      updateThread: (_id: string, patch: Record<string, unknown>) => {
+        seen = patch;
+        return { id: "th-1" };
+      },
+    };
+    const services = controlServices(
+      undefined as never,
+      undefined as never,
+      threads as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      async () => [],
+    );
+    // Elevation: a concrete sticky scope must reach the store, else the schema
+    // field is silently voided at HTTP 200 (the QA-037 partial-write class).
+    await services.updateThread("th-1", { access: "workspace_write" });
+    expect(seen).toMatchObject({ access: "workspace_write" });
+    // De-escalation to the repo trust default: null must survive as null, not
+    // be coerced to "leave unchanged" — a dropped clear leaves stale authority.
+    await services.updateThread("th-1", { access: null });
+    expect(seen).toHaveProperty("access", null);
+    // Omission semantics preserved: a title-only PATCH must not touch access.
+    await services.updateThread("th-1", { title: "renamed" });
+    expect(seen?.access).toBeUndefined();
+    if (previous === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+    else process.env.CLAUDEXOR_CONFIG_DIR = previous;
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
   it("rejects a profile that is incompatible with any explicit pool lane", async () => {
     const configDir = mkdtempSync(join(tmpdir(), "claudexor-thread-profile-"));
     const previous = process.env.CLAUDEXOR_CONFIG_DIR;
