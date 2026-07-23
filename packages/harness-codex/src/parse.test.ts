@@ -110,6 +110,43 @@ describe("parseCodexEvent", () => {
     expect(() => HarnessEvent.parse(out?.[0])).not.toThrow();
   });
 
+  it("treats search-family exit code 1 as a benign empty result, not an error", () => {
+    const result = (command: string, exit_code: number) =>
+      parseCodexEvent(
+        {
+          type: "item.completed",
+          item: {
+            id: "s1",
+            type: "command_execution",
+            command,
+            exit_code,
+            status: exit_code === 0 ? "completed" : "failed",
+          },
+        },
+        "s1",
+      )?.[0];
+    // rg/grep exit 1 = the documented "no matches" outcome: ok, exit code kept.
+    const rgNoMatch = result("rg TODO src", 1);
+    expect(rgNoMatch?.tool?.status).toBe("ok");
+    expect(rgNoMatch?.tool?.exit_code).toBe(1);
+    expect(rgNoMatch?.tool?.error_summary).toBeUndefined();
+    expect(rgNoMatch?.text).toBe("tool_result");
+    expect(() => HarnessEvent.parse(rgNoMatch)).not.toThrow();
+    expect(result("grep -r pattern .", 1)?.tool?.status).toBe("ok");
+    // exit >= 2 is a REAL search error (bad flags, unreadable paths).
+    expect(result("rg --bogus src", 2)?.tool?.status).toBe("error");
+    // Non-search commands keep exit 1 = error.
+    expect(result("pnpm test", 1)?.tool?.status).toBe("error");
+    // `find` is NOT grep-family: it exits 0 on a genuine no-match and
+    // reserves exit 1 for REAL errors (bad path, permission denied) — the
+    // carve-out must not mask those (INV-043).
+    const findError = result("find /nonexistent -name x", 1);
+    expect(findError?.tool?.status).toBe("error");
+    expect(findError?.tool?.error_summary).toBeDefined();
+    // Leading token only: a chain fronted by a non-search command stays error.
+    expect(result("cd src && rg TODO", 1)?.tool?.status).toBe("error");
+  });
+
   it("maps failed web searches to error tool_results", () => {
     const out = parseCodexEvent(
       {

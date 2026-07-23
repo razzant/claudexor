@@ -5105,10 +5105,21 @@ export class Orchestrator {
     }
     const unrecovered = unrecoveredToolErrors(telemetry);
     const webBlocked = webUnsatisfied(telemetry);
+    // Same deliverable-presence signal as the explorer path (which computes
+    // it from the redacted report): the planner's contracted deliverable is
+    // the text it produced. redactSecrets never empties a non-empty string,
+    // so this stays byte-faithful to the explorer's boolean.
+    const deliverablePresent = redactSecrets(answer.text()).length > 0;
     if (!harnessError && webBlocked) {
       harnessError = `web evidence unsatisfied: ${telemetry.web.errorSummary ?? (telemetry.web.attempted ? "web tool failed without verified recovery" : "web evidence required but never attempted")}`;
     }
-    if (!harnessError && unrecovered.length > 0) {
+    // Aligned with the explorer path's existing semantics (INV-043/INV-044):
+    // an unrecovered non-web tool error on an attempt that DELIVERED its plan
+    // is disclosed warning evidence — setAttemptOutcome lands it as
+    // success_with_warnings — never a terminal failure. Only a deliverable-less
+    // attempt escalates the first unrecovered error to a hard failure.
+    // Required-but-unsatisfied web evidence keeps its own hard gate above.
+    if (!harnessError && unrecovered.length > 0 && !deliverablePresent) {
       const first = unrecovered[0] as ToolErrorRecord;
       harnessError = `${first.tool} failed without recovery: ${first.summary}`;
     }
