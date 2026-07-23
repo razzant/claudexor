@@ -380,6 +380,7 @@ export const RunFailure = z
         "auth",
         "harness_unavailable",
         "harness_error",
+        "config_error",
         "budget",
         "policy",
         "cancelled",
@@ -388,7 +389,7 @@ export const RunFailure = z
       ])
       .default("unknown")
       .describe(
-        "Typed failure category (validation, project, auth, harness, budget, policy, cancelled, internal, unknown).",
+        "Typed failure category (validation, project, auth, harness, config, budget, policy, cancelled, internal, unknown). config_error is a settings/routing misconfiguration (e.g. quality routing with no comparable tier), corrected by changing configuration, not by re-auth or waiting for a harness.",
       ),
     code: RunFailureCode.nullable()
       .default(null)

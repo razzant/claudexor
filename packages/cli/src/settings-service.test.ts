@@ -91,6 +91,44 @@ describe("assertSettingsPatchValid", () => {
     }
   });
 
+  it("D-9/#22: merged-effective quality routing with zero tiers is a 4xx config_error at write", async () => {
+    const emptyTiers = ControlSettingsUpdateRequest.parse({}).qualityTiers ?? {};
+    // (a) Patch flips the goal to quality over empty stored tiers → refused.
+    await expect(
+      assertSettingsPatchValid(ControlSettingsUpdateRequest.parse({ routingGoal: "quality" }), {
+        goal: "auto",
+        qualityTiers: emptyTiers,
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "config_error" });
+    // (b) Clearing the tiers while quality is already active → refused.
+    const oneTier = ControlSettingsUpdateRequest.parse({
+      qualityTiers: { implement: [[{ harness: "codex", model: "gpt-5.5", effort: "high" }]] },
+    }).qualityTiers!;
+    await expect(
+      assertSettingsPatchValid(ControlSettingsUpdateRequest.parse({ qualityTiers: {} }), {
+        goal: "quality",
+        qualityTiers: oneTier,
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "config_error" });
+    // (c) A valid tier set with a quality goal is accepted.
+    await expect(
+      assertSettingsPatchValid(
+        ControlSettingsUpdateRequest.parse({
+          routingGoal: "quality",
+          qualityTiers: { implement: [[{ harness: "codex", model: "gpt-5.5", effort: "high" }]] },
+        }),
+        { goal: "auto", qualityTiers: emptyTiers },
+      ),
+    ).resolves.toBeUndefined();
+    // (d) The stored tiers carry the goal even when the patch omits them.
+    await expect(
+      assertSettingsPatchValid(ControlSettingsUpdateRequest.parse({ routingGoal: "quality" }), {
+        goal: "auto",
+        qualityTiers: oneTier,
+      }),
+    ).resolves.toBeUndefined();
+  }, 30_000); // codex discover() spawns the vendor CLI to validate the tier route
+
   it("rejects the retired Active-account patch key at the strict schema (F1: Active removed)", () => {
     // The Active account concept is gone: the per-harness patch no longer
     // accepts activeProfileId, so a strict parse 400s rather than persisting it.

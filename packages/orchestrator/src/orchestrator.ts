@@ -503,6 +503,30 @@ export function isFullAccess(access: AccessProfile): boolean {
   return access === "full" || access === "external_sandbox_full";
 }
 
+/**
+ * A routing preflight refusal (`RoutingPreflightError`: quality routing with no
+ * comparable user-declared tier for the intent) is a CONFIGURATION error, not a
+ * harness-availability problem (A-1/D-9/#22). Classifying it as
+ * `harness_unavailable` sent the operator to re-auth or wait for a harness; the
+ * real fix is to configure a tier or change the routing goal. Detected by the
+ * typed `code` (robust across duplicate `@claudexor/budget` package copies) so
+ * EVERY strategy's routing catch (ask/agent/plan/deep-scan/council) classifies
+ * it identically. Returns the failure category + matching remediation.
+ */
+export function routingFailureClassification(err: unknown): {
+  category: "config_error" | "harness_unavailable";
+  nextActions?: string[];
+} {
+  const isPreflightRefusal =
+    !!err &&
+    typeof err === "object" &&
+    (err as { code?: unknown }).code === "routing_preflight_refused";
+  if (isPreflightRefusal) {
+    return { category: "config_error", nextActions: harnessFailureNextActions("config_error") };
+  }
+  return { category: "harness_unavailable" };
+}
+
 export interface RoutedAdapter {
   adapter: HarnessAdapter;
   adapterAccess: AccessProfile;
@@ -2982,11 +3006,15 @@ export class Orchestrator {
         join(paths.contextDir, "context_error.md"),
         `# Routing Error\n\n${message}\n`,
       );
+      // A routing preflight refusal is a config_error, not harness_unavailable
+      // (A-1/#22): classify identically across every strategy's routing catch.
+      const routingFailure = routingFailureClassification(err);
       writeFailure(store, paths, {
         phase: "routing",
-        category: "harness_unavailable",
+        category: routingFailure.category,
         safeMessage: message,
         runDir: paths.root,
+        ...(routingFailure.nextActions ? { nextActions: routingFailure.nextActions } : {}),
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
@@ -4709,11 +4737,15 @@ export class Orchestrator {
         join(paths.contextDir, "context_error.md"),
         `# Routing Error\n\n${message}\n`,
       );
+      // A routing preflight refusal is a config_error, not harness_unavailable
+      // (A-1/#22): classify identically across every strategy's routing catch.
+      const routingFailure = routingFailureClassification(err);
       writeFailure(store, paths, {
         phase: "routing",
-        category: "harness_unavailable",
+        category: routingFailure.category,
         safeMessage: message,
         runDir: paths.root,
+        ...(routingFailure.nextActions ? { nextActions: routingFailure.nextActions } : {}),
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
@@ -5918,11 +5950,15 @@ export class Orchestrator {
         join(paths.contextDir, "context_error.md"),
         `# Routing Error\n\n${message}\n`,
       );
+      // A routing preflight refusal is a config_error, not harness_unavailable
+      // (A-1/#22): classify identically across every strategy's routing catch.
+      const routingFailure = routingFailureClassification(err);
       writeFailure(store, paths, {
         phase: "routing",
-        category: "harness_unavailable",
+        category: routingFailure.category,
         safeMessage: message,
         runDir: paths.root,
+        ...(routingFailure.nextActions ? { nextActions: routingFailure.nextActions } : {}),
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
@@ -6468,11 +6504,15 @@ export class Orchestrator {
         join(paths.contextDir, "context_error.md"),
         `# Routing Error\n\n${message}\n`,
       );
+      // A routing preflight refusal is a config_error, not harness_unavailable
+      // (A-1/#22): classify identically across every strategy's routing catch.
+      const routingFailure = routingFailureClassification(err);
       writeFailure(store, paths, {
         phase: "routing",
-        category: "harness_unavailable",
+        category: routingFailure.category,
         safeMessage: message,
         runDir: paths.root,
+        ...(routingFailure.nextActions ? { nextActions: routingFailure.nextActions } : {}),
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),

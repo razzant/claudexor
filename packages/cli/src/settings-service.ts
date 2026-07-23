@@ -11,6 +11,8 @@
 import type {
   ControlSettingsUpdateRequest,
   GlobalConfig as GlobalConfigT,
+  QualityTierSet,
+  RoutingGoal,
 } from "@claudexor/schema";
 import { GlobalConfig } from "@claudexor/schema";
 import { validateModel } from "@claudexor/core";
@@ -67,7 +69,35 @@ function badRequest(message: string): never {
   throw Object.assign(new Error(message), { status: 400 });
 }
 
-export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest): Promise<void> {
+/**
+ * A settings MISCONFIGURATION refusal (D-9/#22 server half): a typed 4xx that
+ * carries `code: "config_error"` so the request boundary projects it as a
+ * config_error problem (never a 500, never a silent accept). Distinct from
+ * `badRequest` so the quality-without-tiers refusal reads as a configuration
+ * error the operator fixes by changing settings, mirroring the runtime
+ * RoutingPreflightError → config_error classification the strategies apply.
+ */
+function configError(message: string): never {
+  throw Object.assign(new Error(message), { status: 400, code: "config_error" });
+}
+
+/** Total user-declared quality tiers across every intent. Zero means quality
+ * routing can never rank a route (the router refuses every quality run at
+ * preflight), so persisting `goal: quality` with zero tiers is unroutable. */
+function totalQualityTierCount(tiers: QualityTierSet): number {
+  return Object.values(tiers).reduce((sum, list) => sum + (list?.length ?? 0), 0);
+}
+
+/**
+ * The effective GLOBAL routing this write would persist: the patch's field when
+ * present, otherwise the currently-stored value. `qualityTiers` REPLACES
+ * wholesale exactly as the persist path merges it (control-services
+ * updateSettings), so a patch clearing tiers ({}) is honored here too.
+ */
+export async function assertSettingsPatchValid(
+  p: ControlSettingsUpdateRequest,
+  current?: { goal: RoutingGoal; qualityTiers: QualityTierSet },
+): Promise<void> {
   const realIds = new Set(buildRegistry({ includeFakes: false }).keys());
   const realList = [...realIds].sort().join(", ");
   if (p.primaryHarness) {
@@ -153,6 +183,24 @@ export async function assertSettingsPatchValid(p: ControlSettingsUpdateRequest):
             : `harness '${id}' does not accept effort '${patch.effort}' (declared ladder: ${ladder.join(", ")})`,
         );
       }
+    }
+  }
+  // D-9/#22 server half: validate the MERGED EFFECTIVE routing, not just the
+  // patch. If the write would leave `goal: quality` with zero configured tiers
+  // across every intent, the engine would refuse EVERY quality run at preflight
+  // (router `RoutingPreflightError`) and map it to a runtime failure. Refuse at
+  // write with a typed 4xx config_error instead — whether the patch flips the
+  // goal to quality over empty stored tiers, or clears the tiers while quality
+  // is already active. The per-intent narrower case (tiers for some intents but
+  // not the one a run uses) still surfaces at runtime, now classified as
+  // config_error by the strategies.
+  if (current) {
+    const effectiveGoal = p.routingGoal ?? current.goal;
+    const effectiveTiers = p.qualityTiers ?? current.qualityTiers;
+    if (effectiveGoal === "quality" && totalQualityTierCount(effectiveTiers) === 0) {
+      configError(
+        "quality routing requires at least one configured quality tier; configure a tier (via `claudexor settings`) or choose auto/economy routing — nothing was saved",
+      );
     }
   }
 }

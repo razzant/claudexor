@@ -59,6 +59,7 @@
                           "auth",
                           "harness_unavailable",
                           "harness_error",
+                          "config_error",
                           "budget",
                           "policy",
                           "cancelled",
@@ -66,7 +67,7 @@
                           "unknown"
                         ],
                         "default": "unknown",
-                        "description": "Typed failure category (validation, project, auth, harness, budget, policy, cancelled, internal, unknown)."
+                        "description": "Typed failure category (validation, project, auth, harness, config, budget, policy, cancelled, internal, unknown). config_error is a settings/routing misconfiguration (e.g. quality routing with no comparable tier), corrected by changing configuration, not by re-auth or waiting for a harness."
                       },
                       "code": {
                         "anyOf": [

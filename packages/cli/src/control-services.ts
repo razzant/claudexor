@@ -530,7 +530,14 @@ export function controlServices(
     },
     updateSettings: async (patch: unknown) => {
       const p = ControlSettingsUpdateRequest.parse(patch ?? {});
-      await assertSettingsPatchValid(p);
+      // Validate the MERGED EFFECTIVE routing (D-9/#22 server half): the current
+      // stored goal/tiers are folded with the patch so a quality goal left with
+      // zero tiers is refused at write with a typed config_error.
+      const currentRouting = loadConfig(NO_PROJECT_ROOT).global.routing;
+      await assertSettingsPatchValid(p, {
+        goal: currentRouting.goal,
+        qualityTiers: currentRouting.quality_tiers,
+      });
       const nullableName = (
         value: string | null | undefined,
         current: string | null,

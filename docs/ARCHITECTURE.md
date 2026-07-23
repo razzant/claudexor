@@ -1436,6 +1436,18 @@ tie-breaker. Credential transport alone never proves a route free. Typed rate
 limits create cooldowns; unknown quota remains eligible and is never rendered
 as full headroom.
 
+Quality routing needs at least one comparable user-declared tier for the run's
+intent, or the ranker refuses at preflight (`RoutingPreflightError`). This is a
+CONFIGURATION error, not a harness-availability one, and is enforced on BOTH
+sides (D-9/#22): the daemon `POST /v2/settings` write validates the MERGED
+EFFECTIVE routing and returns a typed 4xx `config_error` when the write would leave
+`goal: quality` with zero configured tiers (whether the patch flips the goal or
+clears the tiers), so an unroutable goal is never persisted; and at run time the
+strategies (ask / agent / plan / deep-scan / council) classify a
+`RoutingPreflightError` as a `config_error` failure — with configuration
+remediation, never a re-auth/harness-wait prompt — rather than
+`harness_unavailable`.
+
 Routing rationale: pool ordering records a typed `RouteRankingRationale` ONCE as
 run evidence (`RunTelemetry.routing_rationale`), not an event — the ordered pool,
 the ids dropped by `paid_fallback`/cooldown, the decisive `reason`
