@@ -1715,9 +1715,15 @@ code touching one of these areas must honor it or change it explicitly here.
   writer of a run directory; external writers into the external runtime
   namespace are unsupported.
 - The plan lifecycle parses the planner's instructed `## Open Questions` block
-  by delimiters (never as governance); output deviating from the instructed
-  format degrades to free-text questions (or an `unverified` readiness when no
-  block parses) instead of failing the plan run.
+  by delimiters (never as governance), bounded to that block: once it contains
+  any recognized `[single]`/`[multi]`/`[text]` bullet the block is STRUCTURED,
+  so only tagged bullets (and a terminal `(none)`) are questions and the first
+  nonconforming top-level bullet ends the set (QA-016 — an adapter that appends
+  ordinary todo bullets after the tagged block, such as Cursor's empty-`planUri`
+  recovery, can no longer fabricate owner questions). A wholly-untagged block
+  keeps the tolerant legacy degradation to free-text/single-choice questions;
+  output with no parseable block is an `unverified` readiness. No shape fails
+  the plan run.
 - Startup crash GC sweeps orphaned envelopes only under project roots recorded
   in the daemon command journal; envelopes created by CLI/MCP/ACP runs
   in roots the daemon never saw are reclaimed only by their own process.
