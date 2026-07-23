@@ -2,17 +2,15 @@ import Foundation
 import CryptoKit
 import ClaudexorKit
 
-// MARK: - Runtime pointer reader (M7 — 3.0 READ side only)
+// MARK: - Runtime pointer reader + install FS ops (M7 / D-2)
 //
-// Owns the on-disk `~/.claudexor/runtime/` layout, but for 3.0 only the READ
-// side ships: resolving the ACTIVE runtime pointer (`current.json`) so
-// DaemonLauncher can launch an installed closure and the update check can name
-// the running engine version. The WRITE side of an install (sha-verify, unpack,
-// atomic pointer swap, last-known-good rollback) and the daemon-lifecycle
-// process signalling are DEFERRED to 3.1 per owner-locked D1 — that
-// security-sensitive install machinery is out of 3.0 entirely, not half-wired.
-// Nothing in 3.0 writes `current.json`; when absent (the 3.0 norm) callers fall
-// back to the app-bundled runtime.
+// Owns the on-disk `~/.claudexor/runtime/` layout. The READ side resolves the
+// ACTIVE runtime pointer (`current.json`) through the QA-073 containment guard so
+// DaemonLauncher launches only a contained installed closure, else the
+// app-bundled runtime. The WRITE side (sha-verify, full unpack, quarantine
+// strip, atomic pointer swap, last-known-good rollback) backs
+// RuntimeInstallCoordinator's in-place install (D-2). When `current.json` is
+// absent or fails containment, callers fall back to the bundled runtime.
 
 /// Errors surfaced by the runtime update CHECK. Messages are honest and
 /// user-facing.

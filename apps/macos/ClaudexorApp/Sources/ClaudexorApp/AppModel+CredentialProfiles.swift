@@ -272,7 +272,87 @@ extension AppModel {
         case let .appUpdateRequired(minAppVersion, _):
             runtimeUpdateStatus = "App update required — install the latest app (needs v\(minAppVersion) or newer), then re-check."
         case let .unknown(reason):
-            runtimeUpdateStatus = "Update status unknown: \(reason)"
+            // Dev-build polish: a source/SwiftPM build reports engine version
+            // "dev", which is legitimately unorderable — say so plainly instead
+            // of surfacing the raw "'dev' is not a valid version" parser detail.
+            // A genuinely-unparseable NON-dev version keeps the honest unknown.
+            runtimeUpdateStatus =
+                resolvedRunningEngineVersion() == "dev"
+                ? "Dev build — update check not applicable"
+                : "Update status unknown: \(reason)"
+        }
+    }
+
+    // MARK: Engine-runtime auto-install (D-2)
+
+    /// Resolve the closure tarball's release-asset download URL for a verified
+    /// manifest (the asset named `manifest.archiveName` on the latest release).
+    private func resolveClosureURL(
+        transport: RuntimeReleaseTransport, archiveName: String
+    ) async -> URL? {
+        guard let fetch = try? await transport.fetchLatestRelease(etag: nil),
+            let body = fetch.data, let release = GitHubRelease.parse(body),
+            let asset = release.asset(named: archiveName),
+            let url = URL(string: asset.browserDownloadURL)
+        else { return nil }
+        return url
+    }
+
+    /// One-click in-place engine-runtime install (D-2). Requires a signature-
+    /// VERIFIED `.available` decision from the last check; downloads the bound
+    /// closure, then runs the full RuntimeInstallCoordinator sequence (verify →
+    /// unpack → probe → idle-gate → stop → atomic swap → relaunch → handshake →
+    /// rollback). Progress/failure is surfaced honestly via RuntimeInstallPhase.
+    func installRuntimeUpdate() async {
+        guard !runtimeInstalling else { return }
+        guard case let .available(manifest)? = await runtimeUpdater?.cachedDecision else {
+            runtimeInstallStatus = "No verified update to install."
+            return
+        }
+        runtimeInstalling = true
+        runtimeInstallStatus = "Preparing update to v\(manifest.version)…"
+        defer { runtimeInstalling = false }
+
+        let transport = makeRuntimeTransport()
+        guard let assetURL = await resolveClosureURL(transport: transport, archiveName: manifest.archiveName)
+        else {
+            runtimeInstallStatus = "Could not locate the runtime download for v\(manifest.version)."
+            return
+        }
+        let coordinator = RuntimeInstallCoordinator(
+            installer: RuntimeInstaller(),
+            transport: transport,
+            daemon: makeDaemonControl(),
+            onPhase: { [weak self] phase in
+                Task { @MainActor in self?.applyInstallPhase(phase) }
+            })
+        do {
+            let version = try await coordinator.install(manifest: manifest, assetURL: assetURL)
+            runtimeInstallStatus = "Updated to engine v\(version)."
+            // The pointer + engine changed; re-check so the chip clears.
+            await checkForRuntimeUpdate()
+        } catch {
+            runtimeInstallStatus =
+                (error as? RuntimeInstallError)?.errorDescription
+                ?? (error as? RuntimeUpdateError)?.errorDescription
+                ?? "Update failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Map an install phase to honest chip status text (per DESIGN_SYSTEM: real
+    /// state, never a fabricated success).
+    private func applyInstallPhase(_ phase: RuntimeInstallPhase) {
+        switch phase {
+        case .downloading: runtimeInstallStatus = "Downloading engine runtime…"
+        case .verifying: runtimeInstallStatus = "Verifying signature and checksum…"
+        case .unpacking: runtimeInstallStatus = "Unpacking…"
+        case .probing: runtimeInstallStatus = "Checking the new runtime…"
+        case .awaitingIdle: runtimeInstallStatus = "Waiting for running jobs to finish…"
+        case .swapping: runtimeInstallStatus = "Switching to the new runtime…"
+        case .relaunching: runtimeInstallStatus = "Relaunching the engine…"
+        case let .done(version): runtimeInstallStatus = "Updated to engine v\(version)."
+        case let .rolledBack(reason): runtimeInstallStatus = "Update rolled back: \(reason)."
+        case let .failed(reason): runtimeInstallStatus = "Update failed: \(reason)."
         }
     }
 
