@@ -89,6 +89,15 @@
             "exit_code": {
               "type": "integer",
               "description": "Process exit code for command tools, when known."
+            },
+            "web_retrieval": {
+              "type": "string",
+              "enum": [
+                "verified",
+                "dispatched",
+                "failed"
+              ],
+              "description": "Adapter-stamped web/browser retrieval outcome (verified/dispatched/failed), distinct from the tool-call status lifecycle."
             }
           },
           "required": [

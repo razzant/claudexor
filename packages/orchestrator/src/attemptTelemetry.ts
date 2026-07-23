@@ -57,9 +57,29 @@ export interface WebEvidenceState {
   attempted: boolean;
   satisfied: boolean;
   failed: boolean;
+  /** QA-042: retrieval strength — "verified" once any web result carried a
+   * typed successful retrieval, else "dispatched" once web activity completed
+   * with no typed outcome (codex), else "none". Never downgrades verified. */
+  verification: "verified" | "dispatched" | "none";
   tool: string | null;
   target: string | null;
   errorSummary: string | null;
+}
+
+/**
+ * QA-040: runtime browser-MCP evidence for one attempt. `requested` is set when
+ * the engine armed the browser injection (a fixed `browser` server namespace).
+ * A browser tool call/result matched to that injected server flips attempted/
+ * satisfied/failed — so a successful browser navigation is recognized as
+ * trusted live-web activity even though adapters normalize browser calls as
+ * `kind:"mcp"`. Spoof-resistant: only the engine-injected server name matches.
+ */
+export interface BrowserEvidenceState {
+  requested: boolean;
+  serverName: string | null;
+  attempted: boolean;
+  satisfied: boolean;
+  failed: boolean;
 }
 
 /**
@@ -109,6 +129,9 @@ export interface AttemptTelemetry {
   rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
   /** Delegation-belt runtime readiness (QA-024); requested=false on non-delegate attempts. */
   delegationBelt: DelegationBeltState;
+  /** Browser-MCP runtime evidence (QA-040); requested=false unless the browser
+   * injection was armed for this attempt. */
+  browser: BrowserEvidenceState;
   /** D-16: a terminal `capacity_exhausted` context signal was observed this
    * attempt (never a transient; consumed by the finalizer, not the retry loop). */
   contextExhausted: boolean;
@@ -147,6 +170,10 @@ export function createAttemptTelemetry(
   /** The delegation-belt MCP server name injected into THIS attempt's spec, or
    * null when no belt was injected (QA-024). Non-null marks the belt requested. */
   beltServerName: string | null = null,
+  /** The browser MCP server name armed for THIS attempt (fixed `browser`
+   * namespace), or null when the browser was not injected (QA-040). Non-null
+   * marks the browser requested/armed. */
+  browserServerName: string | null = null,
 ): AttemptTelemetry {
   return {
     requestRequirements,
@@ -160,6 +187,7 @@ export function createAttemptTelemetry(
       attempted: false,
       satisfied: false,
       failed: false,
+      verification: "none",
       tool: null,
       target: null,
       errorSummary: null,
@@ -178,6 +206,13 @@ export function createAttemptTelemetry(
       ready: false,
       failed: false,
       toolEvidence: false,
+    },
+    browser: {
+      requested: browserServerName !== null,
+      serverName: browserServerName,
+      attempted: false,
+      satisfied: false,
+      failed: false,
     },
     contextExhausted: false,
     contextExhaustedCause: null,
@@ -228,6 +263,38 @@ function observeBeltStartup(t: AttemptTelemetry, ev: HarnessEvent): void {
  */
 export function delegationBeltUnavailable(t: AttemptTelemetry): boolean {
   return t.delegationBelt.requested && t.delegationBelt.failed && !t.delegationBelt.toolEvidence;
+}
+
+/**
+ * QA-040: does this tool ref belong to the engine-armed browser MCP? Adapters
+ * normalize browser calls as `kind:"mcp"` (codex `browser:browser_navigate`,
+ * claude `mcp__browser__browser_navigate`), so the ToolKind cannot express
+ * "browser". Match on the ENGINE-INJECTED server namespace only — a user MCP
+ * server cannot spoof trusted browser evidence because the browser is matched
+ * solely when the engine armed it under its fixed injected name.
+ */
+function matchesBrowser(t: AttemptTelemetry, tool: { name: string; target?: string }): boolean {
+  const server = t.browser.serverName;
+  if (!t.browser.requested || !server) return false;
+  return tool.name.startsWith(`mcp__${server}__`) || (tool.target ?? "").startsWith(`${server}:`);
+}
+
+/**
+ * QA-040: the browser was armed but never called while generic web evidence
+ * satisfied the run — a legitimately policy-satisfied run (e.g. web_search
+ * answered) that nonetheless did not exercise the requested browser. Disclosure
+ * only: it must NOT fail the run.
+ */
+export function browserUnused(t: AttemptTelemetry): boolean {
+  return t.browser.requested && !t.browser.attempted && t.web.satisfied;
+}
+
+/** QA-042: raise the web retrieval strength, never downgrading a proven
+ * `verified`. A typed success promotes to verified; any other satisfied web
+ * activity is dispatch-strength (completed, content not typed-proven). */
+function bumpWebVerification(t: AttemptTelemetry, retrieval: string | undefined): void {
+  if (retrieval === "verified") t.web.verification = "verified";
+  else if (t.web.verification !== "verified") t.web.verification = "dispatched";
 }
 
 /**
@@ -339,6 +406,15 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       t.web.tool = tool.name;
       t.web.target = tool.target ?? t.web.target;
     }
+    // QA-040: an armed browser MCP call is trusted live-web ACTIVITY even though
+    // its kind is "mcp" — mark the browser attempted and count it as web
+    // attempted (a successful result below satisfies the generic web gate).
+    if (matchesBrowser(t, tool)) {
+      t.browser.attempted = true;
+      t.web.attempted = true;
+      t.web.tool = t.web.tool ?? tool.name;
+      t.web.target = tool.target ?? t.web.target;
+    }
     return;
   }
 
@@ -353,6 +429,10 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       t.web.attempted = true;
       t.web.tool = tool.name;
       t.web.target = tool.target ?? t.web.target;
+    }
+    if (matchesBrowser(t, tool)) {
+      t.browser.attempted = true;
+      t.web.attempted = true;
     }
     return;
   }
@@ -375,6 +455,19 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       t.web.errorSummary = redactSecrets(
         tool.error_summary ?? "web tool result marked error",
       ).slice(0, 1000);
+    }
+    // QA-040: a failed armed-browser call is browser activity that did not
+    // satisfy. It contributes web `attempted` (a call was made) and, since the
+    // browser is a live-egress channel, a web failure — but a later successful
+    // web/browser call still recovers the generic gate (the ok branch below).
+    if (matchesBrowser(t, tool)) {
+      t.browser.attempted = true;
+      t.browser.failed = true;
+      t.web.attempted = true;
+      t.web.failed = true;
+      t.web.errorSummary =
+        t.web.errorSummary ??
+        redactSecrets(tool.error_summary ?? "browser tool result marked error").slice(0, 1000);
     }
     return;
   }
@@ -417,6 +510,36 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       ? (t.toolErrors.find((e) => e.kind === "web" && !e.recovered)?.summary ?? t.web.errorSummary)
       : null;
     t.web.tool = tool.name;
+    t.web.target = tool.target ?? t.web.target;
+    // QA-042: the retrieval STRENGTH. A typed `verified` retrieval (claude
+    // WebFetch content) proves content; codex `web_search`/`open_page` stamp
+    // `dispatched` (completed, no typed fetch outcome — a hidden 502 is
+    // indistinguishable), so the gate is satisfied at DISPATCH strength only.
+    // Absent stamp is treated as dispatch (never claim verified without proof).
+    bumpWebVerification(t, tool.web_retrieval);
+  }
+  // QA-040: a successful armed-browser call is trusted live-web evidence. It
+  // satisfies the generic web gate AND records browser runtime evidence — a
+  // real navigation/screenshot is a typed success, so it is `verified` strength
+  // (unlike a dispatch-only codex web_search). A user MCP server cannot reach
+  // here: matchesBrowser only accepts the engine-injected server namespace.
+  if (matchesBrowser(t, tool)) {
+    t.browser.attempted = true;
+    t.browser.satisfied = true;
+    t.web.attempted = true;
+    t.web.satisfied = true;
+    t.web.verification = "verified";
+    // The recovery loop above already marked a matching earlier browser error
+    // recovered; recompute the disclosed failure rollup from what remains.
+    t.browser.failed = t.toolErrors.some(
+      (e) =>
+        e.kind === "mcp" &&
+        matchesBrowser(t, { name: e.tool, target: e.target ?? undefined }) &&
+        !e.recovered,
+    );
+    t.web.failed = t.toolErrors.some((e) => e.kind === "web" && !e.recovered) || t.browser.failed;
+    if (!t.web.failed) t.web.errorSummary = null;
+    t.web.tool = t.web.tool ?? tool.name;
     t.web.target = tool.target ?? t.web.target;
   }
 }
@@ -500,10 +623,22 @@ export function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
       attempted: t.web.attempted,
       satisfied: t.web.satisfied,
       status: webStatus(t),
+      verification: t.web.verification,
       tool: t.web.tool,
       target: t.web.target,
       error_summary: t.web.errorSummary,
     },
+    ...(t.browser.requested
+      ? {
+          browser_evidence: {
+            server_name: t.browser.serverName,
+            attempted: t.browser.attempted,
+            satisfied: t.browser.satisfied,
+            failed: t.browser.failed,
+            unused: browserUnused(t),
+          },
+        }
+      : {}),
     tool_errors_total: t.toolErrors.length,
     unrecovered_tool_errors: unrecovered.length,
     tool_errors: unrecovered
@@ -567,6 +702,7 @@ export function attemptTelemetryRecord(
       attempted: t.web.attempted,
       satisfied: t.web.satisfied,
       status: webStatus(t),
+      verification: t.web.verification,
       tool: t.web.tool,
       target: t.web.target,
       error_summary: t.web.errorSummary,
@@ -611,6 +747,19 @@ export function attemptTelemetryRecord(
             ready: t.delegationBelt.ready,
             failed: t.delegationBelt.failed,
             tool_evidence: t.delegationBelt.toolEvidence,
+          },
+        }
+      : {}),
+    // Only present when the browser was armed for this attempt (QA-040).
+    ...(t.browser.requested
+      ? {
+          browser: {
+            requested: t.browser.requested,
+            server_name: t.browser.serverName,
+            attempted: t.browser.attempted,
+            satisfied: t.browser.satisfied,
+            failed: t.browser.failed,
+            unused: browserUnused(t),
           },
         }
       : {}),
@@ -663,6 +812,7 @@ export function aggregateRunWebEvidence(
       attempted: false,
       satisfied: false,
       status: contract.external_context.web_required ? ("unverified" as const) : ("none" as const),
+      verification: "none" as const,
       tool: null,
       target: null,
       error_summary: null,

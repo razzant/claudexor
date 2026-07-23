@@ -2291,6 +2291,11 @@ export class Orchestrator {
     // attempt. A mixed pool leaves it off lanes that cannot host it, so this is
     // per-attempt truth, not the run-wide --delegate flag.
     const beltServerName = spec.extra_mcp_servers?.[0]?.name ?? null;
+    // QA-040: the browser MCP is injected under the fixed `browser` namespace
+    // (codex `mcp_servers.browser.*`, claude `mcp__browser__*`). Its presence in
+    // the spec marks the browser armed for THIS attempt — the telemetry fold
+    // then recognizes browser tool calls as trusted live-web evidence.
+    const browserServerName = spec.browser ? "browser" : null;
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
       contract.external_context.web_required ||
@@ -2300,6 +2305,7 @@ export class Orchestrator {
       [routed.browserRequirement, routed.denyRequirement],
       knobs.model,
       beltServerName,
+      browserServerName,
     );
     let activeSessionId = spec.session_id;
     const onAbort = () => {

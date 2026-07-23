@@ -1573,6 +1573,17 @@ macOS UI/UX SSOT. This section keeps only the engine-facing facts.
   available to the browser child. The injection is disclosed, the browser runs
   HEADED, and navigation snapshots land in the run artifact tree. Cursor/OpenCode/raw-api report
   `browser_tool: false` (honest — no injector wired).
+  Browser RUNTIME evidence (QA-040): adapters normalize browser calls as
+  `kind:"mcp"` (there is no `browser` ToolKind), so the attempt-telemetry web
+  fold recognizes a browser tool call as trusted live-web activity by matching
+  the ENGINE-INJECTED `browser` server namespace only (a user MCP server cannot
+  spoof it). A successful browser navigation therefore satisfies a required-web
+  gate (`web.verification: verified`) and records a typed
+  `browser: {attempted, satisfied, failed, unused}` receipt; a failed browser
+  call blocks required web with the real error rather than "web never attempted".
+  An armed-but-unused browser (generic `web_search` satisfied instead) is
+  disclosed as an unused-browser flag on that receipt — disclosure only, never a
+  run failure.
 
 ### Engine runtime updater (M7, D22/D23)
 

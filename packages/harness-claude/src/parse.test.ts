@@ -264,6 +264,41 @@ describe("parseClaudeEvent", () => {
     expect(() => HarnessEvent.parse(out[0])).not.toThrow();
   });
 
+  it("stamps a successful WebFetch result as a verified retrieval (QA-042)", () => {
+    const parse = createClaudeParser();
+    parse(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "toolu_wf", name: "WebFetch", input: { url: "https://x" } },
+          ],
+        },
+      },
+      "s1",
+    );
+    const out = parse(
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_wf",
+              content: [{ type: "text", text: "Page content here" }],
+            },
+          ],
+        },
+      },
+      "s1",
+    ) as HarnessEvent[];
+    expect(out[0]?.tool?.kind).toBe("web");
+    expect(out[0]?.tool?.status).toBe("ok");
+    // Claude exposes typed content -> a VERIFIED retrieval (unlike codex dispatch).
+    expect(out[0]?.tool?.web_retrieval).toBe("verified");
+    expect(() => HarnessEvent.parse(out[0])).not.toThrow();
+  });
+
   it("maps Claude policy-denied tool results to denied diagnostics", () => {
     const parse = createClaudeParser({ deniedTools: ["WebSearch"] });
     parse(

@@ -339,6 +339,13 @@ function parseClaudeEventStateful(
           status,
           error_summary: status === "error" ? detail || "tool result marked error" : undefined,
           content_summary: detail || undefined,
+          // QA-042: claude WebSearch/WebFetch return TYPED content with an
+          // is_error flag, so a successful web result is a VERIFIED retrieval
+          // (content present), not dispatch-only — unlike codex, which cannot
+          // expose the fetch outcome. A typed error is a failed retrieval.
+          ...(origin?.kind === "web"
+            ? { web_retrieval: status === "error" ? ("failed" as const) : ("verified" as const) }
+            : {}),
         };
         out.push({
           type: "tool_result",

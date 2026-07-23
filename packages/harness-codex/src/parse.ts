@@ -278,6 +278,12 @@ export function parseCodexEvent(
               error_summary: failed
                 ? summarizeCodexOutput(item.error) || "web search failed"
                 : undefined,
+              // QA-042: codex `exec --json` web_search/open_page items carry NO
+              // typed fetch outcome — a `completed` item can hide a 502. So a
+              // non-failed item is DISPATCH strength only (the call completed),
+              // never proof of retrieved content. Only an explicit `failed`
+              // status is a typed retrieval failure.
+              web_retrieval: failed ? "failed" : "dispatched",
             },
             payload: { status: item.status, item_id: item.id },
           },

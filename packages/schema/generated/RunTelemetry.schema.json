@@ -135,6 +135,16 @@
               "description": "Web-evidence verdict for an attempt/run: none (no web activity), attempted, satisfied (required evidence produced), failed, or unverified.",
               "default": "none"
             },
+            "verification": {
+              "type": "string",
+              "enum": [
+                "verified",
+                "dispatched",
+                "none"
+              ],
+              "default": "none",
+              "description": "Retrieval strength of the web evidence: verified (typed retrieval), dispatched (completed but no typed outcome), or none."
+            },
             "tool": {
               "type": [
                 "string",
@@ -319,6 +329,9 @@
                   },
                   "status": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/status"
+                  },
+                  "verification": {
+                    "$ref": "#/definitions/RunTelemetry/properties/web/properties/verification"
                   },
                   "tool": {
                     "$ref": "#/definitions/RunTelemetry/properties/web/properties/tool"
@@ -662,6 +675,46 @@
                 },
                 "additionalProperties": false,
                 "description": "Runtime readiness receipt for the injected Claudexor delegation belt on one attempt (QA-024)."
+              },
+              "browser": {
+                "type": "object",
+                "properties": {
+                  "requested": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "The engine armed (injected) the browser MCP for this attempt."
+                  },
+                  "server_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "description": "The injected browser MCP server name; null when not armed."
+                  },
+                  "attempted": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "At least one browser MCP tool call (matched to the injected server) occurred."
+                  },
+                  "satisfied": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "At least one browser MCP tool call succeeded (trusted live-web activity)."
+                  },
+                  "failed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "A browser MCP tool call failed and was not superseded by a success."
+                  },
+                  "unused": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "The browser was armed but never called while generic web evidence satisfied the run (disclosure only; not a failure)."
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Runtime browser-MCP evidence for one attempt (QA-040)."
               },
               "usage": {
                 "type": "object",

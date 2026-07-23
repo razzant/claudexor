@@ -42,6 +42,10 @@ describe("parseCodexEvent", () => {
     expect(webCall?.tool?.target).toContain("claudexor release");
     const webResult = events.find((e) => e.type === "tool_result" && e.tool?.kind === "web");
     expect(webResult?.tool?.status).toBe("ok");
+    // QA-042: a completed codex web_search has no typed fetch outcome, so it is
+    // DISPATCH strength only (a hidden 502 is indistinguishable) — never proof
+    // of retrieved content.
+    expect(webResult?.tool?.web_retrieval).toBe("dispatched");
 
     const usage = events.find((e) => e.type === "usage");
     expect(usage?.usage?.input_tokens).toBe(100);
@@ -128,6 +132,8 @@ describe("parseCodexEvent", () => {
     expect(out?.[0]?.tool?.kind).toBe("web");
     expect(out?.[0]?.tool?.status).toBe("error");
     expect(out?.[0]?.tool?.error_summary).toContain("search backend unavailable");
+    // QA-042: an explicit failed status is a typed retrieval failure.
+    expect(out?.[0]?.tool?.web_retrieval).toBe("failed");
   });
 
   it("maps turn/item progress events instead of dropping live progress", () => {

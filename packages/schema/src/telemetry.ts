@@ -47,6 +47,22 @@ export const WebEvidenceRecord = z
       .default(false)
       .describe("Whether the web-evidence requirement was satisfied."),
     status: WebEvidenceStatus.default("none"),
+    /**
+     * QA-042: retrieval STRENGTH of a satisfied/attempted web requirement,
+     * orthogonal to `status`. `verified` = at least one web result carried a
+     * typed successful retrieval (e.g. claude WebFetch content, a browser
+     * navigation); `dispatched` = web activity completed but the route exposes
+     * no typed fetch outcome (codex `web_search`/`open_page`), so the gate is
+     * satisfied at dispatch strength but content is NOT proven; `none` = no web
+     * activity. A surface renders "Web verified" only for `verified`, never for
+     * a dispatch-only route (which is honestly "Web reached").
+     */
+    verification: z
+      .enum(["verified", "dispatched", "none"])
+      .default("none")
+      .describe(
+        "Retrieval strength of the web evidence: verified (typed retrieval), dispatched (completed but no typed outcome), or none.",
+      ),
     tool: z
       .string()
       .nullable()
@@ -316,6 +332,49 @@ export const DelegationBeltEvidence = z
   );
 export type DelegationBeltEvidence = z.infer<typeof DelegationBeltEvidence>;
 
+/**
+ * QA-040: runtime browser-MCP evidence for one attempt. `requested` is set when
+ * the engine armed the Playwright browser injection for this lane (the injected
+ * server name is known — a fixed `browser` namespace). `attempted`/`satisfied`/
+ * `failed` flip from the run's tool events matched to that injected server, so a
+ * successful browser navigation is recognized as trusted live-web activity even
+ * though the adapter normalizes browser calls as `kind:"mcp"` (codex/claude both
+ * do). `unused` discloses an armed-but-never-called browser (a generic
+ * web_search satisfied instead) WITHOUT failing the run — disclosure only.
+ */
+export const BrowserEvidenceRecord = z
+  .object({
+    requested: z
+      .boolean()
+      .default(false)
+      .describe("The engine armed (injected) the browser MCP for this attempt."),
+    server_name: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("The injected browser MCP server name; null when not armed."),
+    attempted: z
+      .boolean()
+      .default(false)
+      .describe("At least one browser MCP tool call (matched to the injected server) occurred."),
+    satisfied: z
+      .boolean()
+      .default(false)
+      .describe("At least one browser MCP tool call succeeded (trusted live-web activity)."),
+    failed: z
+      .boolean()
+      .default(false)
+      .describe("A browser MCP tool call failed and was not superseded by a success."),
+    unused: z
+      .boolean()
+      .default(false)
+      .describe(
+        "The browser was armed but never called while generic web evidence satisfied the run (disclosure only; not a failure).",
+      ),
+  })
+  .describe("Runtime browser-MCP evidence for one attempt (QA-040).");
+export type BrowserEvidenceRecord = z.infer<typeof BrowserEvidenceRecord>;
+
 export const AttemptTelemetryRecord = z
   .object({
     attempt_id: Id.describe("Attempt id."),
@@ -422,6 +481,9 @@ export const AttemptTelemetryRecord = z
     /** Delegation-belt runtime readiness (QA-024); present only when a belt was
      * injected into this attempt. Absent on non-delegate attempts. */
     delegation_belt: DelegationBeltEvidence.optional(),
+    /** Browser-MCP runtime evidence (QA-040); present only when the browser was
+     * armed for this attempt. Absent when the browser was not injected. */
+    browser: BrowserEvidenceRecord.optional(),
     /** Token usage summed across this attempt's usage events. */
     usage: TokenUsage.default({}),
   })
