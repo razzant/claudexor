@@ -449,7 +449,15 @@ struct MarkdownTableView: View {
                         }
                     }
                 }
-                .fixedSize()
+                // #24 (owner dogfood): fix HORIZONTAL only. A plain `.fixedSize()`
+                // (both axes) locked the Grid to its IDEAL height, which is measured
+                // with single-line cells — but a cell wider than its 320pt clamp WRAPS
+                // to 2+ lines at layout time, so the row rendered taller than its
+                // locked slot and OVERLAPPED the next row. Fixing width only lets the
+                // Grid keep its natural width (so it scrolls horizontally, preserving
+                // the 64–320pt column clamps) while each row's HEIGHT grows to the
+                // tallest wrapped cell.
+                .fixedSize(horizontal: true, vertical: false)
             }
             .codeSurface(Theme.Radius.control)
             if let disclosure {

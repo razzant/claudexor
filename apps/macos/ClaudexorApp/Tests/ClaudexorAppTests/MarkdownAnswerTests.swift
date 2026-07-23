@@ -205,4 +205,28 @@ import Testing
         let outer = MarkdownOutputView(markdown: "| a | b |\n| --- | --- |\n| 1 | 2 |")
         _ = outer.body
     }
+
+    /// #24 (owner dogfood) regression: a row whose cell is far wider than the
+    /// 320pt column clamp WRAPS to multiple lines, and the row used to OVERLAP
+    /// the next row because the Grid's plain `.fixedSize()` locked its height to
+    /// the single-line ideal. Row height can't be asserted headlessly (no window
+    /// server under `swift test`), so this pins the two things that ARE testable:
+    /// the parsed model retains the full multi-line-worthy cell (it is under the
+    /// per-cell cap, so nothing is dropped), and the fixed view still builds.
+    /// MANUAL CHECK: render this table in the app and confirm the tall wrapped
+    /// row no longer collides with the row beneath it, in both themes.
+    @Test func wrappingCellKeepsFullTextAndViewBuilds() {
+        // A long single cell that will wrap well past 320pt but stays under the
+        // 500-char per-cell cap, so the model must retain it verbatim.
+        let longCell = Array(repeating: "wrapping cell text", count: 12).joined(separator: " ") // 227 chars, no edge space
+        #expect(longCell.count < MarkdownOutputView.maxTableCellChars)
+        let md = "| left | right |\n| --- | --- |\n| \(longCell) | short |\n| a | b |"
+        let table = onlyTable(MarkdownOutputView.parse(md))
+        #expect(table?.rows.count == 2)
+        #expect(table?.rows.first?.first == longCell)          // nothing truncated
+        #expect(table?.truncatedRows == 0)
+        // The view with the wrapping row still constructs and evaluates.
+        let view = MarkdownTableView(table: table!, bodyFont: .body)
+        _ = view.body
+    }
 }
