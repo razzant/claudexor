@@ -376,10 +376,38 @@
       "path": "/v2/runs",
       "mutating": false,
       "applicability": "run",
-      "summary": "List durable run summaries visible to the daemon.",
+      "summary": "List a bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon.",
       "auth": "loopback_bearer",
       "request_schema": null,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Maximum run summaries to return (1..1000; default 200). The page is newest-first by (createdAt, id)."
+        },
+        {
+          "name": "state",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": ["queued", "running", "succeeded", "failed", "cancelled", "interrupted"],
+          "schema_ref": null,
+          "description": "Return only runs in this lifecycle state."
+        },
+        {
+          "name": "cursor",
+          "in": "query",
+          "required": false,
+          "repeatable": false,
+          "enum": null,
+          "schema_ref": null,
+          "description": "Opaque keyset cursor from a prior page's nextCursor; returns the next (older) page. A malformed cursor is a typed 400."
+        }
+      ],
       "response_schema": "ControlRunListResponse",
       "error_schema": "ControlProblem"
     },

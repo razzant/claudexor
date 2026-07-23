@@ -15,9 +15,30 @@ export const ControlRunStartResponse = z
 export type ControlRunStartResponse = z.infer<typeof ControlRunStartResponse>;
 
 export const ControlRunListResponse = z
-  .object({ runs: z.array(ControlRunSummary).default([]) })
+  .object({
+    runs: z.array(ControlRunSummary).default([]),
+    /** QA-052 keyset page cursor: opaque `(createdAt,id)` token to fetch the
+     * next (older) page. Null when this page is the tail — no further runs match
+     * the current filter. Feed it back verbatim as the `cursor` query param. */
+    nextCursor: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Opaque keyset cursor for the next (older) page under the current filter; null on the final page. Pass verbatim as the `cursor` query param.",
+      ),
+    /** True when at least one further run matches the current filter beyond this
+     * page. A consumer keeps paging while this is true, never inferring the tail
+     * from a short page. */
+    hasMore: z
+      .boolean()
+      .default(false)
+      .describe("True when more matching runs exist beyond this page."),
+  })
   .strict()
-  .describe("All durable run summaries visible to the daemon.");
+  .describe(
+    "A bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon (QA-052).",
+  );
 export type ControlRunListResponse = z.infer<typeof ControlRunListResponse>;
 
 export const ControlArtifactListResponse = z

@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   DaemonControlApiServer,
   normalizeRunStartRequest,
+  runListFingerprintProbeCountForTests,
+  resetRunListFingerprintProbeCountForTests,
   type DaemonControlApiOptions,
   type DaemonFacadeClient,
   type DaemonRunRecord,
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
+import { lruGet, lruSet } from "./run-list.js";
 import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.js";
 import { unboundRunStartResponse } from "./run-start.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
@@ -929,6 +932,178 @@ describe("DaemonControlApiServer", () => {
       await server.stop();
     }
   }
+
+  // QA-052: bounded, keyset-paginated, strict GET /runs. A shared runDir is
+  // enough — the fingerprinter stats artifact PATHS (absent files simply count
+  // and return 0), and the summaries degrade to sparse rows, which is all these
+  // pagination/filter/strictness/perf assertions need.
+  function pagedRunRecord(index: number, state: string, runDir: string): DaemonRunRecord {
+    const n = String(index).padStart(4, "0");
+    return {
+      id: `job-${n}`,
+      state,
+      runId: `run-${n}`,
+      taskId: `task-${n}`,
+      runDir,
+      createdAt: new Date(Date.UTC(2026, 6, 20) + index * 1_000).toISOString(),
+      params: { prompt: "p", mode: "agent", scope: { kind: "none" } },
+    };
+  }
+  function pagedDaemon(records: DaemonRunRecord[]): DaemonFacadeClient {
+    return {
+      async enqueue() {
+        return { id: "job-none", state: "queued" };
+      },
+      async status(id: string) {
+        const rec = records.find((r) => r.id === id || r.runId === id);
+        if (!rec) throw new Error("missing");
+        return rec;
+      },
+      async list() {
+        return records;
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+  }
+  async function fetchRunList(
+    base: string,
+    query: Record<string, string> = {},
+  ): Promise<{
+    status: number;
+    body: { runs: { runId: string; state: string }[]; nextCursor: string | null; hasMore: boolean };
+  }> {
+    const url = new URL(`${base}/runs`);
+    for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
+    const res = await apiFetch(url.toString(), { headers: { authorization: `Bearer ${token}` } });
+    return { status: res.status, body: (await res.json()) as never };
+  }
+
+  it("GET /runs keyset-pages the full set exactly once, newest-first (QA-052)", async () => {
+    const runDir = reapMk(join(tmpdir(), "claudexor-runs-page-"));
+    const records = Array.from({ length: 7 }, (_, i) => pagedRunRecord(i, "succeeded", runDir));
+    await withDaemonServer(pagedDaemon(records), async (base) => {
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      let pages = 0;
+      for (;;) {
+        if (pages++ > 25) throw new Error("cursor traversal did not terminate");
+        const { body } = await fetchRunList(base, {
+          limit: "3",
+          ...(cursor ? { cursor } : {}),
+        });
+        expect(body.runs.length).toBeLessThanOrEqual(3);
+        for (const r of body.runs) seen.push(r.runId);
+        if (!body.hasMore) {
+          expect(body.nextCursor).toBeNull();
+          break;
+        }
+        expect(body.nextCursor).toBeTruthy();
+        cursor = body.nextCursor;
+      }
+      // exactly once: every run present, no duplicates
+      expect(seen).toHaveLength(7);
+      expect(new Set(seen).size).toBe(7);
+      // newest-first (createdAt desc, id desc)
+      expect(seen[0]).toBe("run-0006");
+      expect(seen.at(-1)).toBe("run-0000");
+    });
+  });
+
+  it("GET /runs honors an explicit limit and reports hasMore/nextCursor (QA-052)", async () => {
+    const runDir = reapMk(join(tmpdir(), "claudexor-runs-limit-"));
+    const records = Array.from({ length: 5 }, (_, i) => pagedRunRecord(i, "succeeded", runDir));
+    await withDaemonServer(pagedDaemon(records), async (base) => {
+      const { body } = await fetchRunList(base, { limit: "2" });
+      expect(body.runs.map((r) => r.runId)).toEqual(["run-0004", "run-0003"]);
+      expect(body.hasMore).toBe(true);
+      expect(body.nextCursor).toBeTruthy();
+    });
+  });
+
+  it("GET /runs filters by typed lifecycle state (QA-052)", async () => {
+    const runDir = reapMk(join(tmpdir(), "claudexor-runs-state-"));
+    const records = [
+      pagedRunRecord(0, "succeeded", runDir),
+      pagedRunRecord(1, "running", runDir),
+      pagedRunRecord(2, "failed", runDir),
+      pagedRunRecord(3, "running", runDir),
+    ];
+    await withDaemonServer(pagedDaemon(records), async (base) => {
+      const { body } = await fetchRunList(base, { state: "running" });
+      expect(body.runs.map((r) => r.runId)).toEqual(["run-0003", "run-0001"]);
+      expect(body.runs.every((r) => r.state === "running")).toBe(true);
+      expect(body.hasMore).toBe(false);
+    });
+  });
+
+  it("GET /runs rejects malformed limit/state/cursor and unknown params with a typed 400 (QA-052)", async () => {
+    const runDir = reapMk(join(tmpdir(), "claudexor-runs-strict-"));
+    const records = [pagedRunRecord(0, "succeeded", runDir)];
+    await withDaemonServer(pagedDaemon(records), async (base) => {
+      const badQueries: Record<string, string>[] = [
+        { limit: "0" },
+        { limit: "abc" },
+        { limit: "1001" },
+        { state: "bogus" },
+        { cursor: "!!not-base64!!" },
+        { bogus: "1" },
+      ];
+      for (const query of badQueries) {
+        const { status } = await fetchRunList(base, query);
+        expect(status).toBe(400);
+      }
+      // A structurally valid base64url token that does not decode to a cursor is
+      // still a typed 400 with the cursor-specific code, never a silent full list.
+      const noSep = Buffer.from("nofieldseparator", "utf8").toString("base64url");
+      const res = await apiFetch(new URL(`${base}/runs?cursor=${noSep}`).toString(), {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { code: string }).code).toBe("invalid_run_list_cursor");
+    });
+  });
+
+  it("GET /runs fingerprint work is bounded by page size and terminal short-circuits (QA-052)", async () => {
+    const runDir = reapMk(join(tmpdir(), "claudexor-runs-fp-"));
+    const terminal = Array.from({ length: 6 }, (_, i) => pagedRunRecord(i, "succeeded", runDir));
+    await withDaemonServer(pagedDaemon(terminal), async (base) => {
+      // Warm the cache, then measure a fresh page.
+      await fetchRunList(base, { limit: "2" });
+      resetRunListFingerprintProbeCountForTests();
+      const { body } = await fetchRunList(base, { limit: "2" });
+      expect(body.runs).toHaveLength(2);
+      // Only the 2 paged terminal records are fingerprinted, and each terminal
+      // fingerprint short-circuits to a SINGLE delivery_state probe: 2 total, not
+      // 6 records x 12 paths.
+      expect(runListFingerprintProbeCountForTests()).toBe(2);
+    });
+
+    const running = [pagedRunRecord(0, "running", runDir)];
+    await withDaemonServer(pagedDaemon(running), async (base) => {
+      resetRunListFingerprintProbeCountForTests();
+      await fetchRunList(base);
+      // An active run keeps the full 12-path fingerprint (events + final/* land
+      // while live), so it must NOT be short-circuited.
+      expect(runListFingerprintProbeCountForTests()).toBe(12);
+    });
+  });
+
+  it("summary cache evicts LRU-bounded, never wholesale-clears (QA-052)", () => {
+    const cap = 2;
+    const map = new Map<string, number>();
+    lruSet(map, "a", 1, cap);
+    lruSet(map, "b", 2, cap);
+    lruSet(map, "c", 3, cap); // evicts oldest (a), not the whole map
+    expect([...map.keys()]).toEqual(["b", "c"]);
+    expect(map.has("a")).toBe(false);
+    // touching b makes c the LRU; inserting d evicts c
+    expect(lruGet(map, "b")).toBe(2);
+    lruSet(map, "d", 4, cap);
+    expect([...map.keys()]).toEqual(["b", "d"]);
+    expect(map.size).toBe(cap);
+  });
 
   it("runs: preserves a typed pre-start refusal's code and status", async () => {
     const typedFail: DaemonFacadeClient = {

@@ -70,6 +70,13 @@ import {
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery, singleQuery } from "./query.js";
 import {
+  lruGet,
+  lruSet,
+  parseRunListQuery,
+  selectRunListPage,
+  type RunListQuery,
+} from "./run-list.js";
+import {
   controlProblemError,
   normalizeRequestValidationError,
   revertRefusedProblem,
@@ -807,14 +814,7 @@ export class DaemonControlApiServer {
     }
 
     if (method === "GET" && path === "/runs") {
-      const runs = await this.opts.daemon.list();
-      return this.json(
-        res,
-        200,
-        ControlRunListResponse.parse({
-          runs: runs.map((r) => this.summarizeRunOrDiagnostic(r)),
-        }),
-      );
+      return this.handleRunList(url, res);
     }
 
     if (
@@ -1918,6 +1918,36 @@ export class DaemonControlApiServer {
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
   }
 
+  /**
+   * GET /v2/runs (QA-052): a bounded, newest-first, keyset-paginated page of run
+   * summaries. Ordering, filtering, and slicing all happen on the raw daemon
+   * records BEFORE any summary is materialized, so the expensive per-run
+   * artifact fingerprint/projection work is bounded by `limit` (page size), not
+   * by the total retained-record count. `limit`/`state`/`cursor` are typed and
+   * strict — an unknown or malformed param is a typed 400, never silently
+   * ignored. The bare (unparametered) call is still valid and now returns the
+   * newest `RUN_LIST_DEFAULT_LIMIT` runs with `hasMore`/`nextCursor` to page the
+   * rest.
+   */
+  private async handleRunList(url: URL, res: ServerResponse): Promise<void> {
+    let query: RunListQuery;
+    try {
+      query = parseRunListQuery(url);
+    } catch (error) {
+      return this.requestError(res, error);
+    }
+    const { page, hasMore, nextCursor } = selectRunListPage(await this.opts.daemon.list(), query);
+    return this.json(
+      res,
+      200,
+      ControlRunListResponse.parse({
+        runs: page.map((r) => this.summarizeRunOrDiagnostic(r)),
+        nextCursor,
+        hasMore,
+      }),
+    );
+  }
+
   /** Resolve a thread's workspace record (mode + isolated worktree path) from the
    * thread journal — the honest source for QA-038 isolated /produced resolution.
    * Trashed/purged threads are retained by getThread (purge nulls worktree_path),
@@ -2090,14 +2120,29 @@ export class DaemonControlApiServer {
    * runs change only when their artifacts change, so summaries are cached on a
    * state+artifact-mtime fingerprint.
    */
+  private static readonly SUMMARY_CACHE_MAX = 1_000;
+
   private summarizeRunCached(rec: DaemonRunRecord): ControlRunSummary {
     const fingerprint = summaryFingerprint(rec);
-    const hit = this.summaryCache.get(rec.id);
+    const hit = lruGet(this.summaryCache, rec.id);
     if (hit && hit.fingerprint === fingerprint) return hit.summary;
     const summary = summarizeRun(rec);
-    if (this.summaryCache.size > 1_000) this.summaryCache.clear(); // bounded; repopulates on the next poll
-    this.summaryCache.set(rec.id, { fingerprint, summary });
+    // QA-052: LRU-bounded eviction (oldest entry drops) instead of the old
+    // wholesale clear at the guard, so a large retained set never pays a full
+    // cache rehydration wave.
+    lruSet(
+      this.summaryCache,
+      rec.id,
+      { fingerprint, summary },
+      DaemonControlApiServer.SUMMARY_CACHE_MAX,
+    );
     return summary;
+  }
+
+  /** Test-only observability: current summary-cache entry count. Proves QA-052
+   * LRU boundedness (the cache never grows past SUMMARY_CACHE_MAX). */
+  summaryCacheSizeForTests(): number {
+    return this.summaryCache.size;
   }
 
   /**
@@ -2258,8 +2303,24 @@ function appendRunAuditEvent(
   }
 }
 
+/**
+ * QA-052 observability: how many artifact-path probes the run-list fingerprinter
+ * has performed (each probe is a synchronous filesystem stat-family lookup). The
+ * single-parse test pattern (eventsParseCount) proves warm-list work is BOUNDED
+ * — by page size (only sliced records are fingerprinted) and, for terminal runs,
+ * by the one-probe short-circuit below (1 path instead of 12).
+ */
+let fingerprintProbeCount = 0;
+export function runListFingerprintProbeCountForTests(): number {
+  return fingerprintProbeCount;
+}
+export function resetRunListFingerprintProbeCountForTests(): void {
+  fingerprintProbeCount = 0;
+}
+
 function summaryFingerprint(rec: DaemonRunRecord): string {
   const mtime = (rel: string): number => {
+    fingerprintProbeCount++;
     if (!rec.runDir) return 0;
     const path = safeArtifactPath(rec.runDir, rel);
     if (!path) return 0;
@@ -2269,11 +2330,22 @@ function summaryFingerprint(rec: DaemonRunRecord): string {
       return 0;
     }
   };
+  const identity = [rec.state, paramsFingerprint(rec), rec.finishedAt ?? "", rec.error ?? ""];
+  // QA-052 terminal short-circuit: a TERMINAL run's every projected artifact
+  // (events.jsonl, arbitration, telemetry, failure, the final/* outputs,
+  // work_product) is written before the daemon marks the run terminal and never
+  // changes afterward. The SOLE post-terminal mutation is the delivery/apply
+  // overlay (final/delivery_state.yaml), which the apply/revert route is the one
+  // writer of [B7]. So a warm re-list of a terminal run fingerprints ONE path
+  // instead of twelve — the cheap probe still detects an apply/revert, and every
+  // other axis is frozen. Active (queued/running) runs keep the full
+  // artifact-mtime fingerprint because their events.jsonl and final/* land while
+  // the run is still live.
+  if (TERMINAL_STATES.has(rec.state)) {
+    return [...identity, mtime("final/delivery_state.yaml")].join("|");
+  }
   return [
-    rec.state,
-    paramsFingerprint(rec),
-    rec.finishedAt ?? "",
-    rec.error ?? "",
+    ...identity,
     mtime("events.jsonl"),
     mtime("arbitration/decision.yaml"),
     mtime("final/telemetry.yaml"),

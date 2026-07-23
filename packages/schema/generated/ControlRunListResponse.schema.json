@@ -1231,10 +1231,23 @@
             "description": "Run summary row served by GET /runs and embedded in run detail: state, routing, budget, policies, and honest outcome."
           },
           "default": []
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Opaque keyset cursor for the next (older) page under the current filter; null on the final page. Pass verbatim as the `cursor` query param."
+        },
+        "hasMore": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when more matching runs exist beyond this page."
         }
       },
       "additionalProperties": false,
-      "description": "All durable run summaries visible to the daemon."
+      "description": "A bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon (QA-052)."
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

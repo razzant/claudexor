@@ -4,6 +4,7 @@ import {
   ControlHandshakeResponse,
   ControlOperationCatalog,
   ControlProblem,
+  ControlRunState,
   type ControlOperationDescriptor,
 } from "@claudexor/schema";
 import { engineBuildIdentity } from "@claudexor/util";
@@ -200,7 +201,8 @@ const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/projects/:id/outputs/<path>": "Fetch one durable output file from a project.",
   "GET /v2/harnesses/:id/models": "List a harness's selectable models.",
   "POST /v2/harnesses/:id/auth-readiness": "Re-check a harness's auth readiness (dry).",
-  "GET /v2/runs": "List durable run summaries visible to the daemon.",
+  "GET /v2/runs":
+    "List a bounded, newest-first, keyset-paginated page of durable run summaries visible to the daemon.",
   "POST /v2/runs": "Start a run and return its durable handle.",
   "GET /v2/runs/:id": "Read a run's full detail snapshot.",
   "POST /v2/runs/:id/retry": "Retry a run, returning a new durable handle.",
@@ -393,7 +395,25 @@ const operations: ControlOperationDescriptor[] = [
     "ControlAuthReadinessRefreshRequest",
     "ControlAuthReadinessRefreshResponse",
   ),
-  j("GET", "/v2/runs", "read_only", null, "ControlRunListResponse"),
+  j("GET", "/v2/runs", "read_only", null, "ControlRunListResponse", {
+    parameters: [
+      queryParam({
+        name: "limit",
+        description:
+          "Maximum run summaries to return (1..1000; default 200). The page is newest-first by (createdAt, id).",
+      }),
+      queryParam({
+        name: "state",
+        enum: [...ControlRunState.options],
+        description: "Return only runs in this lifecycle state.",
+      }),
+      queryParam({
+        name: "cursor",
+        description:
+          "Opaque keyset cursor from a prior page's nextCursor; returns the next (older) page. A malformed cursor is a typed 400.",
+      }),
+    ],
+  }),
   j("POST", "/v2/runs", "mutating", "ControlRunStartRequest", "ControlRunStartResponse", {
     completion: "durable_handle",
     idempotency: "key_required",

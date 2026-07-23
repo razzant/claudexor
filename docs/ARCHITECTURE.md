@@ -885,6 +885,19 @@ Endpoint semantics beyond the inventory:
 - `GET /v2/runs/:id/produced` and `GET /v2/runs/:id/produced/<path>` serve the
   project's PRODUCED outputs — the repo `artifacts/` dir, the macOS workspace
   Artifacts-tab source — distinct from the run-internal `GET /v2/runs/:id/artifacts` tree.
+- `GET /v2/runs` returns a BOUNDED, newest-first, keyset-paginated page of run
+  summaries (QA-052), not the whole retained registry. `limit` (1..1000, default
+  200), `state`, and an opaque `cursor` are strict and typed — a typoed or
+  malformed value is a typed 400, never silently ignored. Ordering is
+  `(createdAt desc, id desc)`; a page returns `nextCursor` + `hasMore`, and
+  `cursor` is comparison-based so keyset traversal survives concurrent
+  inserts/prunes with no duplicates or omissions. Ordering, `state` filtering,
+  and page slicing all happen on raw records BEFORE any summary is materialized,
+  so per-run artifact fingerprint/projection work is bounded by page size rather
+  than total retained records; a terminal run's fingerprint further short-circuits
+  to a single `delivery_state.yaml` stat (all other artifacts are frozen once the
+  run is terminal). The bare parameterless call stays valid — it now yields the
+  newest 200 with a cursor to page the rest.
 - `claudexor settings show|set` is a thin client of `GET|POST /v2/settings`.
   Validation, persistence, cache invalidation, and the returned effective
   `ControlSettingsSnapshot` come from the daemon; the CLI has no second config
