@@ -40,7 +40,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "project",
-    usageArgs: "list | register <absolute-root> | relink <project-id> <absolute-root>",
+    usageArgs: "list | register <root> | relink <id> <root> | outputs <id> [path]",
     summary: "Manage the durable v2 project registry",
     flags: ["json"],
     mutability: "ops",
@@ -235,7 +235,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     usageArgs: "[list | add|login|enable|disable|remove <harness> <profile-id>]",
     summary:
       "Credential profiles: registry + doctor readiness, per-profile toggle, and vendor login",
-    flags: ["json"],
+    flags: ["json", "display-name"],
     mutability: "ops",
     stability: "stable",
   },
@@ -361,13 +361,13 @@ export function recoveryVerbs(): readonly string[] {
 
 const USAGE_COLUMN = 42;
 
-function usageLabel(cmd: CliCommandSpec): string {
+export function usageLabel(cmd: CliCommandSpec): string {
   const verb =
     cmd.aliases && cmd.aliases.length > 0 ? `${cmd.id} | ${cmd.aliases.join(" | ")}` : cmd.id;
   return cmd.usageArgs ? `claudexor ${verb} ${cmd.usageArgs}` : `claudexor ${verb}`;
 }
 
-function padded(left: string, help: string, column = USAGE_COLUMN): string {
+export function padded(left: string, help: string, column = USAGE_COLUMN): string {
   const gap = Math.max(column - left.length, 3);
   return `  ${left}${" ".repeat(gap)}${help}`;
 }

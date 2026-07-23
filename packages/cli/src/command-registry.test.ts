@@ -3,6 +3,7 @@ import {
   BOOLEAN_FLAGS,
   CLI_COMMANDS,
   CLI_FLAGS,
+  type CliCommandSpec,
   KNOWN_FLAGS,
   REPL_COMMANDS,
   VALUE_FLAGS,
@@ -13,6 +14,7 @@ import {
   renderHelp,
   renderReplHelp,
 } from "./command-registry.js";
+import { commandHelpJson, findCommand, renderCommandHelp } from "./command-help.js";
 import { reviewCommand } from "./review-command.js";
 
 describe("command registry — the one owner of the CLI surface", () => {
@@ -145,5 +147,46 @@ describe("command registry — the one owner of the CLI surface", () => {
   it("REPL help lists every slash command", () => {
     const help = renderReplHelp();
     for (const c of REPL_COMMANDS) expect(help).toContain(c.name);
+  });
+});
+
+describe("scoped command help + registry completeness (GH #28 / QA-057/057b/059)", () => {
+  it("findCommand resolves by id and alias, undefined for a typo", () => {
+    expect(findCommand("inspect")?.id).toBe("inspect");
+    expect(findCommand("definitely-not-a-verb")).toBeUndefined();
+  });
+
+  it("renderCommandHelp prints ONLY the resolved command's scoped usage, not the global list", () => {
+    const inspect = findCommand("inspect");
+    expect(inspect).toBeDefined();
+    const help = renderCommandHelp(inspect as CliCommandSpec);
+    expect(help).toContain("claudexor inspect <run_id>");
+    expect(help).toContain(inspect?.summary as string);
+    // Scoped help must not dump every other verb (that is the QA-057 defect).
+    expect(help).not.toContain("claudexor daemon");
+    expect(help).not.toContain("claudexor release");
+  });
+
+  it("commandHelpJson is a scoped machine catalog including the global affordances", () => {
+    const profiles = findCommand("profiles");
+    const j = commandHelpJson("9.9.9", profiles as CliCommandSpec);
+    expect(j.ok).toBe(true);
+    expect(j.version).toBe("9.9.9");
+    expect(j.command.id).toBe("profiles");
+    // --display-name is now a registered, scoped flag (QA-059).
+    expect(j.flags.map((f) => f.name)).toContain("display-name");
+    expect(j.flags.map((f) => f.name)).toContain("json");
+  });
+
+  it("--display-name is a known flag consumed by the profiles command (QA-059)", () => {
+    expect(KNOWN_FLAGS.has("display-name")).toBe(true);
+    expect(findCommand("profiles")?.flags).toContain("display-name");
+  });
+
+  it("project help advertises the outputs sub-verb (QA-057b)", () => {
+    const project = findCommand("project");
+    expect(project?.usageArgs).toContain("outputs");
+    const help = renderHelp("0.0.0-test");
+    expect(help).toContain("outputs");
   });
 });

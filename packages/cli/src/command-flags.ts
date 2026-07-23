@@ -207,6 +207,11 @@ export const CLI_FLAGS: readonly CliFlagSpec[] = [
     "force",
     "Reapply verified Claudexor-owned plugin drift; never overwrites unowned files",
   ),
+  valueFlag(
+    "display-name",
+    "<name>",
+    "profiles add: human-readable label for the new credential profile",
+  ),
   valueFlag("from-env", "<VAR>", null),
   booleanFlag("allow-full-access", null),
   booleanFlag("revoke-full-access", null),
