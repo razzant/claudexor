@@ -2750,9 +2750,10 @@ function applyGateInputFor(
   targetRepoRoot: string,
   operatorDecision: ControlOperatorDecisionRecord | null,
 ): ApplyGateInput {
+  const decision = safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord);
   return {
     state: rec.state,
-    decision: safeReadStructuredArtifact(rec, "arbitration/decision.yaml", DecisionRecord),
+    decision,
     workProduct: safeReadStructuredArtifact(rec, "final/work_product.yaml", WorkProduct),
     patch,
     originalRepoRoot: runRepoRoot(rec),
@@ -2765,6 +2766,9 @@ function applyGateInputFor(
     // an already-applied / reverted run gets a terminal eligibility disposition
     // instead of a stale "rerun a fresh check" (QA-021).
     applyState: controlRunResult(rec).applyState,
+    // D-16 work_state veto (INV-116): thread the model-attested work outcome so
+    // the gate refuses a needs_input/incomplete winner even with a clean review.
+    workState: decision?.facts?.work_state ?? null,
   };
 }
 

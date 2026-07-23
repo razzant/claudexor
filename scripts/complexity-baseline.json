@@ -13,7 +13,7 @@
   "packages/cli/src/control-services.ts": 553,
   "packages/cli/src/plugins.ts": 1872,
   "packages/cli/src/setup-jobs.ts": 1305,
-  "packages/control-api/src/daemon-server.ts": 2883,
+  "packages/control-api/src/daemon-server.ts": 2887,
   "packages/daemon/src/journal-manager.ts": 582,
   "packages/daemon/src/server.ts": 631,
   "packages/daemon/src/threads.ts": 600,

@@ -5,6 +5,7 @@ import type {
   FinalVerifyRecord,
   RunApplyState,
   WorkProduct,
+  WorkState,
 } from "@claudexor/schema";
 import { parseUnifiedDiff } from "@claudexor/core";
 import { pathGuard } from "@claudexor/policy";
@@ -47,6 +48,17 @@ export interface ApplyGateInput {
    * fresh check" for finished work. Absent/`not_applied` runs the normal gate.
    */
   applyState?: RunApplyState | null;
+  /**
+   * D-16 work_state veto axis (INV-116), threaded from the arbitrated
+   * `decision.facts.work_state` by the same owner that builds this input. A
+   * model-attested `needs_input`/`incomplete` outcome keeps the succeeded
+   * lifecycle but is factually non-applyable — the model itself reported the
+   * work is unfinished — so the gate refuses it (winning over review/checks apply
+   * quality, matching the outcome banner) and the operator risk override cannot
+   * bypass it (accepting a *reviewed* blocker is a different axis from the model
+   * saying it is not done). Absent/`completed`/`unverified` never veto.
+   */
+  workState?: WorkState | null;
 }
 
 /**
@@ -60,6 +72,15 @@ export interface ApplyGateInput {
 function applyHint(decision: DecisionRecord | null, lifecycle: string | null): string {
   const facts = decision?.facts ?? null;
   if (facts) {
+    // D-16 work_state veto (INV-116): the model itself reported the work is not
+    // finished — point at supplying the input / re-running, never a review or a
+    // risk override (accepting a reviewed blocker is a different axis).
+    if (facts.lifecycle === "succeeded" && facts.work_state?.state === "needs_input") {
+      return "Provide the input the run reported it needs, then re-run.";
+    }
+    if (facts.lifecycle === "succeeded" && facts.work_state?.state === "incomplete") {
+      return "Re-run until the run reports the work is complete.";
+    }
     if (facts.review === "blocked" || facts.checks === "failed") {
       // A blocked run already completed its (verified) review — pointing back at
       // "run a review first" is a dead loop (QA-032B). The real next step is the
@@ -75,6 +96,20 @@ function applyHint(decision: DecisionRecord | null, lifecycle: string | null): s
     return "Re-run until the change finishes successfully.";
   }
   return "Re-run until the change finishes successfully.";
+}
+
+/**
+ * D-16 work_state veto (INV-116): the model-attested `needs_input`/`incomplete`
+ * outcome that makes an otherwise-succeeded run non-applyable, threaded on
+ * `input.workState` (from `decision.facts.work_state`). It only ELEVATES a
+ * SUCCEEDED lifecycle — a harder lifecycle failure already refuses on its own
+ * axis — and is NOT bypassable by the risk override, because the model reporting
+ * its work is unfinished is a different axis from accepting a reviewed blocker.
+ */
+function workStateVetoOf(input: ApplyGateInput): "needs_input" | "incomplete" | null {
+  if (input.decision?.facts?.lifecycle !== "succeeded") return null;
+  const state = input.workState?.state;
+  return state === "needs_input" || state === "incomplete" ? state : null;
 }
 
 /** A terminal is a needs-decision block (accepted review blockers or failed
@@ -135,6 +170,18 @@ export function validateApplyGate(input: ApplyGateInput): string | null {
     return `This change can't be applied yet — the run is still ${input.state}. ${applyHint(input.decision, input.state)}`;
   }
   if (!input.decision) return "A completed run is required before this change can be applied.";
+  // D-16 work_state veto (INV-116): a model-attested needs_input/incomplete
+  // outcome on a succeeded lifecycle is factually non-applyable — the model
+  // itself reported the work is unfinished — and WINS over review/checks apply
+  // quality (matching the outcome banner). It is not a *reviewed* risk, so the
+  // operator risk override cannot bypass it.
+  const workVeto = workStateVetoOf(input);
+  if (workVeto === "needs_input") {
+    return "This change can't be applied — the run reported it needs more input to finish. Provide the missing input and re-run.";
+  }
+  if (workVeto === "incomplete") {
+    return "This change can't be applied — the run reported the work is incomplete. Re-run until it finishes.";
+  }
   // Apply requires a succeeded lifecycle with an APPROVED review and checks
   // not failed (INV-112 verification-basis rules unchanged).
   const applyable =
@@ -231,17 +278,22 @@ export function deriveApplyEligibility(input: ApplyGateInput): ApplyEligibility 
   }
   const reason = validateApplyGate(input);
   // The eligibility `state` is a coarse apply classification (not a run state):
-  // ok / needs_review / not_verified / no_changes, projected from the axes.
+  // needs_input / incomplete / needs_review / not_verified / no_changes / ok,
+  // projected from the axes. The D-16 work_state veto (INV-116) wins over
+  // review/checks quality, matching the outcome banner and validateApplyGate.
   const facts = input.decision?.facts ?? null;
-  const state = !facts
-    ? (input.state ?? null)
-    : facts.review === "blocked" || facts.checks === "failed"
-      ? "needs_review"
-      : facts.review === "not_run" || facts.checks === "not_configured"
-        ? "not_verified"
-        : facts.noChanges
-          ? "no_changes"
-          : "ok";
+  const workVeto = workStateVetoOf(input);
+  const state = workVeto
+    ? workVeto
+    : !facts
+      ? (input.state ?? null)
+      : facts.review === "blocked" || facts.checks === "failed"
+        ? "needs_review"
+        : facts.review === "not_run" || facts.checks === "not_configured"
+          ? "not_verified"
+          : facts.noChanges
+            ? "no_changes"
+            : "ok";
   if (reason === null) {
     // A hash-bound risk override on a blocked run whose FinalVerifier was
     // skipped by construction is eligible; the fresh final check runs at apply

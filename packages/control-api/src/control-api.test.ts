@@ -5375,6 +5375,59 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("a needs_input work_state on the decision facts lands in the apply gate via applyGateInputFor: NOT applyable (INV-116, B-1)", async () => {
+    const { daemon, record } = fakeDaemon();
+    // A CLEAN review + passing final verify — the ONLY blocker is the D-16
+    // work_state the model attested. If the gate ignored facts.work_state this
+    // run would read as fully applyable (the pre-B-1 defect).
+    writeFileSync(
+      join(record.runDir as string, "arbitration", "decision.yaml"),
+      [
+        "winner: a01",
+        "facts:",
+        "  lifecycle: succeeded",
+        "  review: approved",
+        "  checks: passed",
+        "  noChanges: false",
+        "  reason: input_required",
+        "  work_state:",
+        "    state: needs_input",
+        "    source: constrained",
+        "    required_inputs:",
+        "      - kind: decision",
+        "        locator: null",
+        "        description: which database backend?",
+        "verification_basis: none",
+        "final_verify:",
+        "  attempted: true",
+        "  applied_cleanly: true",
+        "  gates_passed: true",
+        "",
+      ].join("\n"),
+    );
+    await withDaemonServer(daemon, async (base) => {
+      // GET /runs/:id projects the same gate — a typed needs_input disposition.
+      const detail = (await (
+        await apiFetch(`${base}/runs/run-d1`, { headers: { authorization: `Bearer ${token}` } })
+      ).json()) as {
+        applyEligibility: { eligible: boolean; state: string; reason: string } | null;
+      };
+      expect(detail.applyEligibility?.eligible).toBe(false);
+      expect(detail.applyEligibility?.state).toBe("needs_input");
+      expect(detail.applyEligibility?.reason ?? "").toMatch(/needs more input/i);
+
+      // The pre-apply gate boundary (POST /apply/check → applyGateError →
+      // applyGateInputFor) refuses the same run with the typed veto (409).
+      const check = await apiFetch(`${base}/runs/run-d1/apply/check`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ target: { kind: "project", root: record.runDir } }),
+      });
+      expect(check.status).toBe(409);
+      expect(await check.text()).toMatch(/needs more input/i);
+    });
+  });
+
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
     const dir = reapMk(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";

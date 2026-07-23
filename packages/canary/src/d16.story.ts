@@ -35,16 +35,37 @@ describe("D-16 WorkReport + work_state canaries", () => {
     expect(telemetry).toMatch(/completed/);
   });
 
-  it("[INV-116:work-state-veto] a needs_input WorkReport is a GREEN process that is non-applyable and exits non-zero", () => {
-    const r = cli(sb, ["ask", "do the thing", "--harness", "fake-needs-input", "--json"]);
+  it("[INV-116:work-state-veto] a needs_input WorkReport with a REAL diff is a GREEN process that is NON-APPLYABLE end-to-end and exits non-zero", () => {
+    // A patch-producing agent run (fake-needs-input writes a real worktree file
+    // for the implement intent) so the whole apply boundary is exercised: the
+    // model attests needs_input while a diff exists. INV-116 / B-1: the run is a
+    // succeeded lifecycle but the work_state VETOES applyability — apply must
+    // refuse, not just the exit code.
+    const r = cli(sb, ["agent", "do the thing", "--harness", "fake-needs-input", "--json"]);
     // INV-116: lifecycle succeeded (the process ran clean) but the OUTCOME
     // vetoes — the outcome-aware exit projection returns non-zero.
     expect(r.code, r.stdout + r.stderr).not.toBe(0);
-    const out = r.json() as { runDir: string; status: string; outcomeBanner?: string };
+    const out = r.json() as {
+      runId: string;
+      runDir: string;
+      status: string;
+      outcomeBanner?: string;
+      applyEligibility?: { eligible?: boolean; state?: string } | null;
+    };
     expect(out.status).toBe("succeeded");
+    // A real diff was produced, and the banner discloses the non-applied veto.
+    expect(readRunFile(out.runDir, "final/patch.diff").length).toBeGreaterThan(0);
     expect(out.outcomeBanner ?? "").toMatch(/needs input/i);
+    expect(out.outcomeBanner ?? "").toMatch(/NOT APPLIED/i);
     const telemetry = readRunFile(out.runDir, "final/telemetry.yaml");
     expect(telemetry).toMatch(/needs_input/);
+    // B-1: the work_state veto makes the run non-applyable via the single gate —
+    // the derived eligibility says needs_input, and `apply` itself refuses.
+    expect(out.applyEligibility?.eligible).toBe(false);
+    expect(out.applyEligibility?.state).toBe("needs_input");
+    const check = cli(sb, ["apply", out.runId, "--dry-run"]);
+    expect(check.code).toBe(1);
+    expect(check.stdout + check.stderr).toMatch(/needs more input|can't be applied/i);
   });
 
   it("[INV-116:work-report-contract] a malformed WorkReport on a constrained route is a typed FAILURE, never a prose success", () => {

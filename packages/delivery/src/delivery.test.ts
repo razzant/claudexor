@@ -543,6 +543,91 @@ describe("apply eligibility reflects the effective delivery state (QA-021)", () 
   });
 });
 
+describe("D-16 work_state veto refuses apply even on a clean review (INV-116, B-1)", () => {
+  const patch = "diff --git a/x b/x\n";
+  const workProduct = { kind: "patch", meta: { patch_sha256: sha256(patch) } } as never;
+  const needsInputState = {
+    state: "needs_input" as const,
+    source: "constrained" as const,
+    required_inputs: [{ kind: "decision" as const, locator: null, description: "which backend?" }],
+  };
+  // A CLEAN review (approved) + a passing/clean final verify — the run would be
+  // fully applyable if the model had not attested it still needs input.
+  const cleanDecision = DecisionRecord.parse({
+    winner: "a01",
+    facts: makeOutcomeFacts("succeeded", { review: "approved", work_state: needsInputState }),
+    final_verify: { attempted: true, applied_cleanly: true, gates_passed: true },
+  });
+  const vetoInput = {
+    state: "succeeded" as const,
+    decision: cleanDecision,
+    workProduct,
+    patch,
+    originalRepoRoot: process.cwd(),
+    targetRepoRoot: process.cwd(),
+    workState: needsInputState,
+  };
+
+  it("validateApplyGate refuses a needs_input winner despite an approved review + clean verify", () => {
+    const err = validateApplyGate(vetoInput);
+    expect(err).not.toBeNull();
+    expect(err).toMatch(/needs more input/i);
+  });
+
+  it("deriveApplyEligibility reports a typed needs_input disposition, not applyable", () => {
+    const verdict = deriveApplyEligibility(vetoInput);
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.state).toBe("needs_input");
+    // Honest guidance: supply the input and re-run — never a review or risk override.
+    expect(verdict.requiredAction ?? "").toMatch(/provide the input/i);
+    expect(verdict.requiredAction ?? "").not.toMatch(/accept the risk|run a review/i);
+  });
+
+  it("the risk override does NOT bypass the work_state veto (a different axis)", () => {
+    const withOverride = {
+      ...vetoInput,
+      operatorDecision: { action: "accept_risk", patch_sha256: sha256(patch) },
+    };
+    expect(validateApplyGate(withOverride)).toMatch(/needs more input/i);
+    expect(deriveApplyEligibility(withOverride).eligible).toBe(false);
+  });
+
+  it("an incomplete work_state is a distinct typed disposition, also non-applyable", () => {
+    const incompleteState = { state: "incomplete" as const, source: "constrained" as const };
+    const incompleteInput = {
+      ...vetoInput,
+      decision: DecisionRecord.parse({
+        winner: "a01",
+        facts: makeOutcomeFacts("succeeded", {
+          review: "approved",
+          work_state: incompleteState,
+        }),
+        final_verify: { attempted: true, applied_cleanly: true, gates_passed: true },
+      }),
+      workState: incompleteState,
+    };
+    expect(validateApplyGate(incompleteInput)).toMatch(/incomplete/i);
+    const verdict = deriveApplyEligibility(incompleteInput);
+    expect(verdict.eligible).toBe(false);
+    expect(verdict.state).toBe("incomplete");
+  });
+
+  it("a completed work_state never vetoes (a clean, applyable run stays applyable)", () => {
+    const completedState = { state: "completed" as const, source: "constrained" as const };
+    const okInput = {
+      ...vetoInput,
+      decision: DecisionRecord.parse({
+        winner: "a01",
+        facts: makeOutcomeFacts("succeeded", { review: "approved", work_state: completedState }),
+        final_verify: { attempted: true, applied_cleanly: true, gates_passed: true },
+      }),
+      workState: completedState,
+    };
+    expect(validateApplyGate(okInput)).toBeNull();
+    expect(deriveApplyEligibility(okInput).eligible).toBe(true);
+  });
+});
+
 describe("authorized override unlocks the JIT final verify at apply (QA-032)", () => {
   const patch = "diff --git a/x b/x\n";
   // A review-blocked run skips FinalVerifier by construction: final_verify is null.
