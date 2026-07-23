@@ -137,7 +137,9 @@ describe("CLI projector (D-7 / GH #28): one envelope, one exit-code table", () =
   });
 
   it("INLINE SECRET: the typed code survives and the token is never echoed", () => {
-    const token = "sk-THISLOOKSLIKEASECRET1234567890";
+    // Assembled at runtime so the source (and any sealed review diff of it)
+    // never contains a contiguous secret-like token at rest.
+    const token = ["sk", "THISLOOKSLIKEASECRET1234567890"].join("-");
     const secretErr = Object.assign(
       new Error("secret-like value is not accepted in CLI run params ($.prompt); remove it"),
       { status: 400, code: "inline_secret_rejected" },
