@@ -51,6 +51,11 @@ extension ThreadsScreen {
         }
         .buttonStyle(.borderless)
         .disabled(!fileAttachmentsAllowed)
+        // QA-003: an icon-only control needs an explicit, locale-independent
+        // English NAME — otherwise the AX name falls back to the host-localized
+        // `paperclip` SF Symbol description (`Вложенные Файлы`). `.help` stays the
+        // separate consequence hint.
+        .accessibilityLabel("Attach files")
         .help(attachButtonHelp)
     }
 
@@ -70,7 +75,10 @@ extension ThreadsScreen {
                         Image(systemName: "xmark.circle.fill")
                     }
                     .buttonStyle(.borderless)
-                    .help("Remove attachment")
+                    // QA-003: name the icon-only remove control (else the AX name
+                    // is the localized `xmark.circle.fill` description).
+                    .accessibilityLabel("Remove attachment")
+                    .help("Remove \(att.name)")
                 }
                 .font(.caption)
                 .padding(.horizontal, Theme.Spacing.sm)
@@ -132,6 +140,10 @@ extension ThreadsScreen {
         }
         .buttonStyle(.borderless)
         .disabled(!imageAttachmentsAllowed)
+        // QA-003: stable English name for the icon-only capture control. A
+        // disabled capture keeps its NAME and separately announces the vision-
+        // capability reason via `.help` (the acceptance-criteria case).
+        .accessibilityLabel("Capture screen region")
         .help(captureButtonHelp)
     }
 

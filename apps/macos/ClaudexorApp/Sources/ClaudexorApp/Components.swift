@@ -84,7 +84,14 @@ struct SectionLabel: View {
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
             if let systemImage {
+                // QA-003: the leading section glyph is DECORATIVE — hide it from
+                // accessibility so it doesn't leak its localized SF Symbol
+                // description as a phantom VoiceOver stop (the `plusminus.circle`
+                // → `Экспозиция` case in a code-change workspace header). The
+                // section TITLE below carries the name. One central fix covers all
+                // 18 `SectionLabel` call sites (INV-121 shared-component doctrine).
                 Image(systemName: systemImage).imageScale(.small).foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
             }
             Text(title).font(.subheadline.weight(.semibold))
             Spacer(minLength: Theme.Spacing.sm)
@@ -214,10 +221,24 @@ struct SegmentedTabs<T: Hashable>: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                // QA-003: a custom `.plain` `Image + Text` button does not reliably
+                // export its visible text as the primary AX name on macOS 26 (the
+                // sampled workspace tabs had empty `AXTitle`). Name it explicitly;
+                // keep the selected trait and `.help` separate.
+                .accessibilityLabel(item.label)
                 .accessibilityAddTraits(active ? [.isSelected, .isButton] : .isButton)
                 .help(active ? "\(item.label) tab is selected." : "Show \(item.label).")
             }
         }
+        // QA-076 (issue-076): the workspace tabs are three independent custom
+        // `.plain` buttons with no native tab-group focus behavior — under
+        // all-controls keyboard navigation SwiftUI entered the selected tab but
+        // had no forward successor, so Tab dead-ended on it (and Right Arrow did
+        // nothing). A `.focusSection()` groups the cohort so sequential focus
+        // visits each focusable tab and then continues past the group instead of
+        // self-looping. It does not make an unfocusable view focusable (Apple);
+        // these buttons already enter the graph, they only lacked ordering.
+        .focusSection()
     }
 }
 

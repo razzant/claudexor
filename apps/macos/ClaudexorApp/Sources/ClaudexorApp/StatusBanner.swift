@@ -21,6 +21,9 @@ struct StatusBanner: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
+            // QA-003: name the icon-only copy control (else the AX name is the
+            // localized `doc.on.doc` description).
+            .accessibilityLabel("Copy message")
             .help("Copy message")
         }
         .conversationMeasure()

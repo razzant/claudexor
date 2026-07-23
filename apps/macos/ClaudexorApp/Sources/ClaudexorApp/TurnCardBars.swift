@@ -42,6 +42,9 @@ struct TurnReceiptRow: View {
                 Image(systemName: "sidebar.trailing")
             }
             .buttonStyle(.borderless)
+            // QA-003: name the icon-only workspace affordance (else the AX name is
+            // the localized `sidebar.trailing` description).
+            .accessibilityLabel("Open in workspace")
             .help("Open this run in the thread workspace — changes, artifacts, evidence")
         }
     }

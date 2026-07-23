@@ -85,6 +85,16 @@ struct SettingsScreen: View {
             .padding(.vertical, Theme.Spacing.xl)
             .frame(maxWidth: Theme.Layout.readableMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+            // QA-076 (issue-076): under keyboard navigation the Settings window
+            // had NO reachable focus descendant — `AXFocusedUIElement` stayed on
+            // the `AXWindow` and no tab item or button ever entered focus. The
+            // root `TabView`'s nested `ScrollView`/`VStack` content offered the
+            // focus engine no section to enter. Marking each pane's content a
+            // `.focusSection()` gives SwiftUI an explicit focus cohort to route
+            // into, so Tab reaches the pane's enabled buttons/fields instead of
+            // dead-ending on the window. (The panes' controls are native
+            // buttons/fields — already focusable; they only lacked an entry.)
+            .focusSection()
         }
         .scrollContentBackground(.hidden)
         .background(Theme.surfaceBase)

@@ -116,8 +116,35 @@ struct AppearanceMenu: View {
             }
             .pickerStyle(.inline)
         } label: {
-            Label("Appearance", systemImage: model.appearance.glyph)
+            appearanceLabelIcon
         }
+        // QA-003 (issue-003): the primary AX NAME stays the stable English
+        // product concept "Appearance"; the SELECTED mode is exposed as the
+        // accessibility VALUE. Otherwise the label inferred from the mode glyph
+        // (`sun.max` / `moon.stars` / `circle.lefthalf.filled`) and read as the
+        // host-localized SF Symbol description (`Ясная Ночь` / `Повысить
+        // Яркость`) — a name that also RENAMED the action every time the theme
+        // changed. `.help` stays the separate hover hint, never the name.
+        .accessibilityLabel("Appearance")
+        .accessibilityValue(model.appearance.label)
         .help("Light / Dark / System")
+    }
+
+    /// GH #21: the appearance glyph differs by mode, and `sun.max` /
+    /// `moon.stars` / `circle.lefthalf.filled` have DIFFERENT intrinsic widths.
+    /// As this is the LEADING item of the trailing toolbar cluster, a glyph swap
+    /// on a theme change re-sized it and the whole pill cluster visibly jumped.
+    /// Stacking all mode glyphs (only the active one visible) reserves the widest
+    /// glyph's box, so the label keeps a CONSTANT intrinsic width across theme
+    /// switches — a reserved intrinsic size, no magic number. The hidden glyphs
+    /// are decorative (`.accessibilityHidden`); the Menu owns the AX name/value.
+    private var appearanceLabelIcon: some View {
+        ZStack {
+            ForEach(AppearanceMode.allCases) { mode in
+                Image(systemName: mode.glyph)
+                    .opacity(mode == model.appearance ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 }

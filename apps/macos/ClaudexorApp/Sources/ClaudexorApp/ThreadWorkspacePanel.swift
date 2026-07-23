@@ -164,6 +164,9 @@ struct ThreadWorkspacePanel: View {
         }
         .buttonStyle(.plain)
         .fixedSize()
+        // QA-003: the chip's action is to CLEAR the run filter — name it so, so
+        // the trailing `xmark` glyph doesn't become the AX name.
+        .accessibilityLabel("Clear run filter")
         .help("Filtered to this run — clear to see the whole thread's workspace")
     }
 
