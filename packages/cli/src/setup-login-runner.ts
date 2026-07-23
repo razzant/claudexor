@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { spawn, type SpawnOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,6 +10,11 @@ import {
   type ProcessGroupCapture,
 } from "@claudexor/core";
 import { redactSecrets } from "@claudexor/util";
+import {
+  startCodexDeviceLogin,
+  type CodexAppServerConnection,
+  type JsonRpcFrame,
+} from "./codex-device-login.js";
 import { nativeLoginEnv } from "./native-login.js";
 import {
   SETUP_LOGIN_PROTOCOL_VERSION,
@@ -17,6 +23,7 @@ import {
   readRunnerPermit,
   verifyExecutableEvidence,
   type SetupLoginManifest,
+  type SetupLoginPermit,
   type SetupLoginRunnerResult,
   type SetupLoginRunnerState,
 } from "./setup-login-protocol.js";
@@ -108,6 +115,14 @@ export async function runSetupLoginWorker(
   }
 
   atomicPrivateJson(manifest.statePath, { ...awaitingPermit, stage: "running" });
+
+  // D-17 primary flow: host the codex app-server and drive typed device-code
+  // auth (no Terminal). The app-server child shares this detached worker's
+  // process group, so every restart/permit/termination evidence semantic is
+  // unchanged from the Terminal path.
+  if (manifest.loginMode === "device_code") {
+    return runDeviceCodeLogin(manifest, permit, { now, spawnProcess });
+  }
 
   // Device-auth capability gate (v3.0.3 S6): `--device-auth` exists only
   // since codex 0.46.0. Probe the vendor's own `login --help` BEFORE spawning
@@ -211,6 +226,174 @@ export async function runSetupLoginWorker(
       : {}),
   });
   return result.code === 0 && result.signal === null ? 0 : 1;
+}
+
+/**
+ * D-17 device-code login: host `codex app-server --stdio`, drive the typed
+ * device-code handshake, and write the transient disclosure sidecar (the
+ * one-time code lives ONLY there and is never persisted to the result receipt).
+ * Completion → exit 0 (the daemon then runs the unchanged native verification);
+ * a capability probe miss → `device_auth_unsupported` (the daemon demotes to
+ * the typed Terminal fallback, no stdout regex).
+ */
+async function runDeviceCodeLogin(
+  manifest: SetupLoginManifest,
+  permit: SetupLoginPermit,
+  deps: { now: () => Date; spawnProcess: typeof spawn },
+): Promise<number> {
+  const { now, spawnProcess } = deps;
+  if (!manifest.deviceCodePath || !manifest.appServerFlow) {
+    persistResult(manifest, {
+      permitIssuedAt: permit.issuedAt,
+      commandStarted: false,
+      errorCode: "spawn_failed",
+      exitCode: null,
+      signal: null,
+      finishedAt: now().toISOString(),
+    });
+    return 1;
+  }
+  let child: ChildProcess;
+  try {
+    child = spawnProcess(manifest.binary, manifest.args, {
+      cwd: manifest.cwd,
+      env: nativeLoginEnv(manifest.harness, process.env, manifest.profileConfigDir),
+      detached: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch {
+    persistResult(manifest, {
+      permitIssuedAt: permit.issuedAt,
+      commandStarted: false,
+      errorCode: "spawn_failed",
+      exitCode: null,
+      signal: null,
+      finishedAt: now().toISOString(),
+    });
+    return 1;
+  }
+  child.stderr?.resume();
+  const connection = appServerConnection(child);
+  const abort = new AbortController();
+  const onSignal = () => abort.abort();
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  const killChild = () => {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* best-effort */
+    }
+  };
+  try {
+    const start = await startCodexDeviceLogin(connection, {
+      flow: manifest.appServerFlow,
+      signal: abort.signal,
+    });
+    if (start.kind === "not_supported") {
+      killChild();
+      // Typed capability-probe miss: reuse the existing not_supported outcome
+      // so the daemon offers the legacy Terminal fallback (no stdout regex).
+      persistResult(manifest, {
+        permitIssuedAt: permit.issuedAt,
+        commandStarted: false,
+        errorCode: "device_auth_unsupported",
+        exitCode: null,
+        signal: null,
+        finishedAt: now().toISOString(),
+      });
+      return 1;
+    }
+    // Transient disclosure sidecar. The userCode rides ONLY this file (read-time
+    // snapshot projection); it never enters the result receipt or the journal.
+    atomicPrivateJson(manifest.deviceCodePath, {
+      version: SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId: manifest.jobId,
+      executionId: manifest.executionId,
+      flow: manifest.appServerFlow,
+      verificationUrl: start.disclosure.verificationUrl,
+      userCode: start.disclosure.userCode,
+      disclosedAt: now().toISOString(),
+    });
+    const outcome = await start.awaitCompletion();
+    killChild();
+    if (outcome.kind === "completed") {
+      persistResult(manifest, {
+        permitIssuedAt: permit.issuedAt,
+        commandStarted: true,
+        exitCode: 0,
+        signal: null,
+        finishedAt: now().toISOString(),
+      });
+      return 0;
+    }
+    persistResult(manifest, {
+      permitIssuedAt: permit.issuedAt,
+      commandStarted: true,
+      exitCode: 1,
+      signal: null,
+      finishedAt: now().toISOString(),
+      ...(outcome.kind === "failed" ? { outputTail: boundedTail(outcome.detail) } : {}),
+    });
+    return 1;
+  } catch (error) {
+    killChild();
+    persistResult(manifest, {
+      permitIssuedAt: permit.issuedAt,
+      commandStarted: true,
+      exitCode: 1,
+      signal: null,
+      finishedAt: now().toISOString(),
+      outputTail: boundedTail(error instanceof Error ? error.message : String(error)),
+    });
+    return 1;
+  } finally {
+    process.off("SIGTERM", onSignal);
+    process.off("SIGINT", onSignal);
+  }
+}
+
+/** Adapt a `codex app-server --stdio` child to the device-login transport seam
+ * (line-delimited JSON-RPC over the child's stdio). */
+function appServerConnection(child: ChildProcess): CodexAppServerConnection {
+  const lines = createInterface({ input: child.stdout! });
+  let frameHandler: ((frame: JsonRpcFrame) => void) | null = null;
+  const closeHandlers: Array<(error?: Error) => void> = [];
+  lines.on("line", (line) => {
+    let frame: JsonRpcFrame;
+    try {
+      frame = JSON.parse(line) as JsonRpcFrame;
+    } catch {
+      return; // Vendor diagnostics are not protocol authority.
+    }
+    frameHandler?.(frame);
+  });
+  const closeWith = (error: Error) => {
+    for (const handler of closeHandlers) handler(error);
+  };
+  child.once("exit", (code, signal) =>
+    closeWith(new Error(`codex app-server exited: code=${String(code)} signal=${String(signal)}`)),
+  );
+  child.once("error", (error) => closeWith(error));
+  child.stdin?.on("error", () => undefined);
+  return {
+    send(frame) {
+      child.stdin?.write(`${JSON.stringify(frame)}\n`);
+    },
+    onFrame(handler) {
+      frameHandler = handler;
+    },
+    onClose(handler) {
+      closeHandlers.push(handler);
+    },
+    close() {
+      try {
+        child.stdin?.end();
+      } catch {
+        /* best-effort */
+      }
+    },
+  };
 }
 
 const OUTPUT_TAIL_BYTES = 4096;

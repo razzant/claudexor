@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   AuthCapabilityVerifier,
@@ -19,6 +19,7 @@ import {
   SetupNativeCommandReceipt,
   type ControlSetupJob,
   type ControlSetupJobListFilter,
+  type SetupDeviceCodeDisclosure,
 } from "@claudexor/schema";
 import { noProjectRepoRoot } from "@claudexor/util";
 import * as NativeLogin from "./native-login.js";
@@ -41,6 +42,7 @@ import {
   captureExecutableEvidence,
   commandDigest,
   readLoginManifest,
+  readRunnerDeviceCode,
   readRunnerResult,
   readRunnerState,
   sealLoginManifest,
@@ -161,6 +163,50 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   function iso(): string {
     return now().toISOString();
   }
+  /** A device-code (app-server) login is identified by its authorized argv —
+   * the sealed manifest args carry `app-server` for that flow only. */
+  function isDeviceCodeJob(job: ControlSetupJob): boolean {
+    return job.authorization?.args.includes("app-server") ?? false;
+  }
+  function awaitingUserMessage(job: ControlSetupJob): string {
+    return isDeviceCodeJob(job)
+      ? `Complete ${job.harness} sign-in: open the URL and enter the one-time code shown in Claudexor.`
+      : `Complete ${job.harness} native login in Terminal.`;
+  }
+  /** The transient device-code disclosure the runner wrote, projected at READ
+   * time onto a snapshot/event. Never journaled: only surfaced while the login
+   * is genuinely awaiting the user (the sidecar is removed on terminalization).
+   * The one-time userCode rides this projection only (INV-062 / D-17). */
+  function projectDeviceCode(job: ControlSetupJob): SetupDeviceCodeDisclosure | undefined {
+    if (!ACTIVE_SETUP_STATES.has(job.state) || job.phase !== "awaiting_user") return undefined;
+    if (!isDeviceCodeJob(job) || !job.authorization) return undefined;
+    let sidecar: ReturnType<typeof readRunnerDeviceCode>;
+    try {
+      sidecar = readRunnerDeviceCode(store.paths(job.jobId).runnerDeviceCode);
+    } catch {
+      return undefined;
+    }
+    if (
+      !sidecar ||
+      sidecar.jobId !== job.jobId ||
+      sidecar.executionId !== job.authorization.executionId
+    )
+      return undefined;
+    return {
+      flow: sidecar.flow,
+      verificationUrl: sidecar.verificationUrl,
+      userCode: sidecar.userCode,
+    };
+  }
+  /** Remove the transient device-code sidecar once a login is terminal so the
+   * one-time code stops being projected. Best-effort; the journal is authority. */
+  function removeDeviceCodeSidecar(jobId: string): void {
+    try {
+      rmSync(store.paths(jobId).runnerDeviceCode, { force: true });
+    } catch {
+      /* best-effort; the code is invalid once terminal regardless */
+    }
+  }
   function update(
     jobId: string,
     patch: Partial<ControlSetupJob>,
@@ -201,6 +247,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       message,
       ...(command ? { command } : {}),
     });
+    // The transient device-code disclosure is invalid once terminal — drop the
+    // sidecar so its one-time code stops being projected (INV-062 / D-17).
+    removeDeviceCodeSidecar(jobId);
     logAfterMutation(jobId, message);
     return done;
   }
@@ -629,7 +678,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     if (job.phase === "launching") {
       update(jobId, {
         phase: "awaiting_user",
-        message: `Complete ${job.harness} native login in Terminal.`,
+        message: awaitingUserMessage(job),
       });
     }
   }
@@ -671,8 +720,9 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
           jobId,
           "not_supported",
           "not_supported",
-          `${job.harness} CLI does not support device-code login (--device-auth needs codex >= 0.46.0); ` +
-            `upgrade the codex CLI, or retry with \`claudexor auth login codex --browser-redirect\`.`,
+          `${job.harness} does not expose typed device-code auth over its app-server ` +
+            `(upgrade the codex CLI), or retry the legacy Terminal flow with ` +
+            "`claudexor auth login codex --browser-redirect`.",
         );
         return;
       }
@@ -693,13 +743,16 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       });
       return;
     }
-    // R6: a failed device-auth flow ALWAYS carries the toggle remedy — the
-    // vendor's rejection prose is not classified (no regex governance), the
-    // remedy is keyed deterministically on the authorized flow itself.
-    const deviceAuthRemedy = job.authorization?.args.includes("--device-auth")
-      ? " If the sign-in page rejected your one-time code, enable ChatGPT → Settings → Security → " +
-        '"Allow device code login" and retry, or use `claudexor auth login codex --browser-redirect`.'
-      : "";
+    // R6: a failed device-code / device-auth flow ALWAYS carries the toggle
+    // remedy — the vendor's rejection prose is not classified (no regex
+    // governance), the remedy is keyed deterministically on the authorized flow
+    // itself (the `--device-auth` Terminal flow or the app-server device-code
+    // flow, whose argv carries `app-server`).
+    const deviceAuthRemedy =
+      job.authorization?.args.includes("--device-auth") || isDeviceCodeJob(job)
+        ? " If the sign-in page rejected your one-time code, enable ChatGPT → Settings → Security → " +
+          '"Allow device code login" and retry, or use `claudexor auth login codex --browser-redirect`.'
+        : "";
     finish(
       jobId,
       "failed",
@@ -817,7 +870,7 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     if (current.phase === "launching") {
       update(jobId, {
         phase: "awaiting_user",
-        message: `Complete ${current.harness} native login in Terminal.`,
+        message: awaitingUserMessage(current),
       });
     }
   }
@@ -997,7 +1050,11 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     spec: NativeLoginSpec,
     profileConfigDir?: string,
   ): ControlSetupJob {
-    if (platform !== "darwin") {
+    const deviceCode = spec.loginMode === "device_code";
+    // The device-code flow is driven by the daemon-hosted app-server runner and
+    // needs no Terminal, so it is not macOS-gated. The legacy Terminal handoff
+    // stays macOS-only.
+    if (!deviceCode && platform !== "darwin") {
       return finish(
         job.jobId,
         "failed",
@@ -1024,6 +1081,16 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         // Present ONLY on profile jobs: absent keeps pre-upgrade manifests'
         // sealed digests valid (the field is optional, never defaulted).
         ...(profileConfigDir ? { profileConfigDir } : {}),
+        // D-17 device-code (app-server) login: the runner hosts the app-server
+        // and writes the transient disclosure sidecar. Optional/undefaulted so
+        // Terminal manifests keep their sealed digest.
+        ...(deviceCode
+          ? {
+              loginMode: "device_code" as const,
+              appServerFlow: spec.appServerFlow,
+              deviceCodePath: paths.runnerDeviceCode,
+            }
+          : {}),
         statePath: paths.runnerState,
         resultPath: paths.runnerResult,
         permitPath: paths.runnerPermit,
@@ -1032,6 +1099,52 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         commandDigest: authorizedCommandDigest,
       });
       atomicPrivateJson(paths.manifest, manifest);
+      if (deviceCode) {
+        // D-17 primary flow: launch the app-server runner DETACHED (no Terminal,
+        // no login.command script). The runner survives daemon restart exactly
+        // like the Terminal runner (same detached process group + sidecars);
+        // reconcile/cancel/timeout/extend semantics are unchanged.
+        const waiting = update(job.jobId, {
+          state: "waiting_for_input",
+          phase: "launching",
+          deadlineAt: new Date(now().getTime() + loginTimeoutMs).toISOString(),
+          startedAt: iso(),
+          command: spec.displayCommand,
+          authorization: {
+            executionId,
+            executable,
+            args: [...spec.args],
+            commandDigest: authorizedCommandDigest,
+            manifestDigest: manifest.manifestDigest,
+          },
+          message: `Starting ${job.harness} device-code sign-in over the app-server (no Terminal).`,
+        });
+        log(job.jobId, `device-code runner: ${nodePath} ${runnerPath} ${paths.manifest}`);
+        const runner = spawnProcess(nodePath, [runnerPath, paths.manifest], {
+          detached: true,
+          stdio: "ignore",
+        });
+        const failLaunch = (detail: string) => {
+          if (!["idle", "healthy"].includes(supervisor.health().state)) return;
+          const current = store.status(job.jobId);
+          if (current.phase !== "launching") return;
+          finish(
+            job.jobId,
+            "failed",
+            "launch_failed",
+            `Could not start the ${job.harness} device-code runner: ${detail}.`,
+            {},
+            spec.displayCommand,
+          );
+        };
+        runner.once("error", (err) => failLaunch(err.message));
+        runner.once("exit", (code, signal) => {
+          if (code !== 0 && code !== null)
+            failLaunch(signal ? `signal ${signal}` : `exit code ${code}`);
+        });
+        runner.unref();
+        return waiting;
+      }
       // External-risk disclosure (v3.0.3, Bible): a browser-based OpenAI
       // sign-in completed in a browser holding ANOTHER account's session can
       // revoke sibling sessions (incl. the ChatGPT desktop app) server-side.
@@ -1153,19 +1266,27 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
         // --browser-redirect request must never be silently answered with the
         // active device-auth job.
         if ((active.profileId ?? null) === (profileBinding?.profileId ?? null)) {
-          const activeDeviceAuth = active.authorization?.args.includes("--device-auth") ?? null;
-          const requestedDeviceAuth =
-            harness === "codex" ? request.loginFlow !== "browser_redirect" : null;
+          // The meaningful flow distinction for codex is the legacy Terminal
+          // localhost-redirect ("login" with no app-server / --device-auth argv)
+          // vs the app-server device-code / browser-callback flows. A mismatch
+          // refuses loudly rather than answering with the wrong-flow active job.
+          const activeBrowserRedirect =
+            harness === "codex" && active.authorization
+              ? !active.authorization.args.includes("app-server") &&
+                !active.authorization.args.includes("--device-auth")
+              : null;
+          const requestedBrowserRedirect =
+            harness === "codex" ? request.loginFlow === "browser_redirect" : null;
           if (
-            activeDeviceAuth !== null &&
-            requestedDeviceAuth !== null &&
-            activeDeviceAuth !== requestedDeviceAuth
+            activeBrowserRedirect !== null &&
+            requestedBrowserRedirect !== null &&
+            activeBrowserRedirect !== requestedBrowserRedirect
           ) {
             throw Object.assign(
               new Error(
                 `another ${harness} login job is active (${active.jobId}) using the ` +
-                  `${activeDeviceAuth ? "device-auth" : "browser-redirect"} flow; finish or cancel ` +
-                  `it before starting a ${requestedDeviceAuth ? "device-auth" : "browser-redirect"} login`,
+                  `${activeBrowserRedirect ? "browser-redirect" : "device-code"} flow; finish or cancel ` +
+                  `it before starting a ${requestedBrowserRedirect ? "browser-redirect" : "device-code"} login`,
               ),
               { status: 409 },
             );
@@ -1245,13 +1366,20 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
     },
     snapshot(input: unknown) {
       const p = (input ?? {}) as Record<string, unknown>;
-      return store.snapshot(typeof p.jobId === "string" ? p.jobId : "");
+      const snap = store.snapshot(typeof p.jobId === "string" ? p.jobId : "");
+      // D-17: overlay the transient device-code disclosure at READ time. It is
+      // never a field of the journaled job — only projected here (and on SSE).
+      const deviceCode = projectDeviceCode(snap.job);
+      return deviceCode ? { ...snap, deviceCode } : snap;
     },
     events(input: unknown) {
       const p = (input ?? {}) as Record<string, unknown>;
       const jobId = typeof p.jobId === "string" ? p.jobId : "";
       const afterCursor = typeof p.afterCursor === "string" ? p.afterCursor : null;
-      return store.events(jobId, afterCursor);
+      return store.events(jobId, afterCursor).map((event) => {
+        const deviceCode = projectDeviceCode(event.job);
+        return deviceCode ? { ...event, deviceCode } : event;
+      });
     },
     async cancel(input: unknown): Promise<ControlSetupJob> {
       const p = (input ?? {}) as Record<string, unknown>;

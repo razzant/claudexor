@@ -16,10 +16,12 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { withExecutableInspection, isBoundedRegularExecutable } from "@claudexor/core";
 import {
+  SetupLoginDeviceCode as SetupLoginDeviceCodeSchema,
   SetupLoginManifest as SetupLoginManifestSchema,
   SetupLoginPermit as SetupLoginPermitSchema,
   SetupLoginRunnerResult as SetupLoginRunnerResultSchema,
   SetupLoginRunnerState as SetupLoginRunnerStateSchema,
+  type SetupLoginDeviceCode,
   type SetupLoginManifest,
   type SetupLoginPermit,
   type SetupLoginRunnerResult,
@@ -29,6 +31,7 @@ import {
 } from "@claudexor/schema";
 
 export type {
+  SetupLoginDeviceCode,
   SetupLoginManifest,
   SetupLoginPermit,
   SetupLoginRunnerResult,
@@ -68,6 +71,17 @@ export function readLoginManifest(path: string): SetupLoginManifest {
     basename(manifest.permitPath) !== "runner-permit.json"
   ) {
     throw new Error("setup-login sidecar path escapes or relocates its daemon-owned job directory");
+  }
+  if (manifest.deviceCodePath !== undefined) {
+    const deviceCodeParent = realpathSync(dirname(resolve(manifest.deviceCodePath)));
+    if (
+      deviceCodeParent !== jobDir ||
+      basename(manifest.deviceCodePath) !== "runner-devicecode.json"
+    ) {
+      throw new Error(
+        "setup-login device-code sidecar escapes or relocates its daemon-owned job directory",
+      );
+    }
   }
   const cwd = realpathSync(manifest.cwd);
   if (cwd !== jobDir && !cwd.startsWith(jobDir + sep))
@@ -158,6 +172,14 @@ export function readRunnerResult(path: string): SetupLoginRunnerResult | null {
 export function readRunnerPermit(path: string): SetupLoginPermit | null {
   try {
     return SetupLoginPermitSchema.parse(readPrivateJson(path));
+  } catch {
+    return null;
+  }
+}
+
+export function readRunnerDeviceCode(path: string): SetupLoginDeviceCode | null {
+  try {
+    return SetupLoginDeviceCodeSchema.parse(readPrivateJson(path));
   } catch {
     return null;
   }

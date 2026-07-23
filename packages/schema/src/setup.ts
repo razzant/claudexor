@@ -250,15 +250,19 @@ export const ControlSetupJobCreateRequest = z
       .optional()
       .describe("Registered config_dir_login profile to log in; absent = the default session."),
     /** Codex-only interactive login flow selection. Default (absent) is
-     * device_auth — completed in an isolated browser context it avoids the
-     * account-switch trigger that revokes sibling OpenAI sessions
-     * (v3.0.3 S6, live-verified). browser_redirect is the explicit opt-in
-     * localhost-callback flow. */
+     * device_auth — the D-17 primary flow: typed device-code over the official
+     * codex app-server (NO Terminal), completed in an isolated browser context
+     * it avoids the account-switch trigger that revokes sibling OpenAI sessions
+     * (v3.0.3 S6, live-verified). browser_callback is the secondary opt-in
+     * app-server flow (`account/login/start {type:"chatgpt"}` → authUrl, no
+     * one-time code). browser_redirect is the explicit legacy Terminal
+     * localhost-callback flow (the typed fallback when the app-server lacks
+     * the auth methods). */
     loginFlow: z
-      .enum(["device_auth", "browser_redirect"])
+      .enum(["device_auth", "browser_callback", "browser_redirect"])
       .optional()
       .describe(
-        "Codex-only: device_auth (default; complete it in an isolated browser window) or browser_redirect (explicit opt-in localhost callback).",
+        "Codex-only: device_auth (default; app-server device-code, isolated browser window), browser_callback (app-server browser-callback opt-in), or browser_redirect (legacy Terminal localhost callback / fallback).",
       ),
   })
   .strict()
@@ -417,6 +421,33 @@ export const ControlSetupJob = z
   .describe("One daemon-managed exact-subscription native-login job.");
 export type ControlSetupJob = z.infer<typeof ControlSetupJob>;
 
+/** The two app-server device-code login flows (D-17 primary path). */
+export const SetupAppServerLoginFlow = z.enum(["chatgptDeviceCode", "chatgpt"]);
+export type SetupAppServerLoginFlow = z.infer<typeof SetupAppServerLoginFlow>;
+
+/**
+ * TRANSIENT device-code disclosure surfaced by the D-17 app-server login flow.
+ *
+ * This is a READ-TIME PROJECTION ONLY: it is overlaid on a setup-job snapshot /
+ * SSE frame from the runner's transient device-code sidecar and is NEVER a
+ * field of the journaled {@link ControlSetupJob}. The one-time `userCode` is
+ * never journaled, logged, or persisted to the durable result receipt
+ * (INV-062 / D-17); the journal records only THAT a code was disclosed via the
+ * awaiting_user phase transition. `userCode` is empty for the browser-callback
+ * (`chatgpt`) flow, which surfaces only an authUrl.
+ */
+export const SetupDeviceCodeDisclosure = z
+  .object({
+    flow: SetupAppServerLoginFlow,
+    verificationUrl: z.string().url().describe("Where the operator completes the sign-in."),
+    userCode: z
+      .string()
+      .describe("Transient one-time code (empty for the browser-callback flow); never journaled."),
+  })
+  .strict()
+  .describe("Transient device-code disclosure — read-time projection only, never journaled.");
+export type SetupDeviceCodeDisclosure = z.infer<typeof SetupDeviceCodeDisclosure>;
+
 export const ControlSetupJobListFilter = z
   .object({
     harness: ControlHarnessSetupHarness.optional(),
@@ -457,6 +488,9 @@ export const ControlSetupJobEvent = z
     state: ControlSetupJobState,
     message: z.string().describe("Human-readable status message."),
     job: ControlSetupJob.describe("Full authoritative setup-job snapshot at this cursor."),
+    deviceCode: SetupDeviceCodeDisclosure.optional().describe(
+      "Transient device-code disclosure overlaid at read time from the runner sidecar; never part of the journaled job.",
+    ),
   })
   .strict()
   .superRefine((value, context) => {
@@ -497,6 +531,9 @@ export const ControlSetupJobSnapshot = z
       .nonnegative()
       .safe()
       .describe("Global partition sequence fenced by the snapshot."),
+    deviceCode: SetupDeviceCodeDisclosure.optional().describe(
+      "Transient device-code disclosure overlaid at read time from the runner sidecar; never part of the journaled job.",
+    ),
   })
   .strict()
   .describe("Atomically fenced setup-job snapshot used before attaching or reattaching SSE.");
@@ -528,6 +565,19 @@ export const SetupLoginManifest = z
      * codex CODEX_HOME). OPTIONAL, not defaulted: absent on default-store jobs so
      * pre-existing manifests keep their sealed digest across a daemon upgrade. */
     profileConfigDir: AbsolutePath.optional(),
+    /** D-17: how the runner performs the login. Absent (or "terminal") = the
+     * legacy Terminal-hosted vendor `codex login`. "device_code" = the primary
+     * flow: the runner hosts `codex app-server --stdio` and drives typed
+     * device-code auth (no Terminal). OPTIONAL/undefaulted so pre-existing
+     * sealed manifests keep their digest across a daemon upgrade. */
+    loginMode: z.enum(["terminal", "device_code"]).optional(),
+    /** Which app-server auth flow the device_code runner requests. Present only
+     * with loginMode "device_code". */
+    appServerFlow: SetupAppServerLoginFlow.optional(),
+    /** Sidecar the device_code runner writes its transient disclosure to; read
+     * by the daemon for the snapshot overlay, never journaled. Present only with
+     * loginMode "device_code" (optional so terminal manifests keep their digest). */
+    deviceCodePath: AbsolutePath.optional(),
     statePath: AbsolutePath,
     resultPath: AbsolutePath,
     permitPath: AbsolutePath,
@@ -536,8 +586,52 @@ export const SetupLoginManifest = z
     commandDigest: Sha256Hex,
     manifestDigest: Sha256Hex,
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const deviceCode = value.loginMode === "device_code";
+    if (deviceCode && value.harness !== "codex") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["loginMode"],
+        message: "device_code login mode exists only for the codex app-server",
+      });
+    }
+    if (deviceCode && (!value.appServerFlow || !value.deviceCodePath)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["appServerFlow"],
+        message: "device_code manifests require appServerFlow and deviceCodePath",
+      });
+    }
+    if (!deviceCode && (value.appServerFlow || value.deviceCodePath)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["appServerFlow"],
+        message: "appServerFlow/deviceCodePath require loginMode device_code",
+      });
+    }
+  });
 export type SetupLoginManifest = z.infer<typeof SetupLoginManifest>;
+
+/**
+ * TRANSIENT device-code sidecar the device_code runner writes after
+ * `account/login/start` succeeds. Bound to the job + execution like the state
+ * sidecar. The daemon reads it to overlay {@link SetupDeviceCodeDisclosure} on
+ * snapshots/SSE; its `userCode` is NEVER journaled, logged, or copied into the
+ * durable result receipt (INV-062 / D-17).
+ */
+export const SetupLoginDeviceCode = z
+  .object({
+    version: SetupLoginProtocolVersion,
+    jobId: SetupLoginJobId,
+    executionId: SetupLoginExecutionId,
+    flow: SetupAppServerLoginFlow,
+    verificationUrl: z.string().url(),
+    userCode: z.string(),
+    disclosedAt: SetupTimestamp,
+  })
+  .strict();
+export type SetupLoginDeviceCode = z.infer<typeof SetupLoginDeviceCode>;
 
 export const SetupLoginRunnerState = z
   .object({

@@ -263,6 +263,10 @@ describe("daemon recovery composition", () => {
             harness: "codex",
             action: "login",
             authRequest: "subscription",
+            // The legacy Terminal flow is macOS-only, so on linux it terminalizes
+            // as launch_failed — a clean fresh-epoch terminal outcome. (The
+            // device-code default is not macOS-gated and would stay waiting.)
+            loginFlow: "browser_redirect",
           }),
         });
       } finally {

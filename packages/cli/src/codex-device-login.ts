@@ -201,45 +201,45 @@ export async function startCodexDeviceLogin(
   if (!disclosure) {
     throw new Error("codex app-server login/start result is missing loginId/verificationUrl");
   }
+  const loginId = disclosure.loginId;
+  const readTransportError = (): Error | null => transportError;
+
+  // Listen for completion EAGERLY (before awaitCompletion is called) so a
+  // `completed`/`updated` notification that races the caller is never lost.
+  let settledOutcome: DeviceLoginCompletion | null = null;
+  let deliver: ((outcome: DeviceLoginCompletion) => void) | null = null;
+  const onAbort = () => {
+    // Cancel the pending login so the vendor releases the device code, then
+    // report the honest cancellation to the runner.
+    try {
+      connection.send({ method: "account/login/cancel", params: { loginId } });
+    } catch {
+      /* transport already gone */
+    }
+    settle({ kind: "cancelled" });
+  };
+  const settle = (outcome: DeviceLoginCompletion) => {
+    if (settledOutcome) return;
+    settledOutcome = outcome;
+    options.signal?.removeEventListener("abort", onAbort);
+    deliver?.(outcome);
+  };
+  connection.onClose((error) =>
+    settle({ kind: "failed", detail: (error ?? new Error("codex app-server closed")).message }),
+  );
+  notificationHandlers.add((method, params) => {
+    const outcome = classifyCompletion(method, params, loginId);
+    if (outcome) settle(outcome);
+  });
+  if (options.signal?.aborted) onAbort();
+  else options.signal?.addEventListener("abort", onAbort, { once: true });
+  const pendingError = readTransportError();
+  if (pendingError && !settledOutcome) settle({ kind: "failed", detail: pendingError.message });
 
   const awaitCompletion = (): Promise<DeviceLoginCompletion> =>
     new Promise<DeviceLoginCompletion>((resolve) => {
-      let settled = false;
-      const settle = (outcome: DeviceLoginCompletion) => {
-        if (settled) return;
-        settled = true;
-        options.signal?.removeEventListener("abort", onAbort);
-        resolve(outcome);
-      };
-      const onAbort = () => {
-        // Cancel the pending login so the vendor releases the device code, then
-        // report the honest cancellation to the runner.
-        try {
-          connection.send({
-            method: "account/login/cancel",
-            params: { loginId: disclosure.loginId },
-          });
-        } catch {
-          /* transport already gone */
-        }
-        settle({ kind: "cancelled" });
-      };
-      if (options.signal?.aborted) {
-        onAbort();
-        return;
-      }
-      options.signal?.addEventListener("abort", onAbort, { once: true });
-      if (transportError) {
-        settle({ kind: "failed", detail: transportError.message });
-        return;
-      }
-      connection.onClose((error) =>
-        settle({ kind: "failed", detail: (error ?? new Error("codex app-server closed")).message }),
-      );
-      notificationHandlers.add((method, params) => {
-        const outcome = classifyCompletion(method, params, disclosure.loginId);
-        if (outcome) settle(outcome);
-      });
+      if (settledOutcome) resolve(settledOutcome);
+      else deliver = resolve;
     });
 
   return { kind: "started", disclosure, awaitCompletion };
