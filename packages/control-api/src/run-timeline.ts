@@ -286,7 +286,16 @@ export function timelineEvents(
       errorSummary;
     const toolName = stringOrNull(tool["name"]);
     const target = stringOrNull(tool["target"]);
-    const severity = timelineSeverity(type, payload, tool);
+    // INV-105 disclosure (QA-070): unsupported per-harness knobs the route could
+    // not honor ride harness.started as `ignored_settings`. Project them (redacted,
+    // bounded) so the row renders a visible warning instead of a benign start; a
+    // non-empty list also lifts severity to `warning` (the raw event is info-shaped).
+    const ignoredSettings = Array.isArray(payload["ignored_settings"])
+      ? (payload["ignored_settings"] as unknown[])
+          .map((s) => stringOrNull(s))
+          .filter((s): s is string => s !== null)
+      : [];
+    const severity = ignoredSettings.length > 0 ? "warning" : timelineSeverity(type, payload, tool);
     out.push(
       ControlTimelineEvent.parse({
         type,
@@ -299,6 +308,7 @@ export function timelineEvents(
         toolName,
         target,
         errorSummary,
+        ignoredSettings,
         rawRef: "events.jsonl",
       }),
     );

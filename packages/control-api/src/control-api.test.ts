@@ -1605,6 +1605,84 @@ describe("DaemonControlApiServer", () => {
     );
   });
 
+  it("GET /threads projects typed per-project problems[] and session profileId (QA-064/QA-065)", async () => {
+    const { daemon } = fakeDaemon();
+    const now = new Date().toISOString();
+    const threadObj: Record<string, unknown> = {
+      schema_version: 2,
+      id: "th-p",
+      created_at: now,
+      updated_at: now,
+      repo: { root: "/repo", base_ref: "HEAD" },
+      title: "t",
+      mode: "agent",
+      workspace: { mode: "in_place" },
+      auth_preference: "auto",
+      primary_harness: null,
+      run_ids: [],
+      head_run_id: null,
+      state: "active",
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      // QA-064: a dead project root is skipped but disclosed as a typed problem,
+      // and the surviving threads still load. The wire must carry problems[].
+      listThreads: async () => ({
+        threads: [threadObj],
+        problems: [
+          {
+            projectId: "pr-missing",
+            root: "/gone",
+            code: "project_root_missing",
+            message: "project folder is missing",
+          },
+        ],
+      }),
+      // QA-065: a native session row always carries its credential profileId.
+      threadDetail: async () => ({
+        thread: threadObj,
+        sessions: [
+          {
+            id: "se-1",
+            thread_id: "th-p",
+            harness_id: "claude",
+            native_session_id: "n-1",
+            last_observed_model: null,
+            profile_id: "work",
+            state: "live",
+          },
+        ],
+        turns: [],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const list = (await (
+          await apiFetch(`${base}/threads`, { headers: { authorization: `Bearer ${token}` } })
+        ).json()) as {
+          threads: { id: string }[];
+          problems: { projectId: string; code: string; root: string }[];
+        };
+        // The healthy thread still loads AND the problem is disclosed (QA-064).
+        expect(list.threads[0]?.id).toBe("th-p");
+        expect(list.problems).toHaveLength(1);
+        expect(list.problems[0]).toMatchObject({
+          projectId: "pr-missing",
+          code: "project_root_missing",
+          root: "/gone",
+        });
+
+        const detail = (await (
+          await apiFetch(`${base}/threads/th-p`, { headers: { authorization: `Bearer ${token}` } })
+        ).json()) as { sessions: { harnessId: string; profileId: string | null }[] };
+        // QA-065: the profile binding rides the session DTO on the wire.
+        expect(detail.sessions[0]?.profileId).toBe("work");
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("POST /runs REFUSES a threadId (D10): a thread turn goes through /threads/:id/turns", async () => {
     const { daemon } = fakeDaemon();
     let enqueued = 0;

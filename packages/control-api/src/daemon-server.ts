@@ -147,6 +147,7 @@ import {
   isTerminalLifecycle,
   needsDecision,
   needsOperatorAttention,
+  requiredActionsFor,
   outcomeBanner,
   outcomeFactsFromFailure,
   TestCommandInvocation,
@@ -2684,6 +2685,11 @@ function detailFor(
     // Live plan checklist: the winner's (else last) plan.progress items.
     planProgress: latestPlanProgress(rec, decision?.winner ?? null, events, integrity),
     failure,
+    // Minimal typed required-actions (GH #29) for a succeeded-but-blocked run,
+    // from the single status-projection owner: review-blocked / checks-failed /
+    // needs-decision / work_state needs_input, keyed to the same validated
+    // operator decision the needs-decision + apply gates consult.
+    requiredActions: requiredActionsFor(summary.outcomeFacts ?? null, operator !== null),
   });
 }
 
@@ -2707,6 +2713,44 @@ function parseAccessMaybe(value: unknown): AccessProfile | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+/**
+ * Pure subscription-VALUATION fold over a run's events (QA-023c/QA-017b),
+ * independent of the cash truth. The owner-locked ledger settles native-
+ * subscription work to cash $0 while accumulating its token valuation on
+ * `budget.cash.valuation_usd` (last-wins, cumulative). An UNKNOWN valuation (no
+ * usage ever reported — e.g. a Cursor draft) stays NULL and is never coerced to
+ * a fake $0. The legacy fallback for runs predating budget.cash is the summed
+ * `budget.observation` spend. Vendor token valuation is at best an estimate.
+ */
+export function budgetValuationFromEvents(events: Record<string, unknown>[]): {
+  valuationUsd: number | null;
+  valuationKnowledge: "exact" | "estimated" | "unknown";
+} {
+  let valuationUsd: number | null = null;
+  let observation = 0;
+  let sawObservation = false;
+  for (const ev of events) {
+    const payload = eventPayload(ev);
+    if (ev["type"] === "budget.cash") {
+      const val = payload["valuation_usd"];
+      if (typeof val === "number" && Number.isFinite(val)) valuationUsd = val;
+      continue;
+    }
+    if (ev["type"] === "budget.observation" && payload["kind"] === "spend") {
+      const usd = payload["usd"];
+      if (typeof usd === "number" && Number.isFinite(usd)) {
+        observation += usd;
+        sawObservation = true;
+      }
+    }
+  }
+  if (valuationUsd === null && sawObservation) valuationUsd = observation;
+  return {
+    valuationUsd,
+    valuationKnowledge: valuationUsd === null ? "unknown" : "estimated",
+  };
+}
+
 /** Typed severity per event type — no string matching over event names. */
 function budgetSnapshot(
   rec: DaemonRunRecord,
@@ -2722,10 +2766,14 @@ function budgetSnapshot(
     .paid_budget;
   const paidBudget = PaidBudget.safeParse(p["paidBudget"]).data ??
     contractBudget ?? { kind: "unlimited" as const };
+  const evs = eventsSnapshot ?? readRunEvents(rec);
   let spendUsd = decision?.budget_summary?.spend_usd ?? null;
   let estimated = decision?.budget_summary?.estimated ?? false;
   let source: "decision" | "events" | "settings" | "unknown" =
     spendUsd === null ? "unknown" : "decision";
+  // Subscription VALUATION (QA-023c/QA-017b) beside cash — computed by the pure
+  // event fold so an UNKNOWN valuation stays null, never a fabricated $0.
+  const { valuationUsd, valuationKnowledge } = budgetValuationFromEvents(evs);
   if (spendUsd === null) {
     // The CASH truth for a decision-less run (plan/ask/explore — they never
     // write a decision record) is the ledger's own `budget.cash` disclosure:
@@ -2742,7 +2790,7 @@ function budgetSnapshot(
     let eventSpend = 0;
     let sawCost = false;
     let sawUsage = false;
-    for (const ev of eventsSnapshot ?? readRunEvents(rec)) {
+    for (const ev of evs) {
       const payload = eventPayload(ev);
       if (ev["type"] === "budget.cash") {
         const cash = payload["cash_spend_usd"];
@@ -2797,6 +2845,8 @@ function budgetSnapshot(
   return ControlBudgetSnapshot.parse({
     paidBudget,
     spendUsd,
+    valuationUsd,
+    valuationKnowledge,
     remainingUsd,
     estimated,
     source,
