@@ -169,9 +169,12 @@ function descriptor(input: Draft): ControlOperationDescriptor {
  * can never silently drift from the operations array.
  */
 const OPERATION_SUMMARIES: Record<string, string> = {
-  "POST /v2/uploads": "Begin a resumable upload session for a large attachment.",
-  "PUT /v2/uploads/:id/bytes": "Append a byte range to an in-progress upload.",
-  "GET /v2/uploads/:id": "Read an upload session's status and received byte count.",
+  "POST /v2/uploads":
+    "Create a single-request streaming upload session for an attachment of the declared size.",
+  "PUT /v2/uploads/:id/bytes":
+    "Stream the complete declared byte body in ONE request. The store is single-shot: a short, oversized, or interrupted PUT cancels the upload and discards partial bytes — retry by creating a new upload and resending from byte zero. Not resumable.",
+  "GET /v2/uploads/:id":
+    "Read an upload session's status and received byte count (diagnostic on a cancelled upload, not a resumable offset).",
   "DELETE /v2/uploads/:id": "Abort and discard an in-progress upload session.",
   "POST /v2/uploads/:id/finalize": "Finalize an upload into a durable attachment resource.",
   "POST /v2/handshake": "Negotiate the control protocol major before product calls.",
@@ -190,6 +193,8 @@ const OPERATION_SUMMARIES: Record<string, string> = {
   "GET /v2/projects": "List registered projects (durable handles).",
   "POST /v2/projects": "Register a project root as a durable handle.",
   "POST /v2/projects/:id/relink": "Relink a registered project to a new root.",
+  "DELETE /v2/projects/:id":
+    "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; run artifacts are left to normal GC.",
   "GET /v2/projects/:id/events": "Subscribe to a project's event stream (SSE).",
   "GET /v2/projects/:id/outputs": "List a project's durable outputs (artifacts/).",
   "GET /v2/projects/:id/outputs/<path>": "Fetch one durable output file from a project.",
@@ -351,6 +356,9 @@ const operations: ControlOperationDescriptor[] = [
     "ControlProject",
     { idempotency: "natural" },
   ),
+  j("DELETE", "/v2/projects/:id", "mutating", null, "ControlProjectRemoveReceipt", {
+    idempotency: "natural",
+  }),
   j("GET", "/v2/projects/:id/events", "read_only", null, null, {
     responseKind: "stream",
     parameters: [

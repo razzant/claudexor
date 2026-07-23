@@ -234,6 +234,7 @@ export interface DaemonControlApiOptions {
         clientId: string;
       }) => Promise<unknown>;
       relinkProject?: (id: string, root: string) => Promise<unknown>;
+      removeProject?: (id: string) => Promise<unknown>;
       harnesses?: (input?: {
         fresh?: boolean;
         includeFakes?: boolean;

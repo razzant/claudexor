@@ -4,6 +4,7 @@ import {
   ControlProjectListResponse,
   ControlProjectRegisterRequest,
   ControlProjectRelinkRequest,
+  ControlProjectRemoveReceipt,
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues } from "@claudexor/util";
 import { requiredIdempotencyKey } from "./run-start.js";
@@ -17,6 +18,7 @@ export interface ProjectRouteContext {
       clientId: string;
     }) => Promise<unknown>;
     relinkProject?: (id: string, root: string) => Promise<unknown>;
+    removeProject?: (id: string) => Promise<unknown>;
   };
   readBody(req: IncomingMessage): Promise<unknown>;
   json(res: ServerResponse, status: number, body: unknown): void;
@@ -68,6 +70,22 @@ export async function handleProjectRoute(
       const body = ControlProjectRelinkRequest.parse(raw);
       const project = await service(decodeURIComponent(projectRelinkMatch[1] as string), body.root);
       ctx.json(res, 200, projectWire(project));
+    } catch (error) {
+      ctx.requestError(res, error);
+    }
+    return true;
+  }
+
+  // QA-049: DELETE /projects/:id — retire a durable project (registry entry +
+  // journal-partition archival), typed-fenced against non-purged threads and
+  // live/queued runs. Not a relink match, so it lives after that branch.
+  const projectDeleteMatch = /^\/projects\/([^/]+)$/.exec(path);
+  if (method === "DELETE" && projectDeleteMatch) {
+    const service = ctx.services?.removeProject;
+    if (!service) return unsupported(ctx, res);
+    try {
+      const receipt = await service(decodeURIComponent(projectDeleteMatch[1] as string));
+      ctx.json(res, 200, ControlProjectRemoveReceipt.parse(receipt));
     } catch (error) {
       ctx.requestError(res, error);
     }

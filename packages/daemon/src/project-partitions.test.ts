@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -352,6 +352,73 @@ describe("ProjectPartitions", () => {
       project_id: projectId,
       revision: 3,
     });
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("removes a project with no threads: unregisters it and archives its partition (QA-049)", () => {
+    const f = fixture();
+    const root = join(f.root, "removable");
+    mkdirSync(root);
+    const project = f.partitions.registerProject({
+      root,
+      idempotencyKey: "register-removable",
+      clientId: "test",
+    });
+    // Materialize the partition on disk (a project-scoped command).
+    f.partitions.forRequest({ scope: { kind: "project", root } });
+    const receipt = f.partitions.removeProject(project.id, new Set());
+    expect(receipt).toMatchObject({
+      projectId: project.id,
+      root,
+      registryRemoved: true,
+      journalPartitionArchived: true,
+      artifactsRetained: true,
+    });
+    expect(typeof receipt.archivedPartitionPath).toBe("string");
+    expect(existsSync(receipt.archivedPartitionPath as string)).toBe(true);
+    // The durable registry no longer knows the project.
+    expect(f.projects.current().get(project.id)).toBeUndefined();
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("refuses to remove a project that still has a non-purged thread (QA-049)", () => {
+    const f = fixture();
+    const root = join(f.root, "referenced");
+    mkdirSync(root);
+    const project = f.partitions.registerProject({
+      root,
+      idempotencyKey: "register-referenced",
+      clientId: "test",
+    });
+    f.partitions.createThread({ repoRoot: root });
+    expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(/thread/);
+    // Fence is closed: the project is still registered and its partition intact.
+    expect(f.partitions.forRequest({ scope: { kind: "project", root } })).toBeDefined();
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("refuses to remove a project with a live/queued run referencing it (QA-049)", () => {
+    const f = fixture();
+    const root = join(f.root, "busy");
+    mkdirSync(root);
+    const project = f.partitions.registerProject({
+      root,
+      idempotencyKey: "register-busy",
+      clientId: "test",
+    });
+    expect(() => f.partitions.removeProject(project.id, new Set([root]))).toThrow(/live or queued/);
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("rejects removal of an unknown project id with a typed 404 (QA-049)", () => {
+    const f = fixture();
+    expect(() => f.partitions.removeProject("prj-does-not-exist", new Set())).toThrow(
+      /no such project/,
+    );
     f.partitions.close();
     f.manager.close();
   });

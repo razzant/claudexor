@@ -731,6 +731,7 @@ validator dump, and validates the per-run SSE cursor as a nonnegative integer
 - `GET /v2/operations`
 - `GET /v2/projects`
 - `POST /v2/projects`
+- `DELETE /v2/projects/:id`
 - `GET /v2/projects/:id/events`
 - `GET /v2/projects/:id/outputs`
 - `GET /v2/projects/:id/outputs/<path>`
@@ -1039,8 +1040,14 @@ nonterminal command to `interrupted_unknown`; mutating commands are never
 auto-replayed.
 The deliberately empty-on-v2-start registry is global. `GET/POST /v2/projects`
 list/register canonical local roots and
-`POST /v2/projects/:id/relink` moves an existing stable project id. The CLI
-projects the same surface as `claudexor project list|register|relink` and
+`POST /v2/projects/:id/relink` moves an existing stable project id.
+`DELETE /v2/projects/:id` retires a project — it removes the registry entry and
+ARCHIVES the project's journal partition (renamed out of the active journal
+tree, never deleted, the same non-destructive move the quarantine path uses),
+leaving run artifacts to normal GC and disclosing all of that in a typed
+receipt. It is refused with a typed `409` while any non-purged thread or
+live/queued run still references the project. The CLI
+projects the same surface as `claudexor project list|register|relink|remove` and
 auto-registers the current root before a run; no v1 config, thread, or run path
 is imported as a project registration. Relink updates project-thread root
 projections without changing their partition identity.

@@ -121,10 +121,7 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": [
-            "true",
-            "false"
-          ],
+          "enum": ["true", "false"],
           "schema_ref": null,
           "description": "Request a fresh readiness/status projection instead of only cached truth."
         },
@@ -133,10 +130,7 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": [
-            "true",
-            "false"
-          ],
+          "enum": ["true", "false"],
           "schema_ref": null,
           "description": "Include fake/test harness adapters in the listing."
         },
@@ -179,10 +173,7 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": [
-            "local_session",
-            "api_key"
-          ],
+          "enum": ["local_session", "api_key"],
           "schema_ref": null,
           "description": "Filter enumerated models to the given credential route (models foreign to the route are hidden)."
         }
@@ -236,6 +227,18 @@
       "request_schema": "ControlProjectRegisterRequest",
       "parameters": [],
       "response_schema": "ControlProject",
+      "error_schema": "ControlProblem"
+    },
+    {
+      "method": "DELETE",
+      "path": "/v2/projects/:id",
+      "mutating": true,
+      "applicability": "project",
+      "summary": "Remove a registered project: retire the registry entry and archive its journal partition. Refused (409) while any non-purged thread or live/queued run references it; run artifacts are left to normal GC.",
+      "auth": "loopback_bearer",
+      "request_schema": null,
+      "parameters": [],
+      "response_schema": "ControlProjectRemoveReceipt",
       "error_schema": "ControlProblem"
     },
     {
@@ -641,11 +644,7 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": [
-            "codex",
-            "claude",
-            "cursor"
-          ],
+          "enum": ["codex", "claude", "cursor"],
           "schema_ref": "ControlSetupJobListFilter#/properties/harness",
           "description": "Filter setup jobs to one harness."
         },
@@ -654,9 +653,7 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": [
-            "login"
-          ],
+          "enum": ["login"],
           "schema_ref": "ControlSetupJobListFilter#/properties/action",
           "description": "Filter setup jobs to one action."
         },
@@ -665,10 +662,7 @@
           "in": "query",
           "required": false,
           "repeatable": false,
-          "enum": [
-            "true",
-            "false"
-          ],
+          "enum": ["true", "false"],
           "schema_ref": "ControlSetupJobListFilter#/properties/active",
           "description": "Filter to active (in-flight) jobs only, or terminal jobs only."
         },
@@ -938,7 +932,7 @@
       "path": "/v2/uploads",
       "mutating": true,
       "applicability": "global",
-      "summary": "Begin a resumable upload session for a large attachment.",
+      "summary": "Create a single-request streaming upload session for an attachment of the declared size.",
       "auth": "loopback_bearer",
       "request_schema": "ControlUploadCreateRequest",
       "parameters": [],
@@ -962,7 +956,7 @@
       "path": "/v2/uploads/:id",
       "mutating": false,
       "applicability": "global",
-      "summary": "Read an upload session's status and received byte count.",
+      "summary": "Read an upload session's status and received byte count (diagnostic on a cancelled upload, not a resumable offset).",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [],
@@ -974,7 +968,7 @@
       "path": "/v2/uploads/:id/bytes",
       "mutating": true,
       "applicability": "global",
-      "summary": "Append a byte range to an in-progress upload.",
+      "summary": "Stream the complete declared byte body in ONE request. The store is single-shot: a short, oversized, or interrupted PUT cancels the upload and discards partial bytes — retry by creating a new upload and resending from byte zero. Not resumable.",
       "auth": "loopback_bearer",
       "request_schema": null,
       "parameters": [],

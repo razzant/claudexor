@@ -2,6 +2,7 @@ import {
   ControlProject,
   ControlProjectListResponse,
   ControlProjectOutputsResponse,
+  ControlProjectRemoveReceipt,
   type ControlProject as ControlProjectType,
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
@@ -43,6 +44,30 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
         );
       }
       return mutateProject(json, `/projects/${encodeURIComponent(id)}/relink`, { root });
+    }
+    if (action === "remove") {
+      const id = args._[2];
+      if (!id || args._.length !== 3) {
+        return printUsageError(json, "usage: claudexor project remove <project-id>");
+      }
+      const { addr } = await ensureDaemon();
+      const response = await controlApiFetch(addr, `/projects/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      const data = await responseJson(response);
+      if (!response.ok) return failure(json, response.status, data);
+      const receipt = ControlProjectRemoveReceipt.parse(data);
+      if (json) printJson(receipt);
+      else {
+        print(`Removed project ${receipt.projectId} (${receipt.root}).`);
+        print(
+          receipt.journalPartitionArchived
+            ? `  Journal partition archived to ${receipt.archivedPartitionPath}.`
+            : "  No journal partition to archive.",
+        );
+        print("  Run artifacts left in place for normal garbage collection.");
+      }
+      return 0;
     }
     if (action === "outputs") {
       const id = args._[2];
@@ -93,7 +118,7 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
       }
       return 0;
     }
-    return printUsageError(json, "usage: claudexor project list|register|relink|outputs");
+    return printUsageError(json, "usage: claudexor project list|register|relink|remove|outputs");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (json) printJson({ ok: false, error: message });

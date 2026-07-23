@@ -286,6 +286,33 @@ export class JournalManager {
     this.journal = null;
   }
 
+  /**
+   * Remove-project archival (QA-049): close this partition's journal and move
+   * its directory OUT of the active journal tree into `journal-archived/` — the
+   * same non-destructive rename the partition-quarantine path uses, never a
+   * delete. Returns the absolute archive path, or null when the partition never
+   * materialized on disk. Idempotent: a missing source with an existing archive
+   * returns that archive path; missing source and no archive returns null. A
+   * pre-existing archive for a re-registered id is preserved under a suffixed
+   * name rather than clobbered.
+   */
+  archivePartition(): string | null {
+    this.close();
+    const archiveDir = join(this.rootDir, "journal-archived");
+    const target = join(archiveDir, this.artifactPrefix);
+    if (!existsSync(this.partitionDir)) {
+      return existsSync(target) ? target : null;
+    }
+    ensureCanonicalPrivateDirectory(archiveDir);
+    const dest = existsSync(target)
+      ? join(archiveDir, `${this.artifactPrefix}-${randomUUID()}`)
+      : target;
+    renameSync(this.partitionDir, dest);
+    fsyncDirectory(this.journalRoot);
+    fsyncDirectory(archiveDir);
+    return dest;
+  }
+
   private openGeneration(): void {
     this.assertOpen();
     this.journal?.close();

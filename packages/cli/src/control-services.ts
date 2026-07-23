@@ -3,7 +3,7 @@
  * claudexord composition root, which stays thin). Each closure binds one
  * typed control operation to the daemon's stores and engine entrypoints.
  */
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join, sep } from "node:path";
 import {
   type OperatorDecisionRecord,
@@ -24,6 +24,7 @@ import {
   ControlCredentialProfileCreateRequest,
   type CredentialProfile,
   ControlSettingsUpdateRequest,
+  TERMINAL_LIFECYCLES,
 } from "@claudexor/schema";
 import { registerConfigDirProfile, removeProfileFromRegistry } from "./profile-registration.js";
 import {
@@ -72,7 +73,9 @@ export function controlServices(
   authReadiness: AuthReadinessService,
   resources: ResourceStore,
   quotaRegistry: () => QuotaRegistry,
-  daemonJobs: () => Promise<Array<{ runId?: string; state: string; finishedAt?: string }>>,
+  daemonJobs: () => Promise<
+    Array<{ runId?: string; state: string; finishedAt?: string; params?: unknown }>
+  >,
 ) {
   const secretStore = new SecretStore();
   const journalPartition = (partition: string): JournalManager =>
@@ -128,6 +131,27 @@ export function controlServices(
     relinkProject: async (id: string, root: string) => {
       const project = threads.relinkProject(id, root);
       return { ...project, nesting: projects().nestingFor(project.id) };
+    },
+    // QA-049 minimal project remove: retire the durable registry entry + archive
+    // the journal partition, fenced against non-purged threads and live/queued
+    // runs. The thread fence lives in ProjectPartitions; the active-run set is
+    // derived here from the daemon job list (project-scoped, non-terminal runs),
+    // canonicalized to match the store's realpath'd roots.
+    removeProject: async (id: string) => {
+      const activeRunRoots = new Set<string>();
+      for (const job of await daemonJobs()) {
+        if ((TERMINAL_LIFECYCLES as ReadonlySet<string>).has(job.state)) continue;
+        const scope = (job.params as { scope?: { kind?: string; root?: string } } | undefined)
+          ?.scope;
+        if (scope?.kind === "project" && typeof scope.root === "string" && scope.root) {
+          try {
+            activeRunRoots.add(realpathSync(scope.root));
+          } catch {
+            activeRunRoots.add(scope.root);
+          }
+        }
+      }
+      return threads.removeProject(id, activeRunRoots);
     },
     createThread: async (input: unknown) => {
       const request = (input ?? {}) as Parameters<ProjectPartitions["createThread"]>[0];

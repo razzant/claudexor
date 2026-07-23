@@ -40,7 +40,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "project",
-    usageArgs: "list | register <root> | relink <id> <root> | outputs <id> [path]",
+    usageArgs: "list | register <root> | relink <id> <root> | remove <id> | outputs <id> [path]",
     summary: "Manage the durable v2 project registry",
     flags: ["json"],
     mutability: "ops",

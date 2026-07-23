@@ -187,6 +187,72 @@ export class ProjectPartitions implements CommandAuthority {
     return project;
   }
 
+  /**
+   * QA-049 minimal project remove: retire a registered project. Fails CLOSED
+   * with a typed 409 while any NON-PURGED thread or any live/queued run still
+   * references it (the caller supplies the roots with active runs, since the job
+   * list lives in the daemon composition). On success: unregister the durable
+   * global-registry entry, ARCHIVE the project's journal partition (rename it
+   * out of the active journal tree — never delete), and drop the in-memory
+   * partition. Run artifact trees are left in place for normal GC/retention.
+   * Unknown id -> 404. A partition still in recovery -> 409 (its threads cannot
+   * be fenced safely).
+   */
+  removeProject(
+    id: string,
+    activeRunRoots: ReadonlySet<string>,
+  ): import("@claudexor/schema").ControlProjectRemoveReceipt {
+    const registry = this.projects.current();
+    const project = registry.get(id);
+    if (!project) {
+      throw Object.assign(new Error(`no such project: ${id}`), {
+        code: "project_not_found",
+        status: 404,
+      });
+    }
+    this.sync();
+    const entry = this.partitions.get(id);
+    if (entry) {
+      if (!entry.manager.ready()) {
+        throw Object.assign(
+          new Error(`project ${id} partition requires journal recovery before it can be removed`),
+          { code: "journal_recovery_required", status: 409 },
+        );
+      }
+      const blocking = entry.threads
+        .current()
+        .listThreads()
+        .filter((thread) => thread.state !== "purged");
+      if (blocking.length > 0) {
+        throw Object.assign(
+          new Error(
+            `project ${id} still has ${blocking.length} thread(s); trash and purge them before removing it`,
+          ),
+          { code: "project_has_threads", status: 409 },
+        );
+      }
+    }
+    if (activeRunRoots.has(project.root)) {
+      throw Object.assign(
+        new Error(
+          `project ${id} has a live or queued run; wait for it to finish before removing it`,
+        ),
+        { code: "project_has_active_run", status: 409 },
+      );
+    }
+    registry.unregister(id);
+    const archivedPartitionPath = entry ? entry.manager.archivePartition() : null;
+    this.partitions.delete(id);
+    return {
+      projectId: project.id,
+      root: project.root,
+      registryRemoved: true,
+      journalPartitionArchived: archivedPartitionPath !== null,
+      archivedPartitionPath,
+      artifactsRetained: true,
+    };
+  }
+
   journal(partition: string): JournalManager {
     if (!partition.startsWith("project:")) throw unknownPartition(partition);
     const id = partition.slice("project:".length);
