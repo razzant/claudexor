@@ -89,6 +89,14 @@ final class AppModel {
     var selectedThreadId: String?
     var selectedThreadDetail: ThreadDetailResponse?
     var threadStatus: String?
+    /// Projects the daemon skipped listing because their root is gone (QA-064):
+    /// the sidebar surfaces a relink hint instead of silently hiding those
+    /// threads. Server-owned — refreshed on every list, cleared when it resolves.
+    var projectListingProblems: [ProjectListingProblem] = []
+    /// The registered-project registry (QA-072): loaded so the composer can
+    /// disclose a nesting overlap ("Nested inside …" / "Contains …") for the
+    /// chosen project. Server-owned; the path MRU still drives selection.
+    var registeredProjects: [RegisteredProject] = []
     /// DRAFT-thread routing (before the first message materializes a thread): the
     /// composer edits these; once a thread exists, primary/pool are sticky on the
     /// thread (PATCHed via setPrimaryHarness/setEligiblePool). nil/[] => inherit
@@ -315,6 +323,8 @@ final class AppModel {
         turnSubmitting = false
 
         threads.removeAll()
+        projectListingProblems.removeAll()
+        registeredProjects.removeAll()
         selectedThreadId = nil
         selectedThreadDetail = nil
         threadStatus = nil
@@ -351,6 +361,7 @@ final class AppModel {
                 await refreshQuota()
                 await refreshSecrets()
                 await refreshThreads()
+                await refreshProjects()
                 startGlobalStream()
                 return true
             }
@@ -803,6 +814,7 @@ final class AppModel {
         do {
             let list = try await client.listThreads()
             threads = list.threads
+            projectListingProblems = list.problems
             if list.droppedThreads > 0 {
                 // Per-row salvage disclosed: the store carried rows this
                 // app build cannot decode — say so instead of hiding them.
@@ -815,6 +827,7 @@ final class AppModel {
         } catch let GatewayError.http(status, _) where status == 501 {
             // Engine builds without thread support: honestly empty.
             threads = []
+            projectListingProblems = []
             return true
         } catch {
             // A transport/decode failure is NOT an empty thread list: keep the
@@ -822,6 +835,22 @@ final class AppModel {
             threadStatus = "Could not refresh threads: \(userMessage(for: error))"
             return false
         }
+    }
+
+    /// Load the registered-project registry (QA-072) so the composer can disclose
+    /// nesting overlap. Best-effort: the path MRU still drives selection, so a
+    /// registry fetch failure just leaves nesting undisclosed, never blocks.
+    func refreshProjects() async {
+        guard let client else { return }
+        if let list = try? await client.listProjects() { registeredProjects = list.projects }
+    }
+
+    /// Disclosed nesting relations for a project ROOT (QA-072); empty when the
+    /// root is disjoint or unregistered. Matched on the canonical registry root.
+    func projectNesting(forRoot root: String) -> [ProjectNesting] {
+        let target = root.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return [] }
+        return registeredProjects.first { $0.root == target }?.nesting ?? []
     }
 
     /// The thread the conversation is currently showing (detail preferred — it is
@@ -1520,6 +1549,10 @@ final class AppModel {
                 task.capKnown = budget.maxUsd != nil
                 task.spendKnown = budget.spendUsd != nil
                 task.spendEstimated = budget.estimated
+                // QA-023c: the KNOWN subscription valuation only (unknown stays
+                // absent, never a fabricated $0). Rendered beside cash so a $0
+                // cash subscription run still shows what the work was worth.
+                task.valuationUsd = budget.knownValuationUsd
             }
             // Seed the live box's spend from the snapshot (authoritative up to
             // lastSeq): post-fence budget.observation increments then add ON
@@ -1633,7 +1666,14 @@ final class AppModel {
         } else {
             kind = .system
         }
-        let detailParts = [event.detail, event.target.map { "target: \($0)" }, event.errorSummary.map { "error: \($0)" }]
+        // QA-070: disclose unsupported per-harness knobs the route could NOT honor
+        // (INV-105) as a warning-shaped Activity detail — the wire already sets
+        // severity=warning on the harness.started row, so a dropped max_turns /
+        // tools / effort limit is visible, not a benign-looking start.
+        let ignored = (event.ignoredSettings ?? []).isEmpty
+            ? nil
+            : "Ignored (unsupported by this harness): " + (event.ignoredSettings ?? []).joined(separator: "; ")
+        let detailParts = [event.detail, ignored, event.target.map { "target: \($0)" }, event.errorSummary.map { "error: \($0)" }]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
         return ActivityEvent(

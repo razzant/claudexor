@@ -82,6 +82,15 @@ struct TurnCard: View {
                 Label(note, systemImage: "arrow.triangle.branch")
                     .font(.caption2).foregroundStyle(.tertiary).textSelection(.enabled)
             }
+            // QA-046: an Implement turn that froze an approved plan carries a
+            // provenance receipt — the plan run + a short SHA of the exact frozen
+            // bytes — and, when the operator implemented over open questions, a
+            // persistent readiness-override warning that survives reload.
+            if let planRunId = turn.planRunId {
+                planImplementedReceipt(planRunId: planRunId,
+                                       planHash: turn.planHash,
+                                       overridden: turn.planReadinessOverridden)
+            }
             if let run, let runId = turn.runId {
                 // The FINAL answer is the loudest element — its own accent-edged
                 // bubble above the quiet receipt (W22 Show-more clamp preserved).
@@ -312,6 +321,27 @@ struct TurnCard: View {
     /// A final answer long enough to start collapsed (chat stays scannable).
     static func isLongAnswer(_ answer: String) -> Bool {
         answer.count > 1200 || answer.filter { $0 == "\n" }.count > 14
+    }
+
+    /// The Implement-turn plan-provenance receipt (QA-046): the frozen plan run +
+    /// a short SHA of the exact plan bytes, plus a persistent warning when the
+    /// operator implemented a not-ready plan over open questions.
+    @ViewBuilder
+    private func planImplementedReceipt(planRunId: String, planHash: String?, overridden: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            Label {
+                Text("Implemented plan \(String(planRunId.suffix(6)))"
+                     + (planHash.map { " · sha256 \(String($0.prefix(12)))" } ?? ""))
+                    .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+            } icon: {
+                Image(systemName: "checkmark.seal").foregroundStyle(.secondary)
+            }
+            if overridden {
+                Label("Implemented over open plan questions — plan readiness was overridden.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2).foregroundStyle(Theme.status(.caution)).textSelection(.enabled)
+            }
+        }
     }
 
     // MARK: Silent-failure card (honest inline failure)

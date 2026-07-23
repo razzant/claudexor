@@ -170,6 +170,34 @@ struct PacketVUiTruthsTests {
         #expect(model.runsRefreshTask == nil)   // settled, nothing dangling
     }
 
+    // MARK: QA-065 — session account label resolution
+
+    @MainActor
+    @Test func sessionAccountLabelResolvesProfileNameWithFallbacks() {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        // nil profile = the harness's default vendor login.
+        #expect(model.sessionAccountLabel(harnessId: "claude", profileId: nil) == "Default account")
+        // Unknown profile (registry not loaded) falls back to the raw id, visibly.
+        #expect(model.sessionAccountLabel(harnessId: "claude", profileId: "work") == "work")
+    }
+
+    // MARK: QA-072 — project nesting lookup
+
+    @MainActor
+    @Test func projectNestingLooksUpByCanonicalRoot() throws {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        let child = try JSONDecoder().decode(RegisteredProject.self, from: Data(#"""
+        {"schemaVersion":1,"id":"child","root":"/repo/child","createdAt":"2026-07-19T12:00:00.000Z",
+         "updatedAt":"2026-07-19T12:00:00.000Z",
+         "nesting":[{"relation":"inside","root":"/repo","projectId":"parent"}]}
+        """#.utf8))
+        model.registeredProjects = [child]
+
+        #expect(model.projectNesting(forRoot: "/repo/child").first?.relation == "inside")
+        #expect(model.projectNesting(forRoot: "/repo/other").isEmpty)   // disjoint stays quiet
+        #expect(model.projectNesting(forRoot: "").isEmpty)
+    }
+
     // Helpers -------------------------------------------------------------
 
     @MainActor

@@ -23,8 +23,44 @@ struct RunOutcomeSection: View {
             if !task.candidates.isEmpty {
                 candidatesSection
             }
+            if let council = task.council {
+                councilSection(council)
+            }
             if task.reviewVerdict != .notRun || task.reviewNeedsDecision || !task.findings.isEmpty {
                 reviewContent
+            }
+        }
+    }
+
+    /// Council plan-strategy roster receipt (D31, QA-023b/047): how many members
+    /// were requested vs drafted, whether the round degraded, who merged the
+    /// unified plan, and the per-member roster (harness · role · status), with a
+    /// failed member's redacted error. Rendered from the server projection only.
+    private func councilSection(_ council: CouncilInfo) -> some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            SectionLabel("Council", systemImage: "person.3.sequence.fill",
+                         accessory: council.degraded
+                            ? AnyView(Text("degraded").font(.caption.weight(.medium))
+                                .foregroundStyle(Theme.status(.caution))
+                                .help("Fewer council members drafted than requested."))
+                            : nil)
+            Text("\(council.drafted) of \(council.requested) member\(council.requested == 1 ? "" : "s") drafted"
+                 + (council.mergedBy.map { " · merged by \($0)" } ?? " · merge did not complete"))
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(council.members) { member in
+                HStack(spacing: Theme.Spacing.sm) {
+                    HarnessIcon(family: HarnessFamily(rawValue: member.harnessId), size: 12)
+                    Text(HarnessFamily(rawValue: member.harnessId).label).font(.caption)
+                    Text(member.role).font(.caption2).foregroundStyle(.tertiary)
+                    Text(member.status)
+                        .font(.caption2)
+                        .foregroundStyle(member.status == "failed" ? Theme.status(.negative) : .secondary)
+                    if let error = member.error {
+                        Text(error).font(.caption2).foregroundStyle(Theme.status(.negative))
+                            .lineLimit(1).truncationMode(.tail).help(error)
+                    }
+                    Spacer()
+                }
             }
         }
     }

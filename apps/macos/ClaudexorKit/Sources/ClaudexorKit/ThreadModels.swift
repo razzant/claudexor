@@ -114,6 +114,11 @@ public struct ThreadSessionInfo: Codable, Sendable, Identifiable, Equatable {
     public let harnessId: String
     public let nativeSessionId: String?
     public let observedModel: String?
+    /// Credential profile the vendor session was created under (INV-135); resume
+    /// never crosses profiles, so the footer discloses which account owns each
+    /// resumable session (QA-065). nil = engine-default credentials. Optional so
+    /// an older daemon that omits the key decodes to nil.
+    public let profileId: String?
     public let state: String?
 }
 
@@ -269,11 +274,17 @@ public struct ThreadListResponse: Codable, Sendable {
      * field — computed at decode so the sidebar can disclose the loss
      * instead of silently blanking. */
     public var droppedThreads: Int = 0
+    /** Projects the daemon SKIPPED because their root is no longer usable (F2
+     * resilience disclosure): the other projects still load, and this says
+     * exactly which disappeared and why (QA-064). The sidebar surfaces a
+     * non-destructive relink hint instead of silently hiding those threads. */
+    public var problems: [ProjectListingProblem] = []
 
-    enum CodingKeys: String, CodingKey { case threads }
+    enum CodingKeys: String, CodingKey { case threads, problems }
 
-    public init(threads: [ThreadSummary]) {
+    public init(threads: [ThreadSummary], problems: [ProjectListingProblem] = []) {
         self.threads = threads
+        self.problems = problems
     }
 
     public init(from decoder: Decoder) throws {
@@ -293,11 +304,33 @@ public struct ThreadListResponse: Codable, Sendable {
         }
         self.threads = ok
         self.droppedThreads = dropped
+        self.problems = try c.decodeIfPresent([ProjectListingProblem].self, forKey: .problems) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(threads, forKey: .threads)
+        try c.encode(problems, forKey: .problems)
+    }
+}
+
+/// A project the daemon skipped during thread listing because its root is no
+/// longer usable — disclosed rather than failing the whole list (QA-064, F2).
+public struct ProjectListingProblem: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { projectId }
+    public let projectId: String
+    /// The project root that could not be listed.
+    public let root: String
+    /// Machine code (currently `project_root_missing`); remedies key on this.
+    public let code: String
+    /// Human-readable disclosure of why it was skipped.
+    public let message: String
+
+    public init(projectId: String, root: String, code: String, message: String) {
+        self.projectId = projectId
+        self.root = root
+        self.code = code
+        self.message = message
     }
 }
 

@@ -100,6 +100,14 @@ struct TurnReceiptRow: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .help(CashSpend.help(estimated: spend.estimated))
             }
+            // QA-023c: the subscription VALUATION beside cash — a $0-cash native
+            // run still shows what the work was worth. Shown ONLY when known
+            // (unknown valuation stays absent, never rendered as $0).
+            if let valuation = run.valuationUsd {
+                Text("≈ \(String(format: "$%.4f", valuation)) sub")
+                    .font(.caption).foregroundStyle(.tertiary).monospacedDigit()
+                    .help("Subscription valuation — the token-valued cost of this run's native-subscription work, separate from billed cash.")
+            }
             // Tool / file counts from the transcript — "9 tools · 3 files".
             if let summary = TurnPresentation.activitySummary(blocks: model.transcriptBlocks(runId)) {
                 Text(summary).font(.caption).foregroundStyle(.secondary)

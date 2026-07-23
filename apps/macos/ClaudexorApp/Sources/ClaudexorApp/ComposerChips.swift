@@ -192,6 +192,25 @@ extension ThreadsScreen {
         }
     }
 
+    /// QA-072: disclose a nesting overlap for the chosen project ("Nested inside
+    /// …" / "Contains …") so an owner is not confused by two registered roots
+    /// whose files overlap. Informational only — never a block; quiet when the
+    /// project is disjoint or unregistered.
+    @ViewBuilder var composerNestingHint: some View {
+        if let repoRoot = composerRepoRoot {
+            let relations = model.projectNesting(forRoot: repoRoot)
+            if !relations.isEmpty {
+                ForEach(relations) { relation in
+                    let verb = relation.relation == "inside" ? "Nested inside" : "Contains"
+                    Label("\(verb) \(URL(fileURLWithPath: relation.root).lastPathComponent)",
+                          systemImage: "square.stack.3d.up")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .help("\(verb) the registered project at \(relation.root). Overlapping roots have separate thread/artifact/trust identities.")
+                }
+            }
+        }
+    }
+
     /// Inline one-time-grant disclosure (W19/Quiz-14): choosing Full access
     /// without a persistent grant surfaces the requirement UP FRONT with the
     /// grant action right here — not only as a post-send refusal card. The

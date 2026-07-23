@@ -37,7 +37,11 @@ extension ThreadsScreen {
         HStack(spacing: Theme.Spacing.sm) {
             Image(systemName: "link").foregroundStyle(.secondary)
             ForEach(sessions) { session in
-                Text("\(session.harnessId)\(session.nativeSessionId != nil ? " · live session" : "")")
+                // QA-065: the ACCOUNT owns the pill (harness · account) so two
+                // same-harness sessions on different profiles are distinguishable;
+                // the native session id moves to help. Resume never crosses
+                // profiles, so the account is the user-facing continuity identity.
+                Text("\(session.harnessId) · \(model.sessionAccountLabel(harnessId: session.harnessId, profileId: session.profileId))\(session.nativeSessionId != nil ? " · live session" : "")")
                     .font(.caption)
                     .padding(.horizontal, Theme.Spacing.sm)
                     .padding(.vertical, Theme.Spacing.xxs)

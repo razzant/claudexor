@@ -263,6 +263,8 @@ struct ThreadsScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top], Theme.Spacing.md)
 
+            projectProblemsBanner
+
             if model.threads.isEmpty {
                 ContentUnavailableView(
                     "No threads yet",
@@ -484,6 +486,7 @@ struct ThreadsScreen: View {
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
                 composerControlsRow
                 composerHint
+                composerNestingHint
                 composerAccessHint
                 composerGrantCTA
                 if !composerAttachments.isEmpty { attachmentChips }

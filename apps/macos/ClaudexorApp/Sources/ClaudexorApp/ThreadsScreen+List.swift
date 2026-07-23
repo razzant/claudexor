@@ -43,6 +43,30 @@ extension ThreadsScreen {
         }
     }
 
+    /// QA-064: the daemon resiliently SKIPPED some projects whose root is gone
+    /// (other projects still load) — surface a non-destructive relink hint so the
+    /// hidden threads aren't read as lost. The daemon supplies the exact root; a
+    /// shortened name shows inline, the full root is in `.help`.
+    @ViewBuilder var projectProblemsBanner: some View {
+        if !model.projectListingProblems.isEmpty {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                ForEach(model.projectListingProblems) { problem in
+                    Label {
+                        Text("Threads from “\(URL(fileURLWithPath: problem.root).lastPathComponent)” are hidden — the project folder is missing. Relink it to restore them.")
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(Theme.status(.caution))
+                    }
+                    .help(problem.message + "\n" + problem.root)
+                }
+            }
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.xs)
+        }
+    }
+
     var renameSheet: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             Text("Rename thread").font(.headline)
