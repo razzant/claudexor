@@ -4,6 +4,7 @@ import {
   harnessEventPayload,
   promptWithEngineConstraints,
   promptWithGateArgvDisclosure,
+  redactHarnessEvent,
 } from "./runSupport.js";
 
 describe("promptWithEngineConstraints (QA-022: protected paths + gate argv in one seam)", () => {
@@ -70,6 +71,40 @@ describe("promptWithGateArgvDisclosure (QA-022 FIX B: candidate sees the exact g
       { program: "deploy", args: ["--token", fakeToken] },
     ]);
     expect(out).not.toContain(fakeToken);
+  });
+});
+
+describe("redactHarnessEvent (INV-062 deep payload redaction)", () => {
+  it("deep-redacts secret-like tokens in nested payload string VALUES, not just text/error", () => {
+    // Assembled at runtime so the source (and any sealed review diff of it)
+    // never contains a contiguous secret-like token at rest.
+    const token = ["sk-or-v1", "c".repeat(40)].join("-");
+    const ev: HarnessEvent = {
+      type: "message",
+      session_id: "ses-1",
+      ts: "2026-07-17T00:00:00Z",
+      text: `leaking ${token}`,
+      final: true,
+      // A codex constrained route carries the RAW {work_report, output} envelope
+      // on this payload key; AnswerAssembly.machineText() reads it verbatim, so a
+      // token in it must be redacted BEFORE it can become a candidate deliverable.
+      payload: {
+        work_report_envelope: JSON.stringify({
+          output: token,
+          work_report: { summary: token },
+        }),
+      },
+    };
+    const safe = redactHarnessEvent(ev);
+    // Whole-event proof: no secret survives ANYWHERE in the redacted event.
+    const serialized = JSON.stringify(safe);
+    expect(serialized).not.toContain(token);
+    expect(serialized).toContain("[redacted]");
+    // The nested payload STRING VALUE is redacted in place (deep), not merely the
+    // top-level text/error fields and not dropped wholesale.
+    const envelope = String((safe.payload as Record<string, unknown>)["work_report_envelope"]);
+    expect(envelope).not.toContain(token);
+    expect(envelope).toContain("[redacted]");
   });
 });
 

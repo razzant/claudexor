@@ -43,15 +43,22 @@ const { loadConfig, updateGlobalConfig } = await import("@claudexor/config");
 /** The daemon POST /settings validation core, tested offline
  * against the codex manifest truth source (static known_models). */
 describe("assertSettingsPatchValid", () => {
+  // `current` is REQUIRED now (a caller can no longer opt out of the D-9 fence);
+  // an `auto` goal with no tiers never trips the invariant, so these patch-local
+  // truth checks (harness ids / models / effort) reach their throw as before.
+  const AUTO_NO_TIERS = { goal: "auto" as const, qualityTiers: {} };
+
   it("rejects fake harness ids everywhere they could persist", async () => {
     await expect(
       assertSettingsPatchValid(
         ControlSettingsUpdateRequest.parse({ primaryHarness: "fake-success" }),
+        AUTO_NO_TIERS,
       ),
     ).rejects.toThrow(/not a real registered harness/);
     await expect(
       assertSettingsPatchValid(
         ControlSettingsUpdateRequest.parse({ eligibleHarnesses: ["codex", "fake-implement"] }),
+        AUTO_NO_TIERS,
       ),
     ).rejects.toThrow(/not a real registered harness/);
     await expect(
@@ -59,6 +66,7 @@ describe("assertSettingsPatchValid", () => {
         ControlSettingsUpdateRequest.parse({
           harnesses: { "fake-success": { defaultModel: "fake-model" } },
         }),
+        AUTO_NO_TIERS,
       ),
     ).rejects.toThrow(/not persistable/);
   });
@@ -69,12 +77,14 @@ describe("assertSettingsPatchValid", () => {
         ControlSettingsUpdateRequest.parse({
           harnesses: { codex: { defaultModel: "ghost-model-9000" } },
         }),
+        AUTO_NO_TIERS,
       ),
     ).rejects.toThrow(/refused defaultModel 'ghost-model-9000'.*truth source: manifest/s);
     // A truth-listed model passes.
     await expect(
       assertSettingsPatchValid(
         ControlSettingsUpdateRequest.parse({ harnesses: { codex: { defaultModel: "gpt-5.5" } } }),
+        AUTO_NO_TIERS,
       ),
     ).resolves.toBeUndefined();
   }, 30_000); // codex discover() spawns the vendor CLI; its startup latency is environmental
@@ -88,6 +98,7 @@ describe("assertSettingsPatchValid", () => {
       await expect(
         assertSettingsPatchValid(
           ControlSettingsUpdateRequest.parse({ harnesses: { "raw-api": { effort: "high" } } }),
+          AUTO_NO_TIERS,
         ),
       ).rejects.toThrow(/declares no effort ladder/);
     } finally {

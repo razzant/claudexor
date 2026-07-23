@@ -917,6 +917,62 @@ describe("Orchestrator", () => {
     ).rejects.toThrow(/secret-like/);
   });
 
+  it("redacts a secret-like token in the winning candidate's answer before final/answer.md (INV-062: candidate lane parity with read-only/deep-scan)", async () => {
+    const repo = await initRepo();
+    // Assembled at runtime so the source (and any sealed review diff of it) never
+    // holds a contiguous secret-like token at rest.
+    const token = ["sk-or-v1", "c".repeat(40)].join("-");
+    const base = createFakeHarness("fake-success");
+    // An answer-only (no file change) candidate whose FINAL deliverable carries a
+    // live-looking token — exactly the payload-sourced text runCandidateInEnvelope
+    // unwraps into answerText and writes to final/answer.md. The read-only lane and
+    // deepScanReducer already redact their unwrapped deliverable; this proves the
+    // candidate lane now matches.
+    const leaky: HarnessAdapter = {
+      ...base,
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "leaky-model",
+          credential_route: "managed_api_key",
+        };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: `Here is the key you asked for: ${token}`,
+          final: true,
+          payload: { final_source: "fake" },
+        };
+        yield {
+          type: "usage",
+          session_id: spec.session_id,
+          ts,
+          credential_route: "managed_api_key",
+          usage: { cost_usd: 0.001 },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    // Register under the base adapter's own id so the requested harness resolves
+    // to this lane (a mismatched key would drop it before it can produce a diff).
+    const registry = new Map<string, HarnessAdapter>([["fake-success", leaky]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["fake-success"],
+      n: 1,
+    });
+    const answer = readFileSync(join(res.runDir, "final", "answer.md"), "utf8");
+    expect(answer).not.toContain(token);
+    expect(answer).toContain("[redacted]");
+  }, 20000);
+
   it("plan mode produces a plan without mutating", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

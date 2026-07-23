@@ -80,6 +80,14 @@ Selecting an account never narrows the harness pool; choosing a strategy
 never pins an account. Quota is read per account from the vendor's own
 surfaces, absence is typed and explained, and unknown never renders as zero.
 
+A routing goal answers to the same line. Quality routing compares declared,
+comparable options — a named harness, model, and effort for the intent at
+hand — so with none declared there is nothing to rank and the run cannot
+proceed. That absence is a configuration the user completes, not a harness
+the user waits on: Claudexor classifies it as a configuration fault and
+points the user at settings, never at re-authentication or a cooldown, for a
+gap only a settings change can close.
+
 Rejected alternative: a privileged "orchestrator harness" role. Harnesses are
 tools; intents route to whichever tool is ready and capable. A primary
 harness exists only as an ordering bias — who answers in chat — never as a

@@ -105,14 +105,18 @@ export function assertRoutingGoalTiersConsistent(goal: RoutingGoal, tiers: Quali
 }
 
 /**
- * The effective GLOBAL routing this write would persist: the patch's field when
- * present, otherwise the currently-stored value. `qualityTiers` REPLACES
- * wholesale exactly as the persist path merges it (control-services
- * updateSettings), so a patch clearing tiers ({}) is honored here too.
+ * `current` is the currently-stored routing this write merges over, and is
+ * REQUIRED: the merged-effective goal/tiers invariant (D-9/#22) can only be
+ * enforced against the stored state, so making it optional would let a future
+ * writer call this + `updateGlobalConfig` directly and silently bypass the
+ * fence. The effective value is the patch's field when present, otherwise the
+ * stored one; `qualityTiers` REPLACES wholesale exactly as the persist path
+ * merges it (control-services updateSettings), so a patch clearing tiers ({})
+ * is honored here too.
  */
 export async function assertSettingsPatchValid(
   p: ControlSettingsUpdateRequest,
-  current?: { goal: RoutingGoal; qualityTiers: QualityTierSet },
+  current: { goal: RoutingGoal; qualityTiers: QualityTierSet },
 ): Promise<void> {
   const realIds = new Set(buildRegistry({ includeFakes: false }).keys());
   const realList = [...realIds].sort().join(", ");
@@ -210,11 +214,9 @@ export async function assertSettingsPatchValid(
   // is already active. The per-intent narrower case (tiers for some intents but
   // not the one a run uses) still surfaces at runtime, now classified as
   // config_error by the strategies.
-  if (current) {
-    const effectiveGoal = p.routingGoal ?? current.goal;
-    const effectiveTiers = p.qualityTiers ?? current.qualityTiers;
-    assertRoutingGoalTiersConsistent(effectiveGoal, effectiveTiers);
-  }
+  const effectiveGoal = p.routingGoal ?? current.goal;
+  const effectiveTiers = p.qualityTiers ?? current.qualityTiers;
+  assertRoutingGoalTiersConsistent(effectiveGoal, effectiveTiers);
 }
 
 const nullableSettingName = (

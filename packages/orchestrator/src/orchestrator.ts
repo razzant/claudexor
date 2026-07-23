@@ -2627,7 +2627,7 @@ export class Orchestrator {
     const unwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", workReportMode, {
       sideToolReport: telemetry.sideToolWorkReport ?? undefined,
     });
-    const answerText = unwrapped.deliverable.trim().length > 0 ? unwrapped.deliverable : undefined;
+    const answerText = redactSecrets(unwrapped.deliverable).trim() || undefined;
     const deliverableEvidence = diff.trim().length > 0 || Boolean(answerText);
     // Cancelled attempts skip gates entirely: the operator asked to
     // stop NOW; running a 600s-per-gate suite after the abort delays the ack
