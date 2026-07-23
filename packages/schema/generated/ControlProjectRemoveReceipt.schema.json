@@ -1,0 +1,52 @@
+{
+  "$ref": "#/definitions/ControlProjectRemoveReceipt",
+  "definitions": {
+    "ControlProjectRemoveReceipt": {
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The retired project's stable id."
+        },
+        "root": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The project's canonical root at removal time."
+        },
+        "registryRemoved": {
+          "type": "boolean",
+          "const": true,
+          "description": "The durable global-registry entry (and its indexes) were removed."
+        },
+        "journalPartitionArchived": {
+          "type": "boolean",
+          "description": "Whether the project's journal partition directory was archived (renamed out of the active journal tree). False only when the partition never materialized on disk."
+        },
+        "archivedPartitionPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Absolute path the partition journal was archived to, or null when there was no partition directory to archive."
+        },
+        "artifactsRetained": {
+          "type": "boolean",
+          "const": true,
+          "description": "Run artifact trees are left in place for normal GC/retention — remove never deletes run bytes or the user's project directory."
+        }
+      },
+      "required": [
+        "projectId",
+        "root",
+        "registryRemoved",
+        "journalPartitionArchived",
+        "archivedPartitionPath",
+        "artifactsRetained"
+      ],
+      "additionalProperties": false,
+      "description": "DELETE /v2/projects/:id receipt: registry entry removed, journal partition archived, artifacts left to GC."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

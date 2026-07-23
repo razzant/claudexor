@@ -130,6 +130,7 @@ import {
   ControlProjectListResponse,
   ControlProjectRegisterRequest,
   ControlProjectRelinkRequest,
+  ControlProjectRemoveReceipt,
 } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -263,6 +264,7 @@ const schemas = {
   ControlProjectListResponse,
   ControlProjectRegisterRequest,
   ControlProjectRelinkRequest,
+  ControlProjectRemoveReceipt,
 } as const;
 
 for (const [name, schema] of Object.entries(schemas)) {
