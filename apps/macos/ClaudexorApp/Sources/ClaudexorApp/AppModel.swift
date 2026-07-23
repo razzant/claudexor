@@ -138,10 +138,11 @@ final class AppModel {
     @ObservationIgnored var makeDaemonControl: @Sendable () -> RuntimeDaemonControl = {
         AppRuntimeDaemonControl(
             isBusyProbe: {
-                guard let client = try? ControlApiDiscovery.load().makeClient(),
-                    let runs = try? await client.listRuns()
-                else { return nil }
-                return runs.contains { $0.state == "queued" || $0.state == "running" }
+                // Fail-closed (audit 5): count ALL active runs via state-filtered
+                // queries (not just the newest 200-row page) AND any active
+                // setup/login job. Any transport error → nil → treated as busy.
+                guard let client = try? ControlApiDiscovery.load().makeClient() else { return nil }
+                do { return try await client.engineHasActiveWork() } catch { return nil }
             },
             handshakeProbe: {
                 guard let client = try? ControlApiDiscovery.load().makeClient(),

@@ -105,6 +105,39 @@ public final class GatewayClient: Sendable {
         return (try Self.decoder.decode(RunListResponse.self, from: data)).runs
     }
 
+    /// A single `state`-filtered runs page. The daemon filters by `state` BEFORE
+    /// slicing (QA-052), so a filtered query returns matching runs no matter how
+    /// old they are — the bare unfiltered `listRuns()` only sees the newest page
+    /// (default 200) and would miss active work older than that.
+    func runs(inState state: String, limit: Int) async throws -> [RunSummary] {
+        let req = request(
+            "runs", method: "GET",
+            queryItems: [
+                URLQueryItem(name: "state", value: state),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ])
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
+            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
+        }
+        return (try Self.decoder.decode(RunListResponse.self, from: data)).runs
+    }
+
+    /// FAIL-CLOSED busy check for the engine-runtime installer (D-2, audit 5):
+    /// the engine is BUSY when ANY run is queued or running — counted via
+    /// `state`-filtered queries so active work OLDER than the default runs page
+    /// is still seen — OR any setup/login job is active (a device-code / terminal
+    /// login in flight must block an engine swap). Throws on transport error so
+    /// the caller treats the unknown as busy.
+    public func engineHasActiveWork() async throws -> Bool {
+        for state in ["running", "queued"] {
+            if try await !runs(inState: state, limit: 1).isEmpty { return true }
+        }
+        let activeJobs = try await listSetupJobs(filter: SetupJobListFilter(active: true, limit: 1))
+        return !activeJobs.isEmpty
+    }
+
     public func runDetail(runId: String) async throws -> RunDetail {
         let req = request("runs/\(runId)", method: "GET")
         let (data, resp) = try await session.data(for: req)
