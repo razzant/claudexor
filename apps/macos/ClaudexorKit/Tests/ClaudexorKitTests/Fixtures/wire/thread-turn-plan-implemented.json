@@ -1,0 +1,18 @@
+{
+  "schema": "ControlThreadTurn",
+  "value": {
+    "id": "tn-5",
+    "threadId": "th-1",
+    "runId": "run-6",
+    "parentRunId": null,
+    "planRunId": "run-plan-1",
+    "planHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "planReadinessOverridden": true,
+    "kind": "followup",
+    "prompt": "implement the approved plan",
+    "run": null,
+    "enqueueError": null,
+    "continuity": null,
+    "createdAt": "2026-07-19T12:00:00.000Z"
+  }
+}

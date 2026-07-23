@@ -197,6 +197,14 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
     public let parentRunId: String?
     /// Set when this turn implements an approved plan from an earlier run.
     public let planRunId: String?
+    /// SHA-256 of the frozen plan bytes this Implement turn materialized (INV-081);
+    /// nil on non-Implement/legacy turns (QA-046). Surfaces render a compact
+    /// "implemented plan <run> · sha256 <short>" receipt.
+    public let planHash: String?
+    /// True when the operator implemented a not-ready plan over open questions
+    /// (INV-081); recorded for provenance and rendered as a persistent warning
+    /// receipt so the override survives reload (QA-046).
+    public let planReadinessOverridden: Bool
     public let kind: String?
     public let prompt: String
     /// Embedded run card (state + honest outcome) so the chat renders without N+1.
@@ -210,6 +218,7 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
 
     public init(id: String, threadId: String, runId: String?, parentRunId: String?,
                 planRunId: String?, kind: String?, prompt: String, run: TurnRunCard?,
+                planHash: String? = nil, planReadinessOverridden: Bool = false,
                 enqueueError: TurnEnqueueErrorInfo? = nil,
                 continuity: ThreadTurnContinuity? = nil, createdAt: String) {
         self.id = id
@@ -217,12 +226,40 @@ public struct ThreadTurnInfo: Codable, Sendable, Identifiable, Equatable {
         self.runId = runId
         self.parentRunId = parentRunId
         self.planRunId = planRunId
+        self.planHash = planHash
+        self.planReadinessOverridden = planReadinessOverridden
         self.kind = kind
         self.prompt = prompt
         self.run = run
         self.enqueueError = enqueueError
         self.continuity = continuity
         self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, threadId, runId, parentRunId, planRunId, planHash,
+             planReadinessOverridden, kind, prompt, run, enqueueError, continuity, createdAt
+    }
+
+    // Custom decode so the Ф2 plan-provenance fields default honestly when a
+    // legacy/version-skewed turn omits them (planHash nil, override false) rather
+    // than failing the whole turn decode. Encode stays synthesized and always
+    // emits them.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        threadId = try c.decode(String.self, forKey: .threadId)
+        runId = try c.decodeIfPresent(String.self, forKey: .runId) ?? nil
+        parentRunId = try c.decodeIfPresent(String.self, forKey: .parentRunId) ?? nil
+        planRunId = try c.decodeIfPresent(String.self, forKey: .planRunId) ?? nil
+        planHash = try c.decodeIfPresent(String.self, forKey: .planHash) ?? nil
+        planReadinessOverridden = try c.decodeIfPresent(Bool.self, forKey: .planReadinessOverridden) ?? false
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? nil
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
+        run = try c.decodeIfPresent(TurnRunCard.self, forKey: .run) ?? nil
+        enqueueError = try c.decodeIfPresent(TurnEnqueueErrorInfo.self, forKey: .enqueueError) ?? nil
+        continuity = try c.decodeIfPresent(ThreadTurnContinuity.self, forKey: .continuity) ?? nil
+        createdAt = try c.decode(String.self, forKey: .createdAt)
     }
 }
 

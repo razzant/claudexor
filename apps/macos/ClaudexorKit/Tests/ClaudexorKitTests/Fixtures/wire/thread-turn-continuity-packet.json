@@ -6,6 +6,8 @@
     "runId": "run-3",
     "parentRunId": "run-2",
     "planRunId": null,
+    "planHash": null,
+    "planReadinessOverridden": false,
     "kind": "followup",
     "prompt": "now optimize it",
     "run": {

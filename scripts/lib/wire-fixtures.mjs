@@ -138,6 +138,22 @@ export function buildWireFixtures() {
     createdAt: NOW,
   });
 
+  // Implement turn that froze an approved plan and was forced over open
+  // questions: exercises the non-default planHash / planReadinessOverridden
+  // branch the Swift decoder must round-trip and the Implement receipt renders
+  // (QA-046). Minimal/continuity fixtures above cover the null/false default.
+  add("thread-turn-plan-implemented", "ControlThreadTurn", {
+    id: "tn-5",
+    threadId: "th-1",
+    runId: "run-6",
+    planRunId: "run-plan-1",
+    planHash: "a".repeat(64),
+    planReadinessOverridden: true,
+    kind: "followup",
+    prompt: "implement the approved plan",
+    createdAt: NOW,
+  });
+
   add("outcome-facts-clean", "RunOutcomeFacts", {
     lifecycle: "succeeded",
     noChanges: false,
@@ -173,6 +189,21 @@ export function buildWireFixtures() {
     remainingUsd: 1.25,
     estimated: true,
     source: "decision",
+  });
+
+  // Subscription run: cash exact $0 with a KNOWN non-null token valuation and
+  // partial event evidence — exercises the non-default valuationUsd /
+  // valuationKnowledge / evidence branch (QA-023c). The two fixtures above pin
+  // the null/"unknown"/"complete" default.
+  add("budget-snapshot-valued", "ControlBudgetSnapshot", {
+    paidBudget: { kind: "unlimited" },
+    spendUsd: 0,
+    valuationUsd: 0.87,
+    valuationKnowledge: "estimated",
+    remainingUsd: null,
+    estimated: false,
+    source: "events",
+    evidence: "incomplete",
   });
 
   add("plan-readiness-ready", "PlanReadiness", { state: "ready", questionCount: 0 });

@@ -6,6 +6,8 @@
     "runId": "run-4",
     "parentRunId": null,
     "planRunId": null,
+    "planHash": null,
+    "planReadinessOverridden": false,
     "kind": "followup",
     "prompt": "and add a test",
     "run": null,

@@ -6,6 +6,8 @@
     "runId": null,
     "parentRunId": null,
     "planRunId": null,
+    "planHash": null,
+    "planReadinessOverridden": false,
     "kind": "initial",
     "prompt": "add a multiply feature",
     "run": null,

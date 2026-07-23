@@ -4,12 +4,12 @@
     "paidBudget": {
       "kind": "unlimited"
     },
-    "spendUsd": null,
-    "valuationUsd": null,
-    "valuationKnowledge": "unknown",
+    "spendUsd": 0,
+    "valuationUsd": 0.87,
+    "valuationKnowledge": "estimated",
     "remainingUsd": null,
     "estimated": false,
-    "source": "unknown",
-    "evidence": "complete"
+    "source": "events",
+    "evidence": "incomplete"
   }
 }

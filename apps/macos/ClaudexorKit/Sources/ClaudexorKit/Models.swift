@@ -364,23 +364,67 @@ public struct BudgetSnapshot: Codable, Sendable, Equatable {
     public let paidBudget: PaidBudget
     /// CASH spend so far in USD; null when unknown.
     public let spendUsd: Double?
+    /// Subscription VALUATION in USD (QA-023c): what this run's native-subscription
+    /// work would approximately have cost by token valuation, accumulated separately
+    /// from real billed cash. Nil when no valuation is known — an UNKNOWN valuation
+    /// stays nil and is NEVER coerced to a fake $0.
+    public let valuationUsd: Double?
+    /// Confidence of `valuationUsd`: `exact` (natively priced), `estimated`
+    /// (token-derived), or `unknown` (no usage reported — `valuationUsd` is then nil).
+    public let valuationKnowledge: String
     /// Remaining budget in USD; null when no cap or unknown spend.
     public let remainingUsd: Double?
     /// True when spend is token-derived rather than natively reported.
     public let estimated: Bool
     /// Where the snapshot came from: decision | events | settings | unknown.
     public let source: String
+    /// Integrity of the canonical events this spend fallback read:
+    /// `complete` | `incomplete` | `unavailable`.
+    public let evidence: String
 
     /// Convenience projection: the finite USD cap when capped, nil when unlimited.
     public var maxUsd: Double? { paidBudget.finiteMaxUsd }
 
+    /// A displayable subscription valuation: the USD amount only when it is
+    /// actually known (`exact`/`estimated`). An `unknown` valuation stays absent
+    /// (nil) — never rendered as $0 (QA-023c).
+    public var knownValuationUsd: Double? {
+        valuationKnowledge == "unknown" ? nil : valuationUsd
+    }
+
     public init(paidBudget: PaidBudget, spendUsd: Double?, remainingUsd: Double?,
-                estimated: Bool, source: String) {
+                estimated: Bool, source: String,
+                valuationUsd: Double? = nil, valuationKnowledge: String = "unknown",
+                evidence: String = "complete") {
         self.paidBudget = paidBudget
         self.spendUsd = spendUsd
+        self.valuationUsd = valuationUsd
+        self.valuationKnowledge = valuationKnowledge
         self.remainingUsd = remainingUsd
         self.estimated = estimated
         self.source = source
+        self.evidence = evidence
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case paidBudget, spendUsd, valuationUsd, valuationKnowledge, remainingUsd,
+             estimated, source, evidence
+    }
+
+    // Custom decode so a legacy/version-skewed engine that omits the Ф2 valuation
+    // and evidence fields defaults them honestly (nil valuation / "unknown" /
+    // "complete") instead of failing the whole snapshot decode. Encode stays
+    // synthesized and always emits them.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        paidBudget = try c.decode(PaidBudget.self, forKey: .paidBudget)
+        spendUsd = try c.decodeIfPresent(Double.self, forKey: .spendUsd) ?? nil
+        valuationUsd = try c.decodeIfPresent(Double.self, forKey: .valuationUsd) ?? nil
+        valuationKnowledge = try c.decodeIfPresent(String.self, forKey: .valuationKnowledge) ?? "unknown"
+        remainingUsd = try c.decodeIfPresent(Double.self, forKey: .remainingUsd) ?? nil
+        estimated = try c.decodeIfPresent(Bool.self, forKey: .estimated) ?? false
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? "unknown"
+        evidence = try c.decodeIfPresent(String.self, forKey: .evidence) ?? "complete"
     }
 }
 
