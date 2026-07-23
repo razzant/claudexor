@@ -48,6 +48,11 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
       return parsed.success && isBlocking(parsed.data);
     }).length;
     const gates = Array.isArray(raw.gates) ? (raw.gates as Array<{ status?: unknown }>) : [];
+    // QA-028: surface this candidate's row of the decision's ranking scorecard
+    // so the candidate card can explain the ranking (the detail-level
+    // decision.decisive_axis names which axis actually separated winner from
+    // runner-up). Matched by attempt id; null when arbitration produced none.
+    const scorecardRow = decision?.ranking_scorecard?.find((r) => r.attempt_id === raw.attempt_id);
     const parsed = ControlCandidate.safeParse({
       attemptId: raw.attempt_id,
       harnessId: raw.harness_id,
@@ -76,6 +81,7 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
               deletions: numberOr(raw.diffstat.deletions, 0),
             }
           : null,
+      rankingAxes: scorecardRow ? scorecardRow.axes : null,
     });
     if (parsed.success) out.push(parsed.data);
   }

@@ -94,6 +94,22 @@ export const ControlCandidate = z
       .nullable()
       .default(null)
       .describe("Diff statistics of the candidate's patch; null when there is no patch."),
+    /**
+     * QA-028: this candidate's row of the decision's ranking scorecard —
+     * every compared ranking axis (`tool_warnings`, `diff_size`, `cost`, …)
+     * keyed to its formatted value, projected from
+     * `decision.ranking_scorecard` by attempt id. Null when the run had no
+     * arbitration (single candidate / no decision). Together with the
+     * detail-level `decision.decisive_axis`, a machine surface can explain WHY
+     * a winner beat a runner-up without reimplementing the ranking order.
+     */
+    rankingAxes: z
+      .record(z.string(), z.string())
+      .nullable()
+      .default(null)
+      .describe(
+        "This candidate's ranking-scorecard axis values (from decision.ranking_scorecard); null when no arbitration ran.",
+      ),
   })
   .describe(
     "Per-candidate evidence card for a race run, projected from attempt, review, and decision artifacts.",

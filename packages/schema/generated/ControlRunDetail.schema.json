@@ -2570,6 +2570,21 @@
                 ],
                 "default": null,
                 "description": "Diff statistics of the candidate's patch; null when there is no patch."
+              },
+              "rankingAxes": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "This candidate's ranking-scorecard axis values (from decision.ranking_scorecard); null when no arbitration ran."
               }
             },
             "required": [

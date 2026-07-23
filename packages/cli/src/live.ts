@@ -104,7 +104,9 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
     case "synthesis.started":
       return p["synthesize"] ? "synthesis started" : null;
     case "arbitration.completed":
-      return `arbitration: winner=${String(p["winner"] ?? "none")} status=${String(p["status"] ?? "?")}`;
+      return `arbitration: winner=${String(p["winner"] ?? "none")} lifecycle=${String(
+        p["lifecycle"] ?? "?",
+      )}${p["decisive_axis"] ? ` decisive=${String(p["decisive_axis"])}` : ""}`;
     case "output.ready":
       return `output ready: ${String(p["path"] ?? "?")}${p["state"] ? ` (${String(p["state"])})` : ""}`;
     case "budget.observation":

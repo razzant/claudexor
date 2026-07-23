@@ -3694,6 +3694,11 @@ export class Orchestrator {
     log.emit("arbitration.completed", {
       winner: result.decision.winner,
       lifecycle: result.decision.facts.lifecycle,
+      // QA-028: surface the axis that actually separated the winner from the
+      // runner-up (null on an exact tie) so live surfaces can explain the pick.
+      ...(result.decision.decisive_axis
+        ? { decisive_axis: result.decision.decisive_axis.key }
+        : {}),
     });
 
     // Winner can only be a candidate that actually produced work; corpses are
