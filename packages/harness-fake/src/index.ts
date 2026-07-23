@@ -25,7 +25,8 @@ export type FakeKind =
   | "fake-work-complete"
   | "fake-needs-input"
   | "fake-work-malformed"
-  | "fake-context-exhausted";
+  | "fake-context-exhausted"
+  | "fake-context-then-complete";
 
 export const FAKE_KINDS: FakeKind[] = [
   "fake-success",
@@ -41,6 +42,7 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-needs-input",
   "fake-work-malformed",
   "fake-context-exhausted",
+  "fake-context-then-complete",
 ];
 
 /** The D-16 kinds that declare a schema-constrained WorkReport transport and
@@ -50,7 +52,16 @@ const WORK_REPORT_KINDS = new Set<FakeKind>([
   "fake-needs-input",
   "fake-work-malformed",
   "fake-context-exhausted",
+  "fake-context-then-complete",
 ]);
+
+/**
+ * D-16d: the substring the orchestrator embeds in a one-shot continuation
+ * packet pointer (mirrors `CONTINUATION_PACKET_SENTINEL` in the orchestrator).
+ * A fake that sees it in its prompt knows THIS turn is the continuation and can
+ * complete instead of re-exhausting. Kept as a literal to avoid a package dep.
+ */
+const CONTINUATION_SENTINEL = "one-shot continuation after context exhaustion";
 
 /** Producing intents write a real file so the run->apply->deliver chain has a diff. */
 const PRODUCING_INTENTS = new Set<Intent>(["implement", "create_from_scratch", "repair"]);
@@ -270,6 +281,39 @@ async function* runFake(
           kind: "capacity_exhausted",
           cause: "repeated_refill",
           native_code: "prompt_too_long",
+          trigger: "auto",
+          pre_tokens: 190000,
+        },
+      });
+      yield ev(s, "completed", { observed_model: observedModel });
+      return;
+    }
+    case "fake-context-then-complete": {
+      // D-16d one-shot continuation fixture. On the FIRST turn (no continuation
+      // packet in the prompt) it exhausts with the eligible `repeated_refill`
+      // cause; on the CONTINUATION turn (the orchestrator injected the sentinel)
+      // it COMPLETES with a valid WorkReport envelope. Proves the whole loop:
+      // exhausted → continuation disclosed → completes.
+      const isContinuation = spec.prompt.includes(CONTINUATION_SENTINEL);
+      if (isContinuation) {
+        yield ev(s, "message", {
+          text: JSON.stringify({
+            work_report: { state: "completed", required_inputs: [] },
+            output: "Completed after a one-shot continuation.",
+          }),
+          final: true,
+          payload: { final_source: "fake" },
+        });
+        yield ev(s, "usage", { usage: { input_tokens: 80, output_tokens: 40, cost_usd: 0.008 } });
+        yield ev(s, "completed", { observed_model: observedModel });
+        return;
+      }
+      yield ev(s, "message", { text: "Partial progress before running out of room." });
+      yield ev(s, "context", {
+        context: {
+          kind: "capacity_exhausted",
+          cause: "repeated_refill",
+          native_code: "rapid_refill_breaker",
           trigger: "auto",
           pre_tokens: 190000,
         },

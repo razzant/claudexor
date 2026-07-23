@@ -10,7 +10,7 @@
  * story.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Sandbox, cli, makeSandbox, readRunFile } from "./support.js";
+import { type Sandbox, cli, makeSandbox, readEvents, readRunFile } from "./support.js";
 
 let sb: Sandbox;
 beforeEach(() => {
@@ -61,5 +61,24 @@ describe("D-16 WorkReport + work_state canaries", () => {
     expect(r.code).not.toBe(0);
     const out = r.json() as { status: string };
     expect(out.status).toBe("interrupted");
+  });
+
+  it("[INV-116:continuation] an eligible context exhaustion triggers a one-shot continuation that completes ⇒ succeeded, exit 0", () => {
+    const r = cli(sb, ["ask", "do the thing", "--harness", "fake-context-then-complete", "--json"]);
+    // The first turn exhausts (repeated_refill); the engine launches ONE
+    // fresh-session continuation which completes with a valid WorkReport.
+    expect(r.code, r.stdout + r.stderr).toBe(0);
+    const out = r.json() as { runDir: string; status: string };
+    expect(out.status).toBe("succeeded");
+    // The continuation was DISCLOSED as a typed run.continuation event.
+    const events = readEvents(out.runDir);
+    const cont = events.find((e) => e["type"] === "run.continuation");
+    expect(cont, "run.continuation event present").toBeTruthy();
+    expect((cont?.["payload"] as Record<string, unknown>)?.["cause"]).toBe("repeated_refill");
+    expect((cont?.["payload"] as Record<string, unknown>)?.["continuation_count"]).toBe(1);
+    // answer.md holds the continuation's OUTPUT, not the envelope.
+    const answer = readRunFile(out.runDir, "final/answer.md");
+    expect(answer).toContain("Completed after a one-shot continuation.");
+    expect(answer).not.toContain("work_report");
   });
 });

@@ -1272,15 +1272,44 @@ engine COMPILES a transport ENVELOPE `{ work_report, output }` that wraps any
 caller `output_schema` and rides `HarnessRunSpec.output_schema`; the caller's
 original schema stays the conformance authority for `output` after unwrap (the
 contract keeps both). With no caller schema a `final_message` route (codex)
-wraps the markdown deliverable as `output: string`, while a `side_tool` route
-(claude's `--json-schema` materializes a StructuredOutput tool) is left to the
-adapter layer so the prose final stays markdown. The unified attempt finalizer
-un-nests the envelope beside `finalizeStructuredOutput` — `answer.md` persists
-the OUTPUT, never the envelope — and validates the model-authored
-`WorkReport { state, required_inputs }`. A missing/malformed report on a
-constrained route is a typed `work_report_contract` failure (never a prose
-success); a valid `needs_input`/`incomplete` report becomes a `work_state`
-veto. Live plan checklists ride typed
+wraps the markdown deliverable as `output: string`; a `side_tool` route
+(claude's `--json-schema` materializes a StructuredOutput tool) arms a
+`{work_report}`-ONLY schema so the prose final stays the deliverable and the
+report rides the tool payload (the adapter surfaces it on the final message's
+`work_report_side_tool` payload); a `validated` route (cursor, no native
+schema) INSTRUCTS the model to end with a fenced `{work_report, output}` JSON
+block that the finalizer validates off the last fenced block. The three tiers
+are one resolver (`resolveWorkReportEnvelope`) and one unwrap
+(`unwrapWorkReportEnvelope`, keyed on the envelope `channel`). The unified
+attempt finalizer un-nests the envelope beside `finalizeStructuredOutput` —
+`answer.md` persists the OUTPUT, never the envelope — and validates the
+model-authored `WorkReport { state, required_inputs }`. A missing/malformed
+report on a constrained OR validated route is a typed `work_report_contract`
+failure (never a prose success); a valid `needs_input`/`incomplete` report
+becomes a `work_state` veto.
+
+Context signals (D-16c) are a sibling of the transient-retry taxonomy and NEVER
+enter the retry loop. The claude adapter maps FIXTURE-PROVEN 2.1.165 frames onto
+the typed `context` field of `HarnessEvent`: result `terminal_reason` (`prompt_too_long` and
+the rapid-refill breaker `rapid_refill_breaker` → `capacity_exhausted` with a
+typed cause), the `compact_boundary` system frame → a compaction event, and the
+top-level typed `rate_limit_event` → the existing `rate_limit` signal (a routine
+`allowed` heartbeat surfaces nothing and never arms rotation). Codex exec
+0.144.1 surfaces oversized input only as a stderr JSON-RPC error
+(`input_error_code: input_too_large`), NOT a typed stream frame, so codex stays
+honestly generic (no context event) until upstream surfaces a typed code. A
+terminal `capacity_exhausted` with no completed WorkReport maps to
+`interrupted / context_capacity_exhausted`.
+
+One-shot continuation (D-16d): when an eligible terminal `capacity_exhausted`
+(cause `repeated_refill` only — `prompt_too_long` may be an irreducible packet)
+leaves no completed WorkReport, `continuation_count == 0`, and the run is
+read-only or enveloped (in-place excluded), the engine launches ONE fresh native
+session (`nativeResumeAvailable: false`) re-grounded by a mechanical-first
+checkpoint packet synthesized via the continuity module (sibling of
+`resolveContinuity`). The continuation is disclosed as a typed `run.continuation`
+event with the count; on completion it supersedes the exhausted attempt as the
+run winner. Live plan checklists ride typed
 `HarnessEvent.plan_progress` (codex `todo_list` items; claude
 TaskCreate/TaskUpdate accumulation — TodoWrite kept for older CLIs), forwarded
 as last-wins `plan.progress` run events and projected on the run detail as

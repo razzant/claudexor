@@ -118,6 +118,10 @@ export const RunEventType = z
     "run.blocked",
     "run.completed",
     "run.failed",
+    /** D-16d: a one-shot automatic continuation was launched after a terminal
+     * context exhaustion (eligible cause, no completed WorkReport). Payload:
+     * {from_attempt, cause, continuation_count, packet_turns}. */
+    "run.continuation",
   ])
   .describe(
     "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs.",

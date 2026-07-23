@@ -152,6 +152,11 @@ import {
   type ResolvedWorkReportEnvelope,
   type WorkReportEnvelopeMode,
 } from "./attemptFinalize.js";
+import {
+  buildContinuationPacket,
+  decideContinuation,
+  synthesizeContinuationRequest,
+} from "./continuation.js";
 import { interactionChannelFor } from "./interaction.js";
 import {
   gateSpecsFromContract,
@@ -1800,6 +1805,28 @@ export class Orchestrator {
     });
   }
 
+  /**
+   * D-16: apply the resolved WorkReport transport to a built spec — set the
+   * envelope output_schema (constrained/side_tool routes) and APPEND the fenced
+   * envelope instruction (validated routes, e.g. cursor). Mutates the spec in
+   * place and returns the mode the answer unwrap consumes. Called at every
+   * task-producing spec-build site so the transport is never wired one-off.
+   */
+  private applyWorkEnvelope(
+    spec: HarnessRunSpec,
+    workEnvelope: ResolvedWorkReportEnvelope,
+  ): WorkReportEnvelopeMode {
+    if (workEnvelope.outputSchema !== undefined) spec.output_schema = workEnvelope.outputSchema;
+    const instruction = workEnvelope.mode.instruction;
+    if (instruction) {
+      spec.instructions =
+        spec.instructions && spec.instructions.trim()
+          ? `${spec.instructions}\n\n${instruction}`
+          : instruction;
+    }
+    return workEnvelope.mode;
+  }
+
   private routeSpecKnobs(
     routed: RoutedAdapter,
     contract: TaskContract,
@@ -2077,8 +2104,7 @@ export class Orchestrator {
     // D-16: compile the WorkReport envelope onto the spec (overriding the plain
     // caller-schema transport) and keep the mode for the answer unwrap.
     const workEnvelope = this.workReportEnvelopeFor(routed, contract, Boolean(interaction));
-    if (workEnvelope.outputSchema !== undefined) spec.output_schema = workEnvelope.outputSchema;
-    const workReportMode: WorkReportEnvelopeMode = workEnvelope.mode;
+    const workReportMode: WorkReportEnvelopeMode = this.applyWorkEnvelope(spec, workEnvelope);
     const inactivityMs = harnessInactivityTimeoutMs(this.config(contract.repo.root));
 
     const attemptStartedMs = Date.now();
@@ -2348,7 +2374,9 @@ export class Orchestrator {
     const diff = await wsm.diff(envelope);
     // D-16: un-nest the {work_report, output} envelope so answer.md persists the
     // OUTPUT (never the envelope) and the WorkReport folds into work_state.
-    const unwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", workReportMode);
+    const unwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", workReportMode, {
+      sideToolReport: telemetry.sideToolWorkReport ?? undefined,
+    });
     const answerText = unwrapped.deliverable.trim().length > 0 ? unwrapped.deliverable : undefined;
     const deliverableEvidence = diff.trim().length > 0 || Boolean(answerText);
     // Cancelled attempts skip gates entirely: the operator asked to
@@ -5103,9 +5131,7 @@ export class Orchestrator {
     // D-16: compile the WorkReport envelope for the plan lane (require plan text
     // below folds the deliverable; the veto rides work_state).
     const planWorkEnvelope = this.workReportEnvelopeFor(routed, contract, Boolean(planInteraction));
-    if (planWorkEnvelope.outputSchema !== undefined)
-      spec.output_schema = planWorkEnvelope.outputSchema;
-    const planWorkMode: WorkReportEnvelopeMode = planWorkEnvelope.mode;
+    const planWorkMode: WorkReportEnvelopeMode = this.applyWorkEnvelope(spec, planWorkEnvelope);
     const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
     const answer = new AnswerAssembly();
     const telemetry = createAttemptTelemetry(
@@ -5212,7 +5238,9 @@ export class Orchestrator {
     }
     // D-16: unwrap the envelope and require PLAN TEXT — the planner outlier
     // (no-error ⇒ delivered) is fixed: a plan with no text is not delivered.
-    const planUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", planWorkMode);
+    const planUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", planWorkMode, {
+      sideToolReport: telemetry.sideToolWorkReport ?? undefined,
+    });
     const planText = planUnwrapped.deliverable.trim();
     const planFinalized = finalizeAttempt({
       deliverableEvidence: planText.length > 0,
@@ -5851,11 +5879,17 @@ export class Orchestrator {
       routed: RoutedAdapter,
       idx: number,
       modelOverride?: string,
+      // D-16d: a one-shot continuation re-run injects its checkpoint packet
+      // pointer here; the attempt runs a FRESH session (resume is never granted
+      // to a same-adapter follow-up slot) and is tagged `-cont`.
+      continuationPointer?: string,
     ): Promise<void> => {
       const adapter = routed.adapter;
-      const attemptId = modelOverride
-        ? `a${String(idx + 1).padStart(2, "0")}-fb`
-        : `a${String(idx + 1).padStart(2, "0")}`;
+      const attemptId = continuationPointer
+        ? `a${String(idx + 1).padStart(2, "0")}-cont`
+        : modelOverride
+          ? `a${String(idx + 1).padStart(2, "0")}-fb`
+          : `a${String(idx + 1).padStart(2, "0")}`;
       const budgetSignalState = { quotaPressureDisclosed: false };
       const lease = ledger.reserve({
         taskId,
@@ -5905,12 +5939,19 @@ export class Orchestrator {
             log,
           )
         : null;
+      // D-16d: the continuation packet pointer rides after the lane pointer so
+      // the fresh session is re-grounded in the exhausted attempt's work.
+      const promptWithPointers = [
+        explorerPrompt,
+        laneContinuity?.pointerLine,
+        continuationPointer,
+      ]
+        .filter((p): p is string => Boolean(p))
+        .join("\n\n");
       let spec = HarnessRunSpec.parse({
         session_id: newId("ses"),
         intent: opts.intent,
-        prompt: laneContinuity?.pointerLine
-          ? `${explorerPrompt}\n\n${laneContinuity.pointerLine}`
-          : explorerPrompt,
+        prompt: promptWithPointers,
         cwd: this.execRootOf(input),
         access: "readonly",
         // ASK/EXPLORE/AUDIT read-only runs must forward the user's attachments —
@@ -5947,9 +5988,10 @@ export class Orchestrator {
         contract,
         Boolean(reportInteraction),
       );
-      if (readonlyWorkEnvelope.outputSchema !== undefined)
-        spec.output_schema = readonlyWorkEnvelope.outputSchema;
-      const readonlyWorkMode: WorkReportEnvelopeMode = readonlyWorkEnvelope.mode;
+      const readonlyWorkMode: WorkReportEnvelopeMode = this.applyWorkEnvelope(
+        spec,
+        readonlyWorkEnvelope,
+      );
       const attemptEventsPath = join(paths.attemptsDir, attemptId, "events.jsonl");
       const answer = new AnswerAssembly();
       const telemetry = createAttemptTelemetry(
@@ -6136,7 +6178,9 @@ export class Orchestrator {
       }
       attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
       // D-16: un-nest the {work_report, output} envelope; the OUTPUT is the report.
-      const roUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", readonlyWorkMode);
+      const roUnwrapped = unwrapWorkReportEnvelope(answer.text() ?? "", readonlyWorkMode, {
+        sideToolReport: telemetry.sideToolWorkReport ?? undefined,
+      });
       const report = redactSecrets(roUnwrapped.deliverable);
       const unrecovered = unrecoveredToolErrors(telemetry);
       const webBlocked = webUnsatisfied(telemetry);
@@ -6231,10 +6275,50 @@ export class Orchestrator {
       } else {
         // ask/audit: sequential fallback chain — first success wins; a blocked
         // attempt opens a fallback arc to the next eligible harness.
+        let continuationCount = 0; // D-16d: one-shot budget across the chain
         for (const [idx, routed] of adapters.entries()) {
           if (input.signal?.aborted) break;
           await runReadonlyAttempt(routed, idx);
           let last = attempts[attempts.length - 1];
+          // D-16d one-shot continuation: an ELIGIBLE terminal context exhaustion
+          // (repeated_refill, no completed report) gets ONE fresh-session re-run,
+          // re-grounded by a mechanical checkpoint packet. On completion the
+          // exhausted attempt is superseded so the continuation wins the terminal.
+          if (last?.status === "success" && continuationCount === 0 && !budgetStopped) {
+            const decision = decideContinuation({
+              contextExhausted: last.telemetry.contextExhausted,
+              contextExhaustedCause: last.telemetry.contextExhaustedCause,
+              workStateCompleted: last.telemetry.outcome?.workState?.state === "completed",
+              continuationCount,
+              runKind: "read_only",
+            });
+            if (decision.eligible) {
+              const exhausted = last;
+              const packet = buildContinuationPacket(
+                synthesizeContinuationRequest({
+                  harness: exhausted.harnessId,
+                  profileId: input.credentialProfileId ?? null,
+                  priorPrompt: prompt,
+                  priorOutput: exhausted.report,
+                }),
+              );
+              continuationCount += 1;
+              log.emit("run.continuation", {
+                from_attempt: exhausted.attemptId,
+                cause: last.telemetry.contextExhaustedCause,
+                continuation_count: continuationCount,
+                packet_turns: packet.continuity.disclosure.packetTurns,
+              });
+              await runReadonlyAttempt(routed, idx, undefined, packet.pointerLine ?? undefined);
+              const cont = attempts[attempts.length - 1];
+              if (cont && cont !== exhausted && cont.status === "success") {
+                exhausted.status = "failed";
+                exhausted.error =
+                  exhausted.error ?? "superseded by one-shot continuation (context exhausted)";
+                last = cont;
+              }
+            }
+          }
           // Per-harness fallback_model: one same-harness retry on FAILURE (not
           // policy blocks) before falling through to the next harness.
           const fallbackModel = routed.settings?.fallbackModel;
