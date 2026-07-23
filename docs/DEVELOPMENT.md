@@ -146,6 +146,32 @@ signature covers the schemaVersion, so the two contracts cannot be replayed
 into each other. Schema 1, unsigned, unknown-key, and tampered inputs are
 rejected.
 
+The `publish` mode also carries a second signed input, the OWNER-SIGNED
+runtime-update manifest (D-2), transported the same way as the review
+attestation (base64 workflow-dispatch input). The candidate run builds the
+engine-runtime closure and an UNSIGNED `runtime-manifest.json`; on a trusted
+machine the owner signs it offline against the exact promoted-artifact digest:
+
+```
+pnpm sign:runtime-manifest \
+  --in       runtime-manifest.json           # the candidate's unsigned manifest
+  --sha256   <sha256 of the promoted claudexor-runtime-<v>.tar.gz> \
+  --private-key ~/.claudexor/keys/runtime-update-ed25519.pem \
+  --authority   release/runtime-update-authority.json \
+  --out         runtime-manifest.signed.json
+```
+
+The private key is a dedicated OFFLINE Ed25519 key (SEPARATE from the
+review-attestation key, never on CI); the signer refuses any unstamped/
+placeholder field and self-verifies. The publish workflow then runs
+`scripts/verify-signed-runtime-manifest.mjs`, which ships the signed manifest
+ONLY if its signature verifies against the pinned
+`release/runtime-update-authority.json`, its `sha256` byte-matches the built
+tarball, and its non-secret fields equal the freshly-built manifest. Candidate
+runs publish nothing signed; only publish ships the signed manifest. Rotate the
+key by minting a new keypair, bumping its `keyId`, and shipping the new public
+half in a signed DMG.
+
 The review process itself (panel composition, sealed packet contents, the
 blocker contract, wave discipline) is defined ONCE, in `docs/CHECKLISTS.md`
 (Release review protocol) — this file only covers the attestation transport.
