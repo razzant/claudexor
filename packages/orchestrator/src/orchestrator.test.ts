@@ -397,6 +397,57 @@ function transientThenDiffImplementer(id: string): {
   };
 }
 
+/** An implementer that discloses a typed vendor auth failure then errors with
+ * no deliverable — a NON-retryable category (GH #31) the retry policy must not
+ * replay, and whose terminal must carry auth remediation. */
+function authFailedImplementer(id: string): {
+  adapter: HarnessAdapter;
+  calls: () => number;
+} {
+  let calls = 0;
+  return {
+    calls: () => calls,
+    adapter: {
+      id,
+      async discover() {
+        return HarnessManifest.parse({
+          id,
+          display_name: id,
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true },
+          access_profiles_supported: ["workspace_write"],
+        });
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: id,
+          status: "ok",
+          enabled_intents: ["implement"],
+        });
+      },
+      async *run(spec) {
+        calls += 1;
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "status",
+          session_id: spec.session_id,
+          ts,
+          status: { kind: "api_retry", error_category: "authentication_failed" },
+        };
+        yield {
+          type: "error",
+          session_id: spec.session_id,
+          ts,
+          error: "not authenticated",
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    },
+  };
+}
+
 /** A reviewer/planner-only adapter: cannot implement/edit. */
 function noImplementAdapter(id: string, family: ProviderFamily = "openai"): HarnessAdapter {
   return {
@@ -655,6 +706,32 @@ describe("Orchestrator", () => {
     const attempt = readFileSync(join(res.runDir, "attempts", "a01", "attempt.yaml"), "utf8");
     expect(attempt).toContain("transient_failures");
     expect(attempt).toContain("network");
+    // GH #31: the retry event carries the typed category, not only the fine kind.
+    expect(events).toContain('"category":"unknown_harness_error"');
+  });
+
+  it("does NOT retry a non-retryable classified failure and attaches auth remediation only on auth_failed (GH #31)", async () => {
+    const repo = await initRepo();
+    const authFail = authFailedImplementer("auth-impl");
+    const registry = new Map<string, HarnessAdapter>([[authFail.adapter.id, authFail.adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "write file",
+      mode: "agent",
+      harnesses: [authFail.adapter.id],
+      n: 1,
+    });
+    // A deterministic auth refusal is never replayed by the transient policy.
+    expect(authFail.calls()).toBe(1);
+    expect(legacyOutcome(res)).toBe("failed");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).not.toContain("route.transient.retry_scheduled");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    // Auth guidance appears ONLY because the classified category is auth_failed.
+    expect(failure).toMatch(/[Rr]e-authenticate/);
+    const telemetry = readFileSync(join(res.runDir, "final", "telemetry.yaml"), "utf8");
+    expect(telemetry).toContain("auth_failed");
   });
 
   it("delivers per-run instructions to a task-producing candidate lane (W5)", async () => {

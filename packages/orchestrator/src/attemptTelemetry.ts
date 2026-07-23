@@ -16,6 +16,15 @@ import type {
   WorkState,
 } from "@claudexor/schema";
 import { redactSecrets } from "@claudexor/util";
+import {
+  type TransientFailureObservation,
+  classifyCompletedCrash,
+  classifyRateLimit,
+  classifyStatusError,
+  classifyTransientSignal,
+} from "./transientClassify.js";
+
+export { type TransientFailureObservation, classifyAdapterThrow } from "./transientClassify.js";
 
 export interface ToolErrorRecord {
   tool: string;
@@ -92,11 +101,9 @@ export interface AttemptTelemetry {
   /** Model hint the engine SENT this attempt (requested side; observedModel is
    * the disclosed side of the model x route truth). */
   requestedModel: string | null;
-  /** Adapter-declared transient failures seen during this attempt. */
-  transientFailures: {
-    kind: NonNullable<HarnessEvent["transient"]>["kind"];
-    retryDelayMs: number | null;
-  }[];
+  /** Adapter-declared transient failures seen during this attempt, each
+   * classified into the GH #31 typed taxonomy the retry policy gates on. */
+  transientFailures: TransientFailureObservation[];
   /** TYPED vendor rate-limit signals seen during this attempt (W5.4): the
    * rotation predicate reads these, never prose or plain transients. */
   rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
@@ -276,17 +283,23 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   // native tries of ONE attempt, and the receipt must name the try that
   // produced the deliverable.
   if (ev.credential_profile_id) t.profileId = ev.credential_profile_id;
-  if (ev.transient) {
-    t.transientFailures.push({
-      kind: ev.transient.kind,
-      retryDelayMs: ev.transient.retry_delay_ms ?? null,
-    });
-  }
+  // #31: classify every disclosed transient into the typed taxonomy (see
+  // transientClassify.ts). An adapter `transient` and a `rate_limit` are
+  // retryable failures; the vendor's typed `status.error_category` surfaces only
+  // the deterministic FAILURE classes (auth/capability/config) so required-
+  // actions attach the right remediation. Rate limits ALSO stay in rateLimits
+  // for the W5.4 rotation predicate.
+  if (ev.transient) t.transientFailures.push(classifyTransientSignal(ev.transient));
   if (ev.rate_limit) {
     t.rateLimits.push({
       retryDelayMs: ev.rate_limit.retry_delay_ms ?? null,
       resetsAt: ev.rate_limit.resets_at ?? null,
     });
+    t.transientFailures.push(classifyRateLimit(ev.rate_limit.retry_delay_ms ?? null));
+  }
+  if (ev.status?.error_category) {
+    const obs = classifyStatusError(ev.status.error_category, ev.status.retry_delay_ms ?? null);
+    if (obs) t.transientFailures.push(obs);
   }
   // D-16 context signal: a terminal capacity_exhausted marks the attempt for the
   // finalizer's interrupted/context_capacity_exhausted mapping. Context signals
@@ -311,6 +324,10 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
       Number(ev.payload?.["dropped_unparsed_lines"] ?? 0) +
       Number(ev.payload?.["dropped_unrecognized_events"] ?? 0);
     if (Number.isFinite(dropped) && dropped > 0) t.droppedEvents += dropped;
+    // #31 process crash: the run loop discloses a non-aborted signal kill, a
+    // non-zero exit, or a spawn failure as TYPED payload fields (never prose).
+    const crash = classifyCompletedCrash(ev.payload);
+    if (crash) t.transientFailures.push(crash);
     return;
   }
   const tool = ev.tool;
@@ -514,9 +531,12 @@ export function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
       : {}),
     ...(t.transientFailures.length > 0
       ? {
-          transient_failures: t.transientFailures
-            .slice(-5)
-            .map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })),
+          transient_failures: t.transientFailures.slice(-5).map((e) => ({
+            kind: e.kind,
+            category: e.category,
+            retryable: e.retryable,
+            retry_delay_ms: e.retryDelayMs,
+          })),
         }
       : {}),
     ...(t.droppedEvents > 0 ? { dropped_events: t.droppedEvents } : {}),
@@ -563,9 +583,15 @@ export function attemptTelemetryRecord(
     unrecovered_tool_errors: unrecoveredToolErrors(t).length,
     statusless_tool_results: t.statuslessResults,
     dropped_events: t.droppedEvents,
-    transient_failures: t.transientFailures
-      .slice(-TELEMETRY_TOOL_ERRORS_MAX)
-      .map((e) => ({ kind: e.kind, retry_delay_ms: e.retryDelayMs })),
+    transient_failures: t.transientFailures.slice(-TELEMETRY_TOOL_ERRORS_MAX).map((e) => ({
+      kind: e.kind,
+      category: e.category,
+      retryable: e.retryable,
+      retry_delay_ms: e.retryDelayMs,
+      http_status: e.httpStatus,
+      signal: e.signal,
+      adapter_code: e.adapterCode,
+    })),
     outcome: {
       deliverable_present: t.outcome?.deliverablePresent ?? false,
       gates_passed: t.outcome?.gatesPassed ?? null,

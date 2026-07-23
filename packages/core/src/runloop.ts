@@ -72,6 +72,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
   let droppedUnparsedLines = 0;
   let droppedUnrecognizedEvents = 0;
   let sawError = false;
+  let spawnFailed = false;
   let exitCode: number | null = null;
   let exitSignal: NodeJS.Signals | null = null;
   const abortSignal = abortSignalFromSpec(spec);
@@ -139,6 +140,7 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
     }
   } catch (err) {
     sawError = true;
+    spawnFailed = true;
     yield {
       type: "error",
       session_id: spec.session_id,
@@ -174,6 +176,10 @@ export async function* runCliHarness(opts: CliRunLoopOptions): AsyncGenerator<Ha
     payload["dropped_unrecognized_events"] = droppedUnrecognizedEvents;
   if (aborted) payload["aborted"] = true;
   if (exitCode !== null) payload["exit_code"] = exitCode;
+  // Typed crash evidence (GH #31): a non-aborted signal kill or spawn failure is
+  // a process crash the orchestrator classifies without parsing prose.
+  if (!aborted && exitSignal) payload["exit_signal"] = exitSignal;
+  if (spawnFailed) payload["spawn_failed"] = true;
   yield {
     type: "completed",
     session_id: spec.session_id,

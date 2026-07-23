@@ -92,12 +92,46 @@ export const ToolErrorRecord = z
   .describe("One tool error observed during an attempt.");
 export type ToolErrorRecord = z.infer<typeof ToolErrorRecord>;
 
+/**
+ * Typed taxonomy (GH #31) the orchestrator classifies every adapter/harness
+ * transient failure into at the adapter→orchestrator boundary. Orthogonal to
+ * the fine-grained `kind`: the retry policy gates on this category's
+ * `retryable` verdict, and required-actions attach auth guidance ONLY on
+ * `auth_failed`. Never inferred by surfaces or parsed from prose.
+ */
+export const HarnessFailureCategory = z
+  .enum([
+    "timeout",
+    "rate_limited",
+    "auth_failed",
+    "capability_refused",
+    "process_crash",
+    "config_error",
+    "unknown_harness_error",
+  ])
+  .describe(
+    "Typed harness-failure category (GH #31) the retry policy and required-actions read; orthogonal to the fine-grained kind.",
+  );
+export type HarnessFailureCategory = z.infer<typeof HarnessFailureCategory>;
+
 export const TransientFailureRecord = z
   .object({
     kind: z
       .enum(["network", "stream_disconnect", "service_unavailable", "timeout", "unknown"])
       .default("unknown")
-      .describe("Kind of transient failure."),
+      .describe("Fine-grained kind of transient failure (adapter-declared)."),
+    /** GH #31 typed category the retry policy and required-actions read. */
+    category: HarnessFailureCategory.default("unknown_harness_error").describe(
+      "Typed failure category (GH #31) the retry policy and required-actions read; orthogonal to kind.",
+    ),
+    /** Whether the classified category is retryable — the centralized retry
+     * gate reads THIS, never a bare sawTransient boolean. */
+    retryable: z
+      .boolean()
+      .default(false)
+      .describe(
+        "Whether the classified category is retryable (the centralized retry-policy gate).",
+      ),
     retry_delay_ms: z
       .number()
       .int()
@@ -105,6 +139,27 @@ export const TransientFailureRecord = z
       .nullable()
       .default(null)
       .describe("Suggested retry delay in milliseconds, when reported."),
+    /** Preserved safe provider metadata: the vendor's HTTP status when disclosed. */
+    http_status: z
+      .number()
+      .int()
+      .nullable()
+      .default(null)
+      .describe("Vendor HTTP status code disclosed by the error, when any; null otherwise."),
+    /** Process termination signal (e.g. SIGKILL) when a crash killed the child, else null. */
+    signal: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe(
+        "Process termination signal (e.g. SIGKILL) when a crash killed the child; null otherwise.",
+      ),
+    /** Vendor/adapter error-category code passed verbatim as evidence, when any. */
+    adapter_code: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("Vendor/adapter error-category code passed verbatim as evidence; null when none."),
   })
   .describe("An adapter-declared transient failure that informed bounded retry policy.");
 export type TransientFailureRecord = z.infer<typeof TransientFailureRecord>;

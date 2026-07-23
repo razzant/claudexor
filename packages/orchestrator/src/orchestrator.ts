@@ -137,6 +137,7 @@ import { runDiffReview, type DiffReviewInput, type DiffReviewResult } from "./di
 import {
   type AttemptTelemetry,
   type ToolErrorRecord,
+  classifyAdapterThrow,
   createAttemptTelemetry,
   observeAttemptTelemetry,
   setAttemptOutcome,
@@ -145,6 +146,7 @@ import {
   unrecoveredToolErrors,
   webUnsatisfied,
 } from "./attemptTelemetry.js";
+import { dominantHarnessFailureCategory, harnessFailureNextActions } from "./harnessFailure.js";
 import {
   finalizeAttempt,
   readOnlyNoSuccessTerminal,
@@ -2290,15 +2292,23 @@ export class Orchestrator {
             });
         } catch (err) {
           // A throwing adapter must not lose the cost already streamed: record the
-          // error here and let the caller settle the REAL accumulated spend.
+          // error here and let the caller settle the REAL accumulated spend. #31:
+          // classify the throw (watchdog timeout vs process crash) so the retry
+          // gate and required-actions read a typed category, not a bare boolean.
           harnessErrored = true;
           errors.push(safeErrorMessage(err));
+          telemetry.transientFailures.push(
+            classifyAdapterThrow({ errorName: err instanceof Error ? err.name : null }),
+          );
         } finally {
           clearFileBackedContext();
         }
 
-        const transient = telemetry.transientFailures.at(-1) ?? null;
-        const sawTransient = telemetry.transientFailures.length > transientStart;
+        const newTransients = telemetry.transientFailures.slice(transientStart);
+        const transient = newTransients.at(-1) ?? null;
+        // #31: the centralized retry gate reads the classified `retryable`, not a
+        // bare "saw any transient" boolean.
+        const sawRetryable = newTransients.some((f) => f.retryable);
         const sawTypedLimit = telemetry.rateLimits.length > rateLimitStart;
         const currentDiff = await wsm.diff(envelope);
         const currentAnswer = answer.text();
@@ -2330,7 +2340,7 @@ export class Orchestrator {
         }
         if (
           !harnessErrored ||
-          !sawTransient ||
+          !sawRetryable ||
           !deliverableEmpty ||
           nativeTry >= retryPolicy.maxRetries ||
           signal?.aborted
@@ -2347,6 +2357,7 @@ export class Orchestrator {
           harness_id: adapter.id,
           attempt_id: attemptId,
           kind: transient?.kind ?? "unknown",
+          category: transient?.category ?? "unknown_harness_error",
           native_try: nativeTry + 1,
         });
         log?.emit("route.transient.retry_scheduled", {
@@ -2366,6 +2377,7 @@ export class Orchestrator {
       log?.emit("route.transient.exhausted", {
         harness_id: adapter.id,
         attempt_id: attemptId,
+        category: telemetry.transientFailures.at(-1)?.category ?? "unknown_harness_error",
         retries: retryPolicy.maxRetries,
       });
     }
@@ -3178,6 +3190,10 @@ export class Orchestrator {
       const existingEventRefs = runs
         .map((r) => `attempts/${r.attemptId}/events.jsonl`)
         .filter((rel) => existsSync(join(paths.root, rel)));
+      // #31: auth guidance only on a classified auth failure; every other
+      // harness cause (timeout, rate limit, crash, config) gets remediation that
+      // fits it, instead of a doomed "Check harness authentication".
+      const harnessCategory = dominantHarnessFailureCategory(first.telemetry.transientFailures);
       writeFailure(store, paths, {
         phase,
         category: phase === "workspace" ? "project" : "harness_error",
@@ -3190,7 +3206,7 @@ export class Orchestrator {
         nextActions:
           phase === "workspace"
             ? ["Check the project folder", "Open diagnostics", "Retry the run"]
-            : ["Open diagnostics", "Check harness authentication", "Retry the run"],
+            : harnessFailureNextActions(harnessCategory),
       });
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
@@ -6155,10 +6171,16 @@ export class Orchestrator {
             }
           } catch (err) {
             harnessError = safeErrorMessage(err);
+            // #31: classify the throw so the retry gate and required-actions read
+            // a typed category (watchdog timeout vs process crash).
+            telemetry.transientFailures.push(
+              classifyAdapterThrow({ errorName: err instanceof Error ? err.name : null }),
+            );
           }
 
-          const transient = telemetry.transientFailures.at(-1) ?? null;
-          const sawTransient = telemetry.transientFailures.length > transientStart;
+          const newTransients = telemetry.transientFailures.slice(transientStart);
+          const transient = newTransients.at(-1) ?? null;
+          const sawRetryable = newTransients.some((f) => f.retryable);
           const sawTypedLimit = telemetry.rateLimits.length > rateLimitStart;
           const reportSoFar = answer.text();
           // W5.4 reactive failover, READ-ONLY lane (same contract as the
@@ -6187,7 +6209,7 @@ export class Orchestrator {
           }
           if (
             !harnessError ||
-            !sawTransient ||
+            !sawRetryable ||
             reportSoFar.length > 0 ||
             nativeTry >= retryPolicy.maxRetries ||
             input.signal?.aborted
@@ -6204,6 +6226,7 @@ export class Orchestrator {
             harness_id: adapter.id,
             attempt_id: attemptId,
             kind: transient?.kind ?? "unknown",
+            category: transient?.category ?? "unknown_harness_error",
             native_try: nativeTry + 1,
           });
           log.emit("route.transient.retry_scheduled", {
@@ -6233,6 +6256,7 @@ export class Orchestrator {
         log.emit("route.transient.exhausted", {
           harness_id: adapter.id,
           attempt_id: attemptId,
+          category: telemetry.transientFailures.at(-1)?.category ?? "unknown_harness_error",
           retries: retryPolicy.maxRetries,
         });
       }
@@ -6537,6 +6561,11 @@ export class Orchestrator {
           budgetFailureRecord(budgetMapping, { eventRefs: roEventRefs, runDir: paths.root }),
         );
       } else {
+        // #31: classify the harness cause across the read-only attempts so auth
+        // guidance appears only on a real auth failure.
+        const roCategory = dominantHarnessFailureCategory(
+          attemptTelemetries.flatMap((a) => a.telemetry.transientFailures),
+        );
         writeFailure(store, paths, {
           phase: "harness",
           category: webBlocked ? "policy" : "harness_error",
@@ -6545,7 +6574,7 @@ export class Orchestrator {
           safeMessage: singleError,
           eventRefs: roEventRefs,
           runDir: paths.root,
-          nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
+          nextActions: harnessFailureNextActions(roCategory),
         });
       }
       // QA-036: re-check the DELIVERABLE through the shared finalizer helper —
@@ -6637,6 +6666,11 @@ export class Orchestrator {
           }),
         );
       } else {
+        // #31: classify the scout failures; keep the scan-specific width hint but
+        // drop the unconditional auth line unless the cause was a real auth failure.
+        const scanCategory = dominantHarnessFailureCategory(
+          attemptTelemetries.flatMap((a) => a.telemetry.transientFailures),
+        );
         writeFailure(store, paths, {
           phase: "harness",
           category: blocked ? "policy" : "harness_error",
@@ -6644,8 +6678,7 @@ export class Orchestrator {
           eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
           runDir: paths.root,
           nextActions: [
-            "Open diagnostics",
-            "Check harness authentication",
+            ...harnessFailureNextActions(scanCategory).filter((a) => !a.startsWith("Retry")),
             "Reduce explore width",
             "Retry after setup",
           ],
