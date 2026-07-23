@@ -117,6 +117,24 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `run failed: ${truncate(String(p["error"] ?? p["status"] ?? "failed"), 200)}`;
     case "run.blocked":
       return `run blocked: ${truncate(String(p["error"] ?? "needs human decision"), 200)}`;
+    case "run.continuation":
+      return `[${String(p["from_attempt"] ?? "?")}] continuing in a fresh session (${String(
+        p["cause"] ?? "context exhausted",
+      )}, continuation ${String(p["continuation_count"] ?? "?")})`;
+    case "delegation.belt.unavailable":
+      return `[${who}] delegation belt unavailable (${String(p["server_name"] ?? "?")}: ${String(
+        p["reason"] ?? "unknown",
+      )})`;
+    case "route.pool.degraded": {
+      const dropped = Array.isArray(p["dropped_lanes"])
+        ? (p["dropped_lanes"] as Array<Record<string, unknown>>)
+            .map((d) => String(d["harness_id"] ?? "?"))
+            .join(", ")
+        : "";
+      return `route pool degraded: ${String(p["effective_n"] ?? "?")}/${String(
+        p["requested_n"] ?? "?",
+      )} lanes${dropped ? ` (dropped ${dropped})` : ""}`;
+    }
     default:
       return null;
   }

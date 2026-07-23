@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -97,7 +97,9 @@ describe("composeBaseEnv managed-runner Node prepend rides every lane class (QA-
   let runnerDir: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "env-scope-runner-"));
+    // Canonicalize: the managed-runner prepend now anchors the REAL binary's dir
+    // (realpath), and on macOS tmpdir is /var -> /private/var.
+    root = realpathSync(mkdtempSync(join(tmpdir(), "env-scope-runner-")));
     runnerDir = join(root, "app-node");
     mkdirSync(runnerDir, { recursive: true });
     fakeNode = join(runnerDir, "node");

@@ -934,6 +934,36 @@ describe("routing telemetry", () => {
       );
       expect(survivors.map((r) => r.harnessId)).toEqual(["codex"]);
     });
+
+    // Economy decisive-axis mirroring (round-3): entitlement-first is reported
+    // ONLY when the paid/free split actually separated the pool, not whenever
+    // ANY route is entitled. When they are ALL entitled the reason must be the
+    // axis that truly decided — cost, then tier — mirroring the economy sort.
+    it("reports lowest_incremental_cash when two ENTITLED routes are split by cost", () => {
+      const led = new BudgetLedger();
+      const r = explainRanking(
+        [
+          nativeVerified("a", { incrementalCostUsd: 0.05 }),
+          nativeVerified("b", { incrementalCostUsd: 0.01 }),
+        ],
+        { ...routeContext(led, "economy"), qualityTiers: {} },
+      );
+      expect(r.reason).toBe("lowest_incremental_cash");
+      expect(r.order).toEqual(["b", "a"]); // cheaper entitled route leads
+    });
+
+    it("falls to quality_tier when two ENTITLED equal-cost routes are split by declared tier", () => {
+      const led = new BudgetLedger();
+      // Both entitled, neither declares an incremental cost (equal +Inf), so the
+      // cost axis does not separate them; the declared tier (claude 0, codex 1)
+      // does. Entitlement did NOT decide — every route is entitled.
+      const r = explainRanking(
+        [nativeVerified("codex"), nativeVerified("claude")],
+        routeContext(led, "economy"),
+      );
+      expect(r.reason).toBe("quality_tier");
+      expect(r.order).toEqual(["claude", "codex"]);
+    });
   });
 
   // Round-2 #1: the recorded auto rationale must mirror the comparator branch

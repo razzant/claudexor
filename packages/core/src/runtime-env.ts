@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import { isLaunchableExecutable } from "./executable-inspection.js";
@@ -20,8 +20,13 @@ import { isLaunchableExecutable } from "./executable-inspection.js";
  *  - the path must be absolute and a spawnable regular file (the running
  *    process is itself proof the bytes launch — "self-contained/valid");
  *  - it must NOT itself be an at-risk Homebrew Node — prepending a killable
- *    Node's dir would poison the very shell we are trying to protect.
- * Returns null when the guard fails; the guessed `preferred` entries still apply.
+ *    Node's dir would poison the very shell we are trying to protect;
+ *  - the REAL binary's dir (symlinks followed) is what we anchor — a symlinked
+ *    launcher must not put the WRONG dir first on the harness PATH;
+ *  - that dir must NOT be group/world-writable — prepending a dir any non-owner
+ *    can write to lets a local attacker drop a malicious `node`/`bash` that then
+ *    SHADOWS the system tools for every harness child.
+ * Returns null when any guard fails; the guessed `preferred` entries still apply.
  */
 export function managedRunnerNodeDir(
   execPath: string = process.execPath,
@@ -29,8 +34,28 @@ export function managedRunnerNodeDir(
 ): string | null {
   if (!execPath || !isAbsolute(execPath)) return null;
   if (atRiskNodeAdvisory(execPath, platform) !== null) return null;
+  // realpath + regular-file + executable facts (identity-stable, bounded).
   if (!isLaunchableExecutable(execPath)) return null;
-  return dirname(execPath);
+  // Anchor the REAL binary's dir (follow symlinks) rather than the launcher's.
+  let runnerDir: string;
+  try {
+    runnerDir = dirname(realpathSync(execPath));
+  } catch {
+    return null;
+  }
+  // A group/world-writable runner dir is an injection surface — skip the prepend.
+  if (platform !== "win32" && dirIsGroupOrWorldWritable(runnerDir)) return null;
+  return runnerDir;
+}
+
+/** True when `dir` is writable by group or other (POSIX mode & 0o022), or cannot
+ *  be stat'd (an undeterminable dir is not provably safe — treat as unsafe). */
+function dirIsGroupOrWorldWritable(dir: string): boolean {
+  try {
+    return (statSync(dir).mode & 0o022) !== 0;
+  } catch {
+    return true;
+  }
 }
 
 /**

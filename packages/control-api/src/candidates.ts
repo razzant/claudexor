@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { redactSecrets } from "@claudexor/util";
 import {
   ControlCandidate,
   ReviewFinding,
@@ -60,8 +61,14 @@ export function candidatesFor(runDir: string, decision: DecisionRecord | null): 
       costUsd: typeof raw.cost_usd === "number" ? raw.cost_usd : 0,
       costEstimated: raw.cost_estimated === true,
       errored: raw.errored === true,
+      // Redact the first error reason: this projection reads the attempt.yaml
+      // artifact directly, so it bypasses any serve-time redaction — a raw
+      // harness error string can carry a token. The protocol rule is to expose
+      // the first REDACTED error reason, never the raw one.
       errorReason:
-        Array.isArray(raw.errors) && typeof raw.errors[0] === "string" ? raw.errors[0] : null,
+        Array.isArray(raw.errors) && typeof raw.errors[0] === "string"
+          ? redactSecrets(raw.errors[0])
+          : null,
       gatesPassed: gates.filter((g) => g.status === "passed").length,
       gatesTotal: gates.length,
       blockers,

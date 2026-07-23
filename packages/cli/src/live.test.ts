@@ -93,6 +93,45 @@ describe("claudexor follow", () => {
     ).toContain("browser=unavailable:manifest_unsupported");
   });
 
+  it("renders run.continuation, delegation.belt.unavailable, and route.pool.degraded", () => {
+    expect(
+      formatRunEventLine({
+        type: "run.continuation",
+        payload: {
+          from_attempt: "a01",
+          cause: "context_capacity_exhausted",
+          continuation_count: 1,
+          packet_turns: 3,
+        },
+      }),
+    ).toBe("[a01] continuing in a fresh session (context_capacity_exhausted, continuation 1)");
+
+    expect(
+      formatRunEventLine({
+        type: "delegation.belt.unavailable",
+        payload: {
+          attempt_id: "a02",
+          harness_id: "claude",
+          server_name: "belt-mcp",
+          reason: "mcp_server_failed_to_start",
+        },
+      }),
+    ).toBe("[a02/claude] delegation belt unavailable (belt-mcp: mcp_server_failed_to_start)");
+
+    expect(
+      formatRunEventLine({
+        type: "route.pool.degraded",
+        payload: {
+          requested_harnesses: ["claude", "codex", "cursor"],
+          effective_harnesses: ["claude", "codex"],
+          requested_n: 3,
+          effective_n: 2,
+          dropped_lanes: [{ harness_id: "cursor", stage: "readiness", detail: "logged out" }],
+        },
+      }),
+    ).toBe("route pool degraded: 2/3 lanes (dropped cursor)");
+  });
+
   it("resumes after a mid-stream drop via Last-Event-ID and exits 0 on the terminal", async () => {
     let connections = 0;
     const { server, port } = await sseServer((lastEventId, res) => {

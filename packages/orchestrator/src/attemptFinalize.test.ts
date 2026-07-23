@@ -196,6 +196,36 @@ describe("unwrapWorkReportEnvelope", () => {
     expect(r.workReport).toBeNull();
   });
 
+  it("redacts secret-like tokens in required_inputs locator+description (one owner)", () => {
+    // Assemble the fake token at runtime so this test file never carries a
+    // contiguous secret-like token at rest (runSupport.test.ts pattern).
+    const fakeToken = ["sk-ant", "1234567890abcdefghij"].join("-");
+    const text = JSON.stringify({
+      work_report: {
+        state: "needs_input",
+        required_inputs: [
+          {
+            kind: "credential",
+            locator: `env:API_KEY=${fakeToken}`,
+            description: `paste ${fakeToken} to proceed`,
+          },
+        ],
+      },
+      output: "partial",
+    });
+    const r = unwrapWorkReportEnvelope(text, ACTIVE);
+    expect(r.contractViolation).toBeNull();
+    const ri = r.workReport?.required_inputs[0];
+    // The raw token never survives into the validated work_report (which flows
+    // to telemetry yaml, decision facts, and the CLI needsInputLabel).
+    expect(ri?.locator).not.toContain(fakeToken);
+    expect(ri?.description).not.toContain(fakeToken);
+    expect(ri?.locator).toContain("[redacted]");
+    expect(ri?.description).toContain("[redacted]");
+    // Non-secret text is preserved.
+    expect(ri?.description).toContain("to proceed");
+  });
+
   it("flags a missing/malformed work_report as a contract violation", () => {
     const text = JSON.stringify({ output: "x", work_report: { state: "bogus" } });
     const r = unwrapWorkReportEnvelope(text, ACTIVE);

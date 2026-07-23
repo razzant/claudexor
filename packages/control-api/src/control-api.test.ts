@@ -976,6 +976,40 @@ describe("DaemonControlApiServer", () => {
     ).toEqual({ kind: "no_project" });
   });
 
+  // QA-038 store-error edge: a run bound to a thread whose workspace lookup
+  // FAILS must NOT fail open back to the live project — that re-attributes the
+  // live project's files to an isolated run. It answers typed authority-
+  // unavailable (503) instead.
+  it("resolveProducedRoot fails CLOSED when the thread workspace lookup throws", async () => {
+    const liveRoot = "/Users/x/proj";
+    const rec = {
+      id: "j",
+      state: "succeeded",
+      params: { scope: { kind: "project", root: liveRoot }, threadId: "th-iso" },
+    };
+    expect(
+      await resolveProducedRoot(rec, async () => {
+        throw new Error("thread store unavailable");
+      }),
+    ).toEqual({
+      kind: "worktree_unavailable",
+      threadId: "th-iso",
+      reason: "authority_unavailable",
+    });
+    // A non-thread run with a throwing resolver is unaffected (no threadId ⇒ the
+    // resolver is never consulted): the live root is still correct.
+    const oneShot = {
+      id: "j2",
+      state: "succeeded",
+      params: { scope: { kind: "project", root: liveRoot } },
+    };
+    expect(
+      await resolveProducedRoot(oneShot, async () => {
+        throw new Error("should not be called");
+      }),
+    ).toEqual({ kind: "root", root: liveRoot });
+  });
+
   it("GET /runs/:id/produced for an isolated run serves the worktree and hides live-project files", async () => {
     const { daemon, record } = fakeDaemon();
     const liveRoot = reapMk(join(tmpdir(), "claudexor-iso-live-"));

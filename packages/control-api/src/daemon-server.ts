@@ -1857,21 +1857,19 @@ export class DaemonControlApiServer {
    * project. Absent service or an unknown thread ⇒ null (non-thread fallback). */
   private async resolveThreadWorkspace(threadId: string): Promise<ResolvedThreadWorkspace | null> {
     const svc = this.opts.services?.threadDetail;
+    // No thread service / no workspace record ⇒ null (in-place / one-shot: live
+    // root is correct). A THROWN lookup is NOT swallowed to null: for a run bound
+    // to a thread that fails OPEN to the live project (QA-038), so it propagates
+    // and `resolveProducedRoot` fails CLOSED with a typed authority-unavailable.
     if (!svc) return null;
-    try {
-      const { thread } = await svc(threadId);
-      const ws = (thread as { workspace?: { mode?: unknown; worktree_path?: unknown } })?.workspace;
-      if (!ws) return null;
-      return {
-        mode: ws.mode === "isolated" ? "isolated" : "in_place",
-        worktreePath:
-          typeof ws.worktree_path === "string" && ws.worktree_path.trim() ? ws.worktree_path : null,
-      };
-    } catch {
-      // A missing thread (404) or unavailable store must not 500 the artifact
-      // route; a non-thread fallback keeps in-place/one-shot runs unaffected.
-      return null;
-    }
+    const { thread } = await svc(threadId);
+    const ws = (thread as { workspace?: { mode?: unknown; worktree_path?: unknown } })?.workspace;
+    if (!ws) return null;
+    return {
+      mode: ws.mode === "isolated" ? "isolated" : "in_place",
+      worktreePath:
+        typeof ws.worktree_path === "string" && ws.worktree_path.trim() ? ws.worktree_path : null,
+    };
   }
 
   private operatorDecisionFor(rec: DaemonRunRecord): ControlOperatorDecisionRecord | null {

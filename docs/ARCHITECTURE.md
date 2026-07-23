@@ -36,7 +36,8 @@ engine strategies are flags on a mode, never modes:
 - `ask` - one selected read-only `explain` route; writes `final/answer.md`.
   `--deep-scan` widens it into the bounded multi-scout research sweep that used
   to be `audit --swarm` / `explore` (`intent: audit`), writing
-  `final/explore.md`, `final/explore-findings.yaml`, and `final/omissions.md`.
+  `final/report.md`, `final/explore-findings.yaml`, and `final/omissions.md`
+  (see §6 for the synthesis reducer that produces `final/report.md`).
 - `plan` - read-only multi-harness planning; writes `final/plan.md`.
 - `agent` - default `claudexor agent`; one primary-biased envelope route. Flags
   select the strategy on the SAME mode: `--n N` (best-of-N race with isolated
@@ -1515,7 +1516,7 @@ final/work_product.yaml
 final/summary.md
 final/failure.yaml?
 final/answer.md?
-final/explore.md?
+final/explore.md?            (legacy deep-scan output; current runs write final/report.md)
 final/explore-findings.yaml?
 final/omissions.md?
 final/report.md?

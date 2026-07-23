@@ -180,7 +180,7 @@ export function explainRanking(
     eligible: eligibleIds.has(c.harnessId),
   }));
   const dropped = candidates.filter((c) => !eligibleIds.has(c.harnessId)).map((c) => c.harnessId);
-  const reason = rankingReason(ctx, rankedCandidates);
+  const reason = rankingReason(ctx, rankedCandidates, candidates);
   return { goal: ctx.goal, paid_fallback: ctx.paidFallback, order, dropped, reason, entries };
 }
 
@@ -192,6 +192,15 @@ function tiersDistinguish(ranked: RouterCandidate[], ctx: RouteContext): boolean
   return indices.some((value) => value !== indices[0]);
 }
 
+/** Do the ranked candidates carry two distinct incremental costs (with the SAME
+ * missing-cost fallback the economy sort uses)? Only then did the cost
+ * comparator — not the paid/free split above it or the tier tie-break below —
+ * actually decide the order. */
+function costsDistinguish(ranked: RouterCandidate[]): boolean {
+  const costs = ranked.map((c) => c.incrementalCostUsd ?? Number.POSITIVE_INFINITY);
+  return costs.some((value) => value !== costs[0]);
+}
+
 /**
  * The DECISIVE comparator axis, mirrored EXACTLY from rankHarnesses so the
  * recorded rationale can never claim a factor the sort did not use (round-2 #1):
@@ -200,7 +209,11 @@ function tiersDistinguish(ranked: RouterCandidate[], ctx: RouteContext): boolean
  * tier comparator, so the reason is `quality_tier` when tiers separated the
  * pool and `declared_order` when nothing distinguished it.
  */
-function rankingReason(ctx: RouteContext, ranked: RouterCandidate[]): RouteRankingReason {
+function rankingReason(
+  ctx: RouteContext,
+  ranked: RouterCandidate[],
+  candidates: RouterCandidate[],
+): RouteRankingReason {
   if (ctx.goal === "quality") return "quality_tier";
   if (ctx.goal === "auto") {
     // The auto branch sorts by binding pace slack whenever any candidate has a
@@ -214,15 +227,26 @@ function rankingReason(ctx: RouteContext, ranked: RouterCandidate[]): RouteRanki
     if (tiersDistinguish(ranked, ctx)) return "quality_tier";
     return "declared_order";
   }
-  // economy
-  if (
-    ranked.some((c) => {
-      const billing = effectiveBilling(c);
-      return billing === "subscription_entitlement" || billing === "proven_zero";
-    })
-  )
-    return "subscription_entitlement_first";
-  if (ranked.some((c) => c.incrementalCostUsd != null)) return "lowest_incremental_cash";
-  if (ranked.length > 0) return "all_incremental_cash_unknown";
+  // economy: mirror the economy sort tuple EXACTLY — (isIncrementalPaid,
+  // incrementalCostUsd, tierIndex) — and report the FIRST axis that actually
+  // SEPARATED the pool. Reporting entitlement whenever ANY route is entitled was
+  // wrong when they are ALL entitled and cost/tier did the deciding (the same
+  // correction made for `auto` in 1d6a2a50).
+  const someEntitled = ranked.some((c) => !isIncrementalPaid(c));
+  // Entitlement decided when the pool actually WEIGHED an entitled route against
+  // a paid one — whether the paid route was ranked BELOW (sort axis 1) or DROPPED
+  // by paid_fallback (both are the entitled-preferred-over-paid outcome). When
+  // every route CONSIDERED is entitled, entitlement did not decide — cost/tier
+  // did (the round-3 correction; matches the pool-wide `auto` mirror in
+  // 1d6a2a50). The full candidate set (not just the eligible pool) is consulted
+  // so a paid route dropped by paid_fallback:never still attributes the outcome.
+  const anyPaidConsidered = candidates.some((c) => isIncrementalPaid(c));
+  if (someEntitled && anyPaidConsidered) return "subscription_entitlement_first";
+  if (costsDistinguish(ranked)) return "lowest_incremental_cash";
+  if (tiersDistinguish(ranked, ctx)) return "quality_tier";
+  // Nothing separated the pool: distinguish "we could not compare cash at all"
+  // from a genuine declared-order tie.
+  if (ranked.length > 0 && ranked.some((c) => c.incrementalCostUsd == null))
+    return "all_incremental_cash_unknown";
   return "declared_order";
 }

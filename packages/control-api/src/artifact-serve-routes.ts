@@ -118,7 +118,14 @@ export async function handleArtifactServeRoute(
     if (!rec?.runDir) return (ctx.json(res, 404, { error: "no such run" }), true);
     const resolved = await resolveProducedRoot(rec, ctx.resolveThreadWorkspace);
     if (resolved.kind === "worktree_unavailable")
-      return (ctx.json(res, 410, isolatedWorktreeUnavailableBody(resolved)), true);
+      return (
+        ctx.json(
+          res,
+          worktreeUnavailableStatus(resolved.reason),
+          isolatedWorktreeUnavailableBody(resolved),
+        ),
+        true
+      );
     const artifacts =
       resolved.kind === "root" ? listArtifacts(join(resolved.root, "artifacts")) : [];
     ctx.json(
@@ -135,7 +142,14 @@ export async function handleArtifactServeRoute(
     if (!rec?.runDir) return (ctx.json(res, 404, { error: "no such run" }), true);
     const resolved = await resolveProducedRoot(rec, ctx.resolveThreadWorkspace);
     if (resolved.kind === "worktree_unavailable")
-      return (ctx.json(res, 410, isolatedWorktreeUnavailableBody(resolved)), true);
+      return (
+        ctx.json(
+          res,
+          worktreeUnavailableStatus(resolved.reason),
+          isolatedWorktreeUnavailableBody(resolved),
+        ),
+        true
+      );
     if (resolved.kind !== "root")
       return (ctx.json(res, 404, { error: "no project root for run" }), true);
     const target = safeArtifactPath(
@@ -277,7 +291,8 @@ export type ProducedRootResolution =
   | { kind: "no_project" }
   | { kind: "worktree_unavailable"; threadId: string; reason: WorktreeUnavailableReason };
 
-type WorktreeUnavailableReason = "worktree_not_retained" | "worktree_missing";
+type WorktreeUnavailableReason =
+  "worktree_not_retained" | "worktree_missing" | "authority_unavailable";
 
 export async function resolveProducedRoot(
   rec: DaemonRunRecord,
@@ -287,7 +302,16 @@ export async function resolveProducedRoot(
   if (!projectRoot) return { kind: "no_project" };
   const threadId = producedThreadId(rec);
   if (threadId && resolveThreadWorkspace) {
-    const workspace = await resolveThreadWorkspace(threadId);
+    let workspace: ResolvedThreadWorkspace | null;
+    try {
+      workspace = await resolveThreadWorkspace(threadId);
+    } catch {
+      // The thread store could not answer for a run BOUND to a thread. We cannot
+      // prove this run executed in the live project, so serving the live root
+      // would re-open the QA-038 fail-open leak. Answer typed authority-
+      // unavailable (a transient 503), never the live project root.
+      return { kind: "worktree_unavailable", threadId, reason: "authority_unavailable" };
+    }
     if (workspace?.mode === "isolated") {
       const worktree = workspace.worktreePath;
       // Purge nulls worktree_path (and removes the tree); a never-written
@@ -303,13 +327,22 @@ export async function resolveProducedRoot(
   return { kind: "root", root: projectRoot };
 }
 
-/** The honest answer when an isolated run's worktree is gone: the run existed
- *  and ran, but its execution tree is no longer retained — a typed 410 naming
- *  the reason, never a fresh live-project snapshot under this run id (QA-038). */
+/** The honest answer when an isolated run's produced tree cannot be served: the
+ *  run existed and ran, but its execution tree is gone (410) or the thread
+ *  authority that would locate it could not answer (503) — never a fresh
+ *  live-project snapshot under this run id (QA-038). */
 function isolatedWorktreeUnavailableBody(resolved: {
   threadId: string;
   reason: WorktreeUnavailableReason;
 }): { error: string; code: string; reason: string; thread_id: string } {
+  if (resolved.reason === "authority_unavailable") {
+    return {
+      error: `thread ${resolved.threadId} workspace could not be resolved to serve produced outputs (thread authority unavailable)`,
+      code: "thread_authority_unavailable",
+      reason: resolved.reason,
+      thread_id: resolved.threadId,
+    };
+  }
   const detail =
     resolved.reason === "worktree_not_retained"
       ? "its isolated worktree was purged or never materialized"
@@ -320,6 +353,12 @@ function isolatedWorktreeUnavailableBody(resolved: {
     reason: resolved.reason,
     thread_id: resolved.threadId,
   };
+}
+
+/** A gone worktree is permanent (410); an unavailable thread authority is a
+ *  transient store failure (503). Both fail CLOSED — never the live root. */
+function worktreeUnavailableStatus(reason: WorktreeUnavailableReason): 410 | 503 {
+  return reason === "authority_unavailable" ? 503 : 410;
 }
 
 function contentType(path: string): string {

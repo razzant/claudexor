@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -141,7 +142,9 @@ describe("WorkspaceManager", () => {
 
     // A fake, spawnable, non-Homebrew Node standing in for the daemon's own
     // notarized runtime; its dir must win over an ad-hoc Homebrew Node.
-    const runnerDir = mkdtempSync(join(tmpdir(), "lane-runner-"));
+    // Canonicalize: the prepend now anchors the REAL dir (realpath), and on
+    // macOS tmpdir is /var -> /private/var.
+    const runnerDir = realpathSync(mkdtempSync(join(tmpdir(), "lane-runner-")));
     const fakeNode = join(runnerDir, "node");
     writeFileSync(fakeNode, "#!/bin/sh\nexit 0\n");
     chmodSync(fakeNode, 0o755);
