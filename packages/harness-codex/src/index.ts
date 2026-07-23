@@ -412,6 +412,11 @@ export function createCodexAdapter(deps: Partial<CodexRuntimeDeps> = {}): Harnes
           browser_tool: true,
           // LIVE-VERIFIED (codex 0.137): `codex exec --output-schema <FILE>`.
           json_schema_output: true,
+          // D-16: `--output-schema` constrains the FINAL MESSAGE, so a no-caller
+          // WorkReport envelope must wrap the markdown deliverable as
+          // `output: string` (final_message).
+          work_report_transport: "constrained",
+          structured_output_channel: "final_message",
           web_policy: "native",
           // codex model_reasoning_effort accepts low|medium|high|xhigh (max clamps
           // to xhigh). Single source for the manifest AND the run-time normalizer.

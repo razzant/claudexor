@@ -32,9 +32,36 @@ export function isTerminalLifecycle(state: string): boolean {
 
 /** Process exit policy: the LIFECYCLE is the exit code. A finished run with
  * open review findings exits 0 — "Done · needs review" is done; whether the
- * result may be APPLIED is applyEligibility's answer, never the exit code. */
+ * result may be APPLIED is applyEligibility's answer, never the exit code.
+ *
+ * This is the CONTRACT for callers that only hold a lifecycle string (streamed
+ * status polls). It is deliberately unchanged: the D-16 work_state veto is a
+ * separate, additive projection (`outcomeExitCode`) that consults the full
+ * outcome facts, so a needs_input/incomplete run exits non-zero WITHOUT this
+ * function learning about work_state (INV-116 — lifecycle stays succeeded). */
 export function processExitCode(lifecycle: string): number {
   return lifecycle === "succeeded" ? 0 : 1;
+}
+
+/** D-16: true when a run's work_state VETOES a clean exit — the model attested
+ * it needs input or its work is incomplete. Orthogonal to lifecycle (INV-116):
+ * the process succeeded, but the WORK did not, so applyability and the CLI exit
+ * must reflect that. `unverified`/`completed`/absent never veto. */
+export function workStateVetoes(facts: RunOutcomeFacts | null | undefined): boolean {
+  const state = facts?.work_state?.state;
+  return state === "needs_input" || state === "incomplete";
+}
+
+/**
+ * D-16 outcome-aware CLI exit projection (BESIDE processExitCode, not a change
+ * to it). The exit follows the OUTCOME, not the bare lifecycle: a succeeded
+ * lifecycle whose work_state vetoes (needs_input/incomplete) exits non-zero,
+ * so a "clean process, unfinished work" run cannot read as success at the shell.
+ * Every other case defers to processExitCode(lifecycle). */
+export function outcomeExitCode(facts: RunOutcomeFacts | null | undefined): number {
+  if (!facts) return 1; // not terminal / unknown — never a clean 0
+  if (facts.lifecycle === "succeeded" && workStateVetoes(facts)) return 1;
+  return processExitCode(facts.lifecycle);
 }
 
 /** The D8 user-facing label for a terminal run (English-only, INV-141). */
@@ -51,11 +78,26 @@ export function runOutcomeLabel(facts: RunOutcomeFacts): string {
     default:
       return "Working";
   }
+  // D-16 work_state veto (INV-116): the process succeeded but the model attested
+  // the WORK is unfinished — surfaced ABOVE review/checks so a needs_input run
+  // never reads as "Done · not verified". Locators (when named) ride the label.
+  if (facts.work_state?.state === "needs_input") return needsInputLabel(facts);
+  if (facts.work_state?.state === "incomplete") return "Incomplete";
   if (facts.review === "blocked" || facts.checks === "failed") return "Needs review";
   if (facts.review === "not_run" || facts.checks === "not_configured") {
     return "Done · not verified";
   }
   return "Done";
+}
+
+/** "Needs input" with up to two named locators appended for honest disclosure
+ * (INV-141 English-only). Unnameable inputs collapse to the bare label. */
+function needsInputLabel(facts: RunOutcomeFacts): string {
+  const locators = (facts.work_state?.required_inputs ?? [])
+    .map((r) => r.locator)
+    .filter((l): l is string => typeof l === "string" && l.length > 0)
+    .slice(0, 2);
+  return locators.length > 0 ? `Needs input: ${locators.join(", ")}` : "Needs input";
 }
 
 /**
@@ -88,6 +130,15 @@ export function outcomeBanner(
     case "not_applied":
       break;
   }
+  // D-16 work_state veto wins the banner over review/checks/apply quality: an
+  // unfinished-work run is never presented as an applyable candidate.
+  const vetoLabel =
+    facts.work_state?.state === "needs_input"
+      ? needsInputLabel(facts)
+      : facts.work_state?.state === "incomplete"
+        ? "Incomplete"
+        : null;
+  if (vetoLabel) return delivery.hasApplyableChange ? `${vetoLabel} — NOT APPLIED` : vetoLabel;
   const needsReview = facts.review === "blocked" || facts.checks === "failed";
   const unverified = facts.review === "not_run" || facts.checks === "not_configured";
   // Nothing to apply (answer / plan / report / no changes): the quality alone.
@@ -131,7 +182,7 @@ export function continuityLabel(disclosure: {
 export function needsDecision(facts: RunOutcomeFacts, hasValidOperatorDecision: boolean): boolean {
   return (
     facts.lifecycle === "succeeded" &&
-    (facts.review === "blocked" || facts.checks === "failed") &&
+    (facts.review === "blocked" || facts.checks === "failed" || workStateVetoes(facts)) &&
     !hasValidOperatorDecision
   );
 }
@@ -158,6 +209,7 @@ export function makeOutcomeFacts(
     checks: partial.checks ?? "not_configured",
     review: partial.review ?? "not_run",
     reason: partial.reason ?? null,
+    ...(partial.work_state ? { work_state: partial.work_state } : {}),
   };
 }
 

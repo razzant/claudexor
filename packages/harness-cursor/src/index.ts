@@ -482,6 +482,11 @@ export function createCursorAdapter(deps: Partial<CursorRuntimeDeps> = {}): Harn
           // honest false until that path exists + is verified.
           browser_tool: false,
           web_policy: "uncontrolled",
+          // D-16: cursor has no native json_schema_output; the WorkReport rides
+          // an instructed fenced envelope validated off the whole final answer
+          // (the existing last-fenced-JSON parse path).
+          work_report_transport: "validated",
+          structured_output_channel: "final_message",
           // cursor-agent exposes no reasoning-effort flag -> effort is not tunable.
           effort_levels: [],
         },

@@ -201,6 +201,9 @@ export function createOpenCodeAdapter(): HarnessAdapter {
           // honest false until that path exists + is verified.
           browser_tool: false,
           web_policy: "uncontrolled",
+          // D-16: no schema-constrained transport -> WorkReport unsupported
+          // (work_state stays unverified, a disclosed absence, never a failure).
+          work_report_transport: "unsupported",
           // opencode exposes no reasoning-effort flag -> effort is not tunable.
           effort_levels: [],
         },

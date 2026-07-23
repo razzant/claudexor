@@ -499,6 +499,82 @@
                     ],
                     "description": "Outcome of one attempt: success, success_with_warnings, blocked, or failed.",
                     "default": "success"
+                  },
+                  "work_state": {
+                    "type": "object",
+                    "properties": {
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "completed",
+                          "needs_input",
+                          "incomplete",
+                          "unverified"
+                        ],
+                        "description": "Folded work state: the WorkReport state, or unverified when no report was obtainable (transport unsupported / lane gated)."
+                      },
+                      "source": {
+                        "type": "string",
+                        "enum": [
+                          "constrained",
+                          "validated",
+                          "absent"
+                        ],
+                        "description": "Provenance of a WorkReport: constrained (native schema transport), validated (whole-answer JSON), or absent (no transport could carry one — a disclosed absence, not a failure)."
+                      },
+                      "required_inputs": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "file",
+                                "context",
+                                "credential",
+                                "permission",
+                                "decision",
+                                "external_dependency"
+                              ],
+                              "description": "Category of a missing input a needs_input/incomplete report lists: a file, additional context, a credential, a permission, a human decision, or an external dependency."
+                            },
+                            "locator": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 512
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null,
+                              "description": "Concrete pointer to the missing thing (path/url/name); null when unnameable."
+                            },
+                            "description": {
+                              "type": "string",
+                              "maxLength": 1024,
+                              "description": "Human-readable description of what is needed and why."
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "description"
+                          ],
+                          "additionalProperties": false,
+                          "description": "One blocking input a needs_input/incomplete WorkReport lists."
+                        },
+                        "maxItems": 16,
+                        "description": "Carried through from a needs_input/incomplete WorkReport for honest disclosure."
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "source"
+                    ],
+                    "additionalProperties": false,
+                    "description": "D-16 model-attested work outcome for the attempt (from its WorkReport), orthogonal to status; absent when the route has no work_report transport."
                   }
                 },
                 "additionalProperties": false,

@@ -326,6 +326,25 @@
               "default": false,
               "description": "The harness can constrain its final message to a caller-supplied JSON Schema (native structured-output flag)."
             },
+            "work_report_transport": {
+              "type": "string",
+              "enum": [
+                "constrained",
+                "validated",
+                "unsupported"
+              ],
+              "default": "unsupported",
+              "description": "How the harness carries the D-16 WorkReport envelope: constrained (native schema transport), validated (whole-answer JSON), or unsupported (work_state stays unverified)."
+            },
+            "structured_output_channel": {
+              "type": "string",
+              "enum": [
+                "side_tool",
+                "final_message"
+              ],
+              "default": "final_message",
+              "description": "Where a schema-constrained answer surfaces: side_tool (rides a tool; final message stays markdown) or final_message (constrains the final message itself)."
+            },
             "effort_levels": {
               "type": "array",
               "items": {

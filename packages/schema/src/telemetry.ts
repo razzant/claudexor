@@ -14,6 +14,7 @@ import { AuthMode } from "./budget.js";
 import { AuthPreference } from "./primitives.js";
 import { AuthRouteReason, AuthSourceKind } from "./auth.js";
 import { RequestRequirementResolution } from "./request-requirements.js";
+import { WorkState } from "./work-report.js";
 
 /**
  * Run telemetry artifact (`final/telemetry.yaml`).
@@ -151,6 +152,14 @@ export const AttemptOutcome = z
       .default(0)
       .describe("Count of tool warnings in the attempt."),
     status: AttemptOutcomeStatus.default("success"),
+    /**
+     * D-16 work_state axis for this attempt (INV-116): the model-attested work
+     * outcome from its WorkReport, orthogonal to `status`. Absent when the
+     * route carries no work_report transport (pre-D16 shape preserved).
+     */
+    work_state: WorkState.optional().describe(
+      "D-16 model-attested work outcome for the attempt (from its WorkReport), orthogonal to status; absent when the route has no work_report transport.",
+    ),
   })
   .describe(
     "Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.",

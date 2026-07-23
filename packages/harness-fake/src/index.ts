@@ -20,7 +20,12 @@ export type FakeKind =
   | "fake-hang"
   | "fake-rate-limit"
   | "fake-same-model-fallback"
-  | "fake-reviewer-without-evidence";
+  | "fake-reviewer-without-evidence"
+  // D-16 WorkReport / context-signal emit knobs (drive the finalizer canaries).
+  | "fake-work-complete"
+  | "fake-needs-input"
+  | "fake-work-malformed"
+  | "fake-context-exhausted";
 
 export const FAKE_KINDS: FakeKind[] = [
   "fake-success",
@@ -32,7 +37,20 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-rate-limit",
   "fake-same-model-fallback",
   "fake-reviewer-without-evidence",
+  "fake-work-complete",
+  "fake-needs-input",
+  "fake-work-malformed",
+  "fake-context-exhausted",
 ];
+
+/** The D-16 kinds that declare a schema-constrained WorkReport transport and
+ * emit a (possibly malformed) envelope final message. */
+const WORK_REPORT_KINDS = new Set<FakeKind>([
+  "fake-work-complete",
+  "fake-needs-input",
+  "fake-work-malformed",
+  "fake-context-exhausted",
+]);
 
 /** Producing intents write a real file so the run->apply->deliver chain has a diff. */
 const PRODUCING_INTENTS = new Set<Intent>(["implement", "create_from_scratch", "repair"]);
@@ -90,7 +108,13 @@ function buildManifest(id: string, provider: ProviderFamily): HarnessManifest {
       max_turns: false,
       tool_lists: false,
       interactive: false,
-      json_schema_output: false,
+      // D-16: the work-report emit knobs advertise a constrained transport (which
+      // rides the native json_schema flag) so the orchestrator compiles the
+      // envelope and the finalizer canaries can drive completed / needs_input /
+      // malformed / context-exhaustion paths. Other fakes stay schema-free.
+      json_schema_output: WORK_REPORT_KINDS.has(id as FakeKind),
+      work_report_transport: WORK_REPORT_KINDS.has(id as FakeKind) ? "constrained" : "unsupported",
+      structured_output_channel: "final_message",
       // Partial ladder: a deliberate clamp fixture for the effort normalizer
       // (requests for xhigh/max clamp down to high).
       effort_levels: ["low", "medium", "high"],
@@ -201,6 +225,70 @@ async function* runFake(
       yield ev(s, "completed", { observed_model: observedModel });
       return;
     }
+    // D-16 emit knobs. All three "work" kinds write a real file for producing
+    // intents (so agent runs have a diff to veto/apply) and finalize a
+    // structured-output ENVELOPE `{work_report, output}` as the final message —
+    // exactly what a constrained final_message route surfaces.
+    case "fake-work-complete":
+    case "fake-needs-input":
+    case "fake-work-malformed": {
+      maybeWriteFakeChange(spec);
+      const deliverable = "Implemented by the fake harness.";
+      let finalText: string;
+      if (kind === "fake-work-malformed") {
+        // A constrained route promised a WorkReport but the model returned prose
+        // instead of the envelope JSON -> the finalizer raises work_report_contract.
+        finalText = "not an envelope, just prose";
+      } else {
+        const workReport =
+          kind === "fake-needs-input"
+            ? {
+                state: "needs_input",
+                required_inputs: [
+                  {
+                    kind: "decision",
+                    locator: null,
+                    description: "Which database backend should the migration target?",
+                  },
+                ],
+              }
+            : { state: "completed", required_inputs: [] };
+        finalText = JSON.stringify({ work_report: workReport, output: deliverable });
+      }
+      yield ev(s, "message", { text: finalText, final: true, payload: { final_source: "fake" } });
+      yield ev(s, "usage", { usage: { input_tokens: 100, output_tokens: 50, cost_usd: 0.01 } });
+      yield ev(s, "completed", { observed_model: observedModel });
+      return;
+    }
+    case "fake-context-exhausted": {
+      // Terminal capacity exhaustion with NO completed WorkReport: the finalizer
+      // maps this to interrupted / context_capacity_exhausted. The eligible
+      // `repeated_refill` cause is what a future one-shot continuation keys on.
+      yield ev(s, "message", { text: "Partial progress before running out of room." });
+      yield ev(s, "context", {
+        context: {
+          kind: "capacity_exhausted",
+          cause: "repeated_refill",
+          native_code: "prompt_too_long",
+          trigger: "auto",
+          pre_tokens: 190000,
+        },
+      });
+      yield ev(s, "completed", { observed_model: observedModel });
+      return;
+    }
+  }
+}
+
+/** Write the deterministic fixture change for producing intents on a writable,
+ * non-readonly worktree (mirrors fake-implement). Best-effort: a non-writable
+ * cwd simply yields an empty diff (no_op). */
+function maybeWriteFakeChange(spec: HarnessRunSpec): void {
+  if (!PRODUCING_INTENTS.has(spec.intent) || spec.access === "readonly") return;
+  try {
+    writeFileSync(join(spec.cwd, "FAKE_CHANGE.txt"), "fake-implement deterministic change\n");
+  } catch {
+    /* non-writable cwd -> empty diff -> no_op */
   }
 }
 

@@ -151,6 +151,40 @@ export const HarnessCapabilities = z
         "The harness can constrain its final message to a caller-supplied JSON Schema (native structured-output flag).",
       ),
     /**
+     * How the harness can carry the D-16 WorkReport envelope (a compiled
+     * wrapper over any caller output schema). Consumer: the orchestrator spec
+     * build compiles the envelope only for `constrained`/`validated` routes,
+     * and the attempt finalizer demands a report only from them.
+     * - `constrained`: a native schema-constrained transport carries it
+     *   (codex --output-schema, claude StructuredOutput tool).
+     * - `validated`: no native flag; the whole final answer is validated JSON
+     *   (cursor's instructed fenced envelope on the existing parse path).
+     * - `unsupported`: the route cannot carry a WorkReport; the work_state axis
+     *   stays `unverified` (a disclosed absence, never a failure).
+     */
+    work_report_transport: z
+      .enum(["constrained", "validated", "unsupported"])
+      .default("unsupported")
+      .describe(
+        "How the harness carries the D-16 WorkReport envelope: constrained (native schema transport), validated (whole-answer JSON), or unsupported (work_state stays unverified).",
+      ),
+    /**
+     * Where a schema-constrained structured answer surfaces relative to the
+     * final message. Consumer: the orchestrator's no-caller-schema envelope
+     * shape (D-16). `side_tool` (claude --json-schema materializes a
+     * StructuredOutput tool; the prose message stays markdown) lets a
+     * WorkReport-only envelope ride the tool while the markdown remains the
+     * deliverable. `final_message` (codex --output-schema, cursor fenced JSON)
+     * consumes the final message, so a no-caller WorkReport envelope must wrap
+     * the markdown deliverable as `output: string`.
+     */
+    structured_output_channel: z
+      .enum(["side_tool", "final_message"])
+      .default("final_message")
+      .describe(
+        "Where a schema-constrained answer surfaces: side_tool (rides a tool; final message stays markdown) or final_message (constrains the final message itself).",
+      ),
+    /**
      * Ordered (weakest→strongest) reasoning-effort levels this harness actually
      * accepts. Empty = effort is not a tunable surface. The shared effort
      * normalizer clamps any requested EffortHint onto the nearest member.
@@ -772,10 +806,11 @@ export const HarnessEvent = z
         "usage",
         "error",
         "status",
+        "context",
         "completed",
       ])
       .describe(
-        "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, transient status, and errors.",
+        "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, transient status, context-management signals, and errors.",
       ),
     session_id: Id.describe("Session the event belongs to."),
     ts: z.string().describe("Event timestamp."),
@@ -969,6 +1004,55 @@ export const HarnessEvent = z
       .optional()
       .describe(
         "Typed transient-failure signal set by the adapter from native CLI/API error shapes, consumed for bounded retry policy.",
+      ),
+    /**
+     * Typed CONTEXT-management signal (D-16), a sibling of `transient`/
+     * `rate_limit` and DELIBERATELY separate from the transient-retry taxonomy:
+     * adapters set it in their parse layer from native compaction / context-
+     * exhaustion frames (claude `compact_boundary` system frames + result
+     * `terminal_reason`, codex only when a recorded fixture proves a typed
+     * marker). Context signals NEVER enter the transient_retry loop; a terminal
+     * `capacity_exhausted` with no completed WorkReport is what the finalizer
+     * maps to `interrupted / context_capacity_exhausted`.
+     */
+    context: z
+      .object({
+        kind: z
+          .enum(["compaction_started", "compaction_completed", "capacity_exhausted"])
+          .describe(
+            "Kind of context signal: a compaction boundary starting/completing, or terminal capacity exhaustion.",
+          ),
+        cause: z
+          .enum([
+            "prompt_too_long",
+            "repeated_refill",
+            "blocking_limit",
+            "window_exceeded",
+            "unknown",
+          ])
+          .default("unknown")
+          .describe("Why the context signal fired, mapped onto a typed cause (never prose)."),
+        native_code: z
+          .string()
+          .nullable()
+          .default(null)
+          .describe("The vendor's own terminal/context code passed verbatim as evidence; null when none."),
+        trigger: z
+          .enum(["manual", "auto"])
+          .nullable()
+          .default(null)
+          .describe("Whether the compaction was manually or automatically triggered; null when unreported."),
+        pre_tokens: z
+          .number()
+          .int()
+          .nonnegative()
+          .nullable()
+          .default(null)
+          .describe("Token count before the compaction/exhaustion, when the vendor reports it; null otherwise."),
+      })
+      .optional()
+      .describe(
+        "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy.",
       ),
     error: z.string().optional().describe("Error text for error events."),
     aborted: z

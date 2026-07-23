@@ -18,9 +18,10 @@
             "usage",
             "error",
             "status",
+            "context",
             "completed"
           ],
-          "description": "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, transient status, and errors."
+          "description": "Normalized event type covering session lifecycle, output, tool use, interaction, file changes, usage, transient status, context-management signals, and errors."
         },
         "session_id": {
           "type": "string",
@@ -580,6 +581,74 @@
           },
           "additionalProperties": false,
           "description": "Typed transient-failure signal set by the adapter from native CLI/API error shapes, consumed for bounded retry policy."
+        },
+        "context": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "compaction_started",
+                "compaction_completed",
+                "capacity_exhausted"
+              ],
+              "description": "Kind of context signal: a compaction boundary starting/completing, or terminal capacity exhaustion."
+            },
+            "cause": {
+              "type": "string",
+              "enum": [
+                "prompt_too_long",
+                "repeated_refill",
+                "blocking_limit",
+                "window_exceeded",
+                "unknown"
+              ],
+              "default": "unknown",
+              "description": "Why the context signal fired, mapped onto a typed cause (never prose)."
+            },
+            "native_code": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null,
+              "description": "The vendor's own terminal/context code passed verbatim as evidence; null when none."
+            },
+            "trigger": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "manual",
+                    "auto"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Whether the compaction was manually or automatically triggered; null when unreported."
+            },
+            "pre_tokens": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Token count before the compaction/exhaustion, when the vendor reports it; null otherwise."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "description": "Typed context-management signal (compaction boundary / capacity exhaustion) set by the adapter; orthogonal to the transient-retry taxonomy."
         },
         "error": {
           "type": "string",

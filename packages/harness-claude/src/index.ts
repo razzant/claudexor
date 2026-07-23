@@ -384,6 +384,12 @@ export function createClaudeAdapter(deps: Partial<ClaudeRuntimeDeps> = {}): Harn
           browser_tool: true,
           // LIVE-VERIFIED (claude 2.1.165): `--json-schema <schema>` (inline JSON).
           json_schema_output: true,
+          // D-16: `--json-schema` materializes a StructuredOutput TOOL, so a
+          // WorkReport envelope rides the tool while the prose final stays
+          // markdown (side_tool). Interactive stream-json lanes disclose
+          // unsupported at spec build, not here.
+          work_report_transport: "constrained",
+          structured_output_channel: "side_tool",
           web_policy: "tools",
           max_turns: true,
           tool_lists: true,

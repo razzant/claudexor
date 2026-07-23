@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Id } from "./primitives.js";
+import { WorkState } from "./work-report.js";
 
 export const PairwiseComparison = z
   .object({
@@ -54,6 +55,11 @@ export const RunReason = z
     "wall_clock_exceeded",
     "user_cancelled",
     "crash_interrupted",
+    // D-16 work_state / context reasons.
+    "input_required",
+    "work_incomplete",
+    "context_capacity_exhausted",
+    "work_report_contract",
   ])
   .describe("Typed reason qualifying a non-clean terminal; null on a clean success.");
 export type RunReason = z.infer<typeof RunReason>;
@@ -76,6 +82,16 @@ export const RunOutcomeFacts = z
     reason: RunReason.nullable()
       .default(null)
       .describe("Typed reason qualifying a non-clean terminal; null on a clean success."),
+    /**
+     * D-16 work_state axis (INV-116): the model-attested work outcome,
+     * orthogonal to `lifecycle`. Absent on runs with no work_report transport
+     * (legacy/pre-D16 terminals). A `needs_input`/`incomplete` state makes an
+     * otherwise-succeeded run non-applyable and forces a non-zero CLI exit via
+     * the outcome-aware exit projection, WITHOUT flipping the lifecycle.
+     */
+    work_state: WorkState.optional().describe(
+      "D-16 model-attested work outcome, orthogonal to lifecycle; a needs_input/incomplete state vetoes applyability and exit 0. Absent on runs with no work_report transport.",
+    ),
   })
   .strict()
   .describe("Independent terminal outcome axes of a run (D8/D18).");

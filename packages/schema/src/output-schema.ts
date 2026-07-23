@@ -6,6 +6,35 @@
  * form. Shared owner for both transforms, harness-agnostic.
  */
 
+import { WORK_REPORT_TRANSPORT_SCHEMA } from "./work-report.js";
+
+/**
+ * Compile the D-16 transport ENVELOPE that wraps a caller output schema (or a
+ * bare string, or nothing) with the WorkReport half. This is the schema that
+ * rides `HarnessRunSpec.output_schema` on a work_report-capable route; the
+ * caller's ORIGINAL schema stays the conformance authority for `output` after
+ * unwrap (grounding §5 — the contract keeps both, never overwriting the
+ * caller's copy). `output` controls the no-vs-with-caller shape:
+ *  - a strictified caller schema → `{ work_report, output: <schema> }`
+ *  - "string"                    → `{ work_report, output: {type:"string"} }`
+ *    (codex/cursor final_message routes with no caller schema: the markdown
+ *    deliverable rides the string so the constrained final message can carry it)
+ *  - null                        → `{ work_report }` only
+ *    (claude side_tool route with no caller schema: the WorkReport rides its
+ *    StructuredOutput tool while the final message stays markdown = deliverable)
+ */
+export function buildWorkReportEnvelope(
+  output: Record<string, unknown> | "string" | null,
+): Record<string, unknown> {
+  const properties: Record<string, unknown> = { work_report: WORK_REPORT_TRANSPORT_SCHEMA };
+  const required = ["work_report"];
+  if (output !== null) {
+    properties["output"] = output === "string" ? { type: "string" } : output;
+    required.push("output");
+  }
+  return { type: "object", properties, required, additionalProperties: false };
+}
+
 /** A caller-supplied output schema the structured-output routes cannot carry. */
 /** Every fail-closed shape refusal is caller-actionable: it must surface as
  *  the same typed `invalid_output_schema` contract the compile-failure path
