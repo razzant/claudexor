@@ -410,10 +410,27 @@ describe("setup-login executable evidence — hard-link tolerance (W2)", () => {
     const onPath = join(dir, "claude");
     linkSync(primary, onPath);
 
+    // Fully hermetic env: HOME points at the empty temp root (so the
+    // home-derived preferred dirs resolve to nothing) and `execPath` at a
+    // non-existent path (so `managedRunnerNodeDir` anchors NO ambient
+    // Node-runtime dir first). Without the injected execPath the resolver
+    // prepends the REAL running Node's dir — on the operator's Mac that is
+    // `~/.claudexor/node/bin`, whose own `claude` permanently shadowed this
+    // fixture and reddened the battery on this machine alone.
+    const hermeticExecPath = join(root, "no-such-node", "node");
+
     // Resolver (cheap launchable probe) accepts it...
-    const resolvedAbsolute = resolveHarnessBinary(onPath, { HOME: root, PATH: "" });
+    const resolvedAbsolute = resolveHarnessBinary(
+      onPath,
+      { HOME: root, PATH: "" },
+      hermeticExecPath,
+    );
     expect(resolvedAbsolute).toBe(onPath);
-    const resolvedByName = resolveHarnessBinary("claude", { HOME: root, PATH: dir });
+    const resolvedByName = resolveHarnessBinary(
+      "claude",
+      { HOME: root, PATH: dir },
+      hermeticExecPath,
+    );
     expect(resolvedByName).toBe(onPath);
     // ...and the evidence gate accepts the very same file (no nlink rejection).
     expect(() => captureExecutableEvidence(onPath)).not.toThrow();

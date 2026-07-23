@@ -110,17 +110,26 @@ export function harnessRuntimeEnv(
  * stale pinned shim (e.g. `~/.claudexor/node/bin/codex` shadowing a newer
  * install) is visible instead of silently answering for the wrong version.
  * Returns null when the binary is not on the harness PATH.
+ *
+ * `execPath`/`platform` are forwarded to `normalizedHarnessPath` (same defaults,
+ * so production behavior is unchanged). Forwarding them is what lets a test
+ * fully control the resolution PATH: without it the resolver always anchors the
+ * REAL `process.execPath` dir (e.g. `~/.claudexor/node/bin`) first, and any
+ * `claude`/`codex` living beside the running Node shadows an injected fixture —
+ * the machine-specific parity failure this seam closes.
  */
 export function resolveHarnessBinary(
   bin: string,
   source: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
 ): string | null {
   const names = binaryNameCandidates(bin, source);
   if (isAbsolute(bin)) {
     for (const name of names) if (isLaunchableExecutable(name)) return name;
     return null;
   }
-  for (const dir of normalizedHarnessPath(source).split(delimiter)) {
+  for (const dir of normalizedHarnessPath(source, execPath, platform).split(delimiter)) {
     if (!dir) continue;
     for (const name of names) {
       const candidate = join(dir, name);
