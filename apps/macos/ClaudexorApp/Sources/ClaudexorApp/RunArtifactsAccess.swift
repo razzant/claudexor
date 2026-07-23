@@ -27,9 +27,9 @@ extension AppModel {
     /// oversize its own reason, and anything else `.offline` — never a silent nil
     /// the row would paint as a generic "engine offline" blob.
     func artifactTextOutcome(runId: String, path: String) async -> Result<String, PayloadError> {
-        guard let client else { return .failure(.offline) }
+        guard let client else { return .failure(ArtifactFetchError.offline(path: path)) }
         do { return .success(try await client.artifactText(runId: runId, path: path)) }
-        catch { return .failure(ArtifactFetchError.payloadError(from: error)) }
+        catch { return .failure(ArtifactFetchError.payloadError(from: error, path: path)) }
     }
 
     // MARK: - Produced outputs (project artifacts/, not the run tree)
@@ -51,25 +51,40 @@ extension AppModel {
     /// like `artifactTextOutcome` so a 409 sensitive-file refusal renders as its
     /// typed reason (QA-067).
     func producedTextOutcome(runId: String, path: String) async -> Result<String, PayloadError> {
-        guard let client else { return .failure(.offline) }
+        guard let client else { return .failure(ArtifactFetchError.offline(path: path)) }
         do {
             let data = try await client.producedData(runId: runId, path: path)
-            return .success(String(decoding: data, as: UTF8.self))
-        } catch { return .failure(ArtifactFetchError.payloadError(from: error)) }
+            // STRICT decode (round-3 crit #3): `String(decoding:as:UTF8.self)` silently
+            // REPLACES malformed bytes with U+FFFD and paints corruption as if it were
+            // real text. Refuse a non-UTF-8 body with its path instead.
+            guard let text = String(data: data, encoding: .utf8) else {
+                return .failure(.notRenderable("\(path) is not valid UTF-8 text — open it from the run folder."))
+            }
+            return .success(text)
+        } catch { return .failure(ArtifactFetchError.payloadError(from: error, path: path)) }
     }
 }
 
 /// Maps a `GatewayError` from an artifact/produced fetch onto the typed
-/// `PayloadError` the gallery renders (QA-067). Pure + testable — no network.
+/// `PayloadError` the gallery renders (QA-067). Every projected failure carries
+/// the artifact PATH (round-3 #2) so the failure view names the exact file, never
+/// a bare basename or a generic "engine offline" blob. Pure + testable — no network.
 enum ArtifactFetchError {
-    static func payloadError(from error: Error) -> PayloadError {
+    /// The engine was unreachable (or the error was not a recognizable HTTP
+    /// status) for THIS file — carries the path so the failure view + Retry name
+    /// the exact artifact (round-3 #2).
+    static func offline(path: String) -> PayloadError {
+        .transport("\(path): The engine is offline or the request failed. Reopen this tab to retry.")
+    }
+
+    static func payloadError(from error: Error, path: String) -> PayloadError {
         guard let gateway = error as? GatewayError, case .http(let status, let body) = gateway else {
-            return .offline
+            return offline(path: path)
         }
         switch status {
-        case 409: return .notRenderable(sensitiveRefusalMessage(body: body))
-        case 413: return .notRenderable("Too large to preview here — open it from the run folder.")
-        default: return .offline
+        case 409: return .notRenderable("\(path): \(sensitiveRefusalMessage(body: body))")
+        case 413: return .notRenderable("\(path): Too large to preview here — open it from the run folder.")
+        default: return offline(path: path)
         }
     }
 

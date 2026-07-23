@@ -98,6 +98,22 @@ struct ExternalArtifactHandoff {
         if info.st_uid != getuid() {
             throw HandoffError.insecureRoot("handoff root \(path) is not owned by the current user")
         }
+        // MODE is part of the private-0700 contract (round-3 #7): the per-copy
+        // hardening is only as private as the SHARED root above it, yet `ownership`
+        // and `is a directory` say nothing about the group/other bits. A
+        // pre-existing user-owned 0755 root (created by some other tool, or an
+        // umask that widened our own create) would otherwise be accepted and every
+        // private artifact copy laid down under a world-readable parent. Repair it
+        // to 0700 and RE-lstat; if it is STILL group/other-accessible, fail closed.
+        if (info.st_mode & 0o077) != 0 {
+            _ = chmod(path, 0o700)
+            guard lstat(path, &info) == 0 else {
+                throw HandoffError.insecureRoot("handoff root \(path) mode is unreadable after repair")
+            }
+            if (info.st_mode & 0o077) != 0 {
+                throw HandoffError.insecureRoot("handoff root \(path) is group/other-accessible (not private 0700)")
+            }
+        }
     }
 
     /// The standard owner: `<user temp dir>/claudexor-open`.

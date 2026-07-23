@@ -47,15 +47,17 @@ import Testing
         }
     }
 
-    @Test func swiftTextSetMatchesServerSemanticTextExtensions() {
-        // The Swift set is kept in lockstep with the server's SEMANTIC_TEXT_EXTENSIONS
-        // (plus the always-text md/txt/yaml/json/log). A drift here is the QA-067
-        // parity defect — surface it as a failing table, not a silent gap.
-        let serverSemanticText: Set<String> = [
-            "csv", "xml", "svg", "markdown", "text", "json5", "toml", "ini", "cfg", "conf", "css",
-            "js", "mjs", "cjs", "ts", "tsx", "jsx", "sh", "py", "rb", "go", "rs", "java", "c", "h", "cpp", "sql",
-        ]
-        #expect(serverSemanticText.isSubset(of: ArtifactCategory.semanticTextExtensions))
+    @Test func semanticTextSetHasRepresentativeMembership() {
+        // The AUTHORITATIVE server↔Swift parity gate is scripts/artifact-text-parity-check.mjs
+        // (X102) — a THIRD hardcoded copy of the extension list here just drifted
+        // independently (round-3 #10). Keep only representative membership: a few
+        // known-in (source + config + markup) and a few known-out (truly binary).
+        for ext in ["ts", "py", "toml", "svg", "json5", "sql"] {
+            #expect(ArtifactCategory.semanticTextExtensions.contains(ext))
+        }
+        for ext in ["pdf", "png", "zip", "bin", "jpg"] {
+            #expect(!ArtifactCategory.semanticTextExtensions.contains(ext))
+        }
     }
 
     @Test func sizeTextIsHumanOrNilWhenUnknown() {

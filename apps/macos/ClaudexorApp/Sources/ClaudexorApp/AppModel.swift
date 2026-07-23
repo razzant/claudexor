@@ -362,6 +362,10 @@ final class AppModel {
                 await refreshSecrets()
                 await refreshThreads()
                 await refreshProjects()
+                // QA-065: resolve credential-profile DISPLAY NAMES on connect, not
+                // only when the accounts popover opens — otherwise the sessions
+                // footer shows raw profile ids by default until that popover loads.
+                await refreshCredentialProfiles()
                 startGlobalStream()
                 return true
             }
@@ -376,8 +380,11 @@ final class AppModel {
     /// (default limit + hard cap, run-list.ts), yet overlapping lifecycle/event
     /// triggers must still SHARE one in-flight request rather than fan out N
     /// parallel refetches. A trigger that lands while a refresh runs folds into
-    /// exactly ONE trailing pass (so the settled list still reflects it). Every
-    /// caller awaits the coalesced result.
+    /// exactly ONE trailing pass (so the settled list still reflects it). A caller
+    /// that STARTS a fresh refresh awaits its full lead(+trailing) result; a caller
+    /// that FOLDS into the in-flight lead awaits only that lead — its own trigger is
+    /// what arms the trailing pass, which the folded caller does not itself await
+    /// (the bounded design is correct per ledger X96).
     func refreshRuns() async {
         if let inFlight = runsRefreshTask {
             runsRefreshPending = true      // fold this trigger into the single trailing pass
@@ -398,43 +405,28 @@ final class AppModel {
     }
 
     private func performRunsRefresh() async {
-        guard let client else { return }
+        // Capture the connection identity BEFORE the request: a reconnect fence
+        // (enterHardOffline / connect) can nil-or-replace the client and bump the
+        // generation while listRuns() is in flight (round-3 crit #5).
+        guard let requestClient = client else { return }
+        let requestGeneration = connectionGeneration
         do {
-            let summaries = try await client.listRuns()
-            let existingById = Dictionary(uniqueKeysWithValues: liveTasks.map { ($0.id, $0) })
+            let summaries = try await requestClient.listRuns()
+            // A response that raced a reconnect must NEVER assign liveTasks from the
+            // OLD client — that clobbers the fresh (or wiped) snapshot. Re-check the
+            // generation, the exact client identity, and cancellation before any
+            // mutation (round-3 crit #5).
+            guard !Task.isCancelled, connectionGeneration == requestGeneration,
+                  client === requestClient else { return }
             // Merge instead of replace: a refresh must not wipe locally-hydrated
-            // detail (activity, diff, findings, outputs) for rows we already track.
-            liveTasks = summaries
-                .map { summary in
-                    var task = Self.liveTask(from: summary)
-                    if let existing = existingById[task.id] ?? summary.jobId.flatMap({ existingById[$0] }) {
-                        if !existing.activity.isEmpty { task.activity = existing.activity }
-                        if !existing.diff.isEmpty { task.diff = existing.diff }
-                        if !existing.findings.isEmpty { task.findings = existing.findings }
-                        task.reviewVerdict = existing.reviewVerdict
-                        if !existing.plan.isEmpty { task.plan = existing.plan }
-                        task.answerText = existing.answerText ?? task.answerText
-                        task.diagnosticText = existing.diagnosticText ?? task.diagnosticText
-                        if task.artifactPaths.isEmpty { task.artifactPaths = existing.artifactPaths }
-                        // Carry hydrated questions only while the daemon still says the
-                        // run waits on the user; otherwise an answered/timed-out
-                        // interaction would resurrect on every list refresh.
-                        if task.pendingInteractions.isEmpty, task.waitingOnUser { task.pendingInteractions = existing.pendingInteractions }
-                        task.observedModel = task.observedModel ?? existing.observedModel
-                        if task.routeProof == .unverified, existing.routeProof != .unverified { task.routeProof = existing.routeProof }
-                        task.authRoute = task.authRoute ?? existing.authRoute
-                        task.failureCategory = task.failureCategory ?? existing.failureCategory
-                        // List summaries carry no result: keep the last
-                        // hydrated apply truth as ONE unit (no flicker).
-                        if task.applyState == "not_applied",
-                           existing.applyState != "not_applied" || existing.adopted || existing.revertable {
-                            task.applyState = existing.applyState
-                            task.adopted = existing.adopted
-                            task.revertable = existing.revertable
-                        }
-                    }
-                    return task
-                }
+            // detail — including the Run-Detail-only satellites (crit #1). The merge
+            // owner lives in AppModel+RunMerge.swift.
+            let existingById = Dictionary(uniqueKeysWithValues: liveTasks.map { ($0.id, $0) })
+            liveTasks = summaries.map { summary in
+                Self.mergeRefreshedTask(
+                    summary: summary,
+                    existing: existingById[summary.runId] ?? summary.jobId.flatMap { existingById[$0] })
+            }
             // A 202-queued row was keyed by jobId; once the daemon surfaces the
             // runId the open detail route must follow instead of dangling.
             if case .task(let openId) = route, !liveTasks.contains(where: { $0.id == openId }) {
@@ -561,7 +553,7 @@ final class AppModel {
         return await body()
     }
 
-    private static func liveTask(from s: RunSummary) -> TaskRun {
+    static func liveTask(from s: RunSummary) -> TaskRun {
         let prompt = s.prompt ?? ""
         let title = prompt.isEmpty ? prettyTitle(s.runId) : String(prompt.prefix(64))
         let families = (s.harnesses ?? []).map { HarnessFamily(rawValue: $0) }

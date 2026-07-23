@@ -224,6 +224,23 @@ import Testing
         #expect(try ComposerOptionParser.parseTestCommandStrict("npm test")?.program == "npm")
     }
 
+    @Test func strictArgvRejectsATrailingDanglingBackslash() throws {
+        // Round-3 #4: the lenient tokenizer silently DROPS a terminal backslash, so
+        // `run foo\` becomes `["run", "foo"]` with the escape lost — the strict
+        // parser must reject it as a typed error, not send a mangled argv.
+        #expect(ComposerOptionParser.parseCommandArgv(#"run foo\"#) == ["run", "foo"])
+        #expect(throws: ComposerOptionParser.CommandArgvError.danglingEscape) {
+            _ = try ComposerOptionParser.parseCommandArgvStrict(#"run foo\"#)
+        }
+        #expect(throws: ComposerOptionParser.CommandArgvError.danglingEscape) {
+            _ = try ComposerOptionParser.parseTestCommandStrict(#"npm test\"#)
+        }
+        // A backslash INSIDE the input that escapes a real character is NOT dangling.
+        #expect(try ComposerOptionParser.parseCommandArgvStrict(#"a\ b c"#) == ["a b", "c"])
+        // A backslash inside single quotes is a literal, never an escape → not dangling.
+        #expect(try ComposerOptionParser.parseCommandArgvStrict(#"run 'a\'"#) == ["run", #"a\"#])
+    }
+
     @Test func testCommandParsesProgramAndArgs() throws {
         let cmd = try #require(ComposerOptionParser.parseTestCommand("npm run test:ci"))
         #expect(cmd.program == "npm")

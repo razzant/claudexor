@@ -96,6 +96,24 @@ import ClaudexorKit
         #expect((attrs[.posixPermissions] as? Int) == 0o700)
     }
 
+    @Test func stageRepairsAPreexistingWorldReadableRoot() throws {
+        let root = makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Round-3 #7: a pre-existing user-owned 0755 root (another tool, or a widened
+        // umask) passes ownership + is-a-directory but VIOLATES the private-0700
+        // contract — every private artifact copy would otherwise sit under a
+        // world-readable parent. The mode check repairs it to 0700 before staging.
+        try FileManager.default.createDirectory(
+            at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        #expect((try FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? Int) == 0o755)
+
+        let url = try ExternalArtifactHandoff(root: root).stage(data: Data("x".utf8), suggestedName: "a.txt")
+
+        // The shared root was TIGHTENED to 0700 before the copy was written under it.
+        #expect((try FileManager.default.attributesOfItem(atPath: root.path)[.posixPermissions] as? Int) == 0o700)
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test func stageRefusesASymlinkedRoot() throws {
         let base = makeRoot()
         defer { try? FileManager.default.removeItem(at: base) }
@@ -174,17 +192,32 @@ import ClaudexorKit
         #expect(msg.hasPrefix("Refused"))
     }
 
-    @Test func statusMappingIsTyped() {
-        // A 409 → typed notRenderable refusal; 413 → its own reason; else offline.
-        let refusal = ArtifactFetchError.payloadError(from: GatewayError.http(
-            status: 409, body: #"{"sensitiveClass":"dotenv"}"#))
-        if case .notRenderable(let m) = refusal { #expect(m.contains("dotenv")) }
+    @Test func statusMappingIsTypedAndCarriesThePath() {
+        // Round-3 #2: EVERY projected failure names the artifact path so the failure
+        // view + Retry never show a bare basename or a generic offline blob.
+        let path = "final/report/.env"
+        // A 409 → typed notRenderable refusal, WITH the path visible.
+        let refusal = ArtifactFetchError.payloadError(
+            from: GatewayError.http(status: 409, body: #"{"sensitiveClass":"dotenv"}"#), path: path)
+        if case .notRenderable(let m) = refusal { #expect(m.contains("dotenv")); #expect(m.contains(path)) }
         else { Issue.record("409 should map to .notRenderable") }
 
-        if case .notRenderable = ArtifactFetchError.payloadError(from: GatewayError.http(status: 413, body: "")) {}
+        // 413 → its own reason, with the path.
+        if case .notRenderable(let m) = ArtifactFetchError.payloadError(
+            from: GatewayError.http(status: 413, body: ""), path: path) { #expect(m.contains(path)) }
         else { Issue.record("413 should map to .notRenderable") }
 
-        #expect(ArtifactFetchError.payloadError(from: GatewayError.http(status: 500, body: "")) == .offline)
-        #expect(ArtifactFetchError.payloadError(from: GatewayError.transport("x")) == .offline)
+        // Any other status OR a non-HTTP transport error → a path-carrying transport.
+        for error in [GatewayError.http(status: 500, body: ""), GatewayError.transport("x")] {
+            guard case .transport(let m) = ArtifactFetchError.payloadError(from: error, path: path) else {
+                Issue.record("non-renderable failure should map to .transport with the path"); continue
+            }
+            #expect(m.contains(path))
+        }
+        // The nil-client offline projection also names the path (never a bare blob).
+        guard case .transport(let m) = ArtifactFetchError.offline(path: path) else {
+            Issue.record("offline should be a path-carrying transport"); return
+        }
+        #expect(m.contains(path))
     }
 }

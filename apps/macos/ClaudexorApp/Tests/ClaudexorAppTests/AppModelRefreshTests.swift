@@ -1035,7 +1035,133 @@ struct AppModelRefreshTests {
             return
         }
         #expect(message.contains("413"))
+        // Round-3 #2: the failure names the artifact PATH, not just a run id.
+        #expect(message.contains("final/patch.diff"))
         #expect(model.liveTasks[0].hasPatchArtifact)
+    }
+
+    /// Round-3 #9: an OFFLINE terminal run that HAS a patch artifact must render an
+    /// honest failure+Retry, not an empty Changes tab masquerading as `.loaded`.
+    @MainActor
+    @Test func offlineDiffWithAPatchArtifactFailsInsteadOfFakeLoaded() async {
+        let model = AppModel(client: nil, requestNotificationAuthorization: false)
+        var task = TaskRun(
+            id: "run-offline-diff", title: "Run", prompt: "", mode: .agent, phase: .succeeded,
+            project: "Project", harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )
+        task.artifactPaths = ["final/patch.diff"]
+        model.liveTasks = [task]
+
+        guard case .failed(let message) = await model.loadRunDiff("run-offline-diff") else {
+            Issue.record("offline + patch artifact should be a visible failure, not .loaded")
+            return
+        }
+        #expect(message.contains("offline"))
+        #expect(message.contains("final/patch.diff"))
+    }
+
+    /// Round-3 crit #1: a `loadRunDetail → refreshRuns` sequence must NOT wipe the
+    /// truth only Run Detail hydrates. The bare list summary carries none of these
+    /// satellites, so the merge has to carry the last hydrated value forward.
+    @MainActor
+    @Test func listRefreshPreservesDetailOnlyReceipts() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        var hydrated = TaskRun(
+            id: "run-detail", title: "Run", prompt: "", mode: .agent, phase: .succeeded,
+            project: "Project", harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )
+        hydrated.valuationUsd = 4.20
+        hydrated.council = CouncilInfo(requested: 2, drafted: 2, degraded: false, mergedBy: "claude", members: [])
+        hydrated.outcomeBanner = "Succeeded — patch ready"
+        hydrated.applyEligibility = ApplyEligibility(eligible: true, state: "ok", reason: nil, requiredAction: nil)
+        hydrated.planReadiness = PlanReadiness(state: "ready", questionCount: 0)
+        hydrated.operatorDecisionAction = "accept_risk"
+        model.liveTasks = [hydrated]
+
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            // A bare list summary — NONE of the detail-only satellites ride here.
+            return (appResponse(for: request), Data(#"{"runs":[{"runId":"run-detail","state":"succeeded"}]}"#.utf8))
+        }
+
+        await model.refreshRuns()
+
+        let merged = try #require(model.liveTasks.first)
+        #expect(merged.valuationUsd == 4.20)
+        #expect(merged.council?.requested == 2)
+        #expect(merged.outcomeBanner == "Succeeded — patch ready")
+        #expect(merged.applyEligibility?.eligible == true)
+        #expect(merged.planReadiness?.state == "ready")
+        #expect(merged.operatorDecisionAction == "accept_risk")
+    }
+
+    /// Round-3 crit #5: a runs-list response completing AFTER a reconnect fence
+    /// (`enterHardOffline` nils the client) must not repopulate the wiped snapshot
+    /// from the OLD client — the post-await generation/identity re-check drops it.
+    @MainActor
+    @Test func delayedOldClientRunsResponseCannotRepopulateAfterReconnectFence() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            Thread.sleep(forTimeInterval: 0.12)   // still in flight when the fence fires
+            return (appResponse(for: request), Data(#"{"runs":[{"runId":"stale-r1","state":"succeeded"}]}"#.utf8))
+        }
+
+        let refresh = Task { await model.refreshRuns() }
+        try await Task.sleep(for: .milliseconds(20))   // lead pass now awaiting listRuns
+        model.enterHardOffline()                        // reconnect fence: client → nil
+        await refresh.value
+
+        // The OLD client's response never resurrected a run into the wiped snapshot.
+        #expect(model.liveTasks.isEmpty)
+    }
+
+    /// Round-3 crit #3: a produced text file with malformed UTF-8 is REFUSED as
+    /// not-renderable (naming its path), never silently U+FFFD-replaced and painted
+    /// as if it were real text.
+    @MainActor
+    @Test func producedTextOutcomeRefusesMalformedUtf8() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            // A lone 0xFF byte is never valid UTF-8.
+            return (appResponse(for: request), Data([0xFF, 0xFE, 0x41]))
+        }
+
+        let outcome = await model.producedTextOutcome(runId: "r", path: "artifacts/report.txt")
+        guard case .failure(.notRenderable(let message)) = outcome else {
+            Issue.record("malformed UTF-8 should map to .notRenderable, got \(outcome)")
+            return
+        }
+        #expect(message.contains("not valid UTF-8"))
+        #expect(message.contains("artifacts/report.txt"))
     }
 
     /// W4.3: vendor cost ticks are VALUATION — they must never move the cash

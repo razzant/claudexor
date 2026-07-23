@@ -19,25 +19,33 @@ public enum ComposerOptionParser {
         tokenizeArgv(text).tokens
     }
 
-    /// A malformed command line: it ended INSIDE an unterminated quote. Surfaced
-    /// as a typed error instead of silently closing the quote at end-of-input.
+    /// A malformed command line. Surfaced as a typed error instead of the lenient
+    /// tokenizer's silent best-effort recovery.
     public enum CommandArgvError: Error, Equatable {
+        /// It ended INSIDE an unterminated quote (`go "test`).
         case unterminatedQuote(Character)
+        /// It ended on a TRAILING backslash — an escape with nothing to escape
+        /// (`run foo\`). The lenient tokenizer silently DROPPED that backslash;
+        /// strict parsing rejects the input instead of sending a mangled argv.
+        case danglingEscape
     }
 
-    /// Strict tokenizer: an unterminated quote at end-of-input is a THROWN typed
-    /// error rather than a best-effort close, so a malformed `go "test` never
-    /// slips through as `go test`. The Create Test-command field uses this; the
-    /// lenient `parseCommandArgv` above stays best-effort for any other caller.
+    /// Strict tokenizer: an unterminated quote OR a trailing dangling backslash at
+    /// end-of-input is a THROWN typed error rather than a best-effort recovery, so a
+    /// malformed `go "test` never slips through as `go test` and a trailing `foo\`
+    /// never silently loses its backslash. The Create Test-command field uses this;
+    /// the lenient `parseCommandArgv` above stays best-effort for any other caller.
     public static func parseCommandArgvStrict(_ text: String) throws -> [String] {
         let result = tokenizeArgv(text)
         if let quote = result.openQuote { throw CommandArgvError.unterminatedQuote(quote) }
+        if result.danglingEscape { throw CommandArgvError.danglingEscape }
         return result.tokens
     }
 
     /// Shared tokenizer. `openQuote` is the quote char still open at end-of-input
-    /// (nil when balanced) — the lenient API drops it, the strict API throws on it.
-    private static func tokenizeArgv(_ text: String) -> (tokens: [String], openQuote: Character?) {
+    /// (nil when balanced); `danglingEscape` is true when the input ended mid-escape
+    /// (a trailing backslash). The lenient API drops BOTH; the strict API throws.
+    private static func tokenizeArgv(_ text: String) -> (tokens: [String], openQuote: Character?, danglingEscape: Bool) {
         var tokens: [String] = []
         var current = ""
         var hasToken = false
@@ -65,7 +73,7 @@ public enum ComposerOptionParser {
             current.append(ch); hasToken = true
         }
         if hasToken { tokens.append(current) }
-        return (tokens, quote)
+        return (tokens, quote, escape)
     }
 
     /// Build a single `TestCommandInvocation` from the composer Test-command
