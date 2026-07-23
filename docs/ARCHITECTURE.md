@@ -1763,24 +1763,32 @@ algorithm}`; anti-replay is the signed `version` plus the installer's strict
 monotonic check (never install a version ≤ current or last-known-good). Both the
 Swift updater AND `claudexor release check` verify FAIL-CLOSED: an unsigned,
 unknown-key, tampered, or version-regressed manifest is refused, never surfaced
-as an available update. Exact-artifact promotion: the candidate release workflow
-builds the closure + an UNSIGNED manifest; the owner signs it OFFLINE
-(`scripts/sign-runtime-manifest.mjs`, external 0600 key, refuses unstamped
-fields); the publish workflow receives the signed manifest as an input and
-`scripts/verify-signed-runtime-manifest.mjs` refuses to ship it unless its
-signature verifies against the pinned key AND its `sha256` byte-matches the
-promoted tarball AND its non-secret fields equal the freshly-built manifest.
-`scripts/release-workflow-check.mjs` enforces this wiring; the two authority
-files (review vs runtime-update) can never be the same key.
+as an available update. Exact-artifact promotion (A-5): the candidate release
+workflow builds the closure + an UNSIGNED manifest and uploads them as an
+immutable run artifact; the owner signs the manifest OFFLINE against that exact
+digest (`scripts/sign-runtime-manifest.mjs`, external 0600 key, refuses unstamped
+fields); the publish workflow takes the candidate `run id` + the signed manifest
+as inputs, `download-artifact`s the candidate run's EXACT closure bytes (never a
+publish rebuild), verifies their build provenance, and `scripts/verify-signed-
+runtime-manifest.mjs` refuses to ship unless the signature verifies against the
+pinned key, its `sha256` byte-matches the promoted tarball, and its non-secret
+fields equal the candidate's unsigned manifest — so the shipped closure is
+byte-for-byte the reviewed one. A wrong or expired (14-day retention)
+`candidate_run_id` fails the download. `scripts/release-workflow-check.mjs`
+enforces this wiring; the two authority files (review vs runtime-update) can
+never be the same key.
 
 **Install flow.** One click (bottom-left chip → Install) runs
 `RuntimeInstallCoordinator` (`apps/macos/ClaudexorApp`): verify monotonic →
 download the closure from the release CDN asset URL → sha256-verify against the
 signed manifest → FULL unpack to `versions/<version>/` → re-verify → strip
 `com.apple.quarantine` (after hash verification) → probe-start the unpacked
-daemon with the app-bundled Node in a `--version` handshake → idle-gate (ask the
-daemon for active jobs; refuse while any run — an unknown state is treated as
-busy) → identity-proven daemon stop (existing machinery) → ATOMIC `current.json`
+daemon with the app-bundled Node via `claudexord --probe` (prints
+`{version,buildSha}` and exits without binding a socket or opening the journal) →
+idle-gate (ask the daemon for active jobs; refuse while any run — an unknown
+state is treated as busy) → identity-proven daemon stop (`claudexord --stop`
+reuses the socket `claudexor.shutdown` + termination confirmation, never a raw
+kill) → ATOMIC `current.json`
 swap (write a temp file + a single rename, inside a `flock` over the whole
 check-then-swap critical section) → relaunch → handshake-verify the new engine
 version → rollback to `last-known-good.json` on ANY failure. The bundled runtime
