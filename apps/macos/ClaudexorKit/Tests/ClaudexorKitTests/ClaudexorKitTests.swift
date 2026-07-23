@@ -194,6 +194,29 @@ import Testing
         ]) == "test/**:test update, docs/**")
     }
 
+    // QA-010: the composer's optional Create test-command field — whitespace-
+    // split argv with quoting, parsed into ONE TestCommandInvocation.
+    @Test func testCommandArgvHandlesQuotingAndEscapes() throws {
+        #expect(ComposerOptionParser.parseCommandArgv("npm test") == ["npm", "test"])
+        #expect(ComposerOptionParser.parseCommandArgv("  npm   run   ci  ") == ["npm", "run", "ci"])
+        // Double + single quotes group spaces into one argument.
+        #expect(ComposerOptionParser.parseCommandArgv(#"pytest -k "slow and net""#) == ["pytest", "-k", "slow and net"])
+        #expect(ComposerOptionParser.parseCommandArgv("run 'a b'") == ["run", "a b"])
+        // Backslash escapes a literal space / quote.
+        #expect(ComposerOptionParser.parseCommandArgv(#"a\ b c"#) == ["a b", "c"])
+        // An unbalanced quote is closed at end-of-input (best-effort, no crash).
+        #expect(ComposerOptionParser.parseCommandArgv(#"go "test"#) == ["go", "test"])
+    }
+
+    @Test func testCommandParsesProgramAndArgs() throws {
+        let cmd = try #require(ComposerOptionParser.parseTestCommand("npm run test:ci"))
+        #expect(cmd.program == "npm")
+        #expect(cmd.args == ["run", "test:ci"])
+        // Blank / whitespace-only field is NO gate (nil), never an empty program.
+        #expect(ComposerOptionParser.parseTestCommand("") == nil)
+        #expect(ComposerOptionParser.parseTestCommand("   \n\t ") == nil)
+    }
+
     @Test func settingsUpdateEncodesRoutingAndTaggedBudget() throws {
         let req = SettingsUpdateRequest(
             routingGoal: "economy",

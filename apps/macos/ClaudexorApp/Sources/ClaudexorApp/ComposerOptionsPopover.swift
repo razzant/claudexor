@@ -237,6 +237,13 @@ extension ThreadsScreen {
                     Toggle("Delegate — let the agent spawn bounded sub-runs", isOn: $delegate)
                         .toggleStyle(.switch).tint(Theme.accent)
                         .help("Inject the Claudexor delegation belt (ask / plan / isolated sub-run / best-of / status / result). The harness decides when to delegate; sub-runs are isolated, depth-1, budget- and count-capped. Refused server-side on harnesses without MCP injection.")
+                    // QA-010: Create scaffolds a brand-new project, so its test
+                    // script does not exist until the run writes it — yet the
+                    // operator already knows the command they expect (`npm test`).
+                    // Offer ONE optional typed gate field here so acceptance can be
+                    // deterministic instead of review-only. The engine runs it as a
+                    // post-candidate gate; it is never inferred from the prompt.
+                    if agentStrategy == .create { testCommandField }
                 }
             }
             // Plan STRATEGY knob (D31): Council draft-and-merge across N harnesses,
@@ -257,6 +264,26 @@ extension ThreadsScreen {
         .frame(width: Theme.Layout.composerOptionsWidth, alignment: .leading)
         // Root-level text selection for the options popover (batch-6 item c / §2.9).
         .textSelection(.enabled)
+    }
+
+    /// QA-010: the optional Create-turn deterministic test command. ONE honest
+    /// field — whitespace-split argv with documented quoting — that rides the
+    /// run's typed `tests` gate. Not a full editor.
+    @ViewBuilder var testCommandField: some View {
+        OptionRow(label: "Test command") {
+            HStack(spacing: Theme.Spacing.xs) {
+                TextField("e.g. npm test", text: $testCommandText)
+                    .frame(maxWidth: 180)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                if testCommandInvalid {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange).font(.caption)
+                        .help("Enter a command (the first word is the program), or leave it empty")
+                }
+            }
+            .help("Optional deterministic gate run AFTER the candidate scaffolds the project (e.g. `npm test`). Whitespace-separated argv — the first word is the program, the rest its arguments; wrap an argument that contains spaces in quotes (\"my dir\"), and backslash-escape a literal quote. Not a shell: no pipes, globs, or variables. Empty = review-only acceptance.")
+        }
     }
 
     /// The wire value the per-turn picker sends: empty ("Thread default") is

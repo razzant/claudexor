@@ -341,6 +341,12 @@ struct TurnOptions: Equatable {
     var models: [String: String] = [:]
     var reviewerPanel: [ReviewerPanelEntry]? = nil
     var protectedPathApprovals: [ProtectedPathApproval]? = nil
+    /// QA-010: optional deterministic gate command(s) the operator authorizes for
+    /// THIS turn (Create especially — the project's test script does not exist
+    /// until the run scaffolds it). Rides the run-start request's typed `tests`
+    /// field so it becomes a post-candidate acceptance gate, never inferred from
+    /// prompt text. Empty = review-only acceptance.
+    var tests: [TestCommandInvocation] = []
     /// Per-turn auth route REQUEST ("subscription" | "api_key"); nil = auto /
     /// inherit the thread preference. The effective route is a post-run receipt.
     var authRoute: String? = nil

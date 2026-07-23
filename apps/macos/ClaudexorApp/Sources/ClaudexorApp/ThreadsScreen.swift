@@ -40,6 +40,10 @@ struct ThreadsScreen: View {
     @State var browser = false
     @State var reviewerPanelText = ""
     @State var protectedApprovalsText = ""
+    /// QA-010: optional Create-turn deterministic test command (argv text). Shown
+    /// only for the Create agent strategy; parsed into the run's typed `tests`
+    /// gate. Not sticky across threads.
+    @State var testCommandText = ""
     /// Per-turn model override for the primary harness. Empty = harness default
     /// (the global default stays in Settings → Harnesses). Not sticky across threads.
     /// Harness-scoped per-turn models (harness id -> model id); built by the
@@ -119,9 +123,30 @@ struct ThreadsScreen: View {
             models: composerModels,
             reviewerPanel: reviewerPanelEntries.isEmpty ? nil : reviewerPanelEntries,
             protectedPathApprovals: protectedPathApprovals.isEmpty ? nil : protectedPathApprovals,
+            // QA-010: the typed test-command gate rides ONLY on a Create turn (the
+            // one surface the field is offered on) — a stale command from a hidden
+            // field never leaks onto a non-Create turn.
+            tests: testCommandForCreate.map { [$0] } ?? [],
             authRoute: Self.authRouteRequest(authRoutePreference),
             effort: effortPreference.isEmpty ? nil : effortPreference
         )
+    }
+
+    /// The parsed Create-turn test command, or nil when the field is empty / not
+    /// a Create turn. `send()` reads this so the gate is authorized only when the
+    /// Create surface actually shows the field.
+    var testCommandForCreate: TestCommandInvocation? {
+        guard composerMode == .agent, agentStrategy == .create else { return nil }
+        return ComposerOptionParser.parseTestCommand(testCommandText)
+    }
+
+    /// The Test-command field is INVALID when it's non-empty (for a Create turn)
+    /// but yields no program token — Send is blocked so a mistyped gate never
+    /// silently drops (mirrors the budget/reviewer typed-field contract).
+    var testCommandInvalid: Bool {
+        guard composerMode == .agent, agentStrategy == .create else { return false }
+        let trimmed = testCommandText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && ComposerOptionParser.parseTestCommand(testCommandText) == nil
     }
 
     /// Any harness in the pool can take the agent-driven browser (manifest
@@ -178,7 +203,7 @@ struct ThreadsScreen: View {
     }
 
     private var composerOptionsInvalid: Bool {
-        capUsdInvalid || reviewerPanelInvalid || protectedApprovalsInvalid
+        capUsdInvalid || reviewerPanelInvalid || protectedApprovalsInvalid || testCommandInvalid
     }
 
     private var composerImageAttachmentsInvalid: Bool {
@@ -193,6 +218,7 @@ struct ThreadsScreen: View {
         if capUsdInvalid { return "Fix the budget cap in ⋯ options to send" }
         if reviewerPanelInvalid { return "Fix the reviewer panel in ⋯ options to send" }
         if protectedApprovalsInvalid { return "Fix protected path approvals in ⋯ options to send" }
+        if testCommandInvalid { return "Fix the test command in ⋯ options to send" }
         if composerImageAttachmentsInvalid { return "Images need an available vision-capable route" }
         return "Send (⌘↩)"
     }
@@ -419,6 +445,10 @@ struct ThreadsScreen: View {
                     .background(showOptions ? Theme.accent.opacity(0.14) : .clear, in: Capsule())
             }
             .buttonStyle(.borderless)
+            // QA-003: name the icon-only options control (else the AX name is the
+            // localized `slider.horizontal.3` description, `Изменить`). `.help`
+            // stays the separate hint enumerating what the popover holds.
+            .accessibilityLabel("More options")
             .help("More options: harness pool, model, budget, access, web, repair strategies")
             // Native dismissible popover — no inline glass-on-glass panel.
             .popover(isPresented: $showOptions, arrowEdge: .bottom) {
@@ -446,7 +476,7 @@ struct ThreadsScreen: View {
             access = model.effectiveThreadAccess.flatMap(AccessProfile.init(wire:)) ?? model.composerAccessDefault
             maxAttempts = 3; showOptions = false; browser = false
             agentStrategy = .single; delegate = false; councilEnabled = false; councilMembers = 2
-            reviewerPanelText = ""; protectedApprovalsText = ""
+            reviewerPanelText = ""; protectedApprovalsText = ""; testCommandText = ""
             composerModels = [:]; poolModelCatalogs = [:]  // route-scoped (W20)
         }
         // D26: a write-scope switch is STICKY — PATCH the thread (or the draft
@@ -554,6 +584,9 @@ struct ThreadsScreen: View {
             // Highest priority: a bad budget cap blocks Send — say so even with the
             // "⋯" popover closed, so the disabled Send isn't a mystery.
             Label("Budget cap must be a positive number (in ⋯)", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(.orange).lineLimit(1)
+        } else if testCommandInvalid {
+            Label("Test command needs a program name (in ⋯)", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.orange).lineLimit(1)
         } else if !threadHasProject {
             Text("Pick a project to use Agent · Plan · Best-of")

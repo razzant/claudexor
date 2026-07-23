@@ -1259,6 +1259,10 @@ final class AppModel {
                 planRunId: planRunId,
                 overridePlanReadiness: options.overridePlanReadiness ? true : nil,
                 attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+                // QA-010: the operator-authorized deterministic gate command(s)
+                // for this turn (Create), so acceptance runs a real post-candidate
+                // gate instead of falling back to review-only.
+                tests: options.tests.isEmpty ? nil : options.tests,
                 protectedPathApprovals: options.protectedPathApprovals,
                 authPreference: options.authRoute,
                 effort: options.effort

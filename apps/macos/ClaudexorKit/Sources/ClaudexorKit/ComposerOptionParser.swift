@@ -8,6 +8,53 @@ public enum ComposerOptionParser {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     }
 
+    /// Split a command line into argv tokens for the composer's optional
+    /// Test-command field (QA-010). A minimal POSIX-ish tokenizer — NOT a shell:
+    /// whitespace separates tokens; single and double quotes group spaces into
+    /// one argument; a backslash escapes the next character. There is no globbing,
+    /// no pipes/redirection, and no variable expansion — the tokens become a
+    /// `TestCommandInvocation.args` array the engine runs directly. An unbalanced
+    /// quote is closed at end-of-input (best-effort, never a crash).
+    public static func parseCommandArgv(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var hasToken = false
+        var quote: Character? = nil
+        var escape = false
+        for ch in text {
+            if escape {
+                current.append(ch); hasToken = true; escape = false; continue
+            }
+            if ch == "\\" && quote != "'" {
+                escape = true; hasToken = true; continue
+            }
+            if let q = quote {
+                if ch == q { quote = nil } else { current.append(ch) }
+                hasToken = true
+                continue
+            }
+            if ch == "'" || ch == "\"" {
+                quote = ch; hasToken = true; continue
+            }
+            if ch == " " || ch == "\t" || ch == "\n" {
+                if hasToken { tokens.append(current); current = ""; hasToken = false }
+                continue
+            }
+            current.append(ch); hasToken = true
+        }
+        if hasToken { tokens.append(current) }
+        return tokens
+    }
+
+    /// Build a single `TestCommandInvocation` from the composer Test-command
+    /// field. Returns nil when the field is blank (no gate) — the first token is
+    /// the program, the rest its args (QA-010). Pure + tested.
+    public static func parseTestCommand(_ text: String) -> TestCommandInvocation? {
+        let argv = parseCommandArgv(text)
+        guard let program = argv.first, !program.isEmpty else { return nil }
+        return TestCommandInvocation(program: program, args: Array(argv.dropFirst()))
+    }
+
     public static func parseNonnegativeFiniteDouble(_ text: String) -> Double? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "$", with: "")
