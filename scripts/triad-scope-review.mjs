@@ -148,8 +148,16 @@ function positiveIntEnv(name, fallback) {
 
 const MAX_OUTPUT_TOKENS = positiveIntEnv("TRIAD_MAX_OUTPUT_TOKENS", 100_000);
 const REQUEST_TIMEOUT_MS = 900_000;
-/** Per-file cap inside the touched-file pack; the diff itself is never cut. */
-const MAX_FILE_BYTES = 200_000;
+/**
+ * Per-file cap inside the touched-file pack; the diff itself is never cut.
+ * Env-tunable (like the pack budget) so a legitimately large tracked file
+ * (e.g. a god-file the complexity ratchet already flags) can still be
+ * supplied in FULL to reviewers in one wave rather than dropped to
+ * diff-only — the A-8 coverage guarantee. Raising it never bypasses
+ * coverage: buildTouchedFilePack still throws if the TOTAL pack budget
+ * would force an omission.
+ */
+const MAX_FILE_BYTES = positiveIntEnv("TRIAD_MAX_FILE_BYTES", 200_000);
 const MAX_PACK_BYTES = positiveIntEnv("TRIAD_MAX_PACK_BYTES", 3_000_000);
 
 function git(args, opts = {}) {
