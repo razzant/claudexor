@@ -528,9 +528,10 @@ invariant or owner decision before proceeding.
   bridge (an `AGENTS.md`-only project root, same write-prep stage as the
   automatic git init, CONCEPT-CHANGE(INV-113)) is exclusive-create + no-follow
   so it never overwrites a hand-written file or writes through a symlink,
-  targets the project root not a worktree envelope, excludes read-only and
-  `--in-place` targets exactly as the git boundary does, and announces every
-  create via a typed `project.claude_bridge.created` event. An
+  targets the project root not a worktree envelope, excludes read-only targets
+  as the git boundary does AND additionally excludes `--in-place` targets (the
+  git boundary, by contrast, still runs for an in-place write run), and
+  announces every create via a typed `project.claude_bridge.created` event. An
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
   tests; claude-bridge exclusive-create/no-follow/race/idempotency tests
