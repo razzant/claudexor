@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { BudgetLedger, promptFingerprint, routeCostEvidence } from "./ledger.js";
 import { observationsFromEvent } from "./observe.js";
-import { RoutingPreflightError, type RouterCandidate, selectHarness } from "./router.js";
+import {
+  RoutingPreflightError,
+  type RouterCandidate,
+  billingKnowledgeForAuthRoute,
+  explainRanking,
+  rankHarnesses,
+  selectHarness,
+} from "./router.js";
 
 describe("BudgetLedger", () => {
   const metered = (estimatedUsd: number | null = null) =>
@@ -786,6 +793,147 @@ describe("routing telemetry", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // QA-034: a route's typed auth evidence (credential route + verification) is
+  // the ONLY source of billing knowledge. A verified native/subscription route
+  // yields subscription_entitlement; a metered/API-key route is never presumed
+  // free; an unverified or unknown route stays unknown.
+  describe("billing evidence from the typed auth route (QA-034)", () => {
+    it("a verified vendor-native route proves subscription entitlement", () => {
+      expect(billingKnowledgeForAuthRoute({ route: "vendor_native", verification: "passed" })).toBe(
+        "subscription_entitlement",
+      );
+    });
+
+    it("a metered/API-key route is metered and never presumed free", () => {
+      expect(
+        billingKnowledgeForAuthRoute({ route: "managed_api_key", verification: "passed" }),
+      ).toBe("metered");
+      expect(
+        billingKnowledgeForAuthRoute({ route: "managed_api_key", verification: "not_run" }),
+      ).toBe("metered");
+    });
+
+    it("an unverified native route or an unknown route stays unknown (never free)", () => {
+      expect(
+        billingKnowledgeForAuthRoute({ route: "vendor_native", verification: "not_run" }),
+      ).toBe("unknown");
+      expect(billingKnowledgeForAuthRoute({ route: "vendor_native", verification: "failed" })).toBe(
+        "unknown",
+      );
+      expect(billingKnowledgeForAuthRoute({ route: "local", verification: "passed" })).toBe(
+        "unknown",
+      );
+      expect(billingKnowledgeForAuthRoute({ route: null, verification: "not_run" })).toBe(
+        "unknown",
+      );
+    });
+  });
+
+  describe("native auth evidence reaches economy ranking and paid_fallback (QA-034)", () => {
+    const nativeVerified = (id: string, over: Partial<RouterCandidate> = {}): RouterCandidate => ({
+      harnessId: id,
+      available: true,
+      model: `${id}-model`,
+      effort: "high",
+      authRoute: { route: "vendor_native", verification: "passed" },
+      ...over,
+    });
+    const apiKey = (id: string, over: Partial<RouterCandidate> = {}): RouterCandidate => ({
+      harnessId: id,
+      available: true,
+      model: `${id}-model`,
+      effort: "high",
+      authRoute: { route: "managed_api_key", verification: "passed" },
+      incrementalCostUsd: 0.02,
+      ...over,
+    });
+
+    it("economy ranks a verified native route ahead of a metered API-key route (real tuple, no registry tie)", () => {
+      const led = new BudgetLedger();
+      const ranked = rankHarnesses(
+        [apiKey("codex"), nativeVerified("claude")],
+        routeContext(led, "economy"),
+      );
+      expect(ranked.map((r) => r.harnessId)).toEqual(["claude", "codex"]);
+    });
+
+    it("paid_fallback:never keeps verified native routes and drops the pure API-key route", () => {
+      const led = new BudgetLedger();
+      const ctx = { ...routeContext(led, "economy"), paidFallback: "never" as const };
+      const survivors = rankHarnesses(
+        [nativeVerified("codex"), nativeVerified("claude"), apiKey("cursor")],
+        ctx,
+      );
+      expect(survivors.map((r) => r.harnessId).sort()).toEqual(["claude", "codex"]);
+    });
+
+    it("paid_fallback:never no longer deletes an all-native pool (was 'no harness remains eligible')", () => {
+      const led = new BudgetLedger();
+      const ctx = { ...routeContext(led, "economy"), paidFallback: "never" as const };
+      const survivors = rankHarnesses(
+        [nativeVerified("codex"), nativeVerified("claude"), nativeVerified("cursor")],
+        ctx,
+      );
+      expect(survivors.length).toBe(3);
+    });
+
+    it("emits a typed ranking rationale, not prose, for the routing evidence", () => {
+      const led = new BudgetLedger();
+      // All-native/unknown pool with no tiers: the report's exact fixture — the
+      // rationale must say the order was declared/unknown-cash, not 'cheapest'.
+      const unknownNative = (id: string): RouterCandidate => ({
+        harnessId: id,
+        available: true,
+        model: `${id}-model`,
+        effort: "high",
+        authRoute: { route: "vendor_native", verification: "not_run" },
+      });
+      const r = explainRanking([unknownNative("codex"), unknownNative("claude")], {
+        ...routeContext(led, "economy"),
+        qualityTiers: {},
+      });
+      expect(r.reason).toBe("all_incremental_cash_unknown");
+      expect(r.order).toEqual(["codex", "claude"]);
+      expect(r.entries.every((e) => e.billingKnowledge === "unknown")).toBe(true);
+
+      // A verified native route flips the decisive reason to entitlement-first.
+      const r2 = explainRanking(
+        [
+          {
+            harnessId: "codex",
+            available: true,
+            authRoute: { route: "vendor_native", verification: "passed" },
+          },
+          {
+            harnessId: "cursor",
+            available: true,
+            authRoute: { route: "managed_api_key", verification: "passed" },
+            incrementalCostUsd: 0.02,
+          },
+        ],
+        { ...routeContext(led, "economy"), paidFallback: "never", qualityTiers: {} },
+      );
+      expect(r2.reason).toBe("subscription_entitlement_first");
+      expect(r2.order).toEqual(["codex"]);
+      expect(r2.dropped).toEqual(["cursor"]);
+    });
+
+    it("an unverified native route is NOT entitlement and is dropped by paid_fallback:never", () => {
+      const led = new BudgetLedger();
+      const ctx = { ...routeContext(led, "economy"), paidFallback: "never" as const };
+      const survivors = rankHarnesses(
+        [
+          nativeVerified("codex"),
+          nativeVerified("claude", {
+            authRoute: { route: "vendor_native", verification: "not_run" },
+          }),
+        ],
+        ctx,
+      );
+      expect(survivors.map((r) => r.harnessId)).toEqual(["codex"]);
+    });
   });
 
   it("quota cooldown integration: an observed rate-limit removes the harness from selection until reset", async () => {
