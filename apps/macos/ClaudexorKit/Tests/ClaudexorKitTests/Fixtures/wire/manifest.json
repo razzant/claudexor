@@ -1,5 +1,6 @@
 {
   "handshake-response": "ControlHandshakeResponse",
+  "handshake-response-unknown-sha": "ControlHandshakeResponse",
   "problem-minimal": "ControlProblem",
   "problem-maximal": "ControlProblem",
   "thread-minimal": "ControlThread",

@@ -183,6 +183,16 @@ extension AppModel {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
     }
 
+    /// The serving engine's version, honestly (QA-002): the handshake-disclosed
+    /// build version when connected, else "unknown". Never guessed from the app
+    /// version — a stale daemon skew must be visible, not papered over.
+    var engineVersionDisplay: String { engineIdentity?.version ?? "unknown" }
+
+    /// The serving engine's git sha, shortened for display; "unknown" passes
+    /// through verbatim (the honest value a not-yet-stamped package discloses —
+    /// packaged sha stamping lands in Ф4).
+    var engineShaDisplay: String { engineIdentity.map { AboutInfo.shortSha($0.sha) } ?? "unknown" }
+
     /// The engine version currently running: an installed runtime's pinned
     /// version when `current.json` exists, else the app's own version (the
     /// bundled first-run engine ships lockstep with the app).
@@ -293,5 +303,28 @@ extension AppModel {
         autoBalanceOverride = on
         defer { autoBalanceOverride = nil }
         _ = await saveSettings(SettingsUpdateRequest(harnesses: patch))
+    }
+}
+
+// MARK: - About metadata (D-11, owner-locked shape)
+
+/// SSOT for the app's authorship/license/link facts, shared by Settings → About
+/// and the standard About panel's credits so the two can never drift. The URLs
+/// are the exact owner-locked destinations; do not paraphrase the labels.
+enum AboutInfo {
+    static let author = "Anton Razzhigaev"
+    static let license = "MIT"
+
+    static let telegramLabel = "t.me/abstractDL"
+    static let telegramURL = URL(string: "https://t.me/abstractDL")!
+    static let twitterLabel = "x.com/AbstractDL"
+    static let twitterURL = URL(string: "https://x.com/AbstractDL")!
+    static let repoLabel = "github.com/razzant/claudexor"
+    static let repoURL = URL(string: "https://github.com/razzant/claudexor")!
+
+    /// Short sha for display. "unknown"/empty pass through verbatim — the honest
+    /// value a build discloses before packaged sha stamping (Ф4); never faked.
+    static func shortSha(_ sha: String) -> String {
+        (sha == "unknown" || sha.isEmpty) ? "unknown" : String(sha.prefix(12))
     }
 }

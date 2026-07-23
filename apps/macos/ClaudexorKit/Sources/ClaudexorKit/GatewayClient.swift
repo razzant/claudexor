@@ -56,6 +56,15 @@ public final class GatewayClient: Sendable {
         try await gatewayHealth(baseURL: baseURL, token: token, session: session)
     }
 
+    /// Health + protocol negotiation that RETAINS the engine build identity
+    /// (QA-002 / D20): `.ok` is the same connectivity verdict `health()` returns,
+    /// `.engine` is the serving build's disclosed `{version, sha, entry}` (nil if
+    /// the daemon omits it). Use this on connect so the About panel can show the
+    /// real engine version/sha instead of dropping it on the floor.
+    public func handshake() async throws -> GatewayHandshakeOutcome {
+        try await gatewayHandshake(baseURL: baseURL, token: token, session: session)
+    }
+
     public func startRun(_ body: StartRunRequest) async throws -> RunStartResult {
         var req = request("runs", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

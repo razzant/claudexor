@@ -255,10 +255,21 @@ struct SettingsScreen: View {
     @ViewBuilder private var advancedGroup: some View {
         settingsGroup("Advanced & About", "info.circle") {
                     KeyValueRow(key: "App", value: "Claudexor for macOS")
+                    KeyValueRow(key: "Author", value: AboutInfo.author)
+                    KeyValueRow(key: "License", value: AboutInfo.license)
                     // Single source: the bundle version stamped at packaging time
                     // (a hardcoded string here shipped stale in the past).
                     KeyValueRow(key: "Version", value: "v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                    // Real engine build identity, retained from the connect
+                    // handshake (QA-002/D20) instead of dropped: a stale-daemon
+                    // skew is visible, and the git sha is "unknown" honestly
+                    // until packaged stamping lands (Ф4).
+                    KeyValueRow(key: "Engine version", value: model.engineVersionDisplay, mono: true)
+                    KeyValueRow(key: "Engine sha", value: model.engineShaDisplay, mono: true)
                     KeyValueRow(key: "Engine", value: "@claudexor/control-api (loopback HTTP+SSE)")
+                    aboutLinkRow("Telegram", AboutInfo.telegramLabel, AboutInfo.telegramURL)
+                    aboutLinkRow("X", AboutInfo.twitterLabel, AboutInfo.twitterURL)
+                    aboutLinkRow("Repository", AboutInfo.repoLabel, AboutInfo.repoURL)
                     KeyValueRow(key: "Review protocol", value: "Inline per-turn review; server-owned decision/apply endpoints")
                     if let runtime = model.settingsSnapshot?.runtime {
                         KeyValueRow(key: "Reviewer timeout", value: "\(max(1, runtime.reviewerTimeoutMs / 60_000)) min")
@@ -267,6 +278,22 @@ struct SettingsScreen: View {
                     KeyValueRow(key: "Delivery protocol", value: "Inspect artifacts, dry-run before mutation")
                     KeyValueRow(key: "Public architecture", value: "CLAUDEXOR_BIBLE.md + docs/ARCHITECTURE.md", mono: true)
                 }
+    }
+
+    /// One labeled row carrying a clickable link, laid out like `KeyValueRow`
+    /// (secondary caption key on the left, trailing value) so the About block
+    /// stays visually uniform. The link tints with the brand accent — inline
+    /// links == `brand/accent` (DESIGN_SYSTEM §2.2).
+    private func aboutLinkRow(_ key: String, _ label: String, _ url: URL) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.md) {
+            Text(key).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: Theme.Spacing.md)
+            Link(label, destination: url)
+                .font(.caption)
+                .tint(Theme.accent)
+                .help("Opens \(url.absoluteString)")
+        }
+        .padding(.vertical, 1)
     }
 
     private func settingsGroup<Content: View>(_ title: String, _ systemImage: String, @ViewBuilder content: () -> Content) -> some View {

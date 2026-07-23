@@ -37,6 +37,12 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 final class AppModel {
     var health: Health = .connecting
     var endpoint: String = ""
+    /// The serving engine's disclosed build identity (QA-002 / D20), retained
+    /// from the connect handshake so Settings → About shows the real engine
+    /// version + git sha. Nil until a handshake stamps it (or when the daemon
+    /// omits the field — then About shows "unknown", never a guess). Cleared on
+    /// hard-offline so a stale identity never outlives its connection.
+    var engineIdentity: EngineBuildIdentity?
     var route: SidebarRoute = .threads {
         // Leaving a run's inspector is the P3 eviction point: an off-screen
         // terminal run releases its heavy feed/transcript arrays (reopen reloads).
@@ -284,6 +290,7 @@ final class AppModel {
         health = .offline
         endpoint = ""
         client = nil
+        engineIdentity = nil
         authSheetTarget = nil
         cancelAllStreams()
         // Retire queued settings ops (X20) but KEEP the chain tail (X30): a
@@ -326,7 +333,12 @@ final class AppModel {
             let client = try discovery.makeClient()
             endpoint = "\(discovery.host):\(discovery.port)"
             self.client = client
-            if try await client.health() {
+            // One handshake serves both the connectivity verdict AND the engine
+            // build identity (QA-002): retain what the daemon discloses instead
+            // of a bare Bool that drops version/sha on the floor.
+            let outcome = try await client.handshake()
+            if outcome.ok {
+                engineIdentity = outcome.engine
                 health = .connected
                 await refreshRuns()
                 await refreshHarnesses()

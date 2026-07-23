@@ -21,6 +21,18 @@ struct ClaudexorApp: App {
                 Button("New Thread") { model.startDraftThread() }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            // D-11: the standard macOS About panel, carrying the owner-locked
+            // author/license and clickable links in its Credits. Replaces the
+            // default About item so the app menu shows OUR panel; the
+            // Check-for-Updates group below still anchors `after: .appInfo`.
+            CommandGroup(replacing: .appInfo) {
+                Button("About Claudexor") {
+                    NSApp.orderFrontStandardAboutPanel(options: [
+                        .credits: AboutPanel.credits,
+                    ])
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
             // M7: user-invokable engine-runtime update check (no background timer).
             CommandGroup(after: .appInfo) {
                 Button(model.runtimeUpdateChecking ? "Checking for Updates…" : "Check for Updates…") {
@@ -36,6 +48,37 @@ struct ClaudexorApp: App {
                 .preferredColorScheme(model.appearance.colorScheme)
                 .frame(width: 760, height: 680)
         }
+    }
+}
+
+/// D-11: the standard About panel's Credits attributed string. Carries the same
+/// owner-locked author/license/links as Settings → About (both read `AboutInfo`),
+/// with the three URLs as real clickable `.link` runs.
+enum AboutPanel {
+    static var credits: NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.paragraphSpacing = 4
+
+        let base: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: paragraph,
+        ]
+        let result = NSMutableAttributedString()
+        result.append(NSAttributedString(
+            string: "\(AboutInfo.author)  ·  \(AboutInfo.license) License\n\n", attributes: base))
+
+        func linkRow(_ label: String, _ url: URL, trailingNewline: Bool = true) {
+            var attrs = base
+            attrs[.link] = url
+            attrs[.foregroundColor] = NSColor.linkColor
+            result.append(NSAttributedString(string: label + (trailingNewline ? "\n" : ""), attributes: attrs))
+        }
+        linkRow(AboutInfo.telegramLabel, AboutInfo.telegramURL)
+        linkRow(AboutInfo.twitterLabel, AboutInfo.twitterURL)
+        linkRow(AboutInfo.repoLabel, AboutInfo.repoURL, trailingNewline: false)
+        return result
     }
 }
 

@@ -36,6 +36,15 @@ export function buildWireFixtures() {
     operationsPath: "/v2/operations",
     engine: { version: "3.0.0", sha: "a".repeat(40), entry: "/opt/claudexor/daemon.js" },
   });
+  // Unstamped-build variant: the engine discloses `sha: "unknown"` honestly
+  // before packaged sha stamping lands (Ф4). Locks the Swift handshake decode
+  // (QA-002) + the About panel's honest "unknown" display for that branch.
+  add("handshake-response-unknown-sha", "ControlHandshakeResponse", {
+    protocolMajor: schema.CONTROL_PROTOCOL_MAJOR,
+    compatible: true,
+    operationsPath: "/v2/operations",
+    engine: { version: "3.1.0", sha: "unknown", entry: "/opt/claudexor/daemon.js" },
+  });
 
   add("problem-minimal", "ControlProblem", {
     code: "plan_not_ready",

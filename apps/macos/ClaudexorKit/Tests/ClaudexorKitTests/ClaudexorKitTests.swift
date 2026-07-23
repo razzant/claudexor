@@ -1725,6 +1725,43 @@ import Testing
         RequestStubURLProtocol.handler = nil
     }
 
+    @Test func gatewayHandshakeRetainsEngineBuildIdentity() async throws {
+        // QA-002: the handshake helper must RETAIN the typed engine {version,sha}
+        // instead of discarding it — the About panel needs it. `ok` still gates
+        // connectivity; a missing engine object never demotes the connection.
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        func stub(handshakeBody: String) {
+            RequestStubURLProtocol.handler = { request in
+                switch (request.httpMethod, request.url?.path) {
+                case ("GET", "/healthz"):
+                    return (Self.response(for: request), Data(#"{"ok":true}"#.utf8))
+                case ("POST", "/v2/handshake"):
+                    return (Self.response(for: request), Data(handshakeBody.utf8))
+                default:
+                    throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+                }
+            }
+        }
+
+        stub(handshakeBody: #"{"protocolMajor":3,"compatible":true,"operationsPath":"/v2/operations","engine":{"version":"3.1.0","sha":"abc123def4567890","entry":"/opt/claudexor/daemon.js"}}"#)
+        let withEngine = try await client.handshake()
+        #expect(withEngine.ok)
+        #expect(withEngine.engine == EngineBuildIdentity(
+            version: "3.1.0", sha: "abc123def4567890", entry: "/opt/claudexor/daemon.js"))
+
+        // A daemon that omits `engine` still connects; identity is simply nil.
+        stub(handshakeBody: #"{"protocolMajor":3,"compatible":true,"operationsPath":"/v2/operations"}"#)
+        let noEngine = try await client.handshake()
+        #expect(noEngine.ok)
+        #expect(noEngine.engine == nil)
+    }
+
     @Test func gatewayUploadsExactBytesAndFinalizesDigestBeforeReturningReference() async throws {
         defer { RequestStubURLProtocol.handler = nil }
         let config = URLSessionConfiguration.ephemeral
