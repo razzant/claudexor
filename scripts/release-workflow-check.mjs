@@ -82,6 +82,23 @@ for (const [label, pattern] of [
     "signed runtime manifest input is documented for publish",
     /runtime_manifest_b64:\s*\n\s*description:[^\n]*owner-signed runtime-update manifest/,
   ],
+  [
+    // A-5: publish must PROMOTE the exact candidate artifact bytes, not rebuild.
+    "candidate run id input is documented for publish promotion",
+    /candidate_run_id:\s*\n\s*description:[^\n]*promotes/,
+  ],
+  [
+    "publish downloads the promoted candidate artifact by run id",
+    /download-artifact@[0-9a-f]{40}[\s\S]*?run-id:\s*\$\{\{\s*needs\.prepare\.outputs\.candidate_run_id\s*\}\}/,
+  ],
+  [
+    "publish verifies the promoted candidate closure provenance",
+    /gh attestation verify "candidate-assets\/claudexor-runtime-\$VERSION\.tar\.gz"/,
+  ],
+  [
+    "publish promotes the candidate closure bytes rather than rebuilding",
+    /cp "\$cand" "\$tarball"/,
+  ],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
 }
@@ -181,9 +198,9 @@ for (const [label, pattern] of [
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
-if (directInputs.length !== 4) {
+if (directInputs.length !== 5) {
   errors.push(
-    `release.yml: expected exactly four input projections into workflow env, got ${directInputs.length}`,
+    `release.yml: expected exactly five input projections into workflow env, got ${directInputs.length}`,
   );
 }
 if (errors.length) {

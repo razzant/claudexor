@@ -36,7 +36,10 @@ for (const name of ["signed", "unsigned", "tarball", "version"]) {
 }
 
 try {
-  const authority = JSON.parse(readFileSync("release/runtime-update-authority.json", "utf8"));
+  // Production pins the tracked authority; --authority is a TEST-only override
+  // so the verification cases can be exercised with a fixture key.
+  const authorityPath = options.authority ?? "release/runtime-update-authority.json";
+  const authority = JSON.parse(readFileSync(authorityPath, "utf8"));
   const signed = JSON.parse(readFileSync(options.signed, "utf8"));
   const unsigned = JSON.parse(readFileSync(options.unsigned, "utf8"));
 
