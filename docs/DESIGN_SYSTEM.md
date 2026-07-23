@@ -744,10 +744,20 @@ views in the shared design-system files; screens compose them.
   render native markdown with BLOCK structure: headings get heading type
   styles, paragraphs stay separated (never collapsed into one run-on line),
   list items render as bulleted rows, and fenced code renders on solid
-  `surface/code`. Text is selectable. Patch/diff work products are never
-  markdown-rendered as Outcome; they belong to the workspace Changes tab, parsed from
-  `final/patch.diff`. Dense output uses solid `surface/raised`; never put
-  Liquid Glass behind dense output.
+  `surface/code`. Text is selectable. GFM pipe tables (`| a | b |` + a valid
+  `| --- |` delimiter row) render as a typed `.table` block — a NON-LAZY `Grid`
+  (never a nested `LazyVStack`, the #23 lesson) inside a horizontal `ScrollView`
+  on a solid `surface/code` (dense two-dimensional content, §3), with a semibold
+  header, delimiter-driven column alignment (`:--`/`:-:`/`--:`), and inline
+  markdown in cells through the shared AttributedString path (links still pass
+  the file-link scope gate). The table is bounded like `renderCharCap`: caps of
+  100 body rows, 12 columns, and 500 characters per cell, with any overflow
+  disclosed ("N more rows · M more columns not shown"), never silently dropped;
+  a table is not recognized mid-stream until its complete delimiter row exists
+  (a half-typed table stays readable paragraph text). Patch/diff work products
+  are never markdown-rendered as Outcome; they belong to the workspace Changes
+  tab, parsed from `final/patch.diff`. Dense output uses solid `surface/raised`;
+  never put Liquid Glass behind dense output.
 - **Evidence badges.** Header/timeline badges show output readiness
   (`pending/finalizing/ready/diagnostic`), requested/effective access, web policy,
   web evidence (`none/attempted/satisfied/failed/unverified`), tool errors,

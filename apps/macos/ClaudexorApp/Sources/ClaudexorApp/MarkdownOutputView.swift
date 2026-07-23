@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Block-aware markdown rendering: headings, paragraphs, list items, and fenced
-/// code render as separate views. `AttributedString(markdown:)` alone collapses
-/// every newline into one run-on line, which made multi-paragraph answers unreadable.
+/// Block-aware markdown rendering: headings, paragraphs, list items, fenced
+/// code, and GFM pipe tables render as separate views. `AttributedString(markdown:)`
+/// alone collapses every newline into one run-on line, which made multi-paragraph
+/// answers unreadable and flattened tables into `| a | b | | --- | --- |` runs (#24).
 ///
 /// Shared by the run-detail answer view and the chat transcript (a turn's assistant
 /// message renders markdown, not flat text — the v0.10 chat regression fix).
@@ -45,6 +46,11 @@ struct MarkdownOutputView: View {
                             }
                         }
                     }
+                case .table(let table):
+                    // Dense two-dimensional content: a NON-LAZY bounded Grid inside a
+                    // horizontal ScrollView on a solid code surface (§3 dense-content
+                    // rule). Explicitly no nested LazyVStack — the #23 hang lesson.
+                    MarkdownTableView(table: table, bodyFont: bodyFont)
                 case .code:
                     ScrollView(.horizontal, showsIndicators: true) {
                         Text(block.text)
@@ -66,7 +72,8 @@ struct MarkdownOutputView: View {
         // SAFE-type file — an out-of-scope target OR an executable/script/app
         // (a `.command`/`.app` would launch agent code, sol #11) is refused
         // with a VISIBLE disclosure, not a silent beep (sol #14). Web links
-        // keep normal browser behavior.
+        // keep normal browser behavior. This gate also covers links that live
+        // INSIDE table cells (their inline text runs the same openURL action).
         .environment(\.openURL, OpenURLAction { url in
             guard url.isFileURL || url.scheme == nil else { return .systemAction }
             let raw = url.isFileURL ? url.path : url.absoluteString
@@ -121,6 +128,16 @@ struct MarkdownOutputView: View {
     }
     private var renderTruncated: Int { max(0, markdown.count - Self.renderCharCap) }
 
+    // MARK: - Table limits (bounded like renderCharCap: a hostile/oversized
+    // table must never explode layout on the main thread). Overflow is
+    // disclosed, never silently dropped.
+    /// Body rows rendered; the rest disclosed as "N more rows".
+    static let maxTableRows = 100
+    /// Columns rendered; wider header/rows are clipped and disclosed.
+    static let maxTableColumns = 12
+    /// Per-cell character bound before it reaches the inline parser/layout.
+    static let maxTableCellChars = 500
+
     // Memoized: parsing was a computed property that re-ran on EVERY render, so a
     // list re-render (e.g. one new SSE event) re-parsed every visible message. The
     // cache keys on the raw string — a completed message's text never changes, so it
@@ -136,7 +153,7 @@ struct MarkdownOutputView: View {
     }()
 
     /// Internal (not private) so the W22 acceptance fixtures can assert the
-    /// block structure (headings / lists / fences) without rendering views.
+    /// block structure (headings / lists / fences / tables) without rendering views.
     static func parse(_ markdown: String) -> [MarkdownBlock] {
         let key = markdown as NSString
         if let hit = cache.object(forKey: key) { return hit.blocks }
@@ -162,7 +179,12 @@ struct MarkdownOutputView: View {
             list.removeAll()
         }
 
-        for line in markdown.components(separatedBy: .newlines) {
+        // Indexed walk (not a bare for-line loop) so a table can look one line
+        // AHEAD for its delimiter row and then consume its body rows.
+        let lines = markdown.components(separatedBy: .newlines)
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
             if line.hasPrefix("```") {
                 if inCode {
                     out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n")))
@@ -172,11 +194,21 @@ struct MarkdownOutputView: View {
                     flushParagraph(); flushList()
                     inCode = true
                 }
+                i += 1; continue
+            }
+            if inCode { code.append(line); i += 1; continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { flushParagraph(); flushList(); i += 1; continue }
+
+            // GFM table: a header row + a VALID delimiter row on the NEXT line.
+            // Streaming-safe: `tableAt` returns nil until the complete delimiter
+            // line already exists, so a half-typed table stays paragraph text.
+            if let hit = tableAt(lines, i) {
+                flushParagraph(); flushList()
+                out.append(MarkdownBlock(id: out.count, kind: .table(hit.table), text: hit.rawText))
+                i = hit.nextIndex
                 continue
             }
-            if inCode { code.append(line); continue }
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { flushParagraph(); flushList(); continue }
             if let image = imageLine(trimmed) {
                 flushParagraph(); flushList()
                 out.append(MarkdownBlock(id: out.count, kind: .image(alt: image.alt, target: image.target), text: trimmed))
@@ -190,10 +222,142 @@ struct MarkdownOutputView: View {
                 flushList()
                 paragraph.append(trimmed)
             }
+            i += 1
         }
         if !code.isEmpty { out.append(MarkdownBlock(id: out.count, kind: .code, text: code.joined(separator: "\n"))) }
         flushParagraph(); flushList()
         return out.isEmpty ? [MarkdownBlock(id: 0, kind: .paragraph, text: markdown)] : out
+    }
+
+    // MARK: - Table parsing
+
+    /// If `lines[i]` is a table header whose next line is a valid delimiter,
+    /// build the bounded typed table and return the index PAST its last body
+    /// row. Returns nil otherwise (including when the delimiter line does not
+    /// yet exist — streaming safety). Internal for the parser fixtures.
+    static func tableAt(_ lines: [String], _ i: Int) -> (table: MarkdownTable, rawText: String, nextIndex: Int)? {
+        let headerLine = lines[i].trimmingCharacters(in: .whitespaces)
+        guard headerLine.contains("|") else { return nil }
+        // The delimiter row must ALREADY be present (do not recognize a table
+        // mid-stream before it arrives).
+        guard i + 1 < lines.count else { return nil }
+        let delimLine = lines[i + 1].trimmingCharacters(in: .whitespaces)
+
+        var header = tableCells(headerLine)
+        let delim = tableCells(delimLine)
+        guard !header.isEmpty,
+              header.count == delim.count,
+              delim.allSatisfy(isDelimiterCell) else { return nil }
+        var alignments = delim.map(alignmentOf)
+
+        // Body rows: every following non-empty line that still tokenizes as a
+        // pipe row. Stops at the first non-row line (blank / no pipe / fence).
+        var rows: [[String]] = []
+        var j = i + 2
+        while j < lines.count {
+            let t = lines[j].trimmingCharacters(in: .whitespaces)
+            if t.isEmpty || t.hasPrefix("```") || !t.contains("|") { break }
+            var cells = tableCells(t)
+            // Normalize ragged rows to the header width (pad short, clip long).
+            if cells.count < header.count {
+                cells.append(contentsOf: Array(repeating: "", count: header.count - cells.count))
+            } else if cells.count > header.count {
+                cells = Array(cells.prefix(header.count))
+            }
+            rows.append(cells)
+            j += 1
+        }
+
+        // Column cap.
+        var truncatedCols = 0
+        if header.count > maxTableColumns {
+            truncatedCols = header.count - maxTableColumns
+            header = Array(header.prefix(maxTableColumns))
+            alignments = Array(alignments.prefix(maxTableColumns))
+            rows = rows.map { Array($0.prefix(maxTableColumns)) }
+        }
+        // Row cap.
+        var truncatedRows = 0
+        if rows.count > maxTableRows {
+            truncatedRows = rows.count - maxTableRows
+            rows = Array(rows.prefix(maxTableRows))
+        }
+        // Per-cell character cap.
+        header = header.map(capCell)
+        rows = rows.map { $0.map(capCell) }
+
+        let table = MarkdownTable(header: header, alignments: alignments, rows: rows,
+                                  truncatedRows: truncatedRows, truncatedColumns: truncatedCols)
+        let rawText = lines[i..<j].joined(separator: "\n")
+        return (table, rawText, j)
+    }
+
+    /// Split ONE table line into cells: honors escaped `\|`, ignores pipes
+    /// inside inline-code (backtick) spans, and drops the empty cells produced
+    /// by optional leading/trailing pipes. Plain character walk (no regex, the
+    /// house style). Internal for the tokenizer fixtures.
+    static func tableCells(_ line: String) -> [String] {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        var cells: [String] = []
+        var current = ""
+        var inCode = false
+        var idx = trimmed.startIndex
+        while idx < trimmed.endIndex {
+            let ch = trimmed[idx]
+            if ch == "\\" {
+                let next = trimmed.index(after: idx)
+                if next < trimmed.endIndex, trimmed[next] == "|" {
+                    // Escaped pipe → a literal pipe inside the cell, not a separator.
+                    current.append("|")
+                    idx = trimmed.index(after: next)
+                    continue
+                }
+                current.append(ch)
+                idx = trimmed.index(after: idx)
+                continue
+            }
+            if ch == "`" {
+                inCode.toggle(); current.append(ch)
+                idx = trimmed.index(after: idx); continue
+            }
+            if ch == "|", !inCode {
+                cells.append(current); current = ""
+                idx = trimmed.index(after: idx); continue
+            }
+            current.append(ch)
+            idx = trimmed.index(after: idx)
+        }
+        cells.append(current)
+        // Drop the empty leading/trailing cells that an outer `|` produces —
+        // but keep genuinely empty INTERIOR cells (`a || b`).
+        if trimmed.hasPrefix("|"), let first = cells.first,
+           first.trimmingCharacters(in: .whitespaces).isEmpty {
+            cells.removeFirst()
+        }
+        if trimmed.hasSuffix("|"), let last = cells.last,
+           last.trimmingCharacters(in: .whitespaces).isEmpty {
+            cells.removeLast()
+        }
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// A delimiter cell is `:?-+:?` (dashes with optional alignment colons).
+    static func isDelimiterCell(_ cell: String) -> Bool {
+        var s = Substring(cell)
+        if s.first == ":" { s = s.dropFirst() }
+        if s.last == ":" { s = s.dropLast() }
+        return !s.isEmpty && s.allSatisfy { $0 == "-" }
+    }
+
+    static func alignmentOf(_ cell: String) -> MarkdownTable.Alignment {
+        let lead = cell.hasPrefix(":"), trail = cell.hasSuffix(":")
+        if lead && trail { return .center }
+        if trail { return .trailing }
+        return .leading
+    }
+
+    static func capCell(_ s: String) -> String {
+        s.count > maxTableCellChars ? String(s.prefix(maxTableCellChars)) + "…" : s
     }
 
     /// A whole-line markdown image: `![alt](target)`. Plain syntax walk (the
@@ -233,10 +397,107 @@ struct MarkdownOutputView: View {
         return String(line.dropFirst(head.count + 2))
     }
 
+    /// A parsed GFM pipe table. Bounded at parse time (rows/columns/cell
+    /// length); `truncated*` disclose what the caps dropped.
+    struct MarkdownTable: Equatable {
+        enum Alignment: Equatable { case leading, center, trailing }
+        let header: [String]
+        let alignments: [Alignment]
+        let rows: [[String]]
+        let truncatedRows: Int
+        let truncatedColumns: Int
+    }
+
     struct MarkdownBlock: Identifiable, Equatable {
-        enum Kind: Equatable { case heading(Int), paragraph, list, code, image(alt: String, target: String) }
+        enum Kind: Equatable {
+            case heading(Int), paragraph, list, code
+            case image(alt: String, target: String)
+            case table(MarkdownTable)
+        }
         let id: Int
         let kind: Kind
         let text: String
+    }
+}
+
+/// The dedicated table renderer: a NON-LAZY `Grid` inside a horizontal
+/// `ScrollView` on a solid `codeSurface` (§3 — dense content never sits on
+/// glass). No nested lazy layout in the conversation scroll hierarchy (#23).
+/// Cell text runs the shared inline AttributedString path, so emphasis / code /
+/// links keep working and the parent's file-link `openURL` gate still applies.
+struct MarkdownTableView: View {
+    let table: MarkdownOutputView.MarkdownTable
+    var bodyFont: Font = .callout
+
+    private let cellMinWidth: CGFloat = 64
+    private let cellMaxWidth: CGFloat = 320
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            ScrollView(.horizontal, showsIndicators: true) {
+                Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                    GridRow {
+                        ForEach(Array(table.header.enumerated()), id: \.offset) { idx, text in
+                            cell(text, align: alignment(idx), header: true)
+                        }
+                    }
+                    ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                        GridRow {
+                            ForEach(Array(row.enumerated()), id: \.offset) { idx, text in
+                                cell(text, align: alignment(idx), header: false)
+                            }
+                        }
+                    }
+                }
+                .fixedSize()
+            }
+            .codeSurface(Theme.Radius.control)
+            if let disclosure {
+                Text(disclosure)
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func alignment(_ idx: Int) -> MarkdownOutputView.MarkdownTable.Alignment {
+        idx < table.alignments.count ? table.alignments[idx] : .leading
+    }
+
+    @ViewBuilder
+    private func cell(_ text: String, align: MarkdownOutputView.MarkdownTable.Alignment, header: Bool) -> some View {
+        Text(MarkdownOutputView.inlineAttributed(text))
+            .font(header ? bodyFont.weight(.semibold) : bodyFont)
+            .multilineTextAlignment(textAlignment(align))
+            .textSelection(.enabled)
+            .padding(.horizontal, Theme.Spacing.md)
+            .padding(.vertical, Theme.Spacing.sm)
+            .frame(minWidth: cellMinWidth, maxWidth: cellMaxWidth, alignment: frameAlignment(align))
+            .background(header ? Theme.surfaceRaisedHi : Color.clear)
+            .overlay(alignment: .trailing) { Rectangle().fill(Theme.separator).frame(width: 1) }
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.separator).frame(height: 1) }
+    }
+
+    private func frameAlignment(_ a: MarkdownOutputView.MarkdownTable.Alignment) -> Alignment {
+        switch a {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    private func textAlignment(_ a: MarkdownOutputView.MarkdownTable.Alignment) -> TextAlignment {
+        switch a {
+        case .leading: .leading
+        case .center: .center
+        case .trailing: .trailing
+        }
+    }
+
+    private var disclosure: String? {
+        var parts: [String] = []
+        if table.truncatedRows > 0 { parts.append("\(table.truncatedRows) more rows") }
+        if table.truncatedColumns > 0 { parts.append("\(table.truncatedColumns) more columns") }
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: " · ") + " not shown — open the run's full answer artifact."
     }
 }
