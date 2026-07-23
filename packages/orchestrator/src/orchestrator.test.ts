@@ -4893,6 +4893,170 @@ describe("Orchestrator", () => {
     });
   });
 
+  // Planner attempts share the explorer path's deliverable exception
+  // (INV-043/INV-044): a delivered plan downgrades a benign unrecovered tool
+  // error to warning evidence instead of discarding the deliverable.
+  function toolErrorPlannerAdapter(id: string, planLines: string[]): HarnessAdapter {
+    return {
+      ...markdownPlannerAdapter(id, planLines),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "tool_call",
+          session_id: spec.session_id,
+          ts,
+          text: "rg TODO src",
+          tool: { name: "command", kind: "command", use_id: "t1", target: "rg TODO src" },
+        };
+        yield {
+          type: "tool_result",
+          session_id: spec.session_id,
+          ts,
+          tool: {
+            name: "command",
+            kind: "command",
+            use_id: "t1",
+            status: "error",
+            error_summary: "command exited with code 1",
+          },
+        };
+        if (planLines.length > 0) {
+          yield { type: "message", session_id: spec.session_id, ts, text: planLines.join("\n") };
+        }
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+  }
+
+  it("a delivered plan survives a benign unrecovered tool error as success_with_warnings", async () => {
+    const repo = await initRepo();
+    const planner = toolErrorPlannerAdapter("planner", [
+      "# Plan despite the no-match search",
+      "1. Do the thing in src/a.ts",
+      "",
+      "## Open Questions",
+      "- (none)",
+    ]);
+    const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "plan it",
+      mode: "plan",
+      harnesses: ["planner"],
+    });
+    // The contracted deliverable landed — the unrecovered non-web tool error
+    // is disclosed as a warning, never a discarded plan (explorer parity).
+    expect(legacyOutcome(res)).toBe("success");
+    expect(readFileSync(join(res.runDir, "final", "plan.md"), "utf8")).toContain(
+      "# Plan despite the no-match search",
+    );
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      attempts: Array<{
+        attempt_id: string;
+        outcome: {
+          deliverable_present: boolean;
+          harness_errored: boolean;
+          tool_warnings_count: number;
+          status: string;
+        };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry).toMatchObject({
+      attempts: [
+        {
+          attempt_id: "p01",
+          outcome: {
+            deliverable_present: true,
+            harness_errored: false,
+            tool_warnings_count: 1,
+            status: "success_with_warnings",
+          },
+        },
+      ],
+    });
+  });
+
+  it("a deliverable-less planner still hard-fails on an unrecovered tool error", async () => {
+    const repo = await initRepo();
+    const planner = toolErrorPlannerAdapter("planner", []);
+    const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "plan it",
+      mode: "plan",
+      harnesses: ["planner"],
+    });
+    expect(legacyOutcome(res)).toBe("failed");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("failed without recovery");
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      attempts: Array<{
+        attempt_id: string;
+        outcome: { deliverable_present: boolean; status: string };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry).toMatchObject({
+      attempts: [{ attempt_id: "p01", outcome: { deliverable_present: false, status: "failed" } }],
+    });
+  });
+
+  it("required web evidence keeps blocking a planner even when the plan text was delivered", async () => {
+    const repo = await initRepo();
+    // Delivers a plan but never attempts the REQUIRED web evidence — the web
+    // gate is a separate axis and must not be softened by the deliverable
+    // exception. (web_policy: "tools" so the harness is eligible for --web live.)
+    const planner: HarnessAdapter = {
+      ...markdownPlannerAdapter("planner", []),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "planner",
+          display_name: "planner",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { plan: true, web_policy: "tools" },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: ["# Plan from memory, no web call made", "", "## Open Questions", "- (none)"].join(
+            "\n",
+          ),
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({ registry: new Map([["planner", planner]]), reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "plan against the latest release notes",
+      mode: "plan",
+      harnesses: ["planner"],
+      web: "live",
+    });
+    expect(legacyOutcome(res)).toBe("blocked");
+    expect(readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8")).toContain(
+      "never attempted",
+    );
+    const telemetry = new ArtifactStore(repo).readYaml<{
+      attempts: Array<{
+        attempt_id: string;
+        outcome: { web_required_unsatisfied: boolean; status: string };
+      }>;
+    }>(join(res.runDir, "final", "telemetry.yaml"));
+    expect(telemetry).toMatchObject({
+      attempts: [
+        { attempt_id: "p01", outcome: { web_required_unsatisfied: true, status: "blocked" } },
+      ],
+    });
+  });
+
   // Council (INV-031): a planner that emits DRAFT questions on intent=plan and
   // a DIFFERENT merged set on intent=synthesize, so the "parser runs on the
   // merge output only" promise is verifiable — draft questions must not leak.

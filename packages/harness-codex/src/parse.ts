@@ -220,8 +220,16 @@ export function parseCodexEvent(
         ];
       }
       case "command_execution": {
+        // grep-family exit code 1 is the tools' documented "no matches"
+        // outcome — a benign empty recon result, not a tool failure. Real
+        // errors (bad flags, unreadable paths) use exit >= 2 and still map to
+        // error. Detection reads the LEADING argv token only (no deep parsing
+        // of shell chains): `cd x && rg y` stays an error here as-is.
+        const noMatches = item.exit_code === 1 && isSearchNoMatchCommand(item.command);
         const failed =
-          item.status === "failed" || (typeof item.exit_code === "number" && item.exit_code !== 0);
+          !noMatches &&
+          (item.status === "failed" ||
+            (typeof item.exit_code === "number" && item.exit_code !== 0));
         const detail = summarizeCodexOutput(item.aggregated_output ?? item.output);
         return [
           {
@@ -337,6 +345,19 @@ function applyCodexTransient(ev: HarnessEvent, message: string): void {
     kind: /stream disconnected/i.test(message) ? "stream_disconnect" : "network",
     retry_delay_ms: null,
   };
+}
+
+// Search commands whose documented exit code 1 means "ran fine, found
+// nothing" (their real errors exit >= 2).
+const SEARCH_NO_MATCH_COMMANDS = new Set(["rg", "grep", "egrep", "fgrep", "find"]);
+
+/** True when the command's LEADING argv token is a search-family tool. No
+ *  deep parsing of shell chains: a chain is judged by its first token like
+ *  any other command, so `cd x && rg y` never gets the exit-1 carve-out. */
+function isSearchNoMatchCommand(command: unknown): boolean {
+  if (typeof command !== "string") return false;
+  const leading = command.trimStart().split(/\s+/, 1)[0];
+  return leading !== undefined && SEARCH_NO_MATCH_COMMANDS.has(leading);
 }
 
 function commandToolRef(item: Json): ToolRef {
