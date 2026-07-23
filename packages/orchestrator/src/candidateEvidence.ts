@@ -64,8 +64,6 @@ export function toCandidateEvidence(
     diffSize: run.diff.split("\n").length,
     diffBytes: Buffer.byteLength(run.diff, "utf8"),
     costUsd: run.cost,
-    ...(run.telemetry.outcome?.workState
-      ? { workState: run.telemetry.outcome.workState }
-      : {}),
+    ...(run.telemetry.outcome?.workState ? { workState: run.telemetry.outcome.workState } : {}),
   };
 }

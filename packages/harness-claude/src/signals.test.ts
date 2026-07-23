@@ -87,7 +87,12 @@ describe("claude D-16 signal fixtures", () => {
   it("maps rapid_refill_breaker terminal_reason to the continuation-eligible repeated_refill cause", () => {
     const parser = createClaudeParser();
     const out = parser(
-      { type: "result", subtype: "success", is_error: true, terminal_reason: "rapid_refill_breaker" },
+      {
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        terminal_reason: "rapid_refill_breaker",
+      },
       "sig",
     );
     const ctx = (out ?? []).filter((e) => e.type === "context");

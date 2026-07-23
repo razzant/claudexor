@@ -230,7 +230,12 @@ export function unwrapWorkReportEnvelope(
   opts: { sideToolReport?: unknown } = {},
 ): UnwrappedAnswer {
   if (!mode.active) {
-    return { deliverable: answerText, workReport: null, source: mode.source, contractViolation: null };
+    return {
+      deliverable: answerText,
+      workReport: null,
+      source: mode.source,
+      contractViolation: null,
+    };
   }
   // side_tool: the markdown answer stays the deliverable; the report is the tool
   // payload. A missing/malformed tool report is a typed contract failure.
@@ -415,9 +420,7 @@ export function finalizeAttempt(input: FinalizeAttemptInput): FinalizeAttemptRes
       workState: {
         state: report.state,
         source: input.workReportSource,
-        ...(report.required_inputs.length > 0
-          ? { required_inputs: report.required_inputs }
-          : {}),
+        ...(report.required_inputs.length > 0 ? { required_inputs: report.required_inputs } : {}),
       },
       reason: report.state === "needs_input" ? "input_required" : "work_incomplete",
       outcomeClass: "veto",

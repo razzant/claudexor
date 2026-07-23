@@ -293,7 +293,8 @@ export async function resolveProducedRoot(
       // Purge nulls worktree_path (and removes the tree); a never-written
       // isolated thread also has none. Either way there is no run-owned tree to
       // serve — answer typed, do not leak the live project.
-      if (!worktree) return { kind: "worktree_unavailable", threadId, reason: "worktree_not_retained" };
+      if (!worktree)
+        return { kind: "worktree_unavailable", threadId, reason: "worktree_not_retained" };
       if (!existsSync(worktree))
         return { kind: "worktree_unavailable", threadId, reason: "worktree_missing" };
       return { kind: "root", root: worktree };

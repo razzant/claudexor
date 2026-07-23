@@ -128,7 +128,8 @@ const DENIAL_MESSAGE: Record<BudgetDenial["code"], string> = {
 const TERMINAL_MESSAGE: Record<Exclude<BudgetTerminal, null>, string> = {
   budget_exhausted: "the run stopped: the paid budget was exhausted",
   budget_overshoot: "the run stopped: settled spend exceeded the paid budget cap",
-  cost_unverifiable: "the run stopped: a route's incremental cost could not be verified under the finite cap",
+  cost_unverifiable:
+    "the run stopped: a route's incremental cost could not be verified under the finite cap",
 };
 
 /**

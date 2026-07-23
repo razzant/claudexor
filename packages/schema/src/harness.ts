@@ -1036,19 +1036,25 @@ export const HarnessEvent = z
           .string()
           .nullable()
           .default(null)
-          .describe("The vendor's own terminal/context code passed verbatim as evidence; null when none."),
+          .describe(
+            "The vendor's own terminal/context code passed verbatim as evidence; null when none.",
+          ),
         trigger: z
           .enum(["manual", "auto"])
           .nullable()
           .default(null)
-          .describe("Whether the compaction was manually or automatically triggered; null when unreported."),
+          .describe(
+            "Whether the compaction was manually or automatically triggered; null when unreported.",
+          ),
         pre_tokens: z
           .number()
           .int()
           .nonnegative()
           .nullable()
           .default(null)
-          .describe("Token count before the compaction/exhaustion, when the vendor reports it; null otherwise."),
+          .describe(
+            "Token count before the compaction/exhaustion, when the vendor reports it; null otherwise.",
+          ),
       })
       .optional()
       .describe(

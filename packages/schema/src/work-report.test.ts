@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import AjvModule from "ajv";
-import {
-  WorkReport,
-  WORK_REPORT_TRANSPORT_SCHEMA,
-  buildWorkReportEnvelope,
-} from "./index.js";
+import { WorkReport, WORK_REPORT_TRANSPORT_SCHEMA, buildWorkReportEnvelope } from "./index.js";
 
 const Ajv = AjvModule.default ?? (AjvModule as unknown as typeof AjvModule.default);
 
@@ -74,7 +70,11 @@ describe("buildWorkReportEnvelope", () => {
   });
 
   it("a caller schema ⇒ {work_report, output:<schema>}", () => {
-    const s = { type: "object", properties: { x: { type: "string" } }, additionalProperties: false };
+    const s = {
+      type: "object",
+      properties: { x: { type: "string" } },
+      additionalProperties: false,
+    };
     const env = buildWorkReportEnvelope(s);
     expect((env["properties"] as Record<string, unknown>)["output"]).toBe(s);
     expect(env["additionalProperties"]).toBe(false);

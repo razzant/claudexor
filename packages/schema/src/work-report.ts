@@ -129,7 +129,14 @@ export const WORK_REPORT_TRANSPORT_SCHEMA: Record<string, unknown> = {
         properties: {
           kind: {
             type: "string",
-            enum: ["file", "context", "credential", "permission", "decision", "external_dependency"],
+            enum: [
+              "file",
+              "context",
+              "credential",
+              "permission",
+              "decision",
+              "external_dependency",
+            ],
           },
           locator: { type: ["string", "null"], maxLength: 512 },
           description: { type: "string", maxLength: 1024 },

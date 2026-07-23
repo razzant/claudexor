@@ -32,11 +32,7 @@ describe("classifyBudgetFailure (QA-050 shared budget-denial classifier)", () =>
   });
 
   it("gives each denial code a distinct typed code + non-auth remediation", () => {
-    for (const code of [
-      "hard_cap",
-      "estimate_headroom",
-      "unknown_paid_in_flight",
-    ] as const) {
+    for (const code of ["hard_cap", "estimate_headroom", "unknown_paid_in_flight"] as const) {
       const m = classifyBudgetFailure({ denial: denial(code), terminal: null });
       expect(m.code).toBe(code);
       expect(m.phase).toBe("budget");

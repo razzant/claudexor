@@ -218,7 +218,8 @@ describe("unwrapWorkReportEnvelope", () => {
   });
 
   it("does not let a prototype-pollution output key escape the envelope", () => {
-    const text = '{"work_report":{"state":"completed","required_inputs":[]},"__proto__":{"polluted":1},"output":"ok"}';
+    const text =
+      '{"work_report":{"state":"completed","required_inputs":[]},"__proto__":{"polluted":1},"output":"ok"}';
     const r = unwrapWorkReportEnvelope(text, ACTIVE);
     expect(r.deliverable).toBe("ok");
     expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();

@@ -163,9 +163,7 @@ export function claudeResultMessageEvents(
           ? {
               payload: {
                 ...(successResult ? { final_source: "result" } : {}),
-                ...(sideToolReport !== undefined
-                  ? { work_report_side_tool: sideToolReport }
-                  : {}),
+                ...(sideToolReport !== undefined ? { work_report_side_tool: sideToolReport } : {}),
               },
             }
           : {}),

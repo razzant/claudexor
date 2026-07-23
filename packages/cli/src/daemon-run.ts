@@ -389,7 +389,6 @@ export function exitCodeForState(state: string, facts?: RunOutcomeFacts | null):
   return processExitCodeForRunStatus(state);
 }
 
-
 /**
  * The run's derived apply-gate verdict from GET /runs/:id (single producer:
  * the delivery gate via the control API). Soft-fails to null — a detail
