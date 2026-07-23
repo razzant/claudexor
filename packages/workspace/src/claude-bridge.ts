@@ -114,6 +114,13 @@ const CLAUDE_BRIDGE_CONTENT_BYTES = Buffer.from(CLAUDE_BRIDGE_CONTENT, "utf8");
  * generated file (which the candidate never touched) is excluded. A hand-written
  * `CLAUDE.md` cannot match these exact bytes either. A symlink at the path is
  * refused (no-follow), matching the writer's fence.
+ *
+ * A-3 residual: byte-equality is NECESSARY but NOT SUFFICIENT for exclusion. It
+ * cannot distinguish our freshly written bridge from a candidate that rewrote a
+ * PRE-EXISTING committed `CLAUDE.md` to exactly these bytes, so the caller
+ * (`WorkspaceManager.diff`) AND-gates this check with the created-this-run fact:
+ * exclude only when Claudexor created the bridge this run AND the bytes still
+ * match. This function reports the byte condition alone.
  */
 export function isGeneratedClaudeBridge(worktreeRoot: string): boolean {
   const claudePath = join(worktreeRoot, CLAUDE_BRIDGE_BASENAME);

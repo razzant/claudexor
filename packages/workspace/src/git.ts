@@ -498,10 +498,11 @@ export async function branchDelete(repo: string, branch: string): Promise<void> 
 export async function diffStaged(
   worktreePath: string,
   baseSha?: string,
-  /** Additional EXACT-path pathspec excludes (e.g. the marker-verified CLAUDE.md
-   *  bridge). Each must already be a git pathspec magic term like
-   *  `:(exclude,top)<path>`. Applied to BOTH the scratch `add -A` and the diff,
-   *  so an excluded path is neither staged nor reported. */
+  /** Additional EXACT-path pathspec excludes (e.g. the generated CLAUDE.md
+   *  bridge, excluded by the caller only when it was created THIS run and its
+   *  bytes still equal CLAUDE_BRIDGE_CONTENT). Each must already be a git
+   *  pathspec magic term like `:(exclude,top)<path>`. Applied to BOTH the scratch
+   *  `add -A` and the diff, so an excluded path is neither staged nor reported. */
   extraExcludes: readonly string[] = [],
 ): Promise<string> {
   const target = baseSha && baseSha.length > 0 ? baseSha : "HEAD";

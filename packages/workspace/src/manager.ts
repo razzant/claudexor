@@ -64,6 +64,20 @@ export function processStartTime(pid: number): string | null {
 export class WorkspaceManager {
   private readonly runtimeRoot: string;
 
+  /**
+   * Envelope ids whose worktree bridge THIS manager's prep actually created
+   * (`ensureClaudeBridge` returned `created: true`) during THIS run. The
+   * diff-exclusion of the generated `CLAUDE.md` bridge is gated on this recorded
+   * fact — not on content alone (A-3 residual): byte-equality cannot tell "we
+   * wrote this bridge this run" from "a candidate rewrote a PRE-EXISTING
+   * committed CLAUDE.md to exactly CLAUDE_BRIDGE_CONTENT", and excluding the
+   * latter would silently drop the candidate's real edit. This state is
+   * intentionally in-memory and per-manager: if a daemon upgrade recreates the
+   * manager mid-run the fact is lost, and its ABSENCE fails toward CAPTURE
+   * (exclude only on positive proof), matching the safe-direction doctrine.
+   */
+  private readonly bridgeCreatedEnvelopes = new Set<string>();
+
   constructor(
     private readonly repoRoot: string,
     options: { runtimeRoot?: string } = {},
@@ -199,13 +213,16 @@ export class WorkspaceManager {
     // precondition), and no run event — this envelope is disposable and
     // Claudexor-owned. `diff()` excludes the generated bridge so it never enters
     // the candidate patch.
+    // ONLY when THIS prep actually created the bridge (recorded below) does diff()
+    // exclude it; a CLAUDE.md already present is never excluded (A-3 residual).
+    let bridgeCreatedHere = false;
     try {
-      ensureClaudeBridge(path);
+      bridgeCreatedHere = ensureClaudeBridge(path).created;
     } catch {
       /* a missing bridge is harmless; never fail envelope creation over it */
     }
 
-    return WorkspaceEnvelopeSchema.parse({
+    const envelope = WorkspaceEnvelopeSchema.parse({
       id: newId("env"),
       task_id: opts.taskId,
       attempt_id: opts.attemptId,
@@ -220,6 +237,10 @@ export class WorkspaceManager {
       dirty_policy: dirtyPolicy,
       created_at: nowIso(),
     });
+    // Record the created-this-run fact keyed by envelope id, so diff() gates the
+    // bridge exclusion on POSITIVE PROOF rather than on content bytes alone.
+    if (bridgeCreatedHere) this.bridgeCreatedEnvelopes.add(envelope.id);
+    return envelope;
   }
 
   /**
@@ -425,20 +446,30 @@ export class WorkspaceManager {
       }
     }
     // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
-    // candidate patch — by EXACT path and only when the worktree file is BYTE-
-    // IDENTICAL to the generated bridge content (A-3). A git pathspec cannot
-    // express content-equality, so the decision is computed in code here: an
-    // untouched bridge is excluded, but ANY candidate edit — even one that keeps
-    // the ownership marker — differs from the exact bytes, so the exclude is not
-    // added and the edit is captured in patch.diff. Same doctrine as the
-    // `.claudexor` artifact-dir exclusion.
-    const bridgeExcludes = isGeneratedClaudeBridge(env.worktree_path)
-      ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
-      : [];
+    // candidate patch — by EXACT path, and only when BOTH conditions hold: (1)
+    // THIS run's prep actually created the bridge (the recorded created-this-run
+    // fact), and (2) the worktree file is still BYTE-IDENTICAL to the generated
+    // bridge content. A git pathspec cannot express either condition, so the
+    // decision is computed in code here. Condition (1) closes the A-3 residual:
+    // byte-equality alone cannot tell our freshly written bridge from a candidate
+    // that rewrote a PRE-EXISTING committed CLAUDE.md to exactly the bridge bytes,
+    // and excluding the latter would silently drop the candidate's real edit. If
+    // the created fact is absent (pre-existing file, a prior run, or a daemon
+    // upgrade that lost the in-memory fact), we NEVER exclude — failing toward
+    // CAPTURE. Condition (2) keeps a candidate that EDITED the bridge we DID
+    // create in the diff. Same exact-path doctrine as the `.claudexor`
+    // artifact-dir exclusion.
+    const bridgeExcludes =
+      this.bridgeCreatedEnvelopes.has(env.id) && isGeneratedClaudeBridge(env.worktree_path)
+        ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
+        : [];
     return diffStaged(env.worktree_path, env.base_sha ?? undefined, bridgeExcludes);
   }
 
   async dispose(env: WorkspaceEnvelope): Promise<void> {
+    // Drop the created-this-run bridge fact so a long-lived manager doesn't
+    // accumulate envelope ids (a disposed envelope is never diffed again).
+    this.bridgeCreatedEnvelopes.delete(env.id);
     // In-place envelopes point worktree_path at the live repo root; NEVER remove a
     // worktree or the tree itself in that case.
     const inPlace = env.worktree_path === env.repo_root;

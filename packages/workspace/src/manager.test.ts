@@ -26,7 +26,7 @@ import {
   snapshotTree,
 } from "./git.js";
 import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
-import { CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
+import { CLAUDE_BRIDGE_CONTENT, CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
 import { WorkspaceManager } from "./manager.js";
 import { advanceThreadWorktree, ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -164,7 +164,8 @@ describe("WorkspaceManager", () => {
     const diff = await mgr.diff(env);
     // The real change is captured...
     expect(diff).toContain("feature.ts");
-    // ...but the marker-verified bridge NEVER pollutes patch.diff.
+    // ...but the bridge WE created this run, still byte-identical, NEVER pollutes
+    // patch.diff (created-this-run fact AND byte-equality both hold).
     expect(diff).not.toContain("CLAUDE.md");
     expect(diff).not.toContain("@AGENTS.md");
 
@@ -174,7 +175,8 @@ describe("WorkspaceManager", () => {
   it("captures a candidate-authored CLAUDE.md (no bridge marker) in the patch", async () => {
     // No AGENTS.md -> no generated bridge; a candidate that authors its OWN
     // CLAUDE.md must have it captured like any real change (exact-path exclusion
-    // is gated on the ownership marker, never on the basename alone).
+    // is gated on the created-this-run fact plus byte-equality, never on the
+    // basename alone — and here Claudexor created no bridge this run).
     const repo = await initRepo();
     const mgr = new WorkspaceManager(repo);
     const env = await mgr.create({ taskId: "task-userclaude", attemptId: "a01", baseRef: "HEAD" });
@@ -229,6 +231,38 @@ describe("WorkspaceManager", () => {
     const diff = await mgr.diff(env);
     expect(diff).toContain("feature.ts");
     expect(diff).not.toContain("CLAUDE.md");
+    await mgr.dispose(env);
+  });
+
+  it("A-3 residual: captures a candidate that rewrites a PRE-EXISTING committed CLAUDE.md to exactly the bridge bytes", async () => {
+    // The A-3 residual corner: byte-equality alone cannot tell "Claudexor wrote
+    // this bridge this run" from "a candidate rewrote a pre-existing committed
+    // CLAUDE.md to exactly CLAUDE_BRIDGE_CONTENT". Here a CLAUDE.md is already
+    // committed with DIFFERENT content, so ensureClaudeBridge never creates the
+    // bridge this run (claude_exists). The candidate then rewrites it to the exact
+    // bridge bytes. Because the created-this-run fact is absent, the exclusion is
+    // NOT applied and the candidate's real edit is captured — failing toward
+    // CAPTURE, not silently dropped.
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-preexisting-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    writeFileSync(join(repo, "CLAUDE.md"), "# pre-existing hand-written claude rules\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-bridge-preexisting", attemptId: "a01" });
+    const bridgePath = join(env.worktree_path, "CLAUDE.md");
+    // The committed CLAUDE.md was materialized as-is; Claudexor did NOT create it.
+    expect(readFileSync(bridgePath, "utf8")).toContain("pre-existing hand-written claude rules");
+
+    // The candidate rewrites it to EXACTLY the generated bridge bytes.
+    writeFileSync(bridgePath, CLAUDE_BRIDGE_CONTENT);
+
+    const diff = await mgr.diff(env);
+    // The rewrite is a real candidate edit and MUST be captured, not dropped.
+    expect(diff).toContain("CLAUDE.md");
+    expect(diff).toContain("pre-existing hand-written claude rules");
     await mgr.dispose(env);
   });
 
