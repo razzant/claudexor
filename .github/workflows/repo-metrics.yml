@@ -1,0 +1,65 @@
+name: Repo metrics
+
+# Daily refresh of the committed star-history / total-downloads charts, the
+# CSV ledger, and the shields endpoint badge (D-15). The generated assets under
+# docs/assets are what the README embeds, so this job's only mutation is to
+# commit those regenerated files back to the default branch.
+#
+# GITHUB_TOKEN push semantics: commits pushed with the built-in GITHUB_TOKEN do
+# NOT trigger further workflow runs (GitHub suppresses recursive event
+# triggers), so this daily commit cannot start another CI or release run. That
+# is the intended behavior here; do not swap in a PAT, which would re-enable
+# those triggers and could loop.
+
+on:
+  schedule:
+    # 06:17 UTC daily. Off the top of the hour to dodge cron congestion; the
+    # npm point range and GitHub cumulative counts do not care about the minute.
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+# Serialize runs so a slow fetch cannot race a later scheduled run into a
+# conflicting commit. Never cancel an in-flight run mid-commit.
+concurrency:
+  group: repo-metrics
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # The collector is dependency-free stdlib Node, so there is no install
+      # step. Prove the pure logic before touching the network or the ledger.
+      - name: Self-test the metrics collector
+        run: node scripts/update-repo-metrics.mjs --check
+
+      - name: Refresh metrics, charts, and badge
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/update-repo-metrics.mjs
+
+      - name: Commit regenerated assets when they changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/assets/repo-metrics.csv docs/assets/star-history-light.svg \
+            docs/assets/star-history-dark.svg docs/assets/downloads-light.svg \
+            docs/assets/downloads-dark.svg docs/assets/downloads-badge.json
+          if git diff --cached --quiet; then
+            echo "No metrics change today; nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore(metrics): daily repo metrics refresh"
+          git push
