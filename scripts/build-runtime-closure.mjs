@@ -25,9 +25,18 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runtimeArchiveName } from "./lib/runtime-manifest-contract.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -136,6 +145,58 @@ function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+/**
+ * The deterministic build sha the daemon handshake discloses (QA-002). It is
+ * the SAME value build-app.sh stamps into the esbuild bundle via
+ * `--define:process.env.CLAUDEXOR_BUILD_SHA`, so the manifest's `buildSha` and
+ * the running engine's `engine.sha` agree byte-for-byte. Source of truth:
+ * CLAUDEXOR_BUILD_SHA (set by CI / build-app.sh), else `git rev-parse HEAD`.
+ */
+function resolveBuildSha() {
+  const env = (process.env.CLAUDEXOR_BUILD_SHA ?? "").trim();
+  if (/^[0-9a-f]{40}$/.test(env)) return env;
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+    if (/^[0-9a-f]{40}$/.test(sha)) return sha;
+  } catch {
+    /* fall through */
+  }
+  throw new Error(
+    "could not resolve a 40-char build sha (set CLAUDEXOR_BUILD_SHA or run inside a git checkout)",
+  );
+}
+
+/**
+ * Native-addon guard (D-2 defense-in-depth): the runtime closure must be pure
+ * JS + the standalone process-identity helper. A `.node` C++ addon would be
+ * dlopen'd INTO the bundled Node, which ships `disable-library-validation`, so a
+ * closure-carried addon would load unsigned native code — the signed sha256 is
+ * the only integrity barrier and we do not want a second, weaker one. Refuse if
+ * any `.node` file appears anywhere under the staged closure entries.
+ */
+function assertNoNativeAddons(resources, entries) {
+  const offenders = [];
+  const walk = (dir, rel) => {
+    for (const name of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, name.name);
+      const relPath = rel ? `${rel}/${name.name}` : name.name;
+      if (name.isDirectory()) walk(abs, relPath);
+      else if (name.name.endsWith(".node")) offenders.push(relPath);
+    }
+  };
+  for (const entry of entries) {
+    const abs = join(resources, entry);
+    if (statSync(abs).isDirectory()) walk(abs, entry);
+    else if (entry.endsWith(".node")) offenders.push(entry);
+  }
+  if (offenders.length > 0) {
+    fail(
+      `runtime closure contains native addon(s) forbidden by D-2: ${offenders.join(", ")} ` +
+        "(the bundled Node's disable-library-validation would load them unsigned)",
+    );
+  }
+}
+
 function main() {
   let options;
   try {
@@ -170,12 +231,16 @@ function main() {
   if (CLOSURE_ENTRIES.includes("node"))
     fail("node must never be part of the runtime update closure");
 
+  // Native-addon guard runs on the STAGED bundle, before we tar anything.
+  assertNoNativeAddons(resources, CLOSURE_ENTRIES);
+
   const minAppVersion = readMinAppVersion(version);
   const notes = readNotes(version);
+  const buildSha = resolveBuildSha();
 
   const out = resolve(outDir);
   mkdirSync(out, { recursive: true });
-  const tarballName = `claudexor-runtime-${version}.tar.gz`;
+  const tarballName = runtimeArchiveName(version);
   const tarballPath = join(out, tarballName);
   rmSync(tarballPath, { force: true });
 
@@ -189,14 +254,32 @@ function main() {
     fail(`tar produced no runtime closure at ${tarballPath}`);
   }
 
+  // The stamped bundle inside the closure MUST carry this exact build sha, so
+  // the manifest's buildSha and the running engine's handshake sha agree. A
+  // "unknown"/unstamped bundle here means the esbuild define did not run —
+  // refuse rather than ship a manifest that lies about the engine identity.
+  const bundleText = readFileSync(join(resources, "claudexord.bundle.cjs"), "utf8");
+  if (!bundleText.includes(buildSha)) {
+    fail(
+      `claudexord.bundle.cjs is not stamped with build sha ${buildSha}: run build-app.sh with the ` +
+        "esbuild CLAUDEXOR_BUILD_SHA define (bundled + downloaded closures must be stamped identically)",
+    );
+  }
+
   // Self-verify: the manifest digest MUST be the digest of the file we ship.
   const sha256 = sha256File(tarballPath);
 
+  // UNSIGNED manifest (D-2): the candidate workflow emits this; the owner signs
+  // it OFFLINE (scripts/sign-runtime-manifest.mjs adds keyId/algorithm/
+  // signature). The field set is the ONE canonical contract shape. `signature`
+  // is intentionally absent until the offline signer seals it.
   const manifest = {
+    schemaVersion: 1,
     version,
     sha256,
     minAppVersion,
-    signature: null,
+    archiveName: tarballName,
+    buildSha,
     notes,
   };
   const manifestPath = join(out, "runtime-manifest.json");
@@ -204,7 +287,7 @@ function main() {
 
   process.stdout.write(
     `Runtime closure built: ${tarballName} (${statSync(tarballPath).size} bytes, sha256 ${sha256})\n` +
-      `  minAppVersion=${minAppVersion}\n  manifest=${manifestPath}\n`,
+      `  minAppVersion=${minAppVersion} buildSha=${buildSha}\n  manifest=${manifestPath} (UNSIGNED — owner signs offline)\n`,
   );
 }
 

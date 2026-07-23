@@ -69,8 +69,18 @@ for (const [label, pattern] of [
     /cp "\$RUNNER_TEMP\/runtime-closure\/claudexor-runtime-\$VERSION\.tar\.gz" "\$assets\/"/,
   ],
   [
-    "runtime manifest ships as a release asset",
+    "candidate runtime manifest ships as a release asset",
     /cp "\$RUNNER_TEMP\/runtime-closure\/runtime-manifest\.json" "\$assets\/"/,
+  ],
+  [
+    // D-2: publish must verify the owner-signed manifest fail-closed before it
+    // ships (pinned-authority signature + promoted-artifact byte-identity).
+    "publish verifies the owner-signed runtime manifest",
+    /verify-signed-runtime-manifest\.mjs/,
+  ],
+  [
+    "signed runtime manifest input is documented for publish",
+    /runtime_manifest_b64:\s*\n\s*description:[^\n]*owner-signed runtime-update manifest/,
   ],
 ]) {
   if (!pattern.test(release)) errors.push(`release.yml: ${label}`);
@@ -139,6 +149,26 @@ if (
 ) {
   errors.push("release/review-attestation-authority.json: invalid pinned Ed25519 authority");
 }
+// D-2: the runtime-update authority is a SEPARATE pinned Ed25519 key (never the
+// review key) with the runtime-update keyId shape.
+const runtimeAuthority = JSON.parse(readFileSync("release/runtime-update-authority.json", "utf8"));
+if (
+  runtimeAuthority.algorithm !== "Ed25519" ||
+  !/^claudexor-runtime-update-[0-9a-z.-]+-ed25519-[0-9a-f]{16}$/.test(
+    runtimeAuthority.keyId ?? "",
+  ) ||
+  !String(runtimeAuthority.publicKeyPem ?? "").includes("BEGIN PUBLIC KEY")
+) {
+  errors.push("release/runtime-update-authority.json: invalid pinned Ed25519 authority");
+}
+if (
+  runtimeAuthority.keyId === authority.keyId ||
+  runtimeAuthority.publicKeyPem === authority.publicKeyPem
+) {
+  errors.push(
+    "release/runtime-update-authority.json: must be a SEPARATE key from the review authority",
+  );
+}
 for (const [label, pattern] of [
   ["--clobber is forbidden", /--clobber/],
   ["unsigned release fallback is forbidden", /continue-on-error:\s*true/],
@@ -151,9 +181,9 @@ for (const [label, pattern] of [
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);
-if (directInputs.length !== 3) {
+if (directInputs.length !== 4) {
   errors.push(
-    `release.yml: expected exactly three input projections into workflow env, got ${directInputs.length}`,
+    `release.yml: expected exactly four input projections into workflow env, got ${directInputs.length}`,
   );
 }
 if (errors.length) {

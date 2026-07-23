@@ -1,4 +1,11 @@
-import { CLAUDEXOR_VERSION } from "@claudexor/util";
+import {
+  CLAUDEXOR_VERSION,
+  RUNTIME_MANIFEST_ASSET_NAME,
+  RUNTIME_UPDATE_AUTHORITY,
+  verifyRuntimeManifest,
+  type RuntimeUpdateAuthority,
+  type SignedRuntimeManifest,
+} from "@claudexor/util";
 
 export type NameAvailability = "free" | "taken" | "unknown";
 export interface NameCheck {
@@ -85,14 +92,12 @@ export const NPM_PACKAGE = "claudexor";
  * (tests pass a stub; production defaults to the global fetch). */
 export type FetchLike = typeof fetch;
 
-/** The runtime manifest published beside the closure tarball on each release. */
-export interface RuntimeManifest {
-  version: string;
-  sha256: string;
-  minAppVersion: string;
-  signature: string | null;
-  notes: string | null;
-}
+/** The runtime manifest published beside the closure tarball on each release is
+ * the SIGNED contract from @claudexor/util (D-2). `claudexor release check`
+ * verifies it FAIL-CLOSED against the pinned runtime-update authority: an
+ * unsigned/unknown-key/tampered/malformed manifest degrades to
+ * `source: "unavailable"`, never a false "update available". */
+export type RuntimeManifest = SignedRuntimeManifest;
 
 export interface RuntimeUpdateCheck {
   /** The version the update decision compares against: the RUNNING engine when a
@@ -135,19 +140,21 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-function parseRuntimeManifest(value: unknown): RuntimeManifest | null {
-  if (typeof value !== "object" || value === null) return null;
-  const record = value as Record<string, unknown>;
-  if (!isSemver(record.version)) return null;
-  if (typeof record.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.sha256)) return null;
-  if (!isSemver(record.minAppVersion)) return null;
-  return {
-    version: record.version,
-    sha256: record.sha256,
-    minAppVersion: record.minAppVersion,
-    signature: typeof record.signature === "string" ? record.signature : null,
-    notes: typeof record.notes === "string" ? record.notes : null,
-  };
+/** Fail-closed parse: a manifest is trusted ONLY when its Ed25519 signature
+ * verifies against the pinned runtime-update authority (D-2). The second return
+ * value is an honest refusal reason for the "unavailable" detail. */
+function parseRuntimeManifest(
+  value: unknown,
+  authority: RuntimeUpdateAuthority,
+): { manifest: RuntimeManifest | null; reason: string } {
+  const verdict = verifyRuntimeManifest(value, authority);
+  if (!verdict.ok) {
+    return {
+      manifest: null,
+      reason: `signature/shape check failed: ${verdict.reasons.join("; ")}`,
+    };
+  }
+  return { manifest: value as RuntimeManifest, reason: "" };
 }
 
 /**
@@ -163,8 +170,13 @@ export async function checkRuntimeUpdate(opts?: {
   /** The running engine version resolved from a live daemon handshake; null
    * means no daemon was reachable. Wins over `currentVersion` when provided. */
   runningEngineVersion?: string | null;
+  /** TEST-ONLY seam: the pinned runtime-update authority to verify against.
+   * Production callers never pass this — the fail-closed check is always pinned
+   * to RUNTIME_UPDATE_AUTHORITY; tests inject a fixture authority. */
+  authority?: RuntimeUpdateAuthority;
 }): Promise<RuntimeUpdateCheck> {
   const fetchImpl = opts?.fetchImpl ?? fetch;
+  const authority = opts?.authority ?? RUNTIME_UPDATE_AUTHORITY;
   const cliVersion = CLAUDEXOR_VERSION;
   // The RUNNING engine identity is authoritative (QA-033a): an explicit
   // handshake result wins; the legacy `currentVersion` opt is treated as the
@@ -202,9 +214,9 @@ export async function checkRuntimeUpdate(opts?: {
     const body = (await res.json()) as {
       assets?: { name?: string; browser_download_url?: string }[];
     };
-    const asset = (body.assets ?? []).find((a) => a.name === "runtime-manifest.json");
+    const asset = (body.assets ?? []).find((a) => a.name === RUNTIME_MANIFEST_ASSET_NAME);
     if (!asset?.browser_download_url) {
-      return unavailable("latest release has no runtime-manifest.json asset yet");
+      return unavailable(`latest release has no ${RUNTIME_MANIFEST_ASSET_NAME} asset yet`);
     }
     manifestUrl = asset.browser_download_url;
   } catch (error) {
@@ -216,12 +228,18 @@ export async function checkRuntimeUpdate(opts?: {
     const res = await fetchImpl(manifestUrl, {
       headers: { "User-Agent": GH_HEADERS["User-Agent"] },
     });
-    if (!res.ok) return unavailable(`runtime-manifest.json download returned HTTP ${res.status}`);
-    manifest = parseRuntimeManifest(await res.json());
+    if (!res.ok) {
+      return unavailable(`${RUNTIME_MANIFEST_ASSET_NAME} download returned HTTP ${res.status}`);
+    }
+    const parsed = parseRuntimeManifest(await res.json(), authority);
+    // FAIL-CLOSED (D-2): an unverified manifest is never an "available update".
+    if (!parsed.manifest) return unavailable(`${RUNTIME_MANIFEST_ASSET_NAME} ${parsed.reason}`);
+    manifest = parsed.manifest;
   } catch (error) {
-    return unavailable(`could not download runtime-manifest.json (${describeError(error)})`);
+    return unavailable(
+      `could not download ${RUNTIME_MANIFEST_ASSET_NAME} (${describeError(error)})`,
+    );
   }
-  if (!manifest) return unavailable("runtime-manifest.json is malformed");
 
   const updateAvailable =
     isSemver(comparisonVersion) && compareSemver(manifest.version, comparisonVersion) > 0;

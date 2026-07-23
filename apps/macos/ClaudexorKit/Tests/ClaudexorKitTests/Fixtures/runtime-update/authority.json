@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "keyId": "claudexor-runtime-update-TESTVECTOR-ed25519",
+  "algorithm": "Ed25519",
+  "role": "runtime-update-test",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAPQA1OS9cjhmVsQC2T34MbYHoY7UeKyS3B6zoNy79Sm0=\n-----END PUBLIC KEY-----\n"
+}

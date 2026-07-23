@@ -1,10 +1,20 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  checkRuntimeUpdate,
-  releaseStats,
-  type FetchLike,
-  type RuntimeManifest,
-} from "./release.js";
+import type { RuntimeUpdateAuthority } from "@claudexor/util";
+import { checkRuntimeUpdate, releaseStats, type FetchLike } from "./release.js";
+
+const fixtureDir = resolve(
+  import.meta.dirname,
+  "../../../apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/runtime-update",
+);
+// The signed test vector (TS-signed with the fixed TEST key) and its authority.
+const TEST_AUTHORITY = JSON.parse(
+  readFileSync(resolve(fixtureDir, "authority.json"), "utf8"),
+) as RuntimeUpdateAuthority;
+const SIGNED_MANIFEST = JSON.parse(
+  readFileSync(resolve(fixtureDir, "valid-manifest.json"), "utf8"),
+);
 
 /** A minimal Response-like stub for the injected fetch. */
 function jsonResponse(body: unknown, status = 200): Response {
@@ -31,13 +41,8 @@ function stubFetch(routes: { match: string; respond: () => Response }[]): {
   return { fetchImpl, calls };
 }
 
-const MANIFEST: RuntimeManifest = {
-  version: "3.4.0",
-  sha256: "a".repeat(64),
-  minAppVersion: "2.1.0",
-  signature: null,
-  notes: "shiny new engine",
-};
+// The signed fixture is the trusted manifest; tests inject its TEST authority.
+const MANIFEST = SIGNED_MANIFEST;
 
 const latestRelease = (assetName = "runtime-manifest.json") =>
   jsonResponse({
@@ -53,12 +58,16 @@ describe("checkRuntimeUpdate", () => {
       { match: "/releases/latest", respond: latestRelease },
       { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
     ]);
-    const check = await checkRuntimeUpdate({ fetchImpl, currentVersion: "3.0.0" });
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      currentVersion: "3.0.0",
+      authority: TEST_AUTHORITY,
+    });
     expect(check.source).toBe("github");
     expect(check.updateAvailable).toBe(true);
     expect(check.latestVersion).toBe("3.4.0");
     expect(check.minAppVersion).toBe("2.1.0");
-    expect(check.notes).toBe("shiny new engine");
+    expect(check.notes).toBe(SIGNED_MANIFEST.notes);
   });
 
   it("reports current when the running engine matches the latest manifest", async () => {
@@ -66,7 +75,11 @@ describe("checkRuntimeUpdate", () => {
       { match: "/releases/latest", respond: latestRelease },
       { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
     ]);
-    const check = await checkRuntimeUpdate({ fetchImpl, currentVersion: "3.4.0" });
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      currentVersion: "3.4.0",
+      authority: TEST_AUTHORITY,
+    });
     expect(check.updateAvailable).toBe(false);
     expect(check.source).toBe("github");
   });
@@ -76,7 +89,11 @@ describe("checkRuntimeUpdate", () => {
       { match: "/releases/latest", respond: latestRelease },
       { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
     ]);
-    const check = await checkRuntimeUpdate({ fetchImpl, currentVersion: "3.9.0" });
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      currentVersion: "3.9.0",
+      authority: TEST_AUTHORITY,
+    });
     expect(check.updateAvailable).toBe(false);
   });
 
@@ -108,9 +125,43 @@ describe("checkRuntimeUpdate", () => {
         respond: () => jsonResponse({ ...MANIFEST, sha256: "not-a-digest" }),
       },
     ]);
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      currentVersion: "3.0.0",
+      authority: TEST_AUTHORITY,
+    });
+    expect(check.source).toBe("unavailable");
+    // Fail-closed: a mutated field breaks both the shape and the signature.
+    expect(check.detail.toLowerCase()).toContain("check failed");
+  });
+
+  it("REFUSES a tampered manifest whose signature no longer matches (D-2 fail-closed)", async () => {
+    const tampered = { ...MANIFEST, notes: "attacker-swapped release notes" };
+    const { fetchImpl } = stubFetch([
+      { match: "/releases/latest", respond: latestRelease },
+      { match: "runtime-manifest.json", respond: () => jsonResponse(tampered) },
+    ]);
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      currentVersion: "3.0.0",
+      authority: TEST_AUTHORITY,
+    });
+    expect(check.source).toBe("unavailable");
+    expect(check.updateAvailable).toBe(false);
+    expect(check.detail).toContain("signature is invalid");
+  });
+
+  it("REFUSES a manifest signed by an unknown key (D-2 fail-closed)", async () => {
+    const { fetchImpl } = stubFetch([
+      { match: "/releases/latest", respond: latestRelease },
+      { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
+    ]);
+    // Verify against the PRODUCTION authority (default) — the fixture is signed
+    // by the TEST key, so the keyId does not match the pinned authority.
     const check = await checkRuntimeUpdate({ fetchImpl, currentVersion: "3.0.0" });
     expect(check.source).toBe("unavailable");
-    expect(check.detail).toContain("malformed");
+    expect(check.updateAvailable).toBe(false);
+    expect(check.detail).toContain("pinned runtime-update authority");
   });
 
   it("survives a network throw and reports it honestly", async () => {
@@ -129,7 +180,11 @@ describe("checkRuntimeUpdate", () => {
       { match: "/releases/latest", respond: latestRelease },
       { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
     ]);
-    const check = await checkRuntimeUpdate({ fetchImpl, runningEngineVersion: "3.0.3" });
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      runningEngineVersion: "3.0.3",
+      authority: TEST_AUTHORITY,
+    });
     expect(check.runningEngineVersion).toBe("3.0.3");
     expect(check.runningEngineSource).toBe("handshake");
     expect(check.updateAvailable).toBe(true);
@@ -144,7 +199,11 @@ describe("checkRuntimeUpdate", () => {
       { match: "/releases/latest", respond: latestRelease },
       { match: "runtime-manifest.json", respond: () => jsonResponse(MANIFEST) },
     ]);
-    const check = await checkRuntimeUpdate({ fetchImpl, runningEngineVersion: null });
+    const check = await checkRuntimeUpdate({
+      fetchImpl,
+      runningEngineVersion: null,
+      authority: TEST_AUTHORITY,
+    });
     expect(check.runningEngineVersion).toBeNull();
     expect(check.runningEngineSource).toBe("unavailable");
     // Never the false-negative "running <v> is current" the CLI-version relabel produced.

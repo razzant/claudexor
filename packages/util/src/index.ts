@@ -2,6 +2,7 @@ export { CLAUDEXOR_VERSION } from "./version.js";
 export * from "./secret-names.js";
 export * from "./sensitive-resource.js";
 export * from "./delegation-env.js";
+export * from "./runtime-manifest.js";
 import { sensitiveResourcePolicy } from "./sensitive-resource.js";
 import { createHash, randomUUID } from "node:crypto";
 import {

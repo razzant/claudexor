@@ -16,6 +16,10 @@ on:
         description: Base64 signed schema-v3 owner-review attestation; required only for publish
         required: false
         type: string
+      runtime_manifest_b64:
+        description: Base64 owner-signed runtime-update manifest (D-2); required only for publish
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +28,7 @@ env:
   RELEASE_MODE_INPUT: ${{ inputs.mode }}
   RELEASE_REF_INPUT: ${{ inputs.ref }}
   REVIEW_ATTESTATION_B64_INPUT: ${{ inputs.review_attestation_b64 }}
+  RUNTIME_MANIFEST_B64_INPUT: ${{ inputs.runtime_manifest_b64 }}
 
 concurrency:
   group: claudexor-release-v2
@@ -244,7 +249,22 @@ jobs:
           cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"
           cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"
           cp "$RUNNER_TEMP/runtime-closure/claudexor-runtime-$VERSION.tar.gz" "$assets/"
-          cp "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" "$assets/"
+          # D-2: candidate ships the UNSIGNED manifest (owner signs it offline);
+          # publish ships only the OWNER-SIGNED manifest after fail-closed
+          # verification (pinned-authority signature + byte-identity of the
+          # promoted tarball + field match with the freshly-built closure).
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            signed="$RUNNER_TEMP/runtime-manifest.signed.json"
+            printf '%s' "$RUNTIME_MANIFEST_B64_INPUT" | base64 -d > "$signed"
+            node scripts/verify-signed-runtime-manifest.mjs \
+              --signed "$signed" \
+              --unsigned "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" \
+              --tarball "$RUNNER_TEMP/runtime-closure/claudexor-runtime-$VERSION.tar.gz" \
+              --version "$VERSION"
+            cp "$signed" "$assets/runtime-manifest.json"
+          else
+            cp "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" "$assets/"
+          fi
           pnpm licenses list --prod --json | node scripts/generate-release-sbom.mjs \
             --app-bundle apps/macos/dist/Claudexor.app \
             > "$assets/Claudexor-$VERSION.spdx.json"
