@@ -9,8 +9,6 @@
 import { createHash } from "node:crypto";
 import type { ServerResponse } from "node:http";
 import {
-  PlanQuestionsArtifact,
-  derivePlanReadiness,
   ControlRunStartInfo,
   ControlRunStartRequest,
   ControlThreadTurnResponse,
@@ -252,20 +250,19 @@ export function handleThreadTurnCreate(
             { status: 400 },
           );
         }
-        // Readiness gate (D17): open questions refuse implement with a typed
-        // 409 unless the user explicitly overrides; the override is recorded
-        // on the turn for provenance.
-        const questions = await ctx.readRunArtifactText(planRunId, "final/questions.json");
-        const readiness = planReadinessFromArtifactText(questions);
+        // Readiness gate (D17) is enforced at RUN-START by the daemon runner,
+        // NOT with a bespoke early return here (QA-045). A pre-create throw
+        // left NO turn, no idempotency handle, and no replayable refusal — it
+        // violated the honest-refused-turn invariant (INV-093) that every other
+        // pre-run refusal honors. We only record the operator's explicit
+        // override on the turn for provenance; the turn is still created and the
+        // run enqueued. When open questions remain and the override is absent,
+        // the runner refuses the run PRE-START with a typed `plan_not_ready`,
+        // riding the SAME durable mechanism as the trust gate: the daemon
+        // persists `enqueue_error` on the turn (retryable — a job was recorded)
+        // and POST .../retry replays the recorded params through that fresh
+        // preflight once the plan is ready.
         planOverridden = body["overridePlanReadiness"] === true;
-        if (readiness.state === "needs_answers" && !planOverridden) {
-          throw Object.assign(
-            new Error(
-              `plan ${planRunId} is not ready: ${readiness.questionCount} open question(s) — answer them in a follow-up plan turn, or pass overridePlanReadiness:true`,
-            ),
-            { status: 409, code: "plan_not_ready" },
-          );
-        }
         const digest = createHash("sha256").update(planText, "utf8").digest("hex");
         planHash = digest;
         const planPath = await ctx.resolveRunArtifactPath(planRunId, "final/plan.md");
@@ -309,9 +306,15 @@ export function handleThreadTurnCreate(
         (!turnPool || turnPool.includes(thread.primary_harness))
           ? thread.primary_harness
           : undefined;
+      // `overridePlanReadiness` is a ControlThreadTurnRequest-only field (its
+      // effect is recorded on the turn as plan_readiness_overridden and honored
+      // by the run-start readiness gate); it is NOT a ControlRunStartRequest
+      // field, so it must be stripped before the strict run-start parse or the
+      // "Implement anyway" override would 400 on an unrecognized key.
+      const { overridePlanReadiness: _overrideConsumed, ...runStartBody } = body;
       const params = ctx.normalizeStart(
         ControlRunStartRequest.parse({
-          ...body,
+          ...runStartBody,
           prompt,
           scope: thread.repo ? { kind: "project", root: thread.repo.root } : { kind: "none" },
           mode,
@@ -542,19 +545,4 @@ export function handleThreadTurnRetry(
       });
     }
   });
-}
-
-/** Derive readiness from a raw final/questions.json body. Missing/corrupt
- * artifact (pre-v3 plan runs mid-branch) counts as unverified: implement is
- * allowed but never silently "ready". */
-function planReadinessFromArtifactText(text: string | null): {
-  state: "ready" | "needs_answers" | "unverified";
-  questionCount: number;
-} {
-  if (!text) return { state: "unverified", questionCount: 0 };
-  try {
-    return derivePlanReadiness(PlanQuestionsArtifact.parse(JSON.parse(text)));
-  } catch {
-    return { state: "unverified", questionCount: 0 };
-  }
 }

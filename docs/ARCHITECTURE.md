@@ -736,9 +736,13 @@ Endpoint semantics beyond the inventory:
   never need it.
 - Refused turns are honest end-to-end: when a turn's run dies BEFORE it starts
   (the trust gate refusing `access: full`, preflight validation, an enqueue
-  throw), the daemon persists the reason on the turn (`ThreadTurn.enqueue_error`,
-  projected as `enqueueError`) so every surface renders the refusal inline
-  instead of an eternally-empty bubble. `POST /v2/threads/:id/turns/:turnId/retry`
+  throw, or an Implement whose plan still has open questions and no explicit
+  override — a typed `plan_not_ready`), the daemon persists the reason on the
+  turn (`ThreadTurn.enqueue_error`, projected as `enqueueError`) so every
+  surface renders the refusal inline instead of an eternally-empty bubble. The
+  readiness refusal is enforced at run-start (not by a bespoke early return in
+  the control API), so it rides this exact mechanism and stays durable,
+  idempotent, and replayable. `POST /v2/threads/:id/turns/:turnId/retry`
   creates a new command attempt for that SAME turn by replaying the immutable
   original command params through fresh preflight (no duplicate turn); a
   successful run binding clears the error, a repeat refusal replaces it.

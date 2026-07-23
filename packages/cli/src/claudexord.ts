@@ -28,6 +28,7 @@ import {
 } from "@claudexor/daemon";
 import { DaemonControlApiServer, normalizeRunStartRequest } from "@claudexor/control-api";
 import { armDaemonLifecycle, logLine, runStartupCrashGc } from "./daemon-lifecycle.js";
+import { assertPlanImplementReady } from "./plan-implement-readiness.js";
 import { Orchestrator } from "@claudexor/orchestrator";
 import { buildDelegationBeltDescriptor } from "./delegation-belt-descriptor.js";
 import { loadConfig, sweepRetiredConfigKeysAtStartup } from "@claudexor/config";
@@ -199,6 +200,21 @@ async function main(): Promise<void> {
               : undefined,
         });
         const { threadId, turnId } = threads.assertKnownIds(p.threadId, p.turnId);
+        // Plan readiness gate (QA-045 / D17): refuse an Implement whose frozen
+        // plan still has open questions BEFORE any worktree, spawn, or spend —
+        // so the refusal is a durable, replayable refused turn (the daemon
+        // records enqueue_error=plan_not_ready on the turn; retry replays
+        // through this fresh preflight). Skipped when the operator explicitly
+        // overrode readiness (recorded on the turn at create time). The gate
+        // lives at run-start, not in the control API, so retry re-runs it.
+        if (p.planRef && typeof p.planRef === "object") {
+          const overridden =
+            turnId != null && threads.getTurn(turnId)?.plan_readiness_overridden === true;
+          if (!overridden) {
+            const planRef = p.planRef as { runId: string; path: string };
+            assertPlanImplementReady(planRef.runId, planRef.path);
+          }
+        }
         let executionRoot: string | undefined;
         let inPlace = p.execution.isolation === "live";
         if (threadId && repoRoot !== NO_PROJECT_ROOT) {

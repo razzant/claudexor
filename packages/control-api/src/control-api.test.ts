@@ -947,9 +947,9 @@ describe("DaemonControlApiServer", () => {
       params: { scope: { kind: "project", root: liveRoot }, threadId: "th-iso" },
     };
     // in_place thread OR non-thread run stays on the live project root.
-    expect(await resolveProducedRoot(rec, async () => ({ mode: "in_place", worktreePath: null }))).toEqual(
-      { kind: "root", root: liveRoot },
-    );
+    expect(
+      await resolveProducedRoot(rec, async () => ({ mode: "in_place", worktreePath: null })),
+    ).toEqual({ kind: "root", root: liveRoot });
     expect(await resolveProducedRoot(rec)).toEqual({ kind: "root", root: liveRoot });
     // Isolated with a live worktree dir → that worktree, not the project.
     expect(
@@ -958,7 +958,11 @@ describe("DaemonControlApiServer", () => {
     // Isolated but the worktree was purged (worktree_path nulled) → typed answer.
     expect(
       await resolveProducedRoot(rec, async () => ({ mode: "isolated", worktreePath: null })),
-    ).toEqual({ kind: "worktree_unavailable", threadId: "th-iso", reason: "worktree_not_retained" });
+    ).toEqual({
+      kind: "worktree_unavailable",
+      threadId: "th-iso",
+      reason: "worktree_not_retained",
+    });
     // Isolated but the worktree directory is gone from disk → typed answer.
     expect(
       await resolveProducedRoot(rec, async () => ({ mode: "isolated", worktreePath: worktree })),
@@ -982,7 +986,11 @@ describe("DaemonControlApiServer", () => {
     // The isolated worktree holds the file THIS run actually created.
     mkdirSync(join(worktree, "artifacts"), { recursive: true });
     writeFileSync(join(worktree, "artifacts", "thread-isolated-note.md"), "ISOLATED_THREAD_OK\n");
-    record.params = { mode: "agent", scope: { kind: "project", root: liveRoot }, threadId: "th-iso" };
+    record.params = {
+      mode: "agent",
+      scope: { kind: "project", root: liveRoot },
+      threadId: "th-iso",
+    };
     const services: DaemonControlApiOptions["services"] = {
       threadDetail: async (id: string) => ({
         thread: { id, workspace: { mode: "isolated", worktree_path: worktree } },
@@ -1022,7 +1030,11 @@ describe("DaemonControlApiServer", () => {
     const liveRoot = reapMk(join(tmpdir(), "claudexor-iso-purged-"));
     mkdirSync(join(liveRoot, "artifacts"), { recursive: true });
     writeFileSync(join(liveRoot, "artifacts", "live-old.md"), "# unrelated live file\n");
-    record.params = { mode: "agent", scope: { kind: "project", root: liveRoot }, threadId: "th-gone" };
+    record.params = {
+      mode: "agent",
+      scope: { kind: "project", root: liveRoot },
+      threadId: "th-gone",
+    };
     // Purge nulls the thread's worktree_path (the record survives for diagnosis).
     const services: DaemonControlApiOptions["services"] = {
       threadDetail: async (id: string) => ({
@@ -1060,7 +1072,11 @@ describe("DaemonControlApiServer", () => {
     const liveRoot = reapMk(join(tmpdir(), "claudexor-inplace-live-"));
     mkdirSync(join(liveRoot, "artifacts"), { recursive: true });
     writeFileSync(join(liveRoot, "artifacts", "in-place.md"), "# in-place output\n");
-    record.params = { mode: "agent", scope: { kind: "project", root: liveRoot }, threadId: "th-live" };
+    record.params = {
+      mode: "agent",
+      scope: { kind: "project", root: liveRoot },
+      threadId: "th-live",
+    };
     const services: DaemonControlApiOptions["services"] = {
       threadDetail: async (id: string) => ({
         thread: { id, workspace: { mode: "in_place", worktree_path: null } },
@@ -2092,6 +2108,403 @@ describe("DaemonControlApiServer", () => {
       undefined,
       services,
     );
+  });
+
+  // QA-045: Implementing a plan with unresolved owner questions must produce a
+  // DURABLE, idempotent, replayable refused turn — the readiness gate rides the
+  // SAME pre-start mechanism as the trust gate, never a bespoke early return
+  // that leaves no turn and ignores the idempotency key.
+  describe("threads: plan_not_ready implement is a durable refused turn (QA-045)", () => {
+    function makePlanRunDir(): string {
+      const runDir = reapMk(join(tmpdir(), "claudexor-plan-run-"));
+      mkdirSync(join(runDir, "final"), { recursive: true });
+      writeFileSync(join(runDir, "final", "plan.md"), "# Plan\n\nDo the thing.\n");
+      // One open single-choice question -> readiness needs_answers. (Only the
+      // OLD pre-create gate read this; the fixed route delegates readiness to
+      // the run-start runner, so this drives the RED assertion pre-fix.)
+      writeFileSync(
+        join(runDir, "final", "questions.json"),
+        JSON.stringify({
+          parse: "found",
+          questions: [
+            {
+              id: "q1",
+              kind: "single",
+              prompt: "How to store it?",
+              options: [],
+              allow_text: false,
+            },
+          ],
+        }),
+      );
+      return runDir;
+    }
+
+    function planThread(repo: string, planRunId: string): Record<string, unknown> {
+      const now = new Date().toISOString();
+      return {
+        schema_version: 2,
+        id: "th-plan",
+        created_at: now,
+        updated_at: now,
+        repo: { root: repo, base_ref: "HEAD" },
+        title: "plan thread",
+        mode: "agent",
+        workspace: { mode: "in_place", worktree_path: null, base_sha: null },
+        auth_preference: "auto",
+        primary_harness: null,
+        routingGoal: "auto",
+        run_ids: [planRunId],
+        head_run_id: planRunId,
+        state: "active",
+      };
+    }
+
+    it("a not-ready implement creates a durable, idempotent turn carrying the typed refusal", async () => {
+      const repo = reapMk(join(tmpdir(), "claudexor-plan-thread-"));
+      const planRunDir = makePlanRunDir();
+      const now = new Date().toISOString();
+      const threadObj = planThread(repo, "run-plan");
+      const turns: Record<string, unknown>[] = [];
+      const refusalMsg =
+        "plan run-plan is not ready: 1 open question(s) — answer them in a follow-up plan turn, or pass overridePlanReadiness:true";
+      // Job registry: the completed PLAN run (so readRunArtifactText/resolve can
+      // find final/plan.md) plus the implement job the runner refuses pre-start.
+      const jobs = new Map<string, DaemonRunRecord>([
+        ["job-plan", { id: "job-plan", state: "succeeded", runId: "run-plan", runDir: planRunDir }],
+      ]);
+      // createThreadTurn is idempotent by key (the daemon ThreadStore contract).
+      const turnByKey = new Map<string, Record<string, unknown>>();
+      let createTurnCalls = 0;
+      // enqueue is idempotent by key: a repeat returns the same recorded job.
+      const jobByKey = new Map<string, { id: string; state: string }>();
+      const planDaemon: DaemonFacadeClient = {
+        async enqueue(params: unknown, options) {
+          const key = options?.idempotencyKey ?? "";
+          const existing = jobByKey.get(key);
+          if (existing) return existing;
+          const turnId = (params as { turnId?: string }).turnId;
+          // The runner refuses pre-start (open questions, no override): the job
+          // settles terminal with a TYPED code and NO run bound.
+          jobs.set("job-impl", {
+            id: "job-impl",
+            state: "failed",
+            error: refusalMsg,
+            errorCode: "plan_not_ready",
+            errorStatus: 409,
+            params,
+            createdAt: now,
+          });
+          void turnId;
+          const job = { id: "job-impl", state: "queued" };
+          jobByKey.set(key, job);
+          return job;
+        },
+        async status(id: string) {
+          const rec = jobs.get(id);
+          if (!rec) throw new Error(`missing job ${id}`);
+          // The daemon's own finally-hook persists the pre-start refusal on the
+          // turn (onTurnEnqueueFailed -> setTurnEnqueueError, retryable default
+          // true — a job WAS recorded, so retry can replay it).
+          if (id === "job-impl" && rec.state === "failed" && rec.errorCode === "plan_not_ready") {
+            const turnId = (rec.params as { turnId?: string }).turnId;
+            const turn = turns.find((t) => t["id"] === turnId);
+            if (turn && !turn["run_id"] && !turn["enqueue_error"]) {
+              turn["enqueue_error"] = {
+                message: rec.error,
+                code: "plan_not_ready",
+                retryable: true,
+                failed_at: now,
+              };
+            }
+          }
+          return rec;
+        },
+        async list() {
+          return [...jobs.values()];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      const services: DaemonControlApiOptions["services"] = {
+        threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+        createThreadTurn: async (id, prompt, opts) => {
+          const key = opts.idempotency?.key ?? "";
+          const prior = turnByKey.get(key);
+          if (prior) return prior;
+          createTurnCalls += 1;
+          const turn: Record<string, unknown> = {
+            id: "tn-impl",
+            thread_id: id,
+            run_id: null,
+            parent_run_id: opts.parentRunId ?? null,
+            plan_run_id: opts.planRunId ?? null,
+            plan_hash: opts.planHash ?? null,
+            plan_readiness_overridden: opts.planOverridden === true,
+            kind: "followup",
+            prompt,
+            created_at: now,
+          };
+          turns.push(turn);
+          turnByKey.set(key, turn);
+          return turn;
+        },
+      };
+      await withDaemonServer(
+        planDaemon,
+        async (base) => {
+          const idem = `plan-impl-${crypto.randomUUID()}`;
+          const post = () =>
+            apiFetch(`${base}/threads/th-plan/turns`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "Idempotency-Key": idem },
+              body: JSON.stringify({ prompt: "Implement this plan.", planRunId: "run-plan" }),
+            });
+          const res = await post();
+          // The refusal is honest: 409 with the TYPED code AND durable handles
+          // (turnId + threadId), so a reloading/other client can recover it.
+          expect(res.status).toBe(409);
+          const body = (await res.json()) as {
+            code?: string;
+            context?: { turnId?: string; threadId?: string };
+          };
+          expect(body.code).toBe("plan_not_ready");
+          expect(body.context?.turnId).toBe("tn-impl");
+          expect(body.context?.threadId).toBe("th-plan");
+          // The turn is DURABLE: a thread reload projects it with the typed
+          // enqueueError (never an eternally-empty bubble). head/run_ids are
+          // unchanged — no run started.
+          const detail = (await (
+            await apiFetch(`${base}/threads/th-plan`, {
+              headers: { authorization: `Bearer ${token}` },
+            })
+          ).json()) as {
+            thread: { headRunId: string | null; runIds?: string[] };
+            turns: {
+              id: string;
+              runId: string | null;
+              planRunId: string | null;
+              enqueueError: { code: string | null; retryable: boolean } | null;
+            }[];
+          };
+          const durable = detail.turns.find((t) => t.id === "tn-impl");
+          expect(durable?.runId).toBeNull();
+          expect(durable?.planRunId).toBe("run-plan");
+          expect(durable?.enqueueError?.code).toBe("plan_not_ready");
+          expect(durable?.enqueueError?.retryable).toBe(true);
+          expect(detail.thread.headRunId).toBe("run-plan"); // unchanged (plan run)
+
+          // Idempotent: the SAME key returns the SAME durable turn and creates
+          // no second turn.
+          const again = await post();
+          expect(again.status).toBe(409);
+          expect(((await again.json()) as { context?: { turnId?: string } }).context?.turnId).toBe(
+            "tn-impl",
+          );
+          expect(createTurnCalls).toBe(1);
+        },
+        undefined,
+        services,
+      );
+    });
+
+    it("retry replays a plan_not_ready refusal through fresh preflight and succeeds once the plan is ready", async () => {
+      const repo = reapMk(join(tmpdir(), "claudexor-plan-retry-"));
+      const planRunDir = makePlanRunDir();
+      const now = new Date().toISOString();
+      const threadObj = planThread(repo, "run-plan");
+      const implParams = {
+        prompt: "Implement the approved plan of this thread",
+        mode: "agent",
+        scope: { kind: "project", root: repo, context: "auto" },
+        planRunId: "run-plan",
+        turnId: "tn-impl",
+      };
+      // Pre-seed the durable refused turn (as the first not-ready implement left
+      // it) and the recorded implement job in the registry.
+      const turns: Record<string, unknown>[] = [
+        {
+          id: "tn-impl",
+          thread_id: "th-plan",
+          run_id: null,
+          parent_run_id: "run-plan",
+          plan_run_id: "run-plan",
+          plan_readiness_overridden: false,
+          kind: "followup",
+          prompt: "Implement the approved plan of this thread",
+          enqueue_error: {
+            message: "plan run-plan is not ready: 1 open question(s)",
+            code: "plan_not_ready",
+            retryable: true,
+            failed_at: now,
+          },
+          created_at: now,
+        },
+      ];
+      const jobs = new Map<string, DaemonRunRecord>([
+        ["job-plan", { id: "job-plan", state: "succeeded", runId: "run-plan", runDir: planRunDir }],
+        [
+          "job-impl",
+          {
+            id: "job-impl",
+            state: "failed",
+            error: "plan run-plan is not ready: 1 open question(s)",
+            errorCode: "plan_not_ready",
+            errorStatus: 409,
+            params: implParams,
+            createdAt: now,
+          },
+        ],
+      ]);
+      const enqueued: unknown[] = [];
+      const retryDaemon: DaemonFacadeClient = {
+        // The retry replays the recorded params through the runner's FRESH
+        // preflight; the plan is now ready, so the run binds (no duplicate turn).
+        async enqueue(params: unknown) {
+          enqueued.push(params);
+          const rec: DaemonRunRecord = {
+            id: "job-impl-retry",
+            state: "running",
+            runId: "run-impl",
+            taskId: "task-impl",
+            runDir: planRunDir,
+            params,
+            createdAt: new Date().toISOString(),
+          };
+          jobs.set(rec.id, rec);
+          const turnId = (params as { turnId?: string }).turnId;
+          const turn = turns.find((t) => t["id"] === turnId);
+          if (turn) {
+            turn["run_id"] = "run-impl";
+            turn["enqueue_error"] = null;
+          }
+          return { id: rec.id, state: "queued" };
+        },
+        async status(id: string) {
+          const rec = jobs.get(id);
+          if (!rec) throw new Error(`missing job ${id}`);
+          return rec;
+        },
+        async list() {
+          return [...jobs.values()];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      const services: DaemonControlApiOptions["services"] = {
+        threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+        setTurnEnqueueError: (turnId, message, code, retryable) => {
+          const turn = turns.find((t) => t["id"] === turnId);
+          if (turn && !turn["run_id"])
+            turn["enqueue_error"] = { message, code, retryable: retryable ?? true, failed_at: now };
+        },
+      };
+      await withDaemonServer(
+        retryDaemon,
+        async (base) => {
+          const res = await apiFetch(`${base}/threads/th-plan/turns/tn-impl/retry`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+          });
+          expect(res.status).toBe(200);
+          const body = (await res.json()) as { runId: string; turnId: string; threadId: string };
+          expect(body.runId).toBe("run-impl");
+          expect(body.turnId).toBe("tn-impl"); // SAME turn, no duplicate bubble
+          expect(body.threadId).toBe("th-plan");
+          // Replayed the recorded params verbatim through fresh preflight.
+          expect(enqueued).toEqual([implParams]);
+        },
+        undefined,
+        services,
+      );
+    });
+
+    it("the explicit plan_readiness_overridden implement path is unchanged (creates a normal run, no refusal)", async () => {
+      const repo = reapMk(join(tmpdir(), "claudexor-plan-override-"));
+      const planRunDir = makePlanRunDir();
+      const now = new Date().toISOString();
+      const threadObj = planThread(repo, "run-plan");
+      const turns: Record<string, unknown>[] = [];
+      let overriddenRecorded: boolean | undefined;
+      const jobs = new Map<string, DaemonRunRecord>([
+        ["job-plan", { id: "job-plan", state: "succeeded", runId: "run-plan", runDir: planRunDir }],
+      ]);
+      const overrideDaemon: DaemonFacadeClient = {
+        // Override recorded on the turn -> the runner SKIPS the readiness gate
+        // and the run binds normally.
+        async enqueue(params: unknown) {
+          const rec: DaemonRunRecord = {
+            id: "job-override",
+            state: "running",
+            runId: "run-impl",
+            taskId: "task-impl",
+            runDir: planRunDir,
+            params,
+            createdAt: now,
+          };
+          jobs.set(rec.id, rec);
+          const turnId = (params as { turnId?: string }).turnId;
+          const turn = turns.find((t) => t["id"] === turnId);
+          if (turn) turn["run_id"] = "run-impl";
+          return { id: rec.id, state: "queued" };
+        },
+        async status(id: string) {
+          const rec = jobs.get(id);
+          if (!rec) throw new Error(`missing job ${id}`);
+          return rec;
+        },
+        async list() {
+          return [...jobs.values()];
+        },
+        async cancel() {
+          return { ok: true };
+        },
+      };
+      const services: DaemonControlApiOptions["services"] = {
+        threadDetail: async () => ({ thread: threadObj, sessions: [], turns }),
+        createThreadTurn: async (id, prompt, opts) => {
+          overriddenRecorded = opts.planOverridden;
+          const turn: Record<string, unknown> = {
+            id: "tn-impl",
+            thread_id: id,
+            run_id: null,
+            parent_run_id: opts.parentRunId ?? null,
+            plan_run_id: opts.planRunId ?? null,
+            plan_readiness_overridden: opts.planOverridden === true,
+            kind: "followup",
+            prompt,
+            created_at: now,
+          };
+          turns.push(turn);
+          return turn;
+        },
+      };
+      await withDaemonServer(
+        overrideDaemon,
+        async (base) => {
+          const res = await apiFetch(`${base}/threads/th-plan/turns`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              prompt: "Implement this plan.",
+              planRunId: "run-plan",
+              overridePlanReadiness: true,
+            }),
+          });
+          expect(res.status).toBe(200);
+          const body = (await res.json()) as { runId: string; turnId: string };
+          expect(body.runId).toBe("run-impl");
+          expect(body.turnId).toBe("tn-impl");
+          // The override provenance is recorded on the turn (D17), not silently
+          // dropped.
+          expect(overriddenRecorded).toBe(true);
+        },
+        undefined,
+        services,
+      );
+    });
   });
 
   it("trust: GET resolves one repo and POST updates only typed user-level trust fields", async () => {
