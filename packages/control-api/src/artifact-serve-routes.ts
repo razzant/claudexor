@@ -405,7 +405,25 @@ function isPatchArtifact(path: string): boolean {
   return ext === ".diff" || ext === ".patch";
 }
 
+/**
+ * Extensions whose bytes are semantic TEXT even when their MIME is not `text/*`
+ * or JSON — SVG is served as `image/svg+xml` but is XML text, and `.csv`/`.xml`/
+ * `.markdown`/`.text` currently fall through `contentType` to
+ * `application/octet-stream`. Without this set those files took the 32MiB BINARY
+ * cap and skipped `redactSecrets`, so a secret-like token inside a served
+ * artifact leaked raw (QA-067). Listing them here routes them through the text
+ * path: the smaller text cap AND secret redaction.
+ */
+const SEMANTIC_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".csv",
+  ".xml",
+  ".svg",
+  ".markdown",
+  ".text",
+]);
+
 function isTextArtifact(path: string): boolean {
   const type = contentType(path);
-  return type.startsWith("text/") || type.startsWith("application/json");
+  if (type.startsWith("text/") || type.startsWith("application/json")) return true;
+  return SEMANTIC_TEXT_EXTENSIONS.has(extname(path).toLowerCase());
 }

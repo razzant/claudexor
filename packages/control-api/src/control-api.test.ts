@@ -4934,6 +4934,34 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("redacts secret-like text from .csv/.xml/.svg/.markdown/.text artifacts (semantic-text policy, QA-067)", async () => {
+    const { daemon, record } = fakeDaemon();
+    // Assemble the marker at runtime so the secret scanner does not trip on this
+    // test's own source (repo convention).
+    const secret = "sk-" + "b".repeat(24);
+    const runDir = record.runDir as string;
+    // One file per newly-covered extension; each carries the marker.
+    const cases = [
+      { file: "final/report.csv", body: `col\n${secret}\n` },
+      { file: "final/data.xml", body: `<r><k>${secret}</k></r>` },
+      { file: "final/pic.svg", body: `<svg><desc>${secret}</desc></svg>` },
+      { file: "final/notes.markdown", body: `# t\n${secret}\n` },
+      { file: "final/raw.text", body: `${secret}\n` },
+    ];
+    for (const c of cases) writeFileSync(join(runDir, c.file), c.body);
+    await withDaemonServer(daemon, async (base) => {
+      for (const c of cases) {
+        const res = await apiFetch(`${base}/runs/run-d1/artifacts/${c.file}`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(res.status, c.file).toBe(200);
+        const text = await res.text();
+        expect(text, c.file).toContain("[redacted]");
+        expect(text, c.file).not.toContain(secret);
+      }
+    });
+  });
+
   it("rejects secret-like string values in run params before enqueue", async () => {
     const { daemon } = fakeDaemon();
     const secret = "sk-" + "c".repeat(24);
