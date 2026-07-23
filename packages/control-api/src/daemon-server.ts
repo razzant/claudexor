@@ -1217,7 +1217,7 @@ export class DaemonControlApiServer {
                   // semantic message. Present a stable English message + typed
                   // reason code, and keep the redacted, bounded stderr as
                   // context evidence the client can inspect deliberately.
-                  const problem = revertRefusedProblem(revert.reason);
+                  const problem = revertRefusedProblem(revert.reason, revert.reasonCode);
                   appendRunAuditEvent(rec, "control.rejected", {
                     decision: "revert_run",
                     reason: problem.context.reason,

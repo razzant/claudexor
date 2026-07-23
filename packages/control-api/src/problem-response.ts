@@ -159,24 +159,38 @@ export function normalizeRequestValidationError(error: unknown): unknown {
 /** Max bytes of vendor (Git) stderr retained as revert-refusal evidence. */
 const REVERT_DETAIL_MAX_BYTES = 2000;
 
+/** The typed revert-refusal classes the workspace PRODUCER emits (git.ts
+ *  `RevertRefusalReason`). Kept structurally in sync here (control-api does not
+ *  depend on @claudexor/workspace) — the round-trip is asserted by test. */
+export type RevertRefusalReason = "postimage_diverged" | "reverse_apply_failed";
+
 /**
- * QA-051: split a workspace revert-refusal reason into a stable, locale-
- * independent English message + typed reason code, keeping the original
- * (redacted, bounded) vendor stderr as context evidence rather than the
- * semantic message. The workspace prefix is English regardless of host locale;
- * only the trailing Git stderr is localized, so mapping on the English prefix
- * is locale-stable.
+ * QA-051 / W3: map a workspace revert refusal to a stable, locale-independent
+ * English message + typed reason code, keeping the original (redacted, bounded)
+ * vendor stderr as context evidence rather than the semantic message.
+ *
+ * The class is decided by the PRODUCER: `reasonCode` comes straight from
+ * `RevertResult.reasonCode` (which branch failed), NOT from regexing the human
+ * `reason`. The English-prefix regex survives only as a conservative fallback
+ * for a legacy-shaped result that carries no typed code.
  */
-export function revertRefusedProblem(rawReason: string | undefined): {
+export function revertRefusedProblem(
+  rawReason: string | undefined,
+  reasonCode?: RevertRefusalReason,
+): {
   message: string;
   context: { reason: string; detail: string };
 } {
   const raw = rawReason ?? "revert refused";
-  const diverged = /postimage no longer matches/.test(raw);
-  const message = diverged
-    ? "Revert is no longer available because the affected files changed after this turn."
-    : "Revert could not be applied to the current project tree.";
-  const reason = diverged ? "postimage_diverged" : "reverse_apply_failed";
+  // Prefer the producer's typed class; fall back to the English-prefix match
+  // only when a legacy caller supplied no code.
+  const reason: RevertRefusalReason =
+    reasonCode ??
+    (/postimage no longer matches/.test(raw) ? "postimage_diverged" : "reverse_apply_failed");
+  const message =
+    reason === "postimage_diverged"
+      ? "Revert is no longer available because the affected files changed after this turn."
+      : "Revert could not be applied to the current project tree.";
   let detail = redactSecrets(raw);
   if (Buffer.byteLength(detail, "utf8") > REVERT_DETAIL_MAX_BYTES) {
     while (Buffer.byteLength(detail, "utf8") > REVERT_DETAIL_MAX_BYTES && detail.length > 0) {

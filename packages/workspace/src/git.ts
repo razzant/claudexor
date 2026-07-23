@@ -277,11 +277,21 @@ function assertNoBinaryStubs(diff: string, label: string): void {
   }
 }
 
+/** Why a revert was refused, decided by the PRODUCER (which branch failed), not
+ *  by regexing the human `reason` downstream (QA-051/W3):
+ *  - `postimage_diverged`: the reverse `--check` failed because the turn-owned
+ *    postimage no longer matches (files changed after the turn);
+ *  - `reverse_apply_failed`: the reverse apply itself failed after a clean
+ *    preflight. */
+export type RevertRefusalReason = "postimage_diverged" | "reverse_apply_failed";
+
 export interface RevertResult {
   reverted: boolean;
   /** Turn-added files removed to restore the pre-turn state (`.claudexor` preserved). */
   removed: string[];
   reason?: string;
+  /** Typed refusal class set at the point of failure; absent on success. */
+  reasonCode?: RevertRefusalReason;
 }
 
 /**
@@ -322,6 +332,7 @@ export async function revertWorkingTreePatch(repo: string, patch: string): Promi
       reverted: false,
       removed: [],
       reason: `turn-owned postimage no longer matches; refusing to overwrite later user edits: ${check.stderr.trim()}`,
+      reasonCode: "postimage_diverged",
     };
   }
   const before = await statusPorcelain(repo);
@@ -336,6 +347,7 @@ export async function revertWorkingTreePatch(repo: string, patch: string): Promi
         (after === before
           ? "tree remains at the observed pre-revert state"
           : "target changed during revert; no destructive rollback was attempted"),
+      reasonCode: "reverse_apply_failed",
     };
   }
   return { reverted: true, removed };

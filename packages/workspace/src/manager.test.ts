@@ -79,6 +79,9 @@ describe("revertWorkingTreeTo", () => {
     const r2 = await revertWorkingTreeTo(repo, preTurn, postTurn);
     expect(r2.reverted).toBe(false);
     expect(r2.reason).toMatch(/postimage no longer matches|user edits/);
+    // W3: the producer classifies the refusal with a typed code (consumed by
+    // control-api instead of regexing the English message).
+    expect(r2.reasonCode).toBe("postimage_diverged");
     // The refused revert touched nothing.
     expect(readFileSync(join(repo, "keep.ts"), "utf8")).toBe("edited again after the turn\n");
   });
