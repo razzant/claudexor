@@ -212,6 +212,30 @@ the status scale (blocker→failed, major→blocked, minor→running, nit→neut
 
 - **SF Symbols** first (monochrome in toolbars per Tahoe; tint only for meaning).
   Animated symbols for run state. Provide an accessibility label for every icon.
+- **AX-label doctrine (QA-003 / issue-003, INV-141).** An icon control's primary
+  accessibility NAME is a stable, product-owned ENGLISH string set at the control
+  boundary — it must NOT be left to SwiftUI's `Image(systemName:)` inference,
+  which on a non-`en` host exports the OS's localized SF Symbol description (a
+  `ru_RU` build read `paperclip` as `Вложенные Файлы`, `slider.horizontal.3` as
+  `Изменить`). The rules:
+  1. **Every icon-only interactive control carries an explicit
+     `.accessibilityLabel("…")`** (composer: More options / Attach files /
+     Capture screen region / Remove attachment; the receipt workspace affordance;
+     the status-banner Copy control; workspace filter chip). Verbatim product
+     strings, so host localization cannot rewrite them.
+  2. **`.help(...)` is the separate HINT, never the name.** Help states the
+     consequence/reason (and a disabled control's reason); it does not discharge
+     the label requirement.
+  3. **Dynamic state is VALUE, not identity.** The Appearance menu keeps the name
+     "Appearance" and exposes System/Light/Dark as its `.accessibilityValue` — a
+     glyph swap never renames the action.
+  4. **Decorative glyphs are `.accessibilityHidden(true)`.** `SectionLabel`'s
+     leading icon is hidden centrally (one fix for all 18 call sites, INV-121),
+     so a header glyph never leaks a phantom localized stop (`plusminus.circle` →
+     `Экспозиция`); the section title text carries the name.
+  5. **Custom `Image + Text` buttons name themselves.** `SegmentedTabs` exports
+     each tab's label + selected trait explicitly — a `.plain` button's visible
+     text is not a reliable AX name on macOS 26.
 - A small set of custom marks: the Claudexor app icon (Icon Composer, layered,
   Light/Dark/Clear/Tinted) and the vendor harness marks.
 - **Vendor iconography has ONE owner: `HarnessIcon`.** Every surface that shows a
@@ -922,6 +946,22 @@ views in the shared design-system files; screens compose them.
   An empty / no-output thread reads an honest "No project output in this thread."
 - **Honesty badges.** route-proof (verified / unverified / same-model-fallback), estimated $,
   gate status — quiet, always-on, expandable to evidence.
+- **Outcome receipts — council / valuation / plan-hash (packet V truth items).**
+  Three server-projected facts render as quiet Outcome receipts, each a
+  projection of a typed run/DTO field (never UI-invented):
+  - **Council** — a Plan run drafted by a council (D31) shows its membership
+    receipt (`CouncilInfo`): how many harnesses drafted in parallel and which
+    primary merged them into the one plan + one question set. A member that was
+    unavailable is disclosed, not silently dropped or self-duplicated.
+  - **Subscription valuation** — the token-valued cost of native-subscription
+    work (`valuationUsd`), shown as a SEPARATE line from billed cash
+    (`Cash: $X / cap` vs `Subscription valuation: ~$Y`), with the executor/review
+    split when known. An UNKNOWN valuation renders "unknown", NEVER $0; cash
+    stays the only value the cap governs.
+  - **Plan hash** — an implemented plan carries the frozen plan's identity
+    (`planRunId` / plan hash) so the agent turn's outcome names exactly which
+    plan it froze and ran; a plan-readiness override is recorded on the turn for
+    provenance, never inferred.
 - **Settings.** Native macOS `Settings` scene (`Cmd+,`) with grouped tabs: General,
   Routing, Harnesses (per-harness defaults + doctor), Budget, Secrets, and
   Appearance. The editable budget cockpit and the Harness Doctor are Settings
@@ -981,11 +1021,26 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   prominent action). SOLID `accentSolid` capsule + white text (NOT system
   `.glassProminent`, which can vanish on light-mode glass); dims to
   `accentSolid.opacity(0.35)` when disabled.
+- **`ComposerInputCopy` — composer copy truth (QA-012).** The composer's
+  placeholder + accessibility strings key ONLY on whether a thread is selected,
+  and tell the truth about what Send does: a DRAFT reads "…the first message
+  starts a thread" (AX hint "Sending starts a new thread."); an OPEN thread reads
+  "Continue this conversation…" (hint "Sending adds a turn to this
+  conversation.") and never mentions "native session" (a lane detail, not the
+  user's mental model). The accessible NAME is the short, stable
+  "Conversation message" — never the punctuation-heavy placeholder. One owner
+  (`ComposerInputCopy`); surfaces read it, never re-phrase it.
 - **`ProjectChip`** — the composer's working-directory picker. Capsule (logo + folder
   name + chevron) opening a `Menu` of MRU recents (`model.recentProjects`, persisted) +
   "Browse…" (`NSOpenPanel`). In the draft state it sets the new thread's project; an
   open thread's repo is bound, so picking another project starts a new draft there.
-  Highlighted (accent border) when no project is set.
+  Highlighted (accent border) when no project is set. **A no-project draft keeps a
+  reachable "No project" row (INV-131 / QA-006).** The chip's menu carries an
+  explicit no-project choice (`onNoProject` → `clearProject`) so a draft can
+  return to the no-project Ask-only state on purpose; clearing the project is a
+  SCOPE choice, never a deletion (the MRU list is untouched). The chip stays
+  visible as the choose-project CTA in that state — the ONLY place project
+  selection lives; Settings owns no Current Project field.
 - **`OptionSection` / `OptionRow`** — the "⋯" popover building blocks: a caption-titled
   section, and a `labelWidth`-aligned label+control row (replaces ad-hoc `.fixedSize()` /
   magic-width pickers so every option lines up). Solid surface, token spacing.
@@ -1034,6 +1089,14 @@ DesignSystemComponents.swift, DesignTokens.swift.)
   the system toolbar via `.navigationTitle`/`.navigationSubtitle` — never a second header strip.
   Project + primary harness chips live in the COMPOSER, not the toolbar. Monochrome SF Symbols;
   don't mix text+icon in one group.
+  **Toolbar layout is STABLE across theme switches (GH #21).** A toolbar item
+  whose glyph changes with state must reserve a CONSTANT width, or the whole pill
+  cluster jumps when the glyph swaps. The Appearance menu is the case: its glyph
+  is `sun.max` / `moon.stars` / `circle.lefthalf.filled` (different intrinsic
+  widths), and it is the LEADING item, so a theme change re-sized it and shifted
+  the cluster. `AppearanceMenu` stacks all mode glyphs (only the active one
+  visible) to reserve the widest box — a reserved intrinsic size, never a magic
+  frame width. Any future state-varying toolbar glyph does the same.
 - **Sidebar selection.** The glass sidebar is the THREAD LIST. `List(selection:)` binds a
   `Hashable` route with a distinct case per selectable concept. Every row gets a UNIQUE
   `.tag(…)`; the detail is a `switch` over the route. NEVER alias two concepts to one tag
@@ -1067,6 +1130,25 @@ component.
 - Honor Reduce Motion, Reduce Transparency, Increase Contrast, Dynamic Type.
 - Full VoiceOver labels (every icon/badge), keyboard navigation, focus order.
 - Never encode state with color alone — always glyph + text.
+- **Keyboard focus reaches every cohort (QA-076 / issue-076).** Under the
+  applicable macOS keyboard-navigation mode, forward/back Tab must traverse each
+  visible enabled control and never dead-end. The app relies on SwiftUI's
+  implicit focus graph, so a CUSTOM cohort needs an explicit boundary:
+  1. **Custom tab groups get `.focusSection()`.** The workspace `SegmentedTabs`
+     are three independent `.plain` buttons with no native tab-group behavior —
+     forward Tab used to enter the selected tab and self-loop. `.focusSection()`
+     groups the cohort so focus visits each tab then continues past the group.
+  2. **A `TabView` window needs a focusable entry.** The Settings scene left
+     `AXFocusedUIElement` on the `AXWindow` (no reachable descendant); each pane's
+     content is a `.focusSection()` so Tab routes into the pane's native
+     buttons/fields. Use `.focusSection()` for ordering; add `.focusable()` ONLY
+     for a custom view proven absent from the native graph — never blanket it onto
+     already-focusable native controls (duplicate/dead stops).
+  3. Do NOT fight the platform: `Control-F5` toolbar entry and arrow-key movement
+     inside a focused group are correct, not failures; never install a global Tab
+     monitor or mutate the user's macOS keyboard settings.
+  The live keyboard traversal has no headless test (no XCUITest target yet), so
+  it is a MANUAL Visual-QA story (§8) until an AX-driven UI test lands.
 
 ---
 
@@ -1113,6 +1195,12 @@ thread (the Counter Lab long thread) and stand in for the deterministic gates:
   user and final-answer bubbles read faintly frosted (glow through) with text
   fully legible; toggling System Settings → Reduce Transparency snaps both back
   to solid fills with no contrast change.
+- **Keyboard traversal + AX names (QA-076 / QA-003).** With macOS Keyboard
+  navigation enabled, Tab/Shift-Tab must reach every visible enabled control in
+  the composer, the workspace tabs, and each Settings pane without dead-ending or
+  falling back to the window; the full manual keyboard + VoiceOver-name story is
+  the `docs/CHECKLISTS.md` "macOS Visual QA" steps (no XCUITest target exists
+  yet, so this is a hand story, not a gate).
 
 ---
 

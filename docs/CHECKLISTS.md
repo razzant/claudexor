@@ -124,6 +124,27 @@ pnpm test
 
 - Verify dark and light appearances.
 - Verify Reduce Motion and Reduce Transparency.
+- Toolbar stability (GH #21): switch the Appearance theme repeatedly and confirm
+  the trailing toolbar pill cluster does NOT shift — a state-varying glyph must
+  reserve a constant width.
+- Keyboard navigation (QA-076 / issue-076), the manual keyboard story — no
+  headless test exists yet:
+  - Enable macOS Keyboard navigation (System Settings → Keyboard, or `Ctrl-F7`).
+  - In the main window, Tab/Shift-Tab through the composer and, with the workspace
+    open, the Changes/Artifacts/Evidence tabs: every visible enabled control is
+    reachable exactly once, focus never dead-ends on one tab or falls back to the
+    window, and Shift-Tab is the exact inverse. Activate each with Space/Return.
+  - In Settings, Tab must ENTER the window (never leave focus on the window) and
+    reach each pane's enabled buttons/fields; switch panes and repeat.
+  - Negative control (reduced Tab mode OFF): plain Tab visiting only text/list
+    controls is correct platform behavior, not a failure; `Ctrl-F5` toolbar entry
+    and arrow-key movement inside a focused group are correct too.
+- VoiceOver / AX names (QA-003 / issue-003): every icon-only control announces a
+  stable English NAME (More options, Attach files, Capture screen region, Remove
+  attachment, Appearance, workspace tabs, Copy message), the Appearance control
+  keeps ONE name while its value changes System/Light/Dark, and decorative
+  section-header glyphs create no phantom stops. Spot-check on a non-`en` host
+  (`ru_RU`): the names stay English (no `Изменить`/`Экспозиция`).
 - Check compact, medium, and wide window sizes.
 - Check composer, mode menu, harness chips, Settings, run detail, diagnostics,
   and onboarding.
