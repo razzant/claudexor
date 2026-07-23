@@ -49,6 +49,7 @@ import {
   renderHelp,
 } from "./command-registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
+import { aboutJson, renderAbout } from "./about-command.js";
 import { dispatchOpsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
@@ -1428,6 +1429,14 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
       }
       return 0;
     }
+
+    case "about":
+      // Product identity (version + author + license + owner links, D-11).
+      // `--json` is a small stable envelope; the Swift About panel and the
+      // packed npm-manifest assertion consume the same facts.
+      if (json) printJson(aboutJson(CLI_VERSION));
+      else print(renderAbout(CLI_VERSION));
+      return 0;
 
     case "help":
       // `help --json` is the machine-readable command catalog (agents parse

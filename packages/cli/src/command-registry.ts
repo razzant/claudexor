@@ -288,6 +288,13 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
     stability: "stable",
   },
   {
+    id: "about",
+    summary: "Product identity: version, author, license, and links",
+    flags: ["json"],
+    mutability: "read",
+    stability: "stable",
+  },
+  {
     id: "help",
     summary: "Show this help",
     flags: ["json"],
