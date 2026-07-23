@@ -90,7 +90,8 @@
             "run.blocked",
             "run.completed",
             "run.failed",
-            "run.continuation"
+            "run.continuation",
+            "run.continuation.denied"
           ],
           "description": "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs."
         },

@@ -23,6 +23,7 @@ import { TERMINAL_LIFECYCLES, type RunOutcomeFacts, outcomeExitCode } from "@cla
 export {
   daemonOutcomeProblemFields,
   fetchRunOutcomeFacts,
+  projectRunOutcomeFacts,
   mergeDaemonRunOutcome,
 } from "./daemon-outcome.js";
 
@@ -499,34 +500,50 @@ export async function fetchRunSpendUsd(
   }
 }
 
-export async function fetchApplyEligibility(
+/**
+ * ONE GET /runs/:id for the terminal path (INV-120/122): fetch the run detail
+ * once and feed every pure projection below, instead of one round-trip per
+ * projection. Soft-fails to null (a detail hiccup must never eat a finished
+ * run's result). The per-projection `fetch*` wrappers stay for callers that
+ * need exactly one projection.
+ */
+export async function fetchRunDetail(
   addr: ControlApiAddress,
   runId: string,
-): Promise<{
-  eligible: boolean;
-  state: string | null;
-  reason: string | null;
-  requiredAction: string | null;
-} | null> {
+): Promise<Record<string, unknown> | null> {
   if (!runId) return null;
   try {
     const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
       headers: { authorization: `Bearer ${addr.token}` },
     });
     if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const v = detail["applyEligibility"];
-    return v && typeof v === "object"
-      ? (v as {
-          eligible: boolean;
-          state: string | null;
-          reason: string | null;
-          requiredAction: string | null;
-        })
-      : null;
+    return (await res.json()) as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+export type ApplyEligibilityProjection = {
+  eligible: boolean;
+  state: string | null;
+  reason: string | null;
+  requiredAction: string | null;
+};
+
+/** Pure projection of the delivery-gate verdict from an already-fetched detail. */
+export function projectApplyEligibility(
+  detail: Record<string, unknown> | null,
+): ApplyEligibilityProjection | null {
+  if (!detail) return null;
+  const v = detail["applyEligibility"];
+  return v && typeof v === "object" ? (v as ApplyEligibilityProjection) : null;
+}
+
+export async function fetchApplyEligibility(
+  addr: ControlApiAddress,
+  runId: string,
+): Promise<ApplyEligibilityProjection | null> {
+  return projectApplyEligibility(await fetchRunDetail(addr, runId));
 }
 
 /**
@@ -535,22 +552,18 @@ export async function fetchApplyEligibility(
  * it never re-derives a headline of its own, so model prose can never outrank
  * the arbitrated truth. Null while the run is not terminal or unavailable.
  */
+/** Pure projection of the server-owned outcome banner from a fetched detail. */
+export function projectOutcomeBanner(detail: Record<string, unknown> | null): string | null {
+  if (!detail) return null;
+  const banner = detail["outcomeBanner"];
+  return typeof banner === "string" && banner.length > 0 ? banner : null;
+}
+
 export async function fetchOutcomeBanner(
   addr: ControlApiAddress,
   runId: string,
 ): Promise<string | null> {
-  if (!runId) return null;
-  try {
-    const res = await controlApiFetch(addr, `/runs/${encodeURIComponent(runId)}`, {
-      headers: { authorization: `Bearer ${addr.token}` },
-    });
-    if (!res.ok) return null;
-    const detail = (await res.json()) as Record<string, unknown>;
-    const banner = detail["outcomeBanner"];
-    return typeof banner === "string" && banner.length > 0 ? banner : null;
-  } catch {
-    return null;
-  }
+  return projectOutcomeBanner(await fetchRunDetail(addr, runId));
 }
 
 /**

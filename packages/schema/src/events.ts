@@ -137,6 +137,11 @@ export const RunEventType = z
      * context exhaustion (eligible cause, no completed WorkReport). Payload:
      * {from_attempt, cause, continuation_count, packet_turns}. */
     "run.continuation",
+    /** D-16d: an eligible one-shot continuation was REFUSED because its budget
+     * lease was denied — emitted INSTEAD of run.continuation so a denied lease
+     * never leaves a disclosure claiming a continuation launched. No attempt ran
+     * and the one-shot is not consumed. Payload: {from_attempt, cause, reason}. */
+    "run.continuation.denied",
   ])
   .describe(
     "Type of an append-only run event, covering run lifecycle, contract/context creation, budget, routing fallbacks, harness activity, interactions, gates, review, arbitration, work products, and control verbs.",

@@ -3662,6 +3662,86 @@ describe("Orchestrator", () => {
     expect(readFileSync(paths2.eventsPath, "utf8")).toContain('"lifecycle":"cancelled"');
   });
 
+  it("terminalization hook fires with the runId on EVERY announced terminal, never pre-announce (QA-034 map leak)", async () => {
+    const repo = await initRepo();
+    const { guardAnnouncedRun } = await import("./runTerminals.js");
+    const guard = guardAnnouncedRun as unknown as (
+      signal: AbortSignal | undefined,
+      body: (announce: (a: unknown) => void) => Promise<unknown>,
+      onSettled?: (runId: string) => void,
+    ) => Promise<OrchestratorResult>;
+    const { ArtifactStore } = await import("@claudexor/artifact-store");
+    const { EventLog } = await import("@claudexor/event-log");
+    const store = new ArtifactStore(repo);
+
+    // Pre-announce throw: no runId was ever assigned, so the hook must NOT fire
+    // (there is nothing to release; the caller gets the loud error).
+    const settled: string[] = [];
+    await expect(
+      guard(
+        undefined,
+        async () => {
+          throw new Error("pre-announce boom");
+        },
+        (id) => settled.push(id),
+      ),
+    ).rejects.toThrow("pre-announce boom");
+    expect(settled).toEqual([]);
+
+    // Announced-then-throw: the run died before any telemetry writer — the hook
+    // is exactly what releases per-run state here (the leak this closes).
+    const p1 = store.createRun("hook-throw");
+    const l1 = new EventLog(p1.eventsPath, "hook-throw", "t1");
+    await guard(
+      undefined,
+      async (announce) => {
+        l1.emit("run.created", { mode: "agent", prompt: "x" });
+        announce({
+          log: l1,
+          store,
+          paths: p1,
+          runId: "hook-throw",
+          taskId: "t1",
+          mode: "agent",
+          phase: "race",
+        });
+        throw new Error("mid-strategy");
+      },
+      (id) => settled.push(id),
+    );
+    expect(settled).toEqual(["hook-throw"]);
+
+    // Normal return also settles (idempotent with the telemetry writer's own delete).
+    const p2 = store.createRun("hook-ok");
+    const l2 = new EventLog(p2.eventsPath, "hook-ok", "t2");
+    await guard(
+      undefined,
+      async (announce) => {
+        announce({
+          log: l2,
+          store,
+          paths: p2,
+          runId: "hook-ok",
+          taskId: "t2",
+          mode: "agent",
+          phase: "race",
+        });
+        return {
+          runId: "hook-ok",
+          taskId: "t2",
+          mode: "agent",
+          lifecycle: "completed",
+          winner: null,
+          runDir: p2.root,
+          summary: "ok",
+          candidates: [],
+        } as unknown as OrchestratorResult;
+      },
+      (id) => settled.push(id),
+    );
+    expect(settled).toEqual(["hook-throw", "hook-ok"]);
+  });
+
   it("discloses a requested effort on a harness with no declared ladder via ignored_settings (INV-105)", async () => {
     const repo = await initRepo();
     // realLikeAdapter declares NO effort_levels — a configured per-harness

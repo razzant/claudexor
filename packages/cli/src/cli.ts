@@ -67,7 +67,11 @@ import {
   fetchApplyEligibility,
   fetchCouncil,
   fetchOutcomeBanner,
+  fetchRunDetail,
   fetchRunOutcomeFacts,
+  projectApplyEligibility,
+  projectOutcomeBanner,
+  projectRunOutcomeFacts,
   mergeDaemonRunOutcome,
 } from "./daemon-run.js";
 import { runPlanQuestionLoop } from "./plan-question-loop.js";
@@ -681,8 +685,10 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const out = mergeDaemonRunOutcome(started, final);
       const status = out.status;
       const reason = daemonOutcomeSummary({ ...started, status, error: out.error });
-      const applyEligibility = await fetchApplyEligibility(addr, started.runId);
-      const outcomeBanner = await fetchOutcomeBanner(addr, started.runId);
+      // ONE GET /runs/:id feeds all three terminal projections (INV-120/122).
+      const detail = await fetchRunDetail(addr, out.runId);
+      const applyEligibility = projectApplyEligibility(detail);
+      const outcomeBanner = projectOutcomeBanner(detail);
       printJsonLine({
         frame: "run.terminal",
         runId: out.runId,
@@ -696,7 +702,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
       });
-      return exitCodeForState(status, await fetchRunOutcomeFacts(addr, out.runId));
+      return exitCodeForState(status, projectRunOutcomeFacts(detail));
     }
     if (json) {
       // Pure machine surface: await the terminal outcome and print one JSON object.
@@ -705,9 +711,11 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       const reason = daemonOutcomeSummary(out);
       // ADD-ONLY key (bench contract keeps {runId,runDir,status}): the derived
       // apply-gate verdict, so machine callers act on truth instead of
-      // re-implying eligibility from status.
-      const applyEligibility = await fetchApplyEligibility(addr, out.runId);
-      const outcomeBanner = await fetchOutcomeBanner(addr, out.runId);
+      // re-implying eligibility from status. ONE GET /runs/:id feeds all three
+      // terminal projections (INV-120/122).
+      const detail = await fetchRunDetail(addr, out.runId);
+      const applyEligibility = projectApplyEligibility(detail);
+      const outcomeBanner = projectOutcomeBanner(detail);
       printJson({
         runId: out.runId,
         runDir: out.runDir,
@@ -720,7 +728,7 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         ...(outcomeBanner ? { outcomeBanner } : {}),
         ...(applyEligibility ? { applyEligibility } : {}),
       });
-      return exitCodeForState(out.status, await fetchRunOutcomeFacts(addr, out.runId));
+      return exitCodeForState(out.status, projectRunOutcomeFacts(detail));
     }
     // Text mode: enqueue, then live-stream the run through the shared follow
     // pipeline (replay + push + interactive TTY question answering), then print

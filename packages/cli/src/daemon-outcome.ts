@@ -2,9 +2,24 @@ import { OUTPUT_SCHEMA_DIALECTS, RunOutcomeFacts } from "@claudexor/schema";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 import type { DaemonRunOutcome } from "./daemon-run.js";
 
-/** Fetch the run's terminal outcome facts (D8 axes incl. the D-16 work_state)
- * from the run detail; null when unavailable. Used to make the direct-run CLI
- * exit outcome-aware for a work_state veto. */
+/** Pure projection of the D8 outcome facts (incl. the D-16 work_state) from an
+ * already-fetched run detail — lets the terminal path derive facts from the SAME
+ * GET /runs/:id the banner and apply-eligibility projections read (INV-120/122),
+ * not a third round-trip. Null when the detail is missing or malformed. */
+export function projectRunOutcomeFacts(
+  detail: Record<string, unknown> | null,
+): RunOutcomeFacts | null {
+  const summary =
+    detail && typeof detail === "object"
+      ? (detail as { summary?: { outcomeFacts?: unknown } }).summary
+      : undefined;
+  const parsed = RunOutcomeFacts.safeParse(summary?.outcomeFacts);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Fetch the run's terminal outcome facts from the run detail; null when
+ * unavailable. Used to make the direct-run CLI exit outcome-aware for a
+ * work_state veto (callers that need only this one projection). */
 export async function fetchRunOutcomeFacts(
   addr: ControlApiAddress,
   runId: string,
@@ -15,9 +30,7 @@ export async function fetchRunOutcomeFacts(
       headers: { authorization: `Bearer ${addr.token}` },
     });
     if (!res.ok) return null;
-    const detail = (await res.json()) as { summary?: { outcomeFacts?: unknown } };
-    const parsed = RunOutcomeFacts.safeParse(detail.summary?.outcomeFacts);
-    return parsed.success ? parsed.data : null;
+    return projectRunOutcomeFacts((await res.json()) as Record<string, unknown>);
   } catch {
     return null;
   }

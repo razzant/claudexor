@@ -193,11 +193,17 @@ export function promptWithGateArgvDisclosure(
   gates: ReadonlyArray<{ program: string; args: readonly string[] }>,
 ): string {
   if (gates.length === 0) return prompt;
+  const shown = gates.slice(0, 20);
   const lines = [
     "",
     "Engine-configured deterministic gates (the engine will run these EXACT typed argv again to verify the run). Use them verbatim for local verification; do not substitute a bare `node`/`npm`, a package script, or a shell string:",
-    ...gates.slice(0, 20).map((g) => `- ${redactSecrets(JSON.stringify([g.program, ...g.args]))}`),
+    ...shown.map((g) => `- ${redactSecrets(JSON.stringify([g.program, ...g.args]))}`),
   ];
+  // Never let the slice silently imply the disclosed set is exhaustive: mark how
+  // many gates were omitted so the model knows more will run than it can see.
+  if (gates.length > shown.length) {
+    lines.push(`- …${gates.length - shown.length} more gates omitted`);
+  }
   return [prompt, ...lines].join("\n");
 }
 

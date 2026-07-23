@@ -1013,6 +1013,34 @@ describe("routing telemetry", () => {
       expect(r.reason).toBe("declared_order");
       expect(r.order).toEqual(["alpha", "beta"]);
     });
+
+    // Round-4 #3 (third recurrence): non-null but EQUAL slacks. The comparator
+    // subtracts equal effective values -> order 0 -> it neither reorders the pool
+    // NOR falls through to tiers, so the honest reason is declared_order even
+    // though the declared tiers (claude 0, codex 1) would differ. The old
+    // `slackDecided = some(non-null)` heuristic falsely claimed expiring_quota_slack.
+    it("reports declared_order for EQUAL non-null slacks (does not fall through to tiers)", () => {
+      const led = new BudgetLedger();
+      const reset = new Date(Date.now() + 9_000_000).toISOString();
+      // Identical used_ratio + window + reset for both -> identical binding pace
+      // slack, so the slack axis is in force yet separates nothing.
+      for (const harness_id of ["codex", "claude"] as const) {
+        led.observe({
+          harness_id,
+          ts: new Date().toISOString(),
+          quality: "native",
+          kind: "quota_constraint",
+          constraint_id: "five-hour",
+          used_ratio: 0.3,
+          window_seconds: 18_000,
+          resets_at: reset,
+        });
+      }
+      const r = explainRanking([cand("claude"), cand("codex")], routeContext(led, "auto"));
+      expect(r.reason).toBe("declared_order");
+      // Equal slacks: the stable sort preserves the declared input order.
+      expect(r.order).toEqual(["claude", "codex"]);
+    });
   });
 
   it("quota cooldown integration: an observed rate-limit removes the harness from selection until reset", async () => {

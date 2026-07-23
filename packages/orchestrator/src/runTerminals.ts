@@ -209,6 +209,13 @@ export function failTerminally(
 export async function guardAnnouncedRun(
   signal: AbortSignal | undefined,
   body: (announce: (a: AnnouncedRunContext) => void) => Promise<OrchestratorResult>,
+  /**
+   * Invoked once with the announced runId when the strategy settles (return OR
+   * throw). The single per-run terminalization hook: per-run engine state keyed
+   * by runId (e.g. the routing-rationale map) is released HERE so a run that
+   * dies before its telemetry writer runs cannot leak it (QA-034 map leak).
+   */
+  onSettled?: (runId: string) => void,
 ): Promise<OrchestratorResult> {
   let announced: AnnouncedRunContext | null = null;
   try {
@@ -255,5 +262,10 @@ export async function guardAnnouncedRun(
       err,
       spendUsd,
     );
+  } finally {
+    // Release per-run engine state on EVERY terminal path (normal return, failure
+    // net, cancel), but only for a run that actually announced a runId.
+    const settled = announced as AnnouncedRunContext | null;
+    if (settled) onSettled?.(settled.runId);
   }
 }

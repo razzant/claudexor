@@ -91,6 +91,17 @@
           ],
           "description": "Requested reasoning effort."
         },
+        "efforts": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/ControlThreadTurnRequest/properties/effort"
+          },
+          "propertyNames": {
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "description": "Harness-scoped effort map (harness id to effort); an entry here wins over the scalar effort and the per-harness settings default."
+        },
         "reviewerModels": {
           "type": "object",
           "additionalProperties": {

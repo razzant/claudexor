@@ -7,7 +7,11 @@ import {
   type ProcessTreeTerminationOutcome,
   type ReapProcessTreeOptions,
 } from "./process-tree.js";
-import { defaultProcessGroupService, type ProcessGroupHandle } from "./process-group.js";
+import {
+  defaultProcessGroupService,
+  type ProcessGroupHandle,
+  type ProcessGroupService,
+} from "./process-group.js";
 
 export interface SpawnOptions {
   cwd?: string;
@@ -49,6 +53,13 @@ export interface SpawnOptions {
    * Production callers never set this.
    */
   reap?: (opts: ReapProcessTreeOptions) => Promise<ProcessTreeTerminationOutcome>;
+  /**
+   * Injection seam for the identity-proven process-group service used by the
+   * direct-group cancel belt (deterministic tests of unknown-capture / stale-
+   * identity refusal). Defaults to the shared `defaultProcessGroupService`.
+   * Production callers never set this.
+   */
+  processGroups?: ProcessGroupService;
   /** Runtime abort signal for active daemon/orchestrator cancellation. */
   abortSignal?: AbortSignal;
   /**
@@ -121,25 +132,25 @@ export async function* spawnProcess(
   // root is gone) and would never be enumerated — so reapProcessTree could
   // falsely report `confirmed` (round-2 #3). A seeded handle keeps the direct
   // group tracked (and raw-probeable) until it is proven empty.
+  const groupService = opts.processGroups ?? defaultProcessGroupService;
   let directGroupHandle: ProcessGroupHandle | undefined;
   if (typeof child.pid === "number") {
-    const capture = defaultProcessGroupService.captureLeader(child.pid);
+    const capture = groupService.captureLeader(child.pid);
     if (capture.status === "known") directGroupHandle = capture.handle;
   }
 
-  // Signal the child's process GROUP (negative pid) so grandchildren die too;
-  // fall back to the direct child if the group is already gone.
+  // Identity-proven-only direct-group belt (round-4 #1). A raw
+  // `process.kill(-child.pid, signal)` — including the delayed SIGKILL fallback —
+  // could signal an UNRELATED group if the child exited and its PID/PGID was
+  // reused before the escalation fires. So we signal ONLY through the captured,
+  // identity-verified handle: `ProcessGroupService.signal` re-checks the recorded
+  // leader identity and refuses (never signalling) when the group is gone,
+  // recycled, or unreadable. When capture never succeeded (no proven handle) we
+  // do not signal at all — the whole-tree reap remains the fail-closed disclosure
+  // channel (it reports `unconfirmed` for a group it cannot identity-prove).
   const killTree = (signal: NodeJS.Signals): void => {
-    try {
-      if (typeof child.pid === "number") process.kill(-child.pid, signal);
-      else child.kill(signal);
-    } catch {
-      try {
-        child.kill(signal);
-      } catch {
-        /* already gone */
-      }
-    }
+    if (!directGroupHandle) return;
+    groupService.signal(directGroupHandle, signal);
   };
 
   // A child can exit before/while stdin is written (e.g. a failing `git apply`).
@@ -233,8 +244,12 @@ export async function* spawnProcess(
         graceMs: killDelay,
         deadlineMs: opts.cancelDeadlineMs ?? killDelay + 4_000,
         // Seed the direct group so a surviving same-pgid grandchild is proven
-        // dead even if the direct child's ppid chain is already gone.
-        ...(directGroupHandle ? { seedHandles: [directGroupHandle] } : {}),
+        // dead even if the direct child's ppid chain is already gone, and bind
+        // the reap to the root's original identity so a mid-deadline PID reuse
+        // cannot enroll an unrelated replacement tree (round-4 #2).
+        ...(directGroupHandle
+          ? { seedHandles: [directGroupHandle], rootIdentity: directGroupHandle.leader }
+          : {}),
       });
     }
     // Direct-group belt: a raw cooperative nudge + SIGKILL escalation to the

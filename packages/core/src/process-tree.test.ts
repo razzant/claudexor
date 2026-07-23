@@ -7,7 +7,11 @@ import {
   type ProcessTreeReader,
 } from "./process-tree.js";
 import { ProcessGroupService } from "./process-group.js";
-import type { ProcessIdentity, ProcessIdentityReader } from "./process-identity.js";
+import type {
+  KnownProcessIdentity,
+  ProcessIdentity,
+  ProcessIdentityReader,
+} from "./process-identity.js";
 
 /**
  * Deterministic fake kernel: a set of live pgids (each led by pid==pgid), a
@@ -289,5 +293,116 @@ describe("reapProcessTree", () => {
         "leader_exited_group_alive",
       );
     }
+  });
+
+  // Round-4 #2: the fixed-point rescan discovers descendants from the numeric
+  // rootPid. If the root exits and its PID is REUSED mid-deadline, a later
+  // snapshot shows an UNRELATED process tree under the same pid — the rescan must
+  // NOT enroll and signal that impostor's descendant groups. A root-identity
+  // binding stops new discovery the instant the root's identity differs.
+  const ORIG_ROOT: KnownProcessIdentity = {
+    status: "known",
+    pid: 100,
+    platform: "linux",
+    source: "procfs_stat",
+    startToken: "linux:orig-100",
+    processGroupId: 100,
+  };
+  // Root re-verify reader (used ONLY by reapProcessTree's root check, distinct
+  // from the group service's identity): the first observation is the original
+  // root; every subsequent observation is a different process that reused pid 100.
+  function reusingRootChecker(): ProcessIdentityReader {
+    let reads = 0;
+    return {
+      read(pid: number): ProcessIdentity {
+        if (pid !== 100) return { status: "missing", pid, platform: "linux" };
+        reads += 1;
+        return {
+          status: "known",
+          pid: 100,
+          platform: "linux",
+          source: "procfs_stat",
+          startToken: reads <= 1 ? "linux:orig-100" : "linux:impostor-100",
+          processGroupId: 100,
+        };
+      },
+      self: () => ({ status: "missing", pid: 1, platform: "linux" }),
+    };
+  }
+
+  it("stops discovering descendants once the root PID is reused mid-deadline (root-identity bound)", async () => {
+    // Intact tree first (root 100 + escaped descendant 300); a later snapshot is
+    // the impostor's tree (100 -> 500). 500 must NEVER be signalled.
+    const world = fakeWorld({
+      alive: [100, 300, 500],
+      snapshots: [
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 200, ppid: 100, pgid: 100 },
+          { pid: 300, ppid: 200, pgid: 300 },
+        ],
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 500, ppid: 100, pgid: 500 },
+        ],
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 500, ppid: 100, pgid: 500 },
+        ],
+      ],
+    });
+    const outcome = await reapProcessTree({
+      rootPid: 100,
+      rootIdentity: ORIG_ROOT,
+      identity: reusingRootChecker(),
+      groups: world.groups,
+      tree: world.tree,
+      now: world.now,
+      sleep: world.sleep,
+      graceMs: 100,
+      cooperativeSignal: "SIGTERM",
+      probeIntervalMs: 50,
+    });
+    expect(outcome.state).toBe("confirmed");
+    // The originally-valid tree was reaped to death...
+    expect(world.isAlive(100)).toBe(false);
+    expect(world.isAlive(300)).toBe(false);
+    // ...but the impostor's descendant was never enrolled or signalled.
+    expect(world.signals.some((s) => s.pgid === 500)).toBe(false);
+    expect(world.isAlive(500)).toBe(true);
+  });
+
+  it("WITHOUT a root identity, the same reuse fixture leaks a signal to the impostor tree", async () => {
+    // Control: the identical fixture, minus rootIdentity, DOES discover and
+    // signal the reused pid's descendant 500 — proving the guard above is what
+    // prevents it (not the fixture merely never reaching the impostor snapshot).
+    const world = fakeWorld({
+      alive: [100, 300, 500],
+      snapshots: [
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 300, ppid: 100, pgid: 300 },
+        ],
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 500, ppid: 100, pgid: 500 },
+        ],
+        [
+          { pid: 100, ppid: 1, pgid: 100 },
+          { pid: 500, ppid: 100, pgid: 500 },
+        ],
+      ],
+    });
+    await reapProcessTree({
+      rootPid: 100,
+      groups: world.groups,
+      tree: world.tree,
+      now: world.now,
+      sleep: world.sleep,
+      graceMs: 100,
+      cooperativeSignal: "SIGTERM",
+      probeIntervalMs: 50,
+    });
+    expect(world.signals.some((s) => s.pgid === 500)).toBe(true);
   });
 });

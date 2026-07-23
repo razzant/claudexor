@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { armOrphanExit, labelStreams, spawnProcess } from "./proc.js";
+import { ProcessGroupService } from "./process-group.js";
+import type { ProcessIdentity, ProcessIdentityReader } from "./process-identity.js";
 
 const tempDirs: string[] = [];
 
@@ -211,6 +213,89 @@ describe("spawnProcess termination_unconfirmed disclosure", () => {
       if (ev.type === "stdout" && ev.line === "ready") ac.abort();
     }
     expect(events.some((e) => e.type === "termination_unconfirmed")).toBe(false);
+  });
+});
+
+// Round-4 #1: the direct-group cancel belt must signal ONLY through the captured,
+// identity-verified process-group handle — never a raw negative-PID kill that a
+// reused PID/PGID could redirect to an unrelated group. When identity cannot be
+// proven (capture unknown, or the leader identity changed before escalation) the
+// belt sends NOTHING; the whole-tree reap remains the fail-closed disclosure.
+describe("spawnProcess identity-proven cancel belt", () => {
+  // Child self-exits regardless of signals, so the run terminates cleanly even
+  // when the belt (correctly) refuses to signal — isolating the assertion to
+  // "was a raw group signal ever emitted?".
+  const selfExitChild = ["console.log('ready')", "setTimeout(() => process.exit(0), 300)"].join(
+    ";",
+  );
+
+  function spyGroupService(identity: ProcessIdentityReader): {
+    groups: ProcessGroupService;
+    signalled: Array<{ negativePgid: number; signal: string }>;
+  } {
+    const signalled: Array<{ negativePgid: number; signal: string }> = [];
+    const groups = new ProcessGroupService({
+      platform: "linux",
+      identity,
+      probeProcessGroup: () => {},
+      signalProcessGroup: (negativePgid, signal) => signalled.push({ negativePgid, signal }),
+    });
+    return { groups, signalled };
+  }
+
+  it("sends NO group signal when the leader identity cannot be captured (unknown)", async () => {
+    // Identity is unreadable for every pid -> captureLeader returns `unknown` ->
+    // no directGroupHandle -> the belt has nothing it may safely signal.
+    const identity: ProcessIdentityReader = {
+      read: (pid) => ({ status: "unknown", pid, platform: "linux", reason: "io_error" }),
+      self: () => ({ status: "missing", pid: 1, platform: "linux" }),
+    };
+    const { groups, signalled } = spyGroupService(identity);
+    const ac = new AbortController();
+    for await (const ev of spawnProcess(process.execPath, ["-e", selfExitChild], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 20,
+      processGroups: groups,
+      reap: async () => ({ state: "confirmed", pgids: [] }),
+    })) {
+      if (ev.type === "stdout" && ev.line === "ready") ac.abort();
+    }
+    expect(signalled).toEqual([]);
+  });
+
+  it("refuses to signal when the leader identity CHANGED before escalation (PID reuse)", async () => {
+    // First observation is the real leader (captured at spawn); every later read
+    // is a different process that reused the pid -> compareLeader='different' ->
+    // ProcessGroupService.signal returns `stale_leader` WITHOUT signalling.
+    let reads = 0;
+    const identity: ProcessIdentityReader = {
+      read: (pid): ProcessIdentity => {
+        reads += 1;
+        return {
+          status: "known",
+          pid,
+          platform: "linux",
+          source: "procfs_stat",
+          startToken: reads <= 1 ? "linux:leader" : "linux:reused",
+          processGroupId: pid,
+        };
+      },
+      self: () => ({ status: "missing", pid: 1, platform: "linux" }),
+    };
+    const { groups, signalled } = spyGroupService(identity);
+    const ac = new AbortController();
+    for await (const ev of spawnProcess(process.execPath, ["-e", selfExitChild], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 20,
+      processGroups: groups,
+      reap: async () => ({ state: "confirmed", pgids: [] }),
+    })) {
+      if (ev.type === "stdout" && ev.line === "ready") ac.abort();
+    }
+    // The capture at spawn succeeded, but neither the cooperative nudge nor the
+    // delayed SIGKILL fallback signalled the (now-recycled) group.
+    expect(signalled).toEqual([]);
+    expect(reads).toBeGreaterThan(1); // proves the belt DID attempt (and was refused)
   });
 });
 

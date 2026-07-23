@@ -357,6 +357,11 @@ export interface RunInput {
   models?: Record<string, string>;
   /** Optional reasoning-effort hint forwarded to harnesses that support it. */
   effort?: EffortHint;
+  /** Harness-scoped effort map (harness id → effort). Specific beats general: an
+   * entry wins over the scalar `effort` and the per-harness settings default,
+   * analogous to `models`. Exact Retry replays the frozen per-lane efforts here
+   * so a non-primary lane keeps its own effort (QA-035 completeness). */
+  efforts?: Record<string, EffortHint>;
   /** Pre-assigned ids so a caller (daemon/control-api) knows them before the run starts. */
   runId?: string;
   taskId?: string;
@@ -713,27 +718,34 @@ export class Orchestrator {
     // Whole-strategy terminal net: once a strategy ANNOUNCES its
     // run, any escaped throw still stamps failure.yaml + summary + run.failed
     // instead of orphaning events.jsonl.
-    return guardAnnouncedRun(resolved.signal, (announce) => {
-      switch (mode) {
-        case "ask":
-          // `--deep-scan` widens the answer into the bounded multi-scout
-          // research sweep with synthesis (the old `audit --swarm`/`explore`).
-          return resolved.deepScan
-            ? this.runDeepScan(resolved, announce)
-            : this.runAsk(resolved, announce);
-        case "agent":
-          // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
-          // and `--attempts` select the convergence loop; `--n` selects the race
-          // width; `--create` switches the candidate intent to create_from_scratch.
-          if (resolved.untilClean) return this.runConvergence(resolved, mode, null, announce);
-          if (resolved.attempts !== undefined && resolved.attempts !== null) {
-            return this.runConvergence(resolved, mode, resolved.attempts, announce);
-          }
-          return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announce);
-        case "plan":
-          return this.runPlan(resolved, announce);
-      }
-    });
+    return guardAnnouncedRun(
+      resolved.signal,
+      (announce) => {
+        switch (mode) {
+          case "ask":
+            // `--deep-scan` widens the answer into the bounded multi-scout
+            // research sweep with synthesis (the old `audit --swarm`/`explore`).
+            return resolved.deepScan
+              ? this.runDeepScan(resolved, announce)
+              : this.runAsk(resolved, announce);
+          case "agent":
+            // Engine strategies are FLAGS on agent (v0.9 collapse): `--until-clean`
+            // and `--attempts` select the convergence loop; `--n` selects the race
+            // width; `--create` switches the candidate intent to create_from_scratch.
+            if (resolved.untilClean) return this.runConvergence(resolved, mode, null, announce);
+            if (resolved.attempts !== undefined && resolved.attempts !== null) {
+              return this.runConvergence(resolved, mode, resolved.attempts, announce);
+            }
+            return this.runRace({ ...resolved, n: resolved.n ?? 1 }, mode, announce);
+          case "plan":
+            return this.runPlan(resolved, announce);
+        }
+      },
+      // Single per-run terminalization hook: release the routing-rationale map
+      // entry on EVERY terminal (incl. a run that died before its telemetry
+      // writer ran, which is the leak this closes).
+      (runId) => this.routingRationaleByRun.delete(runId),
+    );
   }
 
   private async resolveReviewers(
@@ -1586,7 +1598,11 @@ export class Orchestrator {
             input.models?.[r.adapter.id] ??
             config.harnesses[r.adapter.id]?.default_model ??
             undefined,
-          effort: input.effort ?? config.harnesses[r.adapter.id]?.effort ?? undefined,
+          effort:
+            input.efforts?.[r.adapter.id] ??
+            input.effort ??
+            config.harnesses[r.adapter.id]?.effort ??
+            undefined,
           billingKnowledge: authMode === "api_key" ? "metered" : "unknown",
           incrementalCostUsd: authMode === "api_key" ? (metric?.avg_cost_usd ?? null) : null,
           credentialRoute:
@@ -1853,13 +1869,21 @@ export class Orchestrator {
       // reads — there is no run-global model (INV-103).
       routing_models: input.models ?? {},
       // QA-035: freeze the RESOLVED reasoning-effort per known lane so Exact
-      // Retry replays it instead of re-resolving current settings. A per-turn
-      // `input.effort` wins; otherwise the harness settings default is frozen.
-      // Only known-pool lanes can be frozen here (a pure auto pool's lanes are
-      // resolved later — documented seam).
+      // Retry replays it instead of re-resolving current settings. Precedence
+      // (specific beats general): the harness-scoped `efforts` map entry, then a
+      // per-turn scalar `input.effort`, then the harness settings default — the
+      // same map that Exact Retry replays so a NON-PRIMARY lane keeps its own
+      // frozen effort (QA-035 completeness). Only known-pool lanes are frozen
+      // here (a pure auto pool's lanes resolve later — documented seam).
       routing_efforts: Object.fromEntries(
-        (input.harnesses ?? [])
-          .map((hid) => [hid, input.effort ?? resolvedCfg.global.harnesses?.[hid]?.effort ?? null])
+        [...new Set([...(input.harnesses ?? []), ...Object.keys(input.efforts ?? {})])]
+          .map((hid) => [
+            hid,
+            input.efforts?.[hid] ??
+              input.effort ??
+              resolvedCfg.global.harnesses?.[hid]?.effort ??
+              null,
+          ])
           .filter((entry): entry is [string, string] => entry[1] !== null),
       ),
     });
@@ -2051,7 +2075,12 @@ export class Orchestrator {
       overrideModel ?? contract.routing_models[routed.adapter.id] ?? s?.defaultModel ?? null;
     // Effort disclosure (INV-105): a requested effort on a harness with no
     // declared ladder is DISCLOSED as ignored, never silently dropped.
-    let effort = effortHint ?? s?.effort ?? null;
+    // Harness-scoped resolution mirrors the model line above: the contract's
+    // FROZEN per-lane effort (QA-035) is authoritative so Exact Retry replays it
+    // without re-reading settings; a per-attempt `effortHint` (or settings
+    // default) applies only to a lane the contract did not freeze.
+    let effort: EffortHint | null =
+      contract.routing_efforts[routed.adapter.id] ?? effortHint ?? s?.effort ?? null;
     if (effort && routed.effortLevels.length === 0) {
       ignored.push(
         `effort=${effort} (manifest capabilities.effort_levels is empty for ${routed.adapter.id})`,
@@ -3185,7 +3214,6 @@ export class Orchestrator {
             runKind: envInPlace ? "in_place" : "enveloped",
           });
           if (contDecision.eligible) {
-            candidateContinuationCount += 1; // claim the one-shot synchronously
             const contAttemptId = `${slot.attemptId}c`;
             const packet = buildContinuationPacket(
               synthesizeContinuationRequest({
@@ -3195,12 +3223,10 @@ export class Orchestrator {
                 priorOutput: run.answerText ?? run.diff ?? "",
               }),
             );
-            log.emit("run.continuation", {
-              from_attempt: run.attemptId,
-              cause: run.telemetry.contextExhaustedCause,
-              continuation_count: candidateContinuationCount,
-              packet_turns: packet.continuity.disclosure.packetTurns,
-            });
+            // Reserve the continuation lease BEFORE any disclosure: a denied lease
+            // must never emit run.continuation (which claims a continuation
+            // launched) and must not consume the one-shot with no attempt. Grant ->
+            // claim + disclose + run; refusal -> typed run.continuation.denied.
             const contLease = ledger.reserve({
               taskId,
               attemptId: contAttemptId,
@@ -3214,6 +3240,13 @@ export class Orchestrator {
               ),
             });
             if (contLease.granted) {
+              candidateContinuationCount += 1; // claim the one-shot only once it launches
+              log.emit("run.continuation", {
+                from_attempt: run.attemptId,
+                cause: run.telemetry.contextExhaustedCause,
+                continuation_count: candidateContinuationCount,
+                packet_turns: packet.continuity.disclosure.packetTurns,
+              });
               const contLeaseId = contLease.lease?.lease_id ?? "";
               try {
                 const contRun = await this.runCandidateInEnvelope(
@@ -3298,6 +3331,11 @@ export class Orchestrator {
               }
             } else {
               ledger.cancel(contLease.lease?.lease_id ?? "");
+              log.emit("run.continuation.denied", {
+                from_attempt: run.attemptId,
+                cause: run.telemetry.contextExhaustedCause,
+                reason: contLease.reason ?? contLease.denied ?? "budget lease denied",
+              });
             }
           }
         }
@@ -6498,7 +6536,12 @@ export class Orchestrator {
       // pointer here; the attempt runs a FRESH session (resume is never granted
       // to a same-adapter follow-up slot) and is tagged `-cont`.
       continuationPointer?: string,
-    ): Promise<void> => {
+      // D-16d: fired exactly once AFTER the budget lease is granted and BEFORE the
+      // attempt streams — the continuation caller emits run.continuation here so
+      // the disclosure never precedes (or outlives) a denied lease. The result
+      // carries the denial reason so a refusal discloses run.continuation.denied.
+      onLaunch?: () => void,
+    ): Promise<{ status: "launched" } | { status: "budget_denied"; reason: string }> => {
       const adapter = routed.adapter;
       const attemptId = continuationPointer
         ? `a${String(idx + 1).padStart(2, "0")}-cont`
@@ -6547,8 +6590,10 @@ export class Orchestrator {
         if (opts.deepScan) {
           recordBudgetDeniedScout(adapter.id, attemptId, lease.reason ?? "budget lease denied");
         }
-        return;
+        return { status: "budget_denied", reason: lease.reason ?? "budget lease denied" };
       }
+      // Lease granted: the attempt is now committed to run — disclose the launch.
+      onLaunch?.();
       const knobs = this.routeSpecKnobs(routed, contract, modelOverride, input.effort);
       const effectiveWeb = this.discloseWebUpgrade(log, routed, knobs.webPolicy, attemptId);
       const explorerPrompt =
@@ -6875,7 +6920,7 @@ export class Orchestrator {
             `# Explorer ${attemptId} failed\n\n${harnessError}\n`,
           );
         }
-        return;
+        return { status: "launched" };
       }
       log.emit("harness.completed", {
         harness_id: adapter.id,
@@ -6902,15 +6947,20 @@ export class Orchestrator {
           `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}${warningNote}\n`,
         );
       }
+      return { status: "launched" };
     };
 
     try {
       if (opts.deepScan) {
-        // Explorer swarm runs in parallel (bounded), mirroring parallel candidates.
+        // Explorer swarm runs in parallel (bounded), mirroring parallel
+        // candidates. The swarm has no continuation lane, so the launched/denied
+        // return is unused here.
         await runBounded(
           adapters,
           Math.min(adapters.length, MAX_PARALLEL_CANDIDATES),
-          runReadonlyAttempt,
+          async (routed, idx) => {
+            await runReadonlyAttempt(routed, idx);
+          },
         );
       } else {
         // ask/audit: sequential fallback chain — first success wins; a blocked
@@ -6942,20 +6992,39 @@ export class Orchestrator {
                   priorOutput: exhausted.report,
                 }),
               );
-              continuationCount += 1;
-              log.emit("run.continuation", {
-                from_attempt: exhausted.attemptId,
-                cause: last.telemetry.contextExhaustedCause,
-                continuation_count: continuationCount,
-                packet_turns: packet.continuity.disclosure.packetTurns,
-              });
-              await runReadonlyAttempt(routed, idx, undefined, packet.pointerLine ?? undefined);
-              const cont = attempts[attempts.length - 1];
-              if (cont && cont !== exhausted && cont.status === "success") {
-                exhausted.status = "failed";
-                exhausted.error =
-                  exhausted.error ?? "superseded by one-shot continuation (context exhausted)";
-                last = cont;
+              // The continuation lease is reserved INSIDE runReadonlyAttempt; emit
+              // run.continuation via onLaunch (fires only AFTER the grant, before the
+              // stream) so a denied lease never leaves a false "launched" disclosure
+              // nor consumes the one-shot. A refusal emits run.continuation.denied.
+              const outcome = await runReadonlyAttempt(
+                routed,
+                idx,
+                undefined,
+                packet.pointerLine ?? undefined,
+                () => {
+                  continuationCount += 1;
+                  log.emit("run.continuation", {
+                    from_attempt: exhausted.attemptId,
+                    cause: last.telemetry.contextExhaustedCause,
+                    continuation_count: continuationCount,
+                    packet_turns: packet.continuity.disclosure.packetTurns,
+                  });
+                },
+              );
+              if (outcome.status === "budget_denied") {
+                log.emit("run.continuation.denied", {
+                  from_attempt: exhausted.attemptId,
+                  cause: last.telemetry.contextExhaustedCause,
+                  reason: outcome.reason,
+                });
+              } else {
+                const cont = attempts[attempts.length - 1];
+                if (cont && cont !== exhausted && cont.status === "success") {
+                  exhausted.status = "failed";
+                  exhausted.error =
+                    exhausted.error ?? "superseded by one-shot continuation (context exhausted)";
+                  last = cont;
+                }
               }
             }
           }

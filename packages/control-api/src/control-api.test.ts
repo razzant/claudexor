@@ -6511,9 +6511,66 @@ describe("DaemonControlApiServer", () => {
         body: "{}",
       });
       expect(response.status).toBe(200);
-      // The retry replays the FROZEN route, not whatever settings say now.
+      // The retry replays the FROZEN route, not whatever settings say now. Effort
+      // is replayed as the per-lane MAP (not a collapsed scalar) so a non-primary
+      // lane keeps its own effort (QA-035 completeness).
       expect(enqueued?.["models"]).toMatchObject({ codex: "gpt-5.3-codex-spark" });
-      expect(enqueued?.["effort"]).toBe("low");
+      expect(enqueued?.["efforts"]).toMatchObject({ codex: "low" });
+    });
+  });
+
+  it("QA-035 completeness: Exact Retry replays per-lane frozen efforts for a two-harness pool (non-primary lane keeps its own effort)", async () => {
+    const { daemon, record } = fakeDaemon();
+    // Two lanes with DIFFERENT frozen efforts; codex is primary. The old scalar
+    // collapse replayed only codex's effort and dropped claude's.
+    writeFileSync(
+      join(record.runDir as string, "context", "task.yaml"),
+      [
+        "schema_version: 2",
+        "task_id: task-d1",
+        "created_at: 2026-07-15T00:00:00.000Z",
+        "repo:",
+        `  root: ${JSON.stringify(record.runDir)}`,
+        "  base_ref: HEAD",
+        "mode:",
+        "  kind: agent",
+        "user_intent:",
+        "  raw: test run",
+        "routing_models: {}",
+        "routing_efforts:",
+        "  codex: low",
+        "  claude: max",
+        "tests:",
+        "  commands: []",
+        "",
+      ].join("\n"),
+    );
+    // Original request relied on (now potentially changed) settings; primary=codex.
+    record.params = {
+      prompt: "hello",
+      mode: "agent",
+      scope: { kind: "project", root: record.runDir, context: "auto" },
+      harnesses: ["codex", "claude"],
+      primaryHarness: "codex",
+      routingGoal: "auto",
+    };
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "qa035-2lane-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(200);
+      // BOTH lanes' frozen efforts survive — not just the primary's.
+      expect(enqueued?.["efforts"]).toMatchObject({ codex: "low", claude: "max" });
     });
   });
 

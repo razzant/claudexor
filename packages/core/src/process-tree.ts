@@ -21,6 +21,12 @@ import {
   type ProcessGroupHandle,
   type ProcessGroupService,
 } from "./process-group.js";
+import {
+  compareProcessIdentity,
+  defaultProcessIdentityService,
+  type KnownProcessIdentity,
+  type ProcessIdentityReader,
+} from "./process-identity.js";
 
 export interface ProcessTreeNode {
   pid: number;
@@ -175,6 +181,18 @@ export type ProcessTreeTerminationOutcome =
 export interface ReapProcessTreeOptions {
   /** The direct child pid; its whole descendant tree is reaped. */
   rootPid: number;
+  /**
+   * The root's ORIGINAL identity, captured while it was provably alive (round-4
+   * #2). The fixed-point rescan discovers descendants from the numeric `rootPid`;
+   * if the child exits and its PID is reused mid-deadline, a rescan would capture
+   * an UNRELATED replacement tree. Binding the root identity stops NEW-descendant
+   * discovery the moment the root goes missing or its identity differs — already
+   * captured groups keep being probed to death. Absent (legacy callers): numeric
+   * behavior, no re-verification.
+   */
+  rootIdentity?: KnownProcessIdentity;
+  /** Reads live process identity for the root re-verification (default real). */
+  identity?: ProcessIdentityReader;
   /** Handles captured elsewhere (e.g. the direct child at spawn) to include. */
   seedHandles?: ProcessGroupHandle[];
   /** Cooperative signal first (default SIGTERM). */
@@ -223,6 +241,7 @@ export async function reapProcessTree(
 ): Promise<ProcessTreeTerminationOutcome> {
   const groups = opts.groups ?? defaultProcessGroupService;
   const tree = opts.tree ?? defaultProcessTreeReader;
+  const identity = opts.identity ?? defaultProcessIdentityService;
   const sleep = opts.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const now = opts.now ?? Date.now;
   const coop = opts.cooperativeSignal ?? "SIGTERM";
@@ -242,7 +261,22 @@ export async function reapProcessTree(
     }
   };
 
+  // Is the numeric rootPid still the SAME process we were asked to reap? Only a
+  // proven `different`/`missing` blocks further descendant discovery (the PID was
+  // reused or the root vanished); `same` and an unreadable `unknown` keep
+  // discovering (best-effort — we can never prove reuse from an unreadable read,
+  // and refusing on `unknown` would leak escaped descendants on hosts without a
+  // usable identity source). With no `rootIdentity` supplied this is always true.
+  const rootStillReapable = (): boolean => {
+    if (!opts.rootIdentity) return true;
+    const comparison = compareProcessIdentity(opts.rootIdentity, identity.read(opts.rootPid));
+    return comparison !== "different" && comparison !== "missing";
+  };
+
   const capture = (): void => {
+    // Once the root is gone/reused, stop enumerating NEW descendants from its
+    // (possibly recycled) PID; keep probing the groups captured while it was valid.
+    if (!rootStillReapable()) return;
     const snap = captureProcessTreeGroups(opts.rootPid, { tree, groups, probeGroupAlive });
     for (const handle of snap.handles) {
       if (!handles.has(handle.pgid)) {

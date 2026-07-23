@@ -409,6 +409,7 @@ async function main(): Promise<void> {
             model: p.model,
             models: p.models,
             effort: p.effort,
+            efforts: p.efforts,
             tests: Array.isArray(p.tests) ? p.tests : undefined,
             protectedPathApprovals: Array.isArray(p.protectedPathApprovals)
               ? p.protectedPathApprovals

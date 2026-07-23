@@ -113,6 +113,57 @@ function eligible(candidates: RouterCandidate[], ctx: RouteContext): RouterCandi
   return ready;
 }
 
+/** User-declared tier index the comparators order by (missing => MAX). Shared
+ * by the sort and the traced comparator so a "tier" claim is never re-derived. */
+function tierValueOf(candidate: RouterCandidate, ctx: RouteContext): number {
+  return tierIndex(candidate, ctx) ?? Number.MAX_SAFE_INTEGER;
+}
+
+/** Binding pace slack the `auto` comparator orders by; null = none observed. */
+function autoSlack(candidate: RouterCandidate, ctx: RouteContext): number | null {
+  return ctx.ledger.bindingPaceSlack(
+    candidate.harnessId,
+    candidate.credentialRoute,
+    candidate.credentialSubjectId,
+  );
+}
+
+/** null slack collapses to this so a slack-carrying candidate always outranks a
+ * slack-less one, exactly as the comparator subtraction does. */
+const AUTO_SLACK_ABSENT = Number.NEGATIVE_INFINITY;
+
+type AutoRankAxis = "expiring_quota_slack" | "quality_tier";
+
+/**
+ * The SINGLE traced comparator for `auto` (round-4 #3 — this rationale has been
+ * wrong three times). It returns both the pair ORDER and the AXIS that produced
+ * it, and is the only place the auto ordering is defined. `rankHarnesses` sorts
+ * by `.order`; `rankingReason` reads `.axis`. Deriving the recorded reason from
+ * the very comparator that ordered the pool makes it structurally impossible for
+ * the rationale to claim a factor the sort did not use (the axis-registry
+ * pattern used in arbitration, specialized to auto's conditional slack axis).
+ *
+ * The slack axis is in force whenever EITHER candidate has a non-null slack; the
+ * subtraction of the (null => -Infinity) effective values is what decides — so
+ * two EQUAL non-null slacks yield order 0 and a null axis (declared order, and
+ * the sort does NOT fall through to tiers). Only when BOTH slacks are absent
+ * does the comparator compare tier indices.
+ */
+function compareAutoTraced(
+  a: RouterCandidate,
+  b: RouterCandidate,
+  ctx: RouteContext,
+): { order: number; axis: AutoRankAxis | null } {
+  const aSlack = autoSlack(a, ctx);
+  const bSlack = autoSlack(b, ctx);
+  if (aSlack !== null || bSlack !== null) {
+    const order = (bSlack ?? AUTO_SLACK_ABSENT) - (aSlack ?? AUTO_SLACK_ABSENT);
+    return { order, axis: order !== 0 ? "expiring_quota_slack" : null };
+  }
+  const order = tierValueOf(a, ctx) - tierValueOf(b, ctx);
+  return { order, axis: order !== 0 ? "quality_tier" : null };
+}
+
 /** Order candidates transparently; lower tuple values win. Unknown quota remains eligible. */
 export function rankHarnesses(candidates: RouterCandidate[], ctx: RouteContext): RouterCandidate[] {
   const routes = eligible(candidates, ctx);
@@ -121,33 +172,21 @@ export function rankHarnesses(candidates: RouterCandidate[], ctx: RouteContext):
       `quality routing requires a comparable user-declared tier for intent '${ctx.intent}'`,
     );
   }
+  if (ctx.goal === "auto") {
+    return routes.toSorted((a, b) => compareAutoTraced(a, b, ctx).order);
+  }
   return routes.toSorted((a, b) => {
-    const aTier = tierIndex(a, ctx) ?? Number.MAX_SAFE_INTEGER;
-    const bTier = tierIndex(b, ctx) ?? Number.MAX_SAFE_INTEGER;
+    const aTier = tierValueOf(a, ctx);
+    const bTier = tierValueOf(b, ctx);
     if (ctx.goal === "quality") return aTier - bTier;
-    if (ctx.goal === "economy") {
-      const aPaid = isIncrementalPaid(a) ? 1 : 0;
-      const bPaid = isIncrementalPaid(b) ? 1 : 0;
-      const paidOrder = aPaid - bPaid;
-      if (paidOrder !== 0) return paidOrder;
-      const aCost = a.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
-      const bCost = b.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
-      return aCost - bCost || aTier - bTier;
-    }
-    const aSlack = ctx.ledger.bindingPaceSlack(
-      a.harnessId,
-      a.credentialRoute,
-      a.credentialSubjectId,
-    );
-    const bSlack = ctx.ledger.bindingPaceSlack(
-      b.harnessId,
-      b.credentialRoute,
-      b.credentialSubjectId,
-    );
-    if (aSlack !== null || bSlack !== null) {
-      return (bSlack ?? Number.NEGATIVE_INFINITY) - (aSlack ?? Number.NEGATIVE_INFINITY);
-    }
-    return aTier - bTier;
+    // economy
+    const aPaid = isIncrementalPaid(a) ? 1 : 0;
+    const bPaid = isIncrementalPaid(b) ? 1 : 0;
+    const paidOrder = aPaid - bPaid;
+    if (paidOrder !== 0) return paidOrder;
+    const aCost = a.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
+    const bCost = b.incrementalCostUsd ?? Number.POSITIVE_INFINITY;
+    return aCost - bCost || aTier - bTier;
   });
 }
 
@@ -202,12 +241,13 @@ function costsDistinguish(ranked: RouterCandidate[]): boolean {
 }
 
 /**
- * The DECISIVE comparator axis, mirrored EXACTLY from rankHarnesses so the
- * recorded rationale can never claim a factor the sort did not use (round-2 #1):
- * `expiring_quota_slack` is reported for `auto` ONLY when a binding pace slack
- * was present to order by; with no slack the auto sort falls through to the
- * tier comparator, so the reason is `quality_tier` when tiers separated the
- * pool and `declared_order` when nothing distinguished it.
+ * The DECISIVE comparator axis. For `auto` the reason is read directly off the
+ * SAME traced comparator that ordered the pool (`compareAutoTraced`) — never
+ * re-derived from a separately-recomputed condition (round-4 #3, the third
+ * recurrence of a rationale that disagreed with `rankHarnesses`): the reason is
+ * whichever axis actually separated an adjacent ranked pair, and `declared_order`
+ * when the comparator broke no pair (e.g. equal non-null slacks — which do NOT
+ * fall through to tiers).
  */
 function rankingReason(
   ctx: RouteContext,
@@ -216,15 +256,16 @@ function rankingReason(
 ): RouteRankingReason {
   if (ctx.goal === "quality") return "quality_tier";
   if (ctx.goal === "auto") {
-    // The auto branch sorts by binding pace slack whenever any candidate has a
-    // non-null slack; otherwise it compares tier indices. Report the axis that
-    // was live, never quota-slack unconditionally.
-    const slackDecided = ranked.some(
-      (c) =>
-        ctx.ledger.bindingPaceSlack(c.harnessId, c.credentialRoute, c.credentialSubjectId) !== null,
-    );
-    if (slackDecided) return "expiring_quota_slack";
-    if (tiersDistinguish(ranked, ctx)) return "quality_tier";
+    // Walk the ranked order through the very comparator that produced it. Since
+    // the pool is sorted, any two distinct axis values leave a differing
+    // adjacent pair, so this sees every axis the sort actually used.
+    const axes = new Set<AutoRankAxis>();
+    for (let i = 0; i + 1 < ranked.length; i++) {
+      const traced = compareAutoTraced(ranked[i]!, ranked[i + 1]!, ctx);
+      if (traced.axis) axes.add(traced.axis);
+    }
+    if (axes.has("expiring_quota_slack")) return "expiring_quota_slack";
+    if (axes.has("quality_tier")) return "quality_tier";
     return "declared_order";
   }
   // economy: mirror the economy sort tuple EXACTLY — (isIncrementalPaid,

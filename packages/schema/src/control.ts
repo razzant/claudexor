@@ -109,6 +109,16 @@ export const ControlRunStartRequest = z
         "Harness-scoped model map (harness id to model id); an entry here wins over the scalar model and over the per-harness settings default.",
       ),
     effort: EffortHint.optional().describe("Requested reasoning effort."),
+    /** Harness-scoped effort map (harness id → effort). Specific beats general:
+     * an entry here wins over the scalar `effort` and the per-harness settings
+     * default, analogous to `models`. Exact Retry replays the frozen
+     * per-lane efforts through this map so a non-primary lane keeps its effort. */
+    efforts: z
+      .record(NonBlankString, EffortHint)
+      .optional()
+      .describe(
+        "Harness-scoped effort map (harness id to effort); an entry here wins over the scalar effort and the per-harness settings default.",
+      ),
     reviewerModels: z
       .record(ProviderFamily, NonBlankString)
       .optional()

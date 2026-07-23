@@ -121,6 +121,10 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `[${String(p["from_attempt"] ?? "?")}] continuing in a fresh session (${String(
         p["cause"] ?? "context exhausted",
       )}, continuation ${String(p["continuation_count"] ?? "?")})`;
+    case "run.continuation.denied":
+      return `[${String(p["from_attempt"] ?? "?")}] continuation refused — budget lease denied (${String(
+        p["reason"] ?? "budget",
+      )})`;
     case "delegation.belt.unavailable":
       return `[${who}] delegation belt unavailable (${String(p["server_name"] ?? "?")}: ${String(
         p["reason"] ?? "unknown",

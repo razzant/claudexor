@@ -7,8 +7,8 @@
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/GatewayClient.swift": 666,
   "apps/macos/ClaudexorKit/Sources/ClaudexorKit/Models.swift": 542,
   "packages/acp-server/src/index.ts": 454,
-  "packages/cli/src/claudexord.ts": 582,
-  "packages/cli/src/cli.ts": 1463,
+  "packages/cli/src/claudexord.ts": 583,
+  "packages/cli/src/cli.ts": 1471,
   "packages/cli/src/command-registry.ts": 472,
   "packages/cli/src/control-services.ts": 553,
   "packages/cli/src/plugins.ts": 1872,
@@ -23,8 +23,8 @@
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 701,
   "packages/orchestrator/src/attemptTelemetry.ts": 834,
-  "packages/orchestrator/src/orchestrator.ts": 7483,
+  "packages/orchestrator/src/orchestrator.ts": 7552,
   "packages/review/src/reviewEngine.ts": 1396,
-  "packages/schema/src/control.ts": 1676,
+  "packages/schema/src/control.ts": 1686,
   "packages/schema/src/harness.ts": 1077
 }

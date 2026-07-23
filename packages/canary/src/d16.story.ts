@@ -9,6 +9,8 @@
  * → project. If a story fails, INV-116 regressed — fix the product, not the
  * story.
  */
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Sandbox, cli, makeSandbox, readEvents, readRunFile } from "./support.js";
 
@@ -101,6 +103,33 @@ describe("D-16 WorkReport + work_state canaries", () => {
     const answer = readRunFile(out.runDir, "final/answer.md");
     expect(answer).toContain("Completed after a one-shot continuation.");
     expect(answer).not.toContain("work_report");
+  });
+
+  it("[INV-116:continuation-denied] an eligible exhaustion whose continuation lease is DENIED discloses run.continuation.denied, never a false run.continuation", () => {
+    // An ENVELOPED candidate reserves its one-shot continuation WITH the estimate
+    // floor (0.05). A finite cap below that floor admits the first candidate (no
+    // floor) but refuses the continuation lease (estimate_headroom). The
+    // reserve-before-disclose fix must emit run.continuation.denied and NEVER a
+    // run.continuation claiming a launch that never happened.
+    writeFileSync(
+      join(sb.configDir, "config.yaml"),
+      "budget:\n  paid_budget_per_run:\n    kind: finite\n    maxUsd: 0.03\n",
+    );
+    const r = cli(sb, [
+      "agent",
+      "do the thing",
+      "--harness",
+      "fake-context-then-complete",
+      "--json",
+    ]);
+    const out = r.json() as { runDir: string };
+    const events = readEvents(out.runDir);
+    expect(
+      events.find((e) => e["type"] === "run.continuation.denied"),
+      "run.continuation.denied disclosed",
+    ).toBeTruthy();
+    // The false-launch disclosure must be absent — the continuation never ran.
+    expect(events.some((e) => e["type"] === "run.continuation")).toBe(false);
   });
 
   it("[INV-116:plan-needs-input] a needs_input WorkReport on the winning PLANNER vetoes the plan terminal — succeeded lifecycle, exit non-zero", () => {
