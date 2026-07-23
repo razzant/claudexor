@@ -2045,9 +2045,17 @@ export class Orchestrator {
     // W-C4 delta flood budget (per attempt): counts forwarded delta chunks.
     let deltaCount = 0;
     let deltaCutoffDisclosed = false;
+    // QA-024: emit the belt-failure disclosure event at most once per attempt.
+    let beltFailureDisclosed = false;
     const errors: string[] = [];
     const answer = new AnswerAssembly();
     const retryPolicy = transientRetryPolicy(this.config(contract.repo.root));
+    // QA-024: the delegation belt is the ONLY engine-owned extra MCP server
+    // injected into an agent lane (the browser MCP rides its own field), so its
+    // presence in the spec marks the belt requested-and-injected for THIS
+    // attempt. A mixed pool leaves it off lanes that cannot host it, so this is
+    // per-attempt truth, not the run-wide --delegate flag.
+    const beltServerName = spec.extra_mcp_servers?.[0]?.name ?? null;
     const telemetry = createAttemptTelemetry(
       knobs.webPolicy,
       contract.external_context.web_required ||
@@ -2056,6 +2064,7 @@ export class Orchestrator {
       effectiveWebMode ?? knobs.webPolicy,
       [routed.browserRequirement, routed.denyRequirement],
       knobs.model,
+      beltServerName,
     );
     let activeSessionId = spec.session_id;
     const onAbort = () => {
@@ -2135,6 +2144,25 @@ export class Orchestrator {
             if (inPlaceEnvelope) observeNativeSessionEvent(runInput, adapter.id, safeEv);
             observeAuthSwitch(log, adapter.id, attemptId, safeEv);
             observeAttemptTelemetry(telemetry, safeEv);
+            // QA-024: the injected delegation belt's MCP server reported `failed`
+            // to start. Disclose it ONCE as a typed run event the moment the
+            // `started` frame reveals it — the harness is about to run without
+            // `mcp__<belt>__*` tools and may degrade to its own native subagent.
+            // The terminal outcome axis (delegationBeltUnavailable) reflects it
+            // too; this event makes the failure visible while the run is live.
+            if (
+              telemetry.delegationBelt.requested &&
+              telemetry.delegationBelt.failed &&
+              !beltFailureDisclosed
+            ) {
+              beltFailureDisclosed = true;
+              log?.emit("delegation.belt.unavailable", {
+                attempt_id: attemptId,
+                harness_id: adapter.id,
+                server_name: telemetry.delegationBelt.serverName,
+                reason: "mcp_server_failed_to_start",
+              });
+            }
             // Live plan checklist: forward the adapter's typed plan
             // progress as a run event (LAST WINS; the UI renders the latest).
             if (safeEv.plan_progress) {

@@ -49,6 +49,22 @@ export interface WebEvidenceState {
   errorSummary: string | null;
 }
 
+/**
+ * Delegation-belt runtime readiness for one attempt (QA-024). `requested` is
+ * set at attempt creation when a belt MCP server was injected into the spec;
+ * `ready`/`failed` are filled from the harness's `started` event (its
+ * `mcp_servers[<belt>].status`); `toolEvidence` flips when any `mcp__<belt>__*`
+ * tool actually runs. A requested belt that reports `failed` with no tool
+ * evidence is the false-success trap the outcome axis must catch.
+ */
+export interface DelegationBeltState {
+  requested: boolean;
+  serverName: string | null;
+  ready: boolean;
+  failed: boolean;
+  toolEvidence: boolean;
+}
+
 export interface AttemptTelemetry {
   requestRequirements: RequestRequirementResolution[];
   toolErrors: ToolErrorRecord[];
@@ -80,6 +96,8 @@ export interface AttemptTelemetry {
   /** TYPED vendor rate-limit signals seen during this attempt (W5.4): the
    * rotation predicate reads these, never prose or plain transients. */
   rateLimits: { retryDelayMs: number | null; resetsAt: string | null }[];
+  /** Delegation-belt runtime readiness (QA-024); requested=false on non-delegate attempts. */
+  delegationBelt: DelegationBeltState;
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
   /** Token usage summed across this attempt's usage events (money stays in the
@@ -103,6 +121,9 @@ export function createAttemptTelemetry(
   effectiveMode: ExternalContextPolicy = policy,
   requestRequirements: RequestRequirementResolution[] = [],
   requestedModel: string | null = null,
+  /** The delegation-belt MCP server name injected into THIS attempt's spec, or
+   * null when no belt was injected (QA-024). Non-null marks the belt requested. */
+  beltServerName: string | null = null,
 ): AttemptTelemetry {
   return {
     requestRequirements,
@@ -128,6 +149,13 @@ export function createAttemptTelemetry(
     requestedModel,
     transientFailures: [],
     rateLimits: [],
+    delegationBelt: {
+      requested: beltServerName !== null,
+      serverName: beltServerName,
+      ready: false,
+      failed: false,
+      toolEvidence: false,
+    },
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
     usageCost: { cashUsd: 0, valuationUsd: 0, unknownUsd: 0 },
@@ -141,12 +169,63 @@ function addToken(acc: number | null, value: number | undefined): number | null 
 }
 
 /**
+ * Read the injected belt server's status out of the harness `started` frame's
+ * `mcp_servers` list (QA-024). The shape is the vendor's — claude emits
+ * `{ name, status }` entries — so we defensively narrow each entry and match by
+ * the injected belt server name. `status:"failed"` (or "error") is the startup
+ * failure the outcome axis must not let terminalize a silent success.
+ */
+function observeBeltStartup(t: AttemptTelemetry, ev: HarnessEvent): void {
+  const payload = (ev as { payload?: Record<string, unknown> }).payload;
+  const servers = payload?.["mcp_servers"];
+  if (!Array.isArray(servers)) return;
+  for (const raw of servers) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as { name?: unknown; status?: unknown };
+    if (entry.name !== t.delegationBelt.serverName) continue;
+    const status = typeof entry.status === "string" ? entry.status.toLowerCase() : "";
+    if (status === "failed" || status === "error") t.delegationBelt.failed = true;
+    else if (status === "connected" || status === "ready" || status === "ok") {
+      t.delegationBelt.ready = true;
+    }
+    return;
+  }
+}
+
+/**
+ * The delegation belt was requested (--delegate injected it) but never became
+ * operational: the harness reported the server `failed` and no belt tool ever
+ * ran (QA-024). This is the false-success trap — the harness may have answered
+ * from its own native subagent with no Claudexor sub-run provenance. A belt
+ * that was ready-but-unused is NOT unavailable (docs leave the spawn decision to
+ * the harness); only a startup failure counts.
+ */
+export function delegationBeltUnavailable(t: AttemptTelemetry): boolean {
+  return t.delegationBelt.requested && t.delegationBelt.failed && !t.delegationBelt.toolEvidence;
+}
+
+/**
  * Observe a normalized harness event into the attempt telemetry. Governance is
  * fully typed: only the `tool` ToolRef on tool_call/tool_result/file_change
  * events and the run-loop drop counters are consulted — never payload string
  * matching or tool-name heuristics.
  */
 export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): void {
+  // Delegation belt readiness (QA-024): the harness's `started` frame lists its
+  // MCP servers and each one's status. When the engine injected a belt, read
+  // THAT server's status as first-class readiness truth — never prose. A
+  // `failed` belt with no later tool evidence is the false-success trap.
+  if (ev.type === "started" && t.delegationBelt.requested) {
+    observeBeltStartup(t, ev);
+  }
+  // Belt tool evidence: any `mcp__<belt>__*` tool call/result proves the belt
+  // was actually reachable and used (a real Claudexor sub-run path), which
+  // distinguishes a used belt from one the harness silently substituted.
+  if (t.delegationBelt.requested && t.delegationBelt.serverName && ev.tool?.name) {
+    if (ev.tool.name.startsWith(`mcp__${t.delegationBelt.serverName}`)) {
+      t.delegationBelt.toolEvidence = true;
+    }
+  }
   // Route evidence: remember the model identity the stream itself disclosed.
   if (ev.observed_model && !t.observedModel) t.observedModel = ev.observed_model;
   // Route evidence: the adapter's first-class credential-route disclosure
@@ -322,9 +401,18 @@ export function setAttemptOutcome(
 ): void {
   const warnings = toolWarnings(t).length;
   const contractFailed = !opts.deliverablePresent || opts.gatesPassed === false;
+  // QA-024: a requested belt that failed to start with no tool evidence is an
+  // explicitly-requested capability that never became operational — treated
+  // like an unsatisfied hard requirement (never a silent clean success). It
+  // rides the same axis order as web: it can only ELEVATE severity, never mask
+  // a harder failure. NOTE (D-16 seam): this producer maps belt-unavailable to
+  // `failed`; a future finalizer that prefers a softer disclosure would flip
+  // this to `success_with_warnings` — the typed telemetry fact
+  // (delegation_belt.*) is what a consumer reads either way.
+  const beltUnavailable = delegationBeltUnavailable(t);
   const status: AttemptOutcomeStatus = opts.webRequiredUnsatisfied
     ? "blocked"
-    : opts.harnessErrored || contractFailed
+    : opts.harnessErrored || contractFailed || beltUnavailable
       ? "failed"
       : warnings > 0
         ? "success_with_warnings"
@@ -378,6 +466,17 @@ export function telemetrySummary(t: AttemptTelemetry): Record<string, unknown> {
         }
       : {}),
     ...(t.outcome ? { outcome: t.outcome } : {}),
+    ...(t.delegationBelt.requested
+      ? {
+          delegation_belt: {
+            server_name: t.delegationBelt.serverName,
+            ready: t.delegationBelt.ready,
+            failed: t.delegationBelt.failed,
+            tool_evidence: t.delegationBelt.toolEvidence,
+            unavailable: delegationBeltUnavailable(t),
+          },
+        }
+      : {}),
     ...(t.transientFailures.length > 0
       ? {
           transient_failures: t.transientFailures
@@ -437,9 +536,22 @@ export function attemptTelemetryRecord(
       gates_passed: t.outcome?.gatesPassed ?? null,
       harness_errored: t.outcome?.harnessErrored ?? false,
       web_required_unsatisfied: t.outcome?.webRequiredUnsatisfied ?? false,
+      delegation_belt_unavailable: delegationBeltUnavailable(t),
       tool_warnings_count: t.outcome?.toolWarningsCount ?? warnings.length,
       status: t.outcome?.status ?? (warnings.length > 0 ? "success_with_warnings" : "success"),
     },
+    // Only present when a belt was actually injected into this attempt (QA-024).
+    ...(t.delegationBelt.requested
+      ? {
+          delegation_belt: {
+            requested: t.delegationBelt.requested,
+            server_name: t.delegationBelt.serverName,
+            ready: t.delegationBelt.ready,
+            failed: t.delegationBelt.failed,
+            tool_evidence: t.delegationBelt.toolEvidence,
+          },
+        }
+      : {}),
     usage: {
       input_tokens: t.usage.inputTokens,
       output_tokens: t.usage.outputTokens,

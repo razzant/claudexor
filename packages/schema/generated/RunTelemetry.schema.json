@@ -478,6 +478,11 @@
                     "default": false,
                     "description": "True when required web evidence was not satisfied."
                   },
+                  "delegation_belt_unavailable": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "True when --delegate requested the belt but the injected MCP server failed to become operational (QA-024); blocks a silent clean success."
+                  },
                   "tool_warnings_count": {
                     "type": "integer",
                     "minimum": 0,
@@ -499,6 +504,41 @@
                 "additionalProperties": false,
                 "description": "Contract/outcome truth for one attempt; tool errors are tracked separately from deliverable production.",
                 "default": {}
+              },
+              "delegation_belt": {
+                "type": "object",
+                "properties": {
+                  "requested": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "A Claudexor delegation belt MCP server was injected into this attempt's sandbox."
+                  },
+                  "server_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "default": null,
+                    "description": "The injected belt MCP server name (as the harness reports it); null when unknown."
+                  },
+                  "ready": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "The harness reported the injected belt MCP server as connected/ready."
+                  },
+                  "failed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "The harness reported the injected belt MCP server as failed to start."
+                  },
+                  "tool_evidence": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "At least one belt tool (mcp__<server>__*) was actually invoked in this attempt."
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Runtime readiness receipt for the injected Claudexor delegation belt on one attempt (QA-024)."
               },
               "usage": {
                 "type": "object",

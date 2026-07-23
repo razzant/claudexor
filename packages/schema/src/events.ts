@@ -88,6 +88,13 @@ export const RunEventType = z
     "council.member.failed",
     "council.merged",
     "budget.quota_pressure",
+    /** QA-024: a --delegate attempt injected the Claudexor delegation belt but
+     * the harness reported its MCP server `failed` to start and no belt tool ran
+     * — the requested capability never became operational (the harness may have
+     * degraded to its own native subagent). Never silent: this surfaces the
+     * failed belt so the terminal outcome and UI can disclose it. Payload:
+     * {attempt_id, harness_id, server_name, reason}. */
+    "delegation.belt.unavailable",
     "output.ready",
     "gate.started",
     "gate.completed",

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_MAX_SUBRUNS, delegationEnv } from "@claudexor/mcp-server";
 import { defaultSocketPath } from "@claudexor/daemon";
+import { DelegationBeltUnavailableError } from "@claudexor/core";
 import { userConfigDir } from "@claudexor/util";
 import type { ExtraMcpServer, PaidBudget } from "@claudexor/schema";
 
@@ -29,24 +30,39 @@ export function beltDaemonDiscoveryEnv(): Record<string, string> {
 }
 
 /**
- * Absolute path to the CLI entry (`cli.js`) that hosts `mcp serve-belt`. The
+ * The ordered `cli.js` candidates that host `mcp serve-belt`, most-preferred
+ * first: adjacent to the launching process, then adjacent to THIS module. The
  * belt descriptor is built INSIDE the daemon process, so `process.argv[1]` is
- * `claudexord.js` — the daemon entry, which has NO `mcp serve-belt` subcommand:
- * `node claudexord.js mcp serve-belt` ignores the args and tries to boot a
- * SECOND daemon (which dies on the socket writer lock), so the belt MCP server
- * never registers. That is the delegation-belt e2e defect: a `--delegate`
- * claude/codex run silently saw no `mcp__claudexor__*` tools and answered from
- * its own in-process subagent instead of creating a real Claudexor sub-run.
- *
- * `cli.js` is a sibling of `claudexord.js` in the same `dist/`. This mirrors the
- * browser launcher's resolution: prefer the entry adjacent to the launching
- * process (survives symlinked / wrapped launches), then fall back to this
- * module's own directory.
+ * `claudexord.js` — the daemon entry, which has NO `mcp serve-belt` subcommand.
+ * In npm/dev `dist/`, `cli.js` is a genuine sibling of `claudexord.js`. In the
+ * single-file macOS app bundle the daemon is `claudexord.bundle.cjs` in
+ * `Contents/Resources` with NO sibling `cli.js` — so BOTH candidates can be
+ * absent, and the fallback must not be trusted blindly.
  */
-export function resolveCliEntry(argv1: string | undefined = process.argv[1]): string {
-  const adjacent = argv1 ? join(dirname(argv1), "cli.js") : "";
-  if (adjacent && existsSync(adjacent)) return adjacent;
-  return join(dirname(fileURLToPath(import.meta.url)), "cli.js");
+export function beltCliEntryCandidates(argv1: string | undefined = process.argv[1]): string[] {
+  const out: string[] = [];
+  if (argv1) out.push(join(dirname(argv1), "cli.js"));
+  const own = join(dirname(fileURLToPath(import.meta.url)), "cli.js");
+  if (!out.includes(own)) out.push(own);
+  return out;
+}
+
+/**
+ * Absolute path to the CLI entry (`cli.js`) that hosts `mcp serve-belt`, or
+ * `undefined` when NO candidate exists on disk. EVERY candidate — including the
+ * module-relative fallback — is existence-validated: a descriptor that points
+ * at a missing `cli.js` spawns `node <missing> mcp serve-belt`, which
+ * MODULE_NOT_FOUNDs inside the harness; the belt reports `failed`, the harness
+ * silently answers from its own native subagent, and the run terminalizes a
+ * false success (QA-024). Returning `undefined` lets the descriptor builder
+ * refuse TYPED at preflight instead of emitting a dead descriptor.
+ *
+ * This mirrors the browser launcher's resolution: prefer the entry adjacent to
+ * the launching process (survives symlinked / wrapped launches), then fall back
+ * to this module's own directory — but never return an unchecked path.
+ */
+export function resolveCliEntry(argv1: string | undefined = process.argv[1]): string | undefined {
+  return beltCliEntryCandidates(argv1).find((candidate) => existsSync(candidate));
 }
 
 /**
@@ -56,12 +72,28 @@ export function resolveCliEntry(argv1: string | undefined = process.argv[1]): st
  * sub-runs). The belt process reads its policy from the injected env: depth 0
  * (top-level — the sub-runs it starts carry no belt, so nesting cannot exceed
  * 1), the sub-run cap, and a snapshot of the parent's paid-budget headroom.
+ *
+ * TYPED PREFLIGHT REFUSAL (QA-024): when no `cli.js` entry exists (the packaged
+ * single-file bundle without a sibling CLI), this throws
+ * `DelegationBeltUnavailableError` naming the probed paths and the remedy — it
+ * never emits a descriptor that would MODULE_NOT_FOUND inside the harness and
+ * degrade into a silent native-subagent false success. Packaging shipping a
+ * real belt entry is Ф4 territory; until then the honest packaged behavior for
+ * `--delegate` is this refusal.
  */
 export function buildDelegationBeltDescriptor(
   paidBudget: PaidBudget | undefined,
-  cliEntry: string = resolveCliEntry(),
+  cliEntry: string | undefined = resolveCliEntry(),
   discoveryEnv: Record<string, string> = beltDaemonDiscoveryEnv(),
 ): ExtraMcpServer {
+  if (!cliEntry) {
+    const probed = beltCliEntryCandidates();
+    throw new DelegationBeltUnavailableError(
+      `--delegate cannot start the Claudexor delegation belt: no 'cli.js' entry that hosts 'mcp serve-belt' exists (probed: ${
+        probed.join(", ") || "<none>"
+      }). This is the packaged single-file bundle without a bundled CLI entry — the belt would MODULE_NOT_FOUND inside the harness and silently degrade to a native subagent. Re-run without --delegate, or use an install that ships cli.js next to the daemon.`,
+    );
+  }
   return {
     name: "claudexor",
     command: process.execPath,

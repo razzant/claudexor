@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DelegationBeltUnavailableError } from "@claudexor/core";
 import {
+  beltCliEntryCandidates,
   beltDaemonDiscoveryEnv,
   buildDelegationBeltDescriptor,
   resolveCliEntry,
@@ -78,9 +80,44 @@ describe("delegation belt descriptor — serve-belt entry resolution", () => {
     }
   });
 
-  it("falls back to this module's own dist dir when the daemon argv is absent", () => {
-    const entry = resolveCliEntry(undefined);
-    // Falls back to import.meta.url resolution (dist dir of THIS module).
-    expect(entry.endsWith("cli.js")).toBe(true);
+  it("existence-validates the fallback candidate too (never returns an unchecked path)", () => {
+    // QA-024 root cause: the old fallback returned this module's own
+    // `cli.js` WITHOUT checking it exists. In the packaged single-file bundle
+    // neither the daemon-adjacent nor the module-adjacent cli.js is present, so
+    // resolution must return undefined — a dead descriptor is worse than none.
+    const dist = reapMk(join(tmpdir(), "cdx-belt-empty-"));
+    const daemonEntry = join(dist, "claudexord.js");
+    // No cli.js written next to the daemon entry; the module-relative fallback
+    // (this test file's dir) has no cli.js sibling either.
+    expect(resolveCliEntry(daemonEntry)).toBeUndefined();
+  });
+
+  it("prefers the daemon-adjacent cli.js when it exists (packaged-adjacent win)", () => {
+    const dist = reapMk(join(tmpdir(), "cdx-belt-adj-"));
+    const daemonEntry = join(dist, "claudexord.js");
+    writeFileSync(join(dist, "cli.js"), "// cli entry\n");
+    expect(resolveCliEntry(daemonEntry)).toBe(join(dist, "cli.js"));
+    expect(beltCliEntryCandidates(daemonEntry)[0]).toBe(join(dist, "cli.js"));
+  });
+
+  it("FAILS TYPED at build when no cli.js candidate exists (packaged bundle refusal, QA-024)", () => {
+    const dist = reapMk(join(tmpdir(), "cdx-belt-refuse-"));
+    const daemonEntry = join(dist, "claudexord.js");
+    // Simulate the packaged bundle: no sibling cli.js resolvable.
+    const entry = resolveCliEntry(daemonEntry);
+    expect(entry).toBeUndefined();
+    let thrown: unknown;
+    try {
+      buildDelegationBeltDescriptor({ kind: "unlimited" }, entry, {
+        CLAUDEXOR_CONFIG_DIR: "/real/root",
+        CLAUDEXOR_DAEMON_SOCK: "/real/root/daemon/x.sock",
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    // A typed refusal, never a descriptor that would MODULE_NOT_FOUND in the harness.
+    expect(thrown).toBeInstanceOf(DelegationBeltUnavailableError);
+    expect((thrown as Error).message).toContain("cli.js");
+    expect((thrown as Error).message).toContain("--delegate");
   });
 });

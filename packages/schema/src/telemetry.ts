@@ -133,6 +133,17 @@ export const AttemptOutcome = z
       .boolean()
       .default(false)
       .describe("True when required web evidence was not satisfied."),
+    /** QA-024: the run requested the Claudexor delegation belt (--delegate) but
+     * the injected MCP server never became operational (the harness reported it
+     * `failed`). A requested-but-unavailable belt must not terminalize a silent
+     * clean success — the harness may have degraded to its own native subagent
+     * with no Claudexor sub-run provenance. */
+    delegation_belt_unavailable: z
+      .boolean()
+      .default(false)
+      .describe(
+        "True when --delegate requested the belt but the injected MCP server failed to become operational (QA-024); blocks a silent clean success.",
+      ),
     tool_warnings_count: z
       .number()
       .int()
@@ -200,6 +211,44 @@ export const TokenUsage = z
     "Token usage summed from harness usage events; money is tracked separately in the budget ledger, not here. Each field is null until a harness reports it (cursor reports cost only; raw-api has no cached), so unreported never reads as 0. Do NOT sum into a grand total: codex cached is a subset of input while claude cached is disjoint from input.",
   );
 export type TokenUsage = z.infer<typeof TokenUsage>;
+
+/**
+ * Runtime readiness receipt for the Claudexor delegation belt (D32) on one
+ * attempt (QA-024). The preflight/descriptor layer refuses TYPED when no belt
+ * `cli.js` entry exists; THIS record is the complementary runtime truth: when a
+ * belt WAS injected, did the harness's MCP server actually come up, and did any
+ * belt tool actually run? A `failed` server with zero tool evidence is the
+ * false-success trap — the harness saw no `mcp__claudexor__*` tools and may
+ * have answered from its own native subagent with no Claudexor sub-run.
+ */
+export const DelegationBeltEvidence = z
+  .object({
+    requested: z
+      .boolean()
+      .default(false)
+      .describe("A Claudexor delegation belt MCP server was injected into this attempt's sandbox."),
+    server_name: z
+      .string()
+      .nullable()
+      .default(null)
+      .describe("The injected belt MCP server name (as the harness reports it); null when unknown."),
+    ready: z
+      .boolean()
+      .default(false)
+      .describe("The harness reported the injected belt MCP server as connected/ready."),
+    failed: z
+      .boolean()
+      .default(false)
+      .describe("The harness reported the injected belt MCP server as failed to start."),
+    tool_evidence: z
+      .boolean()
+      .default(false)
+      .describe("At least one belt tool (mcp__<server>__*) was actually invoked in this attempt."),
+  })
+  .describe(
+    "Runtime readiness receipt for the injected Claudexor delegation belt on one attempt (QA-024).",
+  );
+export type DelegationBeltEvidence = z.infer<typeof DelegationBeltEvidence>;
 
 export const AttemptTelemetryRecord = z
   .object({
@@ -304,6 +353,9 @@ export const AttemptTelemetryRecord = z
       .describe("Adapter-declared transient failures that informed bounded retry policy."),
     /** Contract/outcome projection for this attempt. */
     outcome: AttemptOutcome.default({}),
+    /** Delegation-belt runtime readiness (QA-024); present only when a belt was
+     * injected into this attempt. Absent on non-delegate attempts. */
+    delegation_belt: DelegationBeltEvidence.optional(),
     /** Token usage summed across this attempt's usage events. */
     usage: TokenUsage.default({}),
   })
