@@ -6,13 +6,26 @@ import { describe, expect, it } from "vitest";
 import { RawContextPacket, RawGitPatchEnvelope } from "@claudexor/schema";
 import { sha256 } from "@claudexor/util";
 import { consumeRawPatchEnvelope, RawPatchRefusalError } from "./raw-patch.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
 }
 
 function fixture() {
-  const repo = mkdtempSync(join(tmpdir(), "raw-patch-repo-"));
+  const repo = reapMk(join(tmpdir(), "raw-patch-repo-"));
   git(repo, "init");
   git(repo, "config", "user.email", "test@example.com");
   git(repo, "config", "user.name", "Test");
@@ -22,7 +35,7 @@ function fixture() {
   const baseCommitSha = git(repo, "rev-parse", "HEAD");
   const baseTreeSha = git(repo, "rev-parse", "HEAD^{tree}");
   const blobOid = git(repo, "rev-parse", "HEAD:a.txt");
-  const worktreePath = mkdtempSync(join(tmpdir(), "raw-patch-tree-"));
+  const worktreePath = reapMk(join(tmpdir(), "raw-patch-tree-"));
   execFileSync("git", ["-C", repo, "worktree", "add", "--detach", worktreePath, baseCommitSha]);
   const context = RawContextPacket.parse({
     schema_version: 1,

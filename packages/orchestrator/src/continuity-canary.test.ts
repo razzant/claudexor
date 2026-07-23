@@ -20,9 +20,22 @@ import { ConformanceReport, HarnessManifest } from "@claudexor/schema";
 import { Orchestrator } from "./orchestrator.js";
 import type { ThreadContinuityContext } from "./orchestrator.js";
 import type { ContinuityDisclosureResult } from "./continuity.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-continuity-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-continuity-"));
   await runCapture("git", ["-C", repo, "init", "-b", "main"]);
   writeFileSync(join(repo, "README.md"), "# repo\n");
   await runCapture("git", ["-C", repo, "add", "-A"]);

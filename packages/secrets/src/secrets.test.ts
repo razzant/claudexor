@@ -3,12 +3,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecretStore, isManagedSecretName, resolveSecret } from "./index.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 let prev: string | undefined;
 
 beforeEach(() => {
   prev = process.env.CLAUDEXOR_CONFIG_DIR;
-  process.env.CLAUDEXOR_CONFIG_DIR = mkdtempSync(join(tmpdir(), "claudexor-secrets-"));
+  process.env.CLAUDEXOR_CONFIG_DIR = reapMk(join(tmpdir(), "claudexor-secrets-"));
 });
 
 afterEach(() => {

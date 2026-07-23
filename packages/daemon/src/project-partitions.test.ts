@@ -11,6 +11,19 @@ import { projectProjection } from "./projects.js";
 import { runEventProjection } from "./run-events.js";
 import { threadHeadPingProjection } from "./thread-head-ping.js";
 import { threadProjection } from "./threads.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 const roots: string[] = [];
 
@@ -19,7 +32,7 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-project-partitions-")));
+  const root = realpathSync(reapMk(join(tmpdir(), "claudexor-project-partitions-")));
   roots.push(root);
   const manager = new JournalManager(root);
   const commands = manager.registerProjection(commandProjection());
@@ -253,8 +266,8 @@ describe("ProjectPartitions", () => {
     const prev = process.env["CLAUDEXOR_CONFIG_DIR"];
     // Survivor + missing live OUTSIDE f.root; the ghost lives UNDER f.root and
     // becomes "owned" only after we point CLAUDEXOR_CONFIG_DIR at f.root below.
-    const survivor = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-survivor-")));
-    const missing = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-missing-")));
+    const survivor = realpathSync(reapMk(join(tmpdir(), "claudexor-survivor-")));
+    const missing = realpathSync(reapMk(join(tmpdir(), "claudexor-missing-")));
     roots.push(survivor, missing);
     const ghostRoot = join(f.root, "projects", "d", "workspaces", "task-9", "a01", "tree");
     mkdirSync(ghostRoot, { recursive: true });

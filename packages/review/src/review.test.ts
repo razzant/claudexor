@@ -28,6 +28,19 @@ import { ReadinessLedger, failureSignature } from "./readiness.js";
 import { revalidateFindings } from "./revalidate.js";
 import { type ReviewerProgressEvent, type ReviewerSpec, reviewCandidate } from "./reviewEngine.js";
 import { buildRouteProof, classifyDiversity } from "./route.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function makeReviewer(id: string, family: ProviderFamily, findings: unknown[]): ReviewerSpec {
   const adapter: HarnessAdapter = {
@@ -63,7 +76,7 @@ function makeReviewWorkspace(prefix = "claudexor-review-candidate-"): {
   cwd: string;
   evidenceDir: string;
 } {
-  const cwd = mkdtempSync(join(tmpdir(), prefix));
+  const cwd = reapMk(join(tmpdir(), prefix));
   const evidenceDir = join(cwd, ".claudexor-review-evidence");
   mkdirSync(evidenceDir, { recursive: true });
   writeMandatoryReviewEvidence(evidenceDir);
@@ -99,7 +112,7 @@ describe("reviewer progress event schema contract", () => {
 describe("sealed release native reviewer contract", () => {
   it("prompts for an explicit completion envelope while preserving generic findings", async () => {
     const { cwd, evidenceDir } = makeReviewWorkspace("claudexor-release-review-");
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-release-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-release-review-artifacts-"));
     const diff = "diff --git a/a.ts b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
     writeFileSync(join(evidenceDir, "DIFF.patch"), diff);
     writeFileSync(join(evidenceDir, "DIFF_SUMMARY.md"), "one release file changed\n");
@@ -226,7 +239,7 @@ function sameObservedModelReviewer(
 
 describe("gates", () => {
   it("passes on exit 0, fails on non-zero", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-"));
+    const cwd = reapMk(join(tmpdir(), "claudexor-gate-"));
     const passed = await runGate(
       { id: "a", program: process.execPath, args: ["-e", "process.stdout.write('ok\\n')"] },
       { cwd },
@@ -259,7 +272,7 @@ describe("gates", () => {
   });
 
   it("marks gate output truncated only when the stored redacted tail is sliced", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-trim-"));
+    const cwd = reapMk(join(tmpdir(), "claudexor-gate-trim-"));
     const failed = await runGate(
       {
         id: "trimmed",
@@ -274,7 +287,7 @@ describe("gates", () => {
   });
 
   it("requires an exact external grant for versioned project commands", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-trust-"));
+    const cwd = reapMk(join(tmpdir(), "claudexor-gate-trust-"));
     writeFileSync(join(cwd, "gate.js"), "require('node:fs').writeFileSync('ran.txt', 'yes')\n");
     const invocation = { program: process.execPath, args: ["gate.js"], envAllowlist: [] };
     const context = { projectRoot: cwd, accessProfile: "workspace_write" as const };
@@ -299,7 +312,7 @@ describe("gates", () => {
     expect(trusted.status).toBe("passed");
     expect(readFileSync(join(cwd, "ran.txt"), "utf8")).toBe("yes");
 
-    const verifyCwd = mkdtempSync(join(tmpdir(), "claudexor-gate-verify-tree-"));
+    const verifyCwd = reapMk(join(tmpdir(), "claudexor-gate-verify-tree-"));
     writeFileSync(
       join(verifyCwd, "gate.js"),
       "require('node:fs').writeFileSync('ran.txt', 'yes')\n",
@@ -365,7 +378,7 @@ describe("gates", () => {
   });
 
   it("revokes a package-manager command when package.json changes", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "claudexor-gate-package-script-"));
+    const cwd = reapMk(join(tmpdir(), "claudexor-gate-package-script-"));
     const invocation = { program: "pnpm", args: ["test"], envAllowlist: [] };
     writeFileSync(
       join(cwd, "package.json"),
@@ -589,7 +602,7 @@ describe("revalidate", () => {
   });
 
   it("rejects reviewer file evidence paths outside candidate and evidence roots", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-revalidate-candidate-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-revalidate-candidate-"));
     const evidenceDir = join(candidateRoot, ".claudexor-review-evidence");
     mkdirSync(evidenceDir);
     writeFileSync(join(candidateRoot, "src.ts"), "export const ok = true;\n");
@@ -670,7 +683,7 @@ describe("revalidate", () => {
   });
 
   it("keeps non-path evidence when invalid reviewer paths are stripped", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-revalidate-candidate-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-revalidate-candidate-"));
     const withDiffEvidence = ReviewFinding.parse({
       id: "diff",
       severity: "BLOCK",
@@ -691,7 +704,7 @@ describe("revalidate", () => {
   });
 
   it("keeps safe relative evidence paths even when the cited path does not exist yet", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-revalidate-candidate-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-revalidate-candidate-"));
     const missingFile = ReviewFinding.parse({
       id: "missing-file",
       severity: "BLOCK",
@@ -943,7 +956,7 @@ describe("reviewEngine", () => {
     const reviewersStarted = new Promise<void>((resolve) => {
       releaseReviewers = resolve;
     });
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const concurrentReviewer = (
       id: string,
       family: ProviderFamily,
@@ -1132,7 +1145,7 @@ describe("reviewEngine", () => {
 
   it("redacts reviewer failures before writing findings or parse-error artifacts", async () => {
     const token = "sk-" + "a".repeat(24);
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const adapter: HarnessAdapter = {
       id: "throwing-reviewer",
       async discover() {
@@ -1175,7 +1188,7 @@ describe("reviewEngine", () => {
 
   it("treats reviewer error events as failed reviewer output with redacted detail", async () => {
     const token = "sk-" + "b".repeat(24);
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const adapter: HarnessAdapter = {
       id: "error-event-reviewer",
       async discover() {
@@ -1241,7 +1254,7 @@ describe("reviewEngine", () => {
 
   it("times out a stalled reviewer and forwards abort to the adapter", async () => {
     let childSignal: AbortSignal | undefined;
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const adapter: HarnessAdapter = {
       id: "stalled-reviewer",
       async discover() {
@@ -1310,7 +1323,7 @@ describe("reviewEngine", () => {
       if (ready === 2) releaseBoth();
       await bothReady;
     };
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const parent = new AbortController();
     const stalled: HarnessAdapter = {
       id: "cancelled-reviewer",
@@ -1446,7 +1459,7 @@ describe("reviewEngine", () => {
 
   it("retries a reviewer once it emits typed transient failure with no output", async () => {
     let calls = 0;
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const adapter: HarnessAdapter = {
       id: "transient-reviewer",
       async discover() {
@@ -1564,9 +1577,9 @@ describe("reviewEngine", () => {
     let prompt = "";
     let reviewerCwd = "";
     const secretDiffLine = "+UNIQUE_REVIEW_BODY_SHOULD_NOT_BE_IN_PROMPT";
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review the candidate\n");
     writeFileSync(join(evidenceDir, "FORBIDDEN_FINDINGS.md"), "(none)\n");
     writeFileSync(join(evidenceDir, "PLAN_ACCEPTED.md"), "(none)\n");
@@ -1663,9 +1676,9 @@ describe("reviewEngine", () => {
 
   it("refuses secret-like diff evidence before starting reviewers", async () => {
     let reviewerStarted = false;
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     writeMandatoryReviewEvidence(evidenceDir);
     const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
     const adapter: HarnessAdapter = {
@@ -1708,9 +1721,9 @@ describe("reviewEngine", () => {
 
   it("redacts secret-like prose evidence before persistent artifacts and reviewer workspaces", async () => {
     let reviewerEvidence = "";
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     writeMandatoryReviewEvidence(evidenceDir);
     const fakeKey = "sk-" + "abcdefghijklmnopqrstuvwxyz";
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), `review prose ${fakeKey}\n`);
@@ -1764,9 +1777,9 @@ describe("reviewEngine", () => {
 
   it("fails closed on incomplete mandatory evidence before starting reviewers", async () => {
     let reviewerStarted = false;
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review incomplete evidence\n");
     const adapter: HarnessAdapter = {
       id: "must-not-start",
@@ -1807,8 +1820,8 @@ describe("reviewEngine", () => {
   });
 
   it("persists source evidence when the default artifacts dir is inside the evidence dir", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     writeMandatoryReviewEvidence(evidenceDir);
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review default evidence\n");
     writeFileSync(join(evidenceDir, "FORBIDDEN_FINDINGS.md"), "(none)\n");
@@ -1833,8 +1846,8 @@ describe("reviewEngine", () => {
   });
 
   it("removes temporary reviewer workspace base directories after fallback isolation", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = join(candidateRoot, "review-artifacts");
     writeMandatoryReviewEvidence(evidenceDir);
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review fallback cleanup\n");
@@ -1880,8 +1893,8 @@ describe("reviewEngine", () => {
   });
 
   it("treats child directory names that start with two dots as inside reviewer roots", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = join(candidateRoot, "..review-artifacts");
     writeMandatoryReviewEvidence(evidenceDir);
     writeFileSync(join(candidateRoot, "candidate.txt"), "source\n");
@@ -1930,8 +1943,8 @@ describe("reviewEngine", () => {
   });
 
   it("does not mask review results when temporary reviewer workspace base cleanup fails", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = join(candidateRoot, "review-artifacts");
     writeMandatoryReviewEvidence(evidenceDir);
     writeFileSync(join(candidateRoot, "candidate.txt"), "source\n");
@@ -1991,10 +2004,10 @@ describe("reviewEngine", () => {
   });
 
   it("does not copy reviewer workspace symlinks that resolve outside the candidate root", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     const artifactsDir = join(candidateRoot, "review-artifacts");
-    const outsideDir = mkdtempSync(join(tmpdir(), "claudexor-outside-secret-"));
+    const outsideDir = reapMk(join(tmpdir(), "claudexor-outside-secret-"));
     const outsideSecret = join(outsideDir, "secret.txt");
     mkdirSync(artifactsDir, { recursive: true });
     writeFileSync(join(candidateRoot, "candidate.txt"), "source\n");
@@ -2063,10 +2076,10 @@ describe("reviewEngine", () => {
   });
 
   it("initializes reviewer workspace git baselines without running template hooks", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
     writeMandatoryReviewEvidence(evidenceDir);
-    const templateDir = mkdtempSync(join(tmpdir(), "claudexor-git-template-"));
+    const templateDir = reapMk(join(tmpdir(), "claudexor-git-template-"));
     const hooksDir = join(templateDir, "hooks");
     mkdirSync(hooksDir, { recursive: true });
     for (const hookName of ["pre-commit", "post-commit"]) {
@@ -2126,9 +2139,9 @@ describe("reviewEngine", () => {
   });
 
   it("copies reviewer evidence from excluded .claudexor run artifacts into reviewer workspaces", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
     const evidenceDir = join(candidateRoot, ".claudexor", "runs", "run-x", "review-evidence");
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     mkdirSync(evidenceDir, { recursive: true });
     writeFileSync(join(candidateRoot, "candidate.txt"), "source\n");
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review hidden evidence\n");
@@ -2210,9 +2223,9 @@ describe("reviewEngine", () => {
   });
 
   it("copies versioned project config without copying .claudexor runtime artifacts", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     mkdirSync(join(candidateRoot, ".claudexor", "runs", "run-x"), { recursive: true });
     writeFileSync(
       join(candidateRoot, ".claudexor", "config.yaml"),
@@ -2269,9 +2282,9 @@ describe("reviewEngine", () => {
   });
 
   it("copies diff-touched evidence under normally ignored project output paths", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     for (const dir of [
       "dist",
       "coverage",
@@ -2373,9 +2386,9 @@ describe("reviewEngine", () => {
   });
 
   it("tracks copied candidate files even when candidate gitignore ignores them", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     writeFileSync(join(candidateRoot, ".gitignore"), "ignored-but-versioned.txt\n");
     writeFileSync(join(candidateRoot, "ignored-but-versioned.txt"), "tracked despite ignore\n");
     writeFileSync(join(candidateRoot, "README.md"), "candidate docs\n");
@@ -2427,9 +2440,9 @@ describe("reviewEngine", () => {
   });
 
   it("does not copy paths from the shared sensitive-resource policy into reviewer workspaces", async () => {
-    const candidateRoot = mkdtempSync(join(tmpdir(), "claudexor-candidate-root-"));
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const candidateRoot = reapMk(join(tmpdir(), "claudexor-candidate-root-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     writeFileSync(join(candidateRoot, ".env"), "TOKEN=secret\n");
     writeFileSync(join(candidateRoot, ".envrc"), "export TOKEN=secret\n");
     writeFileSync(join(candidateRoot, ".env.local"), "TOKEN=local-secret\n");
@@ -2542,8 +2555,8 @@ describe("reviewEngine", () => {
 
   it("isolates reviewer workspace setup failures to the failing reviewer", async () => {
     const missingCandidateRoot = join(tmpdir(), `claudexor-missing-candidate-${Date.now()}`);
-    const evidenceDir = mkdtempSync(join(tmpdir(), "claudexor-review-evidence-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const evidenceDir = reapMk(join(tmpdir(), "claudexor-review-evidence-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "setup failure review\n");
     writeFileSync(join(evidenceDir, "FORBIDDEN_FINDINGS.md"), "(none)\n");
     writeFileSync(join(evidenceDir, "PLAN_ACCEPTED.md"), "plan accepted\n");
@@ -2575,7 +2588,7 @@ describe("reviewEngine", () => {
     const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
       "claudexor-review-summary-candidate-",
     );
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     mkdirSync(evidenceDir, { recursive: true });
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review summary\n");
     const diff = Array.from({ length: 85 }, (_, i) => {
@@ -2601,7 +2614,7 @@ describe("reviewEngine", () => {
     const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
       "claudexor-review-auth-switch-candidate-",
     );
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     const adapter: HarnessAdapter = {
       id: "auth-switch-reviewer",
       async discover() {
@@ -2675,8 +2688,8 @@ describe("reviewEngine", () => {
     const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
       "claudexor-review-evidence-symlink-candidate-",
     );
-    const externalRoot = mkdtempSync(join(tmpdir(), "claudexor-review-external-"));
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const externalRoot = reapMk(join(tmpdir(), "claudexor-review-external-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     mkdirSync(evidenceDir, { recursive: true });
     mkdirSync(join(evidenceDir, "nested"), { recursive: true });
     writeFileSync(join(evidenceDir, "USER_INTENT.md"), "review evidence symlink\n");
@@ -2702,7 +2715,7 @@ describe("reviewEngine", () => {
     const { cwd: candidateRoot, evidenceDir } = makeReviewWorkspace(
       "claudexor-review-isolation-candidate-",
     );
-    const artifactsDir = mkdtempSync(join(tmpdir(), "claudexor-review-artifacts-"));
+    const artifactsDir = reapMk(join(tmpdir(), "claudexor-review-artifacts-"));
     writeFileSync(join(candidateRoot, "kept.txt"), "original\n");
     let reviewerCwd = "";
     const adapter: HarnessAdapter = {

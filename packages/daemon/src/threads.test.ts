@@ -4,9 +4,22 @@ import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
 import { describe, expect, it } from "vitest";
 import { ThreadStore, type ThreadHeadPingSink } from "./threads.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function store(): { root: string; journal: DurableJournal; s: ThreadStore } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-threads-")));
+  const root = realpathSync(reapMk(join(tmpdir(), "claudexor-threads-")));
   const journal = new DurableJournal({ rootDir: root, partition: "global" });
   return { root, journal, s: new ThreadStore(journal) };
 }
@@ -385,7 +398,7 @@ describe("ThreadStore", () => {
 
 describe("ThreadStore thread.head.updated ping (W12)", () => {
   function pingStore(partition = "global") {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-threads-ping-")));
+    const root = realpathSync(reapMk(join(tmpdir(), "claudexor-threads-ping-")));
     const pings: Array<{ threadId: string; projectId: string | null }> = [];
     const sink: ThreadHeadPingSink = (ping) => pings.push(ping);
     const journal = new DurableJournal({ rootDir: root, partition });

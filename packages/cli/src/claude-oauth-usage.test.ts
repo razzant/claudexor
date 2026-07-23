@@ -1,7 +1,8 @@
+import { rmSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   claudeOauthKeychainItem,
   parseClaudeOauthCredential,
@@ -129,7 +130,16 @@ describe("claude oauth/usage quota source (W5.3, INV-062)", () => {
 });
 
 describe("claude credential-file store off macOS (Linux quota parity)", () => {
-  const configDir = () => mkdtemp(join(tmpdir(), "claudexor-cred-"));
+  // W-h: reap the temp config dirs this suite creates instead of leaking them.
+  const __reapDirs: string[] = [];
+  const configDir = async () => {
+    const dir = await mkdtemp(join(tmpdir(), "claudexor-cred-"));
+    __reapDirs.push(dir);
+    return dir;
+  };
+  afterAll(() => {
+    for (const dir of __reapDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
   // Redaction bait is assembled at runtime so no token-like literal ever
   // lands in the source tree (secret-scan CI step, INV-062).
   const bait = ["sk", "ant", "oat01", "b".repeat(24)].join("-");

@@ -9,6 +9,19 @@ import {
   type RetentionPolicy,
   type RetentionProject,
 } from "./retention.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 const roots: string[] = [];
 afterEach(() => {
@@ -24,7 +37,7 @@ const POLICY: RetentionPolicy = {
 };
 
 function sandbox(): { project: RetentionProject; root: string } {
-  const root = mkdtempSync(join(tmpdir(), "claudexor-retention-"));
+  const root = reapMk(join(tmpdir(), "claudexor-retention-"));
   roots.push(root);
   const runsDir = join(root, "runs");
   const reviewsDir = join(root, "repo", ".claudexor", "reviews");

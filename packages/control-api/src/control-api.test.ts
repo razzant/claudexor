@@ -27,6 +27,19 @@ import { execFileSync } from "node:child_process";
 import { sha256 } from "@claudexor/util";
 import type { ControlSetupJob } from "@claudexor/schema";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function apiFetch(input: string | URL | Request, init: RequestInit = {}): Promise<Response> {
   if (input instanceof Request) return globalThis.fetch(input, init);
@@ -239,7 +252,7 @@ describe("DaemonControlApiServer", () => {
     record: DaemonRunRecord;
     cancelled: string[];
   } {
-    const runDir = mkdtempSync(join(tmpdir(), "claudexor-control-run-"));
+    const runDir = reapMk(join(tmpdir(), "claudexor-control-run-"));
     mkdirSync(runDir, { recursive: true });
     mkdirSync(join(runDir, "final"), { recursive: true });
     mkdirSync(join(runDir, "arbitration"), { recursive: true });
@@ -922,7 +935,7 @@ describe("DaemonControlApiServer", () => {
 
   it("GET /projects/:id/outputs lists the project's durable outputs, serves files, and blocks traversal", async () => {
     const { daemon } = fakeDaemon();
-    const projectRoot = mkdtempSync(join(tmpdir(), "claudexor-project-outputs-"));
+    const projectRoot = reapMk(join(tmpdir(), "claudexor-project-outputs-"));
     mkdirSync(join(projectRoot, "artifacts", "reports"), { recursive: true });
     writeFileSync(join(projectRoot, "artifacts", "reports", "summary.md"), "# durable output\n");
     writeFileSync(
@@ -993,9 +1006,9 @@ describe("DaemonControlApiServer", () => {
 
   it("GET /projects/:id/outputs blocks a symlink that escapes the artifacts dir", async () => {
     const { daemon } = fakeDaemon();
-    const projectRoot = mkdtempSync(join(tmpdir(), "claudexor-project-symlink-"));
+    const projectRoot = reapMk(join(tmpdir(), "claudexor-project-symlink-"));
     mkdirSync(join(projectRoot, "artifacts"), { recursive: true });
-    const secretDir = mkdtempSync(join(tmpdir(), "claudexor-project-secret-"));
+    const secretDir = reapMk(join(tmpdir(), "claudexor-project-secret-"));
     writeFileSync(join(secretDir, "creds"), "SECRET\n");
     // A symlink inside artifacts/ pointing OUT of the project must not be served.
     symlinkSync(secretDir, join(projectRoot, "artifacts", "escape"));
@@ -1030,8 +1043,8 @@ describe("DaemonControlApiServer", () => {
 
   it("projects: registration requires idempotency, lists the durable handle, and relinks it", async () => {
     const { daemon } = fakeDaemon();
-    const firstRoot = mkdtempSync(join(tmpdir(), "claudexor-project-first-"));
-    const secondRoot = mkdtempSync(join(tmpdir(), "claudexor-project-second-"));
+    const firstRoot = reapMk(join(tmpdir(), "claudexor-project-first-"));
+    const secondRoot = reapMk(join(tmpdir(), "claudexor-project-second-"));
     const now = new Date().toISOString();
     const project = {
       schema_version: 2,
@@ -1093,7 +1106,7 @@ describe("DaemonControlApiServer", () => {
 
   it("threads: create -> list -> turn (enqueued with threadId + native resume anchors) -> detail", async () => {
     const { daemon, record } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-"));
     let enqueued: Record<string, unknown> | undefined;
     let enqueueOptions: Parameters<DaemonFacadeClient["enqueue"]>[1];
     // Minimal in-memory thread service double (the daemon's ThreadStore contract).
@@ -1274,7 +1287,7 @@ describe("DaemonControlApiServer", () => {
 
   it("threads: a refused enqueue persists the error on the turn; the detail projection renders enqueueError", async () => {
     const { daemon } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-refuse-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-refuse-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -1367,7 +1380,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("threads: a turn whose job goes TERMINAL before a run binds is a 500 pre-start failure, never an accepted queued turn", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-terminal-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-terminal-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -1447,7 +1460,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("threads: a typed pre-start refusal (trust) is a 4xx with the code, not a retryable 500 (W24)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-typed-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-typed-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -1517,7 +1530,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("threads: refusal status is born at the throw — persisted errorStatus wins, a bare errno code stays 500 (W24)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-status-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-status-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -1589,7 +1602,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("threads: a preflight refusal lands on the created turn, not raw JSON with no turn (W19)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-preflight-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-preflight-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -1672,7 +1685,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("threads: retry 409s IMMEDIATELY for a retryable:false refusal (no registry lookup for params that were never recorded)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-norep-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-norep-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -1741,7 +1754,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("threads: POST /threads/:id/turns/:turnId/retry replays the recorded job params; guards refuse bound/active/unknown turns", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-retry-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-retry-"));
     const now = new Date().toISOString();
     const threadObj: Record<string, unknown> = {
       schema_version: 2,
@@ -2034,7 +2047,7 @@ describe("DaemonControlApiServer", () => {
 
   it("threads: a turn inherits the thread's sticky primary + eligible pool; the body overrides them; PATCH switches them", async () => {
     const { daemon, record } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-pool-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-pool-"));
     const now = new Date().toISOString();
     let enqueued: Record<string, unknown> | undefined;
     let patched: { primaryHarness?: string | null; eligibleHarnesses?: string[] } | undefined;
@@ -2191,7 +2204,7 @@ describe("DaemonControlApiServer", () => {
 
   it("threads: an empty sticky pool is NOT forwarded (engine auto-pools), but the body pool still is", async () => {
     const { daemon, record } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-autopool-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-autopool-"));
     const now = new Date().toISOString();
     let enqueued: Record<string, unknown> | undefined;
     const threadObj: Record<string, unknown> = {
@@ -2264,7 +2277,7 @@ describe("DaemonControlApiServer", () => {
     // thin gateway must accept and forward them to enqueue, not silently drop
     // them. (Kit tests cover Swift encoding; this locks the wire.)
     const { daemon, record } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-thread-modelspec-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-thread-modelspec-"));
     const now = new Date().toISOString();
     let enqueued: Record<string, unknown> | undefined;
     const threadObj: Record<string, unknown> = {
@@ -2375,7 +2388,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("rejects legacy inline/path attachment authority before daemon enqueue", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-inline-attachment-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-inline-attachment-"));
     let enqueued = 0;
     const daemon: DaemonFacadeClient = {
       async enqueue() {
@@ -2415,7 +2428,7 @@ describe("DaemonControlApiServer", () => {
 
   it("allows only finalized daemon resource ids through daemon enqueue", async () => {
     const { daemon } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-resource-attachment-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-resource-attachment-"));
     let enqueued: Record<string, unknown> | undefined;
     const wrapped: DaemonFacadeClient = {
       ...daemon,
@@ -2442,7 +2455,7 @@ describe("DaemonControlApiServer", () => {
 
   it("refuses unsatisfied lane requirements before creating a daemon run", async () => {
     const { daemon } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-pre-enqueue-requirements-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-pre-enqueue-requirements-"));
     let enqueued = 0;
     const wrapped: DaemonFacadeClient = {
       ...daemon,
@@ -2717,7 +2730,7 @@ describe("DaemonControlApiServer", () => {
 
   it("rejects legacy repoRoot/contextMode fields instead of accepting the old run DTO", async () => {
     const { daemon } = fakeDaemon();
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-proj-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-proj-"));
     await withDaemonServer(daemon, async (base) => {
       const start = await apiFetch(`${base}/runs`, {
         method: "POST",
@@ -2943,7 +2956,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("accepts an explicit ordered reviewer panel at the HTTP boundary", async () => {
-    const panelRoot = mkdtempSync(join(tmpdir(), "claudexor-panel-"));
+    const panelRoot = reapMk(join(tmpdir(), "claudexor-panel-"));
     const { daemon } = fakeDaemon();
     let enqueued: unknown;
     const wrapped: DaemonFacadeClient = {
@@ -4091,7 +4104,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("thread apply gates every undelivered contribution, so a later success cannot launder a blocked run (INV-113)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-thread-gate-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-thread-gate-"));
     const blockedRunDir = join(dir, "run-blocked");
     const headRunDir = join(dir, "run-head");
     const { mkdirSync: mkd } = await import("node:fs");
@@ -4493,7 +4506,7 @@ describe("DaemonControlApiServer", () => {
 
   it("allows manual apply when a valid task contract explicitly has no test commands", async () => {
     const { daemon, record } = fakeDaemon();
-    const project = mkdtempSync(join(tmpdir(), "claudexor-empty-gates-"));
+    const project = reapMk(join(tmpdir(), "claudexor-empty-gates-"));
     try {
       execFileSync("git", ["init", "-q"], { cwd: project });
       execFileSync("git", ["config", "user.name", "Claudexor Test"], { cwd: project });
@@ -4558,7 +4571,7 @@ describe("DaemonControlApiServer", () => {
 
   it("reflects a successful apply in the GET /runs summary IMMEDIATELY (delivery_state is in the cache fingerprint) [B7]", async () => {
     const { daemon, record } = fakeDaemon();
-    const project = mkdtempSync(join(tmpdir(), "claudexor-b7-apply-cache-"));
+    const project = reapMk(join(tmpdir(), "claudexor-b7-apply-cache-"));
     try {
       execFileSync("git", ["init", "-q"], { cwd: project });
       execFileSync("git", ["config", "user.name", "Claudexor Test"], { cwd: project });
@@ -4625,7 +4638,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("409s thread apply when the recorded head run was PRUNED from daemon history (state unknowable)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-capi-prune-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-capi-prune-"));
     const token = "tok";
     const now = new Date().toISOString();
     const threadObj = {
@@ -4691,7 +4704,7 @@ describe("DaemonControlApiServer", () => {
   });
 
   it("refuses a successful thread run whose required patch artifact is missing", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-thread-missing-patch-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-thread-missing-patch-"));
     const runDir = join(dir, "run");
     mkdirSync(runDir, { recursive: true });
     const now = new Date().toISOString();
@@ -4754,7 +4767,7 @@ describe("DaemonControlApiServer", () => {
   it("streams events for a QUEUED job (SSE waits with heartbeats, binds the run dir when it appears)", async () => {
     // GET /runs/:id/events on a queued job must open the stream and
     // wait, not 404 — `follow <jobId>` works from enqueue time.
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-queued-sse-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-queued-sse-"));
     const runDir = join(dir, "run-q1");
     const { mkdirSync: mkd } = await import("node:fs");
     mkd(runDir, { recursive: true });
@@ -5241,6 +5254,7 @@ describe("DaemonControlApiServer", () => {
   it("refuses symlink artifact escapes", async () => {
     const { daemon, record } = fakeDaemon();
     const outside = join(tmpdir(), `claudexor-outside-${Date.now()}.txt`);
+    __reapDirs.push(outside);
     writeFileSync(outside, "outside secret\n");
     symlinkSync(outside, join(record.runDir as string, "final", "escape.txt"));
     await withDaemonServer(daemon, async (base) => {
@@ -5258,7 +5272,7 @@ describe("DaemonControlApiServer", () => {
 
   it("refuses fixed apply artifacts through intermediate symlink directories", async () => {
     const { daemon, record } = fakeDaemon();
-    const outside = mkdtempSync(join(tmpdir(), "claudexor-outside-final-"));
+    const outside = reapMk(join(tmpdir(), "claudexor-outside-final-"));
     writeFileSync(join(outside, "patch.diff"), "diff --git a/evil b/evil\n");
     rmSync(join(record.runDir as string, "final"), { recursive: true, force: true });
     symlinkSync(outside, join(record.runDir as string, "final"), "dir");
@@ -6085,7 +6099,7 @@ describe("DaemonControlApiServer", () => {
 
   it("accepts a non-git existing project root (the engine initializes git itself) but 400s a missing one", async () => {
     const { daemon } = fakeDaemon();
-    const nonGit = mkdtempSync(join(tmpdir(), "claudexor-nongit-api-"));
+    const nonGit = reapMk(join(tmpdir(), "claudexor-nongit-api-"));
     await withDaemonServer(daemon, async (base) => {
       const ok = await apiFetch(`${base}/runs`, {
         method: "POST",
@@ -6113,7 +6127,7 @@ describe("DaemonControlApiServer", () => {
     rmSync(nonGit, { recursive: true, force: true });
   });
   it("refuses delegate on non-agent modes and accepts it for agent (INV-023 / D32)", () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-delegate-"));
+    const root = reapMk(join(tmpdir(), "claudexor-delegate-"));
     try {
       expect(() =>
         normalizeRunStartRequest({
@@ -6140,7 +6154,7 @@ describe("DaemonControlApiServer", () => {
     const server = new DaemonControlApiServer({ ...readyIdentity, token, daemon });
     const { host, port } = await server.start();
     const base = `http://${host}:${port}`;
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-turnid-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-turnid-"));
     try {
       const withTurn = await apiFetch(`${base}/runs`, {
         method: "POST",

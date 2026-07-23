@@ -15,6 +15,19 @@ import type { HarnessAdapter } from "@claudexor/core";
 import { FROZEN_REVIEW_EVIDENCE_FILES } from "@claudexor/context";
 import { reviewCandidate, type ReviewerSpec } from "@claudexor/review";
 import { runDiffReview, type DiffReviewDeps, type FrozenDiffReviewInput } from "./diffReview.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
@@ -78,7 +91,7 @@ function fixture(): {
   candidateTree: string;
   diff: string;
 } {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-frozen-review-repo-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-frozen-review-repo-"));
   git(repo, ["init", "-q", "-b", "main"]);
   git(repo, ["config", "user.email", "test@example.com"]);
   git(repo, ["config", "user.name", "Test"]);
@@ -92,7 +105,7 @@ function fixture(): {
   const candidateSha = git(repo, ["rev-parse", "HEAD"]).trim();
   const candidateTree = git(repo, ["rev-parse", "HEAD^{tree}"]).trim();
   const diff = git(repo, ["diff", "--binary", `${baseSha}..${candidateSha}`]);
-  const external = mkdtempSync(join(tmpdir(), "claudexor-frozen-review-external-"));
+  const external = reapMk(join(tmpdir(), "claudexor-frozen-review-external-"));
   const packet = join(external, "packet");
   const artifacts = join(external, "artifacts");
   const packetManifestSha256 = writePacket(packet, {

@@ -4,6 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { codexBrowserArgs, codexConfigHasNodeRepl, codexExecArgs } from "./index.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 describe("node_repl suppression — config-aware (must never break scoped homes)", () => {
   const spec = {
@@ -31,13 +44,13 @@ describe("node_repl suppression — config-aware (must never break scoped homes)
   });
 
   it("codexConfigHasNodeRepl is true ONLY when the loaded config actually defines node_repl", () => {
-    const withNR = mkdtempSync(join(tmpdir(), "cdx-nr-"));
+    const withNR = reapMk(join(tmpdir(), "cdx-nr-"));
     writeFileSync(join(withNR, "config.toml"), '[mcp_servers.node_repl]\ncommand = "x"\n');
     expect(codexConfigHasNodeRepl(withNR)).toBe(true);
-    const without = mkdtempSync(join(tmpdir(), "cdx-empty-"));
+    const without = reapMk(join(tmpdir(), "cdx-empty-"));
     writeFileSync(join(without, "config.toml"), 'model = "x"\n');
     expect(codexConfigHasNodeRepl(without)).toBe(false); // scoped home with no node_repl => no injection => no "invalid transport"
-    const missing = mkdtempSync(join(tmpdir(), "cdx-none-"));
+    const missing = reapMk(join(tmpdir(), "cdx-none-"));
     expect(codexConfigHasNodeRepl(missing)).toBe(false); // no config.toml at all
   });
 });
@@ -136,7 +149,7 @@ describe("codexBrowserArgs", () => {
 });
 
 describe("codexExecArgs image attachments", () => {
-  const imagePath = join(mkdtempSync(join(tmpdir(), "claudexor-codex-image-")), "f.png");
+  const imagePath = join(reapMk(join(tmpdir(), "claudexor-codex-image-")), "f.png");
   writeFileSync(imagePath, "png");
   const imageSpec = (resume: boolean) => ({
     access: "readonly" as const,

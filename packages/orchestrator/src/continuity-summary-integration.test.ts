@@ -17,12 +17,25 @@ import { readThreadSummary } from "@claudexor/workspace";
 import { Orchestrator } from "./orchestrator.js";
 import type { ThreadContinuityContext } from "./orchestrator.js";
 import type { ContinuityDisclosureResult } from "./continuity.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 let prevConfigDir: string | undefined;
 
 beforeEach(() => {
   prevConfigDir = process.env["CLAUDEXOR_CONFIG_DIR"];
-  process.env["CLAUDEXOR_CONFIG_DIR"] = mkdtempSync(join(tmpdir(), "claudexor-v9c-cfg-"));
+  process.env["CLAUDEXOR_CONFIG_DIR"] = reapMk(join(tmpdir(), "claudexor-v9c-cfg-"));
 });
 
 afterEach(() => {
@@ -31,7 +44,7 @@ afterEach(() => {
 });
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-v9c-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-v9c-"));
   await runCapture("git", ["-C", repo, "init", "-b", "main"]);
   await runCapture("git", ["-C", repo, "add", "-A"]);
   await runCapture("git", [

@@ -11,6 +11,19 @@ import {
   InvalidOutputSchemaError,
   UnsupportedOutputSchemaDialectError,
 } from "./structuredOutput.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 const draft202012Schema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -30,7 +43,7 @@ describe("structured output schema dialects", () => {
   it("compiles and validates a declared draft 2020-12 schema", () => {
     assertOutputSchemaCompiles(draft202012Schema);
 
-    const root = mkdtempSync(join(tmpdir(), "claudexor-structured-output-"));
+    const root = reapMk(join(tmpdir(), "claudexor-structured-output-"));
     const store = new ArtifactStore(root, { claudexorDir: join(root, "runtime") });
     const paths = store.createRun("run-test");
     const log = new EventLog(paths.eventsPath, "run-test", "task-test");
@@ -63,7 +76,7 @@ describe("structured output schema dialects", () => {
     };
     assertOutputSchemaCompiles(schema);
 
-    const root = mkdtempSync(join(tmpdir(), "claudexor-structured-output-"));
+    const root = reapMk(join(tmpdir(), "claudexor-structured-output-"));
     const store = new ArtifactStore(root, { claudexorDir: join(root, "runtime") });
     const paths = store.createRun("run-unevaluated");
     const log = new EventLog(paths.eventsPath, "run-unevaluated", "task-test");

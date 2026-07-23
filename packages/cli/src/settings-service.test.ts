@@ -3,6 +3,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControlSettingsUpdateRequest } from "@claudexor/schema";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 // HERMETIC codex stub: the adapter resolves its binary (CLAUDEXOR_CODEX_BIN)
 // at MODULE LOAD, and codex discover() hard-requires `--version` to answer.
@@ -11,7 +24,7 @@ import { ControlSettingsUpdateRequest } from "@claudexor/schema";
 // (static known_models) is what these tests exercise; the stub only answers
 // the liveness probes. Env is set BEFORE the dynamic import below so the
 // adapter picks it up.
-const stubDir = mkdtempSync(join(tmpdir(), "claudexor-codex-stub-"));
+const stubDir = reapMk(join(tmpdir(), "claudexor-codex-stub-"));
 const stubBin = join(stubDir, "codex");
 writeFileSync(
   stubBin,

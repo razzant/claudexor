@@ -13,6 +13,19 @@ import {
   sweepOrphanLanes,
   writeThreadSummary,
 } from "./lanes.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 // A hermetic Claudexor-owned root so every projectRuntimeDir(...) resolves
 // under a throwaway config dir (never the operator's real ~/.claudexor).
@@ -21,7 +34,7 @@ let configDir: string;
 
 beforeEach(() => {
   prevConfigDir = process.env["CLAUDEXOR_CONFIG_DIR"];
-  configDir = mkdtempSync(join(tmpdir(), "claudexor-lanes-cfg-"));
+  configDir = reapMk(join(tmpdir(), "claudexor-lanes-cfg-"));
   process.env["CLAUDEXOR_CONFIG_DIR"] = configDir;
 });
 
@@ -32,7 +45,7 @@ afterEach(() => {
 
 describe("lane home paths", () => {
   it("is STABLE across turns of the same lane and DISTINCT per profile/harness/thread", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     const mgr = new WorkspaceManager(repo);
 
     const a1 = mgr.laneHomeEnv("th-1", "codex", "work");
@@ -61,7 +74,7 @@ describe("lane home paths", () => {
   });
 
   it("rejects unsafe path segments", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     const mgr = new WorkspaceManager(repo);
     expect(() => mgr.laneHomeEnv("../escape", "codex", null)).toThrow();
     expect(() => mgr.laneHomeEnv("th-1", "co/dex", null)).toThrow();
@@ -70,7 +83,7 @@ describe("lane home paths", () => {
 
 describe("lane lifecycle owners", () => {
   it("purgeThreadLanes removes every lane of one thread and leaves other threads", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     const rt = projectRuntimeDir(repo);
     ensureLaneHomeEnv(rt, "th-1", "codex", "work");
     ensureLaneHomeEnv(rt, "th-1", "claude", null);
@@ -83,7 +96,7 @@ describe("lane lifecycle owners", () => {
   });
 
   it("purgeProfileLanes removes exactly that (harness,profile) lane across threads", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     const rt = projectRuntimeDir(repo);
     ensureLaneHomeEnv(rt, "th-1", "codex", "work");
     ensureLaneHomeEnv(rt, "th-2", "codex", "work");
@@ -101,7 +114,7 @@ describe("lane lifecycle owners", () => {
   });
 
   it("sweepOrphanLanes removes lane dirs whose thread is not live", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     const rt = projectRuntimeDir(repo);
     ensureLaneHomeEnv(rt, "th-live", "codex", null);
     ensureLaneHomeEnv(rt, "th-gone", "codex", null);
@@ -114,7 +127,7 @@ describe("lane lifecycle owners", () => {
   });
 
   it("does not throw when the lanes root does not exist", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     // Prove the repo has content but NO lanes dir yet.
     writeFileSync(join(repo, "x"), "y");
     expect(() => purgeThreadLanes(repo, "th-1")).not.toThrow();
@@ -125,7 +138,7 @@ describe("lane lifecycle owners", () => {
 
 describe("thread continuation-summary cache (INV-137, V9c)", () => {
   it("round-trips a summary and misses on an unknown key", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     expect(readThreadSummary(repo, "th-1", "t5")).toBeNull(); // cold miss
     writeThreadSummary(repo, "th-1", "t5", "cached summary body");
     expect(readThreadSummary(repo, "th-1", "t5")).toBe("cached summary body"); // hit
@@ -133,7 +146,7 @@ describe("thread continuation-summary cache (INV-137, V9c)", () => {
   });
 
   it("expires by NEW HEAD: a new collapse boundary is a new key (old entry harmless)", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     writeThreadSummary(repo, "th-1", "t5", "summary up to t5");
     // Head advances → the collapse boundary moves to t7 → a fresh key misses,
     // so the engine recomputes; the t5 entry stays but is never read again.
@@ -144,7 +157,7 @@ describe("thread continuation-summary cache (INV-137, V9c)", () => {
   });
 
   it("lives under the thread's lane dir, so the lifecycle owners sweep it", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     const rt = projectRuntimeDir(repo);
     writeThreadSummary(repo, "th-1", "t5", "body");
     expect(existsSync(join(rt, "lanes", "th-1", "summaries", "t5.md"))).toBe(true);
@@ -155,7 +168,7 @@ describe("thread continuation-summary cache (INV-137, V9c)", () => {
   });
 
   it("returns null (never throws) for an unsafe key", () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-lanes-repo-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-lanes-repo-"));
     expect(readThreadSummary(repo, "../escape", "t5")).toBeNull();
     expect(readThreadSummary(repo, "th-1", "../escape")).toBeNull();
   });

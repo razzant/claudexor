@@ -22,9 +22,22 @@ import {
   verifySealedEvidencePacket,
   writeEvidencePacket,
 } from "./evidence.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function tmp(): string {
-  return mkdtempSync(join(tmpdir(), "claudexor-ctx-"));
+  return reapMk(join(tmpdir(), "claudexor-ctx-"));
 }
 
 function digest(value: string | Buffer): string {
@@ -345,12 +358,12 @@ describe("evidence packet", () => {
 
 describe("atlas walker symlink safety", () => {
   it("survives a self-referencing symlink cycle and skips directory symlinks", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-atlas-cycle-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-atlas-cycle-"));
     writeFileSync(join(dir, "real.txt"), "content\n");
     // `ln -s . loop` — the classic stack-overflow cycle.
     symlinkSync(".", join(dir, "loop"));
     // A dir symlink pointing OUTSIDE the tree must not be walked either.
-    const outside = mkdtempSync(join(tmpdir(), "claudexor-atlas-outside-"));
+    const outside = reapMk(join(tmpdir(), "claudexor-atlas-outside-"));
     writeFileSync(join(outside, "secret.txt"), "outside\n");
     symlinkSync(outside, join(dir, "escape"));
     const { buildScopeAtlas } = await import("./atlas.js");
@@ -366,14 +379,14 @@ describe("atlas walker symlink safety", () => {
 
 describe("atlas symlink containment (R33 gate finding)", () => {
   it("a TRACKED symlink pointing outside the tree is excluded, never read into the pack", async () => {
-    const { mkdtempSync, writeFileSync, symlinkSync } = await import("node:fs");
+    const { writeFileSync, symlinkSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { execFileSync } = await import("node:child_process");
     const { buildScopeAtlas } = await import("./atlas.js");
-    const outside = mkdtempSync(join(tmpdir(), "cx-outside-"));
+    const outside = reapMk(join(tmpdir(), "cx-outside-"));
     writeFileSync(join(outside, "host-secret.txt"), "HOST SECRET CONTENT\n");
-    const repo = mkdtempSync(join(tmpdir(), "cx-symlink-"));
+    const repo = reapMk(join(tmpdir(), "cx-symlink-"));
     const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     g(["init", "-q"]);
     writeFileSync(join(repo, "real.txt"), "in-tree content\n");
@@ -402,13 +415,13 @@ describe("atlas symlink containment (R33 gate finding)", () => {
 
 describe("atlas fallback-walker symlink containment", () => {
   it("a NON-git tree with an out-of-tree symlink never maps it; in-tree symlinks map", async () => {
-    const { mkdtempSync, writeFileSync, symlinkSync } = await import("node:fs");
+    const { writeFileSync, symlinkSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { buildScopeAtlas } = await import("./atlas.js");
-    const outside = mkdtempSync(join(tmpdir(), "cx-w-outside-"));
+    const outside = reapMk(join(tmpdir(), "cx-w-outside-"));
     writeFileSync(join(outside, "secret.txt"), "WALKER SECRET\n");
-    const root = mkdtempSync(join(tmpdir(), "cx-w-root-")); // NOT a git repo -> fallback walker
+    const root = reapMk(join(tmpdir(), "cx-w-root-")); // NOT a git repo -> fallback walker
     writeFileSync(join(root, "real.txt"), "content\n");
     symlinkSync(join(outside, "secret.txt"), join(root, "leak.txt"));
     symlinkSync(join(root, "real.txt"), join(root, "alias.txt"));

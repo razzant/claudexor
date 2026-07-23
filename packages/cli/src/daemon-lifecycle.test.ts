@@ -4,10 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { armDaemonLifecycle } from "./daemon-lifecycle.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 describe("armDaemonLifecycle", () => {
   it("coalesces SIGTERM and SIGINT into ONE state-machine entry and finalizes idempotently", async () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const root = reapMk(join(tmpdir(), "claudexor-lifecycle-"));
     const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
     const reasons: string[] = [];
     let snapshots = 0;
@@ -39,7 +52,7 @@ describe("armDaemonLifecycle", () => {
   });
 
   it("does not let diagnostic log or snapshot failures suppress shutdown", async () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-lifecycle-"));
+    const root = reapMk(join(tmpdir(), "claudexor-lifecycle-"));
     const signals = new EventEmitter() as EventEmitter & Pick<NodeJS.Process, "on" | "off">;
     let entered = false;
     const lifecycle = armDaemonLifecycle({

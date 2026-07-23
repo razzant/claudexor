@@ -8,9 +8,22 @@ import { CommandStore } from "./command-store.js";
 import { InteractionRegistry, InteractionStore } from "./interactions.js";
 import { DaemonServer, type JobRecord } from "./server.js";
 import { acquireDaemonWriterLease } from "./writer-lease.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function tempDir(name = "daemon"): string {
-  return realpathSync(mkdtempSync(join(tmpdir(), `claudexor-${name}-`)));
+  return realpathSync(reapMk(join(tmpdir(), `claudexor-${name}-`)));
 }
 
 function commandAuthority(

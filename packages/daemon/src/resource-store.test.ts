@@ -4,6 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ResourceStore } from "./resource-store.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 async function* chunks(...values: string[]): AsyncIterable<Uint8Array> {
   for (const value of values) yield Buffer.from(value);
@@ -11,7 +24,7 @@ async function* chunks(...values: string[]): AsyncIterable<Uint8Array> {
 
 describe("ResourceStore", () => {
   it("streams, fsyncs, finalizes, resolves by immutable id and deduplicates blobs", async () => {
-    const store = new ResourceStore(mkdtempSync(join(tmpdir(), "claudexor-resources-")));
+    const store = new ResourceStore(reapMk(join(tmpdir(), "claudexor-resources-")));
     const bytes = Buffer.from("generic sentinel");
     const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
@@ -54,7 +67,7 @@ describe("ResourceStore", () => {
   });
 
   it("reports progress and cancels without producing a resource", async () => {
-    const store = new ResourceStore(mkdtempSync(join(tmpdir(), "claudexor-resource-cancel-")));
+    const store = new ResourceStore(reapMk(join(tmpdir(), "claudexor-resource-cancel-")));
     const upload = store.create(
       { kind: "image", mime: "image/png", name: "x.png", sizeBytes: 4 },
       "create-cancel",
@@ -67,7 +80,7 @@ describe("ResourceStore", () => {
   });
 
   it("fails closed on size or digest mismatch", async () => {
-    const store = new ResourceStore(mkdtempSync(join(tmpdir(), "claudexor-resource-mismatch-")));
+    const store = new ResourceStore(reapMk(join(tmpdir(), "claudexor-resource-mismatch-")));
     const short = store.create(
       { kind: "file", mime: "text/plain", name: "x", sizeBytes: 2 },
       "create-short",
@@ -85,7 +98,7 @@ describe("ResourceStore", () => {
   });
 
   it("returns the original create/finalize result and rejects key reuse with another digest", async () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-resource-idem-"));
+    const root = reapMk(join(tmpdir(), "claudexor-resource-idem-"));
     const store = new ResourceStore(root);
     const request = { kind: "file", mime: "text/plain", name: "x", sizeBytes: 1 };
     const upload = store.create(request, "same-create");
@@ -105,7 +118,7 @@ describe("ResourceStore", () => {
   });
 
   it("restores an idempotent upload handle after daemon restart", async () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-resource-create-restart-"));
+    const root = reapMk(join(tmpdir(), "claudexor-resource-create-restart-"));
     const request = { kind: "file", mime: "text/plain", name: "x", sizeBytes: 1 };
     const first = new ResourceStore(root);
     const upload = first.create(request, "restart-create");
@@ -117,7 +130,7 @@ describe("ResourceStore", () => {
   });
 
   it("rejects sensitive names and content before availability or vendor resolution", async () => {
-    const root = mkdtempSync(join(tmpdir(), "claudexor-resource-sensitive-"));
+    const root = reapMk(join(tmpdir(), "claudexor-resource-sensitive-"));
     const store = new ResourceStore(root);
     expect(() =>
       store.create(

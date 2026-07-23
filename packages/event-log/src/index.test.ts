@@ -3,10 +3,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EventLog, appendRunEvent, lastSeqInFile } from "./index.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 describe("EventLog seq stamping", () => {
   it("fails the producer when the configured durable sink rejects an event", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const log = new EventLog(path, "run-1", "task-1", () => {
       throw new Error("journal append failed");
     });
@@ -15,7 +28,7 @@ describe("EventLog seq stamping", () => {
   });
 
   it("stamps a strictly monotonic seq starting at 1", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const log = new EventLog(path, "run-1", "task-1");
     const a = log.emit("run.created", {});
     const b = log.emit("output.ready", { path: "final/answer.md" });
@@ -29,14 +42,14 @@ describe("EventLog seq stamping", () => {
   });
 
   it("continues the sequence when reopening an existing log (no cursor reuse)", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     new EventLog(path, "run-1", "task-1").emit("run.created", {});
     const reopened = new EventLog(path, "run-1", "task-1");
     expect(reopened.emit("output.ready", {}).seq).toBe(2);
   });
 
   it("continues past LEGACY lines without seq by line position", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     writeFileSync(
       path,
       [
@@ -68,7 +81,7 @@ describe("EventLog seq stamping", () => {
 
 describe("appendRunEvent single-counter invariant", () => {
   it("routes out-of-band appends through the LIVE log (no duplicate seq under interleave)", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const log = new EventLog(path, "run-1", "task-1");
     const a = log.emit("run.created", {});
     // Out-of-band audit append while the run is ACTIVE: a file-tail stamp
@@ -84,7 +97,7 @@ describe("appendRunEvent single-counter invariant", () => {
   });
 
   it("falls back to file-tail stamping once the run is terminal (self-dispose)", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const log = new EventLog(path, "run-1", "task-1");
     log.emit("run.created", {});
     log.emit("run.failed", { reason: "x" }); // terminal -> live counter released
@@ -100,7 +113,7 @@ describe("appendRunEvent single-counter invariant", () => {
   });
 
   it("dispose() is idempotent and releases ownership for a successor log", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
+    const path = join(reapMk(join(tmpdir(), "claudexor-eventlog-")), "events.jsonl");
     const first = new EventLog(path, "run-1", "task-1");
     first.emit("run.created", {});
     first.dispose();

@@ -15,6 +15,19 @@ vi.mock("@claudexor/secrets", async (importOriginal) => ({
 
 import { HarnessRunSpec } from "@claudexor/schema";
 import { createRawApiAdapter } from "./index.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
@@ -175,7 +188,7 @@ describe("raw-api immutable attachments", () => {
 
   it("places an admitted generic-file sentinel in the vendor payload after digest verification", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-raw-attachment-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-raw-attachment-"));
     const path = join(dir, "note.txt");
     const text = "generic sentinel";
     writeFileSync(path, text);
@@ -221,7 +234,7 @@ describe("raw-api immutable attachments", () => {
 
   it("does not call the vendor when immutable bytes no longer match the resource digest", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-raw-digest-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-raw-digest-"));
     const path = join(dir, "note.txt");
     writeFileSync(path, "changed");
     const fetchMock = vi.fn();

@@ -8,6 +8,19 @@ import {
   applyPatchProtected,
   reversePatchAndIndexProtected,
 } from "./git.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 const PATCH = [
   "diff --git a/a.txt b/a.txt",
@@ -36,7 +49,7 @@ function git(repo: string, args: string[]): string {
 }
 
 function initRepo(): string {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-protected-git-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-protected-git-"));
   git(repo, ["init", "-q", "-b", "main"]);
   writeFileSync(join(repo, "a.txt"), "one\n");
   writeFileSync(join(repo, "b.txt"), "delete me\n");

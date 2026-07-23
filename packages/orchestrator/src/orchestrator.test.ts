@@ -30,6 +30,19 @@ import { writeEvidencePacket } from "@claudexor/context";
 import type { ReviewerSpec } from "@claudexor/review";
 import { Orchestrator } from "./orchestrator.js";
 import type { OrchestratorResult } from "./orchestrator.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 /**
  * Project a run's D8 axes (lifecycle + facts) back to the LEGACY status word
@@ -61,7 +74,7 @@ function legacyOutcome(r: OrchestratorResult): string {
 }
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-orch-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-orch-"));
   await runCapture("git", ["-C", repo, "init", "-b", "main"]);
   writeFileSync(join(repo, "README.md"), "# repo\n");
   await runCapture("git", ["-C", repo, "add", "-A"]);
@@ -137,7 +150,7 @@ function cleanReviewerWithSideEffect(
 /** Run a block with CLAUDEXOR_CONFIG_DIR pointed at a fresh empty dir, so the
  * developer's real ~/.claudexor config can never leak into fixtures. */
 async function withScopedConfigDir<T>(fn: () => Promise<T>): Promise<T> {
-  const configDir = mkdtempSync(join(tmpdir(), "claudexor-test-config-"));
+  const configDir = reapMk(join(tmpdir(), "claudexor-test-config-"));
   const prev = process.env.CLAUDEXOR_CONFIG_DIR;
   process.env.CLAUDEXOR_CONFIG_DIR = configDir;
   try {
@@ -492,16 +505,13 @@ function markdownPlannerAdapter(id: string, planLines: string[]): HarnessAdapter
 
 describe("Orchestrator", () => {
   it("keeps review evidence external even when a candidate path would block the old in-tree copy", () => {
-    const source = mkdtempSync(join(tmpdir(), "claudexor-review-source-"));
+    const source = reapMk(join(tmpdir(), "claudexor-review-source-"));
     writeEvidencePacket(source, {
       userIntent: "review this candidate",
       diff: "diff --git a/a b/a\n",
       tests: "not run",
     });
-    const candidateFile = join(
-      mkdtempSync(join(tmpdir(), "claudexor-review-candidate-")),
-      "not-a-dir",
-    );
+    const candidateFile = join(reapMk(join(tmpdir(), "claudexor-review-candidate-")), "not-a-dir");
     writeFileSync(candidateFile, "file blocks candidate evidence dir");
     const orch = new Orchestrator({ registry: new Map() });
 
@@ -1490,7 +1500,7 @@ describe("Orchestrator", () => {
 
   it("refuses an unknown or disabled --profile LOUDLY instead of falling into the default auto-pool", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-profile-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -1541,7 +1551,7 @@ describe("Orchestrator", () => {
 
   it("stamps the resolved credential profile on BOTH the read-only and candidate lane specs (INV-135)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-profile-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -1617,7 +1627,7 @@ describe("Orchestrator", () => {
 
   it("routes an unpinned run to the native default (no profile); an explicit pin selects a profile (INV-135; F1: Active removed)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-active-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-active-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -1687,7 +1697,7 @@ describe("Orchestrator", () => {
 
   it("excludes the native/CLI login when native_credentials_enabled=false; an unpinned run refuses naming the setting; an explicit pin still routes (INV-135; F1)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-native-off-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-native-off-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     const mkAsker = () => {
@@ -1758,7 +1768,7 @@ describe("Orchestrator", () => {
 
   it("reactively rotates on a TYPED vendor limit — new session, new profile, provenance (W5.4)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-reactive-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-reactive-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -1884,7 +1894,7 @@ describe("Orchestrator", () => {
 
   it("resume never crosses profiles at the ENGINE boundary — A→B, A→default, default→A (INV-135)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-resume-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-resume-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -1957,7 +1967,7 @@ describe("Orchestrator", () => {
 
   it("read-only THREAD ask records its native session per lane and the NEXT lane turn resumes it in the SAME durable home (INV-034)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-lane-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-lane-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
@@ -2053,7 +2063,7 @@ describe("Orchestrator", () => {
 
   it("an IMPLICIT pool with --profile routes to the PROFILE's harness even when its default store is logged out (round-18 BLOCK)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-implicit-pool-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-implicit-pool-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2122,7 +2132,7 @@ describe("Orchestrator", () => {
 
   it("a selected api_key profile classifies the route by ITS kind — the default subscription cooldown does not apply (round-18 #2)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-route-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-profile-route-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2188,7 +2198,7 @@ describe("Orchestrator", () => {
 
   it("a selected profile is authenticated by ITS store, not the default doctor verdict (round-13)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-override-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-override-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2247,7 +2257,7 @@ describe("Orchestrator", () => {
 
   it("a doctor-OK harness still refuses an unready selected profile before spawn", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-profile-preflight-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-profile-preflight-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2298,7 +2308,7 @@ describe("Orchestrator", () => {
 
   it("reactively rotates in the READ-ONLY lane too (release wave round-13)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-ro-rotate-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-ro-rotate-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2371,7 +2381,7 @@ describe("Orchestrator", () => {
 
   it("never rotates on a plain transient — typed-limit signals only (W5.4)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-transient-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-transient-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2473,7 +2483,7 @@ describe("Orchestrator", () => {
 
   it("preflight-rotates a spent profile BEFORE spawn and records typed provenance (W5.4)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-rotate-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-rotate-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -2557,7 +2567,7 @@ describe("Orchestrator", () => {
 
   it("limit_action fail REFUSES a fresh headroom breach before spawn (W5.4 + release wave)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-nofail-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-nofail-config-"));
     const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     writeFileSync(
@@ -3028,7 +3038,7 @@ describe("Orchestrator", () => {
     // Cap sized so the wave guard denies the SECOND slot: requested
     // n=2, granted 1. The surviving candidate must still run in an isolated
     // envelope (never silently in-place) and its work be ADOPTED after.
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-degraded-race-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-degraded-race-"));
     writeFileSync(join(configDir, "config.yaml"), "budget:\n  estimate_usd_floor: 5\n");
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
@@ -3254,7 +3264,7 @@ describe("Orchestrator", () => {
     const registry = new Map<string, HarnessAdapter>([
       ["codex", realLikeAdapter("codex", "openai")],
     ]);
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-effort-disclosure-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-effort-disclosure-"));
     writeFileSync(join(configDir, "config.yaml"), "harnesses:\n  codex:\n    effort: high\n");
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
@@ -3403,7 +3413,7 @@ describe("Orchestrator", () => {
 
   it("stores no-project Ask artifacts in the user config store, not the synthetic repo root", async () => {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-orch-config-"));
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
       const noProjectRoot = noProjectRepoRoot();
@@ -3843,7 +3853,7 @@ describe("Orchestrator", () => {
 
   it("uses configured default model for harness-only explicit reviewer panel entries", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-reviewer-panel-default-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-reviewer-panel-default-config-"));
     writeFileSync(
       join(configDir, "config.yaml"),
       "harnesses:\n  rev:\n    default_model: configured-review-model\n",
@@ -3911,7 +3921,7 @@ describe("Orchestrator", () => {
 
   it("validates explicit reviewer models against the scoped per-run auth route", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-reviewer-panel-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-reviewer-panel-config-"));
     writeFileSync(
       join(configDir, "config.yaml"),
       "harnesses:\n  rev:\n    auth_preference: subscription\n",
@@ -4053,7 +4063,7 @@ describe("Orchestrator", () => {
 
   it("skips disabled automatic reviewers before doctor probes", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-disabled-reviewer-config-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-disabled-reviewer-config-"));
     writeFileSync(join(configDir, "config.yaml"), "harnesses:\n  rev:\n    enabled: false\n");
     let doctorCalls = 0;
     const reviewer: HarnessAdapter = {
@@ -4300,7 +4310,7 @@ describe("Orchestrator", () => {
       reviewerPanel: ControlReviewerPanelEntry[] = [{ harness: "rev" }],
     ): Promise<void> {
       const repo = await initRepo();
-      const configDir = mkdtempSync(join(tmpdir(), "claudexor-reviewer-panel-config-"));
+      const configDir = reapMk(join(tmpdir(), "claudexor-reviewer-panel-config-"));
       if (configYaml) writeFileSync(join(configDir, "config.yaml"), configYaml);
       const previousConfigDir = process.env.CLAUDEXOR_CONFIG_DIR;
       process.env.CLAUDEXOR_CONFIG_DIR = configDir;
@@ -6222,11 +6232,11 @@ describe("Orchestrator", () => {
 
   it("in-place convergence runs against a non-git live dir and never deletes it", async () => {
     // A plain (non-git) directory standing in for a stateful external environment.
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-orch-inplace-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-orch-inplace-"));
     writeFileSync(join(dir, "task.txt"), "do the thing\n");
     // access=full requires a USER-LEVEL trust allow (TrustConfig wire-in); the
     // test scopes the config dir so it never touches the developer's real home.
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-trust-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-orch-trust-"));
     mkdirSync(join(configDir, "trust"), { recursive: true });
     writeFileSync(join(configDir, "trust", `${repoHash(dir)}.yaml`), "allow_full_access: true\n");
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
@@ -6310,7 +6320,7 @@ describe("Orchestrator", () => {
 
   it("refuses access=full without a user-level trust allow (loud, no silent downgrade)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-notrust-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-orch-notrust-"));
     process.env.CLAUDEXOR_CONFIG_DIR = configDir;
     try {
       const registry = new Map<string, HarnessAdapter>([
@@ -6374,7 +6384,7 @@ describe("Orchestrator", () => {
 
   it("applies the configured global paid_budget_per_run as the default run cap", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-budgetcfg-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-orch-budgetcfg-"));
     writeFileSync(
       join(configDir, "config.yaml"),
       "budget:\n  paid_budget_per_run:\n    kind: finite\n    maxUsd: 0.005\n",
@@ -6545,7 +6555,7 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
   });
 
   it("initializes a git boundary automatically for write modes on a non-git folder", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-nongit-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-nongit-"));
     writeFileSync(join(dir, "notes.txt"), "pre-existing file\n");
     const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
     const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
@@ -7573,7 +7583,7 @@ describe("delegation belt injection (D32)", () => {
 
   it("rebinds the belt budget to the configured global cap when the request supplied none (config-cap inheritance)", async () => {
     const repo = await initRepo();
-    const configDir = mkdtempSync(join(tmpdir(), "claudexor-orch-beltcfg-"));
+    const configDir = reapMk(join(tmpdir(), "claudexor-orch-beltcfg-"));
     writeFileSync(
       join(configDir, "config.yaml"),
       "budget:\n  paid_budget_per_run:\n    kind: finite\n    maxUsd: 0.25\n",

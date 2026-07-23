@@ -12,11 +12,24 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach } from "vitest";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 // ALWAYS a fresh temp dir — an inherited CLAUDEXOR_CONFIG_DIR (e.g. a
 // developer shell pointing at the real ~/.claudexor) must not become the
 // suite sandbox.
-const sandboxConfigDir = mkdtempSync(join(tmpdir(), "claudexor-vitest-config-"));
+const sandboxConfigDir = reapMk(join(tmpdir(), "claudexor-vitest-config-"));
 process.env.CLAUDEXOR_CONFIG_DIR = sandboxConfigDir;
 
 // Tests that override the config dir restore it in their own finally; any

@@ -7,6 +7,19 @@ import {
   buildDelegationBeltDescriptor,
   resolveCliEntry,
 } from "./delegation-belt-descriptor.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 describe("delegation belt descriptor — serve-belt entry resolution", () => {
   it("points serve-belt at cli.js (the host of the subcommand), NEVER at the daemon entry", () => {
@@ -15,7 +28,7 @@ describe("delegation belt descriptor — serve-belt entry resolution", () => {
     // `node claudexord.js mcp serve-belt` ignores the args and boots a second
     // daemon (dies on the socket lock) instead of serving the belt MCP, so the
     // harness never sees mcp__claudexor__* tools.
-    const dist = mkdtempSync(join(tmpdir(), "cdx-belt-dist-"));
+    const dist = reapMk(join(tmpdir(), "cdx-belt-dist-"));
     const daemonEntry = join(dist, "claudexord.js");
     writeFileSync(join(dist, "cli.js"), "// cli entry\n");
     const entry = resolveCliEntry(daemonEntry);
@@ -24,7 +37,7 @@ describe("delegation belt descriptor — serve-belt entry resolution", () => {
   });
 
   it("builds a belt descriptor whose args run `<cli.js> mcp serve-belt` under node", () => {
-    const dist = mkdtempSync(join(tmpdir(), "cdx-belt-dist2-"));
+    const dist = reapMk(join(tmpdir(), "cdx-belt-dist2-"));
     const daemonEntry = join(dist, "claudexord.js");
     writeFileSync(join(dist, "cli.js"), "// cli entry\n");
     const descriptor = buildDelegationBeltDescriptor(
@@ -50,7 +63,7 @@ describe("delegation belt descriptor — serve-belt entry resolution", () => {
     const prev = process.env.CLAUDEXOR_CONFIG_DIR;
     const prevSock = process.env.CLAUDEXOR_DAEMON_SOCK;
     try {
-      const root = mkdtempSync(join(tmpdir(), "cdx-belt-root-"));
+      const root = reapMk(join(tmpdir(), "cdx-belt-root-"));
       process.env.CLAUDEXOR_CONFIG_DIR = root;
       delete process.env.CLAUDEXOR_DAEMON_SOCK;
       const env = beltDaemonDiscoveryEnv();

@@ -4,6 +4,19 @@ import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
 import { describe, expect, it } from "vitest";
 import { ThreadHeadPingEmitter } from "./thread-head-ping.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function journalAt(root: string): DurableJournal {
   return new DurableJournal({ rootDir: root, partition: "global" });
@@ -11,7 +24,7 @@ function journalAt(root: string): DurableJournal {
 
 describe("ThreadHeadPingEmitter", () => {
   it("emits monotonic per-thread revisions as content-free journal records", () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-head-ping-")));
+    const root = realpathSync(reapMk(join(tmpdir(), "claudexor-head-ping-")));
     const journal = journalAt(root);
     const emitter = new ThreadHeadPingEmitter(journal);
 
@@ -31,7 +44,7 @@ describe("ThreadHeadPingEmitter", () => {
   });
 
   it("resumes the revision counter across a restart (journal-backed)", () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-head-ping-")));
+    const root = realpathSync(reapMk(join(tmpdir(), "claudexor-head-ping-")));
     const first = journalAt(root);
     new ThreadHeadPingEmitter(first).ping({ threadId: "th-a", projectId: null });
     first.close();

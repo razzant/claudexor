@@ -21,13 +21,26 @@ import {
   validateApplyGate,
   verifyAndDeliver,
 } from "./index.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 async function git(repo: string, args: string[]) {
   return runCapture("git", ["-C", repo, ...args], { timeoutMs: 30_000 });
 }
 
 async function makePatchRepo(): Promise<{ repo: string; patch: string }> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-deliver-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-deliver-"));
   await git(repo, ["init", "-b", "main"]);
   writeFileSync(join(repo, "a.txt"), "one\n");
   await git(repo, ["add", "-A"]);
@@ -39,7 +52,7 @@ async function makePatchRepo(): Promise<{ repo: string; patch: string }> {
 }
 
 async function makeModifyDeletePatchRepo(): Promise<{ repo: string; patch: string }> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-deliver-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-deliver-"));
   await git(repo, ["init", "-b", "main"]);
   writeFileSync(join(repo, "a.txt"), "one\n");
   writeFileSync(join(repo, "b.txt"), "delete me\n");
@@ -105,7 +118,7 @@ describe("delivery", () => {
   });
 
   it("serializes fresh verification and mutation for independent deliveries to one repository", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-delivery-lease-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-delivery-lease-"));
     await git(repo, ["init", "-b", "main"]);
     writeFileSync(join(repo, "a.txt"), "one\n");
     writeFileSync(join(repo, "b.txt"), "one\n");
@@ -118,7 +131,7 @@ describe("delivery", () => {
     const patchB = (await git(repo, ["diff", "--", "b.txt"])).stdout;
     await git(repo, ["checkout", "--", "b.txt"]);
 
-    const markerDir = mkdtempSync(join(tmpdir(), "claudexor-delivery-lease-marker-"));
+    const markerDir = reapMk(join(tmpdir(), "claudexor-delivery-lease-marker-"));
     const started = join(markerDir, "started");
     const release = join(markerDir, "release");
     const waitGate = [
@@ -193,7 +206,7 @@ describe("delivery", () => {
 
   it("never captures a path staged concurrently after preflight", async () => {
     const { repo, patch } = await makePatchRepo();
-    const wrapperDir = mkdtempSync(join(tmpdir(), "claudexor-git-wrapper-"));
+    const wrapperDir = reapMk(join(tmpdir(), "claudexor-git-wrapper-"));
     const marker = join(wrapperDir, "inject-on-live-write-tree");
     const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
     const testHome = join(wrapperDir, "home");
@@ -249,7 +262,7 @@ describe("delivery", () => {
 
   it("reports a pushed branch as applied when PR creation fails", async () => {
     const { repo, patch } = await makePatchRepo();
-    const remote = mkdtempSync(join(tmpdir(), "claudexor-delivery-remote-"));
+    const remote = reapMk(join(tmpdir(), "claudexor-delivery-remote-"));
     execFileSync("git", ["init", "--bare", remote], { stdio: "pipe" });
     await git(repo, ["remote", "add", "origin", remote]);
     const res = await deliver(repo, patch, {
@@ -317,7 +330,7 @@ const gitq = (repo: string, args: string[]): void => {
 };
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-deliver-prot-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-deliver-prot-"));
   await git(repo, ["init", "-b", "main"]);
   writeFileSync(join(repo, "seed.txt"), "seed\n");
   gitq(repo, ["add", "-A"]);

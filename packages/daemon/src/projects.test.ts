@@ -4,9 +4,22 @@ import { join } from "node:path";
 import { DurableJournal } from "@claudexor/journal";
 import { describe, expect, it } from "vitest";
 import { ProjectStore } from "./projects.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 function fixture() {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-projects-")));
+  const base = realpathSync(reapMk(join(tmpdir(), "claudexor-projects-")));
   const journalRoot = join(base, "state");
   const firstRoot = join(base, "first");
   const secondRoot = join(base, "second");
@@ -66,7 +79,7 @@ describe("ProjectStore", () => {
         f.store.register({ root: ghostRoot, idempotencyKey: "ghost", clientId: "test" }),
       ).toThrow(/inside the Claudexor runtime tree/);
       // relink is guarded too — the ok project lives OUTSIDE the owned tree.
-      const okRoot = realpathSync(mkdtempSync(join(tmpdir(), "claudexor-ok-")));
+      const okRoot = realpathSync(reapMk(join(tmpdir(), "claudexor-ok-")));
       const ok = f.store.register({ root: okRoot, idempotencyKey: "ok", clientId: "test" });
       expect(() => f.store.relink(ok.id, ghostRoot)).toThrow(/inside the Claudexor runtime tree/);
     } finally {

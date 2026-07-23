@@ -27,10 +27,23 @@ import {
 import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
 import { WorkspaceManager } from "./manager.js";
 import { advanceThreadWorktree, ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
+import { rmSync as __rmSyncReap } from "node:fs";
+import { afterAll as __afterAllReap } from "vitest";
+
+// W-h: reap every temp dir this suite creates so the gate stops leaking tmpdirs.
+const __reapDirs: string[] = [];
+function reapMk(...args: Parameters<typeof mkdtempSync>): string {
+  const dir = mkdtempSync(...args);
+  __reapDirs.push(dir);
+  return dir;
+}
+__afterAllReap(() => {
+  for (const dir of __reapDirs.splice(0)) __rmSyncReap(dir, { recursive: true, force: true });
+});
 
 describe("revertWorkingTreeTo", () => {
   it("restores a modified file, removes a turn-added file, and refuses when the tree diverged", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-revert-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-revert-"));
     await git(repo, ["init", "-b", "main"]);
     writeFileSync(join(repo, "keep.ts"), "original\n");
     writeFileSync(join(repo, "other.ts"), "other original\n");
@@ -71,7 +84,7 @@ describe("revertWorkingTreeTo", () => {
 });
 
 async function initRepo(): Promise<string> {
-  const repo = mkdtempSync(join(tmpdir(), "claudexor-ws-"));
+  const repo = reapMk(join(tmpdir(), "claudexor-ws-"));
   await git(repo, ["init", "-b", "main"]);
   writeFileSync(join(repo, "README.md"), "# test\n");
   await git(repo, ["add", "-A"]);
@@ -247,7 +260,7 @@ describe("WorkspaceManager", () => {
 
   it("in-place: works on a non-git dir, diffs via snapshot, and dispose never deletes the live tree", async () => {
     // A plain (non-git) directory stands in for a stateful external environment.
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-inplace-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-inplace-"));
     writeFileSync(join(dir, "a.txt"), "one\n");
     const mgr = new WorkspaceManager(dir);
 
@@ -287,7 +300,7 @@ describe("WorkspaceManager", () => {
   });
 
   it("in-place non-git: header relativization never rewrites hunk CONTENT that looks like a header (INV-041)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-inplace-fidelity-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-inplace-fidelity-"));
     // Content lines that RENDER as `--- `/`+++ ` in a unified diff: a removed
     // line starting `-- <baseline path>` and an added line starting
     // `++ <live path>`. The relativizer must leave those bytes alone while
@@ -550,7 +563,7 @@ describe("WorkspaceManager", () => {
 
 describe("ensureGitRepository", () => {
   it("initializes a non-git folder without creating .gitignore and makes a baseline commit", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-ensure-"));
     writeFileSync(join(dir, "data.txt"), "hello\n");
     const result = await ensureGitRepository(dir);
     expect(result.initialized).toBe(true);
@@ -567,7 +580,7 @@ describe("ensureGitRepository", () => {
   });
 
   it("creates a baseline commit for a repo with an unborn HEAD", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-ensure-"));
     await git(dir, ["init", "-b", "main"]);
     writeFileSync(join(dir, "x.txt"), "x\n");
     const result = await ensureGitRepository(dir);
@@ -577,7 +590,7 @@ describe("ensureGitRepository", () => {
   });
 
   it("is a no-op for a healthy repo and never rewrites an existing .gitignore entry", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-ensure-"));
     await git(dir, ["init", "-b", "main"]);
     writeFileSync(join(dir, ".gitignore"), ".claudexor/\nnode_modules/\n");
     writeFileSync(join(dir, "y.txt"), "y\n");
@@ -593,7 +606,7 @@ describe("ensureGitRepository", () => {
   });
 
   it("preserves an existing .gitignore byte-for-byte and treats repo .claudexor as user state", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claudexor-ensure-"));
+    const dir = reapMk(join(tmpdir(), "claudexor-ensure-"));
     // A user may version any shape below `.claudexor`; Claudexor neither
     // classifies it as runtime nor repairs the user's no-newline ignore file.
     mkdirSync(join(dir, ".claudexor", "runs", "run-x"), { recursive: true });
@@ -611,7 +624,7 @@ describe("ensureGitRepository", () => {
 
 describe("disposeOrphan (crash GC)", () => {
   it("removes an orphaned envelope's worktree, branch, and scoped base by ids alone", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-orphan-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-orphan-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "a.txt"), "x\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
@@ -636,7 +649,7 @@ describe("disposeOrphan (crash GC)", () => {
 
 describe("diff fidelity", () => {
   it("round-trips CRLF content: captured diff applies cleanly to a fresh clone of base", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-crlf-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-crlf-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "win.txt"), "line one\r\nline two\r\nline three\r\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
@@ -650,7 +663,7 @@ describe("diff fidelity", () => {
     const diff = await wsm.diff(env);
     expect(diff).toContain("\r"); // CR bytes SURVIVE capture (readline used to strip them)
     // The patch must apply cleanly onto the base tree.
-    const clone = mkdtempSync(join(tmpdir(), "claudexor-crlf-clone-"));
+    const clone = reapMk(join(tmpdir(), "claudexor-crlf-clone-"));
     execFileSync("git", ["clone", "-q", repo, clone]);
     execFileSync("git", ["apply", "--check", "-"], { cwd: clone, input: diff });
     await wsm.dispose(env);
@@ -659,7 +672,7 @@ describe("diff fidelity", () => {
   });
 
   it("captures binary changes with an applyable payload (--binary), never a stub", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-bin-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-bin-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "a.txt"), "x\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
@@ -675,7 +688,7 @@ describe("diff fidelity", () => {
     const diff = await wsm.diff(env);
     expect(diff).toContain("GIT binary patch");
     expect(diff).not.toContain("img.bin differ");
-    const clone = mkdtempSync(join(tmpdir(), "claudexor-bin-clone-"));
+    const clone = reapMk(join(tmpdir(), "claudexor-bin-clone-"));
     execFileSync("git", ["clone", "-q", repo, clone]);
     execFileSync("git", ["apply", "--check", "-"], { cwd: clone, input: diff });
     await wsm.dispose(env);
@@ -686,7 +699,7 @@ describe("diff fidelity", () => {
 
 describe("revert with quoted/special filenames", () => {
   it("removes a turn-added non-ASCII file and reports it (git C-quotes it on the newline format)", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "claudexor-revert-q-"));
+    const repo = reapMk(join(tmpdir(), "claudexor-revert-q-"));
     execFileSync("git", ["init", "-q"], { cwd: repo });
     writeFileSync(join(repo, "base.txt"), "base\n");
     execFileSync("git", ["add", "-A"], { cwd: repo });
@@ -708,12 +721,12 @@ describe("revert with quoted/special filenames", () => {
 
 describe("repo .claudexor is entirely USER STATE", () => {
   it("counts both tracked config and untracked similarly-named files as user changes", async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { execFileSync } = await import("node:child_process");
     const { statusPorcelainMeaningful } = await import("./artifact-paths.js");
-    const repo = mkdtempSync(join(tmpdir(), "cx-tracked-art-"));
+    const repo = reapMk(join(tmpdir(), "cx-tracked-art-"));
     const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     g(["init", "-q"]);
     g(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
@@ -734,12 +747,12 @@ describe("repo .claudexor is entirely USER STATE", () => {
 
 describe("snapshot keeps every repo .claudexor change", () => {
   it("captures tracked config edits and untracked similarly-named files", async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { execFileSync } = await import("node:child_process");
     const { snapshotTree } = await import("./git.js");
-    const repo = mkdtempSync(join(tmpdir(), "cx-snap-art-"));
+    const repo = reapMk(join(tmpdir(), "cx-snap-art-"));
     const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     g(["init", "-q"]);
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
@@ -766,13 +779,13 @@ describe("snapshot keeps every repo .claudexor change", () => {
 
 describe("pre-STAGED deletion of a versioned artifact-dir file (R33 cycle-3)", () => {
   it("a user-staged `git rm .claudexor/config.yaml` counts as dirty and the snapshot carries the deletion", async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const { execFileSync } = await import("node:child_process");
     const { snapshotTree } = await import("./git.js");
     const { statusPorcelainMeaningful } = await import("./artifact-paths.js");
-    const repo = mkdtempSync(join(tmpdir(), "cx-staged-del-"));
+    const repo = reapMk(join(tmpdir(), "cx-staged-del-"));
     const g = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
     g(["init", "-q"]);
     mkdirSync(join(repo, ".claudexor"), { recursive: true });
