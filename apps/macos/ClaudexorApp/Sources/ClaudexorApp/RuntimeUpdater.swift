@@ -51,12 +51,16 @@ public enum RuntimeCheckOutcome: Sendable, Equatable {
 /// decision are mutated safely from the check path without a lock.
 public actor RuntimeUpdater {
     private let transport: RuntimeReleaseTransport
+    /// The pinned runtime-update authority the CHECK verifies against. Production
+    /// uses `.pinned`; tests inject a fixture authority for the signed vectors.
+    private let authority: RuntimeUpdateAuthority
 
     private var storedETag: String?
     private var lastDecision: RuntimeUpdateDecision?
 
-    public init(transport: RuntimeReleaseTransport) {
+    public init(transport: RuntimeReleaseTransport, authority: RuntimeUpdateAuthority = .pinned) {
         self.transport = transport
+        self.authority = authority
     }
 
     /// The most recent decision (nil before the first successful check). Lets a
@@ -83,7 +87,11 @@ public actor RuntimeUpdater {
             throw RuntimeUpdateError.transport("manifest asset has an invalid download URL")
         }
         let manifestData = try await transport.downloadAsset(from: assetURL)
-        guard let manifest = RuntimeManifest.parse(manifestData) else {
+        // FAIL-CLOSED (D-2): the CHECK trusts a manifest only when its Ed25519
+        // signature verifies against the pinned runtime-update authority. An
+        // unsigned / unknown-key / tampered manifest is refused, never surfaced
+        // as an available update.
+        guard let manifest = RuntimeManifest.verified(manifestData, authority: authority) else {
             throw RuntimeUpdateError.manifestMalformed
         }
         let decision = decideRuntimeUpdate(

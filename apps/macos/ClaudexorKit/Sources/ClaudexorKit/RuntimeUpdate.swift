@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // MARK: - Engine-runtime updater: pure logic (M7)
 //
@@ -48,47 +49,135 @@ public struct SemanticVersion: Sendable, Equatable, Comparable {
     }
 }
 
-// MARK: - Runtime manifest
+// MARK: - Runtime-update signing authority (D-2)
 
-/// `runtime-manifest.json` describing the published closure. `signature` is
-/// reserved (always null for now) — parsed as an ignored optional, NEVER
-/// required or verified. `sha256` is lowercase hex of the .tar.gz.
+/// The PINNED runtime-update authority (public half). This is embedded here AND
+/// tracked in release/runtime-update-authority.json (a test binds them). It is a
+/// DEDICATED key, SEPARATE from the review-attestation key: it signs ONLY
+/// runtime-update manifests. Verification is fail-closed against this key; a key
+/// rotation ships a new signed DMG carrying the new pinned public half.
+public struct RuntimeUpdateAuthority: Sendable, Equatable {
+    public let keyId: String
+    public let algorithm: String
+    public let publicKeyPem: String
+
+    public init(keyId: String, algorithm: String, publicKeyPem: String) {
+        self.keyId = keyId
+        self.algorithm = algorithm
+        self.publicKeyPem = publicKeyPem
+    }
+
+    public static let pinned = RuntimeUpdateAuthority(
+        keyId: "claudexor-runtime-update-v3.1.0-ed25519-ce7f15e6187e137d",
+        algorithm: "Ed25519",
+        publicKeyPem:
+            "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA0AKwkzFo7g4oHTXn2hCyhNIWNV8wBqK4aGX8+Y6mfN0=\n-----END PUBLIC KEY-----\n"
+    )
+
+    /// The 32-byte raw Ed25519 key extracted from the SPKI PEM, or nil if the
+    /// PEM is not a 44-byte Ed25519 SubjectPublicKeyInfo.
+    func signingPublicKey() -> Curve25519.Signing.PublicKey? {
+        let body = publicKeyPem
+            .replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        guard let der = Data(base64Encoded: body), der.count == 44 else { return nil }
+        // Ed25519 SPKI is a fixed 12-byte AlgorithmIdentifier prefix + the raw
+        // 32-byte key; take the trailing 32 bytes as the raw representation.
+        let raw = der.suffix(32)
+        return try? Curve25519.Signing.PublicKey(rawRepresentation: raw)
+    }
+}
+
+// MARK: - Runtime manifest (SIGNED contract, D-2)
+
+/// `runtime-manifest.json` describing the published closure. In 3.1 this is the
+/// SIGNED contract: every field except `signature` is covered by the Ed25519
+/// signature, so an unsigned / unknown-key / tampered / regressed manifest is
+/// REFUSED. `verified(_:authority:)` is the only trust boundary; the honest
+/// `parse` shape-decode never establishes trust on its own.
 public struct RuntimeManifest: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
     public let version: String
     public let sha256: String
     public let minAppVersion: String
-    /// Reserved for a future signed-manifest scheme; always null today. Kept as
-    /// an ignored optional so an old app never breaks when it starts being set.
-    public let signature: String?
+    public let archiveName: String
+    public let buildSha: String
     public let notes: String
+    public let keyId: String
+    public let algorithm: String
+    public let signature: String
 
-    public init(version: String, sha256: String, minAppVersion: String,
-                signature: String? = nil, notes: String = "") {
+    public init(
+        version: String,
+        sha256: String,
+        minAppVersion: String,
+        archiveName: String? = nil,
+        buildSha: String = String(repeating: "0", count: 40),
+        notes: String = "",
+        keyId: String = "",
+        algorithm: String = "Ed25519",
+        signature: String = "",
+        schemaVersion: Int = 1
+    ) {
+        self.schemaVersion = schemaVersion
         self.version = version
         self.sha256 = sha256
         self.minAppVersion = minAppVersion
-        self.signature = signature
+        self.archiveName = archiveName ?? "claudexor-runtime-\(version).tar.gz"
+        self.buildSha = buildSha
         self.notes = notes
+        self.keyId = keyId
+        self.algorithm = algorithm
+        self.signature = signature
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, sha256, minAppVersion, signature, notes
+        case schemaVersion, version, sha256, minAppVersion, archiveName, buildSha, notes, keyId,
+            algorithm, signature
     }
 
-    // Lenient on `notes`/`signature` (defaulted/reserved), strict on the three
-    // fields the updater actually gates on.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         version = try c.decode(String.self, forKey: .version)
         sha256 = try c.decode(String.self, forKey: .sha256)
         minAppVersion = try c.decode(String.self, forKey: .minAppVersion)
-        signature = try c.decodeIfPresent(String.self, forKey: .signature)
+        archiveName = try c.decodeIfPresent(String.self, forKey: .archiveName) ?? ""
+        buildSha = try c.decodeIfPresent(String.self, forKey: .buildSha) ?? ""
         notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        keyId = try c.decodeIfPresent(String.self, forKey: .keyId) ?? ""
+        algorithm = try c.decodeIfPresent(String.self, forKey: .algorithm) ?? ""
+        signature = try c.decodeIfPresent(String.self, forKey: .signature) ?? ""
     }
 
-    /// Honest parse: nil unless the record is well-formed with a semver
-    /// `version`, a semver `minAppVersion`, and a 64-char lowercase-hex
-    /// `sha256`. An honest updater never acts on a manifest it cannot trust.
+    /// The conventional archive filename bound into (and signed by) the manifest.
+    public static func archiveName(for version: String) -> String {
+        "claudexor-runtime-\(version).tar.gz"
+    }
+
+    /// Deterministic sorted-key JSON of the signed field subset — byte-identical
+    /// to the TS/mjs `canonicalJson(runtimeManifestSignedFields(...))`.
+    func signingBytes() -> Data {
+        let fields: [(String, String)] = [
+            ("algorithm", jsonString(algorithm)),
+            ("archiveName", jsonString(archiveName)),
+            ("buildSha", jsonString(buildSha)),
+            ("keyId", jsonString(keyId)),
+            ("minAppVersion", jsonString(minAppVersion)),
+            ("notes", jsonString(notes)),
+            ("schemaVersion", String(schemaVersion)),
+            ("sha256", jsonString(sha256)),
+            ("version", jsonString(version)),
+        ]
+        let body = fields.map { "\(jsonString($0.0)):\($0.1)" }.joined(separator: ",")
+        return Data("{\(body)}".utf8)
+    }
+
+    /// Honest SHAPE decode (no signature check). Never a trust boundary on its
+    /// own — callers must use `verified(_:authority:)`.
     public static func parse(_ data: Data) -> RuntimeManifest? {
         guard let decoded = try? JSONDecoder().decode(RuntimeManifest.self, from: data) else {
             return nil
@@ -96,16 +185,73 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
         let version = decoded.version.trimmingCharacters(in: .whitespacesAndNewlines)
         guard SemanticVersion(version) != nil else { return nil }
         guard SemanticVersion(decoded.minAppVersion) != nil else { return nil }
-        let sha = decoded.sha256.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard isLowercaseHexSHA256(sha) else { return nil }
-        return RuntimeManifest(
-            version: version,
-            sha256: sha,
-            minAppVersion: decoded.minAppVersion.trimmingCharacters(in: .whitespacesAndNewlines),
-            signature: nil,
-            notes: decoded.notes
-        )
+        // STRICT lowercase hex — the signed contract's canonical form is
+        // lowercase, so normalizing here would silently diverge from the bytes
+        // the signature covers. An uppercase sha256 is refused, not coerced.
+        guard isLowercaseHexSHA256(decoded.sha256) else { return nil }
+        return decoded
     }
+
+    /// FAIL-CLOSED verification (D-2): shape + pinned authority + Ed25519
+    /// signature over the canonical signed bytes. Returns nil on ANY failure —
+    /// an unsigned / unknown-key / tampered / malformed manifest is refused, so
+    /// the updater never acts on a manifest it cannot cryptographically trust.
+    public static func verified(
+        _ data: Data,
+        authority: RuntimeUpdateAuthority = .pinned
+    ) -> RuntimeManifest? {
+        guard let m = parse(data) else { return nil }
+        guard m.schemaVersion == 1 else { return nil }
+        guard m.algorithm == "Ed25519", authority.algorithm == "Ed25519" else { return nil }
+        guard m.keyId == authority.keyId else { return nil }
+        guard isLowercaseHexSHA256(m.sha256) else { return nil }
+        // 40-char lowercase-hex build sha (the handshake identity binding).
+        guard m.buildSha.count == 40, isLowercaseHex(m.buildSha) else { return nil }
+        // archiveName is bound to version.
+        guard m.archiveName == archiveName(for: m.version) else { return nil }
+        guard let key = authority.signingPublicKey() else { return nil }
+        guard let sig = Data(base64Encoded: m.signature), sig.count == 64 else { return nil }
+        guard key.isValidSignature(sig, for: m.signingBytes()) else { return nil }
+        return m
+    }
+}
+
+/// JS-`JSON.stringify`-compatible quoted string: escape `"`, `\`, and control
+/// chars (<0x20); everything else (incl. non-ASCII) is emitted raw UTF-8 —
+/// matching the TS/mjs canonicalizer byte-for-byte.
+func jsonString(_ value: String) -> String {
+    var out = "\""
+    for scalar in value.unicodeScalars {
+        switch scalar {
+        case "\"": out += "\\\""
+        case "\\": out += "\\\\"
+        case "\u{08}": out += "\\b"
+        case "\u{09}": out += "\\t"
+        case "\u{0A}": out += "\\n"
+        case "\u{0C}": out += "\\f"
+        case "\u{0D}": out += "\\r"
+        default:
+            if scalar.value < 0x20 {
+                out += String(format: "\\u%04x", scalar.value)
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+    }
+    out += "\""
+    return out
+}
+
+/// True for a lowercase hex string (no length constraint).
+func isLowercaseHex(_ value: String) -> Bool {
+    guard !value.isEmpty else { return false }
+    for scalar in value.unicodeScalars {
+        switch scalar {
+        case "0"..."9", "a"..."f": continue
+        default: return false
+        }
+    }
+    return true
 }
 
 /// True for a 64-character lowercase hex string (a sha256 digest). No regex
