@@ -13,7 +13,9 @@ import {
   ControlSecretListResponse,
   ControlSecretMutationResponse,
   ControlSecretSetRequest,
+  ControlSetupJob,
 } from "@claudexor/schema";
+import { streamDurableCodexLogin } from "./setup-login-inline.js";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
 import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
@@ -76,6 +78,41 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
         json,
         `harness "${harness}" has no isolated config-dir login; only claude and codex profiles can log in here`,
       );
+    }
+    // D-17: codex profile login rides the SAME durable setup job as the default
+    // store (no more spawnSync bypass) — the device-code flow with inline code
+    // display, scoped to the profile's CODEX_HOME. The daemon owns the flow and
+    // its doctor-probe verification (INV-135).
+    if (harness === "codex") {
+      const { addr } = await ensureDaemon();
+      const response = await controlApiFetch(addr, "/setup/jobs", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${addr.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          harness,
+          action: "login",
+          authRequest: "subscription",
+          profileId,
+        }),
+      });
+      if (!response.ok) {
+        return printUsageError(
+          json,
+          `could not start codex profile login (${response.status}): ${await response.text()}`,
+        );
+      }
+      const job = ControlSetupJob.parse(await response.json());
+      const accepted = !["failed", "cancelled", "timed_out", "not_supported"].includes(job.state);
+      if (json) {
+        printJson({ ok: accepted, job });
+        return accepted ? 0 : 1;
+      }
+      if (!accepted) {
+        print(`codex/${profileId} login was not started: ${job.message}`);
+        return 1;
+      }
+      print(`codex/${profileId} login is managed by claudexord as ${job.jobId}.`);
+      return streamDurableCodexLogin(addr, job.jobId, { label: `codex/${profileId}` });
     }
     const spec = nativeLoginSpec(harness);
     if (!spec) {
