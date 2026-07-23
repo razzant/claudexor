@@ -7,6 +7,7 @@ import {
   type ControlOperationDescriptor,
 } from "@claudexor/schema";
 import { engineBuildIdentity } from "@claudexor/util";
+import { pathnameDecodes, queryParam, resumeHeader } from "./operation-parameters.js";
 
 export type ControlProtocolBoundary =
   | { kind: "route"; path: string }
@@ -83,24 +84,61 @@ export async function resolveControlProtocol(input: {
       body: OPERATION_CATALOG,
     };
   }
+  // QA-066: a malformed percent triplet (`%ZZ`) or percent-encoded invalid
+  // UTF-8 (`%C0%AF`) in the path is a CLIENT syntax error. Validate the whole
+  // encoded pathname decodes once, centrally, BEFORE route dispatch — so it is
+  // a typed HTTP 400 here instead of a `URIError` thrown from one of ~35
+  // per-route `decodeURIComponent` calls into the generic 500 handler. Routes
+  // still match on and decode the ENCODED path (no re-routing on decoded text,
+  // so `%2F`/`%2e%2e` semantics are unchanged); once the whole path decodes,
+  // each `/`-delimited segment decode is guaranteed not to throw.
+  if (!pathnameDecodes(input.requestPath)) {
+    return {
+      kind: "response",
+      status: 400,
+      contentType: "application/problem+json",
+      body: protocolProblem(
+        "malformed_request_path",
+        "request path contains malformed percent-encoding",
+      ),
+    };
+  }
   return { kind: "route", path: input.requestPath.slice(3) };
 }
 
 type Draft = Omit<
   ControlOperationDescriptor,
-  "id" | "applicability" | "idempotency" | "completion" | "errorSchema" | "summary" | "auth"
+  | "id"
+  | "applicability"
+  | "idempotency"
+  | "completion"
+  | "errorSchema"
+  | "summary"
+  | "auth"
+  | "parameters"
 > &
   Partial<
-    Pick<ControlOperationDescriptor, "applicability" | "idempotency" | "completion" | "summary">
+    Pick<
+      ControlOperationDescriptor,
+      "applicability" | "idempotency" | "completion" | "summary" | "parameters"
+    >
   >;
 
 function descriptor(input: Draft): ControlOperationDescriptor {
+  // Resource-family classification (QA-054): an operation is grouped under the
+  // resource plane it acts on. Collection/create routes inherit their family
+  // even without an instance id (GET/POST /v2/projects are project-applicable,
+  // matching how /v2/runs and /v2/threads are already run/thread). `/projects`
+  // had no branch, so every project route falsely reported `global` and the
+  // typed `project` enum value had no live producer.
   const applicability =
     input.path.includes("/threads/") || input.path === "/v2/threads"
       ? "thread"
       : input.path.includes("/runs/") || input.path === "/v2/runs"
         ? "run"
-        : "global";
+        : input.path.includes("/projects/") || input.path === "/v2/projects"
+          ? "project"
+          : "global";
   const key = `${input.method} ${input.path}`;
   const summary = input.summary ?? OPERATION_SUMMARIES[key];
   if (!summary) {
@@ -117,6 +155,7 @@ function descriptor(input: Draft): ControlOperationDescriptor {
     errorSchema: "ControlProblem",
     id: `${input.method.toLowerCase()}:${input.path.slice(4).replaceAll(/[:/<>]+/g, ".")}`,
     applicability: input.applicability ?? applicability,
+    parameters: input.parameters ?? [],
     idempotency: input.idempotency ?? (input.mutability === "read_only" ? "natural" : "none"),
     completion:
       input.completion ?? (input.responseKind === "stream" ? "terminal_stream" : "immediate"),
@@ -243,7 +282,14 @@ const operations: ControlOperationDescriptor[] = [
     idempotency: "natural",
   }),
   j("GET", "/v2/agent-capabilities", "read_only", null, "AgentCapabilityCatalog"),
-  j("GET", "/v2/global/events", "read_only", null, null, { responseKind: "stream" }),
+  j("GET", "/v2/global/events", "read_only", null, null, {
+    responseKind: "stream",
+    parameters: [
+      resumeHeader(
+        "an opaque, partition- and epoch-scoped global journal cursor; a stale or foreign cursor is refused so the client can resnapshot",
+      ),
+    ],
+  }),
   j("GET", "/v2/quota", "read_only", null, "ControlQuotaResponse"),
   j("GET", "/v2/credential-profiles", "read_only", null, "ControlCredentialProfilesResponse"),
   j(
@@ -273,7 +319,26 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/quota", "mutating", null, "ControlQuotaResponse", {
     idempotency: "natural",
   }),
-  j("GET", "/v2/harnesses", "read_only", null, "ControlHarnessListResponse"),
+  j("GET", "/v2/harnesses", "read_only", null, "ControlHarnessListResponse", {
+    parameters: [
+      queryParam({
+        name: "fresh",
+        enum: ["true", "false"],
+        description: "Request a fresh readiness/status projection instead of only cached truth.",
+      }),
+      queryParam({
+        name: "all",
+        enum: ["true", "false"],
+        description: "Include fake/test harness adapters in the listing.",
+      }),
+      queryParam({
+        name: "harness",
+        repeatable: true,
+        description:
+          "Scope the status calculation to the given harness ids (repeat to select several).",
+      }),
+    ],
+  }),
   j("GET", "/v2/projects", "read_only", null, "ControlProjectListResponse"),
   j("POST", "/v2/projects", "mutating", "ControlProjectRegisterRequest", "ControlProject", {
     idempotency: "key_required",
@@ -286,7 +351,14 @@ const operations: ControlOperationDescriptor[] = [
     "ControlProject",
     { idempotency: "natural" },
   ),
-  j("GET", "/v2/projects/:id/events", "read_only", null, null, { responseKind: "stream" }),
+  j("GET", "/v2/projects/:id/events", "read_only", null, null, {
+    responseKind: "stream",
+    parameters: [
+      resumeHeader(
+        "an opaque, partition- and epoch-scoped project journal cursor; a stale or foreign cursor is refused so the client can resnapshot",
+      ),
+    ],
+  }),
   j("GET", "/v2/projects/:id/outputs", "read_only", null, "ControlProjectOutputsResponse"),
   descriptor({
     method: "GET",
@@ -296,7 +368,16 @@ const operations: ControlOperationDescriptor[] = [
     mutability: "read_only",
     responseKind: "binary",
   }),
-  j("GET", "/v2/harnesses/:id/models", "read_only", null, "ControlHarnessModelsResponse"),
+  j("GET", "/v2/harnesses/:id/models", "read_only", null, "ControlHarnessModelsResponse", {
+    parameters: [
+      queryParam({
+        name: "route",
+        enum: ["local_session", "api_key"],
+        description:
+          "Filter enumerated models to the given credential route (models foreign to the route are hidden).",
+      }),
+    ],
+  }),
   j(
     "POST",
     "/v2/harnesses/:id/auth-readiness",
@@ -354,7 +435,19 @@ const operations: ControlOperationDescriptor[] = [
       idempotency: "key_required",
     },
   ),
-  j("GET", "/v2/runs/:id/events", "read_only", null, null, { responseKind: "stream" }),
+  j("GET", "/v2/runs/:id/events", "read_only", null, null, {
+    responseKind: "stream",
+    parameters: [
+      resumeHeader(
+        "the run's nonnegative integer event `seq` (a canonical decimal; malformed/negative/fractional values are refused)",
+      ),
+      queryParam({
+        name: "lastEventId",
+        description:
+          "Compatibility alias for the Last-Event-ID header (same numeric run `seq`); the header wins when both are present.",
+      }),
+    ],
+  }),
   j(
     "POST",
     "/v2/runs/:id/interactions/:id/answer",
@@ -410,7 +503,15 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/threads/:id/turns/:id/retry", "mutating", null, "ControlThreadTurnResponse", {
     idempotency: "key_required",
   }),
-  j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse"),
+  j("GET", "/v2/trust", "read_only", null, "ControlTrustListResponse", {
+    parameters: [
+      queryParam({
+        name: "repoRoot",
+        description:
+          "Scope the trust-state listing to a single repository root (absolute path); omit to list all.",
+      }),
+    ],
+  }),
   j("POST", "/v2/trust", "mutating", "ControlTrustUpdateRequest", "ControlTrustState", {
     idempotency: "natural",
   }),
@@ -425,22 +526,58 @@ const operations: ControlOperationDescriptor[] = [
   j("DELETE", "/v2/secrets/:id", "mutating", null, "ControlSecretMutationResponse", {
     idempotency: "natural",
   }),
-  j("GET", "/v2/setup/jobs", "read_only", null, "ControlSetupJobListResponse"),
+  j("GET", "/v2/setup/jobs", "read_only", null, "ControlSetupJobListResponse", {
+    parameters: [
+      queryParam({
+        name: "harness",
+        enum: ["codex", "claude", "cursor"],
+        schemaRef: "ControlSetupJobListFilter#/properties/harness",
+        description: "Filter setup jobs to one harness.",
+      }),
+      queryParam({
+        name: "action",
+        enum: ["login"],
+        schemaRef: "ControlSetupJobListFilter#/properties/action",
+        description: "Filter setup jobs to one action.",
+      }),
+      queryParam({
+        name: "active",
+        enum: ["true", "false"],
+        schemaRef: "ControlSetupJobListFilter#/properties/active",
+        description: "Filter to active (in-flight) jobs only, or terminal jobs only.",
+      }),
+      queryParam({
+        name: "limit",
+        schemaRef: "ControlSetupJobListFilter#/properties/limit",
+        description: "Cap the number of returned jobs (positive integer, maximum 500).",
+      }),
+    ],
+  }),
   j("POST", "/v2/setup/jobs", "mutating", "ControlSetupJobCreateRequest", "ControlSetupJob", {
     completion: "durable_handle",
     idempotency: "key_required",
   }),
   j("GET", "/v2/setup/jobs/:id", "read_only", null, "ControlSetupJob"),
   j("GET", "/v2/setup/jobs/:id/snapshot", "read_only", null, "ControlSetupJobSnapshot"),
-  j("GET", "/v2/setup/jobs/:id/events", "read_only", null, null, { responseKind: "stream" }),
+  j("GET", "/v2/setup/jobs/:id/events", "read_only", null, null, {
+    responseKind: "stream",
+    parameters: [
+      resumeHeader(
+        "an opaque setup-journal cursor; a stale cursor is refused so the client can resnapshot, and query parameters are not accepted on this stream",
+      ),
+    ],
+  }),
   j("POST", "/v2/setup/jobs/:id/cancel", "mutating", null, "ControlSetupJob", {
     idempotency: "natural",
   }),
   j("POST", "/v2/setup/jobs/:id/reconcile", "mutating", null, "ControlSetupJob", {
     idempotency: "natural",
   }),
+  // QA-075: extension is ADDITIVE (+15 min each call), so exact replay is NOT
+  // naturally idempotent. It binds an Idempotency-Key: the same key returns the
+  // same extension (replay-safe), a new key authorizes a distinct extension.
   j("POST", "/v2/setup/jobs/:id/extend", "mutating", null, "ControlSetupJob", {
-    idempotency: "natural",
+    idempotency: "key_required",
   }),
   j("GET", "/v2/recovery/partitions/:id", "read_only", null, "ControlJournalInspection"),
   j("POST", "/v2/recovery/partitions/:id/validate", "read_only", null, "ControlJournalValidation"),

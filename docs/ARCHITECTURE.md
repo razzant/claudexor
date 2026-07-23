@@ -674,12 +674,14 @@ command authority and has no in-memory command-record fallback. The HTTP control
 artifact/delivery facade. Every implemented operation is declared once as a
 code-first **route descriptor** — a plain entry in the control-api operation
 catalog (`packages/control-api/src/operation-catalog.ts`) carrying method, path,
-one-line summary, mutability, auth boundary, and request/response schema names.
+one-line summary, mutability, auth boundary, applicability plane, and
+request/response schema names.
 That catalog is the single source of truth (Zen #4): the daemon serves it at
 `GET /v2/operations`, and `node scripts/gen-endpoints-doc.mjs` derives BOTH the
 canonical inventory below and the machine-readable endpoint map for external
-agents at `docs/reference/endpoints.json` (method, path, mutating flag, summary,
-auth, and request/response/error schema names referencing the generated JSON
+agents at `docs/reference/endpoints.json` (method, path, mutating flag,
+applicability, summary, auth, located parameters, and request/response/error
+schema names referencing the generated JSON
 Schemas in `packages/schema/generated/`). README and INTEGRATIONS link here
 instead of maintaining duplicates. A freshness gate (`scripts/docs-truth-check`)
 fails when the descriptors and the actual wired route guards drift apart in
@@ -687,6 +689,27 @@ either direction, so an added or removed handler cannot silently escape the
 catalog. Field-level semantics live in the schemas themselves: every control DTO
 carries `.describe()` documentation that lands in the generated JSON Schema
 files.
+
+`applicability` groups an operation under the resource plane it acts on —
+`global`, `project`, `thread`, or `run`. Collection and create routes inherit
+their family even without an instance id (`GET`/`POST /v2/projects` are
+`project`, matching how the run and thread collections are classified), so a
+context-aware consumer can filter operations by the selected resource.
+
+`requestSchema` names the JSON request **body** DTO only. Strict non-body inputs
+— GET query filters (`fresh`/`all`/repeated `harness`, the credential-route
+model filter, the setup-job list filter, the trust `repoRoot` scope) and SSE
+resume cursors (the `Last-Event-ID` header, plus the run stream's `lastEventId`
+query alias) — are declared separately in each descriptor's `parameters`
+(name, `query`/`header` location, required/repeatable, enum or generated
+schema reference, and one-line semantics). A machine consumer can therefore
+build a full valid request, including resumable streams, without guessing.
+The control API validates request bytes as strict UTF-8, rejects malformed
+percent-encoding in the path with a typed `400 malformed_request_path` (never a
+`500`), projects request-schema violations into structured `fieldErrors`
+(JSON Pointer → messages) with a single-line human summary rather than a raw
+validator dump, and validates the per-run SSE cursor as a nonnegative integer
+`seq` before opening the stream.
 
 <!-- BEGIN GENERATED ENDPOINTS (node scripts/gen-endpoints-doc.mjs; do not edit by hand) -->
 - `GET /healthz`

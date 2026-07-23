@@ -41,6 +41,48 @@ export const ControlHandshakeResponse = z
   .describe("Successful control-plane negotiation.");
 export type ControlHandshakeResponse = z.infer<typeof ControlHandshakeResponse>;
 
+/**
+ * A non-body request parameter (query or header) an operation reads. The
+ * descriptor's `requestSchema` describes the JSON request BODY only; strict
+ * query filters and resume-cursor headers live here so a machine consumer can
+ * construct a full valid request (QA-055). This is deliberately NOT OpenAPI —
+ * just the minimum located-parameter contract the catalog needs.
+ */
+export const ControlOperationParameter = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .describe(
+        "Wire name of the parameter: the query key or the (case-insensitive) header field name.",
+      ),
+    location: z
+      .enum(["query", "header"])
+      .describe("Where the parameter travels: the URL query string or a request header."),
+    required: z.boolean().describe("Whether the operation requires the parameter to be present."),
+    repeatable: z
+      .boolean()
+      .default(false)
+      .describe("Whether the parameter may appear more than once (e.g. a repeated query filter)."),
+    enum: z
+      .array(z.string().min(1))
+      .nullable()
+      .default(null)
+      .describe("Closed set of accepted values when the grammar is a fixed enum; null otherwise."),
+    schemaRef: z
+      .string()
+      .min(1)
+      .nullable()
+      .default(null)
+      .describe(
+        "Generated schema name (optionally a `Name#/properties/field` pointer) that types this parameter's value when it is not a simple enum; null otherwise.",
+      ),
+    description: z.string().min(1).describe("One-line human semantics of the parameter."),
+  })
+  .strict()
+  .describe("A query or header request parameter an operation reads (never the JSON body).");
+export type ControlOperationParameter = z.infer<typeof ControlOperationParameter>;
+
 export const ControlOperationDescriptor = z
   .object({
     id: z.string().min(1),
@@ -56,6 +98,15 @@ export const ControlOperationDescriptor = z
       .enum(["loopback_bearer", "loopback_only"])
       .describe("Auth boundary: loopback + bearer token, or loopback-only."),
     requestSchema: z.string().min(1).nullable(),
+    /** Query/header parameters the operation reads. `requestSchema` covers the
+     * JSON body ONLY; these are the non-body inputs (strict GET filters, SSE
+     * resume cursors) a machine consumer needs to build a full valid request.
+     * Empty means the operation reads no non-body parameters beyond the shared
+     * protocol/auth/idempotency headers declared at catalog scope. */
+    parameters: z
+      .array(ControlOperationParameter)
+      .default([])
+      .describe("Query/header request parameters (body shape is `requestSchema`)."),
     responseSchema: z.string().min(1).nullable(),
     errorSchema: z.literal("ControlProblem"),
     mutability: z.enum(["read_only", "mutating"]),

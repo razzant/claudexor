@@ -46,6 +46,80 @@
             }
           ]
         },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Wire name of the parameter: the query key or the (case-insensitive) header field name."
+              },
+              "location": {
+                "type": "string",
+                "enum": [
+                  "query",
+                  "header"
+                ],
+                "description": "Where the parameter travels: the URL query string or a request header."
+              },
+              "required": {
+                "type": "boolean",
+                "description": "Whether the operation requires the parameter to be present."
+              },
+              "repeatable": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether the parameter may appear more than once (e.g. a repeated query filter)."
+              },
+              "enum": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Closed set of accepted values when the grammar is a fixed enum; null otherwise."
+              },
+              "schemaRef": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "description": "Generated schema name (optionally a `Name#/properties/field` pointer) that types this parameter's value when it is not a simple enum; null otherwise."
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "description": "One-line human semantics of the parameter."
+              }
+            },
+            "required": [
+              "name",
+              "location",
+              "required",
+              "description"
+            ],
+            "additionalProperties": false,
+            "description": "A query or header request parameter an operation reads (never the JSON body)."
+          },
+          "default": [],
+          "description": "Query/header request parameters (body shape is `requestSchema`)."
+        },
         "responseSchema": {
           "anyOf": [
             {
