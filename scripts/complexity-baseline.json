@@ -1,5 +1,5 @@
 {
-  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift": 1608,
+  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AppModel.swift": 1599,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/AuthSheet.swift": 521,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/DomainModels.swift": 658,
   "apps/macos/ClaudexorApp/Sources/ClaudexorApp/OpsScreens.swift": 370,
@@ -20,13 +20,15 @@
   "packages/daemon/src/server.ts": 653,
   "packages/daemon/src/threads.ts": 601,
   "packages/harness-claude/src/index.ts": 974,
-  "packages/harness-codex/src/index.ts": 880,
+  "packages/harness-codex/src/index.ts": 874,
   "packages/harness-cursor/src/index.ts": 803,
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 703,
   "packages/orchestrator/src/attemptTelemetry.ts": 834,
   "packages/orchestrator/src/orchestrator.ts": 7594,
+  "packages/orchestrator/src/planRun.ts": 600,
   "packages/review/src/reviewEngine.ts": 1396,
   "packages/schema/src/control.ts": 1737,
-  "packages/schema/src/harness.ts": 1077
+  "packages/schema/src/harness.ts": 1077,
+  "packages/schema/src/telemetry.ts": 600
 }
