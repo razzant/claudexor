@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HarnessEvent } from "@claudexor/schema";
-import { parseCodexEvent } from "./parse.js";
+import { parseCodexEvent, type CodexParseState } from "./parse.js";
 
 const SAMPLE = [
   '{"type":"thread.started","thread_id":"th-1"}',
@@ -323,7 +323,7 @@ describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
     JSON.stringify({ work_report: { state: "completed", required_inputs: [] }, output });
 
   it("unwraps an intermediate envelope to its output for the VISIBLE stream (never raw JSON)", () => {
-    const state = { envelopeActive: true };
+    const state: CodexParseState = { envelopeActive: true };
     const out = parseCodexEvent(
       {
         type: "item.completed",
@@ -346,7 +346,7 @@ describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
   });
 
   it("suppresses an intermediate envelope whose output is non-string (never leaks the object)", () => {
-    const state = { envelopeActive: true };
+    const state: CodexParseState = { envelopeActive: true };
     const out = parseCodexEvent(
       {
         type: "item.completed",
@@ -362,7 +362,7 @@ describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
   });
 
   it("finalizes the LAST envelope message RAW on turn.completed (orchestrator unwrap unchanged)", () => {
-    const state = { envelopeActive: true };
+    const state: CodexParseState = { envelopeActive: true };
     const finalEnvelope = ENVELOPE("Ask — read-only; Plan — planning; Agent — edits.");
     const events = [
       {
@@ -384,7 +384,7 @@ describe("intermediate WorkReport envelope leak (D-16 / codex #19816)", () => {
   });
 
   it("passes a plain (non-envelope) message through untouched even when envelope is active", () => {
-    const state = { envelopeActive: true };
+    const state: CodexParseState = { envelopeActive: true };
     const out = parseCodexEvent(
       { type: "item.completed", item: { type: "agent_message", text: "just a normal answer" } },
       "s1",
