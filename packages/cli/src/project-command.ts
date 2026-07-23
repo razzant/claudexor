@@ -7,6 +7,7 @@ import {
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
+import { controlProblemError, renderCliFailure } from "./cli-error.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 
@@ -120,10 +121,12 @@ export async function projectCommand(args: ParsedArgs, json: boolean): Promise<n
     }
     return printUsageError(json, "usage: claudexor project list|register|relink|remove|outputs");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (json) printJson({ ok: false, error: message });
-    else process.stderr.write(`claudexor project: ${message}\n`);
-    return 1;
+    // Transport / bootstrap throwables are operational (exit 1); render them
+    // through the SAME D-7 projector so the envelope shape stays uniform.
+    return renderCliFailure(json, error, {
+      defaultCategory: "operational",
+      messagePrefix: "claudexor project:",
+    });
   }
 }
 
@@ -170,11 +173,17 @@ async function responseJson(response: Response): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function failure(json: boolean, status: number, data: unknown): number {
-  const record = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
-  const message = String(record["message"] ?? record["error"] ?? `HTTP ${status}`);
-  if (json) printJson({ ok: false, status, error: message, code: record["code"] ?? null });
-  else process.stderr.write(`claudexor project: ${message}\n`);
-  return 1;
+/**
+ * Project-route failure envelope, aligned to the central D-7 contract
+ * (cli-error.ts): a typed `ControlProblem` body is preserved intact
+ * (code/message/retryable/fieldErrors/requiredActions/context), the exit code
+ * comes from the ONE category→exit table via `controlProblemError` (400/422 =
+ * usage 2; everything else, incl. a 409 remove conflict on a fenced id =
+ * operational 1), and the JSON envelope carries `exitCode` + `message` with the
+ * legacy `error` alias. Exported for the failure-envelope test.
+ */
+export function failure(json: boolean, status: number, data: unknown): number {
+  return renderCliFailure(json, controlProblemError(status, data, `HTTP ${status}`), {
+    messagePrefix: "claudexor project:",
+  });
 }
-import process from "node:process";
