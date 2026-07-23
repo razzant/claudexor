@@ -154,6 +154,16 @@ Run evidence lives in two labeled planes: Claudexor's internal orchestration
 record (contracts, events, attempts, reviews), and the project's produced
 outputs (user deliverables). Surfaces always say which plane they show.
 
+The machine surface obeys one contract: a run verb emits exactly one success
+envelope (`{runId, runDir, status, …}`), and every failure — a daemon that will
+not start, an attachment that will not upload, a `--resume` with nothing to
+continue, a mid-run transport error — is rendered by a single projector into one
+typed problem carrying a stable `message`/`code`/exit code, on stdout for
+`--json`, one compact line for `--json-stream`, or one stderr line for text. No
+command path emits a partial ad-hoc error, and secret-like tokens are redacted at
+that one projection point, so a script never has to parse two shapes for the same
+class of failure.
+
 ## Secrets, Auth, And Isolation
 
 Subscription-first: most users authenticate with the vendor subscriptions
@@ -184,6 +194,17 @@ scouts, and delegated sub-runs run in isolated envelopes outside the repo.
 Write access needs a git boundary — a non-git folder is initialized loudly,
 never mutated silently. Vendor homes and scoped auth state live outside every
 worktree so `git add -A` can never capture credentials.
+
+Instruction files stay unified. The recommendation is one `AGENTS.md` at the
+project root — the file Codex, Cursor, and OpenCode already read natively. So a
+Claude Code executor reads the same guidance, Claudexor bridges it with a thin
+`CLAUDE.md` (`@AGENTS.md` plus an ownership marker) whenever the root has an
+`AGENTS.md` and no `CLAUDE.md`. The bridge is exclusive-create and no-follow, so
+a hand-written `CLAUDE.md` is never touched, and it is written both to the
+project root (durable, announced as a run event) and into each disposable
+envelope worktree — which materializes only committed files — so a candidate
+racing in isolation reads it too. The envelope copy is excluded from the
+candidate's diff by its marker, so it never appears in a patch.
 
 ## The Immune System
 

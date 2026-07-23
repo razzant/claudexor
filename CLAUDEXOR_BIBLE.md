@@ -527,15 +527,18 @@ invariant or owner decision before proceeding.
   as delivered and is serialized against active turns; the thin `CLAUDE.md`
   bridge (an `AGENTS.md`-only project root, same write-prep stage as the
   automatic git init, CONCEPT-CHANGE(INV-113)) is exclusive-create + no-follow
-  so it never overwrites a hand-written file or writes through a symlink,
-  targets the project root not a worktree envelope, excludes read-only targets
-  as the git boundary does AND additionally excludes `--in-place` targets (the
-  git boundary, by contrast, still runs for an in-place write run), and
-  announces every create via a typed `project.claude_bridge.created` event. An
+  so it never overwrites a hand-written file or writes through a symlink, and is
+  written in TWO places — the durable project root (announced via a typed
+  `project.claude_bridge.created` event; skipped for read-only modes AND
+  `--in-place` targets, where the git boundary by contrast still runs) and each
+  git-mode ENVELOPE worktree (an envelope materializes only the committed tree,
+  so an untracked project-root bridge never reaches a candidate; the envelope
+  write emits no event and is EXCLUDED from the candidate patch by exact
+  marker-gated path, so a candidate-authored `CLAUDE.md` is never dropped). An
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
-  tests; claude-bridge exclusive-create/no-follow/race/idempotency tests
-  (locked owner decision).
+  tests; claude-bridge exclusive-create/no-follow/race/idempotency tests +
+  envelope-bridge patch-cleanliness test (locked owner decision).
 - **INV-114** Apply/adoption captures and rechecks the exact target preimage
   immediately around the mutation; stale or conflicting targets are refused
   without destructive rollback. `adopted:false`/`not_applied` means the tree

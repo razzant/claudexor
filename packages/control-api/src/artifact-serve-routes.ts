@@ -407,19 +407,50 @@ function isPatchArtifact(path: string): boolean {
 
 /**
  * Extensions whose bytes are semantic TEXT even when their MIME is not `text/*`
- * or JSON — SVG is served as `image/svg+xml` but is XML text, and `.csv`/`.xml`/
- * `.markdown`/`.text` currently fall through `contentType` to
- * `application/octet-stream`. Without this set those files took the 32MiB BINARY
- * cap and skipped `redactSecrets`, so a secret-like token inside a served
- * artifact leaked raw (QA-067). Listing them here routes them through the text
- * path: the smaller text cap AND secret redaction.
+ * or JSON, so `contentType` classifies them as `application/octet-stream`.
+ * Without this set those files took the 32MiB BINARY cap and skipped
+ * `redactSecrets`, so a secret-like token inside a served artifact leaked raw
+ * (QA-067). Listing them here routes them through the text path: the smaller
+ * text cap AND secret redaction.
+ *
+ * The set is the common text-bearing artifact surface a run produces — source
+ * code, config/markup, and structured data — all of which are UTF-8 the
+ * redaction pass can safely serve. Truly-binary types (images, PDFs, archives)
+ * stay on the binary path. `.env`-style secret files are deliberately NOT here:
+ * they never belong in a served artifact tree and are guarded by the stronger
+ * inline-secret param fence and patch refusal upstream; adding them would only
+ * imply this path is a safe delivery channel for them.
  */
 const SEMANTIC_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  // structured data / markup
   ".csv",
   ".xml",
   ".svg",
   ".markdown",
   ".text",
+  ".json5",
+  ".toml",
+  ".ini",
+  ".cfg",
+  ".conf",
+  ".css",
+  // source code
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".jsx",
+  ".sh",
+  ".py",
+  ".rb",
+  ".go",
+  ".rs",
+  ".java",
+  ".c",
+  ".h",
+  ".cpp",
+  ".sql",
 ]);
 
 function isTextArtifact(path: string): boolean {

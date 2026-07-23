@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandProjection } from "./command-store.js";
 import { interactionProjection } from "./interactions.js";
 import { JournalManager } from "./journal-manager.js";
@@ -381,6 +381,38 @@ describe("ProjectPartitions", () => {
     expect(existsSync(receipt.archivedPartitionPath as string)).toBe(true);
     // The durable registry no longer knows the project.
     expect(f.projects.current().get(project.id)).toBeUndefined();
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("a failed partition archival leaves the registry entry intact (archive-before-unregister)", () => {
+    const f = fixture();
+    const root = join(f.root, "archive-fails");
+    mkdirSync(root);
+    const project = f.partitions.registerProject({
+      root,
+      idempotencyKey: "register-archive-fails",
+      clientId: "test",
+    });
+    // Materialize the partition so removeProject reaches the archival step.
+    f.partitions.forRequest({ scope: { kind: "project", root } });
+    // Inject an archival failure (a rename/fsync error). Archival runs BEFORE
+    // the registry unregister, so the throw must leave nothing half-removed.
+    const archiveSpy = vi
+      .spyOn(JournalManager.prototype, "archivePartition")
+      .mockImplementation(() => {
+        throw new Error("simulated archive rename failure");
+      });
+    try {
+      expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(/archive/);
+      // The durable registry STILL knows the project — no removed registration
+      // stranded against an unarchived partition.
+      expect(f.projects.current().get(project.id)?.id).toBe(project.id);
+      // And the partition is still routable.
+      expect(f.partitions.forRequest({ scope: { kind: "project", root } })).toBeDefined();
+    } finally {
+      archiveSpy.mockRestore();
+    }
     f.partitions.close();
     f.manager.close();
   });

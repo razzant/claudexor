@@ -402,13 +402,18 @@ files:
   works on codex. Per codex's own semantics the fallback is consulted ONLY when
   no `AGENTS.md` is present; it is never merged on top of an existing one.
 - For a project that has `AGENTS.md` and no `CLAUDE.md`, a write-mode run creates
-  a thin `CLAUDE.md` at the project root whose entire body is the official
-  Anthropic import `@AGENTS.md` plus a Claudexor ownership marker, so Claude Code
-  reads the same file. The create is exclusive and never follows a symlink, so a
-  hand-written `CLAUDE.md` is never overwritten; it is announced via the
-  `project.claude_bridge.created` run event; and deleting the generated file
-  stops the bridging. Read-only runs and `--in-place` stateful targets do not
-  write it.
+  a thin `CLAUDE.md` whose entire body is the official Anthropic import
+  `@AGENTS.md` plus a Claudexor ownership marker, so Claude Code reads the same
+  file. It is written both at the project root (announced via the
+  `project.claude_bridge.created` run event; deleting the generated file stops the
+  bridging) and inside each isolated envelope worktree a candidate races in —
+  because an envelope only ever contains committed files, so an untracked
+  project-root bridge would not reach a candidate. The envelope copy carries no
+  run event and is excluded from the candidate's diff by its ownership marker, so
+  it never lands in a patch (and a `CLAUDE.md` a candidate writes itself, lacking
+  the marker, is captured normally). Both creates are exclusive and never follow a
+  symlink, so a hand-written `CLAUDE.md` is never overwritten. The project-root
+  write is skipped for read-only runs and `--in-place` stateful targets.
 
 Both behaviors are automatic. If you would rather manage the files yourself,
 keep your own `CLAUDE.md` (it is never touched) or add an `AGENTS.md`.

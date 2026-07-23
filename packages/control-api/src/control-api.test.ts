@@ -4934,7 +4934,7 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
-  it("redacts secret-like text from .csv/.xml/.svg/.markdown/.text artifacts (semantic-text policy, QA-067)", async () => {
+  it("redacts secret-like text from semantic-text artifacts incl. code/config extensions (semantic-text policy, QA-067)", async () => {
     const { daemon, record } = fakeDaemon();
     // Assemble the marker at runtime so the secret scanner does not trip on this
     // test's own source (repo convention).
@@ -4947,6 +4947,12 @@ describe("DaemonControlApiServer", () => {
       { file: "final/pic.svg", body: `<svg><desc>${secret}</desc></svg>` },
       { file: "final/notes.markdown", body: `# t\n${secret}\n` },
       { file: "final/raw.text", body: `${secret}\n` },
+      // Newly-covered code/config extensions (QA-067 broadening): each falls
+      // through `contentType` to application/octet-stream, so without the
+      // semantic-text set they would skip redaction on the binary path.
+      { file: "final/mod.ts", body: `const k = "${secret}";\n` },
+      { file: "final/app.py", body: `k = "${secret}"\n` },
+      { file: "final/config.toml", body: `key = "${secret}"\n` },
     ];
     for (const c of cases) writeFileSync(join(runDir, c.file), c.body);
     await withDaemonServer(daemon, async (base) => {

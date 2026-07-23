@@ -557,14 +557,13 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
   try {
     ({ client, addr } = await ensureDaemon());
   } catch (err) {
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 1;
+    // D-7 projector: one failure envelope with message/code (never a legacy
+    // partial {ok,exitCode,error}). --json-stream stays valid NDJSON via the
+    // compact-line stream option.
+    return renderCliFailure(json || jsonStream, err, {
+      messagePrefix: "claudexor:",
+      stream: jsonStream,
+    });
   }
   // Thread continuation (W13/D10): --thread <id> targets a thread explicitly;
   // --resume picks the most recently updated one. When a threadId is present
@@ -585,21 +584,26 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
       // another project's threads.
       const newest = pickResumableThread(list.threads, process.cwd());
       if (!newest) {
-        // Stay valid on the active output surface: NDJSON stream keeps compact
+        // D-7 projector on the active surface: NDJSON stream keeps compact
         // lines; --json prints its one object; text goes to stderr.
-        const message = "claudexor: --resume found no threads to continue in this project";
-        if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
-        else if (json) printJson({ ok: false, exitCode: 1, error: message });
-        else process.stderr.write(`${message}\n`);
-        return 1;
+        return renderCliFailure(
+          json || jsonStream,
+          new Error("--resume found no threads to continue in this project"),
+          { messagePrefix: "claudexor:", stream: jsonStream },
+        );
       }
       threadId = newest.id;
     } catch (err) {
-      const message = `claudexor: --resume could not list threads: ${err instanceof Error ? err.message : String(err)}`;
-      if (jsonStream) printJsonLine({ ok: false, exitCode: 1, error: message });
-      else if (json) printJson({ ok: false, exitCode: 1, error: message });
-      else process.stderr.write(`${message}\n`);
-      return 1;
+      // Flatten any cause (transport error, a malformed-threads Zod parse) into a
+      // single operational message so the exit code stays 1 and no raw Zod field
+      // dump leaks; the projector owns the envelope on every surface.
+      return renderCliFailure(
+        json || jsonStream,
+        new Error(
+          `--resume could not list threads: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+        { messagePrefix: "claudexor:", stream: jsonStream },
+      );
     }
   }
   let attachmentRefs: ResourceAttachmentRef[] | undefined;
@@ -610,17 +614,13 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
         )
       : undefined;
   } catch (err) {
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else
-      process.stderr.write(
-        `claudexor: attachment upload failed: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    return 1;
+    // D-7 projector: message/code envelope, NDJSON-safe. (Previously this branch
+    // ignored --json-stream and fell through to a stderr line.)
+    return renderCliFailure(
+      json || jsonStream,
+      new Error(`attachment upload failed: ${err instanceof Error ? err.message : String(err)}`),
+      { messagePrefix: "claudexor:", stream: jsonStream },
+    );
   }
   const body: Record<string, unknown> = {
     prompt: p.prompt,
@@ -802,14 +802,12 @@ async function daemonRun(args: ParsedArgs, json: boolean, p: DaemonRunParams): P
     }
     return exitCodeForState(status, await fetchRunOutcomeFacts(addr, effectiveRunId));
   } catch (err) {
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 1,
-        error: `claudexor: ${err instanceof Error ? err.message : String(err)}`,
-      });
-    else process.stderr.write(`claudexor: ${err instanceof Error ? err.message : String(err)}\n`);
-    return 1;
+    // D-7 projector: a typed control problem (code/retryable/context) survives
+    // intact; --json-stream stays valid NDJSON via the compact-line stream option.
+    return renderCliFailure(json || jsonStream, err, {
+      messagePrefix: "claudexor:",
+      stream: jsonStream,
+    });
   }
 }
 

@@ -191,12 +191,12 @@ export class ProjectPartitions implements CommandAuthority {
    * QA-049 minimal project remove: retire a registered project. Fails CLOSED
    * with a typed 409 while any NON-PURGED thread or any live/queued run still
    * references it (the caller supplies the roots with active runs, since the job
-   * list lives in the daemon composition). On success: unregister the durable
-   * global-registry entry, ARCHIVE the project's journal partition (rename it
-   * out of the active journal tree — never delete), and drop the in-memory
-   * partition. Run artifact trees are left in place for normal GC/retention.
-   * Unknown id -> 404. A partition still in recovery -> 409 (its threads cannot
-   * be fenced safely).
+   * list lives in the daemon composition). On success, ARCHIVE the journal
+   * partition (rename out of the active tree — never delete) FIRST — that fallible
+   * rename+fsync must throw with the registry still intact rather than strand an
+   * unregistered project whose partition never moved — THEN unregister the durable
+   * registry entry and drop the in-memory partition. Artifact trees are left for
+   * GC/retention. Unknown id -> 404. Recovery-pending partition -> 409.
    */
   removeProject(
     id: string,
@@ -240,8 +240,8 @@ export class ProjectPartitions implements CommandAuthority {
         { code: "project_has_active_run", status: 409 },
       );
     }
-    registry.unregister(id);
     const archivedPartitionPath = entry ? entry.manager.archivePartition() : null;
+    registry.unregister(id);
     this.partitions.delete(id);
     return {
       projectId: project.id,

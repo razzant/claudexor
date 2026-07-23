@@ -1337,15 +1337,24 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    import form (`@AGENTS.md`) plus a Claudexor ownership marker, so a Claude Code
    route reads the same instruction file Codex/Cursor/OpenCode read natively
    (Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
-   a CLAUDE.md-only project needs no write at all). Fences: the create is
-   EXCLUSIVE (`O_CREAT|O_EXCL`) and NO-FOLLOW, so a hand-written `CLAUDE.md`, a
-   symlink (even dangling), or a directory at that path is never overwritten or
-   written through; it is idempotent, so a second or concurrent prep is a no-op
-   (exactly one file, one event); it targets the PROJECT root, never a worktree
-   envelope; read-only modes and `--in-place` stateful targets are excluded
-   exactly as the git boundary excludes them; and every create is announced via
-   a typed `project.claude_bridge.created` run event — never silent. A bridge
-   failure never fails the run (it is a convenience, not a precondition).
+   a CLAUDE.md-only project needs no write at all). The bridge is written in TWO
+   places, because an isolated envelope worktree materializes only the COMMITTED
+   tree and so never sees an untracked project-root bridge: (a) the PROJECT root
+   (the durable, in-place/thread-visible write, announced via a typed
+   `project.claude_bridge.created` run event — never silent); and (b) each
+   git-mode ENVELOPE worktree at workspace prep, so a Claude Code candidate racing
+   inside an envelope reads the same instructions. The envelope write emits NO run
+   event — the envelope is disposable and Claudexor-owned — and diff capture
+   EXCLUDES the generated bridge from the candidate patch by exact path, gated on
+   the ownership marker (so a candidate-authored `CLAUDE.md`, which lacks the
+   marker, is never dropped), the same doctrine as the `.claudexor` artifact-dir
+   exclusion. Fences on both writes: the create is EXCLUSIVE (`O_CREAT|O_EXCL`)
+   and NO-FOLLOW, so a hand-written `CLAUDE.md`, a symlink (even dangling), or a
+   directory at that path is never overwritten or written through; it is
+   idempotent, so a second or concurrent prep is a no-op; the project-root write
+   is skipped for read-only modes and `--in-place` stateful targets exactly as
+   the git boundary excludes them. A bridge failure never fails the run (it is a
+   convenience, not a precondition).
 
 Reviewer selection is schema-owned. The automatic selector uses provider-family
 diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.

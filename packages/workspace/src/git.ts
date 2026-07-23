@@ -495,7 +495,15 @@ export async function branchDelete(repo: string, branch: string): Promise<void> 
  * captures all net change since the run started regardless of intermediate
  * commits. Git op failures throw loudly instead of masquerading as "no changes".
  */
-export async function diffStaged(worktreePath: string, baseSha?: string): Promise<string> {
+export async function diffStaged(
+  worktreePath: string,
+  baseSha?: string,
+  /** Additional EXACT-path pathspec excludes (e.g. the marker-verified CLAUDE.md
+   *  bridge). Each must already be a git pathspec magic term like
+   *  `:(exclude,top)<path>`. Applied to BOTH the scratch `add -A` and the diff,
+   *  so an excluded path is neither staged nor reported. */
+  extraExcludes: readonly string[] = [],
+): Promise<string> {
   const target = baseSha && baseSha.length > 0 ? baseSha : "HEAD";
   const scratchDir = mkdtempSync(join(tmpdir(), "claudexor-diff-index-"));
   const indexPath = join(scratchDir, "index");
@@ -513,8 +521,11 @@ export async function diffStaged(worktreePath: string, baseSha?: string): Promis
     // a screenshot-only run then reads as `noChanges` and is never
     // review-blocked. Exclusion is by EXACT owned path only (no file-type
     // guess), so a real code change elsewhere can never be silently dropped.
+    // `extraExcludes` adds further EXACT owned paths (the generated CLAUDE.md
+    // bridge) under the same doctrine.
     const excludeArtifacts = `:(exclude,top)${CLAUDEXOR_ARTIFACT_DIR}`;
-    const add = await gitEnv(worktreePath, ["add", "-A", "--", ".", excludeArtifacts], env);
+    const excludes = [excludeArtifacts, ...extraExcludes];
+    const add = await gitEnv(worktreePath, ["add", "-A", "--", ".", ...excludes], env);
     if (add.code !== 0) {
       throw new WorkspaceError(
         `scratch git add -A failed during diff capture: ${add.stderr.trim()}`,
@@ -522,7 +533,7 @@ export async function diffStaged(worktreePath: string, baseSha?: string): Promis
     }
     const diff = await gitEnv(
       worktreePath,
-      ["diff", "--binary", "--cached", target, "--", ".", excludeArtifacts],
+      ["diff", "--binary", "--cached", target, "--", ".", ...excludes],
       env,
     );
     if (diff.code !== 0) {

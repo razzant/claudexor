@@ -20,11 +20,14 @@ export function printJsonLine(value: unknown): void {
 /**
  * A usage/validation failure (exit 2). The JSON envelope aligns with the D-7
  * projector shape ({ok, exitCode, code, message}) while keeping the legacy
- * `error` alias for existing consumers. Typed failures (field errors, domain
- * codes) go through `renderCliFailure` in cli-error.ts instead.
+ * `error` alias for existing consumers. The `code` uses the SAME vocabulary the
+ * projector stamps for this class (`invalid_argument`, matching `minIntError`
+ * and the Zod path) so a machine consumer never sees two names for one failure.
+ * Typed failures (field errors, domain codes) go through `renderCliFailure` in
+ * cli-error.ts instead.
  */
 export function printUsageError(json: boolean, error: string): number {
-  if (json) printJson({ ok: false, exitCode: 2, code: "usage_error", message: error, error });
+  if (json) printJson({ ok: false, exitCode: 2, code: "invalid_argument", message: error, error });
   else process.stderr.write(`${error}\n`);
   return 2;
 }

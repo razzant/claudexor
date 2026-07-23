@@ -221,6 +221,47 @@ describe("mcp daemon body mapping", () => {
     }
   });
 
+  it("__runs_list walks the keyset cursor so the count is not undercounted by one page (QA-052)", async () => {
+    const { mcpSurfaceRunner } = await import("./mcp-runner.js");
+    const daemonRun = await import("./daemon-run.js");
+    const connectSpy = vi.spyOn(daemonRun, "connectDaemonIfRunning").mockResolvedValue({
+      client: {} as never,
+      addr: { baseUrl: "http://x", token: "t" } as never,
+    });
+    // Page 1 caps at 2 with hasMore; page 2 (cursor present) returns the tail.
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        const hasCursor = url.includes("cursor=");
+        const body = hasCursor
+          ? { runs: [{ runId: "r3", state: "succeeded" }], hasMore: false, nextCursor: null }
+          : {
+              runs: [
+                { runId: "r1", state: "running" },
+                { runId: "r2", state: "queued" },
+              ],
+              hasMore: true,
+              nextCursor: "cursor-1",
+            };
+        return { ok: true, json: async () => body } as never;
+      }),
+    );
+    try {
+      const result = (await mcpSurfaceRunner()({ mode: "__runs_list" })) as Record<string, unknown>;
+      // Honest TOTAL across both pages, not the single-page undercount of 2.
+      expect(result["summary"]).toBe("3 daemon-tracked run(s)");
+      expect((result["runs"] as unknown[]).length).toBe(3);
+      expect(result["truncated"]).toBe(false);
+      // It walked: the second request carried the page-1 nextCursor.
+      expect(urls.some((u) => u.includes("cursor=cursor-1"))).toBe(true);
+    } finally {
+      connectSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("returns the terminal primary output and artifact handles from __run_result", async () => {
     const { mcpSurfaceRunner } = await import("./mcp-runner.js");
     const daemonRun = await import("./daemon-run.js");

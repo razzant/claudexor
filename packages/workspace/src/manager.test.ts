@@ -26,6 +26,7 @@ import {
   snapshotTree,
 } from "./git.js";
 import { createRevertAnchor, readRevertAnchor } from "./anchor-store.js";
+import { CLAUDE_BRIDGE_MARKER } from "./claude-bridge.js";
 import { WorkspaceManager } from "./manager.js";
 import { advanceThreadWorktree, ensureThreadWorktree, purgeThreadWorktree } from "./thread-tree.js";
 import { rmSync as __rmSyncReap } from "node:fs";
@@ -137,6 +138,52 @@ describe("WorkspaceManager", () => {
     expect(existsSync(env.worktree_path)).toBe(false);
     // Dispose also removes the scoped dirs (no lingering credentials).
     expect(existsSync(env.home_dir)).toBe(false);
+  });
+
+  it("writes the CLAUDE.md bridge into the envelope worktree and keeps it out of the candidate patch (INV-113)", async () => {
+    // A project that standardizes on AGENTS.md with no CLAUDE.md.
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-bridge", attemptId: "a01", baseRef: "HEAD" });
+
+    // The worktree (materialized only from the COMMITTED tree) now carries a
+    // generated CLAUDE.md so a Claude Code candidate reads the same instructions.
+    const bridgePath = join(env.worktree_path, "CLAUDE.md");
+    expect(existsSync(bridgePath)).toBe(true);
+    const bridge = readFileSync(bridgePath, "utf8");
+    expect(bridge).toContain("@AGENTS.md");
+    expect(bridge).toContain(CLAUDE_BRIDGE_MARKER);
+
+    // A candidate makes a real change; the generated bridge stays untouched.
+    writeFileSync(join(env.worktree_path, "feature.ts"), "export const x = 1;\n");
+    const diff = await mgr.diff(env);
+    // The real change is captured...
+    expect(diff).toContain("feature.ts");
+    // ...but the marker-verified bridge NEVER pollutes patch.diff.
+    expect(diff).not.toContain("CLAUDE.md");
+    expect(diff).not.toContain("@AGENTS.md");
+
+    await mgr.dispose(env);
+  });
+
+  it("captures a candidate-authored CLAUDE.md (no bridge marker) in the patch", async () => {
+    // No AGENTS.md -> no generated bridge; a candidate that authors its OWN
+    // CLAUDE.md must have it captured like any real change (exact-path exclusion
+    // is gated on the ownership marker, never on the basename alone).
+    const repo = await initRepo();
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-userclaude", attemptId: "a01", baseRef: "HEAD" });
+    expect(existsSync(join(env.worktree_path, "CLAUDE.md"))).toBe(false);
+    writeFileSync(join(env.worktree_path, "CLAUDE.md"), "# my own claude notes\n");
+    const diff = await mgr.diff(env);
+    expect(diff).toContain("CLAUDE.md");
+    expect(diff).toContain("my own claude notes");
+    await mgr.dispose(env);
   });
 
   it("every lane env (envelope / read-only scoped / durable thread lane) rides the managed-runner Node prepend (QA-022, INV-067)", async () => {

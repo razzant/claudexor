@@ -19,7 +19,8 @@
  * keep working.
  */
 import { ControlProblem } from "@claudexor/schema";
-import { printJson } from "./cli-io.js";
+import { redactSecrets } from "@claudexor/util";
+import { printJson, printJsonLine } from "./cli-io.js";
 
 export type CliErrorCategory = "usage" | "operational";
 
@@ -235,29 +236,75 @@ export function normalizeThrowable(
   return { category: defaultCategory, message: String(err) };
 }
 
+/** Recursively redact secret-like tokens from any projected value: strings are
+ *  redacted directly; arrays and plain objects are mapped so a token nested in
+ *  `details`/`context` (a runtime-assembled git/tool stderr, an errored URL)
+ *  never leaks. Non-string leaves pass through untouched. */
+function redactUnknown(value: unknown): unknown {
+  if (typeof value === "string") return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactUnknown);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>))
+      out[k] = redactUnknown(v);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * The SINGLE redaction owner for the projector (QA — runtime-assembled tokens):
+ * every human/machine string a failure envelope renders — message, field-error
+ * lines, required actions, and details/context leaves — is passed through
+ * `redactSecrets` here, so a token that reached a thrown message or a bounded
+ * git/tool context is masked once, at the one place that serializes failures.
+ */
+function redactProblem(p: NormalizedProblem): NormalizedProblem {
+  return {
+    ...p,
+    message: redactSecrets(p.message),
+    fieldErrors: p.fieldErrors
+      ? Object.fromEntries(
+          Object.entries(p.fieldErrors).map(([k, v]) => [k, v.map((s) => redactSecrets(s))]),
+        )
+      : undefined,
+    requiredActions: p.requiredActions?.map((s) => redactSecrets(s)),
+    details: p.details ? (redactUnknown(p.details) as Record<string, unknown>) : undefined,
+    context: p.context ? (redactUnknown(p.context) as Record<string, unknown>) : undefined,
+  };
+}
+
 export interface RenderCliFailureOptions {
   /** Exit category when the throwable carries no signal of its own. */
   defaultCategory?: CliErrorCategory;
   /** Prepended to the human message (e.g. "claudexor decision:"). */
   messagePrefix?: string;
+  /**
+   * NDJSON run surface (`--json-stream`): emit the failure envelope as ONE
+   * COMPACT line via `printJsonLine` instead of the pretty multi-line object, so
+   * a line-delimited consumer keeps `for line in stream: json.loads(line)` valid.
+   * Implies a JSON surface — pass `json = true` with it.
+   */
+  stream?: boolean;
 }
 
 /**
  * THE projector: render any thrown value as one failure envelope (json) or one
  * stderr line (text), and return the process exit code. Human stderr and the
- * JSON envelope are generated from the SAME normalized problem.
+ * JSON envelope are generated from the SAME normalized problem, and every string
+ * they carry is secret-redacted once here (the single owner).
  */
 export function renderCliFailure(
   json: boolean,
   err: unknown,
   opts: RenderCliFailureOptions = {},
 ): number {
-  const p = normalizeThrowable(err, opts.defaultCategory ?? "operational");
+  const p = redactProblem(normalizeThrowable(err, opts.defaultCategory ?? "operational"));
   const exitCode = CATEGORY_EXIT[p.category];
   const prefix = opts.messagePrefix;
   const message = prefix && !p.message.startsWith(prefix) ? `${prefix} ${p.message}` : p.message;
   if (json) {
-    printJson({
+    const envelope = {
       ok: false,
       exitCode,
       ...(p.code ? { code: p.code } : {}),
@@ -269,7 +316,9 @@ export function renderCliFailure(
       ...(p.requiredActions ? { requiredActions: p.requiredActions } : {}),
       ...(p.details ? { details: p.details } : {}),
       ...(p.context ? { context: p.context } : {}),
-    });
+    };
+    if (opts.stream) printJsonLine(envelope);
+    else printJson(envelope);
   } else {
     process.stderr.write(`${message}\n`);
   }

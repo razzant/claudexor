@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, openSync, writeSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -91,4 +91,27 @@ export function ensureClaudeBridge(projectRoot: string): ClaudeBridgeResult {
     closeSync(fd);
   }
   return { created: true, path: claudePath, reason: "created" };
+}
+
+/** The `CLAUDE.md` basename a diff-capture exclude targets. */
+export const CLAUDE_BRIDGE_BASENAME = "CLAUDE.md";
+
+/**
+ * True when `<worktreeRoot>/CLAUDE.md` is a Claudexor-GENERATED bridge — i.e. it
+ * carries the ownership marker. Diff capture uses this to exclude exactly the
+ * generated bridge (and only it) from an envelope candidate's patch, so the
+ * bridge written into a disposable envelope tree never pollutes `patch.diff`.
+ *
+ * A hand-written or candidate-authored `CLAUDE.md` lacks the marker and is NEVER
+ * matched: its content flows to the patch like any other real change. A symlink
+ * at the path is refused (no-follow), matching the writer's fence.
+ */
+export function isGeneratedClaudeBridge(worktreeRoot: string): boolean {
+  const claudePath = join(worktreeRoot, CLAUDE_BRIDGE_BASENAME);
+  try {
+    if (lstatSync(claudePath).isSymbolicLink()) return false;
+    return readFileSync(claudePath, "utf8").includes(CLAUDE_BRIDGE_MARKER);
+  } catch {
+    return false;
+  }
 }

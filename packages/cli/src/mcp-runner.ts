@@ -203,11 +203,36 @@ async function recoveryQuery(
     return body;
   };
   if (mode === "__runs_list") {
-    const body = await get("/runs");
-    const runs = Array.isArray(body["runs"]) ? (body["runs"] as Record<string, unknown>[]) : [];
+    // GET /runs is a BOUNDED keyset page (QA-052): a single read undercounts the
+    // daemon-tracked total whenever more pages exist. Walk the opaque cursor to
+    // completion so the count and list are honest, with a hard page ceiling that
+    // keeps the walk finite even against a huge retained set. Truncation (the
+    // ceiling was hit) is disclosed rather than silently reported as the total.
+    const MAX_PAGES = 50;
+    const PAGE_LIMIT = 1_000; // RUN_LIST_MAX_LIMIT; 50 * 1000 = 50k hard ceiling
+    const collected: Record<string, unknown>[] = [];
+    let cursor: string | null = null;
+    let truncated = false;
+    for (let page = 0; ; page += 1) {
+      const query = new URLSearchParams({ limit: String(PAGE_LIMIT) });
+      if (cursor) query.set("cursor", cursor);
+      const body = await get(`/runs?${query.toString()}`);
+      const runs = Array.isArray(body["runs"]) ? (body["runs"] as Record<string, unknown>[]) : [];
+      collected.push(...runs);
+      const next = typeof body["nextCursor"] === "string" ? (body["nextCursor"] as string) : null;
+      if (body["hasMore"] !== true || !next) break;
+      if (page + 1 >= MAX_PAGES) {
+        truncated = true;
+        break;
+      }
+      cursor = next;
+    }
     return {
-      summary: `${runs.length} daemon-tracked run(s)`,
-      runs: runs.map((r) => ({
+      summary: truncated
+        ? `${collected.length}+ daemon-tracked run(s) (listing truncated at ${MAX_PAGES} pages)`
+        : `${collected.length} daemon-tracked run(s)`,
+      truncated,
+      runs: collected.map((r) => ({
         runId: r["runId"] ?? r["id"] ?? null,
         status: r["status"] ?? r["state"] ?? null,
         mode: r["mode"] ?? null,

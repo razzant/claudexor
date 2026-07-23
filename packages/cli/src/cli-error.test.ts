@@ -209,4 +209,62 @@ describe("CLI projector (D-7 / GH #28): one envelope, one exit-code table", () =
     expect(code).toBe(2);
     expect(text).toBe("claudexor: bad flag\n");
   });
+
+  it("STREAM (--json-stream): the failure envelope is ONE COMPACT NDJSON line", () => {
+    // The run-surface failure branches (ensureDaemon / attachment upload /
+    // --resume / terminal catch) route through here with stream:true; a pretty
+    // multi-line object would break `for line in stream: json.loads(line)`.
+    const chunks: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((s: unknown) => {
+      chunks.push(String(s));
+      return true;
+    });
+    let code = -1;
+    try {
+      code = renderCliFailure(true, new Error("daemon unreachable"), {
+        messagePrefix: "claudexor:",
+        stream: true,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(code).toBe(1);
+    expect(chunks).toHaveLength(1);
+    const line = chunks[0] as string;
+    // Exactly one trailing newline, none inside the object (compact).
+    expect(line.endsWith("\n")).toBe(true);
+    expect(line.trimEnd().includes("\n")).toBe(false);
+    const env = JSON.parse(line) as Record<string, unknown>;
+    expect(env).toMatchObject({
+      ok: false,
+      exitCode: 1,
+      message: "claudexor: daemon unreachable",
+      error: "claudexor: daemon unreachable",
+    });
+  });
+
+  it("REDACTION: secret-like tokens are masked in message, context, details, fieldErrors, requiredActions", () => {
+    // Runtime-assembled so this test's own source never holds a contiguous token.
+    const token = ["sk", "REDACTLEAKPROBE1234567890ABCD"].join("-");
+    const problem = {
+      code: "revert_refused",
+      message: `git failed leaking ${token}`,
+      retryable: false,
+      fieldErrors: { runId: [`bad token ${token}`] },
+      requiredActions: [`rotate ${token}`],
+      evidenceRefs: [`run/${token}/patch.diff`],
+      context: { gitStderr: `error: auth ${token}` },
+    };
+    const env = captureJson(() => {
+      renderCliFailure(true, controlProblemError(409, problem, "decision failed"));
+    });
+    // The token appears nowhere in the rendered envelope.
+    expect(JSON.stringify(env)).not.toContain(token);
+    // ...but the structure survives, masked.
+    expect(String(env["message"])).toContain("[redacted]");
+    expect(JSON.stringify(env["context"])).toContain("[redacted]");
+    expect(JSON.stringify(env["fieldErrors"])).toContain("[redacted]");
+    expect(JSON.stringify(env["requiredActions"])).toContain("[redacted]");
+    expect(JSON.stringify(env["details"])).toContain("[redacted]");
+  });
 });

@@ -8,6 +8,11 @@ import { CLAUDEXOR_ARTIFACT_DIR, runCaptureRaw, WorkspaceError } from "@claudexo
 import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
 import {
+  CLAUDE_BRIDGE_BASENAME,
+  ensureClaudeBridge,
+  isGeneratedClaudeBridge,
+} from "./claude-bridge.js";
+import {
   branchDelete,
   diffStaged,
   diffTrees,
@@ -184,6 +189,21 @@ export class WorkspaceManager {
     const path = join(base, "tree");
     const branch = `claudexor/${opts.taskId}/${opts.attemptId}`;
     await worktreeAdd(this.repoRoot, path, branch, baseSha);
+
+    // AGENTS.md bridge (INV-113): a worktree materializes only the COMMITTED
+    // tree, so the project-root bridge (an untracked file) never reaches this
+    // envelope — a Claude Code candidate here would otherwise lack CLAUDE.md.
+    // Write an envelope-local bridge into the worktree so the candidate reads the
+    // same AGENTS.md instructions. Self-fenced (acts only with a committed
+    // AGENTS.md and no CLAUDE.md), best-effort (a convenience, never a
+    // precondition), and no run event — this envelope is disposable and
+    // Claudexor-owned. `diff()` excludes the generated bridge so it never enters
+    // the candidate patch.
+    try {
+      ensureClaudeBridge(path);
+    } catch {
+      /* a missing bridge is harmless; never fail envelope creation over it */
+    }
 
     return WorkspaceEnvelopeSchema.parse({
       id: newId("env"),
@@ -404,7 +424,14 @@ export class WorkspaceManager {
         return "";
       }
     }
-    return diffStaged(env.worktree_path, env.base_sha ?? undefined);
+    // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
+    // candidate patch — by EXACT path and only when it carries the ownership
+    // marker, so a candidate-authored CLAUDE.md is never dropped. Same doctrine
+    // as the `.claudexor` artifact-dir exclusion.
+    const bridgeExcludes = isGeneratedClaudeBridge(env.worktree_path)
+      ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
+      : [];
+    return diffStaged(env.worktree_path, env.base_sha ?? undefined, bridgeExcludes);
   }
 
   async dispose(env: WorkspaceEnvelope): Promise<void> {
