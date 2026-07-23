@@ -26,23 +26,28 @@ export class AnswerAssembly {
     final?: boolean;
     payload?: Record<string, unknown>;
   }): void {
-    if (ev.type !== "message" || !ev.text) return;
+    if (ev.type !== "message") return;
     if (ev.payload?.["auth_switched"] === true) return;
     // Live deltas are DISPLAY-stream chunks (W-C4): the complete message
     // always follows — joining chunks here would shred the answer.
     if (ev.payload?.["delta"] === true) return;
     if (ev.final === true) {
-      // A whitespace-only final is NOT an answer: ignore it, never let it
-      // erase an earlier real final (review sol #3). The accepted final is
-      // kept VERBATIM (the documented contract) — no trimming.
-      if (ev.text.trim().length === 0) return;
-      this.finalText = ev.text;
-      // The raw envelope the adapter split off the display text, when present.
       const raw = ev.payload?.["work_report_envelope"];
-      this.machineFinalText = typeof raw === "string" ? raw : undefined;
-    } else {
-      pushUniqueText(this.parts, ev.text);
+      const machine = typeof raw === "string" ? raw : undefined;
+      const display = ev.text ?? "";
+      // A whitespace-only DISPLAY final is NOT an answer and must never erase an
+      // earlier real final (review sol #3) — UNLESS it carries machine truth. A
+      // codex constrained route legitimately finalizes `output:""` (all its work
+      // lived in the work_report): keep the RAW envelope so the orchestrator
+      // still un-nests work_state/outcome, with an empty display. Otherwise the
+      // accepted final is kept VERBATIM (the documented contract) — no trimming.
+      if (display.trim().length === 0 && machine === undefined) return;
+      this.finalText = display;
+      this.machineFinalText = machine;
+      return;
     }
+    if (!ev.text) return;
+    pushUniqueText(this.parts, ev.text);
   }
 
   /** Whether a typed final answer has been accepted. */

@@ -87,4 +87,26 @@ describe("AnswerAssembly (F2.5 W-C1 typed finality)", () => {
     expect(a.machineText()).toBe("plain final");
     expect(a.machineText()).toBe(a.text());
   });
+
+  it("an empty-output constrained final keeps the machine envelope with an EMPTY display (not the raw JSON, not the narration)", () => {
+    // codex `--output-schema` route whose work lived entirely in the work_report:
+    // the final envelope's `output` is "". The empty display must NOT fall back to
+    // the leftover narration or leak the raw envelope, yet the orchestrator still
+    // has to un-nest work_state/outcome via machineText().
+    const raw = JSON.stringify({
+      work_report: { state: "completed", required_inputs: [] },
+      output: "",
+    });
+    const a = new AnswerAssembly();
+    a.observe({ type: "message", text: "some narration" });
+    a.observe({
+      type: "message",
+      text: "",
+      final: true,
+      payload: { final_source: "last_agent_message", work_report_envelope: raw },
+    });
+    expect(a.hasFinal()).toBe(true);
+    expect(a.text()).toBe("");
+    expect(a.machineText()).toBe(raw);
+  });
 });

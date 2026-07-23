@@ -151,6 +151,13 @@ extension AppModel {
             self.threadsRefreshTask = nil
             if await self.refreshThreads() {
                 self.threadsRefresh = ThreadsRefreshState()
+                // QA-072: a thread mutation (incl. a NEW thread on a freshly
+                // registered project) is the moment the project registry can
+                // change, so refresh it here too — otherwise the composer's
+                // nesting hint stayed stale until the next reconnect (it was
+                // loaded ONLY from connect()). Best-effort, coalesced with the
+                // single-flight thread refetch.
+                await self.refreshProjects()
             } else {
                 // The watermark promises "revisions REFLECTED": a failed
                 // refetch must surrender it so a replayed ping retries instead

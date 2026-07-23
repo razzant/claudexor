@@ -137,17 +137,17 @@ struct ThreadsScreen: View {
     /// Create surface actually shows the field.
     var testCommandForCreate: TestCommandInvocation? {
         guard composerMode == .agent, agentStrategy == .create else { return nil }
-        return ComposerOptionParser.parseTestCommand(testCommandText)
+        return (try? ComposerOptionParser.parseTestCommandStrict(testCommandText)) ?? nil  // strict: malformed never sends
     }
 
-    /// The Test-command field is INVALID when it's non-empty (for a Create turn)
-    /// but yields no program token — Send is blocked so a mistyped gate never
-    /// silently drops (mirrors the budget/reviewer typed-field contract).
-    var testCommandInvalid: Bool {
-        guard composerMode == .agent, agentStrategy == .create else { return false }
-        let trimmed = testCommandText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && ComposerOptionParser.parseTestCommand(testCommandText) == nil
+    /// The Create Test-command field's typed reason (nil = blank/valid); an unterminated quote is a SURFACED parse error, not a silent close (QA-010).
+    var testCommandErrorMessage: String? {
+        guard composerMode == .agent, agentStrategy == .create,
+              !testCommandText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        do { return try ComposerOptionParser.parseTestCommandStrict(testCommandText) == nil ? "Test command needs a program name (in ⋯)" : nil }
+        catch { return "Test command has an unterminated quote (in ⋯)" }
     }
+    var testCommandInvalid: Bool { testCommandErrorMessage != nil }
 
     /// Any harness in the pool can take the agent-driven browser (manifest
     /// `browser_tool`). Gates the composer toggle so we never offer browsing where
@@ -585,8 +585,8 @@ struct ThreadsScreen: View {
             // "⋯" popover closed, so the disabled Send isn't a mystery.
             Label("Budget cap must be a positive number (in ⋯)", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.orange).lineLimit(1)
-        } else if testCommandInvalid {
-            Label("Test command needs a program name (in ⋯)", systemImage: "exclamationmark.triangle.fill")
+        } else if let testCommandMessage = testCommandErrorMessage {
+            Label(testCommandMessage, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption).foregroundStyle(.orange).lineLimit(1)
         } else if !threadHasProject {
             Text("Pick a project to use Agent · Plan · Best-of")

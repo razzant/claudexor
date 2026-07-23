@@ -99,16 +99,30 @@ import ClaudexorKit
     @Test func stageRefusesASymlinkedRoot() throws {
         let base = makeRoot()
         defer { try? FileManager.default.removeItem(at: base) }
-        // The "attacker" destination the planted symlink points at.
+        // The "attacker" destination the planted symlink points at — a REAL,
+        // current-user-owned 0700 directory. A `stat`-following root check would
+        // resolve the link, see this valid directory, and ACCEPT it (writing the
+        // secret THROUGH the link). The lstat-not-stat check refuses it: the
+        // decisive proof is the exact "is a symlink" reason, not a bare throw.
         let target = base.appendingPathComponent("victim", isDirectory: true)
-        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: target, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let linkedRoot = base.appendingPathComponent("claudexor-open", isDirectory: true)
         try FileManager.default.createSymbolicLink(at: linkedRoot, withDestinationURL: target)
 
         let handoff = ExternalArtifactHandoff(root: linkedRoot)
-        #expect(throws: ExternalArtifactHandoff.HandoffError.self) {
+        var thrown: ExternalArtifactHandoff.HandoffError?
+        do {
             _ = try handoff.stage(data: Data("secret".utf8), suggestedName: "a.txt")
+        } catch let error as ExternalArtifactHandoff.HandoffError {
+            thrown = error
         }
+        // The SYMLINK branch fired (not "not a directory" via a followed target).
+        guard case .insecureRoot(let reason) = thrown else {
+            Issue.record("expected an insecureRoot refusal, got \(String(describing: thrown))")
+            return
+        }
+        #expect(reason.contains("symlink"))
         // Nothing was written THROUGH the symlink into the target dir.
         #expect(try FileManager.default.contentsOfDirectory(atPath: target.path).isEmpty)
     }
@@ -116,7 +130,10 @@ import ClaudexorKit
     @Test func sweepFailsClosedOnASymlinkedRoot() throws {
         let base = makeRoot()
         defer { try? FileManager.default.removeItem(at: base) }
+        // A REAL, user-owned 0700 target a `stat`-following sweep would enumerate.
         let target = base.appendingPathComponent("victim", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: target, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // A stale UUID-named dir a followed symlink would otherwise reclaim.
         let bait = target.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: bait, withIntermediateDirectories: true)

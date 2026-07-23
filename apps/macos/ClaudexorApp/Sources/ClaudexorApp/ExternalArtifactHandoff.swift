@@ -54,35 +54,48 @@ struct ExternalArtifactHandoff {
     /// it. `$TMPDIR/claudexor-open` sits in a world-writable hierarchy, so a
     /// planted SYMLINK there would otherwise redirect private artifact copies (or
     /// a sweep's deletions) to an attacker-chosen directory. The root must be a
-    /// REAL directory (attributesOfItem uses lstat semantics — a symlink reports
-    /// `.typeSymbolicLink`, never its target), owned by the current user; it is
-    /// created 0700 when absent and RE-VALIDATED afterward to close the
-    /// create-time TOCTOU (createDirectory would have silently followed a symlink
-    /// planted between the check and the create).
+    /// REAL directory (never a symlink) owned by the current user; it is created
+    /// 0700 when absent and RE-VALIDATED afterward to close the create-time TOCTOU
+    /// (`createDirectory(withIntermediateDirectories:)` silently SUCCEEDS over a
+    /// symlink-to-directory planted between the check and the create).
     private func ensureSecureRoot() throws {
-        let path = root.path
-        if let attrs = try? fileManager.attributesOfItem(atPath: path) {
-            try assertSecureRoot(attrs, path: path)
+        // lstat-not-stat: `.isSymbolicLinkKey` reads the FINAL path component's
+        // OWN type without resolving it — even with `root`'s `isDirectory: true`
+        // trailing slash — so a symlinked root is seen as the symlink it is, and
+        // its target directory is never inspected or trusted. (A `stat`-following
+        // read would report the benign target's type and be defeated.)
+        if let values = try? root.resourceValues(forKeys: rootTypeKeys) {
+            try assertSecureRoot(values, path: root.path)
             return
         }
         // Absent (or unreadable): create OUR private leaf. The intermediate temp
         // dirs are the OS's; only this leaf is created, at 0700.
         try fileManager.createDirectory(
             at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try assertSecureRoot(try fileManager.attributesOfItem(atPath: path), path: path)
+        guard let values = try? root.resourceValues(forKeys: rootTypeKeys) else {
+            throw HandoffError.insecureRoot("handoff root \(root.path) is unreadable after create")
+        }
+        try assertSecureRoot(values, path: root.path)
     }
 
+    private let rootTypeKeys: Set<URLResourceKey> = [.isSymbolicLinkKey, .isDirectoryKey]
+
     /// A root is trustworthy only if it is a plain directory (never a symlink)
-    /// owned by the current user.
-    private func assertSecureRoot(_ attrs: [FileAttributeKey: Any], path: String) throws {
-        let type = attrs[.type] as? FileAttributeType
-        if type == .typeSymbolicLink {
+    /// owned by the current user. Symlink + directory are lstat-not-follow
+    /// `resourceValues`; ownership is a direct `lstat` — both read the leaf
+    /// itself, never a symlink's target.
+    private func assertSecureRoot(_ values: URLResourceValues, path: String) throws {
+        if values.isSymbolicLink == true {
             throw HandoffError.insecureRoot("handoff root \(path) is a symlink")
         }
-        guard type == .typeDirectory else {
+        guard values.isDirectory == true else {
             throw HandoffError.insecureRoot("handoff root \(path) is not a directory")
         }
-        if let owner = attrs[.ownerAccountID] as? NSNumber, owner.uint32Value != getuid() {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            throw HandoffError.insecureRoot("handoff root \(path) ownership is unreadable")
+        }
+        if info.st_uid != getuid() {
             throw HandoffError.insecureRoot("handoff root \(path) is not owned by the current user")
         }
     }

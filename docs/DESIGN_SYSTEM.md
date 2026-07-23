@@ -977,10 +977,12 @@ views in the shared design-system files; screens compose them.
     primary merged them into the one plan + one question set. A member that was
     unavailable is disclosed, not silently dropped or self-duplicated.
   - **Subscription valuation** — the token-valued cost of native-subscription
-    work (`valuationUsd`), shown as a SEPARATE line from billed cash
-    (`Cash: $X / cap` vs `Subscription valuation: ~$Y`), with the executor/review
-    split when known. An UNKNOWN valuation renders "unknown", NEVER $0; cash
-    stays the only value the cap governs.
+    work (`valuationUsd`), shown beside billed cash in the turn receipt as a
+    quiet `≈ $Y sub` element (separate from the `Cash: $X` spend the cap
+    governs). It renders ONLY when the valuation is known
+    (`valuationKnowledge` is `exact`/`estimated`, so `knownValuationUsd` is
+    non-nil); an UNKNOWN valuation is simply ABSENT — never rendered as `$0`, and
+    never a literal "unknown". Cash stays the only value the cap governs.
   - **Plan hash** — an implemented plan carries the frozen plan's identity
     (`planRunId` / plan hash) so the agent turn's outcome names exactly which
     plan it froze and ran; a plan-readiness override is recorded on the turn for

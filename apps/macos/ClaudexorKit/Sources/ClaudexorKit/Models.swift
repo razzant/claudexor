@@ -436,9 +436,9 @@ public struct BudgetSnapshot: Codable, Sendable, Equatable {
     }
 
     // Custom decode so a legacy/version-skewed engine that omits the Ф2 valuation
-    // and evidence fields defaults them honestly (nil valuation / "unknown" /
-    // "complete") instead of failing the whole snapshot decode. Encode stays
-    // synthesized and always emits them.
+    // and evidence fields still decodes: the defaults MIRROR the server zod defaults
+    // EXACTLY (valuation nil / knowledge "unknown" / evidence "complete", per
+    // control.ts BudgetSnapshot) — decoding evidence differently would fork the contract.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         paidBudget = try c.decode(PaidBudget.self, forKey: .paidBudget)

@@ -16,6 +16,28 @@ public enum ComposerOptionParser {
     /// `TestCommandInvocation.args` array the engine runs directly. An unbalanced
     /// quote is closed at end-of-input (best-effort, never a crash).
     public static func parseCommandArgv(_ text: String) -> [String] {
+        tokenizeArgv(text).tokens
+    }
+
+    /// A malformed command line: it ended INSIDE an unterminated quote. Surfaced
+    /// as a typed error instead of silently closing the quote at end-of-input.
+    public enum CommandArgvError: Error, Equatable {
+        case unterminatedQuote(Character)
+    }
+
+    /// Strict tokenizer: an unterminated quote at end-of-input is a THROWN typed
+    /// error rather than a best-effort close, so a malformed `go "test` never
+    /// slips through as `go test`. The Create Test-command field uses this; the
+    /// lenient `parseCommandArgv` above stays best-effort for any other caller.
+    public static func parseCommandArgvStrict(_ text: String) throws -> [String] {
+        let result = tokenizeArgv(text)
+        if let quote = result.openQuote { throw CommandArgvError.unterminatedQuote(quote) }
+        return result.tokens
+    }
+
+    /// Shared tokenizer. `openQuote` is the quote char still open at end-of-input
+    /// (nil when balanced) — the lenient API drops it, the strict API throws on it.
+    private static func tokenizeArgv(_ text: String) -> (tokens: [String], openQuote: Character?) {
         var tokens: [String] = []
         var current = ""
         var hasToken = false
@@ -43,7 +65,7 @@ public enum ComposerOptionParser {
             current.append(ch); hasToken = true
         }
         if hasToken { tokens.append(current) }
-        return tokens
+        return (tokens, quote)
     }
 
     /// Build a single `TestCommandInvocation` from the composer Test-command
@@ -51,6 +73,15 @@ public enum ComposerOptionParser {
     /// the program, the rest its args (QA-010). Pure + tested.
     public static func parseTestCommand(_ text: String) -> TestCommandInvocation? {
         let argv = parseCommandArgv(text)
+        guard let program = argv.first, !program.isEmpty else { return nil }
+        return TestCommandInvocation(program: program, args: Array(argv.dropFirst()))
+    }
+
+    /// Strict Test-command parse for the Create field: THROWS `CommandArgvError`
+    /// on an unterminated quote (so it's blocked + surfaced, never silently sent),
+    /// returns nil for a blank/program-less field (no gate). Pure + tested.
+    public static func parseTestCommandStrict(_ text: String) throws -> TestCommandInvocation? {
+        let argv = try parseCommandArgvStrict(text)
         guard let program = argv.first, !program.isEmpty else { return nil }
         return TestCommandInvocation(program: program, args: Array(argv.dropFirst()))
     }

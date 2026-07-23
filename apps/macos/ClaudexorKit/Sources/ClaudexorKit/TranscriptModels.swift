@@ -268,8 +268,16 @@ public struct TranscriptReducer: Sendable {
 
     /// One accounting choke-point for every cut: the cost is always disclosed.
     private mutating func bound(_ text: String, cap: Int, keepTail: Bool) -> String {
+        let clipped = clip(text, cap: cap, keepTail: keepTail)
+        truncatedChars += text.count - clipped.count
+        return clipped
+    }
+
+    /// The PURE head/tail clip `bound` performs — no `truncatedChars` disclosure
+    /// side effect, so an identity check (removeFinalizedTwin) can reproduce
+    /// EXACTLY how a block was stored without double-counting a truncation.
+    private func clip(_ text: String, cap: Int, keepTail: Bool) -> String {
         guard text.count > cap else { return text }
-        truncatedChars += text.count - cap
         return String(keepTail ? text.suffix(cap) : text.prefix(cap))
     }
 
@@ -320,9 +328,10 @@ public struct TranscriptReducer: Sendable {
 
     /// Remove the finalization TWIN — the candidate message block, but only when
     /// its retained text IS the (head-bounded) final text. The block was stored
-    /// via `boundHead`, so an overlong answer's block equals the final's head;
-    /// comparing against the same bound keeps the identity check exact without
-    /// re-counting a truncation. A distinct narration never matches and stays.
+    /// via `boundHead`, so the identity check compares against the SAME `clip`
+    /// `boundHead` uses (head, `blockCharCap`) — an overlong answer's block equals
+    /// the final's head, and reusing that one function keeps the comparison exact
+    /// without re-counting a truncation. A distinct narration never matches and stays.
     /// Keeps every reducer invariant: decrement `textChars` exactly and shift the
     /// open-tool indices that sat AFTER the removed block so a still-open tool's
     /// later result still lands on the right row. `trimmed`/`truncatedChars` are
@@ -332,7 +341,7 @@ public struct TranscriptReducer: Sendable {
         guard let id,
               let i = blocks.lastIndex(where: { $0.id == id }),
               case .message(_, let text) = blocks[i],
-              text == String(finalText.prefix(blockCharCap)) else { return }
+              text == clip(finalText, cap: blockCharCap, keepTail: false) else { return }
         textChars -= text.count
         blocks.remove(at: i)
         toolIndexByUseId = toolIndexByUseId.compactMapValues { $0 > i ? $0 - 1 : $0 }

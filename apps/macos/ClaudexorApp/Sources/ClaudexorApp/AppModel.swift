@@ -380,20 +380,20 @@ final class AppModel {
     /// the coalesced result.
     func refreshRuns() async {
         if let inFlight = runsRefreshTask {
-            runsRefreshPending = true      // one trailing pass will pick up this trigger
+            runsRefreshPending = true      // fold this trigger into the single trailing pass
             await inFlight.value
             return
         }
-        while true {
+        // Lead pass + AT MOST ONE trailing pass (bounded, never re-arming): a trigger
+        // landing during the trailing pass folds into the NEXT refreshRuns call, so it
+        // can't spin. The `=== task` identity guard mirrors the reconnect fence (QA-052).
+        for pass in 0...1 {
+            if pass == 1, !runsRefreshPending { break }
             runsRefreshPending = false
-            let task = Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.performRunsRefresh()
-            }
+            let task = Task { @MainActor [weak self] in _ = await self?.performRunsRefresh() }
             runsRefreshTask = task
             await task.value
-            runsRefreshTask = nil
-            if !runsRefreshPending { break }  // at most one trailing pass per completed refresh
+            if runsRefreshTask == task { runsRefreshTask = nil }
         }
     }
 

@@ -208,6 +208,22 @@ import Testing
         #expect(ComposerOptionParser.parseCommandArgv(#"go "test"#) == ["go", "test"])
     }
 
+    @Test func strictArgvRejectsAnUnterminatedQuoteAsATypedError() throws {
+        // Balanced input parses identically to the lenient tokenizer.
+        #expect(try ComposerOptionParser.parseCommandArgvStrict(#"pytest -k "slow and net""#)
+            == ["pytest", "-k", "slow and net"])
+        // An unterminated quote is a TYPED error, not a silently-closed `go test`.
+        #expect(throws: ComposerOptionParser.CommandArgvError.unterminatedQuote("\"")) {
+            _ = try ComposerOptionParser.parseCommandArgvStrict(#"go "test"#)
+        }
+        #expect(throws: ComposerOptionParser.CommandArgvError.unterminatedQuote("'")) {
+            _ = try ComposerOptionParser.parseTestCommandStrict("run 'a b")
+        }
+        // A blank field is still no gate (nil), never an error; a valid command parses.
+        #expect(try ComposerOptionParser.parseTestCommandStrict("   ") == nil)
+        #expect(try ComposerOptionParser.parseTestCommandStrict("npm test")?.program == "npm")
+    }
+
     @Test func testCommandParsesProgramAndArgs() throws {
         let cmd = try #require(ComposerOptionParser.parseTestCommand("npm run test:ci"))
         #expect(cmd.program == "npm")

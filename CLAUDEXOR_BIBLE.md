@@ -533,8 +533,11 @@ invariant or owner decision before proceeding.
   `--in-place` targets, where the git boundary by contrast still runs) and each
   git-mode ENVELOPE worktree (an envelope materializes only the committed tree,
   so an untracked project-root bridge never reaches a candidate; the envelope
-  write emits no event and is EXCLUDED from the candidate patch by exact
-  marker-gated path, so a candidate-authored `CLAUDE.md` is never dropped). An
+  write emits no event and is EXCLUDED from the candidate patch ONLY when
+  Claudexor created the bridge THIS run AND its bytes still equal
+  `CLAUDE_BRIDGE_CONTENT` exactly (A-3), so a candidate-authored `CLAUDE.md` — or
+  any candidate EDIT of the bridge, even one that keeps the ownership marker —
+  differs from those bytes and IS captured in `patch.diff`). An
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
   tests; claude-bridge exclusive-create/no-follow/race/idempotency tests +

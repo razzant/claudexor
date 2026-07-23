@@ -213,12 +213,12 @@ function absoluteCliPrefix(runtime: RuntimePaths): string {
 
 /** Render the registry's canonical fallback templates (`claudexor ask "..."`, …)
  * as executable absolute commands by swapping the bare leading `claudexor` token
- * for the absolute Node+CLI prefix. The registry keeps the bare templates as the
- * single source of the verb/flag grammar; only the executable prefix is host- and
- * install-specific, so it is composed here from the runtime, not hardcoded. */
+ * for the absolute Node+CLI prefix (the registry owns the verb/flag grammar; only
+ * the prefix is install-specific). The replacement is a FUNCTION, not a string, so
+ * a `$` in a nodePath/cliPath isn't read as a `String.replace` `$&`/`$$` pattern. */
 function hostFallbackCommands(runtime: RuntimePaths): string[] {
   const prefix = absoluteCliPrefix(runtime);
-  return hostFallbackExamples().map((example) => example.replace(/^claudexor\b/, prefix));
+  return hostFallbackExamples().map((example) => example.replace(/^claudexor\b/, () => prefix));
 }
 
 /** The exact Claude slash invocation for the generated skills-directory plugin.

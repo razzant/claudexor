@@ -1418,4 +1418,26 @@ describe("plugin lifecycle", () => {
       expect(skill).toContain(`'${cli}' ask`);
     });
   });
+
+  it("keeps a `$`-bearing runtime prefix verbatim in the fallback commands (no $-pattern corruption)", async () => {
+    await withTempHome(async ({ dir, home }) => {
+      // A Node path with a literal `$&` (valid filename chars). A STRING
+      // replacement would expand `$&` to the regex match ("claudexor") and
+      // corrupt the emitted fallback command; the function replacement keeps it
+      // verbatim. The shim execs the real node so the MCP doctor still passes.
+      const trickyNode = join(dir, "no$&de");
+      writeFileSync(trickyNode, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, {
+        mode: 0o755,
+      });
+      process.env.CLAUDEXOR_NODE_PATH = trickyNode;
+      const install = await runPluginCommand("install", "claude");
+      expect(install.exitCode).toBe(0);
+      const skill = readFileSync(
+        join(home, ".claude", "skills", "claudexor", "skills", "claudexor", "SKILL.md"),
+        "utf8",
+      );
+      expect(skill).toContain("no$&de"); // literal prefix, uncorrupted
+      expect(skill).not.toContain("noclaudexorde"); // `$&` was NOT expanded to the match
+    });
+  });
 });

@@ -189,6 +189,76 @@ struct AppModelRefreshTests {
         #expect(detailCalls.count == 0)
     }
 
+    /// QA-052 / Ф3 wave-2: a burst of triggers during an in-flight refresh SHARES
+    /// the one request and folds into AT MOST ONE trailing pass — never a
+    /// per-trigger fan-out, and never a re-arming `while true` spin. A trigger that
+    /// lands during the trailing pass does NOT extend it (bounded to 2 passes).
+    @MainActor
+    @Test func refreshRunsBurstSharesOneRequestAndAtMostOneTrailingPass() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        let calls = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            calls.increment()
+            Thread.sleep(forTimeInterval: 0.08)
+            return (appResponse(for: request), Data(#"{"runs":[]}"#.utf8))
+        }
+
+        let lead = Task { await model.refreshRuns() }
+        let duringTrailing = Task {
+            try? await Task.sleep(for: .milliseconds(110))   // lands in the trailing pass
+            await model.refreshRuns()
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<5 { group.addTask { await model.refreshRuns() } }
+        }
+        await lead.value
+        await duringTrailing.value
+
+        #expect(calls.count == 2)                 // lead + exactly one trailing
+        #expect(model.runsRefreshTask == nil)     // settled, nothing dangling
+    }
+
+    /// QA-052 identity guard: if a reconnect fence (`cancelAllStreams`) clears and
+    /// REPLACES the runs-refresh task mid-flight, the completing pass must only
+    /// clear the task if it STILL owns it — an unconditional `= nil` would niled
+    /// the reconnect's fresh task (the leak/stale defect).
+    @MainActor
+    @Test func refreshRunsIdentityGuardDoesNotClobberAReconnectTask() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            Thread.sleep(forTimeInterval: 0.05)
+            return (appResponse(for: request), Data(#"{"runs":[]}"#.utf8))
+        }
+
+        let refresh = Task { await model.refreshRuns() }
+        try await Task.sleep(for: .milliseconds(10))     // lead pass now in flight
+        // Reconnect fence fires mid-flight, then a fresh connect installs a NEW task.
+        model.cancelAllStreams()
+        let sentinel = Task<Void, Never> {}
+        model.runsRefreshTask = sentinel
+        await refresh.value
+
+        // The completing lead pass no longer owned runsRefreshTask, so it left the
+        // reconnect's sentinel intact (an unconditional nil would have dropped it).
+        #expect(model.runsRefreshTask == sentinel)
+        await sentinel.value
+    }
+
     @MainActor
     @Test func threadHeadPingRefetchesThreadListOnceAndDropsStaleRevisions() async throws {
         defer { AppRequestStubURLProtocol.handler = nil }
