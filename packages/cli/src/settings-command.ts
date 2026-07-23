@@ -6,6 +6,7 @@ import {
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
+import { renderCliFailure } from "./cli-error.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 
@@ -75,10 +76,7 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
     else print(`updated ${key}`);
     return 0;
   } catch (error) {
-    const message = `claudexor settings: ${error instanceof Error ? error.message : String(error)}`;
-    if (json) printJson({ ok: false, exitCode: 1, error: message });
-    else process.stderr.write(`${message}\n`);
-    return 1;
+    return renderCliFailure(json, error, { messagePrefix: "claudexor settings:" });
   }
 }
 

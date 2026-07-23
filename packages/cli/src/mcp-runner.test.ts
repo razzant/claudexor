@@ -250,9 +250,13 @@ describe("mcp daemon body mapping", () => {
     );
     try {
       const result = (await mcpSurfaceRunner()({ mode: "__runs_list" })) as Record<string, unknown>;
-      // Honest TOTAL across both pages, not the single-page undercount of 2.
+      // Honest TOTAL across both pages (summed page lengths), not the single-page
+      // undercount of 2 nor a 50k-row accumulation.
       expect(result["summary"]).toBe("3 daemon-tracked run(s)");
-      expect((result["runs"] as unknown[]).length).toBe(3);
+      expect(result["total"]).toBe(3);
+      // The returned rows are only the FIRST page (deeper pages are counted then
+      // discarded so the walk never materializes the whole retained set).
+      expect((result["runs"] as unknown[]).length).toBe(2);
       expect(result["truncated"]).toBe(false);
       // It walked: the second request carried the page-1 nextCursor.
       expect(urls.some((u) => u.includes("cursor=cursor-1"))).toBe(true);

@@ -24,6 +24,7 @@ import {
   ControlCredentialProfileCreateRequest,
   type CredentialProfile,
   ControlSettingsUpdateRequest,
+  RunScope,
   TERMINAL_LIFECYCLES,
 } from "@claudexor/schema";
 import { registerConfigDirProfile, removeProfileFromRegistry } from "./profile-registration.js";
@@ -64,6 +65,28 @@ const NO_PROJECT_ROOT = noProjectRepoRoot();
 type SetupJobManager = ReturnType<typeof createSetupJobManager>;
 type SetupBinding = SetupLifecycleBinding<SetupJobStore, SetupJobManager>;
 type HarnessListInput = { fresh?: boolean; includeFakes?: boolean; harnessIds?: string[] };
+
+/**
+ * The project ROOT a non-terminal job runs against (project-remove active-run
+ * fence), or null when it holds no project. Parsed via the typed `RunScope`
+ * schema, not a widening `{scope?:{kind?;root?}}` cast (Ф2 finding 7): a project
+ * scope always carries a root, so a live project run can't silently drop out of
+ * the fence. A live RUN whose scope can't be parsed FAILS CLOSED (we can't prove
+ * it doesn't reference the project); a non-run job (no runId) is ignored.
+ */
+function activeRunProjectRoot(job: { runId?: string; params?: unknown }): string | null {
+  const scope = (job.params as { scope?: unknown } | null | undefined)?.scope;
+  const parsed = RunScope.safeParse(scope);
+  if (parsed.success) return parsed.data.kind === "project" ? parsed.data.root : null;
+  if (job.runId) {
+    throw Object.assign(
+      new Error(`cannot resolve the scope of active run ${job.runId} for the project-remove fence`),
+      { code: "active_run_scope_unresolved", status: 409 },
+    );
+  }
+  return null;
+}
+
 export function controlServices(
   interactions: InteractionRegistry,
   projects: () => ProjectStore,
@@ -141,14 +164,12 @@ export function controlServices(
       const activeRunRoots = new Set<string>();
       for (const job of await daemonJobs()) {
         if ((TERMINAL_LIFECYCLES as ReadonlySet<string>).has(job.state)) continue;
-        const scope = (job.params as { scope?: { kind?: string; root?: string } } | undefined)
-          ?.scope;
-        if (scope?.kind === "project" && typeof scope.root === "string" && scope.root) {
-          try {
-            activeRunRoots.add(realpathSync(scope.root));
-          } catch {
-            activeRunRoots.add(scope.root);
-          }
+        const root = activeRunProjectRoot(job);
+        if (root === null) continue;
+        try {
+          activeRunRoots.add(realpathSync(root));
+        } catch {
+          activeRunRoots.add(root);
         }
       }
       return threads.removeProject(id, activeRunRoots);

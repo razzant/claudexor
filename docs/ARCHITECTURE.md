@@ -1797,7 +1797,12 @@ code touching one of these areas must honor it or change it explicitly here.
   failure envelope `{ok:false, exitCode, code?, message, retryable?,
   fieldErrors?, requiredActions?, details?, context?}` (with a legacy `error`
   alias of `message`), generated from the SAME typed problem as the human
-  stderr line. A central category → exit-code table owns the codes: usage /
+  stderr line. A run-scoped failure (inspect/apply/decision) may add a
+  per-command identifying field such as `runId` alongside those canonical
+  fields, but the projector-owned fields always win over a same-named extra, so
+  the failure shape cannot be forged. Redaction runs BEFORE the bounded-context
+  truncation, so a secret token straddling the truncation boundary is masked on
+  the full string and can never leak as a surviving head fragment. A central category → exit-code table owns the codes: usage /
   validation = 2, operational failure = 1. Typed domain codes and structured
   field errors survive projection (never a serialized Zod object inside
   `message`, never a secret echoed back, never empty stdout under `--json`);

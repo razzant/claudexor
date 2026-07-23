@@ -166,6 +166,15 @@ function nonEmptyArray(value: string[] | undefined): string[] | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+/** A typed context record or undefined when empty. Unlike `boundContext` this
+ *  does NOT truncate — bounding is deferred to `redactProblem` so redaction of a
+ *  boundary-straddling token always runs on the FULL string first (finding 6). */
+function nonEmptyContext(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  return context && Object.keys(context).length > 0 ? context : undefined;
+}
+
 /**
  * Normalize ANY thrown value into a typed problem. `defaultCategory` decides the
  * exit code only when the throwable carries no category signal of its own — a
@@ -184,7 +193,9 @@ export function normalizeThrowable(
       fieldErrors: nonEmptyRecord(err.fieldErrors),
       requiredActions: nonEmptyArray(err.requiredActions),
       details: err.details,
-      context: boundContext(err.context),
+      // RAW context here; redaction runs BEFORE truncation in redactProblem so a
+      // secret token straddling the truncation boundary cannot survive (finding 6).
+      context: nonEmptyContext(err.context),
     };
   }
   const zodIssues = asZodIssues(err);
@@ -270,7 +281,12 @@ function redactProblem(p: NormalizedProblem): NormalizedProblem {
       : undefined,
     requiredActions: p.requiredActions?.map((s) => redactSecrets(s)),
     details: p.details ? (redactUnknown(p.details) as Record<string, unknown>) : undefined,
-    context: p.context ? (redactUnknown(p.context) as Record<string, unknown>) : undefined,
+    // Redact THEN bound: a secret token that straddles the MAX_CONTEXT_STRING
+    // boundary is masked on the full string before truncation, so a split token
+    // can never evade the detector (finding 6).
+    context: p.context
+      ? boundContext(redactUnknown(p.context) as Record<string, unknown>)
+      : undefined,
   };
 }
 
@@ -286,6 +302,15 @@ export interface RenderCliFailureOptions {
    * Implies a JSON surface — pass `json = true` with it.
    */
   stream?: boolean;
+  /**
+   * Per-command envelope extras merged into the JSON failure object (e.g.
+   * `{runId}` on inspect/apply). The canonical projector fields
+   * (`ok`/`exitCode`/`code`/`message`/`error`/…) always win over an extra of
+   * the same name, so a command can add identifying context without being able
+   * to forge the failure shape. Text mode ignores extras. Values are
+   * secret-redacted with the rest of the envelope.
+   */
+  extras?: Record<string, unknown>;
 }
 
 /**
@@ -305,6 +330,10 @@ export function renderCliFailure(
   const message = prefix && !p.message.startsWith(prefix) ? `${prefix} ${p.message}` : p.message;
   if (json) {
     const envelope = {
+      // Per-command extras first; every canonical field below overrides a
+      // same-named extra so the failure shape can't be forged. Redacted once
+      // here (the single owner) like everything else in the envelope.
+      ...(opts.extras ? (redactUnknown(opts.extras) as Record<string, unknown>) : {}),
       ok: false,
       exitCode,
       ...(p.code ? { code: p.code } : {}),
@@ -347,7 +376,8 @@ export function controlProblemError(
       retryable: pb.retryable,
       fieldErrors: nonEmptyRecord(pb.fieldErrors),
       requiredActions: nonEmptyArray(pb.requiredActions),
-      context: boundContext(pb.context),
+      // RAW: redactProblem redacts before it bounds (finding 6).
+      context: nonEmptyContext(pb.context),
       ...(pb.evidenceRefs.length > 0 ? { details: { evidenceRefs: pb.evidenceRefs } } : {}),
     });
   }

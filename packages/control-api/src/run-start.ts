@@ -228,3 +228,30 @@ export function requiredIdempotencyKey(req: IncomingMessage): string {
   }
   return value;
 }
+
+/**
+ * An OPTIONAL Idempotency-Key: `undefined` when the client sent none, the
+ * validated value when present. Unlike `requiredIdempotencyKey` an absent header
+ * is NOT a 400 — it selects legacy non-idempotent behavior for operations whose
+ * key is optional (the current installed macOS app sends no key). A present but
+ * malformed key still fails loudly (a key the client believed it sent must not
+ * silently degrade to non-idempotent).
+ */
+export function optionalIdempotencyKey(req: IncomingMessage): string | undefined {
+  const header = req.headers["idempotency-key"];
+  if (header === undefined) return undefined;
+  if (Array.isArray(header) || typeof header !== "string" || !header.trim()) {
+    throw Object.assign(new Error("Idempotency-Key, when present, must be a non-empty value"), {
+      code: "invalid_idempotency_key",
+      status: 400,
+    });
+  }
+  const value = header.trim();
+  if (value.length > 256) {
+    throw Object.assign(new Error("Idempotency-Key must contain 1-256 characters"), {
+      code: "invalid_idempotency_key",
+      status: 400,
+    });
+  }
+  return value;
+}

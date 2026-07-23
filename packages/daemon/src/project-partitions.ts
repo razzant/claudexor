@@ -241,7 +241,29 @@ export class ProjectPartitions implements CommandAuthority {
       );
     }
     const archivedPartitionPath = entry ? entry.manager.archivePartition() : null;
-    registry.unregister(id);
+    try {
+      registry.unregister(id);
+    } catch (unregisterError) {
+      // Archive succeeded but the durable registry rejected the unregister: the
+      // project is now archived-but-registered. Roll the archive back into the
+      // active tree so the two views stay consistent, then surface the original
+      // unregister failure. If the rollback ITSELF fails we cannot restore
+      // consistency — disclose the partial state honestly with a typed error
+      // rather than pretend the remove succeeded (Ф2 finding 4).
+      if (entry && archivedPartitionPath) {
+        try {
+          entry.manager.restoreArchivedPartition(archivedPartitionPath);
+        } catch (rollbackError) {
+          throw Object.assign(
+            new Error(
+              `project ${id} could not be removed: its journal partition was archived to ${archivedPartitionPath}, the registry unregister failed, and the archive could not be rolled back (${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}); the project is archived-but-registered and needs manual reconciliation`,
+            ),
+            { code: "project_remove_partial", status: 500, archivedPartitionPath },
+          );
+        }
+      }
+      throw unregisterError;
+    }
     this.partitions.delete(id);
     return {
       projectId: project.id,

@@ -10,6 +10,7 @@ import { isBlocking, type ControlReviewerPanelEntry } from "@claudexor/schema";
 import { parseReviewerPanelFlags } from "./run-options.js";
 import { type ParsedArgs, flagStr, flagValues } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
+import { renderCliFailure } from "./cli-error.js";
 import { buildRegistry } from "./registry.js";
 
 function panelFlags(args: ParsedArgs): ControlReviewerPanelEntry[] | undefined {
@@ -119,9 +120,6 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
     }
     return ok ? 0 : 1;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (json) printJson({ ok: false, error: message });
-    else process.stderr.write(`claudexor review: ${message}\n`);
-    return 1;
+    return renderCliFailure(json, err, { messagePrefix: "claudexor review:" });
   }
 }

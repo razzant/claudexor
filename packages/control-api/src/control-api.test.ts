@@ -658,10 +658,10 @@ describe("DaemonControlApiServer", () => {
         "Last-Event-ID:header",
         "lastEventId:query",
       ]);
-      // QA-075: extend is honestly key_required, not natural.
-      expect(ops.find((o) => o.path === "/v2/setup/jobs/:id/extend")?.idempotency).toBe(
-        "key_required",
-      );
+      // QA-075 / Ф2: extend's Idempotency-Key is OPTIONAL (keyless clients like
+      // the installed macOS Extend button are supported), so the catalog
+      // honestly declares `none` rather than `key_required` or `natural`.
+      expect(ops.find((o) => o.path === "/v2/setup/jobs/:id/extend")?.idempotency).toBe("none");
 
       const missingIdempotencyKey = await globalThis.fetch(`${base}/v2/runs`, {
         method: "POST",
@@ -1255,6 +1255,43 @@ describe("DaemonControlApiServer", () => {
         headers: { authorization: `Bearer ${token}` },
       });
       expect(esc.status).toBe(404);
+    });
+  });
+
+  it("REFUSES to serve `.env`-class credential files (Ф2): typed 409, no bytes leaked, across fetch families", async () => {
+    const { daemon, record } = fakeDaemon();
+    // Runtime-assembled so this test's own source never holds a contiguous
+    // secret. Matches the anthropic_api_key detector.
+    const secret = ["sk-ant", "A".repeat(40)].join("-");
+    // A `.env` has no file extension, so it took the BINARY path and was served
+    // raw (octet-stream), bypassing redaction — the leak this refusal closes.
+    mkdirSync(join(record.runDir as string, "artifacts"), { recursive: true });
+    writeFileSync(join(record.runDir as string, "artifacts", ".env"), `API_KEY=${secret}\n`);
+    writeFileSync(join(record.runDir as string, "artifacts", ".env.production"), `K=${secret}\n`);
+    writeFileSync(join(record.runDir as string, "artifacts", "aws-credentials"), `k=${secret}\n`);
+    // The direct run-artifacts family serves straight from runDir.
+    writeFileSync(join(record.runDir as string, ".env"), `API_KEY=${secret}\n`);
+    await withDaemonServer(daemon, async (base) => {
+      const paths = [
+        `${base}/runs/run-d1/produced/.env`,
+        `${base}/runs/run-d1/produced/.env.production`,
+        `${base}/runs/run-d1/produced/aws-credentials`,
+        `${base}/runs/run-d1/artifacts/.env`,
+      ];
+      for (const url of paths) {
+        const res = await apiFetch(url, { headers: { authorization: `Bearer ${token}` } });
+        expect(res.status).toBe(409);
+        // The daemon normalizes >=400 JSON to problem+json: the typed `code`
+        // survives and the refusal class rides in `context` (non-reserved field).
+        const body = (await res.json()) as {
+          code?: string;
+          context?: { sensitiveClass?: string };
+        };
+        expect(body.code).toBe("sensitive_file_refused");
+        expect(typeof body.context?.sensitiveClass).toBe("string");
+        // The refusal happens BEFORE any bytes are read: the token never leaks.
+        expect(JSON.stringify(body)).not.toContain(secret);
+      }
     });
   });
 
@@ -4269,16 +4306,28 @@ describe("DaemonControlApiServer", () => {
         expect(sseText).not.toContain("event: end");
         sseAbort.abort();
 
-        // QA-075: extend is key_required; a missing key is a typed 400.
+        // Ф2: extend's Idempotency-Key is OPTIONAL — a keyless client (the
+        // installed macOS Extend button) is no longer 400'd; it gets a plain
+        // non-idempotent +15.
         const extendNoKey = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}` },
         });
-        expect(extendNoKey.status).toBe(400);
-        expect(((await extendNoKey.json()) as { code: string }).code).toBe(
-          "idempotency_key_required",
+        expect(extendNoKey.status).toBe(200);
+        expect(await extendNoKey.json()).toMatchObject({ jobId: "setup-1" });
+
+        // A present-but-MALFORMED key still fails loudly (a key the client
+        // believed it sent must not silently degrade to non-idempotent).
+        const extendBadKey = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "idempotency-key": "x".repeat(300) },
+        });
+        expect(extendBadKey.status).toBe(400);
+        expect(((await extendBadKey.json()) as { code: string }).code).toBe(
+          "invalid_idempotency_key",
         );
 
+        // A present valid key still binds the replay-safe path.
         const extended = await apiFetch(`${base}/v2/setup/jobs/setup-1/extend`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, "idempotency-key": "extend-once" },

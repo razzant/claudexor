@@ -79,8 +79,9 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
   preflight/daemon problems, transport, or an unexpected exception — comes back
   as exactly one envelope `{ok:false, exitCode, code?, message, retryable?,
   fieldErrors?, requiredActions?, details?, context?}` on stdout (with a legacy
-  `error` alias of `message`); exit 2 is usage/validation, exit 1 is an
-  operational failure. Typed domain codes and structured field errors survive
+  `error` alias of `message`), optionally carrying a per-command identifying
+  field such as `runId`; the canonical fields above always win over an extra of
+  the same name. Exit 2 is usage/validation, exit 1 is an operational failure. Typed domain codes and structured field errors survive
   (parse `code`/`fieldErrors`, never scrape `message`). A run that STARTED
   always reports its terminal as `{runId, runDir, status, ...}` even when the
   status is a failure — a non-success terminal is a result, not an error

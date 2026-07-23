@@ -2,6 +2,7 @@ import { ControlProblem, ControlQuotaResponse } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
 import { flagBool } from "./args.js";
 import { print, printJson } from "./cli-io.js";
+import { renderCliFailure } from "./cli-error.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import {
@@ -35,10 +36,7 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
     else printQuota(value);
     return 0;
   } catch (error) {
-    const message = `claudexor quota: ${error instanceof Error ? error.message : String(error)}`;
-    if (json) printJson({ ok: false, exitCode: 1, error: message });
-    else process.stderr.write(`${message}\n`);
-    return 1;
+    return renderCliFailure(json, error, { messagePrefix: "claudexor quota:" });
   }
 }
 

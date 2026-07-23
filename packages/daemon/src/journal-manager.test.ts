@@ -335,4 +335,58 @@ describe("JournalManager", () => {
     expect(() => slot.current()).toThrow(/requires recovery/);
     restarted.close();
   });
+
+  it("a FAILED archive rename leaves the partition open and re-archivable, not stranded closed (Ф2)", () => {
+    const manager = new JournalManager(root, {
+      partition: "project:archive-rename-fails",
+      faults: {
+        beforeArchiveRename: () => {
+          throw new Error("simulated archive rename failure");
+        },
+      },
+    });
+    const slot = registerProbe(manager);
+    manager.start();
+    slot.current().journal.append("probe.saved", { value: 1 });
+    const partitionDir = manager.partitionDir;
+
+    // The rename fails; archivePartition rethrows.
+    expect(() => manager.archivePartition()).toThrow(/archive rename failure/);
+    // rename-THEN-close: the manager was NOT stranded closed — it reopened a
+    // fresh generation and is still usable, with its directory still on disk.
+    expect(manager.ready()).toBe(true);
+    expect(existsSync(partitionDir)).toBe(true);
+    slot.current().journal.append("probe.saved", { value: 2 });
+
+    // A CLEAN retry (fault cleared) now archives and closes for good.
+    const clean = new JournalManager(root, { partition: "project:archive-rename-fails" });
+    registerProbe(clean);
+    clean.start();
+    const archived = clean.archivePartition();
+    expect(typeof archived).toBe("string");
+    expect(existsSync(archived as string)).toBe(true);
+    expect(existsSync(partitionDir)).toBe(false);
+    manager.close();
+  });
+
+  it("restoreArchivedPartition rolls an archived partition back into the active tree and reopens it (Ф2)", () => {
+    const manager = new JournalManager(root, { partition: "project:restore-me" });
+    const slot = registerProbe(manager);
+    manager.start();
+    slot.current().journal.append("probe.saved", { value: 7 });
+    const partitionDir = manager.partitionDir;
+
+    const archived = manager.archivePartition();
+    expect(typeof archived).toBe("string");
+    expect(existsSync(partitionDir)).toBe(false);
+
+    // Roll back (the removeProject unregister-failure rollback path).
+    manager.restoreArchivedPartition(archived as string);
+    expect(existsSync(partitionDir)).toBe(true);
+    expect(existsSync(archived as string)).toBe(false);
+    // The manager is usable again after the reopen.
+    expect(manager.ready()).toBe(true);
+    slot.current().journal.records();
+    manager.close();
+  });
 });

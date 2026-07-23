@@ -7,7 +7,7 @@
  */
 import type { ServerResponse } from "node:http";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
-import { extname, join, relative, sep } from "node:path";
+import { basename, extname, join, relative, sep } from "node:path";
 import {
   ControlArtifactListResponse,
   ControlProjectOutputsResponse,
@@ -193,6 +193,21 @@ function serveArtifactFile(
 ): void {
   if (!target || !existsSync(target) || lstatSync(target).isDirectory())
     return ctx.json(res, 404, { error: "no such artifact" });
+  // Sensitive-filename REFUSAL (the filename analogue of the `.diff` patch
+  // refusal below): `.env`-style credential files have no file extension, so
+  // `contentType` classified them as octet-stream and they took the BINARY path
+  // — skipping `redactSecrets` and serving their bytes raw. Refuse the
+  // well-known credential-file conventions outright with a typed 409 naming the
+  // class, BEFORE reading any bytes, across all three fetch families (they all
+  // funnel through here).
+  const sensitiveClass = sensitiveArtifactClass(target);
+  if (sensitiveClass) {
+    return ctx.json(res, 409, {
+      error: `refusing to serve ${basename(target)}: credential-bearing ${sensitiveClass} file`,
+      code: "sensitive_file_refused",
+      sensitiveClass,
+    });
+  }
   const stats = lstatSync(target);
   const cap = isTextArtifact(target) ? MAX_ARTIFACT_FETCH_BYTES : MAX_ARTIFACT_BINARY_FETCH_BYTES;
   if (stats.size > cap) {
@@ -406,6 +421,29 @@ function isPatchArtifact(path: string): boolean {
 }
 
 /**
+ * Files whose NAME (not extension) marks them as secret-bearing by convention.
+ * These must never be served from a run/produced/project artifact tree,
+ * regardless of MIME — `.env`-style files carry no extension, so `contentType`
+ * classified them as `application/octet-stream` and the binary fetch path served
+ * them raw, bypassing redaction. Returns the refusal class name, or null when
+ * the filename is not a known credential convention.
+ *
+ * The list is bounded to the WELL-KNOWN credential-file conventions rather than
+ * a broad guess: dotenv files, package-registry credential files
+ * (`.npmrc`/`.pypirc`/`.netrc`), and any `*credentials*` filename (which also
+ * catches vendor stores like `.credentials.json`). Truly-binary or ordinary
+ * source files are unaffected.
+ */
+function sensitiveArtifactClass(path: string): string | null {
+  const name = basename(path).toLowerCase();
+  if (name === ".env" || name.startsWith(".env.")) return "dotenv";
+  if (name === ".npmrc" || name === ".pypirc" || name === ".netrc")
+    return "package_registry_credentials";
+  if (name.includes("credentials")) return "credentials_file";
+  return null;
+}
+
+/**
  * Extensions whose bytes are semantic TEXT even when their MIME is not `text/*`
  * or JSON, so `contentType` classifies them as `application/octet-stream`.
  * Without this set those files took the 32MiB BINARY cap and skipped
@@ -417,9 +455,10 @@ function isPatchArtifact(path: string): boolean {
  * code, config/markup, and structured data — all of which are UTF-8 the
  * redaction pass can safely serve. Truly-binary types (images, PDFs, archives)
  * stay on the binary path. `.env`-style secret files are deliberately NOT here:
- * they never belong in a served artifact tree and are guarded by the stronger
- * inline-secret param fence and patch refusal upstream; adding them would only
- * imply this path is a safe delivery channel for them.
+ * they never belong in a served artifact tree, and rather than route them
+ * through redaction they are REFUSED outright by `sensitiveArtifactClass` (a
+ * typed 409) before any bytes are read — adding them here would only imply this
+ * path is a safe delivery channel for them.
  */
 const SEMANTIC_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
   // structured data / markup

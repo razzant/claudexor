@@ -601,11 +601,11 @@ const operations: ControlOperationDescriptor[] = [
   j("POST", "/v2/setup/jobs/:id/reconcile", "mutating", null, "ControlSetupJob", {
     idempotency: "natural",
   }),
-  // QA-075: extension is ADDITIVE (+15 min each call), so exact replay is NOT
-  // naturally idempotent. It binds an Idempotency-Key: the same key returns the
-  // same extension (replay-safe), a new key authorizes a distinct extension.
+  // QA-075/Ф2: extension is ADDITIVE (+15 min). Its Idempotency-Key is OPTIONAL
+  // (keyless clients like the installed macOS Extend button are supported), so
+  // the catalog honestly declares `none`, not `key_required` (a key opts into replay-safety).
   j("POST", "/v2/setup/jobs/:id/extend", "mutating", null, "ControlSetupJob", {
-    idempotency: "key_required",
+    idempotency: "none",
   }),
   j("GET", "/v2/recovery/partitions/:id", "read_only", null, "ControlJournalInspection"),
   j("POST", "/v2/recovery/partitions/:id/validate", "read_only", null, "ControlJournalValidation"),

@@ -267,4 +267,72 @@ describe("CLI projector (D-7 / GH #28): one envelope, one exit-code table", () =
     expect(JSON.stringify(env["requiredActions"])).toContain("[redacted]");
     expect(JSON.stringify(env["details"])).toContain("[redacted]");
   });
+
+  it("EXTRAS: a per-command field (runId) rides alongside the canonical envelope, and canonical fields win", () => {
+    // The projector-routed stragglers (inspect no-such-run, apply unsupported
+    // mode, daemon stop-failed) attach identifying extras. The envelope stays
+    // the canonical {ok,exitCode,message,error,...} shape — never a bare
+    // {runId,error} — and an extra can never forge a reserved field.
+    let code = -1;
+    const env = captureJson(() => {
+      code = renderCliFailure(true, new Error("no such run r-123"), {
+        extras: { runId: "r-123", ok: true, exitCode: 0, message: "forged" },
+      });
+    });
+    expect(code).toBe(1);
+    expect(env["runId"]).toBe("r-123");
+    // Canonical fields are projector-owned and override the forged extras.
+    expect(env["ok"]).toBe(false);
+    expect(env["exitCode"]).toBe(1);
+    expect(env["message"]).toBe("no such run r-123");
+    expect(env["error"]).toBe("no such run r-123");
+  });
+
+  it("EXTRAS are secret-redacted like the rest of the envelope", () => {
+    const token = ["ghp", "A".repeat(36)].join("_");
+    const env = captureJson(() => {
+      renderCliFailure(true, new Error("login job failed"), {
+        extras: { harness: "codex", detail: `server said ${token}` },
+      });
+    });
+    expect(JSON.stringify(env)).not.toContain(token);
+    expect(env["harness"]).toBe("codex");
+  });
+
+  it("FINDING 6: a secret token straddling the 2000-char truncation boundary is redacted, not leaked", () => {
+    // Runtime-assembled so this source never holds a contiguous token. A
+    // ghp_ token matches \bghp_[A-Za-z0-9]{20,}\b.
+    const token = ["ghp", "A".repeat(36)].join("_");
+    // Place the token so it straddles the MAX_CONTEXT_STRING (2000) boundary:
+    // it begins a few chars before 2000 and ends after it. If truncation ran
+    // BEFORE redaction, the head half would survive un-masked in the envelope.
+    // The prefix ends with a NON-word char so the token has a real word
+    // boundary the detector needs (`\bghp_…`); it still starts before index 2000.
+    const prefix = `${"x".repeat(1995)} `;
+    const stderr = `${prefix}${token}${"y".repeat(500)}`;
+    expect(prefix.length).toBe(1996);
+    expect(prefix.length).toBeLessThan(2000); // token starts before the boundary
+    expect(prefix.length + token.length).toBeGreaterThan(2000); // and ends after it
+    const problem = {
+      code: "revert_refused",
+      message: "git failed",
+      retryable: false,
+      fieldErrors: {},
+      requiredActions: [],
+      evidenceRefs: [],
+      context: { gitStderr: stderr },
+    };
+    const env = captureJson(() => {
+      renderCliFailure(true, controlProblemError(409, problem, "decision failed"));
+    });
+    const serialized = JSON.stringify(env);
+    // Neither the whole token nor even its `ghp_` head half survives. If
+    // truncation ran BEFORE redaction, the head `ghp_` (which alone is too short
+    // to match the detector) would leak in the bounded evidence; redact-first
+    // removes the whole token before the string is ever cut.
+    expect(serialized).not.toContain(token);
+    expect(serialized).not.toContain("ghp_");
+    // Truncation still happened (the context is bounded evidence).
+    expect(JSON.stringify(env["context"])).toContain("truncated");
+  });
 });

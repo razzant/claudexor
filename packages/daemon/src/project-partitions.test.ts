@@ -417,6 +417,65 @@ describe("ProjectPartitions", () => {
     f.manager.close();
   });
 
+  it("a failed unregister AFTER a successful archive rolls the archive back and surfaces the failure (Ф2)", () => {
+    const f = fixture();
+    const root = join(f.root, "unreg-fails");
+    mkdirSync(root);
+    const project = f.partitions.registerProject({
+      root,
+      idempotencyKey: "register-unreg-fails",
+      clientId: "test",
+    });
+    f.partitions.forRequest({ scope: { kind: "project", root } });
+    const registry = f.projects.current();
+    const spy = vi.spyOn(registry, "unregister").mockImplementation(() => {
+      throw new Error("simulated durable unregister failure");
+    });
+    try {
+      expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(/unregister failure/);
+      // Rollback restored consistency: the archive was moved back into the
+      // active tree (routable) and the project is still registered — not
+      // stranded archived-but-registered.
+      expect(registry.get(project.id)?.id).toBe(project.id);
+      expect(f.partitions.forRequest({ scope: { kind: "project", root } })).toBeDefined();
+    } finally {
+      spy.mockRestore();
+    }
+    f.partitions.close();
+    f.manager.close();
+  });
+
+  it("when the archive rollback ALSO fails, removeProject discloses the partial archived-but-registered state (Ф2)", () => {
+    const f = fixture();
+    const root = join(f.root, "rollback-fails");
+    mkdirSync(root);
+    const project = f.partitions.registerProject({
+      root,
+      idempotencyKey: "register-rollback-fails",
+      clientId: "test",
+    });
+    f.partitions.forRequest({ scope: { kind: "project", root } });
+    const registry = f.projects.current();
+    const unregSpy = vi.spyOn(registry, "unregister").mockImplementation(() => {
+      throw new Error("durable unregister failure");
+    });
+    const restoreSpy = vi
+      .spyOn(JournalManager.prototype, "restoreArchivedPartition")
+      .mockImplementation(() => {
+        throw new Error("rollback rename failure");
+      });
+    try {
+      expect(() => f.partitions.removeProject(project.id, new Set())).toThrow(
+        /archived-but-registered|manual reconciliation/,
+      );
+    } finally {
+      unregSpy.mockRestore();
+      restoreSpy.mockRestore();
+    }
+    f.partitions.close();
+    f.manager.close();
+  });
+
   it("refuses to remove a project that still has a non-purged thread (QA-049)", () => {
     const f = fixture();
     const root = join(f.root, "referenced");

@@ -1467,19 +1467,19 @@ export class DaemonControlApiServer {
     }
     const setupJobExtendMatch = /^\/setup\/jobs\/([^/]+)\/extend$/.exec(path);
     if (method === "POST" && setupJobExtendMatch) {
-      // QA-075: extension is additive (+15 min), so it binds an Idempotency-Key
-      // — the same key returns the same extension (replay-safe), a new key
-      // authorizes a distinct extension.
-      let idempotencyKey: string;
+      // QA-075/Ф2: Idempotency-Key is OPTIONAL (installed macOS Extend sends
+      // none): present → replay-safe, absent → non-idempotent, malformed → 400.
+      let idempotencyKey: string | undefined;
       try {
-        idempotencyKey = runStart.requiredIdempotencyKey(req);
+        idempotencyKey = runStart.optionalIdempotencyKey(req);
       } catch (err) {
         return this.requestError(res, err);
       }
+      const jobId = decodeURIComponent(setupJobExtendMatch[1] as string);
       return this.service(
         res,
         "extendSetupJob",
-        { jobId: decodeURIComponent(setupJobExtendMatch[1] as string), idempotencyKey },
+        { jobId, ...(idempotencyKey !== undefined ? { idempotencyKey } : {}) },
         ControlSetupJob,
       );
     }

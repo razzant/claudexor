@@ -54,7 +54,8 @@ interface QuarantineOperation {
   receipt: ControlJournalQuarantineReceipt | null;
 }
 
-type JournalManagerFault = "afterQuarantineRename" | "afterQuarantineReceipt";
+type JournalManagerFault =
+  "afterQuarantineRename" | "afterQuarantineReceipt" | "beforeArchiveRename";
 
 export interface JournalManagerOptions {
   partition?: string;
@@ -297,20 +298,60 @@ export class JournalManager {
    * name rather than clobbered.
    */
   archivePartition(): string | null {
-    this.close();
     const archiveDir = join(this.rootDir, "journal-archived");
     const target = join(archiveDir, this.artifactPrefix);
     if (!existsSync(this.partitionDir)) {
+      // Nothing to move: close permanently and return the idempotent answer.
+      this.close();
       return existsSync(target) ? target : null;
     }
     ensureCanonicalPrivateDirectory(archiveDir);
     const dest = existsSync(target)
       ? join(archiveDir, `${this.artifactPrefix}-${randomUUID()}`)
       : target;
-    renameSync(this.partitionDir, dest);
+    // RENAME THEN CLOSE (Ф2 finding 4): release the journal file handle for the
+    // move, but do NOT mark the manager permanently closed until the fallible
+    // rename SUCCEEDS. A rename failure that had pre-closed the partition would
+    // strand it closed in-process with its directory still live in the active
+    // tree. On failure, reopen a fresh generation so the partition stays
+    // usable/re-archivable, then rethrow.
+    this.clearSlots();
+    this.journal?.close();
+    this.journal = null;
+    try {
+      this.faults.beforeArchiveRename?.();
+      renameSync(this.partitionDir, dest);
+    } catch (error) {
+      this.openGeneration();
+      throw error;
+    }
+    this.closed = true;
     fsyncDirectory(this.journalRoot);
     fsyncDirectory(archiveDir);
     return dest;
+  }
+
+  /**
+   * Roll a just-archived partition back into the active journal tree — the
+   * removeProject rollback when the durable registry `unregister` fails AFTER a
+   * successful archive (Ф2 finding 4). Moves `archivedPath` back to
+   * `partitionDir` and reopens a fresh generation so the partition is usable
+   * again. Throws (leaving the archive in place) when the active slot is already
+   * occupied, so the caller can disclose the unrecoverable partial state.
+   */
+  restoreArchivedPartition(archivedPath: string): void {
+    if (existsSync(this.partitionDir)) {
+      throw new Error(
+        `cannot restore archived partition: ${this.partitionDir} already exists in the active tree`,
+      );
+    }
+    if (!existsSync(archivedPath)) {
+      throw new Error(`cannot restore archived partition: ${archivedPath} is missing`);
+    }
+    renameSync(archivedPath, this.partitionDir);
+    fsyncDirectory(this.journalRoot);
+    this.closed = false;
+    this.openGeneration();
   }
 
   private openGeneration(): void {

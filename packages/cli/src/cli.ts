@@ -38,7 +38,7 @@ import {
   type ParsedArgs,
 } from "./args.js";
 import { print, printJson, printJsonLine, printUsageError, statusGlyph } from "./cli-io.js";
-import { controlProblemError, minIntError, renderCliFailure } from "./cli-error.js";
+import { controlProblemError, minIntError, renderCliFailure, usageError } from "./cli-error.js";
 import { handleHelpRequest } from "./command-help.js";
 import { pickResumableThread } from "./thread-select.js";
 import {
@@ -1106,9 +1106,8 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
       // store, or a daemon-tracked run that started in another project.
       const resolved = await resolveRunStore(runId);
       if (!resolved) {
-        if (json) printJson({ runId, error: `no such run ${runId}` });
-        else print(`no such run ${runId}`);
-        return 1;
+        // D-7 projector: canonical envelope, run id as a per-command extra.
+        return renderCliFailure(json, new Error(`no such run ${runId}`), { extras: { runId } });
       }
       const store = resolved.store;
       const paths = store.runPaths(runId);
@@ -1286,9 +1285,10 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
       }
       const rawMode = flagStr(args, "mode") ?? "apply";
       if (!["apply", "commit", "branch", "pr"].includes(rawMode)) {
-        if (json) printJson({ runId, error: `unsupported apply mode: ${rawMode}` });
-        else print(`unsupported apply mode: ${rawMode}`);
-        return 2;
+        // D-7 projector: a usage failure (exit 2) with the run id as extra.
+        return renderCliFailure(json, usageError(`unsupported apply mode: ${rawMode}`), {
+          extras: { runId },
+        });
       }
       const { addr } = await ensureDaemon();
       const dryRun = flagBool(args, "dry-run");
@@ -1446,14 +1446,14 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
     default:
       // Unknown command is an ERROR (exit 2), not a silent help print with
       // exit 0 — scripts must not mistake a typo'd verb for success. --json
-      // callers get the machine envelope on stdout (stdout purity contract).
+      // callers get the ONE projector envelope (with message/code shape, no
+      // longer a partial {ok,exitCode,error}); text mode prints the full help.
       if (json) {
-        printJson({
-          ok: false,
-          exitCode: 2,
-          error: `claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)`,
-        });
-        return 2;
+        return renderCliFailure(
+          true,
+          usageError(`claudexor: unknown command '${cmd}' (see \`claudexor help --json\`)`),
+          {},
+        );
       }
       process.stderr.write(`claudexor: unknown command '${cmd}'\n\n${HELP}\n`);
       return 2;

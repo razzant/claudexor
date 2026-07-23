@@ -30,7 +30,7 @@ import {
   ControlSetupJob,
 } from "@claudexor/schema";
 import { type ParsedArgs, flagBool, flagStr } from "./args.js";
-import { controlProblemError } from "./cli-error.js";
+import { controlProblemError, renderCliFailure, usageError } from "./cli-error.js";
 import { profilesCommand, secretsCommand } from "./credential-commands.js";
 import {
   authSourceAvailability,
@@ -140,9 +140,7 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
     } catch (err) {
       const message = `no daemon log at ${logPath()} (${err instanceof Error ? err.message : String(err)}); the daemon may not have started on this machine yet`;
-      if (json) printJson({ ok: false, error: message });
-      else process.stderr.write(`${message}\n`);
-      return 1;
+      return renderCliFailure(json, new Error(message));
     }
     if (json) printJson({ ok: true, log_tail: tail });
     else print(tail);
@@ -151,10 +149,10 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
 
   const token = readToken();
   if (!token) {
-    const message = "daemon not initialized — run: claudexor daemon start";
-    if (json) printJson({ ok: false, error: message });
-    else print(message);
-    return 1;
+    return renderCliFailure(
+      json,
+      new Error("daemon not initialized — run: claudexor daemon start"),
+    );
   }
   const client = new DaemonClient(defaultSocketPath(), token);
   try {
@@ -171,9 +169,11 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       // exit code instead of racing a still-live process.
       const termination = await awaitDaemonTermination(defaultSocketPath());
       if (termination.outcome === "still_alive") {
-        if (json) printJson({ ok: false, stopping: true, stopped: false, ...termination });
-        else process.stderr.write(`claudexord stop FAILED: ${termination.detail}\n`);
-        return 1;
+        // D-7 projector: one failure envelope; the stop-state facts ride as
+        // per-command extras (previously a message-less {ok:false,...} straggler).
+        return renderCliFailure(json, new Error(`claudexord stop failed: ${termination.detail}`), {
+          extras: { stopping: true, stopped: false, ...termination },
+        });
       }
       if (json) printJson({ ok: true, stopping: true, stopped: true, ...termination });
       else
@@ -189,10 +189,10 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       // in-memory token while stop/status would read the new one from disk.
       try {
         await client.health();
-        const err = "daemon is running; stop it first (claudexor daemon stop), then rotate";
-        if (json) printJson({ ok: false, error: err });
-        else process.stderr.write(`${err}\n`);
-        return 1;
+        return renderCliFailure(
+          json,
+          new Error("daemon is running; stop it first (claudexor daemon stop), then rotate"),
+        );
       } catch {
         /* not reachable — safe to rotate */
       }
@@ -202,19 +202,13 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       else print(note);
       return 0;
     }
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 2,
-        error: "usage: claudexor daemon start|status|stop|logs|rotate-token",
-      });
-    else print("usage: claudexor daemon start|status|stop|logs|rotate-token");
-    return 2;
+    return renderCliFailure(
+      json,
+      usageError("usage: claudexor daemon start|status|stop|logs|rotate-token"),
+    );
   } catch (err) {
     const message = `claudexord not reachable (${err instanceof Error ? err.message : String(err)})`;
-    if (json) printJson({ ok: false, error: message });
-    else print(message);
-    return 1;
+    return renderCliFailure(json, new Error(message));
   }
 }
 
@@ -402,9 +396,12 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
     });
     if (!response.ok) {
       const detail = await response.text();
-      if (json) printJson({ ok: false, harness, status: response.status, error: detail });
-      else print(`could not create durable ${harness} login job (${response.status}): ${detail}`);
-      return 1;
+      // D-7 projector: canonical envelope; harness + HTTP status ride as extras.
+      return renderCliFailure(
+        json,
+        new Error(`could not create durable ${harness} login job (${response.status}): ${detail}`),
+        { extras: { harness, status: response.status } },
+      );
     }
     const job = ControlSetupJob.parse(await response.json());
     const accepted = !["failed", "cancelled", "timed_out", "not_supported"].includes(job.state);

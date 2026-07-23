@@ -210,7 +210,13 @@ async function recoveryQuery(
     // ceiling was hit) is disclosed rather than silently reported as the total.
     const MAX_PAGES = 50;
     const PAGE_LIMIT = 1_000; // RUN_LIST_MAX_LIMIT; 50 * 1000 = 50k hard ceiling
-    const collected: Record<string, unknown>[] = [];
+    // The recovery listing returns only the FIRST page's rows (the newest runs,
+    // enough to recover a lost handle). Deeper pages are walked ONLY to keep the
+    // count honest — their rows are counted then discarded, so the walk never
+    // holds up to 50k row objects in memory. `total` is the SUM of page lengths;
+    // `truncated` discloses when the page ceiling cut the walk short.
+    let total = 0;
+    let sample: Record<string, unknown>[] = [];
     let cursor: string | null = null;
     let truncated = false;
     for (let page = 0; ; page += 1) {
@@ -218,7 +224,8 @@ async function recoveryQuery(
       if (cursor) query.set("cursor", cursor);
       const body = await get(`/runs?${query.toString()}`);
       const runs = Array.isArray(body["runs"]) ? (body["runs"] as Record<string, unknown>[]) : [];
-      collected.push(...runs);
+      total += runs.length;
+      if (page === 0) sample = runs;
       const next = typeof body["nextCursor"] === "string" ? (body["nextCursor"] as string) : null;
       if (body["hasMore"] !== true || !next) break;
       if (page + 1 >= MAX_PAGES) {
@@ -229,10 +236,11 @@ async function recoveryQuery(
     }
     return {
       summary: truncated
-        ? `${collected.length}+ daemon-tracked run(s) (listing truncated at ${MAX_PAGES} pages)`
-        : `${collected.length} daemon-tracked run(s)`,
+        ? `${total}+ daemon-tracked run(s) (listing truncated at ${MAX_PAGES} pages)`
+        : `${total} daemon-tracked run(s)`,
       truncated,
-      runs: collected.map((r) => ({
+      total,
+      runs: sample.map((r) => ({
         runId: r["runId"] ?? r["id"] ?? null,
         status: r["status"] ?? r["state"] ?? null,
         mode: r["mode"] ?? null,
