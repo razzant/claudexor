@@ -63,6 +63,27 @@
                   "default": "unknown",
                   "description": "Typed failure category (validation, project, auth, harness, budget, policy, cancelled, internal, unknown)."
                 },
+                "code": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "finite_zero",
+                        "hard_cap",
+                        "estimate_headroom",
+                        "unknown_paid_in_flight",
+                        "budget_overshoot",
+                        "cost_unverifiable"
+                      ],
+                      "description": "Machine-readable failure sub-code within a RunFailure category (today the typed budget-denial reasons produced by the budget ledger)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Machine-readable failure sub-code within the category (today the typed budget-denial reason from the ledger); null when the category alone is sufficient. Surfaces choose remediation from this, never by parsing safeMessage.",
+                  "default": null
+                },
                 "harnessId": {
                   "type": [
                     "string",

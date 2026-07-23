@@ -1432,6 +1432,51 @@ describe("Orchestrator", () => {
     );
   });
 
+  it("QA-050: a zero-budget Ask refusal is a typed budget failure (phase=budget, code=finite_zero, route preserved) with budget remediation, never auth/setup", async () => {
+    const repo = await initRepo();
+    const asker = askAdapter("asker", function* (sessionId) {
+      const ts = new Date().toISOString();
+      yield { type: "started", session_id: sessionId, ts };
+      yield { type: "message", session_id: sessionId, ts, text: "should never run" };
+      yield { type: "completed", session_id: sessionId, ts };
+    });
+    let started = false;
+    const inner = asker.run.bind(asker);
+    asker.run = (spec) => {
+      started = true;
+      return inner(spec);
+    };
+    const res = await new Orchestrator({
+      registry: new Map([["asker", asker]]),
+      reviewers: [],
+    }).run({
+      repoRoot: repo,
+      prompt: "Answer only ZERO_BUDGET_CANARY",
+      mode: "ask",
+      harnesses: ["asker"],
+      paidBudget: { kind: "finite", maxUsd: 0 },
+    });
+    // The safety gate refused BEFORE the harness spawned.
+    expect(started).toBe(false);
+    expect(res.lifecycle).toBe("failed");
+    expect(res.facts.reason).toBe("budget_exhausted");
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toMatch(/phase: budget/);
+    expect(failure).toMatch(/category: budget/);
+    expect(failure).toMatch(/code: finite_zero/);
+    // The refused route/slot is named, not null (QA-050 lost these).
+    expect(failure).toMatch(/harnessId: asker/);
+    expect(failure).toMatch(/attemptId: a01/);
+    // The remediation names the budget control and NEVER auth/setup.
+    expect(failure).toMatch(/--max-usd|Budget/);
+    expect(failure).not.toMatch(/[Cc]heck harness authentication/);
+    expect(failure).not.toMatch(/Retry after setup/);
+    // The diagnostic heading is the budget cause, not "Harness Error".
+    expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(
+      /Budget Denied/,
+    );
+  });
+
   it("forwards attachments into read-only ask harness specs", async () => {
     const repo = await initRepo();
     const note = join(repo, "note.txt");

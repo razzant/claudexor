@@ -13,6 +13,7 @@ import { EventLog } from "@claudexor/event-log";
 import { BudgetLedger } from "@claudexor/budget";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { cancelledResult, writeFailure } from "./runTerminals.js";
+import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import { extractPlanQuestions } from "./planQuestions.js";
 import { resolveReadOnlyRouteContext } from "./routeContext.js";
 import {
@@ -110,6 +111,9 @@ export async function runCouncilPlan(
     members: memberAdapters.map((a) => a.adapter.id),
   });
   let drafts: { harnessId: string; text: string; absPath: string }[] = [];
+  // QA-050: the first council member refused pre-spawn on budget; drives the
+  // all-members-failed terminal to a typed budget failure.
+  let councilBudgetDenial: BudgetDenial | null = null;
   try {
     // Round 1 — parallel drafts (each member = one planner attempt).
     const outcomes = await Promise.all(
@@ -146,6 +150,7 @@ export async function runCouncilPlan(
         status: outcome.status,
         error: outcome.error,
       });
+      if (outcome.budgetDenied) councilBudgetDenial ??= outcome.budgetDenial ?? null;
       if (outcome.status === "success" && outcome.text) {
         const rel = councilDraftRelPath(routed.adapter.id);
         const absPath = join(paths.root, rel);
@@ -211,6 +216,7 @@ export async function runCouncilPlan(
         ledger,
         planAttempts,
         attemptTelemetries,
+        budgetDenial: councilBudgetDenial,
       },
       "all council members failed",
     );
@@ -299,6 +305,7 @@ export async function runCouncilPlan(
         ledger,
         planAttempts,
         attemptTelemetries,
+        budgetDenial: mergeOutcome.budgetDenied ? (mergeOutcome.budgetDenial ?? null) : null,
       },
       `council merge failed: ${mergeOutcome.error ?? "the primary produced no unified plan"}`,
     );
@@ -474,14 +481,25 @@ export function writePlanHarnessFailure(
       error: string | null;
     }[];
     attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[];
+    /** QA-050: the typed budget denial captured when a planner slot was refused
+     * pre-spawn, so plan/council terminals emit a budget failure (typed code +
+     * remediation) instead of a harness auth/setup template. */
+    budgetDenial?: BudgetDenial | null;
   },
   fallbackMessage: string,
 ): OrchestratorResult {
   const { input, contract, taskId, runId, store, paths, log, ledger, planAttempts } = ctx;
   const blocked = planAttempts.some((p) => p.status === "blocked");
-  const message =
-    planAttempts.map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`).join("\n") ||
-    fallbackMessage;
+  // QA-050: a budget refusal (pre-spawn denial, or a settled budget terminal)
+  // is a BUDGET failure across plan + council, not a harness one.
+  const budgetMapping =
+    !blocked && (ctx.budgetDenial || ledger.terminal())
+      ? classifyBudgetFailure({ denial: ctx.budgetDenial ?? null, terminal: ledger.terminal() })
+      : null;
+  const message = budgetMapping
+    ? budgetMapping.safeMessage
+    : planAttempts.map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`).join("\n") ||
+      fallbackMessage;
   deps.writeRunTelemetry(
     store,
     paths,
@@ -492,15 +510,29 @@ export function writePlanHarnessFailure(
     ctx.attemptTelemetries,
     null,
   );
-  store.writeText(join(paths.contextDir, "context_error.md"), `# Harness Error\n\n${message}\n`);
-  writeFailure(store, paths, {
-    phase: "harness",
-    category: blocked ? "policy" : "harness_error",
-    safeMessage: message,
-    eventRefs: planAttempts.map((p) => `attempts/${p.attemptId}/events.jsonl`),
-    runDir: paths.root,
-    nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
-  });
+  store.writeText(
+    join(paths.contextDir, "context_error.md"),
+    `# ${budgetMapping ? "Budget Denied" : "Harness Error"}\n\n${message}\n`,
+  );
+  if (budgetMapping) {
+    writeFailure(
+      store,
+      paths,
+      budgetFailureRecord(budgetMapping, {
+        eventRefs: planAttempts.map((p) => `attempts/${p.attemptId}/events.jsonl`),
+        runDir: paths.root,
+      }),
+    );
+  } else {
+    writeFailure(store, paths, {
+      phase: "harness",
+      category: blocked ? "policy" : "harness_error",
+      safeMessage: message,
+      eventRefs: planAttempts.map((p) => `attempts/${p.attemptId}/events.jsonl`),
+      runDir: paths.root,
+      nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
+    });
+  }
   store.writeText(
     join(paths.finalDir, "summary.md"),
     `# Run ${runId} (plan)\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : "failed"}\n\n${message}\n`,
@@ -508,7 +540,8 @@ export function writePlanHarnessFailure(
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
   const planFailFacts = blocked
     ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
-    : makeOutcomeFacts("failed", { reason: "harness_failed" });
+    : makeOutcomeFacts("failed", { reason: budgetMapping ? budgetMapping.reason : "harness_failed" });
+  const failPhase = budgetMapping ? budgetMapping.phase : "harness";
   if (blocked)
     log.emit("run.blocked", {
       lifecycle: planFailFacts.lifecycle,
@@ -522,7 +555,8 @@ export function writePlanHarnessFailure(
       lifecycle: planFailFacts.lifecycle,
       facts: planFailFacts,
       reason: planFailFacts.reason,
-      phase: "harness",
+      phase: failPhase,
+      ...(budgetMapping?.harnessId ? { harness_id: budgetMapping.harnessId } : {}),
       error: message,
       failure_ref: "final/failure.yaml",
     });

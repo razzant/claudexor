@@ -94,6 +94,7 @@ import {
   guardAnnouncedRun,
   writeFailure,
 } from "./runTerminals.js";
+import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import { assertOutputSchemaCompiles, finalizeStructuredOutput } from "./structuredOutput.js";
 import {
   transientRetryDelayMs,
@@ -567,6 +568,10 @@ export interface PlannerAttemptOutcome {
   /** True when the budget lease was denied — the solo loop stops trying
    * further fallbacks; council treats it as a failed member. */
   budgetDenied: boolean;
+  /** QA-050: the ledger's TYPED denial (route/slot + sub-code), so the plan
+   * terminal emits a budget failure with real remediation instead of collapsing
+   * to "all planners failed". Null when the attempt was not budget-denied. */
+  budgetDenial?: BudgetDenial | null;
 }
 
 /** Inputs to one planner spawn. Shared by the solo plan loop and the Council
@@ -2769,6 +2774,9 @@ export class Orchestrator {
       leaseId: string;
     }
     let budgetStopped = false;
+    // QA-050: keep the ledger's typed denial so the zero-candidate terminal
+    // emits budget remediation (not an empty/auth action list).
+    let budgetDenial: BudgetDenial | null = null;
     let softWarned = false;
     const requestedSingleCandidate = adapters.length === 1;
     const slots: CandidateSlot[] = [];
@@ -2797,6 +2805,12 @@ export class Orchestrator {
         // Wave-guard denial stops ADDING slots but must not cancel the ones
         // already granted; only a tripped hard cap stops everything.
         if (lease.denied !== "estimate_headroom") budgetStopped = true;
+        budgetDenial ??= {
+          code: lease.denied ?? "hard_cap",
+          reason: lease.reason ?? "budget lease denied",
+          harnessId: routed.adapter.id,
+          attemptId,
+        };
         break; // do not spawn more paid work
       }
       slots.push({
@@ -3058,13 +3072,18 @@ export class Orchestrator {
 
     if (runs.length === 0) {
       const budgetReason = ledger.terminal();
+      // QA-050: when the zero-candidate cause is a budget refusal, the shared
+      // classifier owns the typed code, the refused route/slot, and actionable
+      // budget remediation (previously an empty nextActions array).
+      const agentBudgetMapping =
+        budgetStopped || budgetReason
+          ? classifyBudgetFailure({ denial: budgetDenial, terminal: budgetReason })
+          : null;
       const facts = makeOutcomeFacts("failed", {
-        reason: budgetReason ?? (budgetStopped ? "budget_exhausted" : "harness_failed"),
+        reason: agentBudgetMapping?.reason ?? (budgetStopped ? "budget_exhausted" : "harness_failed"),
         noChanges: true,
       });
-      const why = budgetStopped
-        ? "budget exhausted before any candidate run"
-        : "no candidates produced";
+      const why = agentBudgetMapping?.safeMessage ?? "no candidates produced";
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
         winner: null,
         facts,
@@ -3075,20 +3094,26 @@ export class Orchestrator {
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: budget\n\n${why}\n`,
+        `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Phase: ${agentBudgetMapping ? "budget" : "executor"}\n\n${why}\n`,
       );
-      writeFailure(store, paths, {
-        phase: "budget",
-        category: isBudgetTerminal(facts.reason) ? "budget" : "internal",
-        safeMessage: why,
-        runDir: paths.root,
-      });
+      if (agentBudgetMapping) {
+        writeFailure(store, paths, budgetFailureRecord(agentBudgetMapping, { runDir: paths.root }));
+      } else {
+        writeFailure(store, paths, {
+          phase: "executor",
+          category: "internal",
+          safeMessage: why,
+          runDir: paths.root,
+          nextActions: ["Open diagnostics", "Retry the run"],
+        });
+      }
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       log.emit("run.failed", {
         lifecycle: facts.lifecycle,
         facts,
         reason: facts.reason,
-        phase: "budget",
+        phase: agentBudgetMapping ? "budget" : "executor",
+        ...(agentBudgetMapping?.harnessId ? { harness_id: agentBudgetMapping.harnessId } : {}),
         error: why,
         failure_ref: "final/failure.yaml",
       });
@@ -5065,6 +5090,7 @@ export class Orchestrator {
       log.emit("budget.lease.created", {
         granted: false,
         reason: lease.reason,
+        denied: lease.denied,
         attempt_id: attemptId,
         harness_id: adapter.id,
       });
@@ -5076,6 +5102,12 @@ export class Orchestrator {
         text: null,
         telemetry: null,
         budgetDenied: true,
+        budgetDenial: {
+          code: lease.denied ?? "hard_cap",
+          reason: lease.reason ?? "budget lease denied",
+          harnessId: adapter.id,
+          attemptId,
+        },
       };
     }
     const knobs = this.routeSpecKnobs(routed, contract, undefined, input.effort);
@@ -5465,6 +5497,9 @@ export class Orchestrator {
       harnessId: string;
       telemetry: AttemptTelemetry;
     }[] = [];
+    // QA-050: the ledger's typed denial when a planner slot was refused
+    // pre-spawn, so the terminal is a budget failure (not "all planners failed").
+    let planBudgetDenial: BudgetDenial | null = null;
     try {
       for (const [idx, routed] of adapters.entries()) {
         if (input.signal?.aborted) break;
@@ -5485,7 +5520,19 @@ export class Orchestrator {
           promptBody: this.planPrompt(input.prompt) + contextSection,
           intent: "plan",
         });
-        if (outcome.budgetDenied) break;
+        if (outcome.budgetDenied) {
+          // QA-050: retain the denied planner slot before breaking so the
+          // terminal names the refused route and does not read "all planners
+          // failed"; capture the typed denial for the budget classifier.
+          planBudgetDenial ??= outcome.budgetDenial ?? null;
+          planAttempts.push({
+            attemptId,
+            harnessId: outcome.harnessId,
+            status: outcome.status,
+            error: outcome.error,
+          });
+          break;
+        }
         if (outcome.telemetry)
           attemptTelemetries.push({
             attemptId,
@@ -5584,6 +5631,7 @@ export class Orchestrator {
           ledger,
           planAttempts,
           attemptTelemetries,
+          budgetDenial: planBudgetDenial,
         },
         "all planners failed",
       );
@@ -5869,6 +5917,11 @@ export class Orchestrator {
     }[] = [];
     let fallbackOpen = false;
     let budgetStopped = false;
+    // QA-050: keep the ledger's TYPED denial (not just a boolean) so the
+    // terminal names the budget sub-code, the refused route/slot, and budget
+    // remediation instead of a harness auth/setup template. First denial wins —
+    // it is the decisive pre-spawn refusal.
+    let budgetDenial: BudgetDenial | null = null;
     // in a swarm the same harness appears in several slots; resuming the
     // ONE native session id from all of them races the vendor's session store
     // (and is semantically wrong — N explorers continuing one conversation).
@@ -5907,10 +5960,17 @@ export class Orchestrator {
         log.emit("budget.lease.created", {
           granted: false,
           reason: lease.reason,
+          denied: lease.denied,
           attempt_id: attemptId,
           harness_id: adapter.id,
         });
         budgetStopped = true;
+        budgetDenial ??= {
+          code: lease.denied ?? "hard_cap",
+          reason: lease.reason ?? "budget lease denied",
+          harnessId: adapter.id,
+          attemptId,
+        };
         return;
       }
       const knobs = this.routeSpecKnobs(routed, contract, modelOverride, input.effort);
@@ -6423,8 +6483,17 @@ export class Orchestrator {
     if (!opts.deepScan && succeededReadonly.length === 0) {
       const last = attempts[attempts.length - 1];
       const webBlocked = attempts.some((a) => a.status === "blocked");
+      // QA-050: a budget refusal is a BUDGET failure, not a harness one — route
+      // it through the shared classifier so phase/category/code/route and the
+      // remediation are budget-typed (never auth/setup) across every mode.
+      const budgetMapping =
+        budgetStopped && !webBlocked
+          ? classifyBudgetFailure({ denial: budgetDenial, terminal: ledger.terminal() })
+          : null;
       const singleError =
-        last?.error ?? (budgetStopped ? "budget exhausted before any attempt" : "harness failed");
+        budgetMapping?.safeMessage ??
+        last?.error ??
+        (budgetStopped ? "budget exhausted before any attempt" : "harness failed");
       if (fallbackOpen || webBlocked) {
         log.emit("route.fallback.exhausted", {
           harness_id: last?.harnessId ?? null,
@@ -6458,18 +6527,27 @@ export class Orchestrator {
       );
       store.writeText(
         join(paths.contextDir, "context_error.md"),
-        `# Harness Error\n\n${singleError}\n`,
+        `# ${budgetMapping ? "Budget Denied" : "Harness Error"}\n\n${singleError}\n`,
       );
-      writeFailure(store, paths, {
-        phase: "harness",
-        category: webBlocked ? "policy" : budgetStopped ? "budget" : "harness_error",
-        harnessId: last?.harnessId,
-        attemptId: last?.attemptId,
-        safeMessage: singleError,
-        eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
-        runDir: paths.root,
-        nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
-      });
+      const roEventRefs = attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`);
+      if (budgetMapping) {
+        writeFailure(
+          store,
+          paths,
+          budgetFailureRecord(budgetMapping, { eventRefs: roEventRefs, runDir: paths.root }),
+        );
+      } else {
+        writeFailure(store, paths, {
+          phase: "harness",
+          category: webBlocked ? "policy" : "harness_error",
+          harnessId: last?.harnessId,
+          attemptId: last?.attemptId,
+          safeMessage: singleError,
+          eventRefs: roEventRefs,
+          runDir: paths.root,
+          nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
+        });
+      }
       // QA-036: re-check the DELIVERABLE through the shared finalizer helper —
       // a blocked Ask that produced NO answer can no longer read as a succeeded
       // "Needs review" run (exit 0); it is an honest failure (exit 1).
@@ -6483,16 +6561,17 @@ export class Orchestrator {
         ...(roTerminal.review ? { review: roTerminal.review } : {}),
         reason: roTerminal.reason,
       });
+      const terminalHarnessId = budgetMapping?.harnessId ?? last?.harnessId;
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${opts.mode})\n\n- Harness: ${last?.harnessId ?? "none"}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${singleError}\n`,
+        `# Run ${runId} (${opts.mode})\n\n- Harness: ${terminalHarnessId ?? "none"}\n- Lifecycle: ${terminalFacts.lifecycle}${terminalFacts.reason ? ` (${terminalFacts.reason})` : ""}\n\n${singleError}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
       if (terminalFacts.lifecycle === "succeeded") {
         log.emit("run.blocked", {
           lifecycle: terminalFacts.lifecycle,
           facts: terminalFacts,
-          harness_id: last?.harnessId,
+          harness_id: terminalHarnessId,
           error: singleError,
           failure_ref: "final/failure.yaml",
         });
@@ -6501,7 +6580,8 @@ export class Orchestrator {
           lifecycle: terminalFacts.lifecycle,
           facts: terminalFacts,
           reason: terminalFacts.reason,
-          harness_id: last?.harnessId,
+          phase: budgetMapping?.phase,
+          harness_id: terminalHarnessId,
           error: singleError,
           failure_ref: "final/failure.yaml",
         });
@@ -6525,10 +6605,18 @@ export class Orchestrator {
     }
     const succeeded = succeededReadonly;
     if (opts.deepScan && succeeded.length === 0) {
-      const message = attempts
-        .map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`)
-        .join("\n");
       const blocked = attempts.some((a) => a.status === "blocked");
+      // QA-050/QA-019: an all-denied scan (finite-zero, or every scout refused
+      // before spawn) is a BUDGET failure, not harness_error — route it through
+      // the shared classifier. Only a pure-denial scan (no scout actually errored
+      // in the harness) qualifies, so a real explorer failure is never masked.
+      const scanBudgetMapping =
+        budgetStopped && !blocked && attempts.length === 0
+          ? classifyBudgetFailure({ denial: budgetDenial, terminal: ledger.terminal() })
+          : null;
+      const message = scanBudgetMapping
+        ? scanBudgetMapping.safeMessage
+        : attempts.map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`).join("\n");
       this.writeRunTelemetry(
         store,
         paths,
@@ -6539,19 +6627,30 @@ export class Orchestrator {
         attemptTelemetries,
         null,
       );
-      writeFailure(store, paths, {
-        phase: "harness",
-        category: blocked ? "policy" : "harness_error",
-        safeMessage: message || "all explorers failed",
-        eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
-        runDir: paths.root,
-        nextActions: [
-          "Open diagnostics",
-          "Check harness authentication",
-          "Reduce explore width",
-          "Retry after setup",
-        ],
-      });
+      if (scanBudgetMapping) {
+        writeFailure(
+          store,
+          paths,
+          budgetFailureRecord(scanBudgetMapping, {
+            eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
+            runDir: paths.root,
+          }),
+        );
+      } else {
+        writeFailure(store, paths, {
+          phase: "harness",
+          category: blocked ? "policy" : "harness_error",
+          safeMessage: message || "all explorers failed",
+          eventRefs: attempts.map((a) => `attempts/${a.attemptId}/events.jsonl`),
+          runDir: paths.root,
+          nextActions: [
+            "Open diagnostics",
+            "Check harness authentication",
+            "Reduce explore width",
+            "Retry after setup",
+          ],
+        });
+      }
       // QA-036: with ZERO successful explorers there is no synthesizable
       // deliverable, so a blocked scan can no longer read as a succeeded
       // "needs review" run (exit 0). An empty scan is a failure whether the
@@ -6561,12 +6660,14 @@ export class Orchestrator {
         `# Run ${runId} (${opts.mode})\n\n- Lifecycle: failed\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      const scanFailFacts = makeOutcomeFacts("failed", { reason: "harness_failed" });
+      const scanFailFacts = makeOutcomeFacts("failed", {
+        reason: scanBudgetMapping ? scanBudgetMapping.reason : "harness_failed",
+      });
       log.emit("run.failed", {
         lifecycle: scanFailFacts.lifecycle,
         facts: scanFailFacts,
         reason: scanFailFacts.reason,
-        phase: "harness",
+        phase: scanBudgetMapping ? scanBudgetMapping.phase : "harness",
         error: message,
         failure_ref: "final/failure.yaml",
       });

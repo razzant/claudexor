@@ -8,7 +8,7 @@
  * forever.
  */
 import { join } from "node:path";
-import type { ModeKind } from "@claudexor/schema";
+import type { ModeKind, RunFailureCode } from "@claudexor/schema";
 import { makeOutcomeFacts } from "@claudexor/schema";
 import type { ArtifactStore } from "@claudexor/artifact-store";
 import type { EventLog } from "@claudexor/event-log";
@@ -35,9 +35,13 @@ export function writeFailure(
   failure: {
     phase: string;
     category: string;
+    /** Machine-readable sub-code (typed budget-denial reason); null/omitted when
+     * the category alone is sufficient. Consumed by surfaces to pick remediation
+     * without parsing safeMessage (QA-050). */
+    code?: RunFailureCode | null;
     safeMessage: string;
-    harnessId?: string;
-    attemptId?: string;
+    harnessId?: string | null;
+    attemptId?: string | null;
     rawDetailRef?: string;
     logRefs?: string[];
     eventRefs?: string[];
@@ -48,6 +52,7 @@ export function writeFailure(
   store.writeYaml(join(paths.finalDir, "failure.yaml"), {
     phase: failure.phase,
     category: failure.category,
+    code: failure.code ?? null,
     harnessId: failure.harnessId ?? null,
     attemptId: failure.attemptId ?? null,
     safeMessage: redactSecrets(failure.safeMessage),

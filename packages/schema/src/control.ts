@@ -339,6 +339,20 @@ export const ControlQueuedRunInfo = z
   .describe("Compact state of a queued/running daemon job.");
 export type ControlQueuedRunInfo = z.infer<typeof ControlQueuedRunInfo>;
 
+export const RunFailureCode = z
+  .enum([
+    "finite_zero",
+    "hard_cap",
+    "estimate_headroom",
+    "unknown_paid_in_flight",
+    "budget_overshoot",
+    "cost_unverifiable",
+  ])
+  .describe(
+    "Machine-readable failure sub-code within a RunFailure category (today the typed budget-denial reasons produced by the budget ledger).",
+  );
+export type RunFailureCode = z.infer<typeof RunFailureCode>;
+
 export const RunFailure = z
   .object({
     phase: z.string().default("unknown").describe("Pipeline phase where the failure happened."),
@@ -358,6 +372,11 @@ export const RunFailure = z
       .default("unknown")
       .describe(
         "Typed failure category (validation, project, auth, harness, budget, policy, cancelled, internal, unknown).",
+      ),
+    code: RunFailureCode.nullable()
+      .default(null)
+      .describe(
+        "Machine-readable failure sub-code within the category (today the typed budget-denial reason from the ledger); null when the category alone is sufficient. Surfaces choose remediation from this, never by parsing safeMessage.",
       ),
     harnessId: z
       .string()

@@ -1236,6 +1236,19 @@ per-candidate estimate floor (`budget.estimate_usd_floor`, default $0.05) after
 the first slot, so concurrent estimated work counts against headroom before
 usage streams.
 
+A budget refusal is projected honestly by ONE shared classifier
+(`classifyBudgetFailure`), not re-invented per mode. The ledger's typed
+lease-denial (`finite_zero`, `hard_cap`, `estimate_headroom`,
+`unknown_paid_in_flight`) and settled terminal (`budget_overshoot`,
+`cost_unverifiable`) are captured at the denial site with the refused
+route/slot, then mapped — across ask, agent/best-of, deep-scan, solo plan, and
+council — onto a `RunFailure` with `phase: budget`, `category: budget`, a
+machine-readable `code`, the refused `harnessId`/`attemptId`, and remediation
+that names the budget control (`--max-usd` or the composer Budget) or a
+proven-zero route. It NEVER recommends authentication/setup for a budget cause,
+and it warns that an unchanged Exact Retry replays the immutable cap. Surfaces
+choose remediation from the typed `code`, never by parsing the message.
+
 Quota is typed and vendor-owned, never scraped from prose. Codex rollout
 `token_count.rate_limits` preserves every reported window as an independent
 constraint with usage, duration, reset, provenance, and freshness. The global
