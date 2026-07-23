@@ -159,3 +159,13 @@ deferred; they are recorded here now.
   doctor cannot imply an unsupported host will load the layout. Owner-scoped
   OUT of A-2 (namespace + fallback only); ship the version/readiness proof as
   its own reviewed surface, not folded into the invocation fix.
+
+## v3.1.0 dogfood finding (2026-07-23)
+
+- Update-provider cache is keyed only by bundle id, so a source-built dev/side
+  build inherits the installed packaged app's cached update-chip decision
+  ("Update available → vX") through the shared `com.claudexor.ClaudexorApp`
+  UserDefaults domain. Harmless for real users (one packaged build per
+  machine) but misleads dev builds. Fix: namespace the update-provider cache
+  by build kind (dev vs packaged) or by resolved engine identity. Non-gating;
+  logged so it is not a silent drop.
