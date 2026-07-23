@@ -83,6 +83,43 @@ describe("SetupJobStore global-journal authority", () => {
     ).toThrow(/different request/);
   });
 
+  it("binds an extend Idempotency-Key so exact replay is replay-safe across restart (QA-075)", () => {
+    const request = { operation: "extend", jobId: "setup-ext" };
+    const store = new SetupJobStore(root);
+    store.create(job("setup-ext"));
+    // A new extend key is unbound…
+    expect(store.resolveExtend({ key: "ext-1", client: "control-api", request })).toBeNull();
+    // …applying the extension binds it atomically with the state change (a
+    // message-only patch stands in for the +15min deadline bump, which requires
+    // an active phase; the binding mechanism is identical).
+    store.update(
+      "setup-ext",
+      { message: "codex login deadline extended by 15 minutes." },
+      { key: "ext-1", client: "control-api", request },
+    );
+    const replay = store.resolveExtend({ key: "ext-1", client: "control-api", request });
+    expect(replay?.jobId).toBe("setup-ext");
+    expect(replay?.message).toBe("codex login deadline extended by 15 minutes.");
+
+    // The binding survives restart (so a post-crash replay never re-extends).
+    const reopened = new SetupJobStore(root);
+    expect(reopened.resolveExtend({ key: "ext-1", client: "control-api", request })?.jobId).toBe(
+      "setup-ext",
+    );
+    // A different key is a distinct authorized extension (unbound).
+    expect(reopened.resolveExtend({ key: "ext-2", client: "control-api", request })).toBeNull();
+    // The same key reused with a different request is a conflict.
+    expect(() =>
+      reopened.resolveExtend({
+        key: "ext-1",
+        client: "control-api",
+        request: { operation: "extend", jobId: "other" },
+      }),
+    ).toThrow(/different request/);
+    // Extend and create key spaces are independent (different operation digest).
+    expect(reopened.resolveCreate({ key: "ext-1", client: "control-api", request })).toBeNull();
+  });
+
   it("does not read, migrate, chmod, or mutate any v1 setup bytes", () => {
     const legacyRoot = join(root, "setup-jobs");
     const legacyJobDir = join(legacyRoot, "jobs", "setup-legacy");

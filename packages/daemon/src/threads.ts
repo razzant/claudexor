@@ -26,6 +26,7 @@ import {
   threadLaneCheckpoints,
 } from "./thread-lane-checkpoints.js";
 import { reduceThreadLifecycle, type ThreadLifecycleAction } from "./thread-lifecycle.js";
+import { deriveThreadTitle } from "./thread-title.js";
 import {
   assertUnique,
   idempotencyConflict,
@@ -439,7 +440,7 @@ export class ThreadStore {
     // First prompt names the thread (no LLM): cheap, honest, editable via rename.
     const nextThread = ThreadSchema.parse({
       ...thread,
-      title: thread.title || turn.prompt.split("\n")[0].slice(0, 60),
+      title: thread.title || deriveThreadTitle(turn.prompt),
       updated_at: nowIso(),
     });
     if (idempotency) idempotency.turnId = turn.id;

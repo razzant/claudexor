@@ -170,6 +170,32 @@ describe("ThreadStore", () => {
     expect(s.getThread(t.id)?.title).toBe("Make a cyberpunk racing game");
   });
 
+  it("auto-title is grapheme-safe and never splits a surrogate pair (QA-048)", () => {
+    const { s } = store();
+    // 59 ASCII + a supplementary emoji at the 60th grapheme: the old
+    // .slice(0,60) kept 60 UTF-16 code units, splitting 😀 into a lone \ud83d
+    // that Foundation's JSONDecoder then rejects for the whole thread list.
+    const boundaryEmoji = s.createThread({ repoRoot: "/tmp/proj" });
+    const title60 = s.createTurn(boundaryEmoji.id, `${"a".repeat(59)}😀`);
+    void title60;
+    const emojiTitle = s.getThread(boundaryEmoji.id)?.title ?? "";
+    // Exactly 60 graphemes -> kept whole, no truncation, no lone surrogate.
+    expect(emojiTitle).toBe(`${"a".repeat(59)}😀`);
+    expect(emojiTitle.endsWith("😀")).toBe(true);
+    // Every string produced must be valid UTF-16 (no unpaired surrogate).
+    expect(JSON.parse(JSON.stringify(emojiTitle))).toBe(emojiTitle);
+
+    // 61+ graphemes: overflow gets a deliberate ellipsis, whole graphemes only.
+    const long = s.createThread({ repoRoot: "/tmp/proj" });
+    s.createTurn(long.id, `${"b".repeat(59)}😀tail`);
+    const longTitle = s.getThread(long.id)?.title ?? "";
+    expect(longTitle.endsWith("…")).toBe(true);
+    expect(
+      [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(longTitle)].length,
+    ).toBe(60);
+    expect(longTitle.includes("\uD83D")).toBe(false);
+  });
+
   it("updateThread renames and archives", () => {
     const { s } = store();
     const t = s.createThread({ repoRoot: "/tmp/proj" });

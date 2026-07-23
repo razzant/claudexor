@@ -173,10 +173,32 @@ export class SetupJobStore {
     return cloneJob(stored);
   }
 
-  update(jobId: string, patch: Partial<ControlSetupJob>): ControlSetupJob {
+  update(
+    jobId: string,
+    patch: Partial<ControlSetupJob>,
+    idempotency?: SetupCreateIdempotency,
+  ): ControlSetupJob {
     const current = this.jobs.get(jobId);
     if (!current) throw Object.assign(new Error("setup job not found"), { status: 404 });
-    return this.persist(reduceSetupJob(current, { ...current, ...patch }));
+    // QA-075: an additive extension binds its Idempotency-Key atomically with
+    // the state change (one durable `setup.job.saved` record carries both), so
+    // replay after restart returns the same job without re-extending.
+    const binding = idempotency
+      ? this.newBinding(jobId, idempotency, "setup.job.extend")
+      : undefined;
+    return this.persist(reduceSetupJob(current, { ...current, ...patch }), binding);
+  }
+
+  /** QA-075: resolve a prior extension bound to this Idempotency-Key. Returns
+   *  the already-extended job (no further +15) on exact replay, throws on a
+   *  key reused with a different request, null when the key is new. */
+  resolveExtend(idempotency: SetupCreateIdempotency): ControlSetupJob | null {
+    this.assertAvailable();
+    const binding = this.newBinding("pending", idempotency, "setup.job.extend");
+    const prior = this.createByKey.get(binding.keyDigest);
+    if (!prior) return null;
+    if (prior.requestDigest !== binding.requestDigest) throw idempotencyConflict();
+    return this.status(prior.jobId);
   }
 
   status(jobId: string): ControlSetupJob {
@@ -319,7 +341,11 @@ export class SetupJobStore {
     // coordinator after every registered projection has validated the prefix.
   }
 
-  private newBinding(jobId: string, input: SetupCreateIdempotency): SetupCreateBinding {
+  private newBinding(
+    jobId: string,
+    input: SetupCreateIdempotency,
+    operation: "setup.job.create" | "setup.job.extend" = "setup.job.create",
+  ): SetupCreateBinding {
     if (!input.key.trim() || input.key.length > 256) {
       throw Object.assign(new Error("invalid Idempotency-Key"), { status: 400 });
     }
@@ -327,7 +353,7 @@ export class SetupJobStore {
       keyDigest: hashJson({
         client: input.client,
         partition: "global",
-        operation: "setup.job.create",
+        operation,
         key: input.key,
       }),
       requestDigest: hashJson(input.request),

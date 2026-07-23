@@ -161,8 +161,12 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
   function iso(): string {
     return now().toISOString();
   }
-  function update(jobId: string, patch: Partial<ControlSetupJob>): ControlSetupJob {
-    return store.update(jobId, patch);
+  function update(
+    jobId: string,
+    patch: Partial<ControlSetupJob>,
+    idempotency?: { key: string; client: string; request: unknown },
+  ): ControlSetupJob {
+    return store.update(jobId, patch, idempotency);
   }
   function log(jobId: string, line: string): void {
     store.appendLog(jobId, line);
@@ -1285,6 +1289,21 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       supervisor.assertCreateAllowed();
       const p = (input ?? {}) as Record<string, unknown>;
       const jobId = typeof p.jobId === "string" ? p.jobId : "";
+      // QA-075: bind the extension to its Idempotency-Key. Exact replay of the
+      // same key returns the same (already-extended) job instead of adding
+      // another 15 minutes; a new key authorizes a distinct extension.
+      const idempotency =
+        typeof p.idempotencyKey === "string" && p.idempotencyKey
+          ? {
+              key: p.idempotencyKey,
+              client: "control-api",
+              request: { operation: "extend", jobId },
+            }
+          : undefined;
+      if (idempotency) {
+        const prior = store.resolveExtend(idempotency);
+        if (prior) return prior;
+      }
       const job = store.status(jobId);
       if (
         !ACTIVE_SETUP_STATES.has(job.state) ||
@@ -1293,10 +1312,14 @@ export function createSetupJobManager(opts: SetupJobManagerOptions = {}) {
       ) {
         throw Object.assign(new Error("setup job cannot be extended"), { status: 409 });
       }
-      return update(jobId, {
-        deadlineAt: new Date(Date.parse(job.deadlineAt) + LOGIN_EXTENSION_MS).toISOString(),
-        message: `${job.harness} login deadline extended by 15 minutes.`,
-      });
+      return update(
+        jobId,
+        {
+          deadlineAt: new Date(Date.parse(job.deadlineAt) + LOGIN_EXTENSION_MS).toISOString(),
+          message: `${job.harness} login deadline extended by 15 minutes.`,
+        },
+        idempotency,
+      );
     },
     _store: store,
     _supervisorHealth: () => supervisor.health(),

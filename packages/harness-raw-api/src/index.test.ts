@@ -341,6 +341,67 @@ describe("raw-api doctor exact auth-source readiness", () => {
   });
 });
 
+describe("named-instance identity in outward diagnostics (QA-058)", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  const openrouter = () =>
+    createRawApiAdapter({
+      id: "openrouter",
+      providerFamily: "unknown",
+      baseUrl: "https://openrouter.ai/api/v1",
+      keyEnv: "OPENROUTER_API_KEY",
+      defaultModel: "openai/gpt-5.5",
+    });
+
+  beforeEach(() => {
+    delete process.env.OPENROUTER_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("discovery names the instance id, never the raw-api class", async () => {
+    await expect(openrouter().discover()).rejects.toThrow(
+      "openrouter unavailable: set OPENROUTER_API_KEY",
+    );
+    await expect(openrouter().discover()).rejects.not.toThrow(/raw-api/);
+  });
+
+  it("doctor missing-key reason and unsupported-source detail speak the instance id", async () => {
+    const missing = await openrouter().doctor({ cwd: "/repo", authSource: "api_key_env" });
+    expect(missing.reasons).toEqual(["set OPENROUTER_API_KEY to enable the openrouter harness"]);
+    expect(JSON.stringify(missing)).not.toContain("raw-api");
+
+    const unsupported = await openrouter().doctor({ cwd: "/repo", authSource: "native_session" });
+    expect(unsupported.reasons).toEqual(["openrouter does not support auth source native_session"]);
+    expect(unsupported.auth_sources[0]?.detail).toBe("openrouter does not support native_session");
+    expect(JSON.stringify(unsupported)).not.toContain("raw-api");
+  });
+
+  it("a runtime missing-key error names the instance id", async () => {
+    const events = await collect(
+      openrouter().run(
+        HarnessRunSpec.parse({
+          session_id: "s-or",
+          intent: "explain",
+          prompt: "hi",
+          cwd: process.cwd(),
+        }),
+      ),
+    );
+    const error = events.find((e) => e.type === "error") as { error?: string } | undefined;
+    expect(error?.error).toBe("openrouter: OPENROUTER_API_KEY not set");
+    expect(error?.error).not.toContain("raw-api");
+  });
+
+  it("the DEFAULT instance still identifies itself as raw-api (no over-correction)", async () => {
+    await expect(createRawApiAdapter().discover()).rejects.toThrow(
+      "raw-api unavailable: set OPENAI_API_KEY",
+    );
+  });
+});
+
 describe("raw-api typed patch producer", () => {
   const ORIGINAL_ENV = { ...process.env };
 

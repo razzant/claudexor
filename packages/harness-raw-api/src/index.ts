@@ -160,7 +160,10 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
 
     async discover(): Promise<HarnessManifest> {
       if (!apiKey()) {
-        throw new HarnessUnavailableError(`raw-api unavailable: set ${keyEnv}`);
+        // QA-058: outward identity is the configured instance id (e.g.
+        // "openrouter"), never the implementation-class name "raw-api" — which
+        // is a DIFFERENT registered harness with its own key/secret slot.
+        throw new HarnessUnavailableError(`${id} unavailable: set ${keyEnv}`);
       }
       return HarnessManifestSchema.parse({
         id,
@@ -232,18 +235,18 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             {
               id: "auth_source",
               status: "fail",
-              detail: `raw-api does not support ${requestedSource}`,
+              detail: `${id} does not support ${requestedSource}`,
             },
           ],
           enabled_intents: [],
           disabled_intents: ALL_RAW_API_INTENTS,
-          reasons: [`raw-api does not support auth source ${requestedSource}`],
+          reasons: [`${id} does not support auth source ${requestedSource}`],
           auth_sources: [
             {
               source: requestedSource,
               availability: "unavailable",
               verification: "not_run",
-              detail: `raw-api does not support ${requestedSource}`,
+              detail: `${id} does not support ${requestedSource}`,
             },
           ],
         });
@@ -265,7 +268,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           checks: [{ id: "api_key", status: "fail", detail: `${keyEnv} not set` }],
           enabled_intents: [],
           disabled_intents: ALL_RAW_API_INTENTS,
-          reasons: [`set ${keyEnv} to enable the raw-api harness`],
+          reasons: [`set ${keyEnv} to enable the ${id} harness`],
           auth_sources: [readiness],
         });
       }
@@ -371,7 +374,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
           type: "error",
           session_id: spec.session_id,
           ts: nowIso(),
-          error: `raw-api: ${keyEnv} not set`,
+          error: `${id}: ${keyEnv} not set`,
         };
         yield { type: "completed", session_id: spec.session_id, ts: nowIso() };
         return;
@@ -417,7 +420,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
             type: "error",
             session_id: spec.session_id,
             ts: nowIso(),
-            error: `raw-api HTTP ${res.status}`,
+            error: `${id} HTTP ${res.status}`,
             // A 429 is a TYPED rate-limit signal (cooldown/fallback governance
             // reads ev.rate_limit, never prose), with the native reset when known.
             ...(res.status === 429
@@ -447,7 +450,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
               type: "error",
               session_id: spec.session_id,
               ts: nowIso(),
-              error: `raw-api ${spec.intent} requires a RawContextPacket`,
+              error: `${id} ${spec.intent} requires a RawContextPacket`,
               refusal_code: "raw_patch_missing_evidence",
             };
           } else {
@@ -459,7 +462,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
                 type: "error",
                 session_id: spec.session_id,
                 ts: nowIso(),
-                error: `raw-api ${spec.intent} response was not a complete Git patch proposal JSON object`,
+                error: `${id} ${spec.intent} response was not a complete Git patch proposal JSON object`,
                 refusal_code: "raw_patch_truncated",
               };
             }
@@ -470,7 +473,7 @@ export function createRawApiAdapter(config: RawApiConfig = {}): HarnessAdapter {
                   type: "error",
                   session_id: spec.session_id,
                   ts: nowIso(),
-                  error: `raw-api ${spec.intent} patch refused by sensitive-content policy`,
+                  error: `${id} ${spec.intent} patch refused by sensitive-content policy`,
                   refusal_code: "raw_patch_sensitive_content",
                 };
               } else {
