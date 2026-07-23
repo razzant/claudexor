@@ -1691,7 +1691,26 @@ code touching one of these areas must honor it or change it explicitly here.
   surface, spec-session store, or grounding-run job class.
 - `--json` mode guarantees exactly one JSON object on stdout for run/ops
   verbs; interactive TTY question prompts (follow/agent Q&A) remain human-text
-  affordances by design.
+  affordances by design. Every FAILURE class — argument/usage validation,
+  pre-daemon bootstrap (e.g. `EPERM` on `fchmod`), typed preflight/daemon
+  problems, transport errors, and unexpected exceptions — is normalized by the
+  ONE top-level projector (`packages/cli/src/cli-error.ts`) into a single
+  failure envelope `{ok:false, exitCode, code?, message, retryable?,
+  fieldErrors?, requiredActions?, details?, context?}` (with a legacy `error`
+  alias of `message`), generated from the SAME typed problem as the human
+  stderr line. A central category → exit-code table owns the codes: usage /
+  validation = 2, operational failure = 1. Typed domain codes and structured
+  field errors survive projection (never a serialized Zod object inside
+  `message`, never a secret echoed back, never empty stdout under `--json`);
+  a typed `ControlProblem` from the daemon is preserved intact, with any
+  localized git/tool stderr demoted to a bounded `context` evidence field. The
+  run-verb SUCCESS envelope (`{runId, runDir, status, ...}`) is byte-stable and
+  does NOT flow through the projector. Binary/opaque success payloads stay one
+  object too: `project outputs <id> <path> --json` returns the bytes as base64
+  inside `{ok:true, path, encoding:"base64", byteLength, content}` rather than
+  streaming raw bytes onto the JSON stdout. `claudexor <cmd> --help` resolves
+  the command first and prints that command's scoped usage (a typo'd verb with
+  `--help` is a usage error, exit 2), never the global help at exit 0.
 - `--json-stream` is the separate NDJSON machine surface on canonical run
   verbs: an early `run.started` frame (runId/runDir/jobId), one JSON line per
   run event (internally the shared follow pipeline in json mode), and the same

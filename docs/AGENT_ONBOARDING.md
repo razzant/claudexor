@@ -75,10 +75,17 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
 ## CLI vs MCP vs control API
 
 - **CLI** is the primary surface. `--json` gives machine output on the main
-  paths. USAGE and transport errors come back as `{ok:false, exitCode,
-  error}` on stdout; a run that STARTED always reports its terminal as
-  `{runId, runDir, status, ...}` even when the status is a failure — a
-  non-success terminal is a result, not an error envelope.
+  paths. EVERY failure — usage/validation, pre-daemon bootstrap, typed
+  preflight/daemon problems, transport, or an unexpected exception — comes back
+  as exactly one envelope `{ok:false, exitCode, code?, message, retryable?,
+  fieldErrors?, requiredActions?, details?, context?}` on stdout (with a legacy
+  `error` alias of `message`); exit 2 is usage/validation, exit 1 is an
+  operational failure. Typed domain codes and structured field errors survive
+  (parse `code`/`fieldErrors`, never scrape `message`). A run that STARTED
+  always reports its terminal as `{runId, runDir, status, ...}` even when the
+  status is a failure — a non-success terminal is a result, not an error
+  envelope. `claudexor <cmd> --help` (or `--help --json`) prints that command's
+  scoped usage; `claudexor help --json` is the full machine catalog.
 - **MCP** (`claudexor mcp serve`, stdio) uses durable handles while MCP Tasks
   remain experimental. A run tool returns `{runId, runDir, status}` after the
   daemon binds the run; use `claudexor_run_status`, `claudexor_run_result`,
