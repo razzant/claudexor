@@ -43,7 +43,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import {
   touchedFileSection,
@@ -158,12 +159,16 @@ function parseArgs(argv) {
   let base = null;
   let candidate = null;
   let json = false;
+  let wholeFileList = null;
+  let receipt = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--pack") packs.push(argv[++i]);
     else if (a === "--base") base = argv[++i];
     else if (a === "--candidate") candidate = argv[++i];
     else if (a === "--json") json = true;
+    else if (a === "--whole-file-list") wholeFileList = argv[++i];
+    else if (a === "--receipt") receipt = argv[++i];
     else return { error: `unknown or malformed argument: ${a}` };
   }
   if (!base || !SHA1.test(base))
@@ -173,7 +178,7 @@ function parseArgs(argv) {
   }
   if (packs.length === 0 || packs.some((p) => !p))
     return { error: "at least one --pack <file> is required" };
-  return { base, candidate, packs, json };
+  return { base, candidate, packs, json, wholeFileList, receipt };
 }
 
 function git(args) {
@@ -219,20 +224,77 @@ function changedFiles(base, candidate) {
   return parseNameStatusZ(git(["diff", "-z", "--name-status", `${base}..${candidate}`]));
 }
 
+/**
+ * Union the changed set with a packet's FILES_TO_READ_WHOLE.txt: files that
+ * did NOT change in base..candidate but whose FULL text the packet demands
+ * (context folded into the base — the v3.0.1 r6 class). Without this union a
+ * sub-wave selector that excludes a listed-but-unchanged file trips neither
+ * the zero-match guard nor the changed-file coverage, and the file silently
+ * loses full-text review.
+ */
+export function unionWithWholeFileList(files, listText) {
+  if (!listText) return files;
+  const union = [...files];
+  const known = new Set(files.map((f) => f.path));
+  for (const line of listText.split("\n")) {
+    const path = line.trim();
+    if (path && !path.startsWith("#") && !known.has(path)) {
+      union.push({ path, deleted: false });
+      known.add(path);
+    }
+  }
+  return union;
+}
+
+/**
+ * Candidate-bound machine receipt for the seal (audit A-8): the sealed
+ * attestation embeds this body's file digest, so the union-coverage proof is
+ * signature-bound rather than a claim in prose.
+ */
+export function coverageReceiptBody(
+  report,
+  { base, candidate, packs, packContents, wholeFileList },
+) {
+  return {
+    schemaVersion: 1,
+    ok: report.ok,
+    base,
+    candidate,
+    packs: packs.map((path, index) => ({
+      path,
+      sha256: createHash("sha256").update(packContents[index]).digest("hex"),
+    })),
+    wholeFileList: wholeFileList ?? null,
+    covered: report.covered.length,
+    uncovered: report.uncovered,
+    diffAuthoritativeSkips: report.skipped.length,
+    deleted: report.deleted.length,
+  };
+}
+
 function main() {
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed.error) {
     console.error(`review-coverage-check: ${parsed.error}`);
     process.exit(2);
   }
-  const { base, candidate, packs, json } = parsed;
+  const { base, candidate, packs, json, wholeFileList, receipt } = parsed;
   const packContents = packs.map((p) => readFileSync(p, "utf8"));
-  const files = changedFiles(base, candidate);
+  const files = unionWithWholeFileList(
+    changedFiles(base, candidate),
+    wholeFileList ? readFileSync(wholeFileList, "utf8") : null,
+  );
   const report = checkCoverage({
     files,
     readCurrentText: (path) => git(["show", `${candidate}:${path}`]),
     packContents,
   });
+  if (receipt) {
+    writeFileSync(
+      receipt,
+      `${JSON.stringify(coverageReceiptBody(report, { base, candidate, packs, packContents, wholeFileList }), null, 2)}\n`,
+    );
+  }
 
   if (json) {
     console.log(

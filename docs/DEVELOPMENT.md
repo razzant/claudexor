@@ -112,15 +112,19 @@ After review, `publish` accepts only an annotated stable tag on the exact
 `origin/main` commit plus a base64 signed review attestation. The workflow
 verifies its Ed25519 signature against the pinned public release-review key
 before reading any review claims, then recomputes the commit tree and
-validates the attestation's payload for its schema: schemaVersion 3 (the
+validates the attestation's payload for its schema: schemaVersion 4 (the
 current contract) binds the candidate SHA/tree, the full-gate receipt
-digest, and the panel reviewer report digests with non-blocking verdicts —
-the workflow enforces the structural floors defined by the Release review
-protocol in `docs/CHECKLISTS.md`, where the panel composition, wave discipline,
-reviewer count, and round bound live as process law. schemaVersion 2 (the
-retired six-slot panel, still verifiable for already-sealed evidence)
-additionally validates the sealed packet, artifact digests, exact six
-reviewer slots, quorum, and pass result.
+digest, and the panel reviewer report digests with non-blocking verdicts;
+a packet-split wave names each sub-wave on its panel slots
+(`triad@<subwave>=model`), must bind a FULL triad+scope panel per sub-wave,
+and must embed the `review-coverage-check --receipt` coverage receipt
+(candidate-bound pack digests + checker verdict) so one sub-wave's report
+can never stand in for the union — the workflow enforces the structural
+floors defined by the Release review protocol in `docs/CHECKLISTS.md`,
+where the panel composition, wave discipline, reviewer count, and round
+bound live as process law. Older schemas (v2's six-slot panel, v3 without
+the packet-split coverage receipt) are no longer accepted for new seals;
+already-sealed artifacts remain archived.
 Missing signing/notary/npm credentials fail; there is no unsigned or
 GitHub-only release fallback. npm
 packages publish in dependency order with `--provenance`; a retry skips an

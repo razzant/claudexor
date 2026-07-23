@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
   OWNER_REVIEW_MAX_ROUNDS,
   OWNER_REVIEW_PROTOCOL,
   REQUIRED_SCOPE_MODEL,
@@ -404,7 +405,7 @@ describe("release review fail-closed contract", () => {
   });
 });
 
-describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
+describe("owner-review attestation (current schema, owner protocol)", () => {
   const ownerAttestation = () => {
     const candidateSha = "a".repeat(40);
     const candidateTree = "b".repeat(40);
@@ -415,7 +416,7 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
       publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
     };
     const payload: any = {
-      contract: "owner-review-v3",
+      contract: `owner-review-v${OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION}`,
       reviewProtocol: OWNER_REVIEW_PROTOCOL,
       candidateSha,
       candidateTree,
@@ -462,7 +463,7 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
       sealedAt: "2026-07-18T00:00:00.000Z",
     };
     const attestation = {
-      schemaVersion: 3,
+      schemaVersion: OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION as number,
       keyId: authority.keyId,
       algorithm: "Ed25519",
       payload,
@@ -564,6 +565,131 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
     });
   });
 
+  const asSubWave = (reviews: any[], name: string) =>
+    reviews.map((review: any) => ({
+      ...review,
+      reviewer: `${review.reviewer}-${name}`,
+      panel: { ...review.panel, subWave: name },
+    }));
+  const coverageReceipt = (candidateSha: string) => ({
+    receiptSha256: "f".repeat(64),
+    base: "9".repeat(40),
+    candidate: candidateSha,
+    ok: true,
+    packSha256: ["a".repeat(64), "b".repeat(64)],
+  });
+
+  it("accepts a packet-split panel: a full triad+scope per named sub-wave plus a coverage receipt (A-8)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const split = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          ...asSubWave(attestation.payload.reviews, "macos"),
+          ...asSubWave(attestation.payload.reviews, "engine"),
+        ],
+        coverageReceipt: coverageReceipt(expected.candidateSha),
+      },
+    });
+    expect(validateReleaseAttestation(split, authority, expected)).toEqual({
+      ok: true,
+      reasons: [],
+    });
+  });
+
+  it("rejects a packet-split panel with NO coverage receipt — one sub-wave cannot stand for all (A-8)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const split = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          ...asSubWave(attestation.payload.reviews, "macos"),
+          ...asSubWave(attestation.payload.reviews, "engine"),
+        ],
+      },
+    });
+    const verdict = validateReleaseAttestation(split, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toContain("coverageReceipt");
+  });
+
+  it("rejects a sub-wave that binds only a partial panel — every named sub-wave needs the full triad+scope", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const split = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          ...asSubWave(attestation.payload.reviews, "macos"),
+          // engine sub-wave misses its scope slot
+          ...asSubWave(attestation.payload.reviews.slice(0, 3), "engine"),
+        ],
+        coverageReceipt: coverageReceipt(expected.candidateSha),
+      },
+    });
+    const verdict = validateReleaseAttestation(split, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toMatch(/scope slot \(sub-wave engine\)/);
+  });
+
+  it("rejects mixing named sub-wave slots with anonymous ones", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const mixed = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: [
+          ...asSubWave(attestation.payload.reviews, "macos"),
+          ...attestation.payload.reviews,
+        ],
+        coverageReceipt: coverageReceipt(expected.candidateSha),
+      },
+    });
+    const verdict = validateReleaseAttestation(mixed, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toContain("anonymous");
+  });
+
+  it("rejects a coverage receipt bound to the wrong candidate, a failed check, or missing pack digests", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const splitWith = (receipt: any) =>
+      resign({
+        ...attestation,
+        payload: {
+          ...attestation.payload,
+          reviews: [
+            ...asSubWave(attestation.payload.reviews, "macos"),
+            ...asSubWave(attestation.payload.reviews, "engine"),
+          ],
+          coverageReceipt: receipt,
+        },
+      });
+    const good = coverageReceipt(expected.candidateSha);
+    expect(
+      validateReleaseAttestation(
+        splitWith({ ...good, candidate: "c".repeat(40) }),
+        authority,
+        expected,
+      ).ok,
+    ).toBe(false);
+    expect(
+      validateReleaseAttestation(splitWith({ ...good, ok: false }), authority, expected).ok,
+    ).toBe(false);
+    expect(
+      validateReleaseAttestation(splitWith({ ...good, packSha256: [] }), authority, expected).ok,
+    ).toBe(false);
+  });
+
+  it("a single anonymous wave still needs no coverage receipt (unsplit pack is whole by construction)", () => {
+    const { attestation, authority, expected } = ownerAttestation();
+    expect(validateReleaseAttestation(attestation, authority, expected)).toEqual({
+      ok: true,
+      reasons: [],
+    });
+  });
+
   it("rejects tampering after signing — the signature covers the payload bytes", () => {
     const { attestation, authority, expected } = ownerAttestation();
     const tampered = {
@@ -573,7 +699,7 @@ describe("owner-review attestation (schemaVersion 3, owner protocol)", () => {
     expect(validateReleaseAttestation(tampered, authority, expected).ok).toBe(false);
   });
 
-  it("rejects a v2 attestation replayed under schemaVersion 3 without resigning", () => {
+  it("rejects an old-schema attestation replayed under the current version without resigning", () => {
     const { attestation, authority, expected } = ownerAttestation();
     expect(
       validateReleaseAttestation({ ...attestation, schemaVersion: 2 }, authority, expected).ok,

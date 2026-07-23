@@ -5,7 +5,7 @@ export const SCOPE_ITEMS: readonly string[];
 export const RELEASE_REVIEW_ATTESTATION_ALGORITHM: "Ed25519";
 export const REVIEWER_MIN_PLAUSIBLE_MS: number;
 export function livenessFloorMs(promptChars: number): number;
-export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION: 3;
+export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION: 4;
 export const OWNER_REVIEW_PROTOCOL: "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS: 2;
 export const OWNER_REVIEW_MAX_ROUNDS: 10;
@@ -31,13 +31,21 @@ export interface ChecklistValidation {
 }
 
 export function exactPanelMatch(triadModels: readonly string[], scopeModel: string): boolean;
+export function panelSubWaves(
+  reviews: readonly { panel?: { subWave?: unknown } | null }[],
+): Set<string>;
 export function validateReviewPanelCoverage(
   reviews: readonly {
     reviewer?: unknown;
     reportSha256?: unknown;
     verdict?: unknown;
-    panel?: { slot?: unknown; model?: unknown } | null;
+    panel?: { slot?: unknown; model?: unknown; subWave?: unknown } | null;
   }[],
+): string[];
+export function validateCoverageReceipt(
+  receipt: unknown,
+  expected: { candidateSha: string },
+  options: { required: boolean },
 ): string[];
 export interface PanelLockBinding {
   candidateSha: string;

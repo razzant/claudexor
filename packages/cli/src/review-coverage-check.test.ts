@@ -6,8 +6,10 @@ import {
 import {
   GENERATED_ARTIFACT_ALLOWLIST,
   checkCoverage,
+  coverageReceiptBody,
   diffAuthoritativeRule,
   fileCoverage,
+  unionWithWholeFileList,
 } from "../../../scripts/review-coverage-check.mjs";
 
 /** Build a realistic touched-file pack from a {path: currentText} map. */
@@ -143,6 +145,51 @@ describe("review-coverage-check", () => {
     for (const p of GENERATED_ARTIFACT_ALLOWLIST) {
       expect(diffAuthoritativeRule(p)).toBe("generated-artifact-allowlist");
     }
+  });
+
+  it("unions FILES_TO_READ_WHOLE entries into the required set (listed-but-unchanged context files)", () => {
+    const files = unionWithWholeFileList(
+      [{ path: "packages/cli/src/a.ts", deleted: false }],
+      "# context demanded in full\npackages/cli/src/a.ts\ndocs/GUIDE.md\n\n",
+    );
+    expect(files).toEqual([
+      { path: "packages/cli/src/a.ts", deleted: false },
+      { path: "docs/GUIDE.md", deleted: false },
+    ]);
+    // A pack that misses the listed-but-unchanged file must now FAIL coverage.
+    const report = checkCoverage({
+      files,
+      readCurrentText,
+      packContents: [packOf({ "packages/cli/src/a.ts": sources["packages/cli/src/a.ts"] })],
+    });
+    expect(report.ok).toBe(false);
+    expect(report.uncovered.map((entry: { path: string }) => entry.path)).toEqual([
+      "docs/GUIDE.md",
+    ]);
+    // No list → the changed set passes through untouched.
+    expect(unionWithWholeFileList(files, null)).toBe(files);
+  });
+
+  it("emits a candidate-bound receipt whose pack digests are the exact reviewed bytes (A-8 seal input)", () => {
+    const pack = packOf(sources);
+    const report = checkCoverage({
+      files: [{ path: "packages/cli/src/a.ts" }, { path: "docs/GUIDE.md" }],
+      readCurrentText,
+      packContents: [pack],
+    });
+    const body = coverageReceiptBody(report, {
+      base: "9".repeat(40),
+      candidate: "a".repeat(40),
+      packs: ["/tmp/wave/triad-prompt.md"],
+      packContents: [pack],
+      wholeFileList: null,
+    });
+    expect(body.ok).toBe(true);
+    expect(body.candidate).toBe("a".repeat(40));
+    expect(body.packs).toHaveLength(1);
+    expect(body.packs[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.covered).toBe(2);
+    expect(body.uncovered).toEqual([]);
   });
 
   it("covers a file when any one of several packs contains it (union of sub-waves)", () => {

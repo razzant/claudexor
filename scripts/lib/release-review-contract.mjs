@@ -43,11 +43,33 @@ export const SCOPE_ITEMS = Object.freeze([
  * distinguishes it). This binds the digests of the precise triad+scope panel
  * into the signature, not merely a >=2 structural floor.
  */
+const SUB_WAVE_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/**
+ * Distinct sub-wave keys named by the sealed panel slots. A single-wave seal
+ * uses no `subWave` field and yields the one anonymous key `""`; a packet-split
+ * seal names each sub-wave, and EVERY named group must bind its own full
+ * triad+scope panel (validated per group below).
+ */
+export function panelSubWaves(reviews) {
+  const keys = new Set();
+  for (const review of Array.isArray(reviews) ? reviews : []) {
+    const panel = review?.panel;
+    if (panel === undefined || panel === null) continue;
+    keys.add(typeof panel?.subWave === "string" ? panel.subWave : "");
+  }
+  return keys;
+}
+
 export function validateReviewPanelCoverage(reviews) {
   const reasons = [];
   const list = Array.isArray(reviews) ? reviews : [];
-  const triadModels = [];
-  const scopeModels = [];
+  /** subWave key ("" = single wave) -> {triadModels, scopeModels} */
+  const groups = new Map();
+  const slotGroup = (key) => {
+    if (!groups.has(key)) groups.set(key, { triadModels: [], scopeModels: [] });
+    return groups.get(key);
+  };
   for (const review of list) {
     const panel = review?.panel;
     // An extra reviewer (e.g. an internal critic) carries no panel slot; it is
@@ -65,28 +87,83 @@ export function validateReviewPanelCoverage(reviews) {
       reasons.push(`owner review panel ${panel.slot} slot is missing a model id`);
       continue;
     }
+    if (panel.subWave !== undefined && !SUB_WAVE_NAME.test(panel.subWave ?? "")) {
+      reasons.push(
+        `owner review panel sub-wave name must match ${SUB_WAVE_NAME}; got "${panel.subWave}"`,
+      );
+      continue;
+    }
     if (!SHA256.test(review?.reportSha256 ?? "")) {
       reasons.push(
         `owner review panel slot ${panel.slot}/${panel.model} is missing a report digest`,
       );
     }
-    if (panel.slot === "triad") triadModels.push(panel.model);
-    else scopeModels.push(panel.model);
+    const group = slotGroup(typeof panel.subWave === "string" ? panel.subWave : "");
+    if (panel.slot === "triad") group.triadModels.push(panel.model);
+    else group.scopeModels.push(panel.model);
   }
-  const sortedTriad = [...triadModels].sort();
+  // A packet-split seal must not mix anonymous and named slots: either ONE
+  // anonymous full panel, or N named sub-waves EACH carrying a full panel.
+  if (groups.size > 1 && groups.has("")) {
+    reasons.push(
+      "owner review attestation mixes sub-wave-named and anonymous panel slots; name every sub-wave",
+    );
+  }
+  if (groups.size === 0) groups.set("", { triadModels: [], scopeModels: [] });
   const requiredTriadSorted = [...REQUIRED_TRIAD_MODELS].sort();
-  if (
-    triadModels.length !== REQUIRED_TRIAD_MODELS.length ||
-    sortedTriad.some((model, index) => model !== requiredTriadSorted[index])
-  ) {
-    reasons.push(
-      `owner review attestation must bind the exact triad panel [${REQUIRED_TRIAD_MODELS.join(", ")}]; got [${triadModels.join(", ")}]`,
-    );
+  for (const [key, group] of groups) {
+    const label = key === "" ? "" : ` (sub-wave ${key})`;
+    const sortedTriad = [...group.triadModels].sort();
+    if (
+      group.triadModels.length !== REQUIRED_TRIAD_MODELS.length ||
+      sortedTriad.some((model, index) => model !== requiredTriadSorted[index])
+    ) {
+      reasons.push(
+        `owner review attestation must bind the exact triad panel${label} [${REQUIRED_TRIAD_MODELS.join(", ")}]; got [${group.triadModels.join(", ")}]`,
+      );
+    }
+    if (group.scopeModels.length !== 1 || group.scopeModels[0] !== REQUIRED_SCOPE_MODEL) {
+      reasons.push(
+        `owner review attestation must bind exactly one scope slot${label} for ${REQUIRED_SCOPE_MODEL}; got [${group.scopeModels.join(", ")}]`,
+      );
+    }
   }
-  if (scopeModels.length !== 1 || scopeModels[0] !== REQUIRED_SCOPE_MODEL) {
-    reasons.push(
-      `owner review attestation must bind exactly one scope slot for ${REQUIRED_SCOPE_MODEL}; got [${scopeModels.join(", ")}]`,
-    );
+  return reasons;
+}
+
+/**
+ * Candidate-bound full-text coverage receipt (audit A-8): the JSON emitted by
+ * review-coverage-check --receipt, embedded into the sealed payload. Required
+ * whenever the panel is packet-split (more than one named sub-wave) — it is
+ * the only artifact proving the UNION of the sub-wave packs covered every
+ * changed file, so a seal listing one sub-wave cannot silently omit the rest.
+ */
+export function validateCoverageReceipt(receipt, expected, { required }) {
+  const reasons = [];
+  if (receipt === undefined || receipt === null) {
+    if (required) {
+      reasons.push(
+        "packet-split owner review attestation requires a coverageReceipt binding the union of sub-wave packs",
+      );
+    }
+    return reasons;
+  }
+  if (typeof receipt !== "object" || Array.isArray(receipt)) {
+    return ["owner review coverageReceipt is not an object"];
+  }
+  if (receipt.ok !== true) reasons.push("owner review coverageReceipt did not pass (ok !== true)");
+  if (!SHA1.test(receipt.base ?? "")) {
+    reasons.push("owner review coverageReceipt is missing a full base SHA");
+  }
+  if (receipt.candidate !== expected.candidateSha || !SHA1.test(receipt.candidate ?? "")) {
+    reasons.push("owner review coverageReceipt candidate SHA mismatch");
+  }
+  if (!SHA256.test(receipt.receiptSha256 ?? "")) {
+    reasons.push("owner review coverageReceipt is missing the receipt file digest");
+  }
+  const packs = Array.isArray(receipt.packSha256) ? receipt.packSha256 : [];
+  if (packs.length === 0 || packs.some((digest) => !SHA256.test(digest ?? ""))) {
+    reasons.push("owner review coverageReceipt must list the SHA-256 of every reviewed pack");
   }
   return reasons;
 }
@@ -141,7 +218,7 @@ export const RELEASE_REVIEW_ATTESTATION_ALGORITHM = "Ed25519";
 // The retired schemaVersion-2 six-slot contract was removed in v3.0.0;
 // already-sealed v2 artifacts remain archived with valid signatures, but
 // the publish workflow no longer accepts them as input.
-export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION = 3;
+export const OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION = 4;
 export const OWNER_REVIEW_PROTOCOL = "owner-fable-subagents-v1";
 export const OWNER_REVIEW_MIN_REVIEWS = 2;
 export const OWNER_REVIEW_MAX_ROUNDS = 10;
@@ -307,8 +384,18 @@ export function validateOwnerReviewAttestationPayload(payload, expected) {
   }
   // Bind the EXACT triad+scope panel (B8): the sealed reviews must cover the
   // three frozen triad slots and the scope slot, each digest-bound — a >=2
-  // structural floor alone let an off-panel pair seal.
+  // structural floor alone let an off-panel pair seal. Packet-split waves
+  // bind one full panel PER named sub-wave.
   reasons.push(...validateReviewPanelCoverage(reviews));
+  // A packet-split seal must additionally prove the union of its sub-wave
+  // packs covered every changed file (audit A-8): the coverage receipt is
+  // signature-bound so one sub-wave's report can never stand in for all.
+  const namedSubWaves = [...panelSubWaves(reviews)].filter((key) => key !== "");
+  reasons.push(
+    ...validateCoverageReceipt(payload.coverageReceipt, expected, {
+      required: namedSubWaves.length > 1,
+    }),
+  );
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -319,7 +406,7 @@ export function validateReleaseAttestation(attestation, authority, expected) {
     return {
       ok: false,
       reasons: [
-        `review attestation schemaVersion ${attestation?.schemaVersion ?? "(missing)"} is not accepted: the retired six-slot v2 contract was removed in v3.0.0 (sealed v2 artifacts remain archived)`,
+        `review attestation schemaVersion ${attestation?.schemaVersion ?? "(missing)"} is not accepted: this verifier requires v${OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION} (v2's six-slot panel was retired in v3.0.0, v3 lacked the packet-split coverage receipt; sealed old artifacts remain archived)`,
       ],
     };
   }

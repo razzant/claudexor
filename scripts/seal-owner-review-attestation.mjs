@@ -65,23 +65,32 @@ try {
     stderrSha256: receipt.stderr?.sha256,
   };
   const reviews = options.review.map((entry) => {
-    // reviewer=FILE:verdict[:slot=model] — the optional trailing slot=model
-    // binds this report to a triad/scope panel slot (B8). Panel-less entries
-    // are extra internal-critic reviews (counted only by the >=2 floor).
-    const match = /^([A-Za-z0-9._-]+)=(.+):(pass|warn)(?::(triad|scope)=([^:]+))?$/.exec(entry);
+    // reviewer=FILE:verdict[:slot[@subwave]=model] — the optional trailing
+    // slot=model binds this report to a triad/scope panel slot (B8); a
+    // packet-split wave names each sub-wave (slot@subwave=model) and must
+    // bind a FULL panel per sub-wave plus a --coverage-receipt. Panel-less
+    // entries are extra internal-critic reviews (counted only by the >=2
+    // floor).
+    const match =
+      /^([A-Za-z0-9._-]+)=(.+):(pass|warn)(?::(triad|scope)(?:@([a-z0-9-]+))?=([^:]+))?$/.exec(
+        entry,
+      );
     if (!match) {
       throw new Error(
-        `--review must be reviewer=FILE:pass|warn[:triad|scope=model], got "${entry}"`,
+        `--review must be reviewer=FILE:pass|warn[:triad|scope[@subwave]=model], got "${entry}"`,
       );
     }
     const review = { reviewer: match[1], reportSha256: sha256File(match[2]), verdict: match[3] };
-    if (match[4]) review.panel = { slot: match[4], model: match[5] };
+    if (match[4]) {
+      review.panel = { slot: match[4], model: match[6] };
+      if (match[5]) review.panel.subWave = match[5];
+    }
     return review;
   });
 
   const authority = JSON.parse(readFileSync(options.authority, "utf8"));
   const payload = {
-    contract: "owner-review-v3",
+    contract: `owner-review-v${OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION}`,
     reviewProtocol: OWNER_REVIEW_PROTOCOL,
     candidateSha,
     candidateTree,
@@ -90,6 +99,19 @@ try {
     reviews,
     sealedAt: new Date().toISOString(),
   };
+  if (options["coverage-receipt"]) {
+    // The union-coverage proof for a packet-split panel (audit A-8): embed
+    // the checker's receipt digest-bound so the signature covers it. The
+    // verifier REQUIRES this whenever the slots name >1 sub-wave.
+    const receipt = JSON.parse(readFileSync(options["coverage-receipt"], "utf8"));
+    payload.coverageReceipt = {
+      receiptSha256: sha256File(options["coverage-receipt"]),
+      base: receipt.base,
+      candidate: receipt.candidate,
+      ok: receipt.ok === true,
+      packSha256: (receipt.packs ?? []).map((pack) => pack.sha256),
+    };
+  }
   const attestation = {
     schemaVersion: OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
     keyId: authority.keyId,
@@ -131,7 +153,7 @@ function atomicWrite(path, data, mode) {
 function usage(detail = "") {
   if (detail) console.error(detail);
   console.error(
-    "usage: seal-owner-review-attestation.mjs --full-gate-receipt FILE --rounds N --review reviewer=FILE:pass|warn[:triad|scope=model] (must cover the exact triad+scope panel) --private-key FILE --authority FILE --out FILE [--base64-out FILE]",
+    "usage: seal-owner-review-attestation.mjs --full-gate-receipt FILE --rounds N --review reviewer=FILE:pass|warn[:triad|scope[@subwave]=model] (must cover the exact triad+scope panel, per sub-wave when packet-split) [--coverage-receipt FILE (required for packet-split panels)] --private-key FILE --authority FILE --out FILE [--base64-out FILE]",
   );
   process.exit(2);
 }

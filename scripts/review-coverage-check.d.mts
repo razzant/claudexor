@@ -18,3 +18,29 @@ export function checkCoverage(input: {
   skipped: Array<{ path: string; rule: string }>;
   deleted: string[];
 };
+export function parseNameStatusZ(raw: string): Array<{ path: string; deleted: boolean }>;
+export function unionWithWholeFileList(
+  files: Array<{ path: string; deleted: boolean }>,
+  listText: string | null,
+): Array<{ path: string; deleted: boolean }>;
+export function coverageReceiptBody(
+  report: ReturnType<typeof checkCoverage>,
+  input: {
+    base: string;
+    candidate: string;
+    packs: readonly string[];
+    packContents: readonly string[];
+    wholeFileList?: string | null;
+  },
+): {
+  schemaVersion: 1;
+  ok: boolean;
+  base: string;
+  candidate: string;
+  packs: Array<{ path: string; sha256: string }>;
+  wholeFileList: string | null;
+  covered: number;
+  uncovered: Array<{ path: string; reason: string }>;
+  diffAuthoritativeSkips: number;
+  deleted: number;
+};

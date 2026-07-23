@@ -478,7 +478,12 @@ itself). The v3 protocol bounds the loop mechanically.
   `pnpm release:verify` and seals the hash-bound gate receipt;
   `scripts/seal-owner-review-attestation.mjs` signs the attestation (exact
   candidate SHA/tree, gate receipt digest, every panel reviewer report
-  digest + verdict, wave count) with the offline Ed25519 authority.
+  digest + verdict, wave count) with the offline Ed25519 authority. A
+  packet-split wave binds one full triad+scope panel PER named sub-wave
+  (`--review reviewer=FILE:verdict:triad@<subwave>=model`) and MUST pass
+  `--coverage-receipt` (the `review-coverage-check --receipt` output over
+  the union of sub-wave packs); the verifier refuses a packet-split seal
+  without it, so a single sub-wave's report can never stand in for all.
   `verify-release-input.mjs` verifies the signature before semantic
   validation; older sealed schemas stay verifiable for their releases. An
   owner override is a distinct recorded fact in the attestation, never a

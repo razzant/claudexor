@@ -69,6 +69,7 @@ import { dirname, join, resolve } from "node:path";
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 import { verifySealedEvidencePacket } from "../packages/context/dist/evidence.js";
 import { exactObservedModelMatch } from "./lib/openrouter-panel.mjs";
+import { parseNameStatusZ } from "./review-coverage-check.mjs";
 import {
   REQUIRED_SCOPE_MODEL,
   REQUIRED_TRIAD_MODELS,
@@ -319,8 +320,17 @@ const THOROUGHNESS = `- Do NOT stop after finding the first issue. Check EVERY i
 // Context builders
 // ---------------------------------------------------------------------------
 
+/**
+ * ONE enumeration shared with the coverage gate: `-z --name-status` parsed by
+ * review-coverage-check's parseNameStatusZ, so a space/unicode/newline path is
+ * never C-quoted into a `git show` miss (the quoted `--name-only` output made
+ * buildTouchedFilePack falsely render such a file as deleted). Deleted paths
+ * are excluded — they have no current text to pack; the diff carries them.
+ */
 function changedFiles(base) {
-  return git(["diff", "--name-only", `${base}..HEAD`]).trim();
+  return parseNameStatusZ(git(["diff", "-z", "--name-status", `${base}..HEAD`]))
+    .filter((entry) => !entry.deleted)
+    .map((entry) => entry.path);
 }
 
 /**
@@ -356,7 +366,7 @@ function inPackSubset(file, selectors) {
  * the union is exhaustive.
  */
 function reviewPackFiles(base, packetDir, subsetSelectors = null) {
-  const changed = changedFiles(base).split("\n").filter(Boolean);
+  const changed = changedFiles(base);
   let listed = [];
   try {
     listed = readFileSync(join(packetDir, "FILES_TO_READ_WHOLE.txt"), "utf8")
@@ -470,7 +480,7 @@ ${diff}
 
 ## Changed files
 
-${changedFiles(base)}
+${changedFiles(base).join("\n")}
 `;
 }
 
