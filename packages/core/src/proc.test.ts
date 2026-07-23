@@ -65,6 +65,60 @@ describe("spawnProcess", () => {
     await new Promise((resolve) => setTimeout(resolve, 1800));
     expect(existsSync(marker) ? readFileSync(marker, "utf8") : "").toBe("");
   });
+
+  // QA-027: a vendor tool that setsid'd into its OWN process group and then
+  // reparents to pid 1 (its CLI exits on the cooperative signal) must still be
+  // dead before the generator returns. A group-kill of the direct child alone
+  // leaked exactly this — a `/bin/sleep 60` orphan lived ~40s past terminal.
+  it("reaps an ESCAPED descendant process group before the generator returns", async () => {
+    const dir = tempDir();
+    const marker = join(dir, "escaped.txt");
+    // Parent (the direct child) spawns a DETACHED grandchild in a new pgid, then
+    // exits promptly on SIGINT — orphaning the grandchild. The grandchild
+    // ignores SIGINT and would write the marker at 1500ms if it survives.
+    const grandchild = [
+      "process.on('SIGINT', () => {})",
+      `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 1500)`,
+      "setTimeout(() => {}, 5000)",
+    ].join(";");
+    const parent = [
+      "const { spawn } = require('node:child_process')",
+      `const gc = spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { detached: true, stdio: 'ignore' })`,
+      "gc.unref()",
+      "console.log('ready ' + gc.pid)",
+      "process.on('SIGINT', () => process.exit(0))",
+      "setTimeout(() => {}, 5000)",
+    ].join(";");
+
+    const ac = new AbortController();
+    let escapedPgid = 0;
+    for await (const ev of spawnProcess(process.execPath, ["-e", parent], {
+      abortSignal: ac.signal,
+      cancelKillDelayMs: 150,
+    })) {
+      if (ev.type === "stdout" && ev.line.startsWith("ready ")) {
+        escapedPgid = Number(ev.line.slice("ready ".length));
+        // Let the grandchild fully establish its own process group.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        ac.abort();
+      }
+    }
+
+    // The for-await completed => the generator returned. Death proof gates that
+    // return, so the escaped group must already be gone: NO post-hoc sleep.
+    expect(escapedPgid).toBeGreaterThan(0);
+    let groupAlive = true;
+    try {
+      process.kill(-escapedPgid, 0);
+    } catch (err) {
+      groupAlive = (err as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+    expect(groupAlive).toBe(false);
+
+    // And the orphan never got to run its side effect.
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(existsSync(marker) ? readFileSync(marker, "utf8") : "").toBe("");
+  });
 });
 
 describe("labelStreams", () => {

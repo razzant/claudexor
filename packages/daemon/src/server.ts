@@ -540,7 +540,13 @@ export class DaemonServer {
   }
 }
 
-function jobStateFromResult(result: unknown, aborted: boolean): JobState {
+/**
+ * Terminal job state from the runner result. Receipt truth (QA-027): an aborted
+ * run is `cancelled` regardless of what the runner returned — a harness stream
+ * that closed without throwing must never be re-encoded as `succeeded` over a
+ * user/timeout cancel.
+ */
+export function jobStateFromResult(result: unknown, aborted: boolean): JobState {
   if (aborted) return "cancelled";
   // The daemon job state IS the run lifecycle (D8), mapped 1:1 from the
   // engine result's facts.lifecycle. Outcome quality is projected from facts

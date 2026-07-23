@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { registerChildProcess, unregisterChildProcess } from "./process-registry.js";
 import { createInterface } from "node:readline";
 import { composeBaseEnv } from "./env-scope.js";
+import { reapProcessTree, type ProcessTreeTerminationOutcome } from "./process-tree.js";
 
 export interface SpawnOptions {
   cwd?: string;
@@ -18,6 +19,22 @@ export interface SpawnOptions {
   cancelSignal?: NodeJS.Signals;
   /** Hard-kill delay after cancelSignal when the child ignores cooperative stop. */
   cancelKillDelayMs?: number;
+  /**
+   * Overall bound (ms) on the whole-tree death proof after a cancel. Past it the
+   * generator returns and `onTerminationUnconfirmed` fires rather than hanging.
+   * Defaults to `cancelKillDelayMs + 4000`.
+   */
+  cancelDeadlineMs?: number;
+  /**
+   * Fail-closed disclosure (QA-027): called once when a proven-alive descendant
+   * group survives the bounded TERM->KILL escalation, so a cancel that could not
+   * confirm death is never silent. The caller decides how to surface it.
+   */
+  onTerminationUnconfirmed?: (info: {
+    rootPid: number;
+    survivors: number[];
+    unresolved: Array<{ pgid: number; reason: string }>;
+  }) => void;
   /** Runtime abort signal for active daemon/orchestrator cancellation. */
   abortSignal?: AbortSignal;
   /**
@@ -151,29 +168,53 @@ export async function* spawnProcess(
   });
 
   let timer: NodeJS.Timeout | undefined;
-  if (opts.timeoutMs && opts.timeoutMs > 0) {
-    timer = setTimeout(() => killTree("SIGKILL"), opts.timeoutMs);
-  }
 
   let killTimer: NodeJS.Timeout | undefined;
-  const requestCancel = (): void => {
-    if (finished) return;
-    killTree(opts.cancelSignal ?? "SIGINT");
-    const killDelay = opts.cancelKillDelayMs ?? 1_000;
+  // The whole-tree death proof (QA-027). A vendor tool can setsid into a NEW
+  // process group and reparent to pid 1; group-killing only the direct child
+  // leaks it. On the FIRST cancel we snapshot the tree while its ppid chain is
+  // still intact, then reap every owned group (TERM -> bounded KILL) with the
+  // identity-proven ProcessGroupService and probe to death. The generator's
+  // finally awaits this so an AWAITING consumer only observes completion once
+  // the tree is dead (or bounded-unconfirmed).
+  let cancelReap: Promise<ProcessTreeTerminationOutcome> | null = null;
+  const requestCancel = (coopSignal?: NodeJS.Signals, graceOverrideMs?: number): void => {
+    const coop = coopSignal ?? opts.cancelSignal ?? "SIGINT";
+    const killDelay = graceOverrideMs ?? opts.cancelKillDelayMs ?? 1_000;
+    // Kick the identity-proven whole-tree reap FIRST: reapProcessTree captures
+    // the process tree AND cooperatively signals every owned group
+    // synchronously (before its first await). Snapshotting before the direct
+    // group is torn down is what catches an ESCAPED descendant group while its
+    // ppid chain is still intact — the QA-027 orphan.
+    if (!cancelReap && typeof child.pid === "number") {
+      cancelReap = reapProcessTree({
+        rootPid: child.pid,
+        cooperativeSignal: coop,
+        graceMs: killDelay,
+        deadlineMs: opts.cancelDeadlineMs ?? killDelay + 4_000,
+      });
+    }
+    // Direct-group belt: a raw cooperative nudge + SIGKILL escalation to the
+    // immediate child group, covering the case where identity capture raced.
+    killTree(coop);
     if (killDelay >= 0 && !killTimer) {
-      // Escalate to SIGKILL of the whole group if the cooperative signal is
-      // ignored. NOT unref'd: the escalation must actually fire (a prior
-      // unref let an ignoring child outlive the parent). It is cleared on a
-      // clean finish below.
+      // NOT unref'd: the escalation must actually fire (a prior unref let an
+      // ignoring child outlive the parent).
       killTimer = setTimeout(() => {
         if (!finished) killTree("SIGKILL");
       }, killDelay);
     }
   };
+  // A wall-clock timeout is a hard stop: reap the whole tree immediately
+  // (SIGKILL, no grace) and still prove it dead.
+  if (opts.timeoutMs && opts.timeoutMs > 0) {
+    timer = setTimeout(() => requestCancel("SIGKILL", 0), opts.timeoutMs);
+  }
+  const onAbort = (): void => requestCancel();
   const abortSignal = opts.abortSignal;
   if (abortSignal) {
     if (abortSignal.aborted) requestCancel();
-    else abortSignal.addEventListener("abort", requestCancel, { once: true });
+    else abortSignal.addEventListener("abort", onAbort, { once: true });
   }
 
   try {
@@ -190,11 +231,33 @@ export async function* spawnProcess(
     }
   } finally {
     if (timer) clearTimeout(timer);
-    abortSignal?.removeEventListener("abort", requestCancel);
+    abortSignal?.removeEventListener("abort", onAbort);
     if (!finished) {
+      // Consumer broke early (no abort/timeout): cancel and reap the tree.
       requestCancel();
     }
     if (finished && killTimer) clearTimeout(killTimer);
+    // Death proof: block the generator's return until the whole tree — direct
+    // group AND any escaped descendant group — is dead (or bounded-unconfirmed),
+    // so a consumer that awaits this cleanup never terminalizes over a live
+    // descendant. Unconfirmed survival is disclosed, never silent.
+    // `cancelReap` is assigned inside the requestCancel closure, so narrow it
+    // through an explicitly-typed read (CFA otherwise collapses it to null).
+    const pendingReap = cancelReap as Promise<ProcessTreeTerminationOutcome> | null;
+    if (pendingReap) {
+      try {
+        const outcome = await pendingReap;
+        if (outcome.state === "unconfirmed" && typeof child.pid === "number") {
+          opts.onTerminationUnconfirmed?.({
+            rootPid: child.pid,
+            survivors: outcome.survivors,
+            unresolved: outcome.unresolved,
+          });
+        }
+      } catch {
+        /* the reap is best-effort death proof; never throw out of cleanup */
+      }
+    }
     rlOut.close();
     rlErr.close();
   }

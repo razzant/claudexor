@@ -201,13 +201,23 @@ export function isKnownProcessIdentity(value: unknown): value is KnownProcessIde
 }
 
 function bundledDarwinHelperPath(): string | null {
-  const candidate = fileURLToPath(new URL("./native/claudexor-process-identity", import.meta.url));
-  try {
-    accessSync(candidate, constants.X_OK);
-    return candidate;
-  } catch {
-    return null;
+  // The helper is built into `dist/native`. Resolve it whether this module runs
+  // from `dist` (production) or `src` (tsx/vitest) — the `dist` fallback keeps
+  // process-identity usable under the src-run test harness.
+  const candidates = [
+    new URL("./native/claudexor-process-identity", import.meta.url),
+    new URL("../dist/native/claudexor-process-identity", import.meta.url),
+  ];
+  for (const url of candidates) {
+    const candidate = fileURLToPath(url);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      /* try the next layout */
+    }
   }
+  return null;
 }
 
 function executeDarwinHelper(path: string, pid: number): DarwinHelperExecution {

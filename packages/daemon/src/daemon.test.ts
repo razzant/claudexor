@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { DaemonClient } from "./client.js";
 import { CommandStore } from "./command-store.js";
 import { InteractionRegistry, InteractionStore } from "./interactions.js";
-import { DaemonServer, type JobRecord } from "./server.js";
+import { DaemonServer, jobStateFromResult, type JobRecord } from "./server.js";
 import { acquireDaemonWriterLease } from "./writer-lease.js";
 import { rmSync as __rmSyncReap } from "node:fs";
 import { afterAll as __afterAllReap } from "vitest";
@@ -480,5 +480,25 @@ describe("InteractionRegistry", () => {
     expect(second.pendingForRun("run-restart")).toEqual([]);
     expect(second.status("run-restart", "question")).toBe("resolved");
     secondJournal.close();
+  });
+});
+
+describe("jobStateFromResult (cancel receipt truth, QA-027)", () => {
+  it("maps an aborted run to cancelled even when the result claims it succeeded", () => {
+    // A harness stream that closed without throwing yields a success-shaped
+    // result; a user/timeout cancel must still terminalize `cancelled`, never
+    // fabricate `succeeded` over the cancel.
+    expect(jobStateFromResult({ lifecycle: "succeeded" }, true)).toBe("cancelled");
+    expect(jobStateFromResult({ lifecycle: "succeeded", facts: { reason: null } }, true)).toBe(
+      "cancelled",
+    );
+  });
+
+  it("preserves the honest lifecycle when not aborted", () => {
+    expect(jobStateFromResult({ lifecycle: "succeeded" }, false)).toBe("succeeded");
+    expect(jobStateFromResult({ lifecycle: "cancelled" }, false)).toBe("cancelled");
+    // Unrecognized lifecycle is never success-by-default.
+    expect(jobStateFromResult({ lifecycle: "weird" }, false)).toBe("failed");
+    expect(jobStateFromResult({}, false)).toBe("failed");
   });
 });
