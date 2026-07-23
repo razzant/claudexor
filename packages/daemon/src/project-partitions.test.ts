@@ -374,6 +374,8 @@ describe("ProjectPartitions", () => {
       registryRemoved: true,
       journalPartitionArchived: true,
       artifactsRetained: true,
+      // W2: the active-run fence is a disclosed snapshot, not an atomic guarantee.
+      activeRunCheck: "snapshot",
     });
     expect(typeof receipt.archivedPartitionPath).toBe("string");
     expect(existsSync(receipt.archivedPartitionPath as string)).toBe(true);

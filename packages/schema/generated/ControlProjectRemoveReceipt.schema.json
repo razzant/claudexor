@@ -34,6 +34,11 @@
           "type": "boolean",
           "const": true,
           "description": "Run artifact trees are left in place for normal GC/retention — remove never deletes run bytes or the user's project directory."
+        },
+        "activeRunCheck": {
+          "type": "string",
+          "const": "snapshot",
+          "description": "How the live/queued-run fence was evaluated. Always 'snapshot': the active-run set is read once (an async daemon IPC job-list read) BEFORE the synchronous removal, so a run that starts in the narrow window between the snapshot and the removal is NOT fenced. Honest disclosure of a TOCTOU race the current architecture cannot close inside the sync section; see docs/ARCHITECTURE.md."
         }
       },
       "required": [
@@ -42,7 +47,8 @@
         "registryRemoved",
         "journalPartitionArchived",
         "archivedPartitionPath",
-        "artifactsRetained"
+        "artifactsRetained",
+        "activeRunCheck"
       ],
       "additionalProperties": false,
       "description": "DELETE /v2/projects/:id receipt: registry entry removed, journal partition archived, artifacts left to GC."

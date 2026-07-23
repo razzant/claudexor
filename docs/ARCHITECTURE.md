@@ -1059,7 +1059,14 @@ ARCHIVES the project's journal partition (renamed out of the active journal
 tree, never deleted, the same non-destructive move the quarantine path uses),
 leaving run artifacts to normal GC and disclosing all of that in a typed
 receipt. It is refused with a typed `409` while any non-purged thread or
-live/queued run still references the project. The CLI
+live/queued run still references the project. The live/queued-run fence is a
+SNAPSHOT, disclosed as such in the receipt (`activeRunCheck: "snapshot"`): the
+active-run root set is read once via an async daemon IPC job-list read BEFORE
+the synchronous removal, so a run that starts in the narrow window between the
+snapshot and the removal is not fenced. Closing that TOCTOU would require the
+job list to be readable synchronously inside the removal (it is a cross-process
+socket call today), so the receipt states the guarantee honestly rather than
+implying atomicity. The CLI
 projects the same surface as `claudexor project list|register|relink|remove` and
 auto-registers the current root before a run; no v1 config, thread, or run path
 is imported as a project registration. Relink updates project-thread root
