@@ -6,6 +6,7 @@ import {
   CLAUDE_BRIDGE_CONTENT,
   CLAUDE_BRIDGE_MARKER,
   ensureClaudeBridge,
+  isGeneratedClaudeBridge,
 } from "./claude-bridge.js";
 
 describe("ensureClaudeBridge (D-14 layer 3)", () => {
@@ -82,5 +83,39 @@ describe("ensureClaudeBridge (D-14 layer 3)", () => {
     // The loser reports a TYPED refusal, never a create or a throw.
     expect(["race_lost", "claude_exists"]).toContain(losers[0]?.reason);
     expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe(CLAUDE_BRIDGE_CONTENT);
+  });
+});
+
+describe("isGeneratedClaudeBridge (A-3: byte-equality, not marker substring)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "claudexor-bridge-eq-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is true only for a byte-identical generated bridge", () => {
+    writeFileSync(join(dir, "CLAUDE.md"), CLAUDE_BRIDGE_CONTENT);
+    expect(isGeneratedClaudeBridge(dir)).toBe(true);
+  });
+
+  it("is FALSE for a candidate edit that keeps the marker (the A-3 work-loss bug)", () => {
+    // Substring-on-marker would call this "ours" and drop it; byte-equality does not.
+    writeFileSync(join(dir, "CLAUDE.md"), CLAUDE_BRIDGE_CONTENT + "\n# candidate rules\n");
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toContain(CLAUDE_BRIDGE_MARKER);
+    expect(isGeneratedClaudeBridge(dir)).toBe(false);
+  });
+
+  it("is false for a hand-written CLAUDE.md and when absent", () => {
+    expect(isGeneratedClaudeBridge(dir)).toBe(false);
+    writeFileSync(join(dir, "CLAUDE.md"), "# my own notes\n");
+    expect(isGeneratedClaudeBridge(dir)).toBe(false);
+  });
+
+  it("is false for a symlink at CLAUDE.md (no-follow)", () => {
+    writeFileSync(join(dir, "target.md"), CLAUDE_BRIDGE_CONTENT);
+    symlinkSync(join(dir, "target.md"), join(dir, "CLAUDE.md"));
+    expect(isGeneratedClaudeBridge(dir)).toBe(false);
   });
 });

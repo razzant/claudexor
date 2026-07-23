@@ -186,6 +186,52 @@ describe("WorkspaceManager", () => {
     await mgr.dispose(env);
   });
 
+  it("A-3: captures a candidate edit to the generated bridge even when the marker is kept", async () => {
+    // A-3 regression: exclusion is BYTE-EQUALITY, not marker substring. A
+    // candidate that appends real instructions to the generated CLAUDE.md but
+    // leaves the ownership marker in place must NOT be silently dropped from
+    // patch.diff (a substring check on the marker lost that work).
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-edit-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-bridge-edit", attemptId: "a01", baseRef: "HEAD" });
+    const bridgePath = join(env.worktree_path, "CLAUDE.md");
+    const generated = readFileSync(bridgePath, "utf8");
+    expect(generated).toContain(CLAUDE_BRIDGE_MARKER);
+
+    // The candidate EDITS the bridge but keeps the ownership marker comment.
+    writeFileSync(bridgePath, generated + "\n# Candidate-added project rules: prefer X over Y.\n");
+    expect(readFileSync(bridgePath, "utf8")).toContain(CLAUDE_BRIDGE_MARKER);
+
+    const diff = await mgr.diff(env);
+    // The candidate's edit — marker retained — IS captured, not dropped.
+    expect(diff).toContain("CLAUDE.md");
+    expect(diff).toContain("Candidate-added project rules");
+    await mgr.dispose(env);
+  });
+
+  it("A-3: an untouched generated bridge is still excluded (byte-identical only)", async () => {
+    // The other side of the byte-equality contract: a pristine generated bridge
+    // the candidate never touched stays out of patch.diff.
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-pristine-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const mgr = new WorkspaceManager(repo);
+    const env = await mgr.create({ taskId: "task-bridge-keep", attemptId: "a01", baseRef: "HEAD" });
+    writeFileSync(join(env.worktree_path, "feature.ts"), "export const x = 1;\n");
+    const diff = await mgr.diff(env);
+    expect(diff).toContain("feature.ts");
+    expect(diff).not.toContain("CLAUDE.md");
+    await mgr.dispose(env);
+  });
+
   it("every lane env (envelope / read-only scoped / durable thread lane) rides the managed-runner Node prepend (QA-022, INV-067)", async () => {
     const repo = await initRepo();
     const mgr = new WorkspaceManager(repo);

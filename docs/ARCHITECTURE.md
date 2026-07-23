@@ -1346,9 +1346,11 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
    inside an envelope reads the same instructions. The envelope write emits NO run
    event — the envelope is disposable and Claudexor-owned — and diff capture
    EXCLUDES the generated bridge from the candidate patch by exact path, gated on
-   the ownership marker (so a candidate-authored `CLAUDE.md`, which lacks the
-   marker, is never dropped), the same doctrine as the `.claudexor` artifact-dir
-   exclusion. Fences on both writes: the create is EXCLUSIVE (`O_CREAT|O_EXCL`)
+   BYTE-EQUALITY with the generated bridge content (only a pristine, untouched
+   bridge is excluded; a candidate-authored `CLAUDE.md`, or any candidate EDIT of
+   the bridge — even one that keeps the ownership marker comment — differs from
+   the exact bytes and is captured in `patch.diff` like any other real change),
+   the same doctrine as the `.claudexor` artifact-dir exclusion. Fences on both writes: the create is EXCLUSIVE (`O_CREAT|O_EXCL`)
    and NO-FOLLOW, so a hand-written `CLAUDE.md`, a symlink (even dangling), or a
    directory at that path is never overwritten or written through; it is
    idempotent, so a second or concurrent prep is a no-op; the project-root write

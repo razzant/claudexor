@@ -425,9 +425,13 @@ export class WorkspaceManager {
       }
     }
     // Exclude the envelope-local generated CLAUDE.md bridge (INV-113) from the
-    // candidate patch — by EXACT path and only when it carries the ownership
-    // marker, so a candidate-authored CLAUDE.md is never dropped. Same doctrine
-    // as the `.claudexor` artifact-dir exclusion.
+    // candidate patch — by EXACT path and only when the worktree file is BYTE-
+    // IDENTICAL to the generated bridge content (A-3). A git pathspec cannot
+    // express content-equality, so the decision is computed in code here: an
+    // untouched bridge is excluded, but ANY candidate edit — even one that keeps
+    // the ownership marker — differs from the exact bytes, so the exclude is not
+    // added and the edit is captured in patch.diff. Same doctrine as the
+    // `.claudexor` artifact-dir exclusion.
     const bridgeExcludes = isGeneratedClaudeBridge(env.worktree_path)
       ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
       : [];

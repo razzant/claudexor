@@ -96,21 +96,30 @@ export function ensureClaudeBridge(projectRoot: string): ClaudeBridgeResult {
 /** The `CLAUDE.md` basename a diff-capture exclude targets. */
 export const CLAUDE_BRIDGE_BASENAME = "CLAUDE.md";
 
+/** The generated bridge as raw bytes, for exact-content comparison. */
+const CLAUDE_BRIDGE_CONTENT_BYTES = Buffer.from(CLAUDE_BRIDGE_CONTENT, "utf8");
+
 /**
- * True when `<worktreeRoot>/CLAUDE.md` is a Claudexor-GENERATED bridge — i.e. it
- * carries the ownership marker. Diff capture uses this to exclude exactly the
- * generated bridge (and only it) from an envelope candidate's patch, so the
- * bridge written into a disposable envelope tree never pollutes `patch.diff`.
+ * True when `<worktreeRoot>/CLAUDE.md` is an UNMODIFIED Claudexor-generated
+ * bridge — i.e. its bytes are EXACTLY `CLAUDE_BRIDGE_CONTENT`. Diff capture uses
+ * this to exclude exactly the pristine generated bridge (and only it) from an
+ * envelope candidate's patch, so the bridge written into a disposable envelope
+ * tree never pollutes `patch.diff`.
  *
- * A hand-written or candidate-authored `CLAUDE.md` lacks the marker and is NEVER
- * matched: its content flows to the patch like any other real change. A symlink
- * at the path is refused (no-follow), matching the writer's fence.
+ * A-3: the decision is BYTE-EQUALITY, not marker substring. A substring check
+ * silently dropped a candidate that EDITED `CLAUDE.md` while keeping the marker
+ * comment (real work lost from `patch.diff`). Any candidate edit — even one that
+ * retains the marker, or only appends to the bridge — now differs from the exact
+ * bytes and is captured in the diff like any other real change. Only the pristine
+ * generated file (which the candidate never touched) is excluded. A hand-written
+ * `CLAUDE.md` cannot match these exact bytes either. A symlink at the path is
+ * refused (no-follow), matching the writer's fence.
  */
 export function isGeneratedClaudeBridge(worktreeRoot: string): boolean {
   const claudePath = join(worktreeRoot, CLAUDE_BRIDGE_BASENAME);
   try {
     if (lstatSync(claudePath).isSymbolicLink()) return false;
-    return readFileSync(claudePath, "utf8").includes(CLAUDE_BRIDGE_MARKER);
+    return readFileSync(claudePath).equals(CLAUDE_BRIDGE_CONTENT_BYTES);
   } catch {
     return false;
   }
