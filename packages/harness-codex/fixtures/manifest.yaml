@@ -47,3 +47,32 @@ fixtures:
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: true
+  # D-16 CONTEXT-EXHAUSTION EVIDENCE (live, codex-cli 0.144.1, 2026-07-23).
+  # Lives in context/ (NOT top-level) because the top-level conformance loop
+  # asserts tool_call/tool_result/usage on every fixture and this capture has
+  # NONE of those — it is a terminal-shape probe, not a normal run. No
+  # `expectations` block: the subdir file is not consumed by the conformance
+  # loop, only by the freshness/provenance gate.
+  #
+  # FINDING (contradicts the task's #16033 assumption): in codex 0.144.1 exec,
+  # `-c model_context_window=8000 -c model_auto_compact_token_limit=0` does NOT
+  # enforce a hard token ceiling — streams of 114863 / 368799 / 686009 input
+  # tokens all reached turn.completed with exit 0. The ONLY hard terminal
+  # reachable for us is the app-server INPUT CHAR CAP (1048576 chars): an
+  # oversized single prompt fails `turn/start` with JSON-RPC code -32602 and
+  # `input_error_code: input_too_large`. This is NOT a token ContextWindow
+  # Exceeded and it is emitted OUT-OF-BAND on stderr — the `--json` stdout
+  # stream carries ONLY `thread.started` (see the .jsonl) and then the process
+  # exits 1. The verbatim stderr terminal line is captured in the sibling
+  # `exec-oversized-input.stderr.txt`. Implication for D-16: codex 0.144.1 exec
+  # exposes NO typed context-exhaustion STREAM frame to map; a mapper must key
+  # off exit code + the stderr JSON-RPC error, and `input_too_large` (a char
+  # cap) is a distinct class from token-window exhaustion.
+  # thread_id neutralized to a placeholder (not sensitive; sanitized for
+  # determinism, matching the claude fixtures' id policy).
+  context/exec-oversized-input.jsonl:
+    source: recorded
+    cli_version: "0.144.1"
+    recorded_at: "2026-07-23"
+    sanitized: "thread_id"
+    terminal_out_of_band: "stderr (see exec-oversized-input.stderr.txt): turn/start failed, JSON-RPC code -32602, input_error_code=input_too_large, max_chars=1048576"

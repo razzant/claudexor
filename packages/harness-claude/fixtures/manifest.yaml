@@ -90,3 +90,54 @@ fixtures:
       thinking_events: 0
       delta_messages: 0
       typed_rate_limit: false
+  # D-16 TYPED-SIGNAL EVIDENCE (claude 2.1.165). These live in signals/ (NOT
+  # top-level) on purpose: the top-level conformance loop asserts
+  # tool_call/tool_result/error/usage on every fixture, and these captures are
+  # single-turn signal probes with no tools. They carry no `expectations`
+  # block (not consumed by the loop, only by the freshness/provenance gate).
+  # Sanitized like the other recorded fixtures: ids, signatures, and the
+  # environment fingerprint (skills / slash commands / plugins / memory paths /
+  # cwd) are neutral placeholders; the SIGNAL-bearing fields
+  # (rate_limit_info, terminal_reason, api_error_status, usage) are UNTOUCHED.
+  #
+  # LIVE. A trivial no-tool `-p --output-format stream-json --verbose` run on
+  # the subscription route (apiKeySource none). Proves three D-16 promises at
+  # once on this CLI version:
+  #  - result frame carries terminal_reason:"completed" AND full usage/
+  #    modelUsage (B2 answered: 2.1.165 DOES emit terminal_reason);
+  #  - a top-level typed rate_limit_event frame really appears on a normal run
+  #    (QA-015): shape
+  #    {type:"rate_limit_event", rate_limit_info:{status, resetsAt,
+  #     rateLimitType, overageStatus, overageDisabledReason, isUsingOverage},
+  #     uuid, session_id} — captured with status:"allowed" (so QA-015's
+  #    frame is now a LIVE recording, no longer synthetic);
+  #  - a 2.1.165-new system/post_turn_summary frame (status_category /
+  #    status_detail / needs_action) that no prior fixture carried.
+  signals/terminal-completed-rate-limit-event.jsonl:
+    source: recorded
+    cli_version: "2.1.165"
+    recorded_at: "2026-07-23"
+    sanitized: "ids, environment fingerprint"
+  # LIVE. Oversized single prompt (~504274 tokens) to a 200000-window model.
+  # The terminal shape D-16 maps for Claude context exhaustion:
+  #   result frame: subtype:"success", is_error:true, api_error_status:400,
+  #   stop_reason:"stop_sequence", terminal_reason:"prompt_too_long",
+  #   result:"Prompt is too long · the request is ~504274 tokens (limit
+  #   200000) …", total_cost_usd:0, empty modelUsage.
+  # The preceding assistant frame carries model:"<synthetic>",
+  # error:"invalid_request" and the same prose. No prompt bytes are echoed.
+  signals/terminal-prompt-too-long.jsonl:
+    source: recorded
+    cli_version: "2.1.165"
+    recorded_at: "2026-07-23"
+    sanitized: "ids, environment fingerprint"
+  # SYNTHETIC — to be replaced at the next paid smoke that trips a real
+  # auto-compaction. A cheap live compact_boundary was not reachable (a
+  # single-exchange -p run cannot be compacted; stuffing context to the
+  # auto-compact threshold is the expensive path D-16 explicitly avoids).
+  # Shape follows the official Agent SDK contract:
+  #   {type:"system", subtype:"compact_boundary",
+  #    compact_metadata:{trigger:"auto"|"manual", pre_tokens:<int>}, uuid,
+  #    session_id}. Marked synthetic per docs/CHECKLISTS.md fixture rule.
+  signals/compact-boundary.jsonl:
+    source: synthetic
