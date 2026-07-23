@@ -397,7 +397,7 @@ export function defaultClaudexorTools(runner: RunnerFn): McpTool[] {
           properties: {
             harness: { type: "string", minLength: 1 },
             model: { type: "string", minLength: 1 },
-            effort: { type: "string", enum: ["low", "medium", "high", "xhigh", "max"] },
+            effort: { type: "string", enum: ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] },
           },
           required: ["harness"],
         },

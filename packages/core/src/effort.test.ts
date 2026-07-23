@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EffortHint } from "@claudexor/schema";
 import { normalizeEffort } from "./effort.js";
 
 describe("normalizeEffort", () => {
@@ -33,5 +34,36 @@ describe("normalizeEffort", () => {
   it("returns null when nothing was requested", () => {
     expect(normalizeEffort(null, ["low", "medium", "high"])).toBeNull();
     expect(normalizeEffort(undefined, ["low", "medium", "high"])).toBeNull();
+  });
+});
+
+describe("expanded vocabulary: minimal and ultra (official vendor ladders)", () => {
+  it("orders the full vocabulary weakest -> strongest", () => {
+    // Declaration order IS rank (EFFORT_LADDER = EffortHintSchema.options);
+    // this pins the wire-contract ordering after adding the two new levels.
+    expect(EffortHint.options).toEqual([
+      "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]);
+  });
+
+  it("xhigh passes through a claude-shaped ladder unchanged (regression: the old 4-level ladder silently downgraded xhigh to high)", () => {
+    const CLAUDE = ["low", "medium", "high", "xhigh", "max"] as const;
+    expect(normalizeEffort("xhigh", CLAUDE)).toBe("xhigh");
+  });
+
+  it("ultra clamps DOWN to max on a ladder without ultra (claude)", () => {
+    const CLAUDE = ["low", "medium", "high", "xhigh", "max"] as const;
+    expect(normalizeEffort("ultra", CLAUDE)).toBe("max");
+  });
+
+  it("max and ultra pass through a codex-shaped ladder (regression: the old ladder clamped max to xhigh, under-driving models that accept max/ultra)", () => {
+    const CODEX = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+    expect(normalizeEffort("max", CODEX)).toBe("max");
+    expect(normalizeEffort("ultra", CODEX)).toBe("ultra");
+  });
+
+  it("minimal clamps UP to low on ladders that exclude it (gpt-5.6-sol rejects minimal with unsupported_value)", () => {
+    const CODEX = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+    expect(normalizeEffort("minimal", CODEX)).toBe("low");
   });
 });
