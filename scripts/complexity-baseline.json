@@ -23,7 +23,7 @@
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 701,
   "packages/orchestrator/src/attemptTelemetry.ts": 688,
-  "packages/orchestrator/src/orchestrator.ts": 7058,
+  "packages/orchestrator/src/orchestrator.ts": 7152,
   "packages/review/src/reviewEngine.ts": 1396,
   "packages/schema/src/control.ts": 1676,
   "packages/schema/src/harness.ts": 1071

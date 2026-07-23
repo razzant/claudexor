@@ -53,6 +53,7 @@
             "route.transient.exhausted",
             "route.fallback.auth_switched",
             "route.primary.diverged",
+            "route.pool.degraded",
             "session.continuity",
             "interaction.requested",
             "interaction.answered",

@@ -894,7 +894,11 @@ describe("Orchestrator", () => {
     expect(events).toContain("insufficient headroom for estimated cost");
   });
 
-  it("capability-gates candidates: a non-implementing harness is dropped from an implement race", async () => {
+  it("QA-043: an EXPLICIT pool with an intent-incompatible lane refuses loudly (no silent self-race)", async () => {
+    // Legacy behavior (pre-QA-043) silently dropped raw-ish and modulo-filled
+    // fake-success TWICE — a self-race masquerading as best-of-2. An explicitly
+    // selected lane that cannot perform the intent is now a loud typed refusal
+    // BEFORE any candidate starts, never a silent substitution.
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([
       ["raw-ish", noImplementAdapter("raw-ish")],
@@ -908,11 +912,119 @@ describe("Orchestrator", () => {
       harnesses: ["raw-ish", "fake-success"],
       n: 2,
     });
-    // Primary candidates (a01..) must all be the implementing harness; raw-ish is excluded.
+    // Loud typed refusal at routing preflight, surfaced as a failed run naming
+    // the lane — NEVER a silent drop + fake-success run twice.
+    expect(res.lifecycle).toBe("failed");
+    expect(res.summary).toMatch(/raw-ish.*cannot/i);
+    expect(res.candidates.filter((c) => /^a\d+$/.test(c.attemptId))).toHaveLength(0);
+  });
+
+  it("QA-043: an EXPLICIT pool with an access-incompatible lane refuses loudly, naming the lane", async () => {
+    const repo = await initRepo();
+    // codex supports full; cursor does not (only readonly/workspace_write).
+    const codexFull: HarnessAdapter = {
+      ...realLikeAdapter("codex", "openai"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "codex",
+          display_name: "codex",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true, review: true },
+          access_profiles_supported: ["readonly", "workspace_write"],
+        });
+      },
+    };
+    const cursorNoFull: HarnessAdapter = {
+      ...realLikeAdapter("cursor", "google"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "cursor",
+          display_name: "cursor",
+          kind: "local_cli",
+          provider_family: "google",
+          capabilities: { implement: true, review: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", codexFull],
+      ["cursor", cursorNoFull],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await withScopedConfigDir(async () =>
+      orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["codex", "cursor"],
+        access: "workspace_write",
+        n: 2,
+      }),
+    );
+    // Adding a surviving codex lane must NOT convert cursor's refusal into a
+    // silent omission — the explicit pool fails loudly, naming cursor.
+    expect(res.lifecycle).toBe("failed");
+    expect(res.summary).toMatch(/cursor.*cannot enforce workspace_write/i);
+    expect(res.candidates.filter((c) => /^a\d+$/.test(c.attemptId))).toHaveLength(0);
+  });
+
+  it("QA-043: an AUTO pool drops an access-incompatible lane, discloses it, and never self-races", async () => {
+    const repo = await initRepo();
+    const codexFull: HarnessAdapter = {
+      ...realLikeAdapter("codex", "openai"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "codex",
+          display_name: "codex",
+          kind: "local_cli",
+          provider_family: "openai",
+          capabilities: { implement: true, review: true },
+          access_profiles_supported: ["readonly", "workspace_write"],
+        });
+      },
+    };
+    const cursorNoFull: HarnessAdapter = {
+      ...realLikeAdapter("cursor", "google"),
+      async discover() {
+        return HarnessManifest.parse({
+          id: "cursor",
+          display_name: "cursor",
+          kind: "local_cli",
+          provider_family: "google",
+          capabilities: { implement: true, review: true },
+          access_profiles_supported: ["readonly"],
+        });
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", codexFull],
+      ["cursor", cursorNoFull],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    // AUTO pool (no explicit --harness): the engine considers both, drops cursor
+    // for access, and runs codex ONCE — NOT codex twice via modulo self-fill.
+    const res = await withScopedConfigDir(async () =>
+      orch.run({ repoRoot: repo, prompt: "x", mode: "agent", access: "workspace_write", n: 2 }),
+    );
     const primary = res.candidates.filter((c) => /^a\d+$/.test(c.attemptId));
-    expect(primary.length).toBe(2);
-    expect(primary.every((c) => c.harnessId === "fake-success")).toBe(true);
-    expect(res.candidates.every((c) => c.harnessId !== "raw-ish")).toBe(true);
+    expect(primary.every((c) => c.harnessId === "codex")).toBe(true);
+    // The dropped cursor slot is NOT refilled by a duplicate codex.
+    expect(primary.length).toBe(1);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain("route.pool.degraded");
+    const degraded = events
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .find((e) => e.type === "route.pool.degraded");
+    expect(degraded).toBeTruthy();
+    expect(degraded.payload.effective_n).toBe(1);
+    expect(degraded.payload.requested_n).toBe(2);
+    expect(degraded.payload.effective_harnesses).toEqual(["codex"]);
+    expect(degraded.payload.dropped_lanes[0].harness_id).toBe("cursor");
+    expect(degraded.payload.dropped_lanes[0].stage).toBe("access");
   });
 
   it("applies configured eligible pool, primary harness, model, and routing goal defaults", async () => {
@@ -1408,6 +1520,65 @@ describe("Orchestrator", () => {
     ).rejects.toThrow(/primary harness 'claude'/);
   });
 
+  it("GH #25: a multi-harness pool missing its configured primary is a structured ambiguity error with a copy-pasteable fix", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["claude", realLikeAdapter("claude", "anthropic")],
+      ["cursor", realLikeAdapter("cursor", "google")],
+    ]);
+    const configDir = reapMk(join(tmpdir(), "claudexor-gh25-"));
+    // Configured default primary is codex, which is NOT in the selected pool.
+    writeFileSync(join(configDir, "config.yaml"), "routing:\n  primary_harness: codex\n");
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      await expect(
+        orch.run({
+          repoRoot: repo,
+          prompt: "x",
+          mode: "agent",
+          harnesses: ["claude", "cursor"],
+          n: 2,
+        }),
+      ).rejects.toThrow(
+        // Names the missing primary, the pool, and the exact copy-pasteable flag.
+        /ambiguous primary.*codex.*\[claude, cursor\][\s\S]*--primary-harness claude/i,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    }
+  });
+
+  it("GH #25: an explicit --primary-harness inside a multi-harness pool is honored without a duplicate flag", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["claude", realLikeAdapter("claude", "anthropic")],
+      ["cursor", realLikeAdapter("cursor", "google")],
+    ]);
+    const configDir = reapMk(join(tmpdir(), "claudexor-gh25-ok-"));
+    writeFileSync(join(configDir, "config.yaml"), "routing:\n  primary_harness: codex\n");
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["claude", "cursor"],
+        primaryHarness: "claude",
+        n: 2,
+      });
+      // Pinning the primary resolves the ambiguity — the run proceeds.
+      expect(res.lifecycle).not.toBe("failed");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    }
+  });
+
   it("does not persist secret-like tokens from generated patch diffs", async () => {
     const repo = await initRepo();
     const secret = "sk-" + "a".repeat(24);
@@ -1485,9 +1656,12 @@ describe("Orchestrator", () => {
     expect(legacyOutcome(res)).toBe("failed");
     expect(res.candidates).toEqual([]);
     expect(configuredPrimaryRan).toBe(false);
-    expect(res.summary).toMatch(/perform 'implement'/);
+    // QA-043: an explicitly selected incompatible lane now fails loudly by NAME
+    // at routing preflight (a per-lane refusal), not the generic empty-pool
+    // "no harness can perform" message.
+    expect(res.summary).toMatch(/raw-ish.*cannot/i);
     expect(readFileSync(join(res.runDir, "context", "context_error.md"), "utf8")).toMatch(
-      /perform 'implement'/,
+      /raw-ish.*cannot/i,
     );
   });
 
@@ -1502,7 +1676,8 @@ describe("Orchestrator", () => {
       harnesses: ["raw-ish"],
     });
     expect(legacyOutcome(res)).toBe("failed");
-    expect(res.summary).toMatch(/perform 'explain'/);
+    // QA-043: explicit single-lane refusal is a loud per-lane message by name.
+    expect(res.summary).toMatch(/raw-ish.*cannot/i);
     expect(existsSync(join(res.runDir, "context", "context_error.md"))).toBe(true);
     expect(readFileSync(join(res.runDir, "final", "summary.md"), "utf8")).toContain(
       "Lifecycle: failed",
@@ -3403,6 +3578,42 @@ describe("Orchestrator", () => {
       expect(events).toContain("ignored_settings");
       expect(events).toContain("effort=high");
       expect(events).toContain("effort_levels is empty");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
+      else process.env.CLAUDEXOR_CONFIG_DIR = prev;
+    }
+  });
+
+  it("QA-035: freezes the config-derived default model and effort into the immutable TaskContract", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["codex", realLikeAdapter("codex", "openai")],
+    ]);
+    const configDir = reapMk(join(tmpdir(), "claudexor-qa035-freeze-"));
+    // The user relies on Settings-level defaults instead of restating per turn.
+    writeFileSync(
+      join(configDir, "config.yaml"),
+      "harnesses:\n  codex:\n    default_model: model-x\n    effort: high\n",
+    );
+    const prev = process.env.CLAUDEXOR_CONFIG_DIR;
+    process.env.CLAUDEXOR_CONFIG_DIR = configDir;
+    try {
+      const orch = new Orchestrator({ registry, reviewers: [] });
+      const res = await orch.run({
+        repoRoot: repo,
+        prompt: "x",
+        mode: "agent",
+        harnesses: ["codex"],
+        n: 1,
+      });
+      const task = new ArtifactStore(repo).readYaml<{
+        routing_models: Record<string, string>;
+        routing_efforts: Record<string, string>;
+      }>(join(res.runDir, "context", "task.yaml"));
+      // Without the freeze these are {} and an Exact Retry re-resolves both
+      // against whatever settings say at retry time (the QA-035 route drift).
+      expect(task?.routing_models["codex"]).toBe("model-x");
+      expect(task?.routing_efforts["codex"]).toBe("high");
     } finally {
       if (prev === undefined) delete process.env.CLAUDEXOR_CONFIG_DIR;
       else process.env.CLAUDEXOR_CONFIG_DIR = prev;
@@ -5447,6 +5658,144 @@ describe("Orchestrator", () => {
     expect(legacyOutcome(res)).toBe("failed");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(false);
     expect(res.candidates.every((c) => c.status !== "success")).toBe(true);
+  });
+
+  it("QA-047: an EXPLICIT council with an unavailable (no-manifest) member fails loudly, naming it", async () => {
+    const repo = await initRepo();
+    // opencode is unavailable: discover throws (no manifest) and doctor is
+    // unavailable — exactly the branch that silently vanished before QA-047.
+    const ghost: HarnessAdapter = {
+      id: "opencode",
+      async discover() {
+        throw new Error("opencode not found on PATH");
+      },
+      async doctor() {
+        return ConformanceReport.parse({
+          harness_id: "opencode",
+          status: "unavailable",
+          reasons: ["opencode not found", "opencode provider auth not configured"],
+        });
+      },
+      async *run(spec) {
+        yield { type: "completed", session_id: spec.session_id, ts: new Date().toISOString() };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([
+        ["planner-a", councilPlannerAdapter("planner-a", "A")],
+        ["opencode", ghost],
+      ]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      harnesses: ["planner-a", "opencode"],
+      n: 2,
+    });
+    // The explicit unavailable member must fail the run loudly at routing
+    // preflight — NOT vanish while planner-a drafts and the run reads
+    // "degraded" with no representation of who disappeared or why.
+    expect(legacyOutcome(res)).toBe("failed");
+    expect(res.summary).toMatch(/opencode/i);
+    // No draft/merge spend after the deterministic refusal.
+    expect(existsSync(join(res.runDir, "council", "draft-planner-a.md"))).toBe(false);
+  });
+
+  it("QA-047: the council merge reuses the SAME admitted route HOME as the primary's draft", async () => {
+    const repo = await initRepo();
+    // Root cause 2: a fresh disposable merge HOME re-probes cold native status
+    // and times out. The merge must run in the SAME scoped context whose
+    // readiness admitted the primary and in which its draft just succeeded.
+    const homesByIntent: Record<string, string | undefined> = {};
+    const capturing: HarnessAdapter = {
+      ...councilPlannerAdapter("cursor", "C"),
+      async *run(spec) {
+        homesByIntent[spec.intent] = spec.env?.["HOME"];
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        const text =
+          spec.intent === "synthesize"
+            ? ["# Merged plan", "1. step", "", "## Open Questions", "- [single] q? :: a :: b"].join(
+                "\n",
+              )
+            : ["# Draft C", "1. step", "", "## Open Questions", "- [text] q?"].join("\n");
+        yield { type: "message", session_id: spec.session_id, ts, text };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([["cursor", capturing]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      harnesses: ["cursor"],
+      n: 1,
+    });
+    expect(legacyOutcome(res)).toBe("success");
+    expect(homesByIntent["plan"]).toBeTruthy();
+    // The merge (synthesize) HOME is byte-identical to the draft (plan) HOME.
+    expect(homesByIntent["synthesize"]).toBe(homesByIntent["plan"]);
+  });
+
+  it("QA-047: a failed council merge never relabels the successful draft as failed, and the member card stays clean", async () => {
+    const repo = await initRepo();
+    // Single-member council: p01 draft succeeds; p02 merge (synthesize) fails.
+    const draftOkMergeFails: HarnessAdapter = {
+      ...councilPlannerAdapter("cursor", "C"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield { type: "started", session_id: spec.session_id, ts };
+        if (spec.intent === "synthesize") {
+          yield {
+            type: "error",
+            session_id: spec.session_id,
+            ts,
+            error: "merge native status probe timed out",
+          };
+          yield { type: "completed", session_id: spec.session_id, ts };
+          return;
+        }
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: ["# Draft C", "1. Draft step", "", "## Open Questions", "- [text] q?"].join("\n"),
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const orch = new Orchestrator({
+      registry: new Map<string, HarnessAdapter>([["cursor", draftOkMergeFails]]),
+      reviewers: [],
+    });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "design the feature",
+      mode: "plan",
+      council: true,
+      harnesses: ["cursor"],
+      n: 1,
+    });
+    expect(legacyOutcome(res)).toBe("failed");
+    // Root cause 3: the proven-success p01 draft is NEVER labeled failed.
+    expect(res.summary).not.toMatch(/p01\/cursor: failed/);
+    expect(res.summary).toMatch(/p02\/cursor:/);
+    expect(res.summary).toMatch(/Preserved drafts: p01\/cursor/);
+    // The surviving draft artifact is preserved.
+    expect(existsSync(join(res.runDir, "council", "draft-cursor.md"))).toBe(true);
+    // Root cause 4: the merge error is NOT attached to the drafted member card;
+    // the member reads `drafted` with a null draft error (CouncilMember.error
+    // is null unless the member failed to DRAFT).
+    const membership = readFileSync(join(res.runDir, "council", "membership.yaml"), "utf8");
+    expect(membership).toContain("status: drafted");
+    expect(membership).not.toContain("merge native status probe timed out");
   });
 
   it("reviews the candidate worktree rather than the unchanged base repo", async () => {

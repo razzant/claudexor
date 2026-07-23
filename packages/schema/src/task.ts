@@ -12,6 +12,7 @@ import {
   SchemaVersion,
 } from "./primitives.js";
 import { PaidBudget, RoutingGoal } from "./budget.js";
+import { EffortHint } from "./harness.js";
 
 export const TestCommandInvocation = z
   .object({
@@ -293,6 +294,16 @@ export const TaskContract = z
       .default({})
       .describe(
         "Resolved harness-scoped model map for this run (harness id to model id); empty means every route uses its per-harness settings default.",
+      ),
+    /** QA-035: the RESOLVED reasoning-effort per admitted lane, frozen at
+     * contract build so Exact Retry replays the effort that actually governed
+     * the run instead of re-reading (possibly changed) settings. Empty = no
+     * effort was resolved for any known lane (vendor default). */
+    routing_efforts: z
+      .record(z.string(), EffortHint)
+      .default({})
+      .describe(
+        "Resolved harness-scoped reasoning-effort map for this run (harness id to effort), frozen so an Exact Retry replays the same effort instead of re-resolving current settings.",
       ),
     convergence: ConvergencePredicate.default({}),
   })

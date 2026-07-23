@@ -1,0 +1,79 @@
+{
+  "$ref": "#/definitions/RoutePoolDegradedPayload",
+  "definitions": {
+    "RoutePoolDegradedPayload": {
+      "type": "object",
+      "properties": {
+        "requested_harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The pool the resolver considered (explicit ids or auto-derived)."
+        },
+        "effective_harnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Distinct harnesses that actually route, in attempt order."
+        },
+        "requested_n": {
+          "type": "integer",
+          "description": "The requested candidate width for this run."
+        },
+        "effective_n": {
+          "type": "integer",
+          "description": "Distinct candidates that will run; never inflated by duplication."
+        },
+        "dropped_lanes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "harness_id": {
+                "type": "string",
+                "description": "The dropped lane's harness id."
+              },
+              "stage": {
+                "type": "string",
+                "enum": [
+                  "discovery",
+                  "settings",
+                  "credential",
+                  "doctor",
+                  "capability",
+                  "access",
+                  "web",
+                  "attachment"
+                ],
+                "description": "The routing stage at which an auto-pool lane was dropped."
+              },
+              "detail": {
+                "type": "string",
+                "description": "Redacted human reason the lane was dropped."
+              }
+            },
+            "required": [
+              "harness_id",
+              "stage",
+              "detail"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every lane excluded from the auto pool, with its typed stage and reason."
+        }
+      },
+      "required": [
+        "requested_harnesses",
+        "effective_harnesses",
+        "requested_n",
+        "effective_n",
+        "dropped_lanes"
+      ],
+      "additionalProperties": false,
+      "description": "Typed payload for route.pool.degraded: the requested-vs-effective route receipt for an auto pool that dropped lanes or clamped width, validated before being stamped onto the RunEvent payload."
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

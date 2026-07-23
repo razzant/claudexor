@@ -169,6 +169,19 @@ pool, primary first. `Agent` is a one-candidate envelope run. `ask --deep-scan`
 width 4, capped at 8). Best-of-N expands the eligible pool over N candidates. Convergence rotates compatible
 harnesses when a stall signature persists.
 
+Route resolution is honest about membership. An EXPLICITLY selected lane that
+becomes ineligible (unavailable, no manifest, wrong access profile, incompatible
+web policy, unsupported attachment, or unable to perform the intent) is a loud
+typed refusal at preflight that names the lane and the gap — never a silent
+substitution. An AUTO pool may drop such a lane, but the resolver NEVER refills a
+dropped lane's slot by duplicating a surviving harness (the self-race class that
+faked Best-of diversity): effective width clamps to distinct survivors and the
+omission is disclosed once via a `route.pool.degraded` event carrying the
+requested-vs-effective harnesses/width and every dropped lane's typed stage. A
+pool smaller than `N` with NO drops is still a legitimate best-of-N on the
+available harness(es); deep-scan likewise repeats a surviving harness for scout
+coverage, since its width is distinct slices, not distinct harnesses.
+
 A thread carries sticky routing so the chat surface stays a thin gateway: a
 `Thread` persists `primary_harness` (which harness answers in chat) and
 `eligible_harnesses` (the pool Best-of runs — one candidate per harness, so its N is
@@ -177,7 +190,12 @@ the pool size). A turn inherits both unless its request overrides them
 **turn body > thread sticky > engine default** (config `routing.primary_harness`,
 auto-pool of doctor-ok harnesses). All ordering/validation stays in the engine —
 `primaryHarness` is only pinned first, and an EXPLICITLY-selected primary outside
-the selected pool fails loudly (the engine rejects it). An INHERITED sticky
+the selected pool fails loudly (the engine rejects it). A single-item explicit
+pool infers itself as the primary (no duplicate `--primary-harness` needed); a
+MULTI-harness pool whose CONFIGURED default primary is absent, with no primary
+pinned, is a structured ambiguity refusal that names the pool, the missing
+primary, and the exact `--primary-harness` flag to add (GH #25) — never a silent
+reroute. An INHERITED sticky
 primary that no longer fits the pool is instead dropped by the thin gateway
 before the turn is enqueued (so a stale bias never forces routing). Surfaces just
 set the sticky values (`POST /v2/threads`, `PATCH /v2/threads/:id`) and send DTOs; they
@@ -270,8 +288,14 @@ disclosed as `ignored_settings` on `harness.started`, never silently dropped.
 Model choice is harness-scoped end to end. A run carries a per-harness
 `models` map (harness id → model id); the scalar `model` convenience expands
 to the RESOLVED PRIMARY only and is rejected when no primary is resolvable —
-it never fans out to a pool. The resolved map is recorded on the TaskContract
-(`routing_models`), which route-spec building reads; per-attempt overrides
+it never fans out to a pool. At initial normalization the engine FREEZES each
+known lane's config-derived `default_model` and `effort` into the resolved
+route exactly like an explicit input, so the TaskContract records them
+(`routing_models` + `routing_efforts`) instead of leaving `{}` that a later
+retry would re-resolve against changed settings. Exact Retry replays those
+frozen values, so a run made on a settings default stays reproducible after
+the default changes (QA-035); the resolved map is what route-spec building
+reads; per-attempt overrides
 (budget downgrade to `fallback_model`, fallback retry) sit on top. Every
 explicit model — per-run, settings default, fallback, reviewer — must pass
 the harness's model truth source (live `models()` inventory, else manifest
@@ -842,7 +866,17 @@ merge attempt, with a `council/membership.yaml` projection served on
 `ControlRunDetail.council` (requested/drafted/degraded/mergedBy + per-member
 role and status). Degradation is disclosed, not silent — a failed member is
 carried on the projection and the merge proceeds with survivors (one survivor
-still merges); all members failing is a typed failure. `council` is a strategy
+still merges); all members failing is a typed failure. Council shares the
+explicit-lane admission rule with Best-of: an explicitly named member that is
+unavailable (including one with no doctor manifest) fails the run loudly at
+routing preflight before any draft, rather than vanishing while a healthier
+member drafts. Draft and merge are distinct phases of one primary: a member
+card carries only its DRAFT outcome (a merge failure is never attached to a
+drafted member), the failure text derives from per-attempt outcomes (a
+successful draft is never relabeled failed and its artifact is preserved), and
+the merge runs in the SAME admitted route context whose readiness passed for
+the draft — not a fresh disposable HOME whose cold native-status probe times
+out. `council` is a strategy
 FLAG refused off `mode=plan`, and `--n` on a plan is legal only with it (shared
 `runStartStrategyViolations` owner). The strategy is engine-owned in
 `packages/orchestrator/src/planRun.ts` (round orchestration) and

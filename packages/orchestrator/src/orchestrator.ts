@@ -26,6 +26,7 @@ import type {
   AccessProfile,
   AuthSourceReadiness,
   RouteRankingRationale,
+  RouteDropStage,
   Attachment,
   ControlReviewerPanelEntry,
   EffortHint,
@@ -115,6 +116,7 @@ import {
   harnessInactivityTimeoutMs,
   observeAuthSwitch,
   emitPrimaryDivergence,
+  emitPoolDegraded,
   deliveryRefusalFailure,
   writeRaceDeliveryDecision,
 } from "./runSupport.js";
@@ -1002,10 +1004,15 @@ export class Orchestrator {
     const configuredPool = cfg?.global.routing.eligible_harnesses;
     const harnesses =
       input.harnesses ?? (configuredPool && configuredPool.length > 0 ? configuredPool : undefined);
+    // GH #25 precedence: an explicit --primary-harness wins and is validated
+    // against the pool; else a single-item explicit pool infers itself as
+    // primary (shipped in #34); else the configured default primary applies.
+    const explicitPrimary = input.primaryHarness;
+    const configPrimary = cfg?.global.routing.primary_harness;
     const primaryHarness =
-      input.primaryHarness ??
+      explicitPrimary ??
       (input.harnesses?.length === 1 ? input.harnesses[0] : undefined) ??
-      cfg?.global.routing.primary_harness ??
+      configPrimary ??
       undefined;
     if (
       primaryHarness &&
@@ -1013,8 +1020,21 @@ export class Orchestrator {
       harnesses.length > 0 &&
       !harnesses.includes(primaryHarness)
     ) {
-      throw new Error(
-        `primary harness '${primaryHarness}' is not in the eligible harness pool (${harnesses.join(", ")})`,
+      if (explicitPrimary) {
+        // An explicit primary must be a member of the eligible pool (authoritative).
+        throw new Error(
+          `primary harness '${explicitPrimary}' is not in the eligible harness pool (${harnesses.join(", ")}); ` +
+            `pass --primary-harness as one of [${harnesses.join(", ")}], or add '${explicitPrimary}' to --harness`,
+        );
+      }
+      // GH #25 remainder: a MULTI-harness pool whose CONFIGURED default primary
+      // is absent, with no --primary-harness pinned, is ambiguous — the engine
+      // must not silently reroute. Refuse with a structured, copy-pasteable fix
+      // naming the pool, the missing primary, and the exact flag to add.
+      throw new HarnessUnavailableError(
+        `ambiguous primary harness: the configured default primary '${primaryHarness}' is not in the selected pool [${harnesses.join(", ")}], ` +
+          `and no --primary-harness was given. Pin one explicitly, e.g. \`--primary-harness ${harnesses[0]}\` ` +
+          `(or another of [${harnesses.join(", ")}]).`,
       );
     }
     if (input.web && input.externalContextPolicy && input.web !== input.externalContextPolicy) {
@@ -1047,6 +1067,18 @@ export class Orchestrator {
       }
       models[scalarTarget] ??= input.model;
     }
+    // QA-035: FREEZE the config-derived per-harness default_model into the
+    // resolved model map at initial normalization, exactly like an explicit
+    // input. Without this the TaskContract records `routing_models: {}` and an
+    // Exact Retry re-resolves the model against CURRENT settings — silently
+    // changing the route after a settings edit. A per-turn/scalar value already
+    // set wins (??=). Only a known resolved pool can be frozen here; a pure
+    // auto pool's lanes are not yet known (documented seam).
+    const harnessCfg = cfg?.global.harnesses ?? {};
+    for (const hid of harnesses ?? []) {
+      const def = harnessCfg[hid]?.default_model;
+      if (def) models[hid] ??= def;
+    }
     return {
       ...input,
       harnesses,
@@ -1073,6 +1105,12 @@ export class Orchestrator {
     /** QA-034: when provided, the pool-ordering rationale is recorded under this
      * run id so the terminal telemetry writer can persist it. */
     runId?: string,
+    /** Deep-scan opts in: multi-scout coverage repeats a surviving harness to
+     * reach the requested width (distinct SLICES, not distinct harnesses), so a
+     * dropped lane must not clamp the scout count. Best-of leaves this false —
+     * its width is distinct-harness diversity, so a dropped lane clamps rather
+     * than self-races (QA-043). */
+    allowDuplicateFill = false,
   ): Promise<RoutedAdapter[]> {
     let ids = input.harnesses;
     const explicitPool = Boolean(ids && ids.length > 0);
@@ -1142,6 +1180,20 @@ export class Orchestrator {
     const policy = input.web ?? input.externalContextPolicy ?? "auto";
     const pool: RoutedAdapter[] = [];
     const dropped: string[] = [];
+    // Structured requested-vs-effective route receipt (QA-043): every auto-pool
+    // drop is recorded with its typed STAGE so the disclosure preserves the
+    // real cause instead of collapsing to one reason.
+    const droppedLanes: { harnessId: string; stage: RouteDropStage; detail: string }[] = [];
+    // The ONE explicit-lane admission gate shared by every drop site (QA-043 /
+    // QA-047 meta-move): an EXPLICITLY selected lane that becomes ineligible is
+    // a loud typed refusal naming the lane + reason — never a silent
+    // substitution or self-race duplication; an AUTO lane is dropped with a
+    // typed omission recorded for the degradation receipt.
+    const dropLane = (harnessId: string, stage: RouteDropStage, detail: string): void => {
+      if (explicitPool) throw new HarnessUnavailableError(detail);
+      dropped.push(detail);
+      droppedLanes.push({ harnessId, stage, detail });
+    };
     for (const id of ids) {
       const adapter = this.deps.registry.get(id);
       if (!adapter) {
@@ -1154,7 +1206,7 @@ export class Orchestrator {
             `unknown harness '${id}' (registered: ${known}); run \`claudexor harness list --all\``,
           );
         }
-        dropped.push(`${id} (not registered)`);
+        dropLane(id, "discovery", `${id} (not registered)`);
         continue;
       }
       // Per-harness settings: a user-disabled harness never routes. Explicit
@@ -1163,8 +1215,7 @@ export class Orchestrator {
       const cfgEntry = harnessSettings[id];
       if (cfgEntry && cfgEntry.enabled === false) {
         const why = `${id} is disabled in settings (harnesses.${id}.enabled=false)`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
+        dropLane(id, "settings", why);
         continue;
       }
       // INV-135 accounts authority: with the native/CLI login excluded and no
@@ -1176,8 +1227,7 @@ export class Orchestrator {
         this.nativeCredentialsDisabled(input.repoRoot, id)
       ) {
         const why = `${id} has no routable credential: the CLI login is disabled (harnesses.${id}.native_credentials_enabled=false) and no account is pinned (--profile)`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
+        dropLane(id, "credential", why);
         continue;
       }
       // W3.3 (TZ-1 §B): a route is admitted on readiness truth from the SAME
@@ -1191,7 +1241,12 @@ export class Orchestrator {
       );
       const manifest = status?.manifest ?? null;
       if (!status || !manifest) {
-        dropped.push(`${id} (unavailable)`);
+        // QA-047: an explicit member with no doctor manifest (absent binary /
+        // unconfigured provider) is unavailable — it must fail LOUDLY for an
+        // explicit pool (naming the real doctor reasons), not vanish before the
+        // later explicit-status guard because a healthier lane survived.
+        const reasons = status?.reasons?.length ? `: ${status.reasons.join("; ")}` : "";
+        dropLane(id, "doctor", `${id} is unavailable${reasons || " (no manifest / not ready)"}`);
         continue;
       }
       // Doctor status is the readiness truth. A DEGRADED harness (e.g. key present but
@@ -1227,19 +1282,19 @@ export class Orchestrator {
           }
         } else {
           const why = `${id} credential profile is not ready: ${profileVerdict}`;
-          if (explicitPool) throw new HarnessUnavailableError(why);
-          dropped.push(why);
+          dropLane(id, "credential", why);
           continue;
         }
       }
       if (status.status === "unavailable" && !profileAdmitted) {
         const why = `${id} is unavailable${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
+        dropLane(id, "doctor", why);
         continue;
       }
       if (status.status !== "ok" && !explicitPool && !profileAdmitted) {
-        dropped.push(
+        dropLane(
+          id,
+          "doctor",
           `${id} is ${status.status}${status.reasons.length ? `: ${status.reasons.join("; ")}` : ""}`,
         );
         continue;
@@ -1272,8 +1327,7 @@ export class Orchestrator {
         (routeWebRequired && (webSupport === "none" || webSupport === "uncontrolled"));
       if (webIncompatible) {
         const why = `${id} cannot enforce web policy '${routePolicy}' (manifest web_policy=${webSupport}); choose a web-capable/enforceable harness or change --web to a compatible policy`;
-        if (explicitPool) throw new HarnessUnavailableError(why);
-        dropped.push(why);
+        dropLane(id, "web", why);
         continue;
       }
       const attachmentRefusal = this.requestRequirements.attachmentRefusal(
@@ -1282,8 +1336,7 @@ export class Orchestrator {
         manifest.capability_profile.attachment_inputs,
       );
       if (attachmentRefusal) {
-        if (explicitPool) throw new HarnessUnavailableError(attachmentRefusal);
-        dropped.push(attachmentRefusal);
+        dropLane(id, "attachment", attachmentRefusal);
         continue;
       }
       const reason = status.reasons.length > 0 ? `: ${status.reasons.join("; ")}` : "";
@@ -1337,10 +1390,18 @@ export class Orchestrator {
               }
             : null,
         });
-      } else
-        dropped.push(
+      } else {
+        // QA-043: an intent- or access-incompatible lane. For an EXPLICIT pool
+        // this is a loud refusal (dropLane throws) naming the lane and the
+        // exact capability gap — never a silent omission that a surviving lane
+        // then masks by modulo self-duplication. The typed stage distinguishes
+        // an access refusal from a capability one so the disclosure is honest.
+        dropLane(
+          id,
+          accessSupported ? "capability" : "access",
           `${id} (${accessSupported ? `cannot ${intent}${reason}` : `cannot enforce ${requiredAccess}`})`,
         );
+      }
     }
     if (pool.length === 0) {
       throw new HarnessUnavailableError(
@@ -1356,7 +1417,29 @@ export class Orchestrator {
     emitPrimaryDivergence(log, input.primaryHarness, ordered, pool, dropped);
     const n = input.n ?? ordered.length;
     const out: RoutedAdapter[] = [];
-    for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
+    if (droppedLanes.length > 0 && !allowDuplicateFill) {
+      // QA-043: lanes were dropped from an AUTO best-of pool (an explicit pool
+      // would have thrown at the drop). NEVER refill a dropped lane's slot by
+      // duplicating a surviving harness — that manufactures a self-race that
+      // masks the omission. Clamp to distinct survivors and disclose below.
+      // (Deep-scan sets allowDuplicateFill: its width is scout coverage, not
+      // harness diversity, so a dropped lane must not cut the scout count.)
+      for (let i = 0; i < Math.min(n, ordered.length); i++) out.push(ordered[i] as RoutedAdapter);
+    } else {
+      // No lane was dropped: a pool smaller than `n` is an intentional
+      // best-of-N on the available harness(es) (e.g. explicit `--harness codex
+      // -n 3`), so the historical width fill is preserved.
+      for (let i = 0; i < n; i++) out.push(ordered[i % ordered.length] as RoutedAdapter);
+    }
+    // Disclose an auto-pool omission / width clamp once, with the
+    // requested-vs-effective route receipt (never silent — QA-043).
+    emitPoolDegraded(log, {
+      requestedHarnesses: ids,
+      effectiveHarnesses: [...new Set(out.map((lane) => lane.adapter.id))],
+      requestedN: n,
+      effectiveN: out.length,
+      droppedLanes,
+    });
     this.requestRequirements.requireEffectiveBrowser(
       input.browser === true,
       out.map((lane) => lane.browserRequirement),
@@ -1759,6 +1842,16 @@ export class Orchestrator {
       // primary by resolveRunInput). The contract is what route spec building
       // reads — there is no run-global model (INV-103).
       routing_models: input.models ?? {},
+      // QA-035: freeze the RESOLVED reasoning-effort per known lane so Exact
+      // Retry replays it instead of re-resolving current settings. A per-turn
+      // `input.effort` wins; otherwise the harness settings default is frozen.
+      // Only known-pool lanes can be frozen here (a pure auto pool's lanes are
+      // resolved later — documented seam).
+      routing_efforts: Object.fromEntries(
+        (input.harnesses ?? [])
+          .map((hid) => [hid, input.effort ?? resolvedCfg.global.harnesses?.[hid]?.effort ?? null])
+          .filter((entry): entry is [string, string] => entry[1] !== null),
+      ),
     });
   }
 
@@ -2784,12 +2877,14 @@ export class Orchestrator {
 
     let adapters: RoutedAdapter[];
     try {
-      // Best-of races the whole pool (no divergence `log`: the pool still runs).
+      // Best-of races the whole pool. The `log` is passed so an AUTO pool that
+      // drops a lane / clamps width discloses `route.pool.degraded` (QA-043) —
+      // the resolver never refills a dropped slot with a duplicate harness.
       adapters = await this.resolveCandidateAdapters(
         input,
         this.candidateIntent(input),
         ledger,
-        undefined,
+        log,
         undefined,
         runId,
       );
@@ -5951,6 +6046,9 @@ export class Orchestrator {
         log,
         roHome,
         runId,
+        // Deep-scan repeats a surviving harness to reach scout width; a dropped
+        // lane must not clamp coverage (QA-043 clamp is best-of-only).
+        opts.deepScan === true,
       );
       if (!opts.deepScan) {
         const seen = new Set<string>();

@@ -16,9 +16,11 @@ import {
   FallbackReason as FallbackReasonSchema,
   RouteFallbackPayload as RouteFallbackPayloadSchema,
   RoutePrimaryDivergedPayload as RoutePrimaryDivergedPayloadSchema,
+  RoutePoolDegradedPayload as RoutePoolDegradedPayloadSchema,
   makeOutcomeFacts,
   runOutcomeLabel,
 } from "@claudexor/schema";
+import type { RouteDropStage } from "@claudexor/schema";
 import type { EventLog } from "@claudexor/event-log";
 import { isBlocking } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
@@ -367,6 +369,40 @@ export function emitPrimaryDivergence(
         ? `${requested} is on cooldown or over its budget/quota pace`
         : (dropped.find((d) => d.startsWith(`${requested} `) || d.startsWith(`${requested}(`)) ??
           `${requested} is unavailable`),
+    }) as unknown as Record<string, unknown>,
+  );
+}
+
+/** Auto-pool degradation disclosure (QA-043): the resolver dropped one or more
+ * incompatible lanes and/or clamped the effective width below the requested
+ * `n`. It NEVER refills a dropped lane's slot by duplicating a surviving
+ * harness (the self-race class), so the shrink is disclosed here with the
+ * requested-vs-effective route receipt. No-op when nothing was dropped and the
+ * width held (explicit pools never reach here — they throw at the drop). */
+export function emitPoolDegraded(
+  log: EventLog | undefined,
+  args: {
+    requestedHarnesses: string[];
+    effectiveHarnesses: string[];
+    requestedN: number;
+    effectiveN: number;
+    droppedLanes: { harnessId: string; stage: RouteDropStage; detail: string }[];
+  },
+): void {
+  if (!log) return;
+  if (args.droppedLanes.length === 0 && args.effectiveN >= args.requestedN) return;
+  log.emit(
+    "route.pool.degraded",
+    RoutePoolDegradedPayloadSchema.parse({
+      requested_harnesses: args.requestedHarnesses,
+      effective_harnesses: args.effectiveHarnesses,
+      requested_n: args.requestedN,
+      effective_n: args.effectiveN,
+      dropped_lanes: args.droppedLanes.map((d) => ({
+        harness_id: d.harnessId,
+        stage: d.stage,
+        detail: d.detail,
+      })),
     }) as unknown as Record<string, unknown>,
   );
 }

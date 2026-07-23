@@ -6322,6 +6322,62 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("QA-035: Exact Retry replays the model+effort frozen in the source contract despite a settings change", async () => {
+    const { daemon, record } = fakeDaemon();
+    // The source run FROZE its config-derived route into the immutable contract.
+    writeFileSync(
+      join(record.runDir as string, "context", "task.yaml"),
+      [
+        "schema_version: 2",
+        "task_id: task-d1",
+        "created_at: 2026-07-15T00:00:00.000Z",
+        "repo:",
+        `  root: ${JSON.stringify(record.runDir)}`,
+        "  base_ref: HEAD",
+        "mode:",
+        "  kind: agent",
+        "user_intent:",
+        "  raw: test run",
+        "routing_models:",
+        "  codex: gpt-5.3-codex-spark",
+        "routing_efforts:",
+        "  codex: low",
+        "tests:",
+        "  commands: []",
+        "",
+      ].join("\n"),
+    );
+    // The ORIGINAL request carried no scalar model/effort — it relied on
+    // settings that may since have changed. Exact Retry must NOT re-resolve
+    // them from current settings.
+    record.params = {
+      prompt: "hello",
+      mode: "agent",
+      scope: { kind: "project", root: record.runDir, context: "auto" },
+      harnesses: ["codex"],
+      routingGoal: "auto",
+    };
+    let enqueued: Record<string, unknown> | undefined;
+    const wrapped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue(params, options) {
+        enqueued = params as Record<string, unknown>;
+        return daemon.enqueue(params, options);
+      },
+    };
+    await withDaemonServer(wrapped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "qa035-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(200);
+      // The retry replays the FROZEN route, not whatever settings say now.
+      expect(enqueued?.["models"]).toMatchObject({ codex: "gpt-5.3-codex-spark" });
+      expect(enqueued?.["effort"]).toBe("low");
+    });
+  });
+
   it("Exact Retry and Run Again restore threaded attachment references from the durable turn", async () => {
     const { daemon, record } = fakeDaemon();
     const attachmentPath = join(record.runDir as string, "context", "attached.txt");

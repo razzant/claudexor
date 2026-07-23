@@ -70,6 +70,14 @@ export const RunEventType = z
      * (no attempt was ever made on the primary to fall back FROM); never silent.
      * Payload: RoutePrimaryDivergedPayload {requested, effective, reason, detail}. */
     "route.primary.diverged",
+    /** QA-043: an AUTO pool dropped one or more incompatible lanes and/or its
+     * effective width fell below the requested `n`. The route resolver NEVER
+     * backfills a dropped lane's slot by duplicating a surviving harness (the
+     * self-race class), so a shrunk pool is disclosed here — requested vs
+     * effective harnesses/width plus every dropped lane and its typed stage.
+     * Explicit pools fail loudly at the drop instead of reaching this event.
+     * Payload: RoutePoolDegradedPayload. */
+    "route.pool.degraded",
     /** A thread turn was continued across the conversation (INV-137); payload
      * carries the ContinuityDisclosure stats (kind, packet_turns, summarized,
      * lane_switched_from). Replaces the old static session.rebound phrase. */
@@ -185,6 +193,61 @@ export const RoutePrimaryDivergedPayload = z
     "Typed payload for route.primary.diverged, validated before being stamped onto the RunEvent payload so a pre-attempt primary divergence is always evidence-backed.",
   );
 export type RoutePrimaryDivergedPayload = z.infer<typeof RoutePrimaryDivergedPayload>;
+
+/** The routing stage at which an auto-pool lane was dropped. Typed so a
+ * disclosed omission preserves the ACTUAL cause (an access refusal is not an
+ * auth failure) instead of collapsing every drop to one reason (QA-043). */
+export const RouteDropStage = z
+  .enum([
+    "discovery",
+    "settings",
+    "credential",
+    "doctor",
+    "capability",
+    "access",
+    "web",
+    "attachment",
+  ])
+  .describe("The routing stage at which an auto-pool lane was dropped.");
+export type RouteDropStage = z.infer<typeof RouteDropStage>;
+
+/**
+ * Typed payload for `route.pool.degraded`. Emitted once at route resolution
+ * when an AUTO pool lost lanes and/or clamped width below the requested `n`.
+ * It is the canonical requested-vs-effective route receipt: the resolver never
+ * duplicates a surviving harness to refill a dropped lane's slot (the QA-043
+ * self-race), so the shrink is disclosed here rather than hidden as an
+ * identical extra candidate. Explicit pools throw at the drop and never reach
+ * this event, so a degraded auto pool is always attributable to real
+ * unavailability, not a silent substitution.
+ */
+export const RoutePoolDegradedPayload = z
+  .object({
+    requested_harnesses: z
+      .array(z.string())
+      .describe("The pool the resolver considered (explicit ids or auto-derived)."),
+    effective_harnesses: z
+      .array(z.string())
+      .describe("Distinct harnesses that actually route, in attempt order."),
+    requested_n: z.number().int().describe("The requested candidate width for this run."),
+    effective_n: z
+      .number()
+      .int()
+      .describe("Distinct candidates that will run; never inflated by duplication."),
+    dropped_lanes: z
+      .array(
+        z.object({
+          harness_id: z.string().describe("The dropped lane's harness id."),
+          stage: RouteDropStage,
+          detail: z.string().describe("Redacted human reason the lane was dropped."),
+        }),
+      )
+      .describe("Every lane excluded from the auto pool, with its typed stage and reason."),
+  })
+  .describe(
+    "Typed payload for route.pool.degraded: the requested-vs-effective route receipt for an auto pool that dropped lanes or clamped width, validated before being stamped onto the RunEvent payload.",
+  );
+export type RoutePoolDegradedPayload = z.infer<typeof RoutePoolDegradedPayload>;
 
 /** Append-only event record (one JSONL line). */
 export const RunEvent = z

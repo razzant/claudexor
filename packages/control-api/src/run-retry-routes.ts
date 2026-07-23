@@ -1,9 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import {
   ControlRunAgainDraft,
   ControlRunRetryResponse,
   ControlRunStartRequest,
+  TaskContract,
 } from "@claudexor/schema";
+import type { EffortHint } from "@claudexor/schema";
 import type {
   DaemonControlApiOptions,
   DaemonFacadeClient,
@@ -69,8 +74,19 @@ async function exactRetry(
       await sourceParamsWithThreadAttachments(ctx, source),
     );
     const { turnId: _turnId, retryOf: _retryOf, ...original } = parsed;
+    // QA-035: Exact Retry replays the IMMUTABLE original request. The stored
+    // params omit any model/effort the caller left to settings, so re-reading
+    // current settings would silently change the route after a settings edit.
+    // Replay the values the engine FROZE into the source run's TaskContract
+    // (routing_models / routing_efforts) — a value the caller stated explicitly
+    // still wins.
+    const frozen = readFrozenRouting(source);
     params = runStart.normalizeRunStart({
       ...original,
+      ...(frozen.models ? { models: { ...frozen.models, ...(original.models ?? {}) } } : {}),
+      ...(original.effort === undefined && frozen.effort !== undefined
+        ? { effort: frozen.effort }
+        : {}),
       parentRunId: source.runId ?? source.id,
       retryOf: source.runId ?? source.id,
     });
@@ -150,6 +166,43 @@ async function runAgain(ctx: RunRetryRouteContext, id: string, res: ServerRespon
   } catch (error) {
     ctx.requestError(res, error);
   }
+}
+
+/** QA-035: read the model/effort the engine froze into the source run's
+ * TaskContract. Exact Retry injects these as the immutable route so a settings
+ * change between runs cannot silently re-resolve the model or drop the effort.
+ * The effort scalar is the frozen value for the run's effective primary lane
+ * (or the sole frozen lane). A missing/old/unreadable contract yields nothing —
+ * retry then behaves exactly as before (no regression). */
+function readFrozenRouting(source: DaemonRunRecord): {
+  models?: Record<string, string>;
+  effort?: EffortHint;
+} {
+  if (!source.runDir) return {};
+  let contract: TaskContract;
+  try {
+    contract = TaskContract.parse(
+      parseYaml(readFileSync(join(source.runDir, "context", "task.yaml"), "utf8")),
+    );
+  } catch {
+    return {};
+  }
+  const models =
+    Object.keys(contract.routing_models).length > 0 ? contract.routing_models : undefined;
+  const efforts = contract.routing_efforts;
+  const params =
+    source.params && typeof source.params === "object" && !Array.isArray(source.params)
+      ? (source.params as Record<string, unknown>)
+      : {};
+  const primary =
+    (typeof params["primaryHarness"] === "string" ? params["primaryHarness"] : undefined) ??
+    (Array.isArray(params["harnesses"]) && typeof params["harnesses"][0] === "string"
+      ? (params["harnesses"][0] as string)
+      : undefined);
+  const effort =
+    (primary ? efforts[primary] : undefined) ??
+    (Object.keys(efforts).length === 1 ? Object.values(efforts)[0] : undefined);
+  return { ...(models ? { models } : {}), ...(effort ? { effort } : {}) };
 }
 
 async function sourceParamsWithThreadAttachments(

@@ -230,6 +230,7 @@ const WARNING_EVENT_TYPES = new Set([
   "route.fallback.auth_switched",
   "route.fallback.exhausted",
   "route.primary.diverged",
+  "route.pool.degraded",
   "route.profile.headroom_exceeded",
   "route.profile.rotation_exhausted",
   "policy.web.upgraded",

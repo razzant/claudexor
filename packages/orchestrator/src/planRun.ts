@@ -15,7 +15,6 @@ import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { cancelledResult, writeFailure } from "./runTerminals.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import { extractPlanQuestions } from "./planQuestions.js";
-import { resolveReadOnlyRouteContext } from "./routeContext.js";
 import {
   buildCouncilProjection,
   councilDegradationNote,
@@ -165,13 +164,16 @@ export async function runCouncilPlan(
         });
       }
     }
-  } finally {
-    // Round-1 planners done — reclaim the shared read-only route context BEFORE
-    // the merge (which spawns in the primary's own lane/route home again).
+  } catch (err) {
+    // QA-047 root cause 2: the success path keeps roHome alive so the merge
+    // REUSES the admitted context (draft authenticated there) instead of a
+    // fresh HOME whose cold native-status probe times out. Leak-safe here.
     roHome.dispose();
+    throw err;
   }
 
   if (input.signal?.aborted) {
+    roHome.dispose();
     return cancelledResult(
       log,
       runId,
@@ -200,9 +202,9 @@ export async function runCouncilPlan(
     );
   }
 
-  // Degradation is honest: ALL members failed → typed failure (no plan to
-  // merge). One survivor still merges (normalizes format + extracts questions).
+  // ALL members failed → typed failure (no plan to merge); one survivor merges.
   if (drafts.length === 0) {
+    roHome.dispose();
     return writePlanHarnessFailure(
       deps,
       {
@@ -229,7 +231,6 @@ export async function runCouncilPlan(
   const primary =
     memberAdapters.find((a) => draftedIds.has(a.adapter.id)) ??
     (memberAdapters[0] as RoutedAdapter);
-  const roHome2 = resolveReadOnlyRouteContext(deps.execRootOf(input));
   let mergeOutcome: PlannerAttemptOutcome;
   try {
     mergeOutcome = await deps.runPlannerAttempt({
@@ -244,7 +245,9 @@ export async function runCouncilPlan(
       routed: primary,
       attemptId: `p${String(memberCount + 1).padStart(2, "0")}`,
       laneRun: args.laneRun,
-      fallbackHome: roHome2.env,
+      // QA-047 root cause 2: merge in the SAME admitted route context (not a
+      // fresh HOME whose cold native-status probe times out as an absent login).
+      fallbackHome: roHome.env,
       // The merge references the draft FILES by absolute path (pointer lines);
       // full draft text never rides the prompt bubble.
       promptBody: councilMergePrompt(
@@ -255,7 +258,7 @@ export async function runCouncilPlan(
       intent: "synthesize",
     });
   } finally {
-    roHome2.dispose();
+    roHome.dispose();
   }
   if (mergeOutcome.telemetry)
     attemptTelemetries.push({
@@ -271,13 +274,20 @@ export async function runCouncilPlan(
   });
 
   const mergedBy = mergeOutcome.status === "success" ? primary.adapter.id : null;
+  // QA-047 root cause 4: a member card carries its DRAFT error only — the
+  // primary owns two attempts under one harness id (draft + merge), so a
+  // harness-id-only lookup would misattach the merge failure to a drafted member.
+  const mergeAttemptId = mergeOutcome.attemptId;
   const councilProjection = buildCouncilProjection({
     requested,
     members: memberAdapters.map((a) => ({
       harnessId: a.adapter.id,
       role: a.adapter.id === primary.adapter.id ? "primary" : "member",
       drafted: draftedIds.has(a.adapter.id),
-      error: planAttempts.find((p) => p.harnessId === a.adapter.id && p.error)?.error ?? null,
+      error:
+        planAttempts.find(
+          (p) => p.harnessId === a.adapter.id && p.attemptId !== mergeAttemptId && p.error,
+        )?.error ?? null,
     })),
     mergedBy,
   });
@@ -496,10 +506,17 @@ export function writePlanHarnessFailure(
     !blocked && (ctx.budgetDenial || ledger.terminal())
       ? classifyBudgetFailure({ denial: ctx.budgetDenial ?? null, terminal: ledger.terminal() })
       : null;
+  // QA-047 root cause 3: a proven-success draft can NEVER read "failed". Only
+  // non-success attempts feed failure lines; drafts are preserved evidence.
+  const failedLines = planAttempts
+    .filter((p) => p.status !== "success")
+    .map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`);
+  const preserved = planAttempts
+    .filter((p) => p.status === "success")
+    .map((p) => `${p.attemptId}/${p.harnessId}`);
   const message = budgetMapping
     ? budgetMapping.safeMessage
-    : planAttempts.map((p) => `${p.attemptId}/${p.harnessId}: ${p.error ?? "failed"}`).join("\n") ||
-      fallbackMessage;
+    : `${failedLines.length > 0 ? failedLines.join("\n") : fallbackMessage}${preserved.length > 0 ? `\nPreserved drafts: ${preserved.join(", ")}` : ""}`.trim();
   deps.writeRunTelemetry(
     store,
     paths,
@@ -540,7 +557,9 @@ export function writePlanHarnessFailure(
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
   const planFailFacts = blocked
     ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
-    : makeOutcomeFacts("failed", { reason: budgetMapping ? budgetMapping.reason : "harness_failed" });
+    : makeOutcomeFacts("failed", {
+        reason: budgetMapping ? budgetMapping.reason : "harness_failed",
+      });
   const failPhase = budgetMapping ? budgetMapping.phase : "harness";
   if (blocked)
     log.emit("run.blocked", {

@@ -508,6 +508,22 @@
           "default": {},
           "description": "Resolved harness-scoped model map for this run (harness id to model id); empty means every route uses its per-harness settings default."
         },
+        "routing_efforts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "description": "Cross-harness reasoning-effort level, weakest to strongest; adapters declare the subset they support and a shared normalizer clamps requests onto the nearest supported level."
+          },
+          "default": {},
+          "description": "Resolved harness-scoped reasoning-effort map for this run (harness id to effort), frozen so an Exact Retry replays the same effort instead of re-resolving current settings."
+        },
         "convergence": {
           "type": "object",
           "properties": {
