@@ -14,10 +14,11 @@ import {
   ControlRunStartInfo,
   ControlRunStartRequest,
   ControlThreadTurnResponse,
-  TRUST_FULL_ACCESS_CODE,
 } from "@claudexor/schema";
 import type { ResourceAttachmentRef } from "@claudexor/schema";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
+import { errCode, preStartRefusalStatus, routeProblem } from "./thread-turn-problem.js";
+export { errCode, recordTurnEnqueueFailure } from "./thread-turn-problem.js";
 
 export interface ThreadTurnRouteCtx {
   json(res: ServerResponse, status: number, body: unknown): void;
@@ -76,68 +77,6 @@ export function chainThreadMutation<T>(
   return chained;
 }
 
-function errStatus(err: unknown, fallback = 400): number {
-  return err && typeof err === "object" && "status" in err
-    ? Number((err as { status: number }).status)
-    : fallback;
-}
-
-/**
- * HTTP status for a pre-start terminal turn (W24). Refusal semantics are born
- * AT THE THROW: a typed refusal carries its status (trust=403,
- * requirements=400, journal recovery=503) and the daemon persists it onto the
- * job record — that persisted status wins. Without one, only the known trust
- * code keeps its legacy 403; any OTHER bare `code` (an errno like ENOENT, an
- * ABORT_ERR) is an infra failure and stays 500 so genuine transient failures
- * are still retried — a string code alone never proves a client-actionable
- * refusal.
- */
-function preStartRefusalStatus(errorCode: string | undefined, errorStatus?: number): number {
-  if (typeof errorStatus === "number" && errorStatus >= 400 && errorStatus <= 599) {
-    return errorStatus;
-  }
-  if (errorCode === TRUST_FULL_ACCESS_CODE) return 403;
-  return 500;
-}
-
-/** A typed throw's machine code (e.g. the trust gate's), null when absent or
- * non-string (a numeric errno-style `code` must not leak into the typed
- * refusal contract). ONE owner — daemon-server's refusal recorder reuses it. */
-export function errCode(err: unknown): string | null {
-  const code =
-    err && typeof err === "object" && "code" in err ? (err as { code: unknown }).code : null;
-  return typeof code === "string" && code ? code : null;
-}
-
-/**
- * Persist an enqueue failure on a pre-created turn (refused-turn honesty,
- * INV-093). Shared by every pre-create-then-enqueue path OUTSIDE these
- * routes (direct POST /runs with threadId, rerun_with_feedback). Marked
- * retryable=false: these are enqueue-throw paths — no job was recorded, so
- * the retry endpoint has nothing to replay. Best-effort by
- * contract: recording must never mask the original error (callers always
- * return it), and errCode yields null for absent/non-string codes.
- */
-export function recordTurnEnqueueFailure(
-  setTurnEnqueueError:
-    | ((turnId: string, message: string, code: string | null, retryable?: boolean) => void)
-    | undefined,
-  turnId: string | undefined,
-  err: unknown,
-): void {
-  if (!turnId || !setTurnEnqueueError) return;
-  try {
-    setTurnEnqueueError(
-      turnId,
-      err instanceof Error ? err.message : String(err),
-      errCode(err),
-      false,
-    );
-  } catch {
-    /* recording the refusal must not mask the original error */
-  }
-}
-
 async function respondToTurnJob(
   ctx: ThreadTurnRouteCtx,
   res: ServerResponse,
@@ -184,7 +123,20 @@ async function respondToTurnJob(
       threadId,
       state: rec.state,
       error: rec.error ?? `run ended pre-start: ${rec.state}`,
-      ...(rec.errorCode ? { code: rec.errorCode } : {}),
+      ...(rec.problem
+        ? {
+            ...rec.problem,
+            context: {
+              ...rec.problem.context,
+              jobId: rec.id,
+              turnId,
+              threadId,
+              state: rec.state,
+            },
+          }
+        : rec.errorCode
+          ? { code: rec.errorCode }
+          : {}),
     });
   }
   return ctx.json(
@@ -376,44 +328,46 @@ export function handleThreadTurnCreate(
           },
         );
       } catch (err) {
-        const message = err instanceof Error ? err.message : "enqueue failed";
+        const projected = routeProblem(err, 500, "enqueue failed", { turnId: turn.id });
         try {
-          ctx.setTurnEnqueueError?.(turn.id, message, errCode(err), false);
+          ctx.setTurnEnqueueError?.(
+            turn.id,
+            projected.body.message,
+            errCode(err) === projected.body.code ? projected.body.code : null,
+            false,
+          );
         } catch {
           /* recording the refusal must not mask the original error */
         }
         // Untyped enqueue throws are INFRA failures (daemon socket down) —
         // 500, matching POST /runs; typed statuses pass through.
-        return ctx.json(res, errStatus(err, 500), {
-          error: message,
-          turnId: turn.id,
-          retryable: false,
-        });
+        return ctx.json(res, projected.status, projected.body);
       }
       return respondToTurnJob(ctx, res, job.id, threadId, turn.id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "bad request";
-      // PRE-ENQUEUE failures only reach here (plan read, param validation,
-      // turn creation) — the enqueue and status-wait phases return from
-      // their own catches above. When the turn was already recorded, persist
-      // the refusal so a thread reload still shows it (no silent orphan);
-      // no job exists -> retryable:false.
+      const projected = routeProblem(
+        err,
+        400,
+        "bad request",
+        createdTurnId ? { turnId: createdTurnId } : {},
+      );
+      // PRE-ENQUEUE failures only reach here. Persist any refusal after turn
+      // creation so a reload stays honest; no job exists, so replay is false.
       const code = errCode(err);
       if (createdTurnId) {
         try {
-          ctx.setTurnEnqueueError?.(createdTurnId, message, code, false);
+          ctx.setTurnEnqueueError?.(
+            createdTurnId,
+            projected.body.message,
+            code === projected.body.code ? code : null,
+            false,
+          );
         } catch {
           /* recording the refusal must not mask the original error */
         }
       }
-      // Pre-enqueue failures are client errors (validation, preflight refusal) —
-      // errStatus keeps its 400 default; the inline card keys its remedy on the
-      // typed `code` when one is present.
-      return ctx.json(res, errStatus(err), {
-        error: message,
-        ...(createdTurnId ? { turnId: createdTurnId, retryable: false } : {}),
-        ...(code ? { code } : {}),
-      });
+      // Validation/preflight defaults to 400; a typed status still wins.
+      return ctx.json(res, projected.status, projected.body);
     }
   });
 }
@@ -525,21 +479,25 @@ export function handleThreadTurnRetry(
         // A failed replay ENQUEUE is a fresh refusal — but the ORIGINAL job
         // params remain in the registry, so the turn STAYS replayable.
         // Untyped throws are infra failures — 500 (matching POST /runs).
-        const message = err instanceof Error ? err.message : "enqueue failed";
+        const projected = routeProblem(err, 500, "enqueue failed", { turnId, threadId });
         try {
-          ctx.setTurnEnqueueError?.(turnId, message, errCode(err), true);
+          ctx.setTurnEnqueueError?.(
+            turnId,
+            projected.body.message,
+            errCode(err) === projected.body.code ? projected.body.code : null,
+            true,
+          );
         } catch {
           /* recording the refusal must not mask the original error */
         }
-        return ctx.json(res, errStatus(err, 500), { error: message, turnId, threadId });
+        return ctx.json(res, projected.status, projected.body);
       }
       return respondToTurnJob(ctx, res, job.id, threadId, turnId);
     } catch (err) {
       // Guard refusals only (404/409): never overwrite the original recorded
       // refusal with bookkeeping noise.
-      return ctx.json(res, errStatus(err), {
-        error: err instanceof Error ? err.message : "bad request",
-      });
+      const projected = routeProblem(err, 400, "bad request");
+      return ctx.json(res, projected.status, projected.body);
     }
   });
 }

@@ -125,6 +125,8 @@ export interface CliResult {
   stdout: string;
   stderr: string;
   json: () => unknown;
+  /** Parse the entire stdout value, rejecting any diagnostic prefix/suffix or second JSON value. */
+  strictJson: () => unknown;
 }
 
 export function cli(
@@ -148,6 +150,7 @@ export function cli(
       if (start < 0) throw new Error(`no JSON object in stdout:\n${stdout}\n${r.stderr}`);
       return JSON.parse(stdout.slice(start));
     },
+    strictJson: () => JSON.parse(stdout),
   };
 }
 

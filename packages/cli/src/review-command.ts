@@ -9,7 +9,7 @@ import { Orchestrator } from "@claudexor/orchestrator";
 import { isBlocking, type ControlReviewerPanelEntry } from "@claudexor/schema";
 import { parseReviewerPanelFlags } from "./run-options.js";
 import { type ParsedArgs, flagStr, flagValues } from "./args.js";
-import { print, printJson, printUsageError } from "./cli-io.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { buildRegistry } from "./registry.js";
 
 function panelFlags(args: ParsedArgs): ControlReviewerPanelEntry[] | undefined {
@@ -48,6 +48,15 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
       "claudexor review: sealed packet mode cannot be combined with --diff, --intent, or --tests",
     );
   }
+  let reviewerPanel: ControlReviewerPanelEntry[] | undefined;
+  try {
+    reviewerPanel = panelFlags(args);
+  } catch (error) {
+    return printUsageError(json, error, {
+      prefix: "claudexor review: ",
+      fallbackCode: "invalid_reviewer_panel",
+    });
+  }
   let diffText: string | undefined;
   if (diffPath) {
     try {
@@ -62,7 +71,7 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
   try {
     const orch = new Orchestrator({
       registry: buildRegistry(),
-      reviewerPanel: panelFlags(args),
+      reviewerPanel,
     });
     const result = await orch.reviewDiff({
       repoRoot: process.cwd(),
@@ -119,9 +128,10 @@ export async function reviewCommand(args: ParsedArgs, json: boolean): Promise<nu
     }
     return ok ? 0 : 1;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (json) printJson({ ok: false, error: message });
-    else process.stderr.write(`claudexor review: ${message}\n`);
-    return 1;
+    return printCliFailure(json, err, {
+      category: "operational",
+      fallbackCode: "review_failed",
+      prefix: "claudexor review: ",
+    });
   }
 }

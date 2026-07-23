@@ -1,17 +1,19 @@
 import { resolve } from "node:path";
+import { controlProblemError } from "@claudexor/control-api";
 import {
   ControlTrustListResponse,
   ControlTrustState,
   ControlTrustUpdateRequest,
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import { parseTestCommandFlags } from "./run-options.js";
 
 function output(value: unknown, json: boolean): void {
-  if (json) process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-  else process.stdout.write(`${String(value)}\n`);
+  if (json) printJson(value);
+  else print(String(value));
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
@@ -20,9 +22,15 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
     ...init,
     headers: { Authorization: `Bearer ${addr.token}`, ...init?.headers },
   });
-  if (!response.ok)
-    throw new Error(`control API failed (${response.status}): ${await response.text()}`);
-  return response.json();
+  const text = await response.text();
+  let body: unknown = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = text;
+  }
+  if (!response.ok) throw controlProblemError(response.status, body);
+  return body;
 }
 
 export async function trustCommand(args: ParsedArgs, json: boolean): Promise<number> {
@@ -32,6 +40,8 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
   const accessDefault = args.flags["access-default"];
   const grantTest = args.flags["grant-test"];
   const revokeTest = args.flags["revoke-test"];
+
+  let update: ReturnType<typeof ControlTrustUpdateRequest.parse> | undefined;
   try {
     if (allow !== undefined && revoke !== undefined) {
       throw new Error("--allow-full-access and --revoke-full-access are mutually exclusive");
@@ -50,7 +60,6 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
       grantTest === undefined ? [] : Array.isArray(grantTest) ? grantTest : [grantTest];
     if (grantValues.length > 1) throw new Error("--grant-test accepts one command per invocation");
     const grantInvocation = parseTestCommandFlags(grantValues)?.[0];
-    let state: ControlTrustState;
     if (
       allow !== undefined ||
       revoke !== undefined ||
@@ -58,7 +67,7 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
       grantInvocation !== undefined ||
       revokeTest !== undefined
     ) {
-      const body = ControlTrustUpdateRequest.parse({
+      update = ControlTrustUpdateRequest.parse({
         repoRoot,
         ...(allow !== undefined ? { allowFullAccess: true } : {}),
         ...(revoke !== undefined ? { allowFullAccess: false } : {}),
@@ -66,11 +75,19 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
         ...(grantInvocation === undefined ? {} : { grantTestCommand: grantInvocation }),
         ...(typeof revokeTest === "string" ? { revokeTestCommandDigest: revokeTest } : {}),
       });
+    }
+  } catch (error) {
+    return printUsageError(json, error, { prefix: "claudexor trust: " });
+  }
+
+  try {
+    let state: ControlTrustState;
+    if (update) {
       state = ControlTrustState.parse(
         await request("/trust", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(update),
         }),
       );
     } else {
@@ -88,9 +105,9 @@ export async function trustCommand(args: ParsedArgs, json: boolean): Promise<num
     }
     return 0;
   } catch (error) {
-    const message = `claudexor trust: ${error instanceof Error ? error.message : String(error)}`;
-    if (json) output({ error: message }, true);
-    else process.stderr.write(`${message}\n`);
-    return 1;
+    return printCliFailure(json, error, {
+      fallbackCode: "trust_failed",
+      prefix: "claudexor trust: ",
+    });
   }
 }

@@ -61,7 +61,7 @@ export function registerConfigDirProfile(input: RegisterProfileInput): {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw Object.assign(new Error(`could not register the profile: ${message}`), {
-      status: /duplicate/i.test(message) ? 409 : 400,
+      status: /duplicate/i.test(message) ? 409 : 500,
     });
   }
 }

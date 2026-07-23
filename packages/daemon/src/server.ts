@@ -2,6 +2,7 @@ import { type Server, type Socket, connect, createServer } from "node:net";
 import { timingSafeEqual } from "node:crypto";
 import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
+import type { ControlProblem } from "@claudexor/schema";
 import {
   assertNoInlineSecretValues,
   errorCode,
@@ -17,6 +18,7 @@ import {
   type CommandAuthority,
 } from "./command-authority.js";
 import { productCommandRecords, prunableCommandIds } from "./command-retention.js";
+import { daemonJobFailure } from "./job-problem.js";
 
 export interface RunContext {
   signal: AbortSignal;
@@ -82,6 +84,8 @@ export interface JobRecord {
    * a bare errno-style `code` without a status is an infra failure and must
    * not masquerade as a client-actionable 4xx. */
   errorStatus?: number;
+  /** Complete typed pre-start problem, preserved durably across daemon/API/CLI boundaries. */
+  problem?: ControlProblem;
   createdAt: string;
   /** Surfaced as soon as the run starts so a client can tail the external run's events.jsonl. */
   runId?: string;
@@ -261,22 +265,22 @@ export class DaemonServer {
     }
     const { id, method, params, token } = msg;
     if (!tokenMatches(typeof token === "string" ? token : "", this.opts.token)) {
-      this.send(sock, { id, error: { message: "unauthorized" } });
+      const failure = daemonJobFailure(
+        Object.assign(new Error("unauthorized"), { code: "unauthorized", status: 401 }),
+      );
+      this.send(sock, {
+        id,
+        error: { ...failure.problem, status: failure.status ?? 500 },
+      });
       return;
     }
     try {
       this.send(sock, { id, result: await this.dispatch(method, params) });
     } catch (err) {
-      const code = errorCode(err);
+      const failure = daemonJobFailure(err);
       this.send(sock, {
         id,
-        error: {
-          message: redactSecrets(err instanceof Error ? err.message : String(err)),
-          ...(code ? { code } : {}),
-          ...(err && typeof err === "object" && "status" in err
-            ? { status: Number((err as { status: unknown }).status) }
-            : {}),
-        },
+        error: { ...failure.problem, status: failure.status ?? 500 },
       });
     }
   }
@@ -493,23 +497,16 @@ export class DaemonServer {
         rec = this.updateRecord(rec, { state, result, finishedAt: nowIso() });
       }
     } catch (err) {
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as { code: unknown }).code
-          : undefined;
-      const status =
-        err && typeof err === "object" && "status" in err
-          ? (err as { status: unknown }).status
-          : undefined;
-      const typedStatus =
-        typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599
-          ? status
-          : undefined;
+      const failure = daemonJobFailure(err);
+      const rawTypedCode = errorCode(err);
+      const typedCode =
+        rawTypedCode && failure.problem.code === rawTypedCode ? rawTypedCode : undefined;
       rec = this.updateRecord(rec, {
         state: controller.signal.aborted ? "cancelled" : "failed",
-        error: redactSecrets(err instanceof Error ? err.message : String(err)),
-        ...(typeof code === "string" && code ? { errorCode: code } : {}),
-        ...(typedStatus !== undefined ? { errorStatus: typedStatus } : {}),
+        error: failure.problem.message,
+        ...(typedCode ? { errorCode: typedCode } : {}),
+        ...(failure.status !== undefined ? { errorStatus: failure.status } : {}),
+        problem: failure.problem,
         finishedAt: nowIso(),
       });
     } finally {

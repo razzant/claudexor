@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,11 +62,17 @@ describe("claudexor profiles add (INV-135)", () => {
   });
 
   it("refuses a non-claude/codex harness and a malformed id", async () => {
-    expect(await profilesCommand(parseArgs(["profiles", "add", "cursor", "x"]), true)).not.toBe(0);
-    expect(
-      await profilesCommand(parseArgs(["profiles", "add", "claude", "Bad Id"]), true),
-    ).not.toBe(0);
+    expect(await profilesCommand(parseArgs(["profiles", "add", "cursor", "x"]), true)).toBe(2);
+    expect(await profilesCommand(parseArgs(["profiles", "add", "claude", "Bad Id"]), true)).toBe(2);
     expect(loadConfig(noProjectRepoRoot()).global.credential_profiles).toHaveLength(0);
+  });
+
+  it("classifies filesystem failures as operational rather than usage errors", async () => {
+    const blocked = join(dir, "not-a-directory");
+    writeFileSync(blocked, "blocked");
+    process.env.CLAUDEXOR_CONFIG_DIR = blocked;
+
+    expect(await profilesCommand(parseArgs(["profiles", "add", "claude", "work"]), true)).toBe(1);
   });
 });
 

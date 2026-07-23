@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { controlProblemError } from "@claudexor/control-api";
 import {
   DaemonClient,
   awaitDaemonTermination,
@@ -35,6 +36,7 @@ import {
   authSourceAvailability,
   checksSummary,
   print,
+  printCliFailure,
   printJson,
   printUsageError,
   statusGlyph,
@@ -71,6 +73,9 @@ export function dispatchOpsCommand(
 
 export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<number> {
   const sub = args._[1] ?? "status";
+  if (!["start", "status", "stop", "logs", "rotate-token"].includes(sub)) {
+    return printUsageError(json, "usage: claudexor daemon start|status|stop|logs|rotate-token");
+  }
   if (sub === "start") {
     // Probe FIRST: with a live daemon the spawned child dies on the singleton
     // guard while readiness connects to the OLD daemon — reporting the DEAD
@@ -93,13 +98,20 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
           else print(`claudexord already running; socket ${defaultSocketPath()}`);
           return 0;
         }
-        if (json)
-          printJson({ pid: null, socket: defaultSocketPath(), ready: false, alreadyRunning: true });
-        else
-          print(
-            "claudexord socket is alive but its control API is not ready; inspect `claudexor daemon logs`",
-          );
-        return 1;
+        return printCliFailure(
+          json,
+          "claudexord socket is alive but its control API is not ready; inspect `claudexor daemon logs`",
+          {
+            category: "operational",
+            fallbackCode: "daemon_not_ready",
+            context: {
+              pid: null,
+              socket: defaultSocketPath(),
+              ready: false,
+              alreadyRunning: true,
+            },
+          },
+        );
       } catch {
         /* not reachable — start a fresh daemon below */
       }
@@ -122,26 +134,39 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
     // follow-up `status`/run can't race the spawn. Fail loudly (exit 1) if it
     // never comes up.
     const ready = await waitForDaemonReady(15_000);
-    if (json) {
-      printJson({ pid: child.pid ?? null, socket: defaultSocketPath(), ready: ready !== null });
-    } else if (ready) {
-      print(`claudexord ready (pid ${child.pid}); socket ${defaultSocketPath()}`);
-    } else {
-      print(
-        `claudexord started (pid ${child.pid}) but did not become ready within 15s; check \`claudexor daemon logs\``,
+    if (!ready) {
+      return printCliFailure(
+        json,
+        "claudexord started but did not become ready within 15s; check `claudexor daemon logs`",
+        {
+          category: "operational",
+          fallbackCode: "daemon_start_timeout",
+          context: {
+            pid: child.pid ?? null,
+            socket: defaultSocketPath(),
+            ready: false,
+          },
+        },
       );
     }
-    return ready ? 0 : 1;
+    if (json) printJson({ pid: child.pid ?? null, socket: defaultSocketPath(), ready: true });
+    else print(`claudexord ready (pid ${child.pid}); socket ${defaultSocketPath()}`);
+    return 0;
   }
   if (sub === "logs") {
     let tail: string;
     try {
       tail = readFileSync(logPath(), "utf8").split("\n").slice(-40).join("\n");
     } catch (err) {
-      const message = `no daemon log at ${logPath()} (${err instanceof Error ? err.message : String(err)}); the daemon may not have started on this machine yet`;
-      if (json) printJson({ ok: false, error: message });
-      else process.stderr.write(`${message}\n`);
-      return 1;
+      return printCliFailure(json, err, {
+        category: "operational",
+        fallbackCode: "daemon_log_unavailable",
+        prefix: "no daemon log: ",
+        context: {
+          logPath: logPath(),
+          hint: "the daemon may not have started on this machine yet",
+        },
+      });
     }
     if (json) printJson({ ok: true, log_tail: tail });
     else print(tail);
@@ -150,10 +175,10 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
 
   const token = readToken();
   if (!token) {
-    const message = "daemon not initialized — run: claudexor daemon start";
-    if (json) printJson({ ok: false, error: message });
-    else print(message);
-    return 1;
+    return printCliFailure(json, "daemon not initialized — run: claudexor daemon start", {
+      category: "operational",
+      fallbackCode: "daemon_not_initialized",
+    });
   }
   const client = new DaemonClient(defaultSocketPath(), token);
   try {
@@ -170,9 +195,12 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       // exit code instead of racing a still-live process.
       const termination = await awaitDaemonTermination(defaultSocketPath());
       if (termination.outcome === "still_alive") {
-        if (json) printJson({ ok: false, stopping: true, stopped: false, ...termination });
-        else process.stderr.write(`claudexord stop FAILED: ${termination.detail}\n`);
-        return 1;
+        return printCliFailure(json, termination.detail, {
+          category: "operational",
+          fallbackCode: "daemon_stop_failed",
+          prefix: "claudexord stop FAILED: ",
+          context: { stopping: true, stopped: false, ...termination },
+        });
       }
       if (json) printJson({ ok: true, stopping: true, stopped: true, ...termination });
       else
@@ -189,9 +217,10 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       try {
         await client.health();
         const err = "daemon is running; stop it first (claudexor daemon stop), then rotate";
-        if (json) printJson({ ok: false, error: err });
-        else process.stderr.write(`${err}\n`);
-        return 1;
+        return printCliFailure(json, err, {
+          category: "operational",
+          fallbackCode: "daemon_token_rotation_blocked",
+        });
       } catch {
         /* not reachable — safe to rotate */
       }
@@ -201,20 +230,15 @@ export async function daemonCommand(args: ParsedArgs, json: boolean): Promise<nu
       else print(note);
       return 0;
     }
-    if (json)
-      printJson({
-        ok: false,
-        exitCode: 2,
-        error: "usage: claudexor daemon start|status|stop|logs|rotate-token",
-      });
-    else print("usage: claudexor daemon start|status|stop|logs|rotate-token");
-    return 2;
   } catch (err) {
-    const message = `claudexord not reachable (${err instanceof Error ? err.message : String(err)})`;
-    if (json) printJson({ ok: false, error: message });
-    else print(message);
-    return 1;
+    return printCliFailure(json, err, {
+      category: "operational",
+      fallbackCode: "daemon_unreachable",
+      prefix: "claudexord not reachable: ",
+      context: { operation: sub },
+    });
   }
+  return 0;
 }
 
 export async function daemonGet(path: string): Promise<unknown> {
@@ -222,10 +246,19 @@ export async function daemonGet(path: string): Promise<unknown> {
   const response = await controlApiFetch(addr, path, {
     headers: { Authorization: `Bearer ${addr.token}` },
   });
-  if (!response.ok) {
-    throw new Error(`control API ${path} failed (${response.status}): ${await response.text()}`);
+  const body = await responseBody(response);
+  if (!response.ok) throw controlProblemError(response.status, body);
+  return body;
+}
+
+async function responseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
   }
-  return response.json();
 }
 
 function requestedHarnesses(args: ParsedArgs): string[] | undefined {
@@ -292,6 +325,10 @@ export async function doctorCommand(args: ParsedArgs, json: boolean): Promise<nu
 
 /** List the daemon's live model truth for each requested/available harness. */
 export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<number> {
+  const route = flagStr(args, "route");
+  if (route !== undefined && route !== "local_session" && route !== "api_key") {
+    return printUsageError(json, "claudexor: --route must be local_session or api_key");
+  }
   const statuses = ControlHarnessListResponse.parse(await daemonGet(harnessListPath(args)));
   const requested = requestedHarnesses(args);
   const unknown = unknownHarnesses(
@@ -306,10 +343,6 @@ export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<nu
   }
   const ids =
     requested ?? statuses.harnesses.filter((s) => s.status !== "unavailable").map((s) => s.id);
-  const route = flagStr(args, "route");
-  if (route !== undefined && route !== "local_session" && route !== "api_key") {
-    return printUsageError(json, "claudexor: --route must be local_session or api_key");
-  }
   const results = await Promise.all(
     ids.map(async (id) =>
       ControlHarnessModelsResponse.parse(
@@ -400,10 +433,15 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
       }),
     });
     if (!response.ok) {
-      const detail = await response.text();
-      if (json) printJson({ ok: false, harness, status: response.status, error: detail });
-      else print(`could not create durable ${harness} login job (${response.status}): ${detail}`);
-      return 1;
+      return printCliFailure(
+        json,
+        controlProblemError(response.status, await responseBody(response)),
+        {
+          fallbackCode: "auth_login_start_failed",
+          prefix: `could not create durable ${harness} login job: `,
+          context: { harness },
+        },
+      );
     }
     const job = ControlSetupJob.parse(await response.json());
     const accepted = !["failed", "cancelled", "timed_out", "not_supported"].includes(job.state);
@@ -432,8 +470,9 @@ export async function gcCommand(args: ParsedArgs, json: boolean): Promise<number
     headers: { Authorization: `Bearer ${addr.token}`, "content-type": "application/json" },
     body: JSON.stringify({ dry_run: dryRun }),
   });
-  if (!response.ok) throw new Error(`gc failed (${response.status}): ${await response.text()}`);
-  const receipt = ControlGcReceipt.parse(await response.json());
+  const body = await responseBody(response);
+  if (!response.ok) throw controlProblemError(response.status, body);
+  const receipt = ControlGcReceipt.parse(body);
   if (json) {
     printJson(receipt);
     return 0;
@@ -458,18 +497,29 @@ export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<
       "usage: claudexor recovery inspect|validate|export <partition> | quarantine <partition> <fingerprint> quarantine_and_start_fresh",
     );
   }
+  if (!["inspect", "validate", "export", "quarantine"].includes(action)) {
+    return printUsageError(json, `unknown recovery action '${action}'`);
+  }
+  let quarantineRequest: ReturnType<typeof ControlJournalQuarantineRequest.parse> | undefined;
+  if (action === "quarantine") {
+    try {
+      quarantineRequest = ControlJournalQuarantineRequest.parse({
+        expectedFingerprint: args._[3],
+        confirmation: args._[4],
+      });
+    } catch (error) {
+      return printUsageError(json, error, {
+        prefix: "claudexor recovery: ",
+        fallbackCode: "invalid_quarantine_request",
+      });
+    }
+  }
   const { addr } = await ensureDaemon();
   const base = `/recovery/partitions/${encodeURIComponent(partition)}`;
   const request = async (path: string, init?: RequestInit): Promise<unknown> => {
     const response = await controlApiFetch(addr, path, init);
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      const detail =
-        body && typeof body === "object" && "message" in body
-          ? String((body as { message: unknown }).message)
-          : `HTTP ${response.status}`;
-      throw new Error(`journal recovery request failed: ${detail}`);
-    }
+    const body = await responseBody(response);
+    if (!response.ok) throw controlProblemError(response.status, body);
     return body;
   };
   let result: unknown;
@@ -480,18 +530,13 @@ export async function recoveryCommand(args: ParsedArgs, json: boolean): Promise<
   } else if (action === "export") {
     result = ControlJournalExportReceipt.parse(await request(`${base}/export`, { method: "POST" }));
   } else if (action === "quarantine") {
-    const expectedFingerprint = args._[3];
-    const confirmation = args._[4];
-    const body = ControlJournalQuarantineRequest.parse({ expectedFingerprint, confirmation });
     result = ControlJournalQuarantineReceipt.parse(
       await request(`${base}/quarantine`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(quarantineRequest),
       }),
     );
-  } else {
-    return printUsageError(json, `unknown recovery action '${action}'`);
   }
   if (json) printJson(result);
   else print(JSON.stringify(result, null, 2));

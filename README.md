@@ -143,6 +143,13 @@ claudexor daemon start
 `apply --dry-run` checks `final/patch.diff` with `git apply --check` and does
 not mutate the repo. Unknown flags and invalid `--access`/`--web`/`--effort`
 values fail loudly with exit code 2 — a typo never silently runs with defaults.
+For non-streaming commands, every `--json` failure emits exactly one typed
+object on stdout:
+`{ok:false, exitCode, code, message, error, retryable, fieldErrors,
+requiredActions, evidenceRefs, context}`. Usage and validation failures exit 2;
+operational and unexpected failures exit 1. `follow --json` remains an event
+replay stream; canonical run verbs use the explicit `--json-stream` NDJSON
+surface.
 When deterministic gates protect existing test/package surfaces and the task is
 explicitly test-authoring work, use `--allow-protected-path <glob[,glob...]>` to
 record typed per-run approval for those protected gate/test path changes. This

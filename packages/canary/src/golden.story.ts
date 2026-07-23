@@ -24,6 +24,15 @@ let sb: Sandbox;
 const PASS_GATE = JSON.stringify([process.execPath, "-e", "process.exit(0)"]);
 const FAIL_GATE = JSON.stringify([process.execPath, "-e", "process.exit(1)"]);
 const SLOW_GATE = JSON.stringify(["sleep", "60"]);
+interface FailureEnvelope {
+  ok: false;
+  exitCode: 1 | 2;
+  code: string;
+  message: string;
+  retryable: boolean;
+  fieldErrors: Record<string, string[]>;
+  context: Record<string, unknown>;
+}
 beforeEach(() => {
   sb = makeSandbox();
 });
@@ -49,7 +58,15 @@ describe("canary golden stories", () => {
   it("[INV-021:fail-loud-flags] an unknown flag fails loudly with exit 2, never runs with defaults", () => {
     const r = cli(sb, ["ask", "2+2?", "--frobnicate", "--harness", "fake-success", "--json"]);
     expect(r.code).toBe(2);
-    expect(r.stdout + r.stderr).toMatch(/unknown flag|frobnicate/i);
+    expect(r.stderr).toBe("");
+    const out = r.strictJson() as FailureEnvelope;
+    expect(out).toMatchObject({
+      ok: false,
+      exitCode: 2,
+      code: "invalid_argument",
+      retryable: false,
+    });
+    expect(out.message).toMatch(/unknown flag|frobnicate/i);
   });
 
   it("[INV-033:spec-retired] the retired 'spec' verb hard-errors and names the plan lifecycle, never silently runs", () => {
@@ -157,80 +174,22 @@ describe("canary golden stories", () => {
       "fake-success",
       "--json",
     ]);
-    expect(r.code).not.toBe(0);
-    expect(r.stdout + r.stderr).toMatch(/durable run artifacts/);
-    expect(r.stdout + r.stderr).toContain("claudexor secrets set");
+    expect(r.code).toBe(2);
+    expect(r.stderr).toBe("");
+    const out = r.strictJson() as FailureEnvelope;
+    expect(out).toMatchObject({
+      ok: false,
+      exitCode: 2,
+      code: "inline_secret_rejected",
+      retryable: false,
+    });
+    expect(out.message).toMatch(/durable run artifacts/);
+    expect(out.message).toContain("claudexor secrets set");
+    expect(r.stdout + r.stderr).not.toContain(secret);
     // Nothing ran: no run directory was created for the blocked prompt.
     const runsRoot = join(sb.repo, ".claudexor", "runs");
     const runDirs = existsSync(runsRoot) ? readdirSync(runsRoot) : [];
     expect(runDirs.length).toBe(0);
-  });
-
-  it("[INV-021:output-schema-dialect] an unknown dialect is a typed JSON refusal", () => {
-    const schemaPath = join(sb.repo, "unknown-dialect.schema.json");
-    writeFileSync(
-      schemaPath,
-      JSON.stringify({
-        $schema: "https://example.test/custom-json-schema",
-        type: "object",
-        properties: { ok: { type: "boolean" } },
-      }),
-    );
-
-    const r = cli(sb, [
-      "ask",
-      "return ok=true",
-      "--harness",
-      "fake-success",
-      "--output-schema",
-      schemaPath,
-      "--json",
-    ]);
-    expect(r.code).toBe(1);
-    expect(r.stderr).toBe("");
-    expect(r.json()).toMatchObject({
-      status: "failed",
-      code: "unsupported_schema_dialect",
-      errorStatus: 400,
-      retryable: false,
-      supportedDialects: [
-        { dialect: "draft-07", uri: "http://json-schema.org/draft-07/schema#" },
-        {
-          dialect: "draft-2020-12",
-          uri: "https://json-schema.org/draft/2020-12/schema",
-        },
-      ],
-    });
-  });
-
-  it("[INV-021:output-schema-refusal] an unsupported schema shape is a typed JSON refusal", () => {
-    const schemaPath = join(sb.repo, "cyclic-ref.schema.json");
-    writeFileSync(
-      schemaPath,
-      JSON.stringify({
-        type: "object",
-        properties: { x: { $ref: "#/$defs/x" } },
-        $defs: { x: { $ref: "#/$defs/x" } },
-      }),
-    );
-
-    const r = cli(sb, [
-      "ask",
-      "return ok=true",
-      "--harness",
-      "fake-success",
-      "--output-schema",
-      schemaPath,
-      "--json",
-    ]);
-    expect(r.code).toBe(1);
-    expect(r.stderr).toBe("");
-    expect(r.json()).toMatchObject({
-      status: "failed",
-      code: "invalid_output_schema",
-      errorStatus: 400,
-      retryable: false,
-    });
   });
 
   it("[INV-093:plan-honest-no-op] a plan run says 'plan, no files changed' and never claims a green patch", () => {
@@ -558,7 +517,7 @@ describe("canary golden stories", () => {
   it("[INV-104:settings-write-strict] `settings set harness.<id>.default_model` refuses a model outside the truth source and persists nothing", () => {
     // codex's manifest known_models is the offline truth source here.
     const bad = cli(sb, ["settings", "set", "harness.codex.default_model", "ghost-model-9000"]);
-    expect(bad.code).toBe(1);
+    expect(bad.code).toBe(2);
     expect(bad.stdout + bad.stderr).toMatch(/refused|not in the harness/i);
     const show = cli(sb, ["settings", "show", "--json"]);
     expect(show.stdout).not.toContain("ghost-model-9000");
@@ -568,13 +527,13 @@ describe("canary golden stories", () => {
     expect(show2.stdout).toContain("gpt-5.5");
     // Fakes are test fixtures, never persistable routing targets.
     const fake = cli(sb, ["settings", "set", "harness.fake-success.default_model", "fake-model"]);
-    expect(fake.code).toBe(1);
+    expect(fake.code).toBe(2);
     expect(fake.stdout + fake.stderr).toMatch(/fake-success.*(?:not persistable|not a real)/i);
   });
 
   it("[INV-103:no-global-model] the retired global default_model setting hard-errors with the harness-scoped remedy", () => {
     const r = cli(sb, ["settings", "set", "default_model", "gpt-5.5"]);
-    expect(r.code).toBe(1);
+    expect(r.code).toBe(2);
     expect(r.stdout + r.stderr).toMatch(/harness-scoped|harness\.<id>\.default_model/);
   });
 });

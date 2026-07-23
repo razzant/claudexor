@@ -74,10 +74,13 @@ It is strict: skipping a step is how the 2026-07-21 incident happened.
 
 ## CLI vs MCP vs control API
 
-- **CLI** is the primary surface. `--json` gives machine output on the main
-  paths. USAGE and transport errors come back as `{ok:false, exitCode,
-  error}` on stdout; a run that STARTED always reports its terminal as
-  `{runId, runDir, status, ...}` even when the status is a failure — a
+- **CLI** is the primary surface. For non-streaming commands, every `--json`
+  failure produces exactly one typed object on stdout: `{ok:false, exitCode,
+  code, message, error, retryable, fieldErrors, requiredActions, evidenceRefs,
+  context}`. Usage and validation failures exit 2; operational and unexpected
+  failures exit 1. `follow --json` remains an event replay stream; canonical
+  run verbs use `--json-stream`. A run that STARTED always reports its terminal
+  as `{runId, runDir, status, ...}` even when the status is a failure — a
   non-success terminal is a result, not an error envelope.
 - **MCP** (`claudexor mcp serve`, stdio) uses durable handles while MCP Tasks
   remain experimental. A run tool returns `{runId, runDir, status}` after the

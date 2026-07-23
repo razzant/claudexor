@@ -1479,15 +1479,19 @@ code touching one of these areas must honor it or change it explicitly here.
   typed open questions, answer turns refine it on the same persisted lane, and
   Implement freezes it as a content-hashed brief. There is no separate spec
   surface, spec-session store, or grounding-run job class.
-- `--json` mode guarantees exactly one JSON object on stdout for run/ops
-  verbs; interactive TTY question prompts (follow/agent Q&A) remain human-text
-  affordances by design.
+- For non-streaming command outcomes, `--json` guarantees exactly one JSON
+  object on stdout. Failures use the typed `{ok:false, exitCode, code, message,
+  error, retryable, fieldErrors, requiredActions, evidenceRefs, context}`
+  envelope: usage/validation exits 2, while operational/unexpected exits 1. A
+  started run still returns its terminal result object. `follow --json` remains
+  the historical event replay stream. Interactive TTY question prompts
+  (follow/agent Q&A) remain human-text affordances by design.
 - `--json-stream` is the separate NDJSON machine surface on canonical run
   verbs: an early `run.started` frame (runId/runDir/jobId), one JSON line per
   run event (internally the shared follow pipeline in json mode), and the same
-  terminal object `--json` prints as the LAST line. It never changes the
-  `--json` exactly-one-object contract, and the retired `run` verb stays
-  retired.
+  terminal object a non-streaming `--json` run prints as the LAST line. It does
+  not change the non-streaming one-object contract, and the retired `run` verb
+  stays retired.
 - Vendor-owned quota snapshots and typed rate-limit cooldowns persist in the
   checksummed global journal through `QuotaRegistry`; routing reads that
   cross-run authority rather than rediscovering pressure independently in each

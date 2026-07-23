@@ -1,10 +1,27 @@
-import { OUTPUT_SCHEMA_DIALECTS } from "@claudexor/schema";
+import { OUTPUT_SCHEMA_DIALECTS, type ControlProblem } from "@claudexor/schema";
+import { controlProblemError } from "@claudexor/control-api";
 import type { DaemonRunOutcome } from "./daemon-run.js";
 
-/** Additive typed fields for a terminal daemon refusal. The daemon remains
- * the source of code/status/retryability; domain catalogs enrich only their
- * own code with stable machine-readable remedies. */
+/** Additive typed fields for a terminal daemon refusal. */
 export function daemonOutcomeProblemFields(out: DaemonRunOutcome): Record<string, unknown> {
+  if (out.problem) {
+    return {
+      ...out.problem,
+      ...(out.errorStatus !== undefined ? { errorStatus: out.errorStatus } : {}),
+    };
+  }
+  if (!out.errorCode) return {};
+  return {
+    code: out.errorCode,
+    ...(out.errorStatus !== undefined ? { errorStatus: out.errorStatus } : {}),
+    ...(out.errorRetryable !== undefined ? { retryable: out.errorRetryable } : {}),
+  };
+}
+
+/** Historical projection for the NDJSON stream surface. Issue #28 deliberately
+ * leaves that multi-frame protocol unchanged while stabilizing single-object
+ * `--json` failures. */
+export function legacyDaemonOutcomeProblemFields(out: DaemonRunOutcome): Record<string, unknown> {
   if (!out.errorCode) return {};
   return {
     code: out.errorCode,
@@ -18,6 +35,15 @@ export function daemonOutcomeProblemFields(out: DaemonRunOutcome): Record<string
   };
 }
 
+export function daemonOutcomeFailure(out: DaemonRunOutcome): Error {
+  return controlProblemError(out.errorStatus ?? 500, {
+    ...(out.problem ?? {}),
+    code: out.problem?.code ?? out.errorCode,
+    message: out.problem?.message ?? out.error ?? "run failed before it started",
+    retryable: out.problem?.retryable ?? out.errorRetryable ?? false,
+  });
+}
+
 export function mergeDaemonRunOutcome(
   started: DaemonRunOutcome,
   final: {
@@ -26,6 +52,7 @@ export function mergeDaemonRunOutcome(
     error?: string;
     errorCode?: string;
     errorStatus?: number;
+    problem?: ControlProblem;
   } | null,
 ): DaemonRunOutcome {
   return {
@@ -35,5 +62,6 @@ export function mergeDaemonRunOutcome(
     error: final?.error ?? started.error,
     errorCode: final?.errorCode ?? started.errorCode,
     errorStatus: final?.errorStatus ?? started.errorStatus,
+    problem: final?.problem ?? started.problem,
   };
 }

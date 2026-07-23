@@ -14,6 +14,7 @@ import {
 } from "@claudexor/schema";
 import { assertNoInlineSecretValues, noProjectRepoRoot } from "@claudexor/util";
 import type { DaemonFacadeClient, DaemonRunRecord } from "./daemon-server.js";
+import { projectControlProblem } from "./problem-response.js";
 
 const NO_PROJECT_ROOT = noProjectRepoRoot();
 
@@ -120,11 +121,17 @@ export function unboundRunStartResponse(
     status: terminal ? errorStatus : 202,
     body: {
       ...ControlQueuedRunInfo.parse({ jobId: rec.id, state: rec.state, error: rec.error }),
-      ...(rec.errorCode ? { code: rec.errorCode } : {}),
-      // Only a TYPED refusal proves non-retryability; an untyped terminal
-      // (e.g. cancelled or interrupted before a run dir bound) makes no
-      // retryability claim, matching the pre-change body.
-      ...(terminal && rec.errorCode ? { retryable: false } : {}),
+      ...(terminal && rec.problem
+        ? {
+            ...rec.problem,
+            context: { ...rec.problem.context, jobId: rec.id, state: rec.state },
+          }
+        : {
+            ...(rec.errorCode ? { code: rec.errorCode } : {}),
+            // Only a TYPED refusal proves non-retryability; an untyped terminal
+            // makes no retryability claim, matching the pre-change body.
+            ...(terminal && rec.errorCode ? { retryable: false } : {}),
+          }),
     },
   };
 }
@@ -192,13 +199,13 @@ export async function handleRunCreate(
       idempotencyRequest: params,
     });
   } catch (error) {
-    const status =
-      error && typeof error === "object" && "status" in error
-        ? Number((error as { status: number }).status)
-        : 500;
-    return ctx.json(res, status, {
-      error: error instanceof Error ? error.message : "enqueue failed",
+    const projected = projectControlProblem(error, {
+      status: 500,
+      code: (status) => `http_${status}`,
+      retryable: false,
+      message: "enqueue failed",
     });
+    return ctx.json(res, projected.status, projected.body);
   }
   try {
     return await ctx.respondToAcceptedJob(res, job.id);

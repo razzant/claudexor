@@ -1,11 +1,12 @@
 /** `claudexor settings` is a thin projection of the daemon-owned /v2/settings surface. */
+import { controlProblemError } from "@claudexor/control-api";
 import {
   ControlSettingsSnapshot,
   ControlSettingsUpdateRequest,
   type ControlSettingsUpdateRequest as SettingsPatch,
 } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
-import { print, printJson, printUsageError } from "./cli-io.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch, type ControlApiAddress } from "./live.js";
 
@@ -59,6 +60,19 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
   const sub = args._[1] ?? "show";
   if (sub !== "show" && sub !== "set")
     return printUsageError(json, "usage: claudexor settings show|set");
+
+  let patch: SettingsPatch | undefined;
+  if (sub === "set") {
+    const key = args._[2];
+    const value = args._[3];
+    if (!key || value === undefined) return printUsageError(json, USAGE);
+    try {
+      patch = settingPatch(key, value);
+    } catch (error) {
+      return printUsageError(json, error, { prefix: "claudexor settings: " });
+    }
+  }
+
   try {
     const { addr } = await ensureDaemon();
     if (sub === "show") {
@@ -67,18 +81,15 @@ export async function settingsCommand(args: ParsedArgs, json: boolean): Promise<
       else printSettings(snapshot);
       return 0;
     }
-    const key = args._[2];
-    const value = args._[3];
-    if (!key || value === undefined) return printUsageError(json, USAGE);
-    const snapshot = await settingsRequest(addr, "POST", settingPatch(key, value));
+    const snapshot = await settingsRequest(addr, "POST", patch);
     if (json) printJson(snapshot);
-    else print(`updated ${key}`);
+    else print(`updated ${args._[2]}`);
     return 0;
   } catch (error) {
-    const message = `claudexor settings: ${error instanceof Error ? error.message : String(error)}`;
-    if (json) printJson({ ok: false, exitCode: 1, error: message });
-    else process.stderr.write(`${message}\n`);
-    return 1;
+    return printCliFailure(json, error, {
+      fallbackCode: "settings_failed",
+      prefix: "claudexor settings: ",
+    });
   }
 }
 
@@ -99,18 +110,12 @@ async function settingsRequest(
   let value: unknown = {};
   try {
     value = text ? JSON.parse(text) : {};
-  } catch {
+  } catch (error) {
+    if (!response.ok) throw controlProblemError(response.status, text);
     throw new Error(`settings endpoint returned invalid JSON (HTTP ${response.status})`);
   }
   if (!response.ok) {
-    const detail = value as Record<string, unknown>;
-    throw new Error(
-      typeof detail["message"] === "string"
-        ? detail["message"]
-        : typeof detail["error"] === "string"
-          ? detail["error"]
-          : `settings request failed (HTTP ${response.status})`,
-    );
+    throw controlProblemError(response.status, value);
   }
   return ControlSettingsSnapshot.parse(value);
 }

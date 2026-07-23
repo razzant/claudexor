@@ -1,7 +1,8 @@
-import { ControlProblem, ControlQuotaResponse } from "@claudexor/schema";
+import { controlProblemError } from "@claudexor/control-api";
+import { ControlQuotaResponse } from "@claudexor/schema";
 import type { ParsedArgs } from "./args.js";
 import { flagBool } from "./args.js";
-import { print, printJson } from "./cli-io.js";
+import { print, printCliFailure, printJson, printUsageError } from "./cli-io.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 import {
@@ -11,7 +12,12 @@ import {
 
 export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<number> {
   if (args._[1] === "ingest-claude-statusline") {
-    if (args._[2] !== CLAUDE_STATUSLINE_MANAGED_ARG || args._.length > 4) return 2;
+    if (args._[2] !== CLAUDE_STATUSLINE_MANAGED_ARG || args._.length > 4) {
+      return printUsageError(
+        json,
+        `usage: claudexor quota ingest-claude-statusline ${CLAUDE_STATUSLINE_MANAGED_ARG} [upstream-command]`,
+      );
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk));
     await runClaudeStatuslineCollector(Buffer.concat(chunks).toString("utf8"), args._[3]);
@@ -26,19 +32,20 @@ export async function quotaCommand(args: ParsedArgs, json: boolean): Promise<num
     });
     const payload: unknown = await response.json();
     if (!response.ok) {
-      const problem = ControlProblem.safeParse(payload);
-      const detail = problem.success ? `: ${problem.data.code}: ${problem.data.message}` : "";
-      throw new Error(`quota request failed (HTTP ${response.status})${detail}`);
+      return printCliFailure(json, controlProblemError(response.status, payload), {
+        prefix: "claudexor quota: ",
+      });
     }
     const value = ControlQuotaResponse.parse(payload);
     if (json) printJson(value);
     else printQuota(value);
     return 0;
   } catch (error) {
-    const message = `claudexor quota: ${error instanceof Error ? error.message : String(error)}`;
-    if (json) printJson({ ok: false, exitCode: 1, error: message });
-    else process.stderr.write(`${message}\n`);
-    return 1;
+    return printCliFailure(json, error, {
+      category: "operational",
+      fallbackCode: "quota_failed",
+      prefix: "claudexor quota: ",
+    });
   }
 }
 

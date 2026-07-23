@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertNoInlineSecretValues,
   containsSecretLikeToken,
+  errorCode,
   hashJson,
   newId,
   redactSecrets,
@@ -71,6 +72,27 @@ describe("util", () => {
     const b = newId("run");
     expect(a).not.toBe(b);
     expect(a.startsWith("run-")).toBe(true);
+  });
+
+  it("reads typed error codes defensively", () => {
+    expect(errorCode(Object.assign(new Error("typed"), { code: "typed_failure" }))).toBe(
+      "typed_failure",
+    );
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    expect(errorCode(proxy)).toBeUndefined();
+    expect(
+      errorCode(
+        new Proxy(
+          {},
+          {
+            has() {
+              throw new Error("hostile has trap");
+            },
+          },
+        ),
+      ),
+    ).toBeUndefined();
   });
 
   it("redacts obvious secret tokens", () => {

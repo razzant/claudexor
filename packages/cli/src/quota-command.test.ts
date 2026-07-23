@@ -4,12 +4,18 @@ const mocks = vi.hoisted(() => ({
   ensureDaemon: vi.fn(),
   controlApiFetch: vi.fn(),
   print: vi.fn(),
+  printCliFailure: vi.fn(),
   printJson: vi.fn(),
 }));
 
 vi.mock("./daemon-run.js", () => ({ ensureDaemon: mocks.ensureDaemon }));
 vi.mock("./live.js", () => ({ controlApiFetch: mocks.controlApiFetch }));
-vi.mock("./cli-io.js", () => ({ print: mocks.print, printJson: mocks.printJson }));
+vi.mock("./cli-io.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./cli-io.js")>()),
+  print: mocks.print,
+  printCliFailure: mocks.printCliFailure,
+  printJson: mocks.printJson,
+}));
 
 import { parseArgs } from "./args.js";
 import { quotaCommand } from "./quota-command.js";
@@ -20,6 +26,9 @@ describe("quotaCommand", () => {
     mocks.ensureDaemon.mockResolvedValue({
       addr: { baseUrl: "http://127.0.0.1:1234", token: "test" },
     });
+    mocks.printCliFailure.mockImplementation((_json: boolean, error: { status?: number }) =>
+      error.status === 400 ? 2 : 1,
+    );
   });
 
   it("reports problem+json before attempting the success schema", async () => {
@@ -39,12 +48,18 @@ describe("quotaCommand", () => {
     );
 
     expect(await quotaCommand(parseArgs([]), true)).toBe(1);
-    expect(mocks.printJson).toHaveBeenCalledWith(
-      expect.objectContaining({ error: expect.stringContaining("quota_unavailable") }),
+    expect(mocks.printCliFailure).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        status: 503,
+        code: "quota_unavailable",
+        message: "quota source is unavailable",
+        retryable: true,
+        requiredActions: ["retry"],
+      }),
+      { prefix: "claudexor quota: " },
     );
-    expect(mocks.printJson).not.toHaveBeenCalledWith(
-      expect.objectContaining({ error: expect.stringContaining("snapshots") }),
-    );
+    expect(mocks.printJson).not.toHaveBeenCalled();
   });
 
   it("renders typed absences as lines in text mode", async () => {
