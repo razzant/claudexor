@@ -42,7 +42,7 @@ import {
 } from "./cli-io.js";
 import { ensureDaemon, waitForDaemonReady } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
-import { streamDurableCodexLogin } from "./setup-login-inline.js";
+import { streamDurableCodexLogin, terminalLoginFallback } from "./setup-login-inline.js";
 
 export function dispatchOpsCommand(
   command: string,
@@ -406,15 +406,24 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
     }
     const job = ControlSetupJob.parse(await response.json());
     const accepted = !["failed", "cancelled", "timed_out", "not_supported"].includes(job.state);
-    if (json) {
-      printJson({ ok: accepted, job });
-      return accepted ? 0 : 1;
-    }
     // D-17: the codex device-code flow (default; not --browser-redirect) has no
-    // Terminal — show the one-time code inline and follow the job to its outcome.
+    // Terminal — follow the durable job to its outcome, disclosing the one-time
+    // code inline (TTY) or as a `--json` disclosure. On the typed
+    // device_auth_unsupported miss the stream OFFERS the legacy Terminal
+    // fallback (a y/N prompt on a TTY, a typed `nextAction` in `--json`) — a
+    // real one-action fork, not a prose dead-end (audit point 8).
     if (accepted && harness === "codex" && !browserRedirect) {
-      print(`${harness} login is managed by claudexord as ${job.jobId}.`);
-      return streamDurableCodexLogin(addr, job.jobId, { label: harness });
+      if (!json) print(`${harness} login is managed by claudexord as ${job.jobId}.`);
+      return streamDurableCodexLogin(addr, job.jobId, {
+        label: harness,
+        json,
+        fallback: { harness: "codex" },
+      });
+    }
+    if (json) {
+      const nextAction = terminalLoginFallback(job);
+      printJson({ ok: accepted, job, ...(nextAction ? { nextAction } : {}) });
+      return accepted ? 0 : 1;
     }
     print(
       accepted

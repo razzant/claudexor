@@ -15,7 +15,7 @@ import {
   ControlSecretSetRequest,
   ControlSetupJob,
 } from "@claudexor/schema";
-import { streamDurableCodexLogin } from "./setup-login-inline.js";
+import { streamDurableCodexLogin, terminalLoginFallback } from "./setup-login-inline.js";
 import { MANAGED_SECRET_NAMES, isManagedSecretName } from "@claudexor/secrets";
 import { canonicalProfileConfigDir } from "@claudexor/harness-claude";
 import { canonicalCodexProfileHome } from "@claudexor/harness-codex";
@@ -103,16 +103,25 @@ export async function profilesCommand(args: ParsedArgs, json: boolean): Promise<
       }
       const job = ControlSetupJob.parse(await response.json());
       const accepted = !["failed", "cancelled", "timed_out", "not_supported"].includes(job.state);
-      if (json) {
-        printJson({ ok: accepted, job });
-        return accepted ? 0 : 1;
+      // D-17 audit point 8: follow the durable device-code job to its outcome
+      // and, on the typed device_auth_unsupported miss, OFFER the legacy
+      // Terminal fallback SCOPED to this profile (a y/N prompt on a TTY, a typed
+      // `nextAction` in `--json`) — the same one-action fork as the default store.
+      if (accepted) {
+        if (!json) print(`codex/${profileId} login is managed by claudexord as ${job.jobId}.`);
+        return streamDurableCodexLogin(addr, job.jobId, {
+          label: `codex/${profileId}`,
+          json,
+          fallback: { harness: "codex", profileId },
+        });
       }
-      if (!accepted) {
-        print(`codex/${profileId} login was not started: ${job.message}`);
+      if (json) {
+        const nextAction = terminalLoginFallback(job);
+        printJson({ ok: false, job, ...(nextAction ? { nextAction } : {}) });
         return 1;
       }
-      print(`codex/${profileId} login is managed by claudexord as ${job.jobId}.`);
-      return streamDurableCodexLogin(addr, job.jobId, { label: `codex/${profileId}` });
+      print(`codex/${profileId} login was not started: ${job.message}`);
+      return 1;
     }
     const spec = nativeLoginSpec(harness);
     if (!spec) {
