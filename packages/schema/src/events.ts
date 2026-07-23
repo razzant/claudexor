@@ -44,6 +44,13 @@ export const RunEventType = z
     "task.contract.created",
     "context.pack.created",
     "project.git.initialized",
+    /** D-14 (INV-113): a thin `CLAUDE.md` bridge (`@AGENTS.md` import + ownership
+     * marker) was created at the PROJECT root because it had `AGENTS.md` and no
+     * `CLAUDE.md`, so a Claude Code route reads the same instructions codex/cursor
+     * read natively. The ONE live-tree write this feature adds; exclusive-create +
+     * no-follow, never overwriting a hand-written file, emitted only on an actual
+     * create. Payload: {project_root, path, source}. */
+    "project.claude_bridge.created",
     "budget.lease.created",
     "budget.observation",
     "budget.cash",

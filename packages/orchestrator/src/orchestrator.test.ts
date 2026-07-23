@@ -7635,6 +7635,44 @@ describe("Orchestrator v0.8 honesty & streaming", () => {
     expect(tracked.stdout).not.toContain(".claudexor/runs");
   });
 
+  it("bridges an AGENTS.md-only project to CLAUDE.md and announces it (D-14/INV-113)", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-agents-bridge-"));
+    writeFileSync(join(dir, "AGENTS.md"), "# project instructions\n");
+    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: dir,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+    });
+    const claude = readFileSync(join(dir, "CLAUDE.md"), "utf8");
+    expect(claude).toContain("@AGENTS.md");
+    expect(claude).toContain("claudexor:generated claude-bridge");
+    const events = readRunEvents(res.runDir);
+    const bridge = events.find((e) => e.type === "project.claude_bridge.created");
+    expect(bridge).toBeDefined();
+    expect(bridge?.payload["path"]).toBe("CLAUDE.md");
+    expect(bridge?.payload["source"]).toBe("AGENTS.md");
+  });
+
+  it("never overwrites an existing CLAUDE.md and emits no bridge event", async () => {
+    const dir = reapMk(join(tmpdir(), "claudexor-agents-nobridge-"));
+    writeFileSync(join(dir, "AGENTS.md"), "# a\n");
+    writeFileSync(join(dir, "CLAUDE.md"), "# hand-written\n");
+    const registry = new Map<string, HarnessAdapter>([["impl", realLikeAdapter("impl")]]);
+    const res = await new Orchestrator({ registry, reviewers: reviewers() }).run({
+      repoRoot: dir,
+      prompt: "x",
+      mode: "agent",
+      harnesses: ["impl"],
+      n: 1,
+    });
+    expect(readFileSync(join(dir, "CLAUDE.md"), "utf8")).toBe("# hand-written\n");
+    const types = readRunEvents(res.runDir).map((e) => e.type);
+    expect(types).not.toContain("project.claude_bridge.created");
+  });
+
   it("delivers interactive answers into the harness and logs the lifecycle", async () => {
     const repo = await initRepo();
     const seen: unknown[] = [];

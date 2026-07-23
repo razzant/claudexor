@@ -293,6 +293,8 @@ describe("ensureCodexApiAuth", () => {
       "--json",
       "-c",
       CODEX_FILE_AUTH_OVERRIDE,
+      "-c",
+      'project_doc_fallback_filenames=["CLAUDE.md"]',
       "--sandbox",
       "read-only",
       "--skip-git-repo-check",

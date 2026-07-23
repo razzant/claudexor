@@ -35,6 +35,7 @@
             "task.contract.created",
             "context.pack.created",
             "project.git.initialized",
+            "project.claude_bridge.created",
             "budget.lease.created",
             "budget.observation",
             "budget.cash",

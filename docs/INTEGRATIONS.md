@@ -380,6 +380,31 @@ Questions the surface can answer:
   `POST /v2/runs/:id/interactions/:id/answer` (see the `docs/FEATURES.md`
   `acp/interactions` row).
 
+## Project Instruction Files (AGENTS.md)
+
+Keep ONE `AGENTS.md` at your project root as the source of truth for
+project-specific agent instructions. Codex, Cursor, and OpenCode read `AGENTS.md`
+natively; Claude Code reads `CLAUDE.md`. Claudexor bridges that gap for you so
+the same instructions reach every route, without asking you to maintain two
+files:
+
+- Codex routes get `CLAUDE.md` added to codex's `project_doc_fallback_filenames`
+  (a stateless per-run config override — your `~/.codex/config.toml` is never
+  touched), so a project that has only a `CLAUDE.md` and no `AGENTS.md` still
+  works on codex. Per codex's own semantics the fallback is consulted ONLY when
+  no `AGENTS.md` is present; it is never merged on top of an existing one.
+- For a project that has `AGENTS.md` and no `CLAUDE.md`, a write-mode run creates
+  a thin `CLAUDE.md` at the project root whose entire body is the official
+  Anthropic import `@AGENTS.md` plus a Claudexor ownership marker, so Claude Code
+  reads the same file. The create is exclusive and never follows a symlink, so a
+  hand-written `CLAUDE.md` is never overwritten; it is announced via the
+  `project.claude_bridge.created` run event; and deleting the generated file
+  stops the bridging. Read-only runs and `--in-place` stateful targets do not
+  write it.
+
+Both behaviors are automatic. If you would rather manage the files yourself,
+keep your own `CLAUDE.md` (it is never touched) or add an `AGENTS.md`.
+
 ## External Harness Adapters
 
 An out-of-tree JSON-RPC adapter-protocol package was removed as dead

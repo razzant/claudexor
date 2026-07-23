@@ -1,4 +1,5 @@
 export * from "./git.js";
+export * from "./claude-bridge.js";
 export * from "./raw-patch.js";
 export * from "./artifact-paths.js";
 export * from "./anchor-store.js";

@@ -34,6 +34,22 @@ describe("codex developer_instructions (W5)", () => {
     });
   }
 
+  // D-14 layer 1: every codex route carries the CLAUDE.md project-doc fallback so
+  // a Claude-Code-only project works on codex with zero project writes. It rides
+  // the stateless `-c` transport (the user's config.toml is never touched).
+  for (const resume of [null, "ses-1"]) {
+    it(`seeds -c project_doc_fallback_filenames=["CLAUDE.md"]${resume ? " (resume)" : ""}`, () => {
+      const args = codexExecArgs({ ...base, resume_session_id: resume });
+      const idx = args.findIndex((a) => a === 'project_doc_fallback_filenames=["CLAUDE.md"]');
+      expect(idx).toBeGreaterThan(0);
+      expect(args[idx - 1]).toBe("-c"); // it is a config override
+      // The override precedes any variadic `-i` image args (parity with the other
+      // `-c` overrides) so codex never eats it as an image path.
+      const dashI = args.indexOf("-i");
+      if (dashI >= 0) expect(idx).toBeLessThan(dashI);
+    });
+  }
+
   it("TOML-escapes quotes, backslashes, newlines, and DEL so codex config parses", () => {
     const DEL = String.fromCharCode(127);
     const instructions = "Be terse." + NL + 'Use "double" and a ' + BS + " backslash." + DEL;

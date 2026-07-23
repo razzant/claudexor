@@ -190,6 +190,7 @@ import {
   captureRawPatchEnvelope,
   createRevertAnchorFromPatchOrNull,
   createRevertAnchorOrNull,
+  ensureClaudeBridge,
   ensureGitRepository,
   consumeRawPatchEnvelope,
   snapshotTree,
@@ -2799,6 +2800,39 @@ export class Orchestrator {
   }
 
   /**
+   * D-14 layer 3 (AGENTS.md unification, INV-113): the ONE new live-tree write.
+   * When the PROJECT root has `AGENTS.md` and no `CLAUDE.md`, drop a thin
+   * `CLAUDE.md` (`@AGENTS.md` import + Claudexor ownership marker) so a Claude
+   * Code route reads the same instruction file codex/cursor read natively.
+   *
+   * Fenced exactly where the automatic git-init boundary is: read-only modes
+   * never reach this run-prep stage; `--in-place` stateful targets are left
+   * untouched; the write targets the PROJECT root (`repoRoot`), never a worktree
+   * envelope. The workspace helper adds exclusive-create + no-follow +
+   * idempotency, so a hand-written or symlinked `CLAUDE.md` is never overwritten
+   * and a concurrent/second prep is a no-op. Announced via a typed
+   * `project.claude_bridge.created` event on an actual create only — the git-init
+   * pattern. A bridge is a convenience, not a precondition: any failure is
+   * swallowed so it can never fail an otherwise-valid write run.
+   */
+  private ensureClaudeBridgeForRun(repoRoot: string, inPlace: boolean, log: EventLog): void {
+    if (repoRoot === NO_PROJECT_ROOT || inPlace) return;
+    let result;
+    try {
+      result = ensureClaudeBridge(repoRoot);
+    } catch {
+      return;
+    }
+    if (result.created) {
+      log.emit("project.claude_bridge.created", {
+        project_root: repoRoot,
+        path: "CLAUDE.md",
+        source: "AGENTS.md",
+      });
+    }
+  }
+
+  /**
    * Freeze-on-implement delivery (D17/D27): verify the frozen plan's hash and
    * materialize it as context/PLAN.md in the run artifact tree — OUTSIDE every
    * worktree, so it can never dirty a diff — then point the prompt at the
@@ -2903,6 +2937,9 @@ export class Orchestrator {
         candidates: [],
       };
     }
+    // Same run-prep stage as the git boundary: if the PROJECT root uses AGENTS.md
+    // with no CLAUDE.md, bridge it so a Claude Code candidate reads it (INV-113).
+    this.ensureClaudeBridgeForRun(input.repoRoot, input.inPlace === true, log);
     // Pre-turn snapshot of the live tree for in-place runs: the revert restore
     // target (server-owned revertInPlace). A snapshot failure must never fail the
     // run — revert is simply unavailable then.
@@ -4628,6 +4665,11 @@ export class Orchestrator {
           candidates: [],
         };
       }
+      // Same run-prep stage as the git boundary (and the same `!inPlace`
+      // exclusion — we are inside that branch, so inPlace is false here): bridge
+      // an AGENTS.md-only PROJECT root so a Claude Code convergence attempt reads
+      // it (INV-113).
+      this.ensureClaudeBridgeForRun(input.repoRoot, false, log);
     }
 
     const reviewDir = join(paths.root, "review-evidence");

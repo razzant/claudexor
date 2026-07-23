@@ -57,6 +57,8 @@ export const selectCodexRunAuthRoute = selectStrictAuthRoute;
 export {
   CODEX_FILE_AUTH_ARGS,
   CODEX_FILE_AUTH_OVERRIDE,
+  CODEX_PROJECT_DOC_FALLBACK_ARGS,
+  CODEX_PROJECT_DOC_FALLBACK_OVERRIDE,
   codexApiKey,
   codexAuthModeAt,
   defaultNativeCodexHome,
@@ -65,6 +67,7 @@ export {
 } from "./auth.js";
 import {
   CODEX_FILE_AUTH_ARGS,
+  CODEX_PROJECT_DOC_FALLBACK_ARGS,
   codexApiKey,
   codexAuthModeAt,
   defaultNativeCodexHome,
@@ -276,6 +279,7 @@ export function codexExecArgs(
       spec.resume_session_id,
       "--json",
       ...CODEX_FILE_AUTH_ARGS,
+      ...CODEX_PROJECT_DOC_FALLBACK_ARGS,
       ...sandboxConfigArgs(spec.access),
       "--skip-git-repo-check",
     ];
@@ -301,7 +305,7 @@ export function codexExecArgs(
     args.push(spec.prompt);
     return args;
   }
-  const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS];
+  const args = ["exec", "--json", ...CODEX_FILE_AUTH_ARGS, ...CODEX_PROJECT_DOC_FALLBACK_ARGS];
   args.push(...sandboxArgs(spec.access), "--skip-git-repo-check");
   if (opts.outputSchemaPath) args.push("--output-schema", opts.outputSchemaPath);
   if (spec.model_hint) args.push("-m", spec.model_hint);

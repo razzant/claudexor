@@ -1264,6 +1264,21 @@ fence (Bible INV-113); an unlisted mutation path is a release blocker:
 6. **`revert_run`** — the server-owned in-place revert reads the immutable
    external patch anchor and reverses only bytes still equal to the recorded
    Claudexor postimage; a conflicting user edit is refused and left untouched.
+7. **Thin `CLAUDE.md` bridge** — at the same write-mode run-prep stage as the
+   automatic git init (INV-075), a project root that has `AGENTS.md` and no
+   `CLAUDE.md` gets a thin `CLAUDE.md` whose body is the official Anthropic
+   import form (`@AGENTS.md`) plus a Claudexor ownership marker, so a Claude Code
+   route reads the same instruction file Codex/Cursor/OpenCode read natively
+   (Codex additionally gets `CLAUDE.md` as a project-doc fallback via config, and
+   a CLAUDE.md-only project needs no write at all). Fences: the create is
+   EXCLUSIVE (`O_CREAT|O_EXCL`) and NO-FOLLOW, so a hand-written `CLAUDE.md`, a
+   symlink (even dangling), or a directory at that path is never overwritten or
+   written through; it is idempotent, so a second or concurrent prep is a no-op
+   (exactly one file, one event); it targets the PROJECT root, never a worktree
+   envelope; read-only modes and `--in-place` stateful targets are excluded
+   exactly as the git boundary excludes them; and every create is announced via
+   a typed `project.claude_bridge.created` run event — never silent. A bridge
+   failure never fails the run (it is a convenience, not a precondition).
 
 Reviewer selection is schema-owned. The automatic selector uses provider-family
 diversity plus optional per-family `reviewerModels` / `reviewerEfforts` hints.

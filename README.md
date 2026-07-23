@@ -493,6 +493,16 @@ MIME, byte/count limit, and native transport for every mandatory attachment or
 preflight refuses the whole pool. Adapters verify the finalized digest immediately
 before building the vendor payload.
 
+Keep ONE `AGENTS.md` at your project root as the source of truth for
+project-specific instructions. Codex, Cursor, and OpenCode read `AGENTS.md`
+natively; Claude Code reads `CLAUDE.md`. Claudexor bridges the gap automatically:
+codex routes fall back to `CLAUDE.md` when a project has no `AGENTS.md`, and a
+project that has `AGENTS.md` and no `CLAUDE.md` gets a thin generated `CLAUDE.md`
+(just the official `@AGENTS.md` import plus a Claudexor marker) on a write-mode
+run so Claude Code reads the same file. A hand-written `CLAUDE.md` is never
+overwritten; delete the generated one to stop bridging. See
+docs/INTEGRATIONS.md "Project Instruction Files".
+
 Host integrations are managed by `claudexor plugin
 install|status|doctor|repair|uninstall <cursor|claude|codex|opencode|all>`.
 They install user-global host-native artifacts plus MCP wiring while keeping

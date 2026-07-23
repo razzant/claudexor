@@ -48,6 +48,8 @@ export function formatRunEventLine(ev: Record<string, unknown>): string | null {
       return `run created (${String(p["mode"] ?? "?")})`;
     case "project.git.initialized":
       return `initialized git repository at ${String(p["repo_root"] ?? "?")} (baseline commit)`;
+    case "project.claude_bridge.created":
+      return `bridged ${String(p["source"] ?? "AGENTS.md")} → ${String(p["path"] ?? "CLAUDE.md")} for Claude Code`;
     case "harness.started":
       if (p["request_requirement"] && typeof p["request_requirement"] === "object") {
         const requirement = p["request_requirement"] as Record<string, unknown>;

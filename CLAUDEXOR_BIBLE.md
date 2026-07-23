@@ -524,10 +524,17 @@ invariant or owner decision before proceeding.
   apply path, CONCEPT-CHANGE(INV-113));
   race adoption applies only on a verified clean terminal; `revert_run` is
   content/preimage-fenced; thread apply considers every run not yet recorded
-  as delivered and is serialized against active turns. An
+  as delivered and is serialized against active turns; the thin `CLAUDE.md`
+  bridge (an `AGENTS.md`-only project root, same write-prep stage as the
+  automatic git init, CONCEPT-CHANGE(INV-113)) is exclusive-create + no-follow
+  so it never overwrites a hand-written file or writes through a symlink,
+  targets the project root not a worktree envelope, excludes read-only and
+  `--in-place` targets exactly as the git boundary does, and announces every
+  create via a typed `project.claude_bridge.created` event. An
   unlisted mutation path is a release blocker. verify: mutation-path
   inventory in ARCHITECTURE; delivered-prefix and active-turn thread-apply
-  tests (locked owner decision).
+  tests; claude-bridge exclusive-create/no-follow/race/idempotency tests
+  (locked owner decision).
 - **INV-114** Apply/adoption captures and rechecks the exact target preimage
   immediately around the mutation; stale or conflicting targets are refused
   without destructive rollback. `adopted:false`/`not_applied` means the tree

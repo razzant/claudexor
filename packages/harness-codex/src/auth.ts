@@ -8,6 +8,19 @@ const BIN = process.env.CLAUDEXOR_CODEX_BIN || "codex";
 export const CODEX_FILE_AUTH_OVERRIDE = 'cli_auth_credentials_store="file"';
 export const CODEX_FILE_AUTH_ARGS = ["-c", CODEX_FILE_AUTH_OVERRIDE] as const;
 
+// D-14 layer 1 (AGENTS.md unification): codex reads a project's `AGENTS.md`
+// natively; `project_doc_fallback_filenames` lists the filenames it consults
+// INSTEAD, and ONLY when no `AGENTS.md` is present (vendor semantics — the
+// fallback is never merged on top of an existing AGENTS.md). Adding `CLAUDE.md`
+// lets a Claude-Code-only project (CLAUDE.md, no AGENTS.md) work on codex routes
+// with ZERO project writes. It rides the same stateless `-c` override transport
+// as the other engine-owned config (the user's `~/.codex/config.toml` is never
+// touched), so it applies to every scoped-home and native codex run alike.
+export const CODEX_PROJECT_DOC_FALLBACK_OVERRIDE = `project_doc_fallback_filenames=${JSON.stringify(
+  ["CLAUDE.md"],
+)}`;
+export const CODEX_PROJECT_DOC_FALLBACK_ARGS = ["-c", CODEX_PROJECT_DOC_FALLBACK_OVERRIDE] as const;
+
 /**
  * Resolve an OpenAI API key for codex from the environment. Claudexor-managed
  * `api_key` auth mirrors the harness's own variable (`OPENAI_API_KEY`); a
