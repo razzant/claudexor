@@ -13,7 +13,7 @@
   "packages/cli/src/control-services.ts": 553,
   "packages/cli/src/plugins.ts": 1872,
   "packages/cli/src/setup-jobs.ts": 1328,
-  "packages/control-api/src/daemon-server.ts": 3014,
+  "packages/control-api/src/daemon-server.ts": 3064,
   "packages/daemon/src/journal-manager.ts": 582,
   "packages/daemon/src/server.ts": 653,
   "packages/daemon/src/threads.ts": 601,
@@ -21,10 +21,10 @@
   "packages/harness-codex/src/index.ts": 880,
   "packages/harness-cursor/src/index.ts": 803,
   "packages/journal/src/index.ts": 544,
-  "packages/mcp-server/src/index.ts": 701,
+  "packages/mcp-server/src/index.ts": 703,
   "packages/orchestrator/src/attemptTelemetry.ts": 834,
   "packages/orchestrator/src/orchestrator.ts": 7594,
   "packages/review/src/reviewEngine.ts": 1396,
-  "packages/schema/src/control.ts": 1686,
+  "packages/schema/src/control.ts": 1737,
   "packages/schema/src/harness.ts": 1077
 }

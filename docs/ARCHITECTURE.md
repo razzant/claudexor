@@ -284,7 +284,11 @@ the writer for that file (`--allow-full-access`, `--revoke-full-access`,
 (`harnesses.<id>.enabled/default_model/effort/web/max_turns/max_rounds/
 tools_allow/tools_deny/fallback_model` in the global config) gate pool
 membership and seed per-route run specs; knobs a manifest does not support are
-disclosed as `ignored_settings` on `harness.started`, never silently dropped.
+disclosed as `ignored_settings` on `harness.started`, never silently dropped —
+the Control timeline projection carries the list (the `ignoredSettings` field on
+`ControlTimelineEvent`) and lifts the row to `warning`, and human CLI `follow`
+appends a warning suffix, so an ignored cost/safety bound is never an invisible
+benign start.
 
 Model choice is harness-scoped end to end. A run carries a per-harness
 `models` map (harness id → model id); the scalar `model` convenience expands
@@ -860,6 +864,13 @@ Endpoint semantics beyond the inventory:
   the versioned *project* commands (loaded from `.claudexor/config.yaml`) carry
   `trust_required:true` and need the external grant above; the two sources merge
   in `resolveContractGates`.
+- A succeeded-but-blocked run carries a minimal typed `requiredActions` list on
+  `ControlRunDetail` (stable machine ids from the single status-projection owner:
+  `resolve_review_block` / `fix_failed_checks` / `record_operator_decision` for a
+  risk-overridable block, and the non-overridable `provide_required_input` /
+  `complete_incomplete_work` for a work_state veto). Clean, already-decided, and
+  failed runs carry none — a failed run's remediation rides the failure
+  `nextActions`.
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` append an auditable patch-hash-bound
   record to the owning global/project journal before ACK. The run artifact
@@ -915,8 +926,12 @@ materialized as `context/PLAN.md` OUTSIDE every worktree. The engine verifies
 the hash before any harness spawns — a tampered or unreadable plan fails loudly
 (`plan hash mismatch` / missing plan), never runs against altered intent. Exact
 Retry replays the `planRef` verbatim, so a retried Implement can never silently
-run without its plan. Implementing while open questions remain is an explicit,
-recorded operator choice (`plan_readiness_overridden`), not a silent default;
+run without its plan. Both provenance facts ride the turn projection (the
+`planHash` / `planReadinessOverridden` fields on `ControlThreadTurn`) so a
+reviewer can prove which plan bytes ran and see the override survive reload.
+Implementing
+while open questions remain is an explicit, recorded operator choice
+(`plan_readiness_overridden`), not a silent default;
 plans and repo config never carry protected-path approvals — operator approval
 is always supplied on the current run.
 
@@ -933,7 +948,9 @@ are shape-identical to a solo plan and the readiness/freeze/Implement flow above
 is unchanged. Council owns no new state machine: it is round-1 attempts plus a
 merge attempt, with a `council/membership.yaml` projection served on
 `ControlRunDetail.council` (requested/drafted/degraded/mergedBy + per-member
-role and status). Degradation is disclosed, not silent — a failed member is
+role and status) and mirrored on the MCP run/read structured results so a host
+can machine-verify the roster without reading local artifacts. Degradation is
+disclosed, not silent — a failed member is
 carried on the projection and the merge proceeds with survivors (one survivor
 still merges); all members failing is a typed failure. Council shares the
 explicit-lane admission rule with Best-of: an explicitly named member that is
@@ -1340,7 +1357,11 @@ planner, candidates, synthesis, and review, and settles
 observed spend even when work errors. Every route carries cost knowledge
 (`exact | estimated | unknown`), billing knowledge, source, and provenance.
 Subscription token valuation is telemetry, not a cash debit — estimated OR
-exact, for candidates and each reviewer route. Mixed review panels settle
+exact, for candidates and each reviewer route. It is projected BESIDE cash on
+`ControlBudgetSnapshot` (`valuationUsd` + `valuationKnowledge`, also on the MCP
+read result), so a native-subscription run reads as exact `$0` cash with a
+non-null valuation; an unknown valuation stays null, never a fabricated `$0`.
+Mixed review panels settle
 native reviewers to valuation and API-key reviewers to cash independently;
 their aggregate is never blindly charged as cash. Candidate and reviewer
 retries classify EACH usage event by that event/current typed credential
@@ -1693,11 +1714,15 @@ with that installer.
   informational "Update available → vX.Y.Z" chip that links to the GitHub release
   for a manual download. No download, unpack, or daemon signalling happens in 3.0;
   the auto-install flow lands in 3.1.
-- **Engine side.** `claudexor release check` reads the same manifest and reports
-  whether a newer runtime is published (npm installs update via npm). `claudexor
-  release stats` is the owner-facing install counter (D23) — GitHub asset
-  download counts + the npm downloads API, zero infra, no telemetry, no ping.
-  Both hit the network only when invoked.
+- **Engine side.** `claudexor release check` handshakes the running daemon for
+  its authoritative engine version and compares THAT to the manifest (no daemon
+  reachable → the engine is reported unknown and the CLI package version is
+  compared honestly, never relabelled as the running engine). The check never
+  starts a daemon. Its guidance is accurate to what ships: the macOS app offers
+  an engine update flow, and npm users update the CLI with `npm install -g
+  claudexor@latest`. `claudexor release stats` is the owner-facing install
+  counter (D23) — GitHub asset download counts + the npm downloads API, zero
+  infra, no telemetry, no ping. Both hit the network only when invoked.
 
 ## 10. Change Rules
 
