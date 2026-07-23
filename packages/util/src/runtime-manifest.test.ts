@@ -70,6 +70,14 @@ describe("runtime-update manifest verify (fail-closed)", () => {
     expect(verifyRuntimeManifest(bad, TEST_AUTHORITY).ok).toBe(false);
   });
 
+  it("refuses a redirected archiveUrl (D-2 URL binding)", () => {
+    const bad = { ...VALID, archiveUrl: "https://evil.example/x.tar.gz" };
+    const v = verifyRuntimeManifest(bad, TEST_AUTHORITY);
+    expect(v.ok).toBe(false);
+    // Either the URL-binding shape check OR the broken signature refuses it.
+    expect(v.reasons.length).toBeGreaterThan(0);
+  });
+
   it("refuses a wrong schemaVersion / bad buildSha / missing signature", () => {
     expect(verifyRuntimeManifest({ ...VALID, schemaVersion: 2 }, TEST_AUTHORITY).ok).toBe(false);
     expect(verifyRuntimeManifest({ ...VALID, buildSha: "unknown" }, TEST_AUTHORITY).ok).toBe(false);

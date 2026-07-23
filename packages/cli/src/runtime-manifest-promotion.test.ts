@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // The mjs contract mirror (a test may import scripts/lib).
 import {
   runtimeArchiveName,
+  runtimeArchiveUrl,
   sha256Hex,
   signRuntimeManifest,
   type RuntimeUpdateAuthority,
@@ -54,6 +55,7 @@ function buildFixture(): { tarball: string; unsigned: string; sha: string } {
     sha256: sha,
     minAppVersion: "2.1.0",
     archiveName: runtimeArchiveName(VERSION),
+    archiveUrl: runtimeArchiveUrl(VERSION),
     buildSha: "1111111111111111111111111111111111111111",
     notes: "promotion test",
   };
@@ -132,6 +134,18 @@ describe("verify-signed-runtime-manifest (A-5 publish gate)", () => {
       TEST_AUTHORITY,
     );
     signed.archiveName = "claudexor-runtime-9.9.9.tar.gz";
+    expect(() => run(signed, { tarball, unsigned, authority: auth })).toThrow();
+  });
+
+  it("REFUSES a redirected archiveUrl (D-2 URL binding; signature no longer valid)", () => {
+    const { tarball, unsigned } = buildFixture();
+    const auth = writeAuthority(TEST_AUTHORITY);
+    const signed = signRuntimeManifest(
+      JSON.parse(readFileSync(unsigned, "utf8")),
+      TEST_PRIVATE_KEY_PEM,
+      TEST_AUTHORITY,
+    );
+    signed.archiveUrl = "https://evil.example/claudexor-runtime-3.4.0.tar.gz";
     expect(() => run(signed, { tarball, unsigned, authority: auth })).toThrow();
   });
 

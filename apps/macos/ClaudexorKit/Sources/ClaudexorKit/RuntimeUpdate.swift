@@ -104,6 +104,7 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
     public let sha256: String
     public let minAppVersion: String
     public let archiveName: String
+    public let archiveUrl: String
     public let buildSha: String
     public let notes: String
     public let keyId: String
@@ -115,6 +116,7 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
         sha256: String,
         minAppVersion: String,
         archiveName: String? = nil,
+        archiveUrl: String? = nil,
         buildSha: String = String(repeating: "0", count: 40),
         notes: String = "",
         keyId: String = "",
@@ -127,6 +129,7 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
         self.sha256 = sha256
         self.minAppVersion = minAppVersion
         self.archiveName = archiveName ?? "claudexor-runtime-\(version).tar.gz"
+        self.archiveUrl = archiveUrl ?? RuntimeManifest.archiveUrl(for: version)
         self.buildSha = buildSha
         self.notes = notes
         self.keyId = keyId
@@ -135,8 +138,8 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, version, sha256, minAppVersion, archiveName, buildSha, notes, keyId,
-            algorithm, signature
+        case schemaVersion, version, sha256, minAppVersion, archiveName, archiveUrl, buildSha, notes,
+            keyId, algorithm, signature
     }
 
     public init(from decoder: Decoder) throws {
@@ -146,6 +149,7 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
         sha256 = try c.decode(String.self, forKey: .sha256)
         minAppVersion = try c.decode(String.self, forKey: .minAppVersion)
         archiveName = try c.decodeIfPresent(String.self, forKey: .archiveName) ?? ""
+        archiveUrl = try c.decodeIfPresent(String.self, forKey: .archiveUrl) ?? ""
         buildSha = try c.decodeIfPresent(String.self, forKey: .buildSha) ?? ""
         notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
         keyId = try c.decodeIfPresent(String.self, forKey: .keyId) ?? ""
@@ -158,12 +162,19 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
         "claudexor-runtime-\(version).tar.gz"
     }
 
+    /// The canonical release-asset URL bound into (and signed by) the manifest
+    /// (D-2 name+URL binding). Matches the TS/mjs `runtimeArchiveUrl`.
+    public static func archiveUrl(for version: String) -> String {
+        "https://github.com/razzant/claudexor/releases/download/v\(version)/\(archiveName(for: version))"
+    }
+
     /// Deterministic sorted-key JSON of the signed field subset — byte-identical
     /// to the TS/mjs `canonicalJson(runtimeManifestSignedFields(...))`.
     func signingBytes() -> Data {
         let fields: [(String, String)] = [
             ("algorithm", jsonString(algorithm)),
             ("archiveName", jsonString(archiveName)),
+            ("archiveUrl", jsonString(archiveUrl)),
             ("buildSha", jsonString(buildSha)),
             ("keyId", jsonString(keyId)),
             ("minAppVersion", jsonString(minAppVersion)),
@@ -207,8 +218,9 @@ public struct RuntimeManifest: Codable, Sendable, Equatable {
         guard isLowercaseHexSHA256(m.sha256) else { return nil }
         // 40-char lowercase-hex build sha (the handshake identity binding).
         guard m.buildSha.count == 40, isLowercaseHex(m.buildSha) else { return nil }
-        // archiveName is bound to version.
+        // archiveName AND archiveUrl are bound to version (D-2 name+URL binding).
         guard m.archiveName == archiveName(for: m.version) else { return nil }
+        guard m.archiveUrl == archiveUrl(for: m.version) else { return nil }
         guard let key = authority.signingPublicKey() else { return nil }
         guard let sig = Data(base64Encoded: m.signature), sig.count == 64 else { return nil }
         guard key.isValidSignature(sig, for: m.signingBytes()) else { return nil }

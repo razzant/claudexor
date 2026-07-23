@@ -36,7 +36,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runtimeArchiveName } from "./lib/runtime-manifest-contract.mjs";
+import { runtimeArchiveName, runtimeArchiveUrl } from "./lib/runtime-manifest-contract.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -279,6 +279,7 @@ function main() {
     sha256,
     minAppVersion,
     archiveName: tarballName,
+    archiveUrl: runtimeArchiveUrl(version),
     buildSha,
     notes,
   };

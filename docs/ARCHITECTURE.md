@@ -1758,9 +1758,13 @@ bytes (bound by a parity test), and the Swift updater
 (`ClaudexorKit/RuntimeUpdate.swift`) verifies the same bytes with CryptoKit,
 locked by cross-language fixtures (`Fixtures/runtime-update/`, TS signs → Swift
 verifies). The signed bytes cover `{schemaVersion, version, sha256,
-minAppVersion, archiveName (bound to version), buildSha, notes, keyId,
-algorithm}`; anti-replay is the signed `version` plus the installer's strict
-monotonic check (never install a version ≤ current or last-known-good). Both the
+minAppVersion, archiveName AND archiveUrl (both bound to version), buildSha,
+notes, keyId, algorithm}` — the URL binding (D-2) means the installer refuses to
+download unless the release asset URL it resolves EQUALS the signed `archiveUrl`,
+so a tampered release listing cannot redirect the download even though the
+sha256 would still be checked. Anti-replay is the signed `version` plus the
+installer's strict monotonic check (never install a version ≤ current or
+last-known-good). Both the
 Swift updater AND `claudexor release check` verify FAIL-CLOSED: an unsigned,
 unknown-key, tampered, or version-regressed manifest is refused, never surfaced
 as an available update. Exact-artifact promotion (A-5): the candidate release

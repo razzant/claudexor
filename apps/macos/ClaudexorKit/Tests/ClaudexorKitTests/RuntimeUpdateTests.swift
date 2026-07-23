@@ -81,6 +81,16 @@ import Testing
         #expect(RuntimeManifest.verified(data, authority: try testAuthority()) == nil)
     }
 
+    @Test func refusesARedirectedArchiveUrl() throws {
+        // D-2 name+URL binding: a manifest pointing the signed archiveUrl at a
+        // different host is refused (shape binding + broken signature).
+        var obj =
+            try JSONSerialization.jsonObject(with: fixture("valid-manifest")) as! [String: Any]
+        obj["archiveUrl"] = "https://evil.example/claudexor-runtime-3.4.0.tar.gz"
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        #expect(RuntimeManifest.verified(data, authority: try testAuthority()) == nil)
+    }
+
     @Test func pinnedAuthorityMatchesTheTrackedReleaseFile() throws {
         // The embedded pinned key must equal release/runtime-update-authority.json.
         let repoRoot = URL(fileURLWithPath: #filePath)

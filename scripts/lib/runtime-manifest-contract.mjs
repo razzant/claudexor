@@ -40,6 +40,10 @@ import { createHash, createPrivateKey, createPublicKey, sign, verify } from "nod
 export const RUNTIME_MANIFEST_SCHEMA_VERSION = 1;
 /** The only accepted signature algorithm. */
 export const RUNTIME_MANIFEST_ALGORITHM = "Ed25519";
+/** The one release repo whose CDN serves the closure (matches release.ts
+ * RELEASE_REPO and the Swift transport repoSlug). The signed archive URL is
+ * derived from it, so a manifest can only ever bind an asset on THIS repo. */
+export const RUNTIME_RELEASE_REPO = "razzant/claudexor";
 
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -53,6 +57,15 @@ export function isSemver(value) {
 /** The conventional archive filename bound into (and signed by) the manifest. */
 export function runtimeArchiveName(version) {
   return `claudexor-runtime-${version}.tar.gz`;
+}
+
+/** The canonical release-asset download URL bound into (and signed by) the
+ * manifest (D-2 name+URL binding). GitHub serves release assets at the stable
+ * templated form `.../releases/download/<tag>/<asset>` with tag `v<version>`, so
+ * the URL is fully determined by the version — the installer verifies the
+ * resolved download URL EQUALS this signed value before fetching. */
+export function runtimeArchiveUrl(version) {
+  return `https://github.com/${RUNTIME_RELEASE_REPO}/releases/download/v${version}/${runtimeArchiveName(version)}`;
 }
 
 /** Deterministic sorted-key JSON — the byte contract the Ed25519 key signs. */
@@ -73,6 +86,7 @@ export function runtimeManifestSignedFields(manifest) {
     sha256: manifest.sha256,
     minAppVersion: manifest.minAppVersion,
     archiveName: manifest.archiveName,
+    archiveUrl: manifest.archiveUrl,
     buildSha: manifest.buildSha,
     notes: manifest.notes,
     keyId: manifest.keyId,
@@ -114,10 +128,14 @@ export function validateRuntimeManifestShape(manifest, { expectVersion } = {}) {
   if (manifest.algorithm !== RUNTIME_MANIFEST_ALGORITHM) {
     reasons.push(`algorithm must be ${RUNTIME_MANIFEST_ALGORITHM}`);
   }
-  // archiveName is BOUND to version — a valid manifest can never point at a
-  // differently named archive, so a signed manifest cannot be retargeted.
+  // archiveName AND archiveUrl are BOUND to version — a valid manifest can never
+  // point at a differently named archive or a different host/path, so a signed
+  // manifest cannot be retargeted or redirected (D-2 name+URL binding).
   if (isSemver(manifest.version) && manifest.archiveName !== runtimeArchiveName(manifest.version)) {
     reasons.push(`archiveName must be ${runtimeArchiveName(manifest.version)}`);
+  }
+  if (isSemver(manifest.version) && manifest.archiveUrl !== runtimeArchiveUrl(manifest.version)) {
+    reasons.push(`archiveUrl must be ${runtimeArchiveUrl(manifest.version)}`);
   }
   if (expectVersion !== undefined && manifest.version !== expectVersion) {
     reasons.push(`version ${manifest.version} does not match the expected ${expectVersion}`);
@@ -184,6 +202,14 @@ export function signRuntimeManifest(unsigned, privateKeyPem, authority) {
     sha256: unsigned.sha256,
     minAppVersion: unsigned.minAppVersion,
     archiveName: unsigned.archiveName,
+    // Derive the canonical URL from the version if the unsigned manifest omits
+    // it (older builders), so the signature always binds a well-formed URL.
+    archiveUrl:
+      typeof unsigned.archiveUrl === "string" && unsigned.archiveUrl
+        ? unsigned.archiveUrl
+        : isSemver(unsigned.version)
+          ? runtimeArchiveUrl(unsigned.version)
+          : unsigned.archiveUrl,
     buildSha: unsigned.buildSha,
     notes: typeof unsigned.notes === "string" ? unsigned.notes : "",
     keyId: authority.keyId,

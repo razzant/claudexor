@@ -314,9 +314,20 @@ extension AppModel {
         defer { runtimeInstalling = false }
 
         let transport = makeRuntimeTransport()
-        guard let assetURL = await resolveClosureURL(transport: transport, archiveName: manifest.archiveName)
+        guard let resolved = await resolveClosureURL(transport: transport, archiveName: manifest.archiveName)
         else {
             runtimeInstallStatus = "Could not locate the runtime download for v\(manifest.version)."
+            return
+        }
+        // D-2 name+URL binding: the release asset URL resolved from the release
+        // JSON must EXACTLY equal the signed `archiveUrl`, so a tampered release
+        // listing cannot redirect the download to a different host/path even
+        // though the sha256 would still be checked. Download from the SIGNED URL.
+        guard resolved.absoluteString == manifest.archiveUrl,
+            let assetURL = URL(string: manifest.archiveUrl)
+        else {
+            runtimeInstallStatus =
+                "Refusing update: the download URL does not match the signed manifest."
             return
         }
         let coordinator = RuntimeInstallCoordinator(

@@ -12,12 +12,36 @@
  * `claudexor release check` verifies FAIL-CLOSED against the PINNED authority
  * below: an unsigned, unknown-key, tampered, or malformed manifest is refused,
  * never trusted as an available update.
+ *
+ * WHY ONE AUTHORITY, NOT THREE (D-2 / audit 7a). There is ONE authoritative
+ * manifest CONTRACT — the field set, the canonical signing-byte serialization,
+ * the name+URL binding, the monotonic anti-replay, and the pinned-key
+ * verification. It has three faithful language implementations (this TS runtime,
+ * the release-tooling mirror `scripts/lib/runtime-manifest-contract.mjs`, and the
+ * Swift updater `ClaudexorKit/RuntimeUpdate.swift`) that are BOUND to that one
+ * contract by tests, so they cannot drift: a byte-for-byte canonical-signing-
+ * bytes PARITY test (mjs ≡ TS), cross-language SIGNED test vectors (TS signs →
+ * Swift verifies the exact bytes), and pin-integrity tests (each runtime's
+ * embedded public key must equal release/runtime-update-authority.json). This is
+ * the repo's established multi-impl-one-wire pattern (every schema DTO ↔ Swift
+ * wire fixture) — divergence fails CI. Generating all three from a single
+ * packages/schema Zod source was deliberately rejected: (1) verification needs
+ * node:crypto, which the pure/portable schema package must not import; (2) the
+ * npm CLI ships per-package dist WITHOUT the repo's release/ or scripts/ dirs, so
+ * it must compile in its own copy of the pinned key + verifier (exactly as the
+ * .app compiles in its own); (3) the OFFLINE signing scripts run as standalone
+ * .mjs with no guaranteed built dist. The plan-review's "three ad-hoc
+ * definitions" were three DIVERGENT field lists with no shared canonicalization
+ * or signature; those are gone.
  */
 import { createPublicKey, verify } from "node:crypto";
 
 export const RUNTIME_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_MANIFEST_ALGORITHM = "Ed25519" as const;
 export const RUNTIME_MANIFEST_ASSET_NAME = "runtime-manifest.json" as const;
+/** The one release repo whose CDN serves the closure (matches RELEASE_REPO in
+ * release.ts and the Swift transport). The signed archive URL derives from it. */
+export const RUNTIME_RELEASE_REPO = "razzant/claudexor" as const;
 
 /**
  * The PINNED runtime-update authority (public half). This constant is bound to
@@ -45,6 +69,7 @@ export interface SignedRuntimeManifest {
   sha256: string;
   minAppVersion: string;
   archiveName: string;
+  archiveUrl: string;
   buildSha: string;
   notes: string;
   keyId: string;
@@ -63,6 +88,12 @@ export function isRuntimeSemver(value: unknown): value is string {
 
 export function runtimeArchiveName(version: string): string {
   return `claudexor-runtime-${version}.tar.gz`;
+}
+
+/** The canonical release-asset download URL bound into (and signed by) the
+ * manifest (D-2 name+URL binding); fully determined by the version. */
+export function runtimeArchiveUrl(version: string): string {
+  return `https://github.com/${RUNTIME_RELEASE_REPO}/releases/download/v${version}/${runtimeArchiveName(version)}`;
 }
 
 /** Deterministic sorted-key JSON — identical output to the mjs canonicalJson. */
@@ -86,6 +117,7 @@ export function runtimeManifestSignedFields(
     sha256: manifest.sha256,
     minAppVersion: manifest.minAppVersion,
     archiveName: manifest.archiveName,
+    archiveUrl: manifest.archiveUrl,
     buildSha: manifest.buildSha,
     notes: manifest.notes,
     keyId: manifest.keyId,
@@ -133,6 +165,9 @@ export function verifyRuntimeManifest(
   }
   if (isRuntimeSemver(m.version) && m.archiveName !== runtimeArchiveName(m.version)) {
     reasons.push(`archiveName must be ${runtimeArchiveName(m.version as string)}`);
+  }
+  if (isRuntimeSemver(m.version) && m.archiveUrl !== runtimeArchiveUrl(m.version)) {
+    reasons.push(`archiveUrl must be ${runtimeArchiveUrl(m.version as string)}`);
   }
   if (opts.expectVersion !== undefined && m.version !== opts.expectVersion) {
     reasons.push(`version ${String(m.version)} does not match the expected ${opts.expectVersion}`);

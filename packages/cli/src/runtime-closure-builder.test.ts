@@ -72,6 +72,9 @@ describe("build-runtime-closure", () => {
     expect(manifest.signature).toBeUndefined();
     expect(manifest.keyId).toBeUndefined();
     expect(manifest.archiveName).toBe(`claudexor-runtime-${version}.tar.gz`);
+    expect(manifest.archiveUrl).toBe(
+      `https://github.com/razzant/claudexor/releases/download/v${version}/claudexor-runtime-${version}.tar.gz`,
+    );
     expect(manifest.buildSha).toBe(FAKE_BUILD_SHA);
     expect(manifest.minAppVersion).toMatch(/^\d+\.\d+\.\d+$/);
     const tarball = readFileSync(join(out, `claudexor-runtime-${version}.tar.gz`));

@@ -1,5 +1,6 @@
 export const RUNTIME_MANIFEST_SCHEMA_VERSION: 1;
 export const RUNTIME_MANIFEST_ALGORITHM: "Ed25519";
+export const RUNTIME_RELEASE_REPO: string;
 
 export interface SignedRuntimeManifest {
   schemaVersion: 1;
@@ -7,6 +8,7 @@ export interface SignedRuntimeManifest {
   sha256: string;
   minAppVersion: string;
   archiveName: string;
+  archiveUrl: string;
   buildSha: string;
   notes: string;
   keyId: string;
@@ -24,6 +26,7 @@ export interface RuntimeUpdateAuthority {
 
 export function isSemver(value: unknown): value is string;
 export function runtimeArchiveName(version: string): string;
+export function runtimeArchiveUrl(version: string): string;
 export function canonicalJson(value: unknown): string;
 export function runtimeManifestSignedFields(manifest: any): Record<string, unknown>;
 export function runtimeManifestSigningBytes(manifest: any): Buffer;
@@ -42,6 +45,7 @@ export function signRuntimeManifest(
     sha256: string;
     minAppVersion: string;
     archiveName: string;
+    archiveUrl?: string;
     buildSha: string;
     notes?: string;
   },

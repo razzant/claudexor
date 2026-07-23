@@ -51,7 +51,14 @@ try {
   if (signed.sha256 !== actualSha) {
     fail(`signed sha256 ${signed.sha256} does not match the shipped tarball digest ${actualSha}`);
   }
-  for (const field of ["version", "sha256", "minAppVersion", "archiveName", "buildSha"]) {
+  for (const field of [
+    "version",
+    "sha256",
+    "minAppVersion",
+    "archiveName",
+    "archiveUrl",
+    "buildSha",
+  ]) {
     if (signed[field] !== unsigned[field]) {
       fail(
         `signed manifest ${field} (${signed[field]}) does not match the built closure (${unsigned[field]})`,
