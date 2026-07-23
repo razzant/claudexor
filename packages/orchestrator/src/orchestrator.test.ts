@@ -627,6 +627,33 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
 
+  it("a CREATE run's per-run test command is a runnable trust-free gate (QA-010)", async () => {
+    // A fresh project has NO .claudexor trust file. Explicit per-run operator
+    // test commands (run input `tests`) are `trust_required:false` and run
+    // as deterministic gates for that run's own envelope — the honest rule for
+    // Create, where the project (and its test script) does not exist until the
+    // run produces it. A passing command yields checks=passed WITHOUT a grant.
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-implement", createFakeHarness("fake-implement")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "create it",
+      mode: "agent",
+      create: true,
+      harnesses: ["fake-implement"],
+      tests: [shellGate("true")],
+    });
+    expect(res.facts.checks).toBe("passed");
+    const decision = readFileSync(join(res.runDir, "arbitration", "decision.yaml"), "utf8");
+    expect(decision).toContain("checks: passed");
+    // The gate ran without any trust grant.
+    const evidence = readFileSync(join(res.runDir, "review-evidence", "TESTS.txt"), "utf8");
+    expect(evidence).not.toContain("no test commands configured");
+  }, 20000);
+
   it("no-diff candidate emits review.skipped, never review.started or review_verified (QA-025)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

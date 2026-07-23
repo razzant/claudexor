@@ -299,12 +299,30 @@
               "type": "boolean",
               "default": false,
               "description": "True when any of the spend is token-derived rather than natively reported."
+            },
+            "cash_usd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null,
+              "description": "Settled cash spend in USD (0 on native-subscription routes); null when unknown."
+            },
+            "valuation_usd": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "default": null,
+              "description": "Settled subscription-equivalent valuation in USD (includes the reviewer panel); null when unknown."
             }
           },
           "additionalProperties": false,
           "default": {
             "spend_usd": null,
-            "estimated": false
+            "estimated": false,
+            "cash_usd": null,
+            "valuation_usd": null
           },
           "description": "Settled spend for the run; estimates are disclosed, never presented as exact."
         },

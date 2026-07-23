@@ -3273,7 +3273,12 @@ export class Orchestrator {
         why_winner: why,
         evidence_facts: ["no candidates were produced"],
         apply_recommendation: "continue",
-        budget_summary: { spend_usd: ledger.spend(), estimated: false },
+        budget_summary: {
+          spend_usd: ledger.spend(),
+          estimated: false,
+          cash_usd: ledger.spend(),
+          valuation_usd: ledger.valuation(),
+        },
       });
       store.writeText(
         join(paths.finalDir, "summary.md"),
@@ -3338,7 +3343,12 @@ export class Orchestrator {
           (r) => `${r.attemptId} produced no work: ${r.errors[0] ?? "unknown"}`,
         ),
         apply_recommendation: "continue",
-        budget_summary: { spend_usd: ledger.spend(), estimated: false },
+        budget_summary: {
+          spend_usd: ledger.spend(),
+          estimated: false,
+          cash_usd: ledger.spend(),
+          valuation_usd: ledger.valuation(),
+        },
       });
       this.writeRunTelemetry(
         store,
@@ -3676,6 +3686,10 @@ export class Orchestrator {
       result = arbitrate(evidences, {
         spendUsd: ledger.spend(),
         estimatedSpend: runs.some((r) => r.costEstimated),
+        // QA-010b: carry the settled cash + subscription-valuation totals
+        // (reviewer panel included) onto the decision record.
+        cashUsd: ledger.spend(),
+        valuationUsd: ledger.valuation(),
       });
     } catch (err) {
       // Arbitration throws end terminally with artifacts, never as an orphan.
@@ -3987,9 +4001,16 @@ export class Orchestrator {
               ],
       });
     } else if (isFailureTerminal) {
+      // QA-010c: a reviewer-accepted BLOCK/FIX_FIRST (or a failed deterministic
+      // gate) that BLOCKS the run is an operator-decision terminal, not an
+      // internal engine error. Only a genuinely unexpected non-decision terminal
+      // stays `internal`. A review/checks block is `policy` (the acceptance
+      // path), phase `review`, and its remedy names the decision, not "retry
+      // with a different harness".
+      const decisionBlock = needsHuman || needsDecisionTerminal;
       writeFailure(store, paths, {
-        phase: needsHuman ? "review" : "arbitration",
-        category: needsHuman
+        phase: decisionBlock ? "review" : "arbitration",
+        category: decisionBlock
           ? "policy"
           : winnerRun?.errored
             ? "harness_error"
@@ -4000,15 +4021,20 @@ export class Orchestrator {
         attemptId: winnerRun?.errored ? winnerRun.attemptId : undefined,
         safeMessage: needsHuman
           ? `review escalated to a human decision: ${result.decision.why_winner}`
-          : result.decision.why_winner,
+          : needsDecisionTerminal
+            ? `review blocked before apply: ${result.decision.why_winner}`
+            : result.decision.why_winner,
         rawDetailRef: winnerRun?.errored
           ? `attempts/${winnerRun.attemptId}/attempt.yaml`
           : undefined,
         runDir: paths.root,
-        nextActions: needsHuman
+        nextActions: decisionBlock
           ? [
               "Review the blocking findings on the run's turn",
               "Accept the risk to apply this exact patch, or discard the change",
+              ...(facts.checks === "failed"
+                ? ["Configure/approve the deterministic test command, then re-run"]
+                : []),
             ]
           : [
               "Open diagnostics",
@@ -5041,6 +5067,9 @@ export class Orchestrator {
         {
           spendUsd: ledger.spend(),
           estimatedSpend: lastRun.costEstimated || reviewSpendEstimated,
+          // QA-010b: settled cash + valuation (reviewer panel included).
+          cashUsd: ledger.spend(),
+          valuationUsd: ledger.valuation(),
         },
       );
       decision = arb.decision;

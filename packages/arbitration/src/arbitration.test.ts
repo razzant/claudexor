@@ -93,6 +93,20 @@ describe("arbitrate", () => {
     expect(res.decision.apply_recommendation).not.toBe("apply");
   });
 
+  it("carries the settled cash + subscription-valuation split onto the decision (QA-010b)", () => {
+    // Native-subscription route: cash is exactly 0 but ~$0.40 of valuation was
+    // used (candidate + reviewer panel). Both must reach the decision record.
+    const res = arbitrate([candidate("A")], {
+      spendUsd: 0,
+      estimatedSpend: true,
+      cashUsd: 0,
+      valuationUsd: 0.3982,
+    });
+    expect(res.decision.budget_summary.spend_usd).toBe(0);
+    expect(res.decision.budget_summary.cash_usd).toBe(0);
+    expect(res.decision.budget_summary.valuation_usd).toBeCloseTo(0.3982, 4);
+  });
+
   it("marks empty diffs as no_changes on a succeeded lifecycle instead of a clean apply", () => {
     const res = arbitrate([candidate("A", { diffBytes: 0, diffSize: 0 })]);
     expect(res.decision.facts.lifecycle).toBe("succeeded");

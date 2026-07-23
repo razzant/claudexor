@@ -233,7 +233,15 @@ function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseCompariso
  */
 export function arbitrate(
   candidates: CandidateEvidence[],
-  opts: { spendUsd?: number | null; estimatedSpend?: boolean } = {},
+  opts: {
+    spendUsd?: number | null;
+    estimatedSpend?: boolean;
+    /** QA-010b: settled cash vs subscription-valuation split from the ledger,
+     * so the decision record carries the reviewer-inclusive totals (not just
+     * the cash figure). */
+    cashUsd?: number | null;
+    valuationUsd?: number | null;
+  } = {},
 ): ArbitrationResult {
   if (candidates.length === 0) {
     return {
@@ -406,6 +414,8 @@ export function arbitrate(
     budget_summary: {
       spend_usd: opts.spendUsd ?? winner.costUsd ?? null,
       estimated: opts.estimatedSpend ?? false,
+      cash_usd: opts.cashUsd ?? null,
+      valuation_usd: opts.valuationUsd ?? null,
     },
     apply_recommendation: applyable
       ? noChanges

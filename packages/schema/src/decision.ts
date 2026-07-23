@@ -253,8 +253,28 @@ export const DecisionRecord = z
           .boolean()
           .default(false)
           .describe("True when any of the spend is token-derived rather than natively reported."),
+        // QA-010b: the settled CASH vs subscription-VALUATION split, so the
+        // terminal decision record is self-contained. `spend_usd` above is the
+        // cash figure (0 on native-subscription routes); `valuation_usd`
+        // carries the subscription-equivalent total INCLUDING the reviewer
+        // panel, which used to live only in raw events. Optional/nullable so
+        // older records and ledgerless paths stay valid.
+        cash_usd: z
+          .number()
+          .nullable()
+          .default(null)
+          .describe(
+            "Settled cash spend in USD (0 on native-subscription routes); null when unknown.",
+          ),
+        valuation_usd: z
+          .number()
+          .nullable()
+          .default(null)
+          .describe(
+            "Settled subscription-equivalent valuation in USD (includes the reviewer panel); null when unknown.",
+          ),
       })
-      .default({ spend_usd: null, estimated: false })
+      .default({ spend_usd: null, estimated: false, cash_usd: null, valuation_usd: null })
       .describe("Settled spend for the run; estimates are disclosed, never presented as exact."),
     apply_recommendation: ApplyRecommendation.default("inspect"),
     // Honest disclosure of WHAT verified an applyable run (gates, cross-family

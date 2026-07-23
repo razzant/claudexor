@@ -791,6 +791,17 @@ Endpoint semantics beyond the inventory:
   changing any component prevents spawn. CLI trust commands use this same
   boundary (`trust --grant-test '["pnpm","test"]'`). This backs the macOS one-click remedy on a
   trust-refused turn and the Settings trust section (list + revoke).
+  Two distinct authorities feed the deterministic gate set (QA-010): a run
+  request may also carry **explicit per-run operator test commands**
+  (the run request's typed `tests` field / CLI `--test '["npm","test"]'`), canonical
+  typed argv that become `trust_required:false` gates for that run's own
+  envelope. The operator authorized them by passing them, so they run without a
+  trust grant — that is the honest rule for a Create run, whose fresh project
+  (and its test script) does not exist until the run produces it, and which
+  therefore has no versioned config commands and no trust file to grant. Only
+  the versioned *project* commands (loaded from `.claudexor/config.yaml`) carry
+  `trust_required:true` and need the external grant above; the two sources merge
+  in `resolveContractGates`.
 - `POST /v2/runs/:id/decision` records a typed operator decision on a blocked run:
   `accept_risk` / `override_needs_human` append an auditable patch-hash-bound
   record to the owning global/project journal before ACK. The run artifact
