@@ -244,4 +244,83 @@ describe("arbitrate", () => {
     expect(res.ranking[0]?.label).toBe("A");
     expect(res.decision.why_winner).toContain("tests=100%");
   });
+
+  // QA-028: the decision record must carry the full per-candidate score tuple
+  // (every compared axis with values) and name the DECISIVE axis; a win on a
+  // tie-breaker axis must never collapse to "narrowly behind on tie-breakers".
+  describe("score-tuple transparency (QA-028)", () => {
+    // Real QA-028 fixture: leading axes tie, tool warnings differ (A=1, B=0).
+    const fixture = () => {
+      const a = candidate("A", { toolWarningsCount: 1, diffSize: 10, costUsd: 0.0377655 });
+      const b = candidate("B", { toolWarningsCount: 0, diffSize: 10, costUsd: 0 });
+      return arbitrate([a, b], { spendUsd: 0 });
+    };
+
+    it("names the decisive axis with both candidates' values", () => {
+      const res = fixture();
+      expect(res.decision.winner).toBe("B");
+      expect(res.decision.decisive_axis).not.toBeNull();
+      expect(res.decision.decisive_axis?.key).toBe("tool_warnings");
+      expect(res.decision.decisive_axis?.winner_value).toBe("0");
+      expect(res.decision.decisive_axis?.runner_up_value).toBe("1");
+    });
+
+    it("lists every ranking axis key in registry order", () => {
+      const res = fixture();
+      expect(res.decision.score_axes).toEqual([
+        "required_gates",
+        "acceptance_coverage",
+        "blockers",
+        "tests",
+        "clean_review",
+        "tool_warnings",
+        "diff_size",
+        "cost",
+      ]);
+    });
+
+    it("carries a full per-candidate scorecard with every axis value", () => {
+      const res = fixture();
+      const b = res.decision.ranking_scorecard.find((c) => c.attempt_id === "B");
+      const a = res.decision.ranking_scorecard.find((c) => c.attempt_id === "A");
+      expect(res.decision.ranking_scorecard.map((c) => c.attempt_id)).toEqual(["B", "A"]);
+      for (const key of res.decision.score_axes) {
+        expect(a?.axes[key]).toBeDefined();
+        expect(b?.axes[key]).toBeDefined();
+      }
+      expect(b?.axes["tool_warnings"]).toBe("0");
+      expect(a?.axes["tool_warnings"]).toBe("1");
+    });
+
+    it("why_not_others names the decisive tie-breaker axis, never bare prose", () => {
+      const res = fixture();
+      const reason = res.decision.why_not_others["A"] ?? "";
+      expect(reason).toContain("tool_warnings");
+      expect(reason).toContain("1");
+      expect(reason).not.toContain("narrowly behind on tie-breakers");
+    });
+
+    it("why_winner names the decisive axis", () => {
+      const res = fixture();
+      expect(res.decision.why_winner).toContain("tool_warnings");
+    });
+
+    it("pairwise serializes every ranking axis, including the decisive one", () => {
+      const res = fixture();
+      const pair = res.decision.winner ? res.pairwise[0] : undefined;
+      expect(pair).toBeDefined();
+      for (const key of res.decision.score_axes) {
+        expect(pair?.criteria[key]).toBeDefined();
+      }
+      expect(pair?.criteria["tool_warnings"]?.winner).not.toBe("tie");
+    });
+
+    it("an exact tie has no decisive axis (route-order disclosure stays)", () => {
+      const res = arbitrate([candidate("A"), candidate("B")]);
+      expect(res.decision.decisive_axis).toBeNull();
+      expect(
+        res.decision.final_checks.some((c) => c.includes("tie: winner chosen by route order")),
+      ).toBe(true);
+    });
+  });
 });

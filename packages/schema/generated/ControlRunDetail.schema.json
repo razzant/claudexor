@@ -1385,6 +1385,84 @@
                   "default": {},
                   "description": "Per-candidate reasons the others lost, keyed by candidate id."
                 },
+                "ranking_policy_version": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "default": 1,
+                  "description": "Version of the ranking axis registry the scorecard was produced under."
+                },
+                "score_axes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [],
+                  "description": "Every compared ranking axis key, in precedence (best-first) order."
+                },
+                "ranking_scorecard": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "attempt_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Candidate attempt id (stable key; labels may localize)."
+                      },
+                      "label": {
+                        "type": "string",
+                        "description": "Anonymized candidate label shown to the arbiter."
+                      },
+                      "axes": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "description": "Formatted value for every ranking axis, keyed by axis key."
+                      }
+                    },
+                    "required": [
+                      "attempt_id",
+                      "label",
+                      "axes"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "default": [],
+                  "description": "Per-candidate full ranking scorecard, in final ranking order."
+                },
+                "decisive_axis": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "description": "The first ranking axis that separated winner from runner-up."
+                        },
+                        "winner_value": {
+                          "type": "string",
+                          "description": "The winner's formatted value on the decisive axis."
+                        },
+                        "runner_up_value": {
+                          "type": "string",
+                          "description": "The runner-up's formatted value on the decisive axis."
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "winner_value",
+                        "runner_up_value"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "The axis that actually decided the winner vs the runner-up; null on an exact tie (route order decided, disclosed in final_checks)."
+                },
                 "accepted_risks": {
                   "type": "array",
                   "items": {

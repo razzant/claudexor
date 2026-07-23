@@ -186,6 +186,48 @@ export const DecisionRecord = z
       .record(z.string(), z.string())
       .default({})
       .describe("Per-candidate reasons the others lost, keyed by candidate id."),
+    // QA-028 transparency: the full, versioned ranking scorecard so a decision is
+    // self-contained. `score_axes` names every compared ranking axis in
+    // precedence order; `ranking_scorecard` carries every axis value for every
+    // candidate; `decisive_axis` names the FIRST axis that separated the winner
+    // from the runner-up (null on an exact tie, where route order — disclosed in
+    // final_checks — decided). Producer: arbitration. A hidden non-tie axis can
+    // no longer read as an unexplained pick among equals.
+    ranking_policy_version: z
+      .number()
+      .int()
+      .positive()
+      .default(1)
+      .describe("Version of the ranking axis registry the scorecard was produced under."),
+    score_axes: z
+      .array(z.string())
+      .default([])
+      .describe("Every compared ranking axis key, in precedence (best-first) order."),
+    ranking_scorecard: z
+      .array(
+        z.object({
+          attempt_id: Id.describe("Candidate attempt id (stable key; labels may localize)."),
+          label: z.string().describe("Anonymized candidate label shown to the arbiter."),
+          axes: z
+            .record(z.string(), z.string())
+            .describe("Formatted value for every ranking axis, keyed by axis key."),
+        }),
+      )
+      .default([])
+      .describe("Per-candidate full ranking scorecard, in final ranking order."),
+    decisive_axis: z
+      .object({
+        key: z.string().describe("The first ranking axis that separated winner from runner-up."),
+        winner_value: z.string().describe("The winner's formatted value on the decisive axis."),
+        runner_up_value: z
+          .string()
+          .describe("The runner-up's formatted value on the decisive axis."),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "The axis that actually decided the winner vs the runner-up; null on an exact tie (route order decided, disclosed in final_checks).",
+      ),
     accepted_risks: z
       .array(z.string())
       .default([])

@@ -77,18 +77,89 @@ function testEvidenceLabel(c: CandidateEvidence): string {
   return `${(effectiveTestFraction(c) * 100).toFixed(0)}%`;
 }
 
+/**
+ * The single ordered ranking-axis registry (QA-028 root cause #1). Ranking,
+ * the pairwise artifact, the winner/loser explanations, the decisive-axis
+ * disclosure, and the per-candidate scorecard ALL derive from this one list, so
+ * a new axis can never be added to the score tuple without also appearing in
+ * every evidence surface. `value` is higher-is-better (compared lexicographically,
+ * best-first); `format` is the human/machine value shown on every surface.
+ */
+interface RankingAxis {
+  key: string;
+  value: (c: CandidateEvidence) => number;
+  format: (c: CandidateEvidence) => string;
+}
+
+const AXES: RankingAxis[] = [
+  {
+    key: "required_gates",
+    value: (c) => (requiredGatesPassed(c) ? 1 : 0),
+    format: (c) => requiredGateLabel(c),
+  },
+  {
+    key: "acceptance_coverage",
+    value: (c) => acceptanceFraction(c),
+    format: (c) => acceptanceLabel(c),
+  },
+  {
+    key: "blockers",
+    value: (c) => -openBlockerCount(c),
+    format: (c) => `${openBlockerCount(c)}`,
+  },
+  {
+    key: "tests",
+    value: (c) => effectiveTestFraction(c),
+    format: (c) => testEvidenceLabel(c),
+  },
+  {
+    key: "clean_review",
+    value: (c) => (c.finalReviewClean ? 1 : 0),
+    format: (c) => `${c.finalReviewClean}`,
+  },
+  {
+    key: "tool_warnings",
+    value: (c) => -(c.toolWarningsCount ?? 0),
+    format: (c) => `${c.toolWarningsCount ?? 0}`,
+  },
+  {
+    key: "diff_size",
+    value: (c) => -(c.diffSize ?? 0),
+    format: (c) => `${c.diffSize ?? 0}`,
+  },
+  {
+    key: "cost",
+    value: (c) => -(c.costUsd ?? 0),
+    format: (c) => (c.costUsd === undefined ? "unknown" : `${c.costUsd}`),
+  },
+];
+
+/** The ordered ranking-axis keys, in precedence (best-first) order. */
+export function scoreAxisKeys(): string[] {
+  return AXES.map((a) => a.key);
+}
+
 /** Higher is better, compared lexicographically (evidence-first ordering). */
 export function scoreTuple(c: CandidateEvidence): number[] {
-  return [
-    requiredGatesPassed(c) ? 1 : 0, // hard gates
-    acceptanceFraction(c), // acceptance coverage
-    -openBlockerCount(c), // fewer accepted blockers
-    effectiveTestFraction(c), // deterministic test pass fraction
-    c.finalReviewClean ? 1 : 0, // final clean review
-    -(c.toolWarningsCount ?? 0), // cleaner tool hygiene
-    -(c.diffSize ?? 0), // simplicity
-    -(c.costUsd ?? 0), // cost
-  ];
+  return AXES.map((a) => a.value(c));
+}
+
+/** The first ranking axis on which two candidates differ, with both formatted
+ * values — the axis that actually decided the pair. Null on an exact tie. */
+function decisiveAxis(
+  winner: CandidateEvidence,
+  runnerUp: CandidateEvidence,
+): { key: string; winner_value: string; runner_up_value: string } | null {
+  for (const axis of AXES) {
+    if (axis.value(winner) !== axis.value(runnerUp)) {
+      return {
+        key: axis.key,
+        winner_value: axis.format(winner),
+        runner_up_value: axis.format(runnerUp),
+      };
+    }
+  }
+  return null;
 }
 
 function compareTuples(a: number[], b: number[]): number {
@@ -129,77 +200,24 @@ export interface ArbitrationResult {
   pairwise: PairwiseComparison[];
 }
 
-const CRITERIA: {
-  key: string;
-  better: (a: CandidateEvidence, b: CandidateEvidence) => "a" | "b" | "tie";
-}[] = [
-  {
-    key: "gates",
-    better: (a, b) =>
-      requiredGatesPassed(a) === requiredGatesPassed(b)
-        ? "tie"
-        : requiredGatesPassed(a)
-          ? "a"
-          : "b",
-  },
-  {
-    key: "gates_coverage",
-    better: (a, b) =>
-      acceptanceFraction(a) === acceptanceFraction(b)
-        ? "tie"
-        : acceptanceFraction(a) > acceptanceFraction(b)
-          ? "a"
-          : "b",
-  },
-  {
-    key: "blockers",
-    better: (a, b) =>
-      openBlockerCount(a) === openBlockerCount(b)
-        ? "tie"
-        : openBlockerCount(a) < openBlockerCount(b)
-          ? "a"
-          : "b",
-  },
-  {
-    key: "tests",
-    better: (a, b) =>
-      effectiveTestFraction(a) === effectiveTestFraction(b)
-        ? "tie"
-        : effectiveTestFraction(a) > effectiveTestFraction(b)
-          ? "a"
-          : "b",
-  },
-];
-
-/** Concrete per-criterion evidence values, so the persisted pairwise reason
- * says WHAT differed (not just which axis name was consulted). */
-function criterionValue(key: string, c: CandidateEvidence): string {
-  switch (key) {
-    case "gates":
-      return requiredGateLabel(c);
-    case "gates_coverage":
-      return `acceptance ${(acceptanceFraction(c) * 100).toFixed(0)}%`;
-    case "blockers":
-      return `${openBlockerCount(c)} open blocker(s)`;
-    case "tests":
-      return `tests ${testEvidenceLabel(c)}`;
-    default:
-      return key;
-  }
-}
-
 function requiredGateLabel(candidate: CandidateEvidence): string {
   if (!candidate.gates.some((gate) => gate.required)) return "required gates n/a (none configured)";
   return requiredGatesPassed(candidate) ? "required gates passed" : "required gates FAILED";
 }
 
+/** Pairwise comparison over EVERY ranking axis (QA-028 root cause #2): the
+ * persisted artifact now serializes the same axes the score tuple ranks by,
+ * with both candidates' concrete values, so the axis that actually decided the
+ * pair is never absent from the record. */
 function pairwise(a: CandidateEvidence, b: CandidateEvidence): PairwiseComparison {
   const criteria: PairwiseComparison["criteria"] = {};
-  for (const c of CRITERIA) {
-    const winner = c.better(a, b);
-    criteria[c.key] = {
+  for (const axis of AXES) {
+    const av = axis.value(a);
+    const bv = axis.value(b);
+    const winner = av === bv ? "tie" : av > bv ? "a" : "b";
+    criteria[axis.key] = {
       winner,
-      reason: `${a.label}: ${criterionValue(c.key, a)} vs ${b.label}: ${criterionValue(c.key, b)}`,
+      reason: `${a.label}: ${axis.format(a)} vs ${b.label}: ${axis.format(b)}`,
     };
   }
   return { candidate_a: a.label, candidate_b: b.label, criteria };
@@ -314,6 +332,10 @@ export function arbitrate(
     lifecycle === "succeeded" && review === "approved" && checks !== "failed" && !workVeto;
   const verificationBasis = applyable ? (gateVerified ? "both" : "cross_family_review") : "none";
 
+  // The decisive axis for the WINNER vs the runner-up: the first axis on which
+  // they differ (null on an exact tie, where route order decided).
+  const decisive = runnerUp ? decisiveAxis(winner, runnerUp) : null;
+
   const whyNot: Record<string, string> = {};
   for (const c of ranking.slice(1)) {
     const reasons: string[] = [];
@@ -324,8 +346,27 @@ export function arbitrate(
     if (effectiveTestFraction(c) < effectiveTestFraction(winner))
       reasons.push("weaker test evidence");
     if (!c.finalReviewClean) reasons.push("no clean final review");
-    whyNot[c.label] = reasons.length > 0 ? reasons.join("; ") : "narrowly behind on tie-breakers";
+    // QA-028 root cause #4: when a candidate lost purely on a tie-breaker axis,
+    // NAME that axis and both values instead of the opaque "narrowly behind on
+    // tie-breakers". The per-loser decisive axis is computed against the winner.
+    if (reasons.length === 0) {
+      const loserDecisive = decisiveAxis(winner, c);
+      whyNot[c.label] = loserDecisive
+        ? `lost on ${loserDecisive.key}: ${loserDecisive.runner_up_value} vs winner ${loserDecisive.winner_value}`
+        : "exact tie on every ranking axis; winner chosen by route order";
+    } else {
+      whyNot[c.label] = reasons.join("; ");
+    }
   }
+
+  // Full per-candidate scorecard, in final ranking order (QA-028 root cause #6):
+  // every ranking axis value for every candidate, so the decision is
+  // self-contained and no surface has to re-derive the tuple order from source.
+  const rankingScorecard = ranking.map((c) => ({
+    attempt_id: c.attemptId,
+    label: c.label,
+    axes: Object.fromEntries(AXES.map((axis) => [axis.key, axis.format(c)])),
+  }));
 
   const acceptedRisks = winner.findings
     .filter((f) => f.status === "accepted_risk")
@@ -334,8 +375,18 @@ export function arbitrate(
   const decision = DecisionRecordSchema.parse({
     winner: winner.attemptId,
     facts,
-    why_winner: `${winner.label}: gates=${requiredGateLabel(winner)}, gates_coverage=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}`,
+    why_winner: `${winner.label}: gates=${requiredGateLabel(winner)}, gates_coverage=${acceptanceLabel(winner)}, blockers=${openBlockerCount(winner)}, tests=${testEvidenceLabel(winner)}, cleanReview=${winner.finalReviewClean}${
+      decisive
+        ? `; decisive_axis=${decisive.key} (${decisive.winner_value} vs ${decisive.runner_up_value})`
+        : runnerUp
+          ? "; exact tie on every ranking axis, winner chosen by route order"
+          : ""
+    }`,
     why_not_others: whyNot,
+    ranking_policy_version: 1,
+    score_axes: scoreAxisKeys(),
+    ranking_scorecard: rankingScorecard,
+    decisive_axis: decisive,
     accepted_risks: acceptedRisks,
     final_checks: [
       requiredGateLabel(winner),
