@@ -7,7 +7,7 @@ import {
   type DaemonRunRecord,
   type ControlOperatorDecisionRecord,
 } from "./daemon-server.js";
-import { producedRepoRoot } from "./artifact-serve-routes.js";
+import { producedRepoRoot, resolveProducedRoot } from "./artifact-serve-routes.js";
 import { unboundRunStartResponse } from "./run-start.js";
 import { OPERATION_CATALOG } from "./operation-catalog.js";
 import { eventsParseCountForTests, resetEventsParseCountForTests } from "./run-timeline.js";
@@ -931,6 +931,156 @@ describe("DaemonControlApiServer", () => {
       });
       expect(esc.status).toBe(404);
     });
+  });
+
+  // QA-038: an isolated-thread run's produced outputs live in its persistent
+  // per-thread worktree (the tree it actually mutated), NOT the mutable live
+  // project. The live project stays untouched until an explicit thread apply, so
+  // reading it attributes pre-existing/future project files to the run and 404s
+  // the file the run created.
+  it("resolveProducedRoot redirects an isolated run to its worktree, never the live project", async () => {
+    const liveRoot = "/Users/x/proj";
+    const worktree = "/tmp/does-not-exist-worktree-marker";
+    const rec = {
+      id: "j",
+      state: "succeeded",
+      params: { scope: { kind: "project", root: liveRoot }, threadId: "th-iso" },
+    };
+    // in_place thread OR non-thread run stays on the live project root.
+    expect(await resolveProducedRoot(rec, async () => ({ mode: "in_place", worktreePath: null }))).toEqual(
+      { kind: "root", root: liveRoot },
+    );
+    expect(await resolveProducedRoot(rec)).toEqual({ kind: "root", root: liveRoot });
+    // Isolated with a live worktree dir → that worktree, not the project.
+    expect(
+      await resolveProducedRoot(rec, async () => ({ mode: "isolated", worktreePath: tmpdir() })),
+    ).toEqual({ kind: "root", root: tmpdir() });
+    // Isolated but the worktree was purged (worktree_path nulled) → typed answer.
+    expect(
+      await resolveProducedRoot(rec, async () => ({ mode: "isolated", worktreePath: null })),
+    ).toEqual({ kind: "worktree_unavailable", threadId: "th-iso", reason: "worktree_not_retained" });
+    // Isolated but the worktree directory is gone from disk → typed answer.
+    expect(
+      await resolveProducedRoot(rec, async () => ({ mode: "isolated", worktreePath: worktree })),
+    ).toEqual({ kind: "worktree_unavailable", threadId: "th-iso", reason: "worktree_missing" });
+    // No-project fence still holds even when a thread resolver is present.
+    expect(
+      await resolveProducedRoot(
+        { id: "j", state: "succeeded", params: { scope: { kind: "none" }, threadId: "th-iso" } },
+        async () => ({ mode: "isolated", worktreePath: tmpdir() }),
+      ),
+    ).toEqual({ kind: "no_project" });
+  });
+
+  it("GET /runs/:id/produced for an isolated run serves the worktree and hides live-project files", async () => {
+    const { daemon, record } = fakeDaemon();
+    const liveRoot = reapMk(join(tmpdir(), "claudexor-iso-live-"));
+    const worktree = reapMk(join(tmpdir(), "claudexor-iso-tree-"));
+    // The live project holds an UNRELATED older artifact; the run must not claim it.
+    mkdirSync(join(liveRoot, "artifacts"), { recursive: true });
+    writeFileSync(join(liveRoot, "artifacts", "live-old.md"), "# live project, another run\n");
+    // The isolated worktree holds the file THIS run actually created.
+    mkdirSync(join(worktree, "artifacts"), { recursive: true });
+    writeFileSync(join(worktree, "artifacts", "thread-isolated-note.md"), "ISOLATED_THREAD_OK\n");
+    record.params = { mode: "agent", scope: { kind: "project", root: liveRoot }, threadId: "th-iso" };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async (id: string) => ({
+        thread: { id, workspace: { mode: "isolated", worktree_path: worktree } },
+        sessions: [],
+        turns: [],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const list = (await (
+          await apiFetch(`${base}/runs/run-d1/produced`, {
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json()) as { artifacts: { path: string }[] };
+        expect(list.artifacts.some((a) => a.path === "thread-isolated-note.md")).toBe(true);
+        expect(list.artifacts.some((a) => a.path === "live-old.md")).toBe(false);
+        // The created file is fetchable through the run id.
+        const created = await apiFetch(`${base}/runs/run-d1/produced/thread-isolated-note.md`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(created.status).toBe(200);
+        expect(await created.text()).toContain("ISOLATED_THREAD_OK");
+        // A live-project file this run never produced is 404, not silently served.
+        const live = await apiFetch(`${base}/runs/run-d1/produced/live-old.md`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(live.status).toBe(404);
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("GET /runs/:id/produced for an isolated run whose worktree was purged answers a typed 410", async () => {
+    const { daemon, record } = fakeDaemon();
+    const liveRoot = reapMk(join(tmpdir(), "claudexor-iso-purged-"));
+    mkdirSync(join(liveRoot, "artifacts"), { recursive: true });
+    writeFileSync(join(liveRoot, "artifacts", "live-old.md"), "# unrelated live file\n");
+    record.params = { mode: "agent", scope: { kind: "project", root: liveRoot }, threadId: "th-gone" };
+    // Purge nulls the thread's worktree_path (the record survives for diagnosis).
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async (id: string) => ({
+        thread: { id, workspace: { mode: "isolated", worktree_path: null } },
+        sessions: [],
+        turns: [],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const list = await apiFetch(`${base}/runs/run-d1/produced`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(list.status).toBe(410);
+        // The typed answer flows through the standard ControlProblem envelope:
+        // code + human message, with the machine reason/thread in context.
+        expect(await list.json()).toMatchObject({
+          code: "isolated_worktree_unavailable",
+          context: { reason: "worktree_not_retained", thread_id: "th-gone" },
+        });
+        // Fetch must ALSO refuse — never fall back to the live project directory.
+        const fetch = await apiFetch(`${base}/runs/run-d1/produced/live-old.md`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        expect(fetch.status).toBe(410);
+      },
+      undefined,
+      services,
+    );
+  });
+
+  it("GET /runs/:id/produced for an IN-PLACE thread run keeps the live project root", async () => {
+    const { daemon, record } = fakeDaemon();
+    const liveRoot = reapMk(join(tmpdir(), "claudexor-inplace-live-"));
+    mkdirSync(join(liveRoot, "artifacts"), { recursive: true });
+    writeFileSync(join(liveRoot, "artifacts", "in-place.md"), "# in-place output\n");
+    record.params = { mode: "agent", scope: { kind: "project", root: liveRoot }, threadId: "th-live" };
+    const services: DaemonControlApiOptions["services"] = {
+      threadDetail: async (id: string) => ({
+        thread: { id, workspace: { mode: "in_place", worktree_path: null } },
+        sessions: [],
+        turns: [],
+      }),
+    };
+    await withDaemonServer(
+      daemon,
+      async (base) => {
+        const list = (await (
+          await apiFetch(`${base}/runs/run-d1/produced`, {
+            headers: { authorization: `Bearer ${token}` },
+          })
+        ).json()) as { artifacts: { path: string }[] };
+        expect(list.artifacts.some((a) => a.path === "in-place.md")).toBe(true);
+      },
+      undefined,
+      services,
+    );
   });
 
   it("GET /projects/:id/outputs lists the project's durable outputs, serves files, and blocks traversal", async () => {

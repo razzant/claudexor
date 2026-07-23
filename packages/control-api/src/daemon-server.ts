@@ -62,6 +62,7 @@ import {
   handleArtifactServeRoute,
   listArtifacts,
   resolveProjectRoot,
+  type ResolvedThreadWorkspace,
 } from "./artifact-serve-routes.js";
 import { requiredGateSpecsFromTaskArtifact } from "./task-contract-gates.js";
 import { assertOnlyQueryParams, optionalBooleanQuery } from "./query.js";
@@ -1022,6 +1023,7 @@ export class DaemonControlApiServer {
         {
           findRun: (id) => this.findRun(id),
           resolveProjectRoot: (id) => resolveProjectRoot(this.opts.services?.listProjects, id),
+          resolveThreadWorkspace: (id) => this.resolveThreadWorkspace(id),
           json: (response, status, body) => this.json(response, status, body),
         },
         method,
@@ -1819,6 +1821,32 @@ export class DaemonControlApiServer {
   private async findRun(id: string): Promise<DaemonRunRecord | null> {
     const runs = await this.opts.daemon.list();
     return runs.find((r) => r.id === id || r.runId === id) ?? null;
+  }
+
+  /** Resolve a thread's workspace record (mode + isolated worktree path) from the
+   * thread journal — the honest source for QA-038 isolated /produced resolution.
+   * Trashed/purged threads are retained by getThread (purge nulls worktree_path),
+   * so an isolated run's execution tree is diagnosable, never silently the live
+   * project. Absent service or an unknown thread ⇒ null (non-thread fallback). */
+  private async resolveThreadWorkspace(
+    threadId: string,
+  ): Promise<ResolvedThreadWorkspace | null> {
+    const svc = this.opts.services?.threadDetail;
+    if (!svc) return null;
+    try {
+      const { thread } = await svc(threadId);
+      const ws = (thread as { workspace?: { mode?: unknown; worktree_path?: unknown } })?.workspace;
+      if (!ws) return null;
+      return {
+        mode: ws.mode === "isolated" ? "isolated" : "in_place",
+        worktreePath:
+          typeof ws.worktree_path === "string" && ws.worktree_path.trim() ? ws.worktree_path : null,
+      };
+    } catch {
+      // A missing thread (404) or unavailable store must not 500 the artifact
+      // route; a non-thread fallback keeps in-place/one-shot runs unaffected.
+      return null;
+    }
   }
 
   private operatorDecisionFor(rec: DaemonRunRecord): ControlOperatorDecisionRecord | null {

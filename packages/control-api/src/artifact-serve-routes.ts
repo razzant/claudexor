@@ -21,11 +21,25 @@ import type { DaemonRunRecord } from "./daemon-server.js";
 const MAX_ARTIFACT_FETCH_BYTES = 4 * 1024 * 1024;
 const MAX_ARTIFACT_BINARY_FETCH_BYTES = 32 * 1024 * 1024;
 
+/** Server-owned workspace facts for a thread, taken from its journal record:
+ *  the mode and, for an isolated thread, the persistent worktree path (pinned by
+ *  the `claudexor/thread-*` branch) where its turns actually executed. */
+export interface ResolvedThreadWorkspace {
+  mode: "in_place" | "isolated";
+  /** The isolated thread's persistent worktree; null once purged (or before the
+   *  first write turn materializes it). */
+  worktreePath: string | null;
+}
+
 export interface ArtifactServeContext {
   findRun(id: string): Promise<DaemonRunRecord | null | undefined>;
   /** Resolve a registered project id to its canonical repo root (null when the
    *  project is unknown or the build has no project registry). */
   resolveProjectRoot?(id: string): Promise<string | null>;
+  /** Resolve a thread id to its workspace record (mode + isolated worktree
+   *  path). Absent when the build has no thread store; null when the thread
+   *  record cannot be found. Feeds the QA-038 isolated-produced fix. */
+  resolveThreadWorkspace?(id: string): Promise<ResolvedThreadWorkspace | null>;
   json(res: ServerResponse, status: number, body: unknown): void;
 }
 
@@ -102,8 +116,11 @@ export async function handleArtifactServeRoute(
   if (method === "GET" && producedRootMatch) {
     const rec = await ctx.findRun(decodeURIComponent(producedRootMatch[1] as string));
     if (!rec?.runDir) return (ctx.json(res, 404, { error: "no such run" }), true);
-    const repoRoot = producedRepoRoot(rec);
-    const artifacts = repoRoot ? listArtifacts(join(repoRoot, "artifacts")) : [];
+    const resolved = await resolveProducedRoot(rec, ctx.resolveThreadWorkspace);
+    if (resolved.kind === "worktree_unavailable")
+      return (ctx.json(res, 410, isolatedWorktreeUnavailableBody(resolved)), true);
+    const artifacts =
+      resolved.kind === "root" ? listArtifacts(join(resolved.root, "artifacts")) : [];
     ctx.json(
       res,
       200,
@@ -116,10 +133,13 @@ export async function handleArtifactServeRoute(
   if (method === "GET" && producedFetchMatch) {
     const rec = await ctx.findRun(decodeURIComponent(producedFetchMatch[1] as string));
     if (!rec?.runDir) return (ctx.json(res, 404, { error: "no such run" }), true);
-    const repoRoot = producedRepoRoot(rec);
-    if (!repoRoot) return (ctx.json(res, 404, { error: "no project root for run" }), true);
+    const resolved = await resolveProducedRoot(rec, ctx.resolveThreadWorkspace);
+    if (resolved.kind === "worktree_unavailable")
+      return (ctx.json(res, 410, isolatedWorktreeUnavailableBody(resolved)), true);
+    if (resolved.kind !== "root")
+      return (ctx.json(res, 404, { error: "no project root for run" }), true);
     const target = safeArtifactPath(
-      join(repoRoot, "artifacts"),
+      join(resolved.root, "artifacts"),
       decodeURIComponent(producedFetchMatch[2] as string),
     );
     serveArtifactFile(ctx, res, target);
@@ -218,12 +238,87 @@ export function listArtifacts(root: string): ControlArtifactInfo[] {
 /** A run's project root, taken from its TYPED scope — NOT by path-slicing the
  *  runDir. Slicing on `.claudexor` would resolve a no-project run (whose run dir
  *  is `~/.claudexor/v3/runs/<id>`) to the user's HOME and let /produced list
- *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs. */
+ *  `~/artifacts` (review-flagged). Null for scope `none` ⇒ no produced outputs.
+ *
+ *  This is the LIVE PROJECT root — correct for an in-place run, but NOT the tree
+ *  an ISOLATED-thread run actually mutated. Route resolution goes through
+ *  `resolveProducedRoot`, which redirects an isolated run to its own worktree. */
 export function producedRepoRoot(rec: DaemonRunRecord): string | null {
   const scope = (rec.params as { scope?: { kind?: string; root?: string } } | undefined)?.scope;
   return scope?.kind === "project" && typeof scope.root === "string" && scope.root.trim()
     ? scope.root
     : null;
+}
+
+/** The thread this run was bound to, from its typed request params (never a
+ *  caller-suppliable execution root). Null for a non-thread one-shot. */
+function producedThreadId(rec: DaemonRunRecord): string | null {
+  const threadId = (rec.params as { threadId?: unknown } | undefined)?.threadId;
+  return typeof threadId === "string" && threadId.trim() ? threadId : null;
+}
+
+/**
+ * Where a run's produced `artifacts/` outputs actually live (QA-038).
+ *
+ * An ISOLATED-thread run executes in a persistent per-thread git worktree
+ * (pinned by the `claudexor/thread-*` branch), NOT in the live project — the
+ * project stays untouched until an explicit thread apply. So its produced
+ * outputs must be read from that worktree. Reading the live project instead
+ * attributes pre-existing/future project files to the run and 404s the file the
+ * run actually created.
+ *
+ * An in-place run and a non-thread one-shot keep the live project root (correct
+ * today). An isolated thread whose worktree was purged/trashed (or never
+ * materialized) resolves to `worktree_unavailable` — a typed answer naming the
+ * reason, NEVER a silent fallback to the live project.
+ */
+export type ProducedRootResolution =
+  | { kind: "root"; root: string }
+  | { kind: "no_project" }
+  | { kind: "worktree_unavailable"; threadId: string; reason: WorktreeUnavailableReason };
+
+type WorktreeUnavailableReason = "worktree_not_retained" | "worktree_missing";
+
+export async function resolveProducedRoot(
+  rec: DaemonRunRecord,
+  resolveThreadWorkspace?: ArtifactServeContext["resolveThreadWorkspace"],
+): Promise<ProducedRootResolution> {
+  const projectRoot = producedRepoRoot(rec);
+  if (!projectRoot) return { kind: "no_project" };
+  const threadId = producedThreadId(rec);
+  if (threadId && resolveThreadWorkspace) {
+    const workspace = await resolveThreadWorkspace(threadId);
+    if (workspace?.mode === "isolated") {
+      const worktree = workspace.worktreePath;
+      // Purge nulls worktree_path (and removes the tree); a never-written
+      // isolated thread also has none. Either way there is no run-owned tree to
+      // serve — answer typed, do not leak the live project.
+      if (!worktree) return { kind: "worktree_unavailable", threadId, reason: "worktree_not_retained" };
+      if (!existsSync(worktree))
+        return { kind: "worktree_unavailable", threadId, reason: "worktree_missing" };
+      return { kind: "root", root: worktree };
+    }
+  }
+  return { kind: "root", root: projectRoot };
+}
+
+/** The honest answer when an isolated run's worktree is gone: the run existed
+ *  and ran, but its execution tree is no longer retained — a typed 410 naming
+ *  the reason, never a fresh live-project snapshot under this run id (QA-038). */
+function isolatedWorktreeUnavailableBody(resolved: {
+  threadId: string;
+  reason: WorktreeUnavailableReason;
+}): { error: string; code: string; reason: string; thread_id: string } {
+  const detail =
+    resolved.reason === "worktree_not_retained"
+      ? "its isolated worktree was purged or never materialized"
+      : "its isolated worktree directory is no longer on disk";
+  return {
+    error: `isolated thread ${resolved.threadId} has no retained worktree for produced outputs (${detail})`,
+    code: "isolated_worktree_unavailable",
+    reason: resolved.reason,
+    thread_id: resolved.threadId,
+  };
 }
 
 function contentType(path: string): string {
