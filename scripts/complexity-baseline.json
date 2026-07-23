@@ -22,8 +22,8 @@
   "packages/harness-cursor/src/index.ts": 803,
   "packages/journal/src/index.ts": 544,
   "packages/mcp-server/src/index.ts": 701,
-  "packages/orchestrator/src/attemptTelemetry.ts": 640,
-  "packages/orchestrator/src/orchestrator.ts": 6699,
+  "packages/orchestrator/src/attemptTelemetry.ts": 658,
+  "packages/orchestrator/src/orchestrator.ts": 6783,
   "packages/review/src/reviewEngine.ts": 1396,
   "packages/schema/src/control.ts": 1631,
   "packages/schema/src/harness.ts": 1071

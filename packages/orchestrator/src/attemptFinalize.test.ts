@@ -14,13 +14,41 @@ const needsInput: WorkReport = {
   required_inputs: [{ kind: "decision", locator: "db-backend", description: "which db?" }],
 };
 
-const ACTIVE: WorkReportEnvelopeMode = { active: true, source: "constrained", hasCallerSchema: false };
+const ACTIVE: WorkReportEnvelopeMode = {
+  active: true,
+  source: "constrained",
+  hasCallerSchema: false,
+  channel: "constrained_json",
+  instruction: null,
+};
 const ACTIVE_SCHEMA: WorkReportEnvelopeMode = {
   active: true,
   source: "constrained",
   hasCallerSchema: true,
+  channel: "constrained_json",
+  instruction: null,
 };
-const INACTIVE: WorkReportEnvelopeMode = { active: false, source: "absent", hasCallerSchema: false };
+const INACTIVE: WorkReportEnvelopeMode = {
+  active: false,
+  source: "absent",
+  hasCallerSchema: false,
+  channel: "constrained_json",
+  instruction: null,
+};
+const SIDE_TOOL: WorkReportEnvelopeMode = {
+  active: true,
+  source: "constrained",
+  hasCallerSchema: false,
+  channel: "side_tool",
+  instruction: null,
+};
+const FENCE: WorkReportEnvelopeMode = {
+  active: true,
+  source: "validated",
+  hasCallerSchema: false,
+  channel: "instructed_fence",
+  instruction: "…",
+};
 
 describe("resolveWorkReportEnvelope (D-16 spec-build decision)", () => {
   it("wraps a caller schema on a constrained final_message route", () => {
@@ -31,7 +59,13 @@ describe("resolveWorkReportEnvelope (D-16 spec-build decision)", () => {
       interactive: false,
       callerSchema: { type: "object", properties: { x: { type: "string" } } },
     });
-    expect(mode).toEqual({ active: true, source: "constrained", hasCallerSchema: true });
+    expect(mode).toEqual({
+      active: true,
+      source: "constrained",
+      hasCallerSchema: true,
+      channel: "constrained_json",
+      instruction: null,
+    });
     expect(outputSchema).toMatchObject({
       type: "object",
       required: ["work_report", "output"],
@@ -59,7 +93,7 @@ describe("resolveWorkReportEnvelope (D-16 spec-build decision)", () => {
     expect(outputSchema?.["required"]).toEqual(["work_report", "output"]);
   });
 
-  it("leaves claude's no-caller side_tool case INACTIVE (D-16c seam)", () => {
+  it("activates claude's no-caller side_tool case with a {work_report}-only schema (D-16c)", () => {
     const { outputSchema, mode } = resolveWorkReportEnvelope({
       transport: "constrained",
       channel: "side_tool",
@@ -67,8 +101,13 @@ describe("resolveWorkReportEnvelope (D-16 spec-build decision)", () => {
       interactive: false,
       callerSchema: null,
     });
-    expect(mode.active).toBe(false);
-    expect(outputSchema).toBeUndefined();
+    expect(mode.active).toBe(true);
+    expect(mode.channel).toBe("side_tool");
+    expect(mode.source).toBe("constrained");
+    // A {work_report}-ONLY envelope: no `output` half, so the markdown final
+    // message stays the deliverable.
+    expect(outputSchema?.["required"]).toEqual(["work_report"]);
+    expect(outputSchema?.["properties"]).not.toHaveProperty("output");
   });
 
   it("activates side_tool WITH a caller schema (claude enveloped answer)", () => {
@@ -93,7 +132,7 @@ describe("resolveWorkReportEnvelope (D-16 spec-build decision)", () => {
     expect(mode.active).toBe(false);
   });
 
-  it("leaves validated routes (cursor) INACTIVE in D-16b (adapter instruction is D-16c)", () => {
+  it("activates validated routes (cursor) with an instructed fenced envelope (D-16c)", () => {
     const { outputSchema, mode } = resolveWorkReportEnvelope({
       transport: "validated",
       channel: "final_message",
@@ -101,7 +140,11 @@ describe("resolveWorkReportEnvelope (D-16 spec-build decision)", () => {
       interactive: false,
       callerSchema: null,
     });
-    expect(mode.active).toBe(false);
+    expect(mode.active).toBe(true);
+    expect(mode.channel).toBe("instructed_fence");
+    expect(mode.source).toBe("validated");
+    // No native schema constrains cursor — the envelope rides an instruction.
+    expect(mode.instruction).toBeTruthy();
     expect(outputSchema).toBeUndefined();
   });
 
@@ -179,6 +222,59 @@ describe("unwrapWorkReportEnvelope", () => {
     const r = unwrapWorkReportEnvelope(text, ACTIVE);
     expect(r.deliverable).toBe("ok");
     expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
+  });
+
+  // D-16c side_tool (claude): the markdown answer IS the deliverable; the report
+  // rides the tool payload the caller extracted from telemetry.
+  it("side_tool: markdown stays the deliverable, tool payload is the report", () => {
+    const r = unwrapWorkReportEnvelope("# The markdown answer", SIDE_TOOL, {
+      sideToolReport: completed,
+    });
+    expect(r.deliverable).toBe("# The markdown answer");
+    expect(r.workReport).toEqual(completed);
+    expect(r.source).toBe("constrained");
+    expect(r.contractViolation).toBeNull();
+  });
+
+  it("side_tool: a missing tool report is a typed contract violation", () => {
+    const r = unwrapWorkReportEnvelope("# answer", SIDE_TOOL, {});
+    expect(r.contractViolation).toMatch(/StructuredOutput tool did not carry a work_report/);
+    // The markdown deliverable is still preserved for inspection.
+    expect(r.deliverable).toBe("# answer");
+  });
+
+  it("side_tool: a malformed tool report is a typed contract violation", () => {
+    const r = unwrapWorkReportEnvelope("# answer", SIDE_TOOL, {
+      sideToolReport: { state: "bogus" },
+    });
+    expect(r.contractViolation).toMatch(/work_report missing or malformed/);
+  });
+
+  // D-16c instructed_fence (cursor): the envelope is the LAST fenced JSON block.
+  it("instructed_fence: parses the last fenced JSON block, prose before it discarded", () => {
+    const answer = [
+      "Here is my summary of what I did.",
+      "```json",
+      JSON.stringify({ work_report: completed, output: "final deliverable text" }),
+      "```",
+    ].join("\n");
+    const r = unwrapWorkReportEnvelope(answer, FENCE);
+    expect(r.deliverable).toBe("final deliverable text");
+    expect(r.workReport).toEqual(completed);
+    expect(r.source).toBe("validated");
+    expect(r.contractViolation).toBeNull();
+  });
+
+  it("instructed_fence: no fenced block is a typed contract violation (validated route)", () => {
+    const r = unwrapWorkReportEnvelope("just prose, no fence", FENCE);
+    expect(r.contractViolation).toMatch(/no fenced work_report envelope/);
+  });
+
+  it("instructed_fence: a needs_input envelope carries required_inputs", () => {
+    const answer = "```json\n" + JSON.stringify({ work_report: needsInput, output: "" }) + "\n```";
+    const r = unwrapWorkReportEnvelope(answer, FENCE);
+    expect(r.workReport?.state).toBe("needs_input");
+    expect(r.workReport?.required_inputs).toHaveLength(1);
   });
 });
 

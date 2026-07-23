@@ -105,6 +105,15 @@ export interface AttemptTelemetry {
   /** D-16: a terminal `capacity_exhausted` context signal was observed this
    * attempt (never a transient; consumed by the finalizer, not the retry loop). */
   contextExhausted: boolean;
+  /** D-16d: the typed cause of the terminal capacity exhaustion (last-wins),
+   * or null when none observed. The continuation controller keys eligibility on
+   * `repeated_refill` (claude's rapid-refill breaker), never on `prompt_too_long`
+   * (an irreducible packet). */
+  contextExhaustedCause: NonNullable<HarnessEvent["context"]>["cause"] | null;
+  /** D-16c: the raw `{work_report}` payload a `side_tool` route surfaced on its
+   * final message (claude StructuredOutput tool), or null. The unwrap validates
+   * it while the markdown answer stays the deliverable. */
+  sideToolWorkReport: unknown;
   /** Contract/outcome truth for this attempt, produced by the orchestrator. */
   outcome: AttemptOutcomeState | null;
   /** Token usage summed across this attempt's usage events (money stays in the
@@ -164,6 +173,8 @@ export function createAttemptTelemetry(
       toolEvidence: false,
     },
     contextExhausted: false,
+    contextExhaustedCause: null,
+    sideToolWorkReport: null,
     outcome: null,
     usage: { inputTokens: null, outputTokens: null, cachedInputTokens: null },
     usageCost: { cashUsd: 0, valuationUsd: 0, unknownUsd: 0 },
@@ -280,7 +291,14 @@ export function observeAttemptTelemetry(t: AttemptTelemetry, ev: HarnessEvent): 
   // D-16 context signal: a terminal capacity_exhausted marks the attempt for the
   // finalizer's interrupted/context_capacity_exhausted mapping. Context signals
   // NEVER enter the transient-retry loop (they are not transient failures).
-  if (ev.context?.kind === "capacity_exhausted") t.contextExhausted = true;
+  if (ev.context?.kind === "capacity_exhausted") {
+    t.contextExhausted = true;
+    t.contextExhaustedCause = ev.context.cause ?? null;
+  }
+  // D-16c side_tool: capture the raw work_report the StructuredOutput tool
+  // surfaced on the final message (last-wins). The unwrap validates it.
+  const sideTool = ev.payload?.["work_report_side_tool"];
+  if (sideTool !== undefined) t.sideToolWorkReport = sideTool;
   // Token usage: SUM across the attempt's usage events (single-event adapters
   // sum == last-wins; codex per-turn needs the sum). Money is the ledger's job.
   if (ev.type === "usage" && ev.usage) {

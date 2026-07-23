@@ -1,5 +1,11 @@
 import type { HarnessEvent, ToolKind, ToolRef } from "@claudexor/schema";
 import { nowIso, redactSecrets } from "@claudexor/util";
+import {
+  claudeCompactBoundaryEvents,
+  claudeRateLimitEvents,
+  claudeResultMessageEvents,
+  claudeTerminalContextEvent,
+} from "./context-signals.js";
 
 type Json = any;
 
@@ -171,6 +177,12 @@ function parseClaudeEventStateful(
     }
     return [ev];
   }
+
+  // D-16c typed context / rate-limit signal frames (mapping lives in
+  // context-signals.ts so each concern stays a small owner).
+  if (type === "system" && obj.subtype === "compact_boundary")
+    return claudeCompactBoundaryEvents(obj, sessionId, ts);
+  if (type === "rate_limit_event") return claudeRateLimitEvents(obj, sessionId, ts);
 
   if (type === "assistant") {
     // Subagent traffic (parent_tool_use_id set) is NOT the main conversation
@@ -359,40 +371,14 @@ function parseClaudeEventStateful(
         cost_usd: numberOrUndef(obj.total_cost_usd),
       },
     });
-    // Structured-output runs (--json-schema): the typed `structured_output`
-    // value IS the answer — surface it verbatim as the final message so the
-    // engine's single validator receives pure JSON (never the prose result,
-    // which may narrate around it).
-    // Finality is claimed ONLY for a SUCCESS result (review sol #1): a
-    // `subtype:"error_*"` result carries partial/aborted text that must never
-    // win in AnswerAssembly as the authoritative answer — it rides as a plain
-    // message (and the error branch below marks the run) instead.
-    const successResult = !obj.subtype || obj.subtype === "success";
-    if (obj.structured_output !== undefined && obj.structured_output !== null) {
-      out.push({
-        type: "message",
-        session_id: sessionId,
-        ts,
-        text: JSON.stringify(obj.structured_output),
-        // The final_source stamp is the machine-checkable identity of the
-        // wire event finality came from (conformance asserts it per fixture).
-        ...(successResult ? { final: true } : {}),
-        payload: {
-          structured_output: true,
-          ...(successResult ? { final_source: "structured_output" } : {}),
-        },
-      });
-    } else if (typeof obj.result === "string" && obj.result.trim()) {
-      // The terminal `result` IS claude's typed final answer (docs: "the last
-      // line of the stream is a result message with the final response text").
-      out.push({
-        type: "message",
-        session_id: sessionId,
-        ts,
-        text: obj.result,
-        ...(successResult ? { final: true, payload: { final_source: "result" } } : {}),
-      });
-    }
+    // Finality is claimed ONLY for a SUCCESS result (review sol #1); an
+    // `is_error:true` result (e.g. terminal_reason:"prompt_too_long", still
+    // labeled subtype:"success") carries error prose, not a deliverable — it
+    // rides as a plain message and the context event below marks it. The
+    // final-message emission (structured_output / result / side_tool) lives in
+    // context-signals.ts.
+    const successResult = (!obj.subtype || obj.subtype === "success") && obj.is_error !== true;
+    for (const ev of claudeResultMessageEvents(obj, successResult, sessionId, ts)) out.push(ev);
     if (obj.subtype && obj.subtype !== "success") {
       // `error_max_turns` is NOT a run failure: the turn ended because it hit the
       // configured --max-turns ceiling, with all partial work already streamed
@@ -428,6 +414,10 @@ function parseClaudeEventStateful(
         });
       }
     }
+    // D-16c: map the FIXTURE-PROVEN terminal_reason onto a typed context event
+    // (null for completed/unrecognized — no prose matching).
+    const contextEvent = claudeTerminalContextEvent(obj.terminal_reason, sessionId, ts);
+    if (contextEvent) out.push(contextEvent);
     return out;
   }
 
@@ -458,7 +448,11 @@ function parseClaudeEventStateful(
     return [];
   }
 
-  if (type === "system") return []; // recognized but uninteresting system subtypes
+  // recognized but uninteresting system subtypes (incl. 2.1.165's
+  // `post_turn_summary` review-status frame): known plumbing, never counted as
+  // a dropped event. The SIGNAL-bearing system subtype (`compact_boundary`) is
+  // handled above.
+  if (type === "system") return [];
 
   // Control-protocol plumbing frames. Incoming control_requests are consumed
   // by the interactive session handler BEFORE this parser; responses to OUR
