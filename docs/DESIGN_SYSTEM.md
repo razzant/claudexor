@@ -551,23 +551,33 @@ frequency and volume are. The contracts:
     light-theme contrast. The assistant's final-answer bubble stays the NEUTRAL
     graphite `surfaceRaisedHi` — the visible hue gap between the two is the
     differentiator (`BubbleTokenTests` pins their sRGB separation and the user
-    bubble's blue-lead in both themes). **Calibrated translucency + AA guarantee:**
-    both bubbles carry `Theme.bubbleTranslucency` (`0.82` — 18% backdrop bleed,
-    PERCEPTIBLE where the old 0.92 read solid) on the FILL/BACKGROUND only, never
-    the text (which stays fully opaque). Because a translucent fill sits over a
-    variable frosted backdrop, the tints are chosen so the effective worst-case
-    contrast of the primary label still clears WCAG AA (≥4.5:1) in BOTH themes —
-    computed at the nominal frost AND the pessimistic full-desktop-bleed corner:
-    dark user 8.8 nominal / 4.6 worst, dark answer 9.4 / 4.9; light user 15.8 /
-    10.0, light answer 19.4 / 12.8. (This is why a FULLY-translucent low-alpha
-    fill is rejected — the DESIGN_SYSTEM's original light-theme worry: 0.82 keeps
-    enough of the tint to stay AA-safe while still reading as translucent.) The
-    translucency lives ONLY at the two bubble call sites via
-    `Theme.bubbleFillOpacity(reduceTransparency:)`, the ONE owner of the fallback:
-    under `accessibilityReduceTransparency` it restores a fully SOLID fill —
-    exactly like `CardSurfaceModifier`'s fallback; the tokens themselves stay
-    solid everywhere else. The final answer bubble stays the loudest element in
-    the feed. The assistant stays a neutral
+    bubble's blue-lead in both themes). **Frosted-material translucency + AA
+    guarantee (D-12 round 2, owner dogfood):** the bubbles read as genuinely
+    translucent because their fill is a real `.ultraThinMaterial` FROST with the
+    tint washed over it (`Theme.bubbleTintVeil` = `0.5`), never a flat-alpha
+    color. The earlier `0.82` flat fill was invisible for a composition-chain
+    reason: a material only frosts where there is RICH content behind it, and an
+    18%-bleed flat fill showed nothing over the app's actual backdrops. The USER
+    bubble sits over the behind-window desktop frost (rich content) → the material
+    frosts for real, the visible win. The ANSWER bubble sits over the near-opaque
+    assistant `cardSurface` (nothing translucent behind the card) → the material
+    can only lightly tint it, so it stays the loudest, most solid-reading anchor —
+    the honest ceiling of this layer stack, not a regression. The frost is on the
+    FILL/BACKGROUND only; the text stays fully opaque. **AA:** the effective
+    background is `veil·tint + (1 − veil)·M` over the ACTUAL toned backdrop `M`
+    (the behind-window frost is a DARK HUD material in dark mode and a LIGHT
+    material in light mode; the answer bubble's card is toned the same way), so
+    the pure-white / pure-black desktop corner is NOT reachable through it and the
+    tint veil only reinforces the primary label's contrast. Conservative reachable
+    numbers (primary label, ≥4.5:1 required): dark user ≈ 9.2, dark answer ≈ 10.5,
+    light user ≈ 11.5, light answer ≈ 18 — all comfortably AA (`BubbleTokenTests`
+    pins the model). The fill lives ONLY at the two bubble call sites via
+    `.bubbleFill(tint:radius:)`, whose `Theme.bubbleFill(reduceTransparency:)` is
+    the ONE owner of the fallback: under `accessibilityReduceTransparency` it
+    restores a fully SOLID tint fill (no material) — exactly like
+    `CardSurfaceModifier`'s fallback; the tint tokens stay solid everywhere else.
+    The final answer bubble stays the loudest element in the feed. The assistant
+    stays a neutral
     frosted `cardSurface` with one subtle accent hairline (`accent.opacity(0.22)`)
     so it belongs to the same family. Then the assistant reads top-down: the
     FINAL ANSWER bubble (loudest element — solid `surfaceRaisedHi` inset, 2 pt

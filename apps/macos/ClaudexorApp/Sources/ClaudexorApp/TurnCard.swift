@@ -15,9 +15,6 @@ import ClaudexorKit
 
 struct TurnCard: View {
     @Environment(AppModel.self) private var model
-    /// D-12: Reduce Transparency restores fully SOLID bubble fills (the
-    /// calibrated translucency is a visual affordance, never a legibility cost).
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let turn: ThreadTurnInfo
     @State private var actionError: String?
     /// Set after a successful accept-risk decision so the apply affordance appears
@@ -62,11 +59,11 @@ struct TurnCard: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, Theme.Spacing.md)
                     .padding(.vertical, Theme.Spacing.sm)
-                    // D-12: calibrated translucency over the ambient backdrop — solid
-                    // under Reduce Transparency.
-                    .background(
-                        Theme.bubbleUser.opacity(Theme.bubbleFillOpacity(reduceTransparency: reduceTransparency)),
-                        in: RoundedRectangle(cornerRadius: Theme.Radius.bubble, style: .continuous))
+                    // D-12 round 2: a tinted frosted material so the bubble reads as
+                    // genuinely translucent (it sits over the behind-window desktop
+                    // frost — rich content the material can blur) — solid under
+                    // Reduce Transparency.
+                    .bubbleFill(tint: Theme.bubbleUser, radius: Theme.Radius.bubble)
             }
             assistantSection
         }
@@ -196,12 +193,12 @@ struct TurnCard: View {
             }
             .padding(Theme.Spacing.md)
             .frame(maxWidth: .infinity, alignment: .leading)
-            // D-12: the loudest element in the feed carries the same calibrated
-            // translucency over the frosted card material — solid under Reduce
-            // Transparency so the answer's contrast is never traded away.
-            .background(
-                Theme.surfaceRaisedHi.opacity(Theme.bubbleFillOpacity(reduceTransparency: reduceTransparency)),
-                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            // D-12 round 2: the same tinted-material recipe as the user bubble
+            // (one owner, `bubbleFill`). This bubble sits over the opaque
+            // assistant `cardSurface`, so the material can only lightly tint it —
+            // it stays the loudest, most solid-reading anchor (the honest ceiling
+            // of the composition chain), and Reduce Transparency keeps it solid.
+            .bubbleFill(tint: Theme.surfaceRaisedHi, radius: Theme.Radius.control)
             .overlay(alignment: .leading) {
                 UnevenRoundedRectangle(
                     cornerRadii: .init(topLeading: Theme.Radius.control, bottomLeading: Theme.Radius.control))

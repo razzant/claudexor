@@ -44,8 +44,8 @@ enum Theme {
     static let surfaceRaised = Color(dark: (0.205, 0.216, 0.240), light: (1.0, 1.0, 1.0))
     static let surfaceRaisedHi = Color(dark: (0.250, 0.264, 0.294), light: (0.965, 0.967, 0.974))
     static let surfaceCode = Color(dark: (0.060, 0.064, 0.076), light: (0.968, 0.969, 0.976))
-    /// The USER message bubble: a clearly accent-tinted STEEL-BLUE raised fill
-    /// read with the primary label color (D-12, owner dogfood). Its hue is the
+    /// The USER message bubble tint: a clearly accent-tinted STEEL-BLUE that is
+    /// washed over a frosted material (D-12, owner dogfood). Its hue is the
     /// visible differentiator from the assistant's NEUTRAL-graphite answer
     /// bubble (`surfaceRaisedHi`) — the iMessage/Claude-desktop convention: the
     /// sender bubble is tinted, the receiver is neutral, and right-alignment is
@@ -56,27 +56,46 @@ enum Theme {
     /// blue channel is well clear of the answer's neutral so the two never read
     /// "almost identical" (the pre-D-12 defect).
     static let bubbleUser = Color(dark: (0.22, 0.28, 0.42), light: (0.80, 0.86, 0.98))
-    /// D-12 calibrated translucency for the conversation bubbles (user bubble +
-    /// the assistant's final-answer `surfaceRaisedHi` bubble). The fills sit at
-    /// this fraction of their solid color OVER the frosted backdrop, so the
-    /// ambient glow reads visibly through the BACKGROUND (never the text) and
-    /// they belong to the same frosted-material family as the cards. 0.82 (18%
-    /// backdrop bleed) is perceptible — the earlier 0.92 read as solid — while
-    /// the tuned tints keep the primary label color at WCAG AA (≥4.5:1) over the
-    /// effective fill in BOTH themes, even in the pessimistic bright-desktop
-    /// bleed corner (verified: BubbleTokenTests / DESIGN_SYSTEM §4). Applied ONLY
-    /// at the two bubble call sites via `bubbleFillOpacity(reduceTransparency:)`,
-    /// which restores a fully SOLID fill under Reduce Transparency exactly like
-    /// `CardSurfaceModifier`'s fallback — never baked into the token, so every
-    /// other `bubbleUser`/`surfaceRaisedHi` use stays solid.
-    static let bubbleTranslucency: Double = 0.82
 
-    /// The fill opacity for the two conversation bubbles (D-12): the calibrated
-    /// translucency normally, a fully SOLID `1` under Reduce Transparency. ONE
-    /// owner of the fallback rule so the user bubble and the answer bubble can
-    /// never drift apart (and it is unit-testable without a view host).
-    static func bubbleFillOpacity(reduceTransparency: Bool) -> Double {
-        reduceTransparency ? 1 : bubbleTranslucency
+    /// D-12 round 2 (owner dogfood): the conversation bubbles read as GENUINELY
+    /// translucent because their fill is a real frosted `.ultraThinMaterial`, not
+    /// a flat-alpha color. A flat `color.opacity(0.82)` was invisible: the user
+    /// bubble sits over the low-frequency behind-window frost and the answer
+    /// bubble sits over the near-opaque `cardSurface`, so an 18% bleed of a
+    /// nearly-uniform backdrop was indistinguishable from solid. A material
+    /// instead re-blurs whatever is behind it with vibrancy — the effect the eye
+    /// reads as "frosted glass." Over the USER bubble (which sits over the
+    /// behind-window desktop material) that is rich content, so it frosts for
+    /// real; over the ANSWER bubble (which sits over the opaque `cardSurface`) a
+    /// material can only lightly tint (there is nothing translucent behind the
+    /// card to reveal), so the answer bubble stays the loudest, most solid-reading
+    /// anchor — the honest ceiling of the composition chain (DESIGN_SYSTEM §4).
+    ///
+    /// `bubbleTintVeil` is the tint alpha washed OVER the material: high enough to
+    /// carry the steel-blue-vs-neutral hue gap (the D-12 win) and to keep the
+    /// primary label at WCAG AA, low enough that the frost shows through. Because
+    /// the behind-window material is a DARK HUD frost in dark mode and a LIGHT
+    /// frost in light mode, the effective background stays on the text's safe side
+    /// (dark bg / light text; light bg / dark text) — the pessimistic
+    /// pure-white/black desktop corner is not reachable through it, so the tint
+    /// veil only reinforces contrast, never erodes it (numbers: DESIGN_SYSTEM §4,
+    /// pinned by BubbleTokenTests).
+    static let bubbleTintVeil: Double = 0.5
+
+    /// How the two conversation bubbles fill (D-12): a tinted frosted material
+    /// normally, a fully SOLID tint fill under Reduce Transparency (matching
+    /// `CardSurfaceModifier`'s fallback). ONE owner of the fallback branch so the
+    /// user bubble and the answer bubble can never drift apart, and it is
+    /// unit-testable without a view host. The `.bubbleFill(tint:radius:)` modifier
+    /// is the only consumer.
+    enum BubbleFill: Equatable {
+        /// Reduce Transparency: a fully opaque tint fill (no material).
+        case solid(tintOpacity: Double)
+        /// Normal: `.ultraThinMaterial` frost with the tint washed over it.
+        case material(tintOpacity: Double)
+    }
+    static func bubbleFill(reduceTransparency: Bool) -> BubbleFill {
+        reduceTransparency ? .solid(tintOpacity: 1) : .material(tintOpacity: bubbleTintVeil)
     }
     static let separator = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.14)
     static let hairline = Color(dark: (1, 1, 1), light: (0, 0, 0)).opacity(0.08)
@@ -303,7 +322,44 @@ private struct CardSurfaceModifier: ViewModifier {
     }
 }
 
+/// The conversation-bubble fill (D-12 round 2): a tinted frosted material so the
+/// bubble reads as genuinely translucent, collapsing to a SOLID tint fill under
+/// Reduce Transparency (the same gate as `CardSurfaceModifier`). A flat
+/// `tint.opacity(...)` was rejected — it showed no frost over the app's
+/// low-frequency / opaque backdrops (owner dogfood). Layered inside-out:
+/// `.ultraThinMaterial` (the frost) then the tint washed on top at
+/// `Theme.bubbleTintVeil` (the hue + the AA reinforcement). The material only
+/// frosts for real where rich content sits behind it (the user bubble over the
+/// behind-window desktop material); over the opaque assistant `cardSurface` it
+/// reduces to a light tint, which is the intended solid-reading answer anchor.
+private struct BubbleFillModifier: ViewModifier {
+    let tint: Color
+    let radius: CGFloat
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        return content.background {
+            switch Theme.bubbleFill(reduceTransparency: reduceTransparency) {
+            case .solid(let tintOpacity):
+                shape.fill(tint.opacity(tintOpacity))
+            case .material(let tintOpacity):
+                shape.fill(.ultraThinMaterial)
+                shape.fill(tint.opacity(tintOpacity))
+            }
+        }
+    }
+}
+
 extension View {
+    /// See `BubbleFillModifier` — the single conversation-bubble fill recipe
+    /// (tinted frosted material, solid under Reduce Transparency). Used ONLY at
+    /// the two bubble call sites (user prompt + final answer); every other
+    /// `bubbleUser`/`surfaceRaisedHi` use stays a solid token.
+    func bubbleFill(tint: Color, radius: CGFloat) -> some View {
+        modifier(BubbleFillModifier(tint: tint, radius: radius))
+    }
+
     /// See `CardSurfaceModifier` — the single content-card recipe. `clip`
     /// rounds inner content (e.g. a leading accent bar); `strokeColor`
     /// switches the hairline to an emphasis stroke; `hover` opts a clickable
