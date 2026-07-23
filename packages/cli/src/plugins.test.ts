@@ -1380,4 +1380,42 @@ describe("plugin lifecycle", () => {
       expect(readFileSync(skill, "utf8")).not.toContain("manual drift");
     });
   });
+
+  // QA-029A/B / A-2: the generated Claude artifacts must disclose the exact
+  // namespaced slash invocation and, when MCP is denied, offer an EXECUTABLE
+  // absolute CLI fallback — never a bare `claudexor` that exits 127 off-PATH.
+  it("generated Claude artifacts carry the namespaced invocation and an absolute (non-bare) fallback", async () => {
+    await withTempHome(async ({ home, cli }) => {
+      const install = await runPluginCommand("install", "claude");
+      expect(install.exitCode).toBe(0);
+      // The reload/status note prints the exact slash command.
+      expect(install.results[0]?.notes.join("\n")).toContain("/claudexor:claudexor");
+      const status = await runPluginCommand("status", "claude");
+      expect(status.results[0]?.notes.join("\n")).toContain("/claudexor:claudexor");
+
+      const root = join(home, ".claude", "skills", "claudexor");
+      const skill = readFileSync(join(root, "skills", "claudexor", "SKILL.md"), "utf8");
+      const command = readFileSync(join(root, "commands", "claudexor.md"), "utf8");
+      const readme = readFileSync(join(root, "README.md"), "utf8");
+
+      // The exact namespaced slash command is disclosed everywhere a user reads
+      // how to invoke the plugin, and plain `/claudexor` is called out as NOT an alias.
+      for (const text of [skill, command, readme]) {
+        expect(text).toContain("/claudexor:claudexor");
+        expect(text).toContain("not an alias");
+      }
+
+      // The fallback is the executable absolute node+cli command (the SAME
+      // runtime path the MCP descriptor uses), shell-quoted, not bare `claudexor`.
+      for (const text of [skill, command]) {
+        expect(text).toContain(`'${cli}'`);
+        // No bare-`claudexor` fallback command (ask/agent/best-of/plan) survives.
+        expect(text).not.toMatch(/`claudexor (ask|agent|best-of|plan)\b/);
+      }
+      // The MCP descriptor and the fallback resolve to the SAME cli entrypoint.
+      const mcp = readJson(join(root, ".mcp.json"));
+      expect(mcp.mcpServers.claudexor.args[0]).toBe(cli);
+      expect(skill).toContain(`'${cli}' ask`);
+    });
+  });
 });

@@ -197,8 +197,37 @@ function recoveryVerbLine(): string {
     : (parts[0] ?? "");
 }
 
-function skillText(host: PluginHost): string {
-  const namespace = host === "claude" ? "claudexor@skills-dir" : "claudexor";
+/** POSIX single-quote shell quoting so a runtime path containing spaces (or any
+ * other shell metacharacter) survives copy-paste into a terminal intact. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/** The EXECUTABLE absolute CLI prefix, derived from the SAME validated runtime
+ * paths the MCP descriptor uses (bundled Node + dist cli.js), shell-quoted.
+ * QA-029B: the generated fallback must be a command that actually runs, never a
+ * bare `claudexor` that exits 127 because it is not on the user's terminal PATH. */
+function absoluteCliPrefix(runtime: RuntimePaths): string {
+  return `${shellQuote(runtime.nodePath)} ${shellQuote(runtime.cliPath)}`;
+}
+
+/** Render the registry's canonical fallback templates (`claudexor ask "..."`, …)
+ * as executable absolute commands by swapping the bare leading `claudexor` token
+ * for the absolute Node+CLI prefix. The registry keeps the bare templates as the
+ * single source of the verb/flag grammar; only the executable prefix is host- and
+ * install-specific, so it is composed here from the runtime, not hardcoded. */
+function hostFallbackCommands(runtime: RuntimePaths): string[] {
+  const prefix = absoluteCliPrefix(runtime);
+  return hostFallbackExamples().map((example) => example.replace(/^claudexor\b/, prefix));
+}
+
+/** The exact Claude slash invocation for the generated skills-directory plugin.
+ * Claude Code namespaces plugin skills as `/plugin-name:skill-name`; both the
+ * manifest name and the skill name are `claudexor`, so the real command is
+ * `/claudexor:claudexor` (QA-029A) — plain `/claudexor` is NOT an alias. */
+const CLAUDE_SLASH_COMMAND = "/claudexor:claudexor";
+
+function skillText(host: PluginHost, runtime: RuntimePaths): string {
   return [
     "---",
     "name: claudexor",
@@ -222,9 +251,9 @@ function skillText(host: PluginHost): string {
     "- MCP tool `claudexor_create` for create-from-scratch runs.",
     "- MCP tools `claudexor_runs` / `claudexor_inspect` / `claudexor_apply_check` to recover a lost run handle (read-only).",
     "",
-    "When the host cannot call MCP tools, ask the user to run the local CLI explicitly:",
+    "When the host cannot call MCP tools, ask the user to run the local CLI explicitly (these are the exact executable commands for this install — not a bare `claudexor`, which may not be on the terminal PATH):",
     "",
-    ...hostFallbackExamples().map((example) => `\`${example}\``),
+    ...hostFallbackCommands(runtime).map((command) => `\`${command}\``),
     "",
     "MCP support is one-shot and honest: tools return the final Claudexor output, not a live Claudexor thread. Use an explicit `repoPath` when the host cwd may not be the target project.",
     "",
@@ -242,12 +271,22 @@ function skillText(host: PluginHost): string {
     "- NEVER auto-answer `claudexor decision` for a blocked run: risk acceptance (accept-risk/override) is the HUMAN operator's call. Report the blocked state and the decision options.",
     "- Exit codes: 0 = success terminal; 1 = failed/blocked/cancelled run; 2 = usage error (unknown verb/flag/mode). `--json` errors come as `{ok:false, exitCode, error}` on stdout.",
     "",
-    `Host namespace: ${namespace}`,
+    // QA-029A: disclose the plugin identity AND the exact slash invocation as two
+    // separate typed facts. The old single `Host namespace: claudexor@skills-dir`
+    // conflated source identity with the slash command and never told the user the
+    // real `/claudexor:claudexor` grammar.
+    ...(host === "claude"
+      ? [
+          "Plugin identity: claudexor@skills-dir",
+          `Slash command: ${CLAUDE_SLASH_COMMAND} <request>`,
+          `Natural-language activation also works; plain \`/claudexor\` is not an alias — use ${CLAUDE_SLASH_COMMAND}.`,
+        ]
+      : ["Host namespace: claudexor"]),
     "",
   ].join("\n");
 }
 
-function commandText(host: PluginHost): string {
+function commandText(host: PluginHost, runtime: RuntimePaths): string {
   const frontmatter =
     host === "claude" || host === "cursor" || host === "opencode"
       ? ["---", "description: Use Claudexor CLI/MCP for harness-agnostic coding workflows", "---"]
@@ -257,18 +296,28 @@ function commandText(host: PluginHost): string {
     managedComment().trimEnd(),
     "Use Claudexor for this request when cross-harness planning, review, best-of-N race, or evidence-backed execution is useful.",
     "",
-    "First prefer the available MCP tools named `claudexor_*`. If MCP tools are unavailable, tell the user the exact local CLI command to run, such as:",
+    "First prefer the available MCP tools named `claudexor_*`. If MCP tools are unavailable, tell the user the exact executable local CLI command to run (absolute paths for this install — never a bare `claudexor`, which may not be on the terminal PATH), such as:",
     "",
-    ...hostFallbackExamples().map((example) => `- \`${example.replace('"..."', '"$ARGUMENTS"')}\``),
+    ...hostFallbackCommands(runtime).map(
+      (command) => `- \`${command.replace('"..."', '"$ARGUMENTS"')}\``,
+    ),
     "",
     "Do not claim live thread parity through MCP. Ask for an explicit repo path if the target project is ambiguous.",
     "",
+    // QA-029A: this command file is only reached AFTER a correct invocation, but
+    // it still records the exact grammar so a reader learns the canonical name.
+    ...(host === "claude"
+      ? [
+          `Explicit invocation: \`${CLAUDE_SLASH_COMMAND} <request>\` — natural-language activation also works; plain \`/claudexor\` is not an alias.`,
+          "",
+        ]
+      : []),
   ]
     .filter((line, i, all) => line !== "" || all[i - 1] !== "")
     .join("\n");
 }
 
-function readmeText(host: PluginHost): string {
+function readmeText(host: PluginHost, runtime: RuntimePaths): string {
   return [
     managedComment().trimEnd(),
     `# Claudexor ${host} integration`,
@@ -277,6 +326,16 @@ function readmeText(host: PluginHost): string {
     "",
     "It packages Claudexor instructions and MCP configuration for the host. All orchestration remains in the local Claudexor CLI and engine.",
     "",
+    // QA-029A/B: state the exact Claude slash command and an executable fallback
+    // right where a user reads how to invoke the plugin.
+    ...(host === "claude"
+      ? [
+          `Explicit invocation: \`${CLAUDE_SLASH_COMMAND} <request>\` (natural-language activation also works; plain \`/claudexor\` is not an alias).`,
+          "",
+          `When MCP tools are denied, run the equivalent executable CLI command directly, e.g. \`${hostFallbackCommands(runtime)[0]}\`.`,
+          "",
+        ]
+      : []),
     "Long-running MCP tools (claudexor_run, claudexor_best_of, claudexor_create) are daemon-tracked: every result carries a `runId:` trailer, so a call abandoned by a host timeout stays recoverable via `claudexor inspect <runId>` / `claudexor follow <runId>`.",
     "",
   ].join("\n");
@@ -364,12 +423,12 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "skills", "claudexor", "SKILL.md"),
-          content: skillText("claude"),
+          content: skillText("claude", runtime),
           description: "Claude skill",
         },
         {
           path: join(root, "commands", "claudexor.md"),
-          content: commandText("claude"),
+          content: commandText("claude", runtime),
           description: "Claude command",
         },
         {
@@ -379,7 +438,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "README.md"),
-          content: readmeText("claude"),
+          content: readmeText("claude", runtime),
           description: "Claude integration README",
         },
       ];
@@ -393,7 +452,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
       },
     ],
     reloadNote:
-      "Start a new Claude Code session; skills-directory plugins auto-load from ~/.claude/skills.",
+      "Start a new Claude Code session; skills-directory plugins auto-load from ~/.claude/skills. Invoke with `/claudexor:claudexor <request>` (natural-language activation also works; plain `/claudexor` is not an alias).",
   },
   codex: {
     host: "codex",
@@ -410,7 +469,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "skills", "claudexor", "SKILL.md"),
-          content: skillText("codex"),
+          content: skillText("codex", runtime),
           description: "Codex skill",
         },
         {
@@ -420,7 +479,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "README.md"),
-          content: readmeText("codex"),
+          content: readmeText("codex", runtime),
           description: "Codex integration README",
         },
       ];
@@ -452,12 +511,12 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "skills", "claudexor", "SKILL.md"),
-          content: skillText("cursor"),
+          content: skillText("cursor", runtime),
           description: "Cursor skill",
         },
         {
           path: join(root, "commands", "claudexor.md"),
-          content: commandText("cursor"),
+          content: commandText("cursor", runtime),
           description: "Cursor command",
         },
         {
@@ -467,7 +526,7 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
         },
         {
           path: join(root, "README.md"),
-          content: readmeText("cursor"),
+          content: readmeText("cursor", runtime),
           description: "Cursor integration README",
         },
       ];
@@ -493,12 +552,12 @@ const HOST_DEFINITIONS: Record<PluginHost, HostDefinition> = {
       return [
         {
           path: join(root, "skills", "claudexor", "SKILL.md"),
-          content: skillText("opencode"),
+          content: skillText("opencode", runtime),
           description: "OpenCode skill",
         },
         {
           path: join(root, "commands", "claudexor.md"),
-          content: commandText("opencode"),
+          content: commandText("opencode", runtime),
           description: "OpenCode command",
         },
         {

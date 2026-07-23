@@ -144,3 +144,18 @@ deferred; they are recorded here now.
   own issue order (v3.0.4 serializes all settings ops client-side, one POST
   in flight). A daemon-stamped revision/etag on the snapshot would let any
   client discard stale answers by server truth instead of client ordering.
+
+## v3.1.0 deferrals (owner decision, D-22)
+
+- D-22 (from QA-029C, audit A-2): Claude-host VERSION / READINESS proof. The
+  A-2 fix disclosed the exact `/claudexor:claudexor` invocation and an
+  executable absolute-path fallback, but `plugin status/doctor` still proves
+  only owned artifacts + a DIRECT MCP self-test — it does not prove the target
+  Claude Code host can actually auto-load a skills-directory plugin. That needs
+  a minimum host version (skills-directory auto-load landed in Claude Code
+  2.1.157), resolution of WHICH Claude binary/version will load it (this Mac
+  runs a default shell Claude 2.1.89 alongside a bundled 2.1.165), and a
+  `host_loaded` receipt kept separate from the direct MCP self-test so a green
+  doctor cannot imply an unsupported host will load the layout. Owner-scoped
+  OUT of A-2 (namespace + fallback only); ship the version/readiness proof as
+  its own reviewed surface, not folded into the invocation fix.
