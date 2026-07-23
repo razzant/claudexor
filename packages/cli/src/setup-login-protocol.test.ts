@@ -410,14 +410,18 @@ describe("setup-login executable evidence — hard-link tolerance (W2)", () => {
     const onPath = join(dir, "claude");
     linkSync(primary, onPath);
 
-    // Fully hermetic env: HOME points at the empty temp root (so the
-    // home-derived preferred dirs resolve to nothing) and `execPath` at a
-    // non-existent path (so `managedRunnerNodeDir` anchors NO ambient
-    // Node-runtime dir first). Without the injected execPath the resolver
-    // prepends the REAL running Node's dir — on the operator's Mac that is
-    // `~/.claudexor/node/bin`, whose own `claude` permanently shadowed this
-    // fixture and reddened the battery on this machine alone.
-    const hermeticExecPath = join(root, "no-such-node", "node");
+    // Fully hermetic PATH resolution, independent of what is installed on the
+    // host. HOME points at the empty temp root so the home-derived preferred
+    // dirs resolve to nothing, and `execPath` is a launchable fake `node`
+    // INSIDE the fixture dir so `managedRunnerNodeDir` anchors THAT dir first
+    // on the normalized harness PATH. The fixture therefore wins before any
+    // ambient entry — including the hardcoded system dirs (`/opt/homebrew/bin`,
+    // `/usr/local/bin`, …) that `normalizedHarnessPath` always prepends ahead
+    // of the inherited PATH, where an `npm -g` `claude` commonly lives. Without
+    // this the resolver anchored the REAL running Node's dir (on the operator's
+    // Mac `~/.claudexor/node/bin`, whose own `claude` sits beside the bundled
+    // node) and shadowed this fixture, reddening the battery on this machine.
+    const hermeticExecPath = writeExecutable(dir, "node");
 
     // Resolver (cheap launchable probe) accepts it...
     const resolvedAbsolute = resolveHarnessBinary(
