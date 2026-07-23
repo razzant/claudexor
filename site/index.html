@@ -15,7 +15,10 @@
       content="Quota-aware subscription rotation and one coding thread across Claude Code, Codex, Cursor, and OpenCode."
     />
     <meta property="og:url" content="https://razzant.github.io/claudexor/" />
-    <meta property="og:image" content="https://razzant.github.io/claudexor/assets/social-preview.png" />
+    <meta
+      property="og:image"
+      content="https://razzant.github.io/claudexor/assets/social-preview.png"
+    />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="canonical" href="https://razzant.github.io/claudexor/" />
     <link rel="icon" type="image/png" href="./assets/favicon.png" />
@@ -48,11 +51,14 @@
           <p class="hero-lede">
             Claudexor keeps one coding thread moving across Claude Code, Codex, Cursor, and
             OpenCode. Add multiple Claude Code and Codex subscriptions; it tracks real quota,
-            rotates profiles on typed limits, and carries bounded continuation context into the
-            next lane.
+            rotates profiles on typed limits, and carries bounded continuation context into the next
+            lane.
           </p>
           <div class="hero-actions">
-            <a class="button button-primary" href="https://github.com/razzant/claudexor/releases/latest">
+            <a
+              class="button button-primary"
+              href="https://github.com/razzant/claudexor/releases/latest"
+            >
               Get the macOS app <span aria-hidden="true">↗</span>
             </a>
             <a class="button button-secondary" href="#install">Install the CLI</a>
@@ -74,16 +80,22 @@
             <article class="account-row spent">
               <span class="account-mark claude-mark">C</span>
               <div class="account-main">
-                <div class="account-title"><strong>Claude Code · primary</strong><span>limit reached</span></div>
+                <div class="account-title">
+                  <strong>Claude Code · primary</strong><span>limit reached</span>
+                </div>
                 <div class="quota-track"><i style="width: 100%"></i></div>
               </div>
               <b>100%</b>
             </article>
-            <div class="rotation-event"><span>typed limit</span><b>rotate</b><span aria-hidden="true">↓</span></div>
+            <div class="rotation-event">
+              <span>typed limit</span><b>rotate</b><span aria-hidden="true">↓</span>
+            </div>
             <article class="account-row active">
               <span class="account-mark claude-mark">C</span>
               <div class="account-main">
-                <div class="account-title"><strong>Claude Code · work</strong><span>active</span></div>
+                <div class="account-title">
+                  <strong>Claude Code · work</strong><span>active</span>
+                </div>
                 <div class="quota-track"><i style="width: 31%"></i></div>
               </div>
               <b>31%</b>
@@ -100,7 +112,10 @@
 
           <div class="continuation-strip">
             <span class="packet-icon">↳</span>
-            <span><strong>Continuation packet attached</strong><small>thread intent · recent turns · evidence</small></span>
+            <span
+              ><strong>Continuation packet attached</strong
+              ><small>thread intent · recent turns · evidence</small></span
+            >
             <em>opt-in</em>
           </div>
         </div>
@@ -109,10 +124,16 @@
       <section class="compatibility" aria-labelledby="compatibility-title">
         <p id="compatibility-title">Orchestrates the coding agents you already use</p>
         <div class="vendor-grid">
-          <div class="vendor"><img src="./assets/vendor/claude-code.png" alt="" /><span>Claude Code</span></div>
+          <div class="vendor">
+            <img src="./assets/vendor/claude-code.png" alt="" /><span>Claude Code</span>
+          </div>
           <div class="vendor"><img src="./assets/vendor/codex.png" alt="" /><span>Codex</span></div>
-          <div class="vendor"><img src="./assets/vendor/cursor.png" alt="" /><span>Cursor</span></div>
-          <div class="vendor"><img src="./assets/vendor/opencode.png" alt="" /><span>OpenCode</span></div>
+          <div class="vendor">
+            <img src="./assets/vendor/cursor.png" alt="" /><span>Cursor</span>
+          </div>
+          <div class="vendor">
+            <img src="./assets/vendor/opencode.png" alt="" /><span>OpenCode</span>
+          </div>
         </div>
       </section>
 
@@ -121,9 +142,9 @@
           <p class="eyebrow">01 · Quota-aware rotation</p>
           <h2>Your subscriptions become a pool, not a pile of logins.</h2>
           <p>
-            Each Claude Code and Codex profile keeps its own isolated vendor login. Claudexor
-            reads the available subscription windows, routes toward headroom, and rotates only on
-            a typed limit or proactive headroom breach — never on an ordinary network error.
+            Each Claude Code and Codex profile keeps its own isolated vendor login. Claudexor reads
+            the available subscription windows, routes toward headroom, and rotates only on a typed
+            limit or proactive headroom breach — never on an ordinary network error.
           </p>
         </div>
 
@@ -142,18 +163,36 @@
           <div class="rotation-explainer">
             <div class="metric-card">
               <span class="metric-number">01</span>
-              <div><strong>Isolated profiles</strong><p>Separate Claude config directories and Codex homes. No shared credential jar.</p></div>
+              <div>
+                <strong>Isolated profiles</strong>
+                <p>Separate Claude config directories and Codex homes. No shared credential jar.</p>
+              </div>
             </div>
             <div class="metric-card">
               <span class="metric-number">02</span>
-              <div><strong>Real quota facts</strong><p>Five-hour, seven-day, reset and per-model windows stay attributed to the profile that reported them.</p></div>
+              <div>
+                <strong>Real quota facts</strong>
+                <p>
+                  Five-hour, seven-day, reset and per-model windows stay attributed to the profile
+                  that reported them.
+                </p>
+              </div>
             </div>
             <div class="metric-card">
               <span class="metric-number">03</span>
-              <div><strong>Typed handoff</strong><p>The next profile receives bounded task context, not a pretend migration of the vendor session.</p></div>
+              <div>
+                <strong>Typed handoff</strong>
+                <p>
+                  The next profile receives bounded task context, not a pretend migration of the
+                  vendor session.
+                </p>
+              </div>
             </div>
             <figure class="quota-crop">
-              <img src="./assets/screenshots/quota-sidebar.jpg" alt="Three live Claude and Codex quota cards in the Claudexor sidebar" />
+              <img
+                src="./assets/screenshots/quota-sidebar.jpg"
+                alt="Three live Claude and Codex quota cards in the Claudexor sidebar"
+              />
               <figcaption>One thread can see every eligible account lane.</figcaption>
             </figure>
           </div>
@@ -173,17 +212,25 @@
 
         <div class="workflow" aria-label="Cross-harness workflow diagram">
           <article class="workflow-node claude-node">
-            <div class="node-top"><img src="./assets/vendor/claude-code.png" alt="" /><span>Plan</span></div>
+            <div class="node-top">
+              <img src="./assets/vendor/claude-code.png" alt="" /><span>Plan</span>
+            </div>
             <strong>Claude Code</strong>
             <p>Shape the task and attack assumptions.</p>
           </article>
-          <div class="workflow-edge"><span>continuation<br />packet</span><b aria-hidden="true">→</b></div>
+          <div class="workflow-edge">
+            <span>continuation<br />packet</span><b aria-hidden="true">→</b>
+          </div>
           <article class="workflow-node codex-node">
-            <div class="node-top"><img src="./assets/vendor/codex.png" alt="" /><span>Implement</span></div>
+            <div class="node-top">
+              <img src="./assets/vendor/codex.png" alt="" /><span>Implement</span>
+            </div>
             <strong>Codex</strong>
             <p>Work in an isolated lane and produce a patch.</p>
           </article>
-          <div class="workflow-edge"><span>evidence +<br />diff</span><b aria-hidden="true">→</b></div>
+          <div class="workflow-edge">
+            <span>evidence +<br />diff</span><b aria-hidden="true">→</b>
+          </div>
           <article class="workflow-node review-node">
             <div class="review-icons">
               <img src="./assets/vendor/claude-code.png" alt="" />
@@ -194,7 +241,9 @@
             <strong>Cross-family panel</strong>
             <p>Verify findings before anything is applied.</p>
           </article>
-          <div class="workflow-edge"><span>typed<br />gate</span><b aria-hidden="true">→</b></div>
+          <div class="workflow-edge">
+            <span>typed<br />gate</span><b aria-hidden="true">→</b>
+          </div>
           <article class="workflow-node result-node">
             <div class="node-top"><span class="check-mark">✓</span><span>Deliver</span></div>
             <strong>Inspectable result</strong>
@@ -206,17 +255,26 @@
           <article class="feature-card">
             <span class="card-label">Best-of-N</span>
             <h3>Race independent approaches.</h3>
-            <p>Run isolated candidates, review across model families, and arbitrate a winner with evidence.</p>
+            <p>
+              Run isolated candidates, review across model families, and arbitrate a winner with
+              evidence.
+            </p>
           </article>
           <article class="feature-card">
             <span class="card-label">One thread</span>
             <h3>Keep the why attached to the work.</h3>
-            <p>Continuation packets carry the bounded intent, recent turns, artifacts, and receipts needed by the next lane.</p>
+            <p>
+              Continuation packets carry the bounded intent, recent turns, artifacts, and receipts
+              needed by the next lane.
+            </p>
           </article>
           <article class="feature-card receipt-card">
             <span class="card-label">Honest outcomes</span>
             <h3>Finished is not the same as verified.</h3>
-            <img src="./assets/screenshots/review-receipt.jpg" alt="Claudexor result receipt showing an applied change with review still blocked and buttons to review or revert" />
+            <img
+              src="./assets/screenshots/review-receipt.jpg"
+              alt="Claudexor result receipt showing an applied change with review still blocked and buttons to review or revert"
+            />
           </article>
         </div>
       </section>
@@ -228,9 +286,27 @@
             <h2>No magic session teleportation.</h2>
           </div>
           <dl>
-            <div><dt>Where rotation applies</dt><dd>Multiple subscription quota telemetry and automatic profile rotation are available for Claude Code and Codex.</dd></div>
-            <div><dt>Where every harness participates</dt><dd>Claude Code, Codex, Cursor, and OpenCode can all plan, implement, review, or continue the same Claudexor thread.</dd></div>
-            <div><dt>What “shared context” means</dt><dd>Claudexor sends bounded continuation packets between lanes. Native vendor-session resume never crosses credential profiles.</dd></div>
+            <div>
+              <dt>Where rotation applies</dt>
+              <dd>
+                Multiple subscription quota telemetry and automatic profile rotation are available
+                for Claude Code and Codex.
+              </dd>
+            </div>
+            <div>
+              <dt>Where every harness participates</dt>
+              <dd>
+                Claude Code, Codex, Cursor, and OpenCode can all plan, implement, review, or
+                continue the same Claudexor thread.
+              </dd>
+            </div>
+            <div>
+              <dt>What “shared context” means</dt>
+              <dd>
+                Claudexor sends bounded continuation packets between lanes. Native vendor-session
+                resume never crosses credential profiles.
+              </dd>
+            </div>
           </dl>
         </div>
       </section>
@@ -241,10 +317,24 @@
           <h2>The control plane stays on your machine.</h2>
         </div>
         <div class="local-grid">
-          <div><span>01</span><strong>Vendor CLIs stay native</strong><p>Claudexor drives the actual coding harnesses you installed and logged into.</p></div>
-          <div><span>02</span><strong>Credentials stay scoped</strong><p>Profiles use isolated vendor-owned stores; secrets do not enter thread history.</p></div>
-          <div><span>03</span><strong>Changes stay inspectable</strong><p>Write turns land as patches with provenance, checks, review state, and apply gates.</p></div>
-          <div><span>04</span><strong>No telemetry</strong><p>The product and this page ship without analytics, trackers, or remote fonts.</p></div>
+          <div>
+            <span>01</span><strong>Vendor CLIs stay native</strong>
+            <p>Claudexor drives the actual coding harnesses you installed and logged into.</p>
+          </div>
+          <div>
+            <span>02</span><strong>Credentials stay scoped</strong>
+            <p>Profiles use isolated vendor-owned stores; secrets do not enter thread history.</p>
+          </div>
+          <div>
+            <span>03</span><strong>Changes stay inspectable</strong>
+            <p>
+              Write turns land as patches with provenance, checks, review state, and apply gates.
+            </p>
+          </div>
+          <div>
+            <span>04</span><strong>No telemetry</strong>
+            <p>The product and this page ship without analytics, trackers, or remote fonts.</p>
+          </div>
         </div>
       </section>
 
@@ -253,7 +343,11 @@
           <p class="eyebrow">Install</p>
           <h2>Start with the app or stay in the terminal.</h2>
           <p>The macOS app bundles its own runtime. The CLI and daemon also run on Linux.</p>
-          <a class="button button-primary" href="https://github.com/razzant/claudexor/releases/latest">Open the latest release <span aria-hidden="true">↗</span></a>
+          <a
+            class="button button-primary"
+            href="https://github.com/razzant/claudexor/releases/latest"
+            >Open the latest release <span aria-hidden="true">↗</span></a
+          >
           <small>Signed · notarized · checksums · SPDX SBOM · provenance attestation</small>
         </div>
         <div class="terminal" aria-label="Terminal installation commands">
@@ -285,8 +379,8 @@
       </div>
       <p class="trademark-note">
         Claude Code, Codex, Cursor, and OpenCode names and marks belong to their respective owners
-        and are used only to identify compatibility. Claudexor is independent and is not endorsed
-        by Anthropic, OpenAI, Anysphere, or the OpenCode project.
+        and are used only to identify compatibility. Claudexor is independent and is not endorsed by
+        Anthropic, OpenAI, Anysphere, or the OpenCode project.
       </p>
     </footer>
   </body>
