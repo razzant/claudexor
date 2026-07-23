@@ -3,6 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/claudexor)](https://www.npmjs.com/package/claudexor)
 [![npm downloads](https://img.shields.io/npm/d18m/claudexor?label=npm%20downloads)](https://www.npmjs.com/package/claudexor)
 [![app downloads](https://img.shields.io/github/downloads/razzant/claudexor/total?label=app%20downloads)](https://github.com/razzant/claudexor/releases)
+[![total downloads](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/razzant/claudexor/main/docs/assets/downloads-badge.json)](https://github.com/razzant/claudexor/releases)
 [![GitHub stars](https://img.shields.io/github/stars/razzant/claudexor)](https://github.com/razzant/claudexor/stargazers)
 [![latest release](https://img.shields.io/github/v/release/razzant/claudexor?label=release)](https://github.com/razzant/claudexor/releases/latest)
 [![license](https://img.shields.io/github/license/razzant/claudexor)](LICENSE)
@@ -41,6 +42,7 @@ live usage, add & log in, auto-switch at quota limit, and per-window
 preview and applied-change receipt, live per-account quota cards, and the
 composer](docs/assets/app-agent-run.jpg)
 
+- [Metrics](#metrics)
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Quickstart](#quickstart)
@@ -57,6 +59,27 @@ composer](docs/assets/app-agent-run.jpg)
 - [For External Agents](#for-external-agents)
 - [Privacy](#privacy)
 - [Uninstall / where your data lives](#uninstall--where-your-data-lives)
+
+## Metrics
+
+Real numbers, refreshed daily by a scheduled workflow that commits the charts
+back into the repo (so npmjs renders them too). "Total downloads" is honest: it
+counts npm package downloads plus the app DMG/ZIP release assets, and nothing
+else — no SBOMs, runtime tarballs, manifests, or checksums padding the number.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/razzant/claudexor/main/docs/assets/star-history-dark.svg">
+    <img alt="Claudexor GitHub star history" src="https://raw.githubusercontent.com/razzant/claudexor/main/docs/assets/star-history-light.svg" width="760">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/razzant/claudexor/main/docs/assets/downloads-dark.svg">
+    <img alt="Claudexor total downloads over time (npm plus app release assets)" src="https://raw.githubusercontent.com/razzant/claudexor/main/docs/assets/downloads-light.svg" width="760">
+  </picture>
+</p>
 
 ## Prerequisites
 
