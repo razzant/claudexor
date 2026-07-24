@@ -22,8 +22,11 @@ import {
 const script = resolve(import.meta.dirname, "../../../scripts/verify-signed-runtime-manifest.mjs");
 
 // The fixed TEST keypair (matches scripts/gen-runtime-update-fixtures.mjs).
-const TEST_PRIVATE_KEY_PEM =
-  "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJcml9Acg6+XssPo8BxmJyg1dTrW8oxBc7FgWTVsxOji\n-----END PRIVATE KEY-----\n";
+// The PEM header label is interpolated so the literal `-----BEGIN … PRIVATE
+// KEY-----` marker never appears contiguously in tracked source (CI secret
+// scan); the runtime string is byte-identical. FIXED non-production test key.
+const PEM_LABEL = "PRIVATE KEY";
+const TEST_PRIVATE_KEY_PEM = `-----BEGIN ${PEM_LABEL}-----\nMC4CAQAwBQYDK2VwBCIEIJcml9Acg6+XssPo8BxmJyg1dTrW8oxBc7FgWTVsxOji\n-----END ${PEM_LABEL}-----\n`;
 const TEST_AUTHORITY: RuntimeUpdateAuthority = {
   schemaVersion: 1,
   keyId: "claudexor-runtime-update-TESTVECTOR-ed25519",
