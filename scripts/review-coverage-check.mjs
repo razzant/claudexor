@@ -77,12 +77,17 @@ export const GENERATED_ARTIFACT_ALLOWLIST = Object.freeze([
  * Classify a changed path. Returns null when the file is hand-written source
  * (requires full-text coverage) or a short rule id when it is diff-authoritative.
  */
+/** Binary media assets: their "full text" is meaningless to a reviewer; the
+ * exact bytes are hash-verified via the sealed DIFF.patch. SVG stays text. */
+const BINARY_MEDIA_ASSET = /\.(png|jpe?g|gif|ico|icns|webp|pdf|woff2?|ttf|otf|zip|dmg|tar|gz)$/i;
+
 export function diffAuthoritativeRule(path, allowlist = GENERATED_ARTIFACT_ALLOWLIST) {
   if (path.startsWith("packages/schema/generated/")) return "generated-schema";
   if (path === "docs/reference/endpoints.json") return "generated-endpoints-json";
   if (SWIFT_WIRE_FIXTURE.test(path)) return "swift-wire-fixture";
   if (HARNESS_FIXTURE.test(path)) return "harness-fixture";
-  if (allowlist.includes(path)) return "generated-artifact-allowlist";
+  if (BINARY_MEDIA_ASSET.test(path)) return "binary-media-asset";
+  if (path === "pnpm-lock.yaml" || allowlist.includes(path)) return "generated-artifact-allowlist";
   return null;
 }
 

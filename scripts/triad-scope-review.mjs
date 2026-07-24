@@ -69,7 +69,7 @@ import { dirname, join, resolve } from "node:path";
 import { containsSecretLikeToken, redactSecrets } from "../packages/util/dist/index.js";
 import { verifySealedEvidencePacket } from "../packages/context/dist/evidence.js";
 import { exactObservedModelMatch } from "./lib/openrouter-panel.mjs";
-import { parseNameStatusZ } from "./review-coverage-check.mjs";
+import { diffAuthoritativeRule, parseNameStatusZ } from "./review-coverage-check.mjs";
 import {
   REQUIRED_SCOPE_MODEL,
   REQUIRED_TRIAD_MODELS,
@@ -431,7 +431,12 @@ function reviewPackFiles(base, packetDir, subsetSelectors = null) {
   } catch {
     // Optional packet file; absence means the changed set alone is the pack.
   }
-  const union = [...new Set([...changed, ...listed])];
+  // Diff-authoritative files (generated bulk, binary media) never enter the
+  // full-text pack — ONE classification owner shared with the coverage gate,
+  // which exempts exactly the same set.
+  const union = [...new Set([...changed, ...listed])].filter(
+    (file) => diffAuthoritativeRule(file) === null,
+  );
   if (!subsetSelectors) return union;
   const selected = union.filter((file) => inPackSubset(file, subsetSelectors));
   // A packet-split sub-wave whose selectors match NOTHING would silently
