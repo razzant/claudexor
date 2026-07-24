@@ -5859,14 +5859,14 @@ export class Orchestrator {
     if (!harnessError && planFinalized.outcomeClass === "contract_failure") {
       harnessError = `work_report contract: ${planUnwrapped.contractViolation}`;
     }
-    // D-16 r9: an interrupted (context-exhausted) or vetoed (needs_input/
-    // incomplete work_state) planner is NEVER a clean plan — partial text
-    // must not become final/plan.md as success.
+    // D-16 r9: an interrupted (context-exhausted) planner is NEVER a clean
+    // plan — partial text must not become final/plan.md as success. A VETO
+    // (needs_input/incomplete work_state) is DIFFERENT by the sealed D-16
+    // contract (X35, INV-116 canaries): the plan still delivers, lifecycle
+    // succeeded, and the work_state veto rides the OUTCOME (non-zero exit) —
+    // it must not be laundered into a harness failure either direction.
     if (!harnessError && planFinalized.outcomeClass === "interrupted") {
       harnessError = "context capacity exhausted before the plan completed";
-    }
-    if (!harnessError && planFinalized.outcomeClass === "veto") {
-      harnessError = `plan work_state ${planFinalized.workState}: not deliverable as a clean plan`;
     }
     const attemptError =
       harnessError ??
