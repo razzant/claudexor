@@ -147,3 +147,12 @@ export function releaseReviewDecision(input: {
   blockerContractGaps: Array<{ finding: ChecklistFinding; gaps: string[] }>;
   reasons: string[];
 };
+export function validateSlotRecord(
+  record: unknown,
+  expected: {
+    candidateSha: string;
+    candidateTree: string;
+    packetManifestSha256?: string | null;
+    waveId?: string | null;
+  },
+): string[];

@@ -274,6 +274,10 @@ function parseArgs(argv) {
   }
   if (packs.length === 0 || packs.some((p) => !p.path))
     return { error: "at least one --pack [subwave=]<file> is required" };
+  const labels = packs.map((p) => p.subWave).filter(Boolean);
+  if (new Set(labels).size !== labels.length) {
+    return { error: "duplicate --pack sub-wave labels make the slot binding ambiguous" };
+  }
   return { base, candidate, packs, json, wholeFileList, receipt };
 }
 

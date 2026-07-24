@@ -132,6 +132,83 @@ export function validateReviewPanelCoverage(reviews) {
 }
 
 /**
+ * Typed slot-attestation record validation (gate-6): the sealer derives panel
+ * identity from the wave transport's metadata records and REFUSES anything a
+ * caller could forge — status/liveness, derived verdict, candidate/tree
+ * binding, observed==requested==recorded model, membership in the frozen
+ * panel for the claimed slot, wave-id consistency, and the sealed-packet
+ * manifest binding. The report-digest disk recompute stays in the sealer
+ * (filesystem); everything checkable from the record alone lives here.
+ */
+export function validateSlotRecord(record, expected) {
+  const reasons = [];
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return ["slot record is not an object"];
+  }
+  if (record.status !== "responded" || record.error) {
+    reasons.push(`slot is not a live responded review (status ${record.status ?? "(missing)"})`);
+  }
+  if (record.live !== true) {
+    reasons.push("slot record carries no wave liveness verdict (live !== true)");
+  }
+  if (!Number.isFinite(record.duration_ms) || record.duration_ms <= 0) {
+    reasons.push("slot record duration is missing or implausible");
+  } else if (
+    Number.isFinite(record.liveness_floor_ms) &&
+    record.duration_ms < record.liveness_floor_ms
+  ) {
+    reasons.push(
+      `slot duration ${record.duration_ms}ms is below its own recorded liveness floor ${record.liveness_floor_ms}ms`,
+    );
+  }
+  if (!["pass", "warn"].includes(record.verdict)) {
+    reasons.push(`derived verdict "${record.verdict}" cannot seal`);
+  }
+  if (
+    record.candidateSha !== expected.candidateSha ||
+    record.candidateTree !== expected.candidateTree
+  ) {
+    reasons.push("slot record is bound to a different candidate/tree than the sealed one");
+  }
+  if (
+    !record.observed_model ||
+    record.observed_model !== record.requested_model ||
+    record.model_id !== record.observed_model
+  ) {
+    reasons.push(
+      `slot record models do not agree (model_id ${record.model_id}, requested ${record.requested_model}, observed ${record.observed_model})`,
+    );
+  }
+  if (record.panel_slot === "triad") {
+    if (!REQUIRED_TRIAD_MODELS.includes(record.model_id)) {
+      reasons.push(`"${record.model_id}" is not a frozen triad panel model`);
+    }
+  } else if (record.panel_slot === "scope") {
+    if (record.model_id !== REQUIRED_SCOPE_MODEL) {
+      reasons.push(`"${record.model_id}" is not the frozen scope model`);
+    }
+  } else {
+    reasons.push("panel_slot must be triad|scope");
+  }
+  if (!SHA256.test(record.report_sha256 ?? "")) {
+    reasons.push("slot record is missing its report digest");
+  }
+  if (!SHA256.test(record.promptSha256 ?? "")) {
+    reasons.push("slot record is missing its prompt digest");
+  }
+  if (
+    expected.packetManifestSha256 &&
+    record.packetManifestSha256 !== expected.packetManifestSha256
+  ) {
+    reasons.push("slot record reviewed a different sealed packet");
+  }
+  if (expected.waveId && record.reviewWaveId !== expected.waveId) {
+    reasons.push(`slot record mixes wave ${record.reviewWaveId} into wave ${expected.waveId}`);
+  }
+  return reasons;
+}
+
+/**
  * Candidate-bound full-text coverage receipt (audit A-8): the JSON emitted by
  * review-coverage-check --receipt, embedded into the sealed payload. Required
  * whenever the panel is packet-split (more than one named sub-wave) — it is
@@ -169,6 +246,12 @@ export function validateCoverageReceipt(receipt, expected, { required, namedSubW
     reasons.push(
       "owner review coverageReceipt must map every reviewed pack's sub-wave name to its SHA-256",
     );
+  }
+  // One pack per label: duplicate sub-wave labels make the slot↔pack binding
+  // ambiguous (two different pack digests could each claim the same slots).
+  const labels = packs.map((pack) => pack?.subWave).filter((label) => typeof label === "string");
+  if (new Set(labels).size !== labels.length) {
+    reasons.push("owner review coverageReceipt lists duplicate sub-wave labels");
   }
   // The receipt's sub-wave labels must EQUAL the panel's named sub-waves in
   // both directions: a slot reviewing an unlisted pack, or a listed pack no

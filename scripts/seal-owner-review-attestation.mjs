@@ -28,6 +28,7 @@ import {
   RELEASE_REVIEW_ATTESTATION_ALGORITHM,
   releaseAttestationSigningBytes,
   validateReleaseAttestation,
+  validateSlotRecord,
 } from "./lib/release-review-contract.mjs";
 
 const options = { review: [], slotRecord: [] };
@@ -90,37 +91,28 @@ try {
   // Panel slots: PARSED from the wave transport's typed slot-attestation
   // records (triad-scope-review.mjs metadata) — the sealer derives reviewer
   // identity, verdict, sub-wave, and report digest, verifying every binding
-  // from disk instead of trusting caller prose.
+  // from disk instead of trusting caller prose. Record semantics live in
+  // validateSlotRecord (contract-owned, unit-tested); the sealed packet is
+  // REQUIRED so the manifest binding can never be evaded by omission.
   const packetDir = options.packet ?? null;
+  if (options.slotRecord.length > 0 && !packetDir) {
+    throw new Error("--slot-record requires --packet (the sealed-packet manifest binding)");
+  }
   const packetManifestSha256 = packetDir ? sha256File(join(packetDir, "MANIFEST.sha256")) : null;
   let waveId = null;
   for (const recordPath of options.slotRecord) {
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     const where = `slot record ${recordPath}`;
-    if (record.status !== "responded" || record.error) {
-      throw new Error(`${where}: slot is not a live responded review (status ${record.status})`);
-    }
-    if (!["pass", "warn"].includes(record.verdict)) {
-      throw new Error(`${where}: derived verdict "${record.verdict}" cannot seal`);
-    }
-    if (record.candidateSha !== candidateSha || record.candidateTree !== candidateTree) {
-      throw new Error(`${where}: bound to a different candidate/tree than the sealed one`);
-    }
-    if (!record.observed_model || record.observed_model !== record.requested_model) {
-      throw new Error(
-        `${where}: observed model "${record.observed_model}" does not prove the requested "${record.requested_model}"`,
-      );
-    }
-    if (!["triad", "scope"].includes(record.panel_slot)) {
-      throw new Error(`${where}: panel_slot must be triad|scope`);
+    const reasons = validateSlotRecord(record, {
+      candidateSha,
+      candidateTree,
+      packetManifestSha256,
+      waveId,
+    });
+    if (reasons.length > 0) {
+      throw new Error(`${where}: ${reasons.join("; ")}`);
     }
     if (waveId === null) waveId = record.reviewWaveId;
-    else if (record.reviewWaveId !== waveId) {
-      throw new Error(`${where}: mixes wave ${record.reviewWaveId} into wave ${waveId}`);
-    }
-    if (packetManifestSha256 && record.packetManifestSha256 !== packetManifestSha256) {
-      throw new Error(`${where}: reviewed a different sealed packet than --packet`);
-    }
     const reportDigest = sha256File(join(dirname(recordPath), record.raw_file));
     if (reportDigest !== record.report_sha256) {
       throw new Error(

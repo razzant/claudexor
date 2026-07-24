@@ -1017,6 +1017,8 @@ async function main() {
       // digest — instead of trusting CLI-prose labels (gate-5 critical).
       panel_slot: "triad",
       sub_wave: subWaveName,
+      live: status === "responded",
+      liveness_floor_ms: livenessFloorMs(triadPrompt.length),
       report_sha256: createHash("sha256")
         .update(redactSecrets(result.raw ?? ""))
         .digest("hex"),
@@ -1076,6 +1078,8 @@ async function main() {
       reviewWaveId,
       panel_slot: "scope",
       sub_wave: subWaveName,
+      live: scopeStatus === "responded",
+      liveness_floor_ms: livenessFloorMs(scopePrompt.length),
       report_sha256: createHash("sha256")
         .update(redactSecrets(scopeResult.raw ?? ""))
         .digest("hex"),

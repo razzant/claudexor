@@ -27,6 +27,7 @@ import {
   validatePanelLock,
   validateReleaseAttestation,
   validateReleaseInput,
+  validateSlotRecord,
   validateChecklistResponse,
 } from "../../../scripts/lib/release-review-contract.mjs";
 
@@ -749,6 +750,102 @@ describe("owner-review attestation (current schema, owner protocol)", () => {
     const missing = validateReleaseAttestation(mismatched(["macos"]), authority, expected);
     expect(missing.ok).toBe(false);
     expect(missing.reasons.join(" ")).toContain('no pack for panel sub-wave "engine"');
+  });
+
+  it("validateSlotRecord derives everything from the wave record and refuses forgeries (gate-6)", () => {
+    const candidateSha = "a".repeat(40);
+    const candidateTree = "b".repeat(40);
+    const manifest = "c".repeat(64);
+    const good = {
+      status: "responded",
+      error: null,
+      live: true,
+      duration_ms: 120_000,
+      liveness_floor_ms: 60_000,
+      verdict: "pass",
+      candidateSha,
+      candidateTree,
+      packetManifestSha256: manifest,
+      reviewWaveId: "wave-1",
+      panel_slot: "triad",
+      sub_wave: "macos",
+      model_id: REQUIRED_TRIAD_MODELS[0],
+      requested_model: REQUIRED_TRIAD_MODELS[0],
+      observed_model: REQUIRED_TRIAD_MODELS[0],
+      report_sha256: "d".repeat(64),
+      promptSha256: "e".repeat(64),
+      raw_file: "triad-x.raw.txt",
+    };
+    const expected = { candidateSha, candidateTree, packetManifestSha256: manifest, waveId: null };
+    expect(validateSlotRecord(good, expected)).toEqual([]);
+    // Off-panel model in a triad slot.
+    expect(
+      validateSlotRecord(
+        {
+          ...good,
+          model_id: "openai/gpt-4o",
+          requested_model: "openai/gpt-4o",
+          observed_model: "openai/gpt-4o",
+        },
+        expected,
+      ).join(" "),
+    ).toContain("not a frozen triad panel model");
+    // model_id disagreeing with the observed model.
+    expect(
+      validateSlotRecord({ ...good, model_id: REQUIRED_TRIAD_MODELS[1] }, expected).join(" "),
+    ).toContain("models do not agree");
+    // No wave liveness verdict / duration below the recorded floor.
+    expect(validateSlotRecord({ ...good, live: undefined }, expected).join(" ")).toContain(
+      "liveness",
+    );
+    expect(validateSlotRecord({ ...good, duration_ms: 1_000 }, expected).join(" ")).toContain(
+      "below its own recorded liveness floor",
+    );
+    // Blocked verdict cannot seal; wrong candidate; wrong packet; wave mix.
+    expect(validateSlotRecord({ ...good, verdict: "blocked" }, expected).join(" ")).toContain(
+      "cannot seal",
+    );
+    expect(
+      validateSlotRecord({ ...good, candidateSha: "f".repeat(40) }, expected).join(" "),
+    ).toContain("different candidate");
+    expect(
+      validateSlotRecord({ ...good, packetManifestSha256: "0".repeat(64) }, expected).join(" "),
+    ).toContain("different sealed packet");
+    expect(validateSlotRecord(good, { ...expected, waveId: "wave-2" }).join(" ")).toContain(
+      "mixes wave",
+    );
+    // Scope slot with a non-scope model.
+    expect(
+      validateSlotRecord(
+        {
+          ...good,
+          panel_slot: "scope",
+          model_id: "google/gemini-3.5-flash",
+          requested_model: "google/gemini-3.5-flash",
+          observed_model: "google/gemini-3.5-flash",
+        },
+        expected,
+      ).join(" "),
+    ).toContain("not the frozen scope model");
+  });
+
+  it("rejects a coverage receipt with duplicate sub-wave labels (ambiguous slot binding)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const receipt = coverageReceipt(expected.candidateSha, ["macos"]);
+    const duplicated = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: asSubWave(attestation.payload.reviews, "macos"),
+        coverageReceipt: {
+          ...receipt,
+          packs: [...receipt.packs, { subWave: "macos", sha256: "9".repeat(64) }],
+        },
+      },
+    });
+    const verdict = validateReleaseAttestation(duplicated, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toContain("duplicate sub-wave labels");
   });
 
   it("a single anonymous wave still needs no coverage receipt (unsplit pack is whole by construction)", () => {

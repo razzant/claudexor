@@ -479,12 +479,21 @@ itself). The v3 protocol bounds the loop mechanically.
   `pnpm release:verify` and seals the hash-bound gate receipt;
   `scripts/seal-owner-review-attestation.mjs` signs the attestation (exact
   candidate SHA/tree, gate receipt digest, every panel reviewer report
-  digest + verdict, wave count) with the offline Ed25519 authority. A
-  packet-split wave binds one full triad+scope panel PER named sub-wave
-  (`--review reviewer=FILE:verdict:triad@<subwave>=model`) and MUST pass
-  `--coverage-receipt` (the `review-coverage-check --receipt` output over
-  the union of sub-wave packs); the verifier refuses a packet-split seal
-  without it, so a single sub-wave's report can never stand in for all.
+  digest + verdict, wave count) with the offline Ed25519 authority. Panel
+  slots seal ONLY via `--slot-record <metadata.json>` — the wave transport's
+  typed records (panel_slot, sub_wave, derived verdict, liveness verdict +
+  floor, prompt/report digests); the sealer verifies candidate/tree,
+  observed==requested==recorded model, frozen-panel membership, one wave id,
+  the sealed-packet manifest binding (`--packet` REQUIRED with slot
+  records), and recomputes the raw report digest from disk. CLI
+  `--review reviewer=FILE:verdict` entries remain for NON-panel critic
+  reports only. A packet-split wave binds one full triad+scope panel PER
+  named sub-wave and MUST pass `--coverage-receipt` (the
+  `review-coverage-check --receipt` output over the union of sub-wave
+  packs, labels unique, `--pack <subwave>=<file>`); the verifier refuses a
+  packet-split seal without it — a single sub-wave's report can never stand
+  in for all, and each triad slot's prompt digest must equal its sub-wave's
+  receipt pack digest.
   `verify-release-input.mjs` verifies the signature before semantic
   validation; older sealed schemas stay verifiable for their releases. An
   owner override is a distinct recorded fact in the attestation, never a
