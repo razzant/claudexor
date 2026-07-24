@@ -211,8 +211,11 @@ Claude Code executor reads the same guidance, Claudexor bridges it with a thin
 a hand-written `CLAUDE.md` is never touched, and it is written both to the
 project root (durable, announced as a run event) and into each disposable
 envelope worktree — which materializes only committed files — so a candidate
-racing in isolation reads it too. The envelope copy is excluded from the
-candidate's diff by its marker, so it never appears in a patch.
+racing in isolation reads it too. The envelope copy stays out of a candidate's
+patch only while it provably remains Claudexor's own writing: the diff excludes
+it when Claudexor created it during this run AND its bytes still equal the
+bridge content exactly — any candidate edit, even one preserving the marker, is
+captured as real work rather than discarded.
 
 ## The Immune System
 

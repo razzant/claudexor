@@ -12,6 +12,7 @@ import { ArtifactStore, type RunPaths } from "@claudexor/artifact-store";
 import { EventLog } from "@claudexor/event-log";
 import { BudgetLedger } from "@claudexor/budget";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
+import type { AttemptOutcomeClass } from "./attemptFinalize.js";
 import { cancelledResult, writeFailure } from "./runTerminals.js";
 import { type BudgetDenial, budgetFailureRecord, classifyBudgetFailure } from "./budgetFailure.js";
 import { extractPlanQuestions } from "./planQuestions.js";
@@ -93,6 +94,7 @@ export async function runCouncilPlan(
     attemptId: string;
     harnessId: string;
     status: "success" | "failed" | "blocked";
+    outcomeClass?: AttemptOutcomeClass;
     error: string | null;
   }[] = [];
   const attemptTelemetries: {
@@ -147,6 +149,7 @@ export async function runCouncilPlan(
         attemptId: outcome.attemptId,
         harnessId: outcome.harnessId,
         status: outcome.status,
+        outcomeClass: outcome.outcomeClass,
         error: outcome.error,
       });
       if (outcome.budgetDenied) councilBudgetDenial ??= outcome.budgetDenial ?? null;
@@ -270,6 +273,7 @@ export async function runCouncilPlan(
     attemptId: mergeOutcome.attemptId,
     harnessId: mergeOutcome.harnessId,
     status: mergeOutcome.status,
+    outcomeClass: mergeOutcome.outcomeClass,
     error: mergeOutcome.error,
   });
 
@@ -357,6 +361,8 @@ export function finalizePlanRun(
       attemptId: string;
       harnessId: string;
       status: "success" | "failed" | "blocked";
+      /** D-16 r9: interrupted planners project an interrupted terminal. */
+      outcomeClass?: AttemptOutcomeClass;
       error: string | null;
     }[];
     attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[];
@@ -488,6 +494,8 @@ export function writePlanHarnessFailure(
       attemptId: string;
       harnessId: string;
       status: "success" | "failed" | "blocked";
+      /** D-16 r9: interrupted planners project an interrupted terminal. */
+      outcomeClass?: AttemptOutcomeClass;
       error: string | null;
     }[];
     attemptTelemetries: { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[];
@@ -550,16 +558,21 @@ export function writePlanHarnessFailure(
       nextActions: ["Open diagnostics", "Check harness authentication", "Retry after setup"],
     });
   }
+  // D-16 r9: when NO planner blocked/budget-failed and some ran out of
+  // context, the terminal is interrupted — not a generic harness failure.
+  const anyInterrupted = planAttempts.some((p) => p.outcomeClass === "interrupted");
   store.writeText(
     join(paths.finalDir, "summary.md"),
-    `# Run ${runId} (plan)\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : "failed"}\n\n${message}\n`,
+    `# Run ${runId} (plan)\n\n- Lifecycle: ${blocked ? "succeeded (needs review)" : anyInterrupted && !budgetMapping ? "interrupted" : "failed"}\n\n${message}\n`,
   );
   log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
   const planFailFacts = blocked
     ? makeOutcomeFacts("succeeded", { review: "blocked", reason: "review_blocked" })
-    : makeOutcomeFacts("failed", {
-        reason: budgetMapping ? budgetMapping.reason : "harness_failed",
-      });
+    : !budgetMapping && anyInterrupted
+      ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" })
+      : makeOutcomeFacts("failed", {
+          reason: budgetMapping ? budgetMapping.reason : "harness_failed",
+        });
   const failPhase = budgetMapping ? budgetMapping.phase : "harness";
   if (blocked)
     log.emit("run.blocked", {

@@ -773,6 +773,30 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(true);
   }, 15000);
 
+  it("D-16 r9: an interrupted planner never delivers final/plan.md as success — the plan terminal is interrupted", async () => {
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-context-exhausted", createFakeHarness("fake-context-exhausted")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "plan it",
+      mode: "plan",
+      harnesses: ["fake-context-exhausted"],
+    });
+    expect(res.lifecycle).toBe("interrupted");
+    expect(res.facts.reason).toBe("context_capacity_exhausted");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).not.toContain('"type":"run.completed"');
+    // The event contract holds here too.
+    const lines = events.trim().split("\n");
+    const readyIdx = lines.findIndex((l) => l.includes('"type":"output.ready"'));
+    const termIdx = lines.findIndex((l) => l.includes('"type":"run.failed"'));
+    expect(readyIdx).toBeGreaterThanOrEqual(0);
+    expect(termIdx).toBeGreaterThan(readyIdx);
+  }, 15000);
+
   it("D-16 r8: the convergence loop never converges an interrupted attempt — it terminalizes interrupted", async () => {
     // runConvergence read neither outcomeClass nor contextExhausted, so an
     // interrupted attempt (errored===false) flowed into evaluateConvergence and
@@ -796,6 +820,16 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(false);
     const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
     expect(events).not.toContain('"type":"work_product.adopted"');
+    // r9: the event contract holds for interrupted too — a diagnostic summary
+    // exists, output.ready precedes the terminal, and work_product.emitted is
+    // NOT emitted (no product was written).
+    expect(existsSync(join(res.runDir, "final", "summary.md"))).toBe(true);
+    const lines = events.trim().split("\n");
+    const readyIdx = lines.findIndex((l) => l.includes('"type":"output.ready"'));
+    const termIdx = lines.findIndex((l) => l.includes('"type":"run.failed"'));
+    expect(readyIdx).toBeGreaterThanOrEqual(0);
+    expect(termIdx).toBeGreaterThan(readyIdx);
+    expect(events).not.toContain('"type":"work_product.emitted"');
   }, 15000);
 
   it("until-clean terminates on no-progress (bounded, not infinite)", async () => {

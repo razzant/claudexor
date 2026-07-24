@@ -169,6 +169,7 @@ import {
   readOnlyNoSuccessTerminal,
   resolveWorkReportEnvelope,
   unwrapWorkReportEnvelope,
+  type AttemptOutcomeClass,
   type ResolvedWorkReportEnvelope,
   type WorkReportEnvelopeMode,
 } from "./attemptFinalize.js";
@@ -615,6 +616,9 @@ export interface PlannerAttemptOutcome {
   attemptId: string;
   harnessId: string;
   status: "success" | "failed" | "blocked";
+  /** D-16 r9: the finalizer's outcome class — interrupted/veto planners are
+   * NEVER accepted as clean plans; terminals project these facts. */
+  outcomeClass: AttemptOutcomeClass;
   error: string | null;
   /** Plan/merge body on success; null otherwise. */
   text: string | null;
@@ -5522,7 +5526,11 @@ export class Orchestrator {
                     "Retry with more attempts or a narrower prompt",
                   ],
       });
-      if (!lastRun) {
+      // D-16 r8/r9: an INTERRUPTED envelope run still gets its diagnostic
+      // summary + output.ready (only patch/work_product are withheld) — the
+      // ARCHITECTURE event contract guarantees output.ready precedes the
+      // terminal in every mode.
+      if (!lastRun || (interrupted && input.inPlace !== true)) {
         store.writeText(
           join(paths.finalDir, "summary.md"),
           `# Run ${runId} (${mode})\n\n- Lifecycle: ${facts.lifecycle}${facts.reason ? ` (${facts.reason})` : ""}\n- Attempts: ${attempt}\n`,
@@ -5535,7 +5543,10 @@ export class Orchestrator {
       }
     }
 
-    log.emit("work_product.emitted", { winner: lastRun?.attemptId ?? null });
+    // work_product.emitted only when a product was actually written (r9).
+    if (lastRun && (!interrupted || input.inPlace === true)) {
+      log.emit("work_product.emitted", { winner: lastRun.attemptId });
+    }
     if (!convIsFailureTerminal) {
       log.emit("run.completed", {
         lifecycle: facts.lifecycle,
@@ -5659,6 +5670,7 @@ export class Orchestrator {
         attemptId,
         harnessId: adapter.id,
         status: "failed",
+        outcomeClass: "clean", // never spawned: refused pre-flight by the budget gate
         error: lease.reason ?? "budget lease denied",
         text: null,
         telemetry: null,
@@ -5847,6 +5859,15 @@ export class Orchestrator {
     if (!harnessError && planFinalized.outcomeClass === "contract_failure") {
       harnessError = `work_report contract: ${planUnwrapped.contractViolation}`;
     }
+    // D-16 r9: an interrupted (context-exhausted) or vetoed (needs_input/
+    // incomplete work_state) planner is NEVER a clean plan — partial text
+    // must not become final/plan.md as success.
+    if (!harnessError && planFinalized.outcomeClass === "interrupted") {
+      harnessError = "context capacity exhausted before the plan completed";
+    }
+    if (!harnessError && planFinalized.outcomeClass === "veto") {
+      harnessError = `plan work_state ${planFinalized.workState}: not deliverable as a clean plan`;
+    }
     const attemptError =
       harnessError ??
       (planFinalized.deliverablePresent ? null : "planner produced no plan text") ??
@@ -5870,6 +5891,7 @@ export class Orchestrator {
         attemptId,
         harnessId: adapter.id,
         status: webBlocked ? "blocked" : "failed",
+        outcomeClass: planFinalized.outcomeClass,
         error: attemptError,
         text: null,
         telemetry,
@@ -5887,6 +5909,7 @@ export class Orchestrator {
       attemptId,
       harnessId: adapter.id,
       status: "success",
+      outcomeClass: planFinalized.outcomeClass,
       error: null,
       text,
       telemetry,
@@ -6055,6 +6078,7 @@ export class Orchestrator {
       attemptId: string;
       harnessId: string;
       status: "success" | "failed" | "blocked";
+      outcomeClass?: AttemptOutcomeClass;
       error: string | null;
     }[] = [];
     const attemptTelemetries: {
@@ -6094,6 +6118,7 @@ export class Orchestrator {
             attemptId,
             harnessId: outcome.harnessId,
             status: outcome.status,
+            outcomeClass: outcome.outcomeClass,
             error: outcome.error,
           });
           break;
@@ -6108,6 +6133,7 @@ export class Orchestrator {
           attemptId,
           harnessId: outcome.harnessId,
           status: outcome.status,
+          outcomeClass: outcome.outcomeClass,
           error: outcome.error,
         });
         if (outcome.status !== "success") {
