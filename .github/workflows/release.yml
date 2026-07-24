@@ -189,11 +189,13 @@ jobs:
           pnpm retired:check
           pnpm inv:check
           pnpm fixtures:swift:check
+          pnpm fixtures:runtime-update:check
           pnpm sensitive:check
           pnpm knip
           node scripts/complexity-ratchet.mjs
           node scripts/model-hints-freshness.mjs --strict
           node scripts/mcp-cli-parity-check.mjs
+          node scripts/artifact-text-parity-check.mjs
           node scripts/fixture-freshness-check.mjs
           pnpm release:workflow:check
           pnpm format:check

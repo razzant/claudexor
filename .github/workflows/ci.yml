@@ -123,8 +123,14 @@ jobs:
       - name: MCP-CLI capability parity (tool args vs run-control flags)
         run: node scripts/mcp-cli-parity-check.mjs
 
+      - name: Artifact text-extension parity (server SEMANTIC_TEXT_EXTENSIONS vs Swift)
+        run: node scripts/artifact-text-parity-check.mjs
+
       - name: Fixture provenance (manifest coverage; freshness warns locally)
         run: node scripts/fixture-freshness-check.mjs
+
+      - name: Runtime-update fixtures freshness (signed-manifest test vectors)
+        run: pnpm fixtures:runtime-update:check
 
       - name: Canary golden stories (fake-harness E2E)
         run: pnpm canary

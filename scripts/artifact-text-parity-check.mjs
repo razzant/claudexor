@@ -2,9 +2,11 @@
 /**
  * QA-067 artifact text-extension parity guard.
  *
- * The macOS app hand-maintains `ArtifactCategory.semanticTextExtensions`
- * (ArtifactGalleryView.swift) as a mirror of the server's text-serving decision
- * in `isTextArtifact` (packages/control-api/src/artifact-serve-routes.ts). If the
+ * The macOS app hand-maintains the `semanticTextExtensions` set
+ * (ArtifactGallerySupport.swift — located by marker below, since the set has
+ * moved between files once already) as a mirror of the server's
+ * `SEMANTIC_TEXT_EXTENSIONS` set / `isTextArtifact` decision in
+ * packages/control-api/src/artifact-serve-routes.ts. If the
  * two drift, the app either sends a server-redacted TEXT artifact down the raw
  * "open externally" binary path, or eager-previews a server-binary file as text.
  * A Swift-side test can't read the TS source, so this cross-source check reads
