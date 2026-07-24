@@ -82,6 +82,24 @@ describe("resolveHarnessBinary", () => {
     expect(resolveHarnessBinary("tool-b", env)).toBe(target);
   });
 
+  it("forwards the injected platform into name-candidate expansion (win32 tries PATHEXT)", () => {
+    // The injected platform must drive BOTH PATH ordering AND the name candidates:
+    // on a darwin host, an injected win32 has to try `tool-w.CMD` (PATHEXT), while an
+    // injected darwin sees only the bare name and never finds the .CMD file.
+    const home = join(root, "win-home");
+    const binDir = join(root, "win-bin");
+    const target = fakeBin(binDir, "tool-w.CMD");
+    const env = {
+      HOME: home,
+      PATH: binDir,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    } as NodeJS.ProcessEnv;
+    // Pin a non-launchable runner so the managed-runner prepend stays out of the way.
+    expect(resolveHarnessBinary("tool-w", env, "/no/such/node", "win32")).toBe(target);
+    // Injected darwin → bare name only, so the .CMD candidate is never tried.
+    expect(resolveHarnessBinary("tool-w", env, "/no/such/node", "darwin")).toBeNull();
+  });
+
   it("brokenInstallAdvisory returns null when the binary resolves or nothing is on disk", () => {
     const home = join(root, "adv-home");
     const binDir = join(root, "adv-bin");

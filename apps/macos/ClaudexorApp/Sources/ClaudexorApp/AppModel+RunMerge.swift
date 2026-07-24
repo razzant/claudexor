@@ -50,9 +50,12 @@ extension AppModel {
         if task.phase.isActive { task.retryStatus = task.retryStatus ?? existing.retryStatus }
         if task.planQuestions.isEmpty { task.planQuestions = existing.planQuestions }
         if task.candidates.isEmpty { task.candidates = existing.candidates }
-        // List summaries carry no result: keep the last hydrated apply truth as ONE
-        // unit (no flicker).
-        if task.applyState == "not_applied",
+        // INV-093: when the summary CARRIES `result`, `liveTask(from:)` already
+        // projected the server-owned apply truth and it WINS over stale local
+        // hydration (a CLI apply/revert must not be masked). Only when the summary
+        // omits `result` do we keep the last hydrated apply truth as ONE unit
+        // (no flicker) so a mid-thread list refresh does not blank it.
+        if summary.result == nil,
            existing.applyState != "not_applied" || existing.adopted || existing.revertable {
             task.applyState = existing.applyState
             task.adopted = existing.adopted

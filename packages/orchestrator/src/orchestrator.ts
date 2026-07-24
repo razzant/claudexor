@@ -2622,12 +2622,13 @@ export class Orchestrator {
     }
 
     const diff = await wsm.diff(envelope);
-    // D-16: un-nest the {work_report, output} envelope so answer.md persists the
-    // OUTPUT (never the envelope) and the WorkReport folds into work_state.
+    // D-16: un-nest {work_report, output} so answer.md persists the OUTPUT, not the envelope.
     const unwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", workReportMode, {
       sideToolReport: telemetry.sideToolWorkReport ?? undefined,
     });
-    const answerText = redactSecrets(unwrapped.deliverable).trim() || undefined;
+    // X119: persist the VERBATIM redacted bytes; trim ONLY for the emptiness check.
+    const redacted = redactSecrets(unwrapped.deliverable);
+    const answerText = redacted.trim().length > 0 ? redacted : undefined;
     const deliverableEvidence = diff.trim().length > 0 || Boolean(answerText);
     // Cancelled attempts skip gates entirely: the operator asked to
     // stop NOW; running a 600s-per-gate suite after the abort delays the ack
@@ -4065,7 +4066,7 @@ export class Orchestrator {
         ? winnerEvidence.findings.filter((f) => isBlocking(f)).length
         : 0;
       // Prose from an empty-diff winner is an answer, never a patch.
-      const winnerAnswer = winnerRun.answerText?.trim() ?? "";
+      const winnerAnswer = winnerRun.answerText ?? "";
       const resultKind = hasDiff ? "patch" : winnerAnswer.length > 0 ? "answer" : "none";
       // The winner's final MESSAGE is the human-facing answer and materializes
       // for diff-ful runs too: the chat renders final/answer.md (the projection
@@ -5828,12 +5829,11 @@ export class Orchestrator {
       const first = unrecovered[0] as ToolErrorRecord;
       harnessError = `${first.tool} failed without recovery: ${first.summary}`;
     }
-    // D-16: unwrap the envelope and require PLAN TEXT — the planner outlier
-    // (no-error ⇒ delivered) is fixed: a plan with no text is not delivered.
+    // D-16: unwrap and require PLAN TEXT — a plan with no text is not delivered.
     const planUnwrapped = unwrapWorkReportEnvelope(answer.machineText() ?? "", planWorkMode, {
       sideToolReport: telemetry.sideToolWorkReport ?? undefined,
     });
-    const planText = planUnwrapped.deliverable.trim();
+    const planText = redactSecrets(planUnwrapped.deliverable).trim();
     const planFinalized = finalizeAttempt({
       deliverableEvidence: planText.length > 0,
       harnessErrored: harnessError !== null && !webBlocked,

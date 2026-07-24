@@ -30,6 +30,8 @@ struct AppModelRefreshTests {
         model.quotaResponse = try JSONDecoder().decode(ControlQuotaResponse.self, from: Data(#"{"snapshots":[],"refreshed_at":"2026-07-15T00:00:00Z"}"#.utf8))
         model.storedSecrets = [try JSONDecoder().decode(SecretInfo.self, from: Data(#"{"name":"stale","backend":"file","present":true}"#.utf8))]
         model.trustEntries = [try JSONDecoder().decode(TrustEntry.self, from: Data(#"{"repoRoot":"/tmp/project","path":"/tmp/trust.json","allowFullAccess":true,"accessDefault":"full"}"#.utf8))]
+        model.credentialProfiles = [try JSONDecoder().decode(CredentialProfileEntry.self, from: Data(#"{"profile":{"profile_id":"p1","harness_id":"claude","display_name":"Work","credential_kind":"config_dir_login","isolation_locator":null,"enabled":true},"status":{"availability":"available","verification":"not_run","detail":null,"last_verified_at":null}}"#.utf8))]
+        model.harnessAccounts = [try JSONDecoder().decode(HarnessAccounts.self, from: Data(#"{"harness_id":"claude","native_credentials_enabled":true,"native_login_detected":true,"next_up":{"kind":"native"}}"#.utf8))]
         model.draftPrimaryHarness = "claude"
         model.draftEligiblePool = ["claude"]
         model.draftIsolatedWorkspace = true
@@ -51,6 +53,10 @@ struct AppModelRefreshTests {
         #expect(model.quotaResponse == nil)
         #expect(model.storedSecrets.isEmpty)
         #expect(model.trustEntries.isEmpty)
+        // X140 class: the account registries the sessions footer reads are wiped
+        // so the last daemon's accounts are not presented as current truth.
+        #expect(model.credentialProfiles.isEmpty)
+        #expect(model.harnessAccounts.isEmpty)
         #expect(model.secretBackend == "unknown")
         #expect(model.draftPrimaryHarness == "claude")
         #expect(model.draftEligiblePool == ["claude"])
@@ -1116,6 +1122,61 @@ struct AppModelRefreshTests {
         #expect(merged.attentionNote == "Rotated to claude after codex diverged")
         // The transient retry note is NOT resurrected onto a now-terminal run.
         #expect(merged.retryStatus == nil)
+    }
+
+    /// Round-5 crit (INV-093): the LIST summary carries the terminal apply axes, so a
+    /// CLI apply/revert while the app is open must retire the stale eligible-Apply
+    /// affordance on the next refresh. `summary.result` is SERVER TRUTH and wins over
+    /// the locally-hydrated "not_applied" the eligible run still holds.
+    @MainActor
+    @Test func listRefreshProjectsServerApplyStateOverStaleEligibleRun() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        // An eligible, not-yet-applied decision-flow run: Apply is offered.
+        var hydrated = TaskRun(
+            id: "run-apply", title: "Run", prompt: "", mode: .agent, phase: .succeeded,
+            project: "Project", harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )
+        hydrated.applyEligibility = ApplyEligibility(eligible: true, state: "ok", reason: nil, requiredAction: nil)
+        hydrated.operatorDecisionAction = "accept_risk"   // decision-flow → showsApply gate
+        hydrated.applyState = "not_applied"
+        model.liveTasks = [hydrated]
+        #expect(DecisionApplyPresentation.showsApply(hydrated))   // live before the CLI apply
+
+        // The CLI applied the run: the list summary now carries result.applyState=applied.
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            return (appResponse(for: request), Data(#"{"runs":[{"runId":"run-apply","state":"succeeded","result":{"kind":"patch","blockers":0,"applyState":"applied","revertable":true,"adopted":true}}]}"#.utf8))
+        }
+        await model.refreshRuns()
+        let applied = try #require(model.liveTasks.first)
+        #expect(applied.applyState == "applied")
+        #expect(applied.adopted)
+        #expect(applied.revertable)
+        // Server truth wins even though the stale detail-only eligibility is still true.
+        #expect(applied.applyEligibility?.eligible == true)
+        #expect(!DecisionApplyPresentation.showsApply(applied))   // affordance retired
+
+        // A subsequent CLI REVERT flips it to reverted; still no Apply affordance.
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            return (appResponse(for: request), Data(#"{"runs":[{"runId":"run-apply","state":"succeeded","result":{"kind":"patch","blockers":0,"applyState":"reverted","revertable":false,"adopted":false}}]}"#.utf8))
+        }
+        await model.refreshRuns()
+        let reverted = try #require(model.liveTasks.first)
+        #expect(reverted.applyState == "reverted")
+        #expect(!reverted.adopted)
+        #expect(!DecisionApplyPresentation.showsApply(reverted))
     }
 
     /// Round-4 #6: the W-C2 api_retry note is SSE-only, so a list refresh landing

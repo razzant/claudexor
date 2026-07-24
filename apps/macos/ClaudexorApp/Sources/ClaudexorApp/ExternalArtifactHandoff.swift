@@ -129,7 +129,9 @@ struct ExternalArtifactHandoff {
     /// never escape the private dir); the write is atomic.
     func stage(data: Data, suggestedName: String) throws -> URL {
         let base = ((suggestedName as NSString).lastPathComponent as NSString).lastPathComponent
-        let safeName = base.isEmpty || base == "." || base == ".." ? "artifact" : base
+        // `lastPathComponent` of "/" is "/", which is neither empty nor "."/".." —
+        // guard it too so a bare-slash name can never be appended as the file.
+        let safeName = base.isEmpty || base == "." || base == ".." || base == "/" ? "artifact" : base
         // Prove the shared root is a real, user-owned, non-symlink directory
         // (created 0700 if absent) BEFORE writing a private copy through it — a
         // symlinked or foreign-owned root is refused, never followed.

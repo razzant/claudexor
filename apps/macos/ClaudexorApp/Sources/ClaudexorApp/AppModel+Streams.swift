@@ -148,9 +148,16 @@ extension AppModel {
         threadsRefreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
+            // Clear `dirty` BEFORE the await so a ping landing DURING the in-flight
+            // refetch re-arms it (its revision may postdate the read); the TASK ref
+            // clears only AFTER the await so that ping folds into this run instead
+            // of passing the nil-guard and racing a second concurrent refetch
+            // (round-5 #4).
+            self.threadsRefresh.dirty = false
+            let refreshed = await self.refreshThreads()
             self.threadsRefreshTask = nil
-            if await self.refreshThreads() {
-                self.threadsRefresh = ThreadsRefreshState()
+            if refreshed {
+                self.threadsRefresh.delay = ThreadsRefreshState.coalesce
                 // QA-072: a thread mutation (incl. a NEW thread on a freshly
                 // registered project) is the moment the project registry can
                 // change, so refresh it here too — otherwise the composer's
@@ -165,8 +172,12 @@ extension AppModel {
                 // dirty flag re-arms the refetch itself with backoff.
                 self.threadHeadRevisions.removeAll()
                 self.threadsRefresh.delay = min(self.threadsRefresh.delay * 2, ThreadsRefreshState.maxBackoff)
-                if self.threadsRefresh.dirty { self.scheduleThreadsRefresh() }
+                self.threadsRefresh.dirty = true
             }
+            // A ping folded in during the refetch (or a failure re-arm) now chases
+            // a follow-up — the task ref is clear, and the coalescing guard in
+            // scheduleThreadsRefresh collapses any burst into one.
+            if self.threadsRefresh.dirty { self.scheduleThreadsRefresh() }
         }
     }
 

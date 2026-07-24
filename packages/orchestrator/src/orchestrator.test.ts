@@ -943,7 +943,9 @@ describe("Orchestrator", () => {
           type: "message",
           session_id: spec.session_id,
           ts,
-          text: `Here is the key you asked for: ${token}`,
+          // Leading/trailing whitespace is deliberate: the X119 fix must persist the
+          // deliverable VERBATIM (redacted), trimming ONLY for the emptiness check.
+          text: `\n\n  Here is the key you asked for: ${token}  \n`,
           final: true,
           payload: { final_source: "fake" },
         };
@@ -971,6 +973,10 @@ describe("Orchestrator", () => {
     const answer = readFileSync(join(res.runDir, "final", "answer.md"), "utf8");
     expect(answer).not.toContain(token);
     expect(answer).toContain("[redacted]");
+    // X119: the leading/trailing whitespace survives — the deliverable is persisted
+    // verbatim (redacted), not trimmed. (answer.md carries a single appended "\n".)
+    expect(answer.startsWith("\n\n  Here is the key")).toBe(true);
+    expect(answer).toContain("for: [redacted]  \n");
   }, 20000);
 
   it("plan mode produces a plan without mutating", async () => {
@@ -988,6 +994,55 @@ describe("Orchestrator", () => {
     expect(legacyOutcome(res)).toBe("success");
     expect(existsSync(join(res.runDir, "final", "plan.md"))).toBe(true);
   });
+
+  it("redacts a secret-like token in the plan deliverable before final/plan.md (X119 plan-lane symmetry)", async () => {
+    const repo = await initRepo();
+    const token = ["sk-or-v1", "d".repeat(40)].join("-");
+    const base = createFakeHarness("fake-success");
+    // A plan whose deliverable text carries a live-looking token — the outcome.text
+    // → finalizePlanRun → final/plan.md path had no lane-level redaction, unlike the
+    // other three unwrap lanes. This proves the plan lane now matches.
+    const leaky: HarnessAdapter = {
+      ...base,
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "leaky-model",
+          credential_route: "managed_api_key",
+        };
+        yield {
+          type: "message",
+          session_id: spec.session_id,
+          ts,
+          text: `Plan step 1: reuse the key ${token} then continue`,
+          final: true,
+          payload: { final_source: "fake" },
+        };
+        yield {
+          type: "usage",
+          session_id: spec.session_id,
+          ts,
+          credential_route: "managed_api_key",
+          usage: { cost_usd: 0.001 },
+        };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([["fake-success", leaky]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map the repo",
+      mode: "plan",
+      harnesses: ["fake-success"],
+    });
+    const plan = readFileSync(join(res.runDir, "final", "plan.md"), "utf8");
+    expect(plan).not.toContain(token);
+    expect(plan).toContain("[redacted]");
+  }, 20000);
 
   it("enforces an explicit project mandatory_files contract UNIFORMLY across modes (P1)", async () => {
     const repo = await initRepo();

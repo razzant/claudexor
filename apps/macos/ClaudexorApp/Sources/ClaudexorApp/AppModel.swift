@@ -331,6 +331,11 @@ final class AppModel {
         threadLoadGeneration += 1
 
         liveHarnesses.removeAll()
+        // X140 class: the credential-profile + harness-account registries load on
+        // connect and feed the sessions footer/accounts surfaces — leaving them
+        // presents the last daemon's registry as truth. Reconnect repopulates.
+        credentialProfiles.removeAll()
+        harnessAccounts.removeAll()
         exactAuthSources.removeAll()
         settingsSnapshot = nil
         settingsStatus = nil
@@ -596,6 +601,13 @@ final class AppModel {
         // presentation projects from. Rides the LIST summary so a refresh keeps
         // the honest outcome; Run Detail refines banner/applyEligibility later.
         task.outcomeFacts = s.outcomeFacts
+        // INV-093: the LIST summary carries the terminal apply axes, so a CLI
+        // apply/revert flips applyState on refresh (no stale eligible-Apply).
+        if let result = s.result {
+            task.applyState = result.applyState
+            task.revertable = result.revertable
+            task.adopted = result.adopted == true
+        }
         task.waitingOnUser = s.waitingOnUser ?? false
         if let route = s.route {
             task.observedModel = route.observedModel

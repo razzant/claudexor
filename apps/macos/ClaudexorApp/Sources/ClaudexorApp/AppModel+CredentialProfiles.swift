@@ -206,10 +206,13 @@ extension AppModel {
     /// packaged sha stamping lands in Ф4).
     var engineShaDisplay: String { engineIdentity.map { AboutInfo.shortSha($0.sha) } ?? "unknown" }
 
-    /// The engine version currently running: an installed runtime's pinned
-    /// version when `current.json` exists, else the app's own version (the
-    /// bundled first-run engine ships lockstep with the app).
+    /// The engine version currently running: the CONNECTED daemon's
+    /// handshake-disclosed version wins (a serving daemon older than a freshly
+    /// installed app must not read as "Up to date"); else an installed runtime's
+    /// pinned `current.json` version; else the app's own version (the bundled
+    /// first-run engine ships lockstep with the app).
     private func resolvedRunningEngineVersion() -> String {
+        if let serving = engineIdentity?.version { return serving }
         if let installed = RuntimeInstaller().readCurrent()?.version { return installed }
         return Self.appVersionString()
     }

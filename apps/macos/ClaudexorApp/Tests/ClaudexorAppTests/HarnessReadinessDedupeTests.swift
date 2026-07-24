@@ -130,6 +130,23 @@ import Testing
         #expect(presentation.rows.first { $0.id == "stored_key" }?.status == "fail")
     }
 
+    // MARK: - Round-5 #6: the api-key is PRIMARY for opencode/raw-api, not a fallback
+
+    @Test func apiKeyPrimaryFamilyFailedStoredKeyStaysRed() {
+        // opencode's PRIMARY credential is the api key (defaultAuthReadinessRequest
+        // == .apiKey), so an absent/failed stored_key is a REAL failure — never the
+        // "optional API-key fallback" QA-005 neutralizes for native-first families.
+        // The stray api_key_env source that neutralizes claude/cursor must NOT
+        // neutralize an api-key-PRIMARY family.
+        var info = HarnessInfo(family: .opencode, health: .unavailable, version: "1", auth: "no key", intents: [])
+        info.readiness = [
+            ReadinessCheck(kind: "probe", id: "stored_key", title: "Stored key", status: "fail", detail: "no OPENAI_API_KEY"),
+        ]
+        info.authSources = [apiKeySource(availability: "unavailable", verification: "not_run")]
+        let presentation = HarnessReadinessPresentation.from(family: .opencode, info: info)
+        #expect(presentation.rows.first { $0.id == "stored_key" }?.status == "fail")
+    }
+
     @Test func presentationDoesNotRenderDuplicateRows() {
         var info = HarnessInfo(family: .claude, health: .ok, version: "1", auth: "ok", intents: ["implement"])
         info.readiness = [

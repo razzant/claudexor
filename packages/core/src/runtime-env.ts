@@ -124,7 +124,7 @@ export function resolveHarnessBinary(
   execPath: string = process.execPath,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  const names = binaryNameCandidates(bin, source);
+  const names = binaryNameCandidates(bin, source, platform);
   if (isAbsolute(bin)) {
     for (const name of names) if (isLaunchableExecutable(name)) return name;
     return null;
@@ -143,10 +143,16 @@ export function resolveHarnessBinary(
  * Name candidates in cmd.exe lookup order: on Windows a bare `codex` is
  * spawnable as `codex.exe`/`codex.cmd` via PATHEXT, so the resolver must try
  * those too or doctor reports null for a perfectly runnable CLI. Elsewhere the
- * name is used as-is.
+ * name is used as-is. `platform` is forwarded from the resolver (same default,
+ * so production is unchanged) so an injected win32 gets win32 name candidates,
+ * not just win32 PATH ordering.
  */
-function binaryNameCandidates(bin: string, source: NodeJS.ProcessEnv): string[] {
-  if (process.platform !== "win32") return [bin];
+function binaryNameCandidates(
+  bin: string,
+  source: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (platform !== "win32") return [bin];
   const exts = (source.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
   const lower = bin.toLowerCase();
   if (exts.some((e) => lower.endsWith(e.toLowerCase()))) return [bin];

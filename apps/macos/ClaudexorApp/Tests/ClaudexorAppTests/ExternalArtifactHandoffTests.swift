@@ -44,6 +44,12 @@ import ClaudexorKit
         // Degenerate names fall back to "artifact".
         let dotted = try handoff.stage(data: Data(), suggestedName: "..")
         #expect(dotted.lastPathComponent == "artifact")
+
+        // A bare "/" has lastPathComponent "/" (neither empty nor "."/".."); it must
+        // also fall back, never be appended as the file name (round-5 #5).
+        let slash = try handoff.stage(data: Data(), suggestedName: "/")
+        #expect(slash.lastPathComponent == "artifact")
+        #expect(slash.deletingLastPathComponent().deletingLastPathComponent().path == root.path)
     }
 
     @Test func sweepReclaimsStaleCopiesAndKeepsFreshOnes() throws {

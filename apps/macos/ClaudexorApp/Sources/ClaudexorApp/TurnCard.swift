@@ -431,9 +431,13 @@ enum DecisionApplyPresentation {
     }
 
     /// Apply renders on the receipt for a decision-flow run ONCE the SERVER
-    /// eligibility says eligible (item f) — hidden, not disabled, otherwise.
+    /// eligibility says eligible (item f) AND the run is still `not_applied`
+    /// (INV-093: a CLI apply/revert projected onto the list summary retires the
+    /// affordance even when the detail-only eligibility is stale) — hidden, not
+    /// disabled, otherwise.
     static func showsApply(_ run: TaskRun) -> Bool {
         isDecisionFlow(run) && run.applyEligibility?.eligible == true
+            && run.applyState == "not_applied"
     }
 
     /// The eligibility-reload identity: keyed on the decision signals AND the

@@ -23,10 +23,16 @@ struct HarnessReadinessPresentation: Equatable {
         // M5c: the daemon can emit the same finding more than once (aggregated
         // across probes) — dedupe here, the ONE readiness render owner, so a
         // repeated check/reason never shows twice (owner-reported).
+        // QA-005 applies ONLY where the api-key is a genuine FALLBACK — i.e. the
+        // family's PRIMARY credential is a native/subscription session (codex/
+        // claude/cursor). For api-key-PRIMARY families (opencode, raw-api) the
+        // stored_key IS the primary credential, so a failure there is real and must
+        // stay red — pass no fallback source so the rewrite never fires.
+        let apiKeyIsFallback = family.defaultAuthReadinessRequest?.authRequest == .subscription
         let rows = neutralizeAbsentOptionalKey(
             dedupeChecks(info?.readiness ?? []),
             authSources: info?.authSources ?? [],
-            apiKeyFallbackSource: family.apiKeyAuthReadinessRequest?.source)
+            apiKeyFallbackSource: apiKeyIsFallback ? family.apiKeyAuthReadinessRequest?.source : nil)
         let reasons = dedupeOrdered(info?.reasons ?? [])
         return HarnessReadinessPresentation(
             family: family,

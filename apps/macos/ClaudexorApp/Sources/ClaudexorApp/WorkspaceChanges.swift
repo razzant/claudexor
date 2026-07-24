@@ -63,9 +63,12 @@ struct RunDiffSection: View {
     }
 
     /// Item f: Apply is shown ONLY when the server-owned eligibility says the run
-    /// can be applied now, and it is not a decision-flow run (that applies inline).
+    /// can be applied now, it is still `not_applied` (INV-093: a CLI apply/revert
+    /// projected onto the list summary retires the affordance even if the
+    /// detail-only eligibility is stale), and it is not a decision-flow run.
     private var canApply: Bool {
-        !isDecisionFlow && run?.applyEligibility?.eligible == true && !applied
+        !isDecisionFlow && run?.applyEligibility?.eligible == true
+            && run?.applyState == "not_applied" && !applied
     }
 
     var body: some View {
