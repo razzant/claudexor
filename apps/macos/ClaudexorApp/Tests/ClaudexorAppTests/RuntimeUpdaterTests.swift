@@ -118,21 +118,24 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
         let transport = StubTransport()
         let manifestURL = "https://example/runtime-manifest.json"
         let releaseJSON = #"{"assets":[{"name":"runtime-manifest.json","browser_download_url":"\#(manifestURL)"}]}"#
-        let manifestJSON = #"{"version":"3.1.5","sha256":"\#(String(repeating: "a", count: 64))","minAppVersion":"0.0.1"}"#
-        transport.assetData[manifestURL] = Data(manifestJSON.utf8)
+        // FAIL-CLOSED (D-2): the CHECK trusts only a SIGNED manifest, so this
+        // verdict rides the signed test vector (version 3.4.0) paired with its
+        // fixture authority — an unsigned hand-authored manifest is now refused.
+        transport.assetData[manifestURL] = try signedManifestData()
         transport.queuedFetches = [ReleaseFetchResult(status: 200, etag: "\"e\"", data: Data(releaseJSON.utf8))]
 
         let model = AppModel(requestNotificationAuthorization: false)
         // The serving daemon disclosed 3.1.0 on the handshake; the app itself is newer.
         // Preferring engineIdentity deterministically bypasses the on-disk pointer.
         model.engineIdentity = EngineBuildIdentity(version: "3.1.0", sha: "deadbee", entry: "/x")
-        model.runtimeUpdater = RuntimeUpdater(transport: transport)
+        model.runtimeUpdater = RuntimeUpdater(transport: transport, authority: try testAuthority())
 
         await model.checkForRuntimeUpdate(force: true)
 
-        // 3.1.5 (manifest) > 3.1.0 (serving engine) → update available to 3.1.5. A
-        // version read from the app/pointer instead would not yield this verdict.
-        #expect(model.updateAvailability?.version == "3.1.5")
+        // 3.4.0 (signed manifest) > 3.1.0 (serving engine) → update available to
+        // 3.4.0. A version read from the app/pointer instead would not yield this
+        // verdict (the app reports "dev", which is unorderable → no update).
+        #expect(model.updateAvailability?.version == "3.4.0")
     }
 
     // MARK: - DaemonLauncher resolution (the pointer READ side that stays)
