@@ -21,6 +21,7 @@ import { createHash, createPrivateKey, sign } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { verifySealedEvidencePacket } from "../packages/context/dist/evidence.js";
 import { bindCoverageReceipt } from "./review-coverage-check.mjs";
 import {
   OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
@@ -98,7 +99,14 @@ try {
   if (options.slotRecord.length > 0 && !packetDir) {
     throw new Error("--slot-record requires --packet (the sealed-packet manifest binding)");
   }
-  const packetManifestSha256 = packetDir ? sha256File(join(packetDir, "MANIFEST.sha256")) : null;
+  // The packet is VERIFIED, never raw-read (gate-7 critical): the sealed
+  // verifier hashes every MANIFEST entry and binds FREEZE's candidate
+  // SHA/tree, so an altered FREEZE.json (e.g. a narrowed baseSha) beside an
+  // authentic manifest text can never become the coverage base authority.
+  const sealedPacket = packetDir
+    ? verifySealedEvidencePacket({ evidenceDir: packetDir, candidateSha, candidateTree })
+    : null;
+  const packetManifestSha256 = sealedPacket?.manifestSha256 ?? null;
   let waveId = null;
   for (const recordPath of options.slotRecord) {
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
@@ -152,21 +160,15 @@ try {
     // RECOMPUTED result is embedded (signature-bound). Trust boundary: the
     // verifier (no pack files at publish time) checks the signature and
     // structure; the recomputation lives here, before signing.
-    if (!packetDir) {
-      throw new Error("--coverage-receipt requires --packet (the FREEZE base authority)");
+    if (!sealedPacket) {
+      throw new Error("--coverage-receipt requires --packet (the verified FREEZE base authority)");
     }
-    const freeze = JSON.parse(readFileSync(join(packetDir, "FREEZE.json"), "utf8"));
-    if (freeze.candidateSha !== candidateSha) {
-      throw new Error(
-        `sealed packet FREEZE binds candidate ${freeze.candidateSha}, not the sealed ${candidateSha}`,
-      );
-    }
-    const wholeFileListPath = join(packetDir, "FILES_TO_READ_WHOLE.txt");
+    const wholeFileListPath = join(sealedPacket.evidenceDir, "FILES_TO_READ_WHOLE.txt");
     const receipt = JSON.parse(readFileSync(options["coverage-receipt"], "utf8"));
     payload.coverageReceipt = {
       receiptSha256: sha256File(options["coverage-receipt"]),
       ...bindCoverageReceipt(receipt, candidateSha, {
-        baseSha: freeze.baseSha,
+        baseSha: sealedPacket.baseSha,
         wholeFileListPath: existsSync(wholeFileListPath) ? wholeFileListPath : null,
       }),
     };
