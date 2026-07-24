@@ -81,7 +81,7 @@ struct AuthSheetDeviceCodeCard: View {
 
                 // Honest, NON-GUARANTEED wording (D-17): Safari honors the
                 // request; another default browser may not.
-                Text("Claudexor requested a private browser session. Completing the sign-in in a window that is not signed into another OpenAI account avoids signing out other OpenAI apps on this Mac.")
+                Text("Claudexor requested a private browser session. Completing the sign-in in a window that is not signed into another OpenAI account reduces the risk of signing out other OpenAI apps on this Mac — OpenAI may still invalidate sibling sessions on its side.")
                     .font(.caption2).foregroundStyle(.secondary)
 
                 if waiting {
