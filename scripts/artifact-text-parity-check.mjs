@@ -21,16 +21,29 @@
  * text via MIME (not via the explicit set). A new server extension not mirrored
  * in Swift, a stray Swift extension, or a change to either list fails here.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const tsPath = join(root, "packages/control-api/src/artifact-serve-routes.ts");
-const swiftPath = join(
-  root,
-  "apps/macos/ClaudexorApp/Sources/ClaudexorApp/ArtifactGalleryView.swift",
-);
+// The Swift owner of semanticTextExtensions moved once already (gallery →
+// support extraction); locate it by MARKER across the app sources so a
+// refactor relocates the set without silently breaking this gate.
+const swiftSourcesDir = join(root, "apps/macos/ClaudexorApp/Sources/ClaudexorApp");
+function findSwiftOwner(marker) {
+  const candidates = readdirSync(swiftSourcesDir)
+    .filter((name) => name.endsWith(".swift"))
+    .map((name) => join(swiftSourcesDir, name))
+    .filter((path) => readFileSync(path, "utf8").includes(marker));
+  if (candidates.length !== 1) {
+    throw new Error(
+      `parity check: expected exactly ONE Swift owner of "${marker}", found ${candidates.length}`,
+    );
+  }
+  return candidates[0];
+}
+const swiftPath = findSwiftOwner("semanticTextExtensions: Set<String> = [");
 
 /** Extensions the server serves as text via MIME (text/* or application/json),
  * NOT via the explicit SEMANTIC_TEXT_EXTENSIONS set. Fixed + documented: adding a
