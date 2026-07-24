@@ -115,69 +115,6 @@ public final class GatewayClient: Sendable {
         return try Self.decoder.decode(RunDetail.self, from: data)
     }
 
-    public func artifactText(runId: String, path: String) async throws -> String {
-        let escaped = path.split(separator: "/").map { part in
-            String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
-        }.joined(separator: "/")
-        let req = request("runs/\(runId)/artifacts/\(escaped)", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return String(decoding: data, as: UTF8.self)
-    }
-
-    public func listRunArtifacts(runId: String) async throws -> [ArtifactInfo] {
-        let req = request("runs/\(runId)/artifacts", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        struct Resp: Decodable { let artifacts: [ArtifactInfo] }
-        return (try? Self.decoder.decode(Resp.self, from: data))?.artifacts ?? []
-    }
-
-    public func artifactData(runId: String, path: String) async throws -> Data {
-        let escaped = path.split(separator: "/").map { part in
-            String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
-        }.joined(separator: "/")
-        let req = request("runs/\(runId)/artifacts/\(escaped)", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return data
-    }
-
-    /// List a run's PRODUCED outputs — the project's `artifacts/` dir, not the run
-    /// orchestration tree. Same shape/serving as `GET /runs/:id/artifacts`.
-    public func listProducedFiles(runId: String) async throws -> [ArtifactInfo] {
-        let req = request("runs/\(runId)/produced", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        struct Resp: Decodable { let artifacts: [ArtifactInfo] }
-        return (try? Self.decoder.decode(Resp.self, from: data))?.artifacts ?? []
-    }
-
-    public func producedData(runId: String, path: String) async throws -> Data {
-        let escaped = path.split(separator: "/").map { part in
-            String(part).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String(part)
-        }.joined(separator: "/")
-        let req = request("runs/\(runId)/produced/\(escaped)", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw GatewayError.http(status: status, body: String(decoding: data, as: UTF8.self))
-        }
-        return data
-    }
-
     public func listHarnesses(fresh: Bool = false) async throws -> [HarnessStatus] {
         let query = fresh ? [URLQueryItem(name: "fresh", value: "true")] : []
         let req = request("harnesses", method: "GET", queryItems: query)

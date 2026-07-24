@@ -28,6 +28,10 @@ import Testing
         HarnessAuthSource(source: "api_key_env", availability: availability, verification: verification)
     }
 
+    private func providerAuthFileSource(availability: String, verification: String) -> HarnessAuthSource {
+        HarnessAuthSource(source: "provider_auth_file", availability: availability, verification: verification)
+    }
+
     @Test func absentOptionalKeyRendersNeutralNotFail() {
         // Native adapter emits a presence-only `stored_key` fail because no key is
         // configured; the typed api_key_env source says unavailable + not_run.
@@ -36,7 +40,8 @@ import Testing
             ReadinessCheck(kind: "probe", id: "stored_key", title: "Stored key", status: "fail", detail: "no anthropic key fallback"),
         ]
         let out = HarnessReadinessPresentation.neutralizeAbsentOptionalKey(
-            rows, authSources: [apiKeySource(availability: "unavailable", verification: "not_run")])
+            rows, authSources: [apiKeySource(availability: "unavailable", verification: "not_run")],
+            apiKeyFallbackSource: .apiKeyEnvironment)
         let stored = out.first { $0.id == "stored_key" }
         #expect(stored?.status == "skip")
         #expect(stored?.detail == "not configured (optional API-key fallback)")
@@ -53,7 +58,8 @@ import Testing
             ReadinessCheck(kind: "smoke", id: "isolated_api_smoke", title: "Isolated API-key smoke", status: "fail", detail: "401"),
         ]
         let out = HarnessReadinessPresentation.neutralizeAbsentOptionalKey(
-            rows, authSources: [apiKeySource(availability: "available", verification: "failed")])
+            rows, authSources: [apiKeySource(availability: "available", verification: "failed")],
+            apiKeyFallbackSource: .apiKeyEnvironment)
         #expect(out.first { $0.id == "isolated_api_smoke" }?.status == "fail")
         #expect(out.first { $0.id == "stored_key" }?.status == "pass")
     }
@@ -61,7 +67,8 @@ import Testing
     @Test func storedKeyFailWithoutTypedSourceIsLeftUnchanged() {
         // No api_key_env source to prove the absence is optional → do not rewrite.
         let rows = [ReadinessCheck(kind: "probe", id: "stored_key", title: "Stored key", status: "fail")]
-        let out = HarnessReadinessPresentation.neutralizeAbsentOptionalKey(rows, authSources: [])
+        let out = HarnessReadinessPresentation.neutralizeAbsentOptionalKey(
+            rows, authSources: [], apiKeyFallbackSource: .apiKeyEnvironment)
         #expect(out.first { $0.id == "stored_key" }?.status == "fail")
     }
 
@@ -73,6 +80,54 @@ import Testing
         info.authSources = [apiKeySource(availability: "unavailable", verification: "not_run")]
         let presentation = HarnessReadinessPresentation.from(family: .claude, info: info)
         #expect(presentation.rows.first { $0.id == "stored_key" }?.status == "skip")
+    }
+
+    // MARK: - QA-005 codex: the api-key fallback lives at provider_auth_file, not api_key_env
+
+    @Test func codexDefaultSubscriptionNeutralizesAbsentProviderAuthFileKey() {
+        // The DEFAULT codex subscription case: native session works, and the
+        // OPTIONAL api-key fallback (provider_auth_file) is absent + not_run.
+        // Before the typed-source fix the neutralizer only recognized api_key_env,
+        // so codex rendered a RED stored_key here — violating native-first QA-005.
+        var info = HarnessInfo(family: .codex, health: .ok, version: "1", auth: "ok", intents: ["implement"])
+        info.readiness = [
+            ReadinessCheck(kind: "auth", id: "native_session", title: "Native session", status: "pass"),
+            ReadinessCheck(kind: "probe", id: "stored_key", title: "Stored key", status: "fail", detail: "no OPENAI_API_KEY / auth.json fallback"),
+        ]
+        info.authSources = [providerAuthFileSource(availability: "unavailable", verification: "not_run")]
+        let presentation = HarnessReadinessPresentation.from(family: .codex, info: info)
+        let stored = presentation.rows.first { $0.id == "stored_key" }
+        #expect(stored?.status == "skip")
+        #expect(stored?.detail == "not configured (optional API-key fallback)")
+        #expect(stored?.status != "fail")
+    }
+
+    @Test func codexPresentButFailedProviderAuthFileKeyStaysRed() {
+        // A configured codex api-key fallback that FAILS its smoke stays red: the
+        // provider_auth_file source is available (present) so the absence rewrite
+        // is never triggered and the real isolated_api_smoke failure shows red.
+        var info = HarnessInfo(family: .codex, health: .degraded, version: "1", auth: "key failed", intents: ["implement"])
+        info.readiness = [
+            ReadinessCheck(kind: "probe", id: "stored_key", title: "Stored key", status: "pass"),
+            ReadinessCheck(kind: "smoke", id: "isolated_api_smoke", title: "Isolated API-key smoke", status: "fail", detail: "401"),
+        ]
+        info.authSources = [providerAuthFileSource(availability: "available", verification: "failed")]
+        let presentation = HarnessReadinessPresentation.from(family: .codex, info: info)
+        #expect(presentation.rows.first { $0.id == "isolated_api_smoke" }?.status == "fail")
+        #expect(presentation.rows.first { $0.id == "stored_key" }?.status == "pass")
+    }
+
+    @Test func codexApiKeyEnvSourceDoesNotNeutralizeProviderAuthFileFamily() {
+        // A stray api_key_env source must NOT neutralize codex's stored_key: codex's
+        // fallback is provider_auth_file, so an unrelated api_key_env absence is not
+        // proof the codex fallback is unconfigured — the fail stays red.
+        var info = HarnessInfo(family: .codex, health: .ok, version: "1", auth: "ok", intents: ["implement"])
+        info.readiness = [
+            ReadinessCheck(kind: "probe", id: "stored_key", title: "Stored key", status: "fail", detail: "no auth.json fallback"),
+        ]
+        info.authSources = [apiKeySource(availability: "unavailable", verification: "not_run")]
+        let presentation = HarnessReadinessPresentation.from(family: .codex, info: info)
+        #expect(presentation.rows.first { $0.id == "stored_key" }?.status == "fail")
     }
 
     @Test func presentationDoesNotRenderDuplicateRows() {

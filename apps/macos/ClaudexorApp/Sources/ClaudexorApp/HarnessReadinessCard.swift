@@ -25,7 +25,8 @@ struct HarnessReadinessPresentation: Equatable {
         // repeated check/reason never shows twice (owner-reported).
         let rows = neutralizeAbsentOptionalKey(
             dedupeChecks(info?.readiness ?? []),
-            authSources: info?.authSources ?? [])
+            authSources: info?.authSources ?? [],
+            apiKeyFallbackSource: family.apiKeyAuthReadinessRequest?.source)
         let reasons = dedupeOrdered(info?.reasons ?? [])
         return HarnessReadinessPresentation(
             family: family,
@@ -47,17 +48,27 @@ struct HarnessReadinessPresentation: Equatable {
     /// check that flips to `fail` merely because no key is configured — but on a
     /// healthy native harness the API key is an unused fallback, not a failure.
     /// The authority is the TYPED auth-source verdict, not the row's status
-    /// string (ARCHITECTURE §5): when the `api_key_env` source is
-    /// `unavailable + not_run` the fallback is simply not configured, so the
-    /// `stored_key` fail is rewritten to a neutral `skip` ("not configured").
+    /// string (ARCHITECTURE §5). The fallback does NOT live at one hard-coded
+    /// source: the native-first CLIs read the key from `api_key_env`, but Codex's
+    /// fallback is `provider_auth_file` — `HarnessFamily.apiKeyAuthReadinessRequest`
+    /// is the authority for which TYPED source each family's api-key fallback uses.
+    /// When THAT source is `unavailable + not_run` the fallback is simply not
+    /// configured, so the `stored_key` fail is rewritten to a neutral `skip`
+    /// ("not configured"). This is what keeps the DEFAULT Codex subscription case
+    /// (provider_auth_file absent + not_run) from rendering a red `stored_key`.
     /// A present-but-broken key never reaches this rewrite (its `stored_key` is
     /// `pass`; the real failure surfaces via the `isolated_api_smoke` row), so
-    /// genuine failures still render red.
+    /// genuine failures still render red. A family without an api-key fallback
+    /// (`apiKeyFallbackSource == nil`) is never neutralized.
     static func neutralizeAbsentOptionalKey(
-        _ checks: [ReadinessCheck], authSources: [HarnessAuthSource]
+        _ checks: [ReadinessCheck], authSources: [HarnessAuthSource],
+        apiKeyFallbackSource: AuthSourceKind?
     ) -> [ReadinessCheck] {
+        guard let apiKeyFallbackSource else { return checks }
         let keyAbsent = authSources.contains {
-            $0.source == "api_key_env" && $0.availability == "unavailable" && $0.verification == "not_run"
+            AuthSourceKind(rawValue: $0.source) == apiKeyFallbackSource
+                && $0.availability == AuthAvailability.unavailable.rawValue
+                && $0.verification == AuthVerification.notRun.rawValue
         }
         guard keyAbsent else { return checks }
         return checks.map { row in

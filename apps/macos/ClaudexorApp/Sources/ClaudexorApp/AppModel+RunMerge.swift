@@ -41,6 +41,13 @@ extension AppModel {
         task.planReadiness = task.planReadiness ?? existing.planReadiness
         task.operatorDecisionAction = task.operatorDecisionAction ?? existing.operatorDecisionAction
         task.deliveryReceipt = task.deliveryReceipt ?? existing.deliveryReceipt
+        // SSE-only live disclosures the list summary NEVER carries (round-4 #6):
+        // `attentionNote` is a rotation/diverged receipt the user MUST keep seeing
+        // ("the user must see why"), so it survives any list refresh; `retryStatus`
+        // is the W-C2 api_retry note — transient, carried only while the run is still
+        // ACTIVE (a run that has gone terminal is no longer retrying, so it clears).
+        task.attentionNote = task.attentionNote ?? existing.attentionNote
+        if task.phase.isActive { task.retryStatus = task.retryStatus ?? existing.retryStatus }
         if task.planQuestions.isEmpty { task.planQuestions = existing.planQuestions }
         if task.candidates.isEmpty { task.candidates = existing.candidates }
         // List summaries carry no result: keep the last hydrated apply truth as ONE

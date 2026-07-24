@@ -1982,6 +1982,66 @@ import Testing
         }
     }
 
+    /// Round-4 advisory #3 (INV-021): a malformed 200 on the artifact/produced
+    /// LIST endpoints must NOT project as an honest EMPTY gallery — the decode
+    /// failure propagates as `.decoding` so the load reads as FAILED (the app layer
+    /// then renders error + Retry, never a false "no artifacts" over a real error).
+    @Test func listRunArtifactsPropagatesMalformed200InsteadOfEmptyGallery() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        RequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs/r/artifacts" else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            // 200, but the body is not the `{ "artifacts": [...] }` shape.
+            return (Self.response(for: request), Data(#"{"unexpected":true}"#.utf8))
+        }
+        await #expect(throws: GatewayError.self) {
+            _ = try await client.listRunArtifacts(runId: "r")
+        }
+    }
+
+    @Test func listProducedFilesPropagatesMalformed200InsteadOfEmptyGallery() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        RequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs/r/produced" else {
+                throw TestTransportError.badRequest(request.url?.absoluteString ?? "nil")
+            }
+            return (Self.response(for: request), Data(#"{"unexpected":true}"#.utf8))
+        }
+        await #expect(throws: GatewayError.self) {
+            _ = try await client.listProducedFiles(runId: "r")
+        }
+    }
+
+    /// A well-formed 200 with an EMPTY `artifacts` array remains an honest empty
+    /// gallery (never conflated with the malformed-200 failure above).
+    @Test func listRunArtifactsWellFormedEmptyStaysEmpty() async throws {
+        defer { RequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RequestStubURLProtocol.self]
+        let client = GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "t",
+            session: URLSession(configuration: config)
+        )
+        RequestStubURLProtocol.handler = { request in
+            (Self.response(for: request), Data(#"{"artifacts":[]}"#.utf8))
+        }
+        let artifacts = try await client.listRunArtifacts(runId: "r")
+        #expect(artifacts.isEmpty)
+    }
+
     @Test func authReadinessRejectsMismatchedAndUnknownResponseFields() throws {
         let mismatch = """
         {"harnessId":"claude","authRequest":"subscription","requestedSource":"native_session",

@@ -78,13 +78,21 @@ enum ArtifactFetchError {
     }
 
     static func payloadError(from error: Error, path: String) -> PayloadError {
-        guard let gateway = error as? GatewayError, case .http(let status, let body) = gateway else {
+        guard let gateway = error as? GatewayError else { return offline(path: path) }
+        switch gateway {
+        case .http(let status, let body):
+            switch status {
+            case 409: return .notRenderable("\(path): \(sensitiveRefusalMessage(body: body))")
+            case 413: return .notRenderable("\(path): Too large to preview here — open it from the run folder.")
+            default: return offline(path: path)
+            }
+        case .decoding:
+            // Strict UTF-8 decode failed in the client (malformed bytes on the
+            // artifact-text path): refuse as not-renderable naming the file, the
+            // same honest outcome producedTextOutcome gives for a non-UTF-8 body.
+            return .notRenderable("\(path) is not valid UTF-8 text — open it from the run folder.")
+        case .transport:
             return offline(path: path)
-        }
-        switch status {
-        case 409: return .notRenderable("\(path): \(sensitiveRefusalMessage(body: body))")
-        case 413: return .notRenderable("\(path): Too large to preview here — open it from the run folder.")
-        default: return offline(path: path)
         }
     }
 

@@ -282,8 +282,8 @@ final class AppModel {
             if await tryConnect() {
                 while !Task.isCancelled, generation == connectionGeneration {
                     try? await Task.sleep(for: .seconds(3))
-                    guard generation == connectionGeneration, let current = client else { break }
-                    if (try? await current.health()) != true { break }
+                    guard generation == connectionGeneration, client != nil else { break }
+                    guard await pollEngineIdentity() else { break }
                 }
             } else if !attemptedLaunch, DaemonLauncher.startIfNeeded() {
                 attemptedLaunch = true
@@ -373,6 +373,18 @@ final class AppModel {
             // fall through to caller (offline / auto-start path)
         }
         return false
+    }
+
+    /// One steady-state connectivity poll (round-4 #5 / QA-002): re-HANDSHAKE
+    /// rather than the bare `health()` Bool, so a daemon SWAPPED at the same
+    /// endpoint refreshes its disclosed build identity instead of pinning the old
+    /// version/sha in About forever. A dropped or incompatible handshake returns
+    /// false → the caller falls to the reconnect path.
+    @discardableResult
+    func pollEngineIdentity() async -> Bool {
+        guard let current = client, let outcome = try? await current.handshake(), outcome.ok else { return false }
+        engineIdentity = outcome.engine
+        return true
     }
 
     /// Single-flight + coalescing runs-list refresh (QA-052), mirroring the
@@ -827,22 +839,6 @@ final class AppModel {
             threadStatus = "Could not refresh threads: \(userMessage(for: error))"
             return false
         }
-    }
-
-    /// Load the registered-project registry (QA-072) so the composer can disclose
-    /// nesting overlap. Best-effort: the path MRU still drives selection, so a
-    /// registry fetch failure just leaves nesting undisclosed, never blocks.
-    func refreshProjects() async {
-        guard let client else { return }
-        if let list = try? await client.listProjects() { registeredProjects = list.projects }
-    }
-
-    /// Disclosed nesting relations for a project ROOT (QA-072); empty when the
-    /// root is disjoint or unregistered. Matched on the canonical registry root.
-    func projectNesting(forRoot root: String) -> [ProjectNesting] {
-        let target = root.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !target.isEmpty else { return [] }
-        return registeredProjects.first { $0.root == target }?.nesting ?? []
     }
 
     /// The thread the conversation is currently showing (detail preferred — it is

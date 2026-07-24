@@ -1091,6 +1091,10 @@ struct AppModelRefreshTests {
         hydrated.applyEligibility = ApplyEligibility(eligible: true, state: "ok", reason: nil, requiredAction: nil)
         hydrated.planReadiness = PlanReadiness(state: "ready", questionCount: 0)
         hydrated.operatorDecisionAction = "accept_risk"
+        // SSE-only disclosures (round-4 #6): attentionNote is a receipt the user must
+        // keep seeing; retryStatus is transient and must NOT survive onto a terminal run.
+        hydrated.attentionNote = "Rotated to claude after codex diverged"
+        hydrated.retryStatus = RetryStatusNote(kind: "api_retry", attempt: 2, maxRetries: 10, retryDelayMs: 2500, errorCategory: "overloaded")
         model.liveTasks = [hydrated]
 
         AppRequestStubURLProtocol.handler = { request in
@@ -1108,6 +1112,49 @@ struct AppModelRefreshTests {
         #expect(merged.applyEligibility?.eligible == true)
         #expect(merged.planReadiness?.state == "ready")
         #expect(merged.operatorDecisionAction == "accept_risk")
+        // The rotation/diverged disclosure survives the list refresh.
+        #expect(merged.attentionNote == "Rotated to claude after codex diverged")
+        // The transient retry note is NOT resurrected onto a now-terminal run.
+        #expect(merged.retryStatus == nil)
+    }
+
+    /// Round-4 #6: the W-C2 api_retry note is SSE-only, so a list refresh landing
+    /// mid-retry on a STILL-ACTIVE run must not wipe it (the live status line would
+    /// otherwise blink out the "Retrying 2/10" disclosure). attentionNote likewise
+    /// survives on an active run.
+    @MainActor
+    @Test func listRefreshPreservesRetryStatusForActiveRun() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        var running = TaskRun(
+            id: "run-live", title: "Run", prompt: "", mode: .agent, phase: .running,
+            project: "Project", harnesses: [], n: 1,
+            createdAt: .now, updatedAt: .now,
+            spendUsd: 0, capUsd: 0, spendKnown: false, capKnown: false,
+            routeProof: .unverified, attentionNote: nil, plan: [], activity: [],
+            candidates: [], findings: [], diff: []
+        )
+        running.retryStatus = RetryStatusNote(kind: "api_retry", attempt: 3, maxRetries: 10, retryDelayMs: 800, errorCategory: "overloaded")
+        running.attentionNote = "Waiting on Anthropic — retrying"
+        model.liveTasks = [running]
+
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/runs" else { throw AppRefreshTestError.badRequest }
+            return (appResponse(for: request), Data(#"{"runs":[{"runId":"run-live","state":"running"}]}"#.utf8))
+        }
+
+        await model.refreshRuns()
+
+        let merged = try #require(model.liveTasks.first)
+        #expect(merged.retryStatus?.attempt == 3)
+        #expect(merged.retryStatus?.errorCategory == "overloaded")
+        #expect(merged.attentionNote == "Waiting on Anthropic — retrying")
     }
 
     /// Round-3 crit #5: a runs-list response completing AFTER a reconnect fence
@@ -1162,6 +1209,109 @@ struct AppModelRefreshTests {
         }
         #expect(message.contains("not valid UTF-8"))
         #expect(message.contains("artifacts/report.txt"))
+    }
+
+    /// Round-4 advisory #2: the run-tree artifact-text surface is symmetric with
+    /// producedTextOutcome — a malformed-UTF-8 body is REFUSED as not-renderable
+    /// (naming its path), never silently U+FFFD-replaced. `artifactText` now decodes
+    /// strictly in the client and the outcome layer maps `.decoding` → `.notRenderable`.
+    @MainActor
+    @Test func artifactTextOutcomeRefusesMalformedUtf8() async {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        AppRequestStubURLProtocol.handler = { request in
+            // A lone 0xFF byte is never valid UTF-8.
+            return (appResponse(for: request), Data([0xFF, 0xFE, 0x41]))
+        }
+
+        let outcome = await model.artifactTextOutcome(runId: "r", path: "final/report.md")
+        guard case .failure(.notRenderable(let message)) = outcome else {
+            Issue.record("malformed UTF-8 should map to .notRenderable, got \(outcome)")
+            return
+        }
+        #expect(message.contains("not valid UTF-8"))
+        #expect(message.contains("final/report.md"))
+    }
+
+    /// Round-4 advisory #4: a FAILED project-registry refresh must not keep
+    /// presenting the old registry — the composer would show STALE nesting overlap
+    /// as current truth. On failure the registry is cleared so nesting is genuinely
+    /// undisclosed (the documented contract), never a stale warning shown as fresh.
+    @MainActor
+    @Test func refreshProjectsFailureClearsStaleNestingInsteadOfShowingItAsFresh() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        // A previously-loaded registry whose nesting overlap the composer discloses.
+        let child = try JSONDecoder().decode(RegisteredProject.self, from: Data(#"""
+        {"schemaVersion":1,"id":"child","root":"/repo/child","createdAt":"2026-07-19T12:00:00.000Z",
+         "updatedAt":"2026-07-19T12:00:00.000Z",
+         "nesting":[{"relation":"inside","root":"/repo","projectId":"parent"}]}
+        """#.utf8))
+        model.registeredProjects = [child]
+        #expect(!model.projectNesting(forRoot: "/repo/child").isEmpty)   // disclosed before the failure
+
+        // The registry GET now FAILS (engine hiccup): listProjects throws.
+        AppRequestStubURLProtocol.handler = { request in
+            guard request.url?.path == "/v2/projects" else { throw AppRefreshTestError.badRequest }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 503, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return (response, Data("{}".utf8))
+        }
+        let ok = await model.refreshProjects()
+
+        #expect(ok == false)
+        // Stale overlap is NOT presented as current truth after a failed refresh.
+        #expect(model.projectNesting(forRoot: "/repo/child").isEmpty)
+        #expect(model.registeredProjects.isEmpty)
+    }
+
+    /// Round-4 advisory #5: the steady-state connectivity poll re-HANDSHAKES, so a
+    /// daemon SWAPPED at the same endpoint refreshes its disclosed build identity —
+    /// About never pins the old version/sha. Successive handshakes with different
+    /// identities must each update engineIdentity.
+    @MainActor
+    @Test func pollEngineIdentityRefreshesSwappedDaemonIdentity() async throws {
+        defer { AppRequestStubURLProtocol.handler = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AppRequestStubURLProtocol.self]
+        let model = AppModel(client: GatewayClient(
+            baseURL: URL(string: "http://127.0.0.1:1234")!, token: "test",
+            session: URLSession(configuration: config)
+        ), requestNotificationAuthorization: false)
+        model.health = .connected
+        let handshakes = AppRefreshCallCounter()
+        AppRequestStubURLProtocol.handler = { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/healthz"):
+                return (appResponse(for: request), Data(#"{"ok":true}"#.utf8))
+            case ("POST", "/v2/handshake"):
+                handshakes.increment()
+                // Same endpoint, DIFFERENT serving build across successive polls.
+                let version = handshakes.count == 1 ? "3.1.0" : "3.1.1"
+                let sha = handshakes.count == 1 ? "sha-A" : "sha-B"
+                return (appResponse(for: request), Data(#"{"protocolMajor":3,"compatible":true,"operationsPath":"/v2/operations","engine":{"version":"\#(version)","sha":"\#(sha)","entry":"/opt/claudexor/daemon.js"}}"#.utf8))
+            default:
+                throw AppRefreshTestError.badRequest
+            }
+        }
+
+        #expect(await model.pollEngineIdentity())
+        #expect(model.engineIdentity?.sha == "sha-A")
+        #expect(model.engineIdentity?.version == "3.1.0")
+
+        // Daemon replaced at the same endpoint: the next poll picks up the NEW identity.
+        #expect(await model.pollEngineIdentity())
+        #expect(model.engineIdentity?.sha == "sha-B")
+        #expect(model.engineIdentity?.version == "3.1.1")
     }
 
     /// W4.3: vendor cost ticks are VALUATION — they must never move the cash
