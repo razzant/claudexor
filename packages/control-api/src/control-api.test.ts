@@ -7355,6 +7355,39 @@ describe("DaemonControlApiServer", () => {
       });
       expect(badSettings.status).toBe(400);
 
+      // N1 boundary: a service that THROWS a typed problem must see its code
+      // reach the HTTP body verbatim — the catch path used to stamp every
+      // throw internal_error, erasing the config_error taxonomy (D-9/#22).
+      const throwing = new DaemonControlApiServer({
+        ...readyIdentity,
+        token,
+        daemon,
+        services: {
+          settings: async () => snapshot,
+          updateSettings: async () => {
+            throw Object.assign(new Error("quality routing requires comparable tiers"), {
+              status: 400,
+              code: "config_error",
+            });
+          },
+        },
+      });
+      const throwingAddr = await throwing.start();
+      try {
+        const typedRefusal = await apiFetch(
+          `http://${throwingAddr.host}:${throwingAddr.port}/settings`,
+          {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            body: JSON.stringify({ paidBudgetPerRun: { kind: "unlimited" } }),
+          },
+        );
+        expect(typedRefusal.status).toBe(400);
+        expect(((await typedRefusal.json()) as { code?: string }).code).toBe("config_error");
+      } finally {
+        await throwing.stop();
+      }
+
       const okSettings = await apiFetch(`${base}/settings`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}` },

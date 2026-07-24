@@ -31,8 +31,10 @@ deferred; they are recorded here now.
   since-deleted profile 400s instead of returning the prior job (fail-closed).
 - E6: the profile verification probe does not re-check `enabled` mid-job; run
   routing still refuses disabled profiles.
-- N1: 4xx problem bodies from thrown service errors carry `code:
-  "internal_error"` (message/status correct) — pre-existing serializer pattern.
+- N1: FIXED (v3.1.0 Ф3 gate-5) — thrown service errors with a typed string
+  `code` (e.g. settings `config_error`) now reach the problem body verbatim;
+  only untyped throws stamp `internal_error` (boundary test in
+  control-api.test.ts).
 - N4: no recorded macOS Visual QA evidence pass for the accounts popover yet;
   owner is dogfooding the surface live.
 

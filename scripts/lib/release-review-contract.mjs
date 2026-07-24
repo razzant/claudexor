@@ -422,6 +422,29 @@ export function validateOwnerReviewAttestationPayload(payload, expected) {
       namedSubWaves,
     }),
   );
+  // Bind each triad slot to the EXACT pack bytes its reviewer consumed: the
+  // slot record's prompt digest must equal its sub-wave's recomputed pack
+  // digest in the receipt — reviewer reports from one set of prompts can
+  // never seal with a coverage proof computed over different packs.
+  const receiptPacks = new Map(
+    (payload.coverageReceipt?.packs ?? []).map((pack) => [pack.subWave, pack.sha256]),
+  );
+  if (receiptPacks.size > 0) {
+    for (const review of reviews) {
+      const panel = review?.panel;
+      if (!panel || panel.slot !== "triad" || typeof panel.subWave !== "string") continue;
+      const expectedDigest = receiptPacks.get(panel.subWave);
+      if (!SHA256.test(review.promptSha256 ?? "")) {
+        reasons.push(
+          `owner review triad slot ${panel.model} (sub-wave ${panel.subWave}) carries no prompt digest to bind against the coverage receipt`,
+        );
+      } else if (expectedDigest && review.promptSha256 !== expectedDigest) {
+        reasons.push(
+          `owner review triad slot ${panel.model} (sub-wave ${panel.subWave}) reviewed prompt ${review.promptSha256.slice(0, 12)}… but the coverage receipt binds pack ${expectedDigest.slice(0, 12)}…`,
+        );
+      }
+    }
+  }
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -511,16 +534,22 @@ export function buildTouchedFilePack(paths, git, maxFileBytes, maxPackBytes, opt
       out.push(`### ${path}\n\n(deleted by this diff)`);
       continue;
     }
-    if (text.length > maxFileBytes) {
-      omitted.push(`${path} (${text.length}B > per-file cap; review via diff)`);
+    // Budgets count the UTF-8 bytes the transport actually submits — string
+    // .length counts UTF-16 code units and undercounts multibyte text — and
+    // the FULL section (header + fences + separators), not the bare file.
+    const fileBytes = Buffer.byteLength(text, "utf8");
+    if (fileBytes > maxFileBytes) {
+      omitted.push(`${path} (${fileBytes}B > per-file cap; review via diff)`);
       continue;
     }
-    if (total + text.length > maxPackBytes) {
+    const section = touchedFileSection(path, text);
+    const sectionBytes = Buffer.byteLength(section, "utf8") + 2; // + "\n\n" joiner
+    if (total + sectionBytes > maxPackBytes) {
       omitted.push(`${path} (pack budget reached)`);
       continue;
     }
-    total += text.length;
-    out.push(touchedFileSection(path, text));
+    total += sectionBytes;
+    out.push(section);
   }
   if (omitted.length > 0 && onOmission === "throw") {
     throw new Error(
@@ -675,7 +704,11 @@ export function blockerContractGaps(findings) {
   return blockingFindings(findings).flatMap((finding) => {
     const gaps = [];
     if (!finding.invariant) gaps.push("no invariant/criterion cited");
+    // INV-139 requires an explicit reachability claim on every blocker: an
+    // OMITTED field is itself a gap (silently treating it as reachable let a
+    // contract-incomplete row block; treating it as fine hid the omission).
     if (finding.reachable === false) gaps.push("reviewer marked it unreachable in default config");
+    else if (finding.reachable !== true) gaps.push("no reachable:true/false claim");
     return gaps.length > 0 ? [{ finding, gaps }] : [];
   });
 }

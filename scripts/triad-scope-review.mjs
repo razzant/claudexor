@@ -325,12 +325,32 @@ const THOROUGHNESS = `- Do NOT stop after finding the first issue. Check EVERY i
  * review-coverage-check's parseNameStatusZ, so a space/unicode/newline path is
  * never C-quoted into a `git show` miss (the quoted `--name-only` output made
  * buildTouchedFilePack falsely render such a file as deleted). Deleted paths
- * are excluded — they have no current text to pack; the diff carries them.
+ * are excluded from the FULL-TEXT pack (no current text; the diff carries
+ * them) but stay in the prompt's changed-file list, annotated.
  */
 function changedFiles(base) {
   return parseNameStatusZ(git(["diff", "-z", "--name-status", `${base}..HEAD`]))
     .filter((entry) => !entry.deleted)
     .map((entry) => entry.path);
+}
+
+/**
+ * The DERIVED slot verdict the release sealer consumes (never CLI prose):
+ * blocked on any critical FAIL, warn on any advisory FAIL, pass when fully
+ * clean — and only a responded slot can carry a non-error verdict at all.
+ */
+function slotVerdict(status, findings) {
+  if (status !== "responded") return "error";
+  if (findings.some((f) => f.verdict === "FAIL" && f.severity === "critical")) return "blocked";
+  if (findings.some((f) => f.verdict === "FAIL")) return "warn";
+  return "pass";
+}
+
+/** The reviewer-facing changed-file list: every path, deletions annotated. */
+function changedFilesListing(base) {
+  return parseNameStatusZ(git(["diff", "-z", "--name-status", `${base}..HEAD`]))
+    .map((entry) => (entry.deleted ? `${entry.path} (deleted)` : entry.path))
+    .join("\n");
 }
 
 /**
@@ -417,7 +437,8 @@ function subsetNote(subsetSelectors) {
   return (
     `\n\nPACKET-SPLIT SUB-WAVE: this wave's FULL-TEXT pack below covers exactly ` +
     `the changed files under [${subsetSelectors.join(", ")}]. Every changed file ` +
-    `still appears in the diff and the changed-files list; the remaining areas are ` +
+    `still appears in the diff and in the changed-files list (deletions annotated, ` +
+    `diff-only by nature); the remaining areas are ` +
     `reviewed in full text in their own sibling sub-waves, and a deterministic ` +
     `coverage checker asserts the union of sub-waves covers every changed file.`
   );
@@ -480,7 +501,7 @@ ${diff}
 
 ## Changed files
 
-${changedFiles(base).join("\n")}
+${changedFilesListing(base)}
 `;
 }
 
@@ -795,6 +816,17 @@ async function main() {
       throw new Error("--pack-subset file lists no path/prefix selectors");
     }
   }
+  // The sub-wave NAME this wave's slot records carry (the seal binds panel
+  // slots and the coverage receipt through this name). Required WITH a pack
+  // subset, forbidden without one — an unsplit wave is anonymous.
+  const subWaveArg = arg("sub-wave");
+  const subWaveName = typeof subWaveArg === "string" ? subWaveArg.trim() : null;
+  if (subsetSelectors && !/^[a-z0-9][a-z0-9-]{0,31}$/.test(subWaveName ?? "")) {
+    throw new Error("--sub-wave <name> ([a-z0-9-]) is required for a packet-split sub-wave");
+  }
+  if (!subsetSelectors && subWaveName) {
+    throw new Error("--sub-wave applies only to a packet-split sub-wave (--pack-subset)");
+  }
   const packFiles = reviewPackFiles(base, frozen.packet, subsetSelectors);
   const triadPrompt = buildTriadPrompt(
     base,
@@ -980,6 +1012,15 @@ async function main() {
       promptSha256: promptSha256.triad,
       reviewRunId,
       reviewWaveId,
+      // Typed slot-attestation fields: the release sealer PARSES this record
+      // and derives everything from it — verdict, panel identity, report
+      // digest — instead of trusting CLI-prose labels (gate-5 critical).
+      panel_slot: "triad",
+      sub_wave: subWaveName,
+      report_sha256: createHash("sha256")
+        .update(redactSecrets(result.raw ?? ""))
+        .digest("hex"),
+      verdict: slotVerdict(status, parsed),
       model_id: result.model,
       requested_model: result.model,
       observed_model: result.observedModel ?? null,
@@ -1033,6 +1074,11 @@ async function main() {
       promptSha256: promptSha256.scope,
       reviewRunId,
       reviewWaveId,
+      panel_slot: "scope",
+      sub_wave: subWaveName,
+      report_sha256: createHash("sha256")
+        .update(redactSecrets(scopeResult.raw ?? ""))
+        .digest("hex"),
       model_id: SCOPE_MODEL,
       requested_model: SCOPE_MODEL,
       observed_model: scopeResult.observedModel ?? null,
@@ -1108,6 +1154,7 @@ async function main() {
     }
     scopeMeta.findings = scopeFindings;
     scopeMeta.missing_items = scopeMissing;
+    scopeMeta.verdict = slotVerdict(scopeStatus, scopeFindings);
     writeFileSync(join(outDir, "scope.metadata.json"), JSON.stringify(scopeMeta, null, 2) + "\n");
   }
 

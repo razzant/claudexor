@@ -234,6 +234,35 @@ describe("WorkspaceManager", () => {
     await mgr.dispose(env);
   });
 
+  it("the created-this-run bridge fact survives a manager restart (persisted marker)", async () => {
+    // gate-5 advisory: the fact was in-memory per-instance, so a daemon
+    // restart mid-run lost it and diff() CAPTURED our own pristine bridge as
+    // if candidate-authored. The envelope-id-bound bridge-created.json marker
+    // keeps the exclusion across manager recreation; a pristine bridge stays
+    // out of the patch even when a FRESH manager runs the diff.
+    const repo = reapMk(join(tmpdir(), "claudexor-ws-bridge-restart-"));
+    await git(repo, ["init", "-b", "main"]);
+    writeFileSync(join(repo, "AGENTS.md"), "# project agents guidance\n");
+    await git(repo, ["add", "-A"]);
+    await git(repo, ["-c", "user.email=t@t.dev", "-c", "user.name=Test", "commit", "-m", "init"]);
+
+    const runtimeRoot = reapMk(join(tmpdir(), "claudexor-ws-bridge-restart-rt-"));
+    const creator = new WorkspaceManager(repo, { runtimeRoot });
+    const env = await creator.create({
+      taskId: "task-bridge-restart",
+      attemptId: "a01",
+      baseRef: "HEAD",
+    });
+    writeFileSync(join(env.worktree_path, "feature.ts"), "export const x = 1;\n");
+    // A DIFFERENT manager instance (same runtime root) runs the diff — the
+    // in-memory set is empty, only the persisted marker can prove the fact.
+    const restarted = new WorkspaceManager(repo, { runtimeRoot });
+    const diff = await restarted.diff(env);
+    expect(diff).toContain("feature.ts");
+    expect(diff).not.toContain("CLAUDE.md");
+    await creator.dispose(env);
+  });
+
   it("A-3 residual: captures a candidate that rewrites a PRE-EXISTING committed CLAUDE.md to exactly the bridge bytes", async () => {
     // The A-3 residual corner: byte-equality alone cannot tell "Claudexor wrote
     // this bridge this run" from "a candidate rewrote a pre-existing committed

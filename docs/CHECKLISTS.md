@@ -456,7 +456,7 @@ itself). The v3 protocol bounds the loop mechanically.
     full sealed diff and the full changed-file list, but renders the FULL TEXT
     of only a NAMED SUBSET of the changed files, selected with
     `--pack-subset <file>` (a list of paths or top-level area prefixes, e.g.
-    `orchestrator/`, `packages/control-api/`, `apps/macos/ClaudexorApp/`,
+    `packages/orchestrator/`, `packages/control-api/`, `apps/macos/ClaudexorApp/`,
     `apps/macos/ClaudexorKit/`, `packages/schema/`, `docs/`). Size each subset
     so `buildTouchedFilePack` supplies full text within `TRIAD_MAX_PACK_BYTES`
     (no omission). Every sub-wave keeps the identical reviewer contract — same
@@ -465,7 +465,8 @@ itself). The v3 protocol bounds the loop mechanically.
     changed-file set.** `scripts/review-coverage-check.mjs --base <sha>
     --candidate <sha> --pack <each sub-wave's prompt/pack> …` proves this
     deterministically and is a REQUIRED gate before the seal: it enumerates
-    `git diff --name-only base..candidate`, classifies each file as
+    `git diff -z --name-status base..candidate` (NUL-safe — `--name-only`
+    was retired because it C-quotes space/unicode paths), classifies each file as
     hand-written source vs DIFF-AUTHORITATIVE (generated schema under
     `packages/schema/generated/`, `docs/reference/endpoints.json`, swift wire
     fixtures `apps/macos/**/Tests/**/Fixtures/wire/**`, harness fixtures

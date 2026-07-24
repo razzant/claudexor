@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -336,8 +336,13 @@ describe("release review fail-closed contract", () => {
       reason: "uncited blocker",
     };
     const findings = validateChecklistResponse(rows, "model", TRIAD_ITEMS).findings;
+    // An uncited blocker with NO reachable claim carries BOTH gaps: omitting
+    // reachability is itself a contract gap (INV-139), distinct from an
+    // explicit reachable:false.
     expect(blockerContractGaps(findings)).toEqual([
-      expect.objectContaining({ gaps: ["no invariant/criterion cited"] }),
+      expect.objectContaining({
+        gaps: ["no invariant/criterion cited", "no reachable:true/false claim"],
+      }),
     ]);
     const clean = validateChecklistResponse(cleanRows(), "model", TRIAD_ITEMS).findings;
     const triad = liveTriad(clean);
@@ -565,10 +570,16 @@ describe("owner-review attestation (current schema, owner protocol)", () => {
     });
   });
 
+  // One digest per sub-wave NAME, shared by slot fixtures and receipt
+  // fixtures — the validator now binds each triad slot's promptSha256 to its
+  // sub-wave's receipt pack digest.
+  const subWaveDigest = (name: string) =>
+    createHash("sha256").update(`pack-of-${name}`).digest("hex");
   const asSubWave = (reviews: any[], name: string) =>
     reviews.map((review: any) => ({
       ...review,
       reviewer: `${review.reviewer}-${name}`,
+      promptSha256: subWaveDigest(name),
       panel: { ...review.panel, subWave: name },
     }));
   const coverageReceipt = (candidateSha: string, subWaves: string[] = ["macos", "engine"]) => ({
@@ -576,9 +587,9 @@ describe("owner-review attestation (current schema, owner protocol)", () => {
     base: "9".repeat(40),
     candidate: candidateSha,
     ok: true,
-    packs: subWaves.map((subWave, index) => ({
+    packs: subWaves.map((subWave) => ({
       subWave,
-      sha256: String.fromCharCode(97 + index).repeat(64),
+      sha256: subWaveDigest(subWave),
     })),
   });
 

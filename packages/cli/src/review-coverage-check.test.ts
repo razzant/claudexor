@@ -249,6 +249,27 @@ describe("review-coverage-check", () => {
         ).toThrow(/digest mismatch/);
         // Wrong candidate → refused.
         expect(() => bindCoverageReceipt(honest, base)).toThrow(/not the sealed candidate/);
+        // The BASE comes from the packet authority: a receipt whose base
+        // differs from FREEZE is refused, and the degenerate base===candidate
+        // (empty changed set proves nothing) is refused even when claimed
+        // consistently (gate-5 critical: caller honesty about base was the
+        // one leg X133 left open).
+        expect(() => bindCoverageReceipt(honest, candidate, { baseSha: candidate })).toThrow(
+          /not the sealed packet's frozen base/,
+        );
+        expect(() =>
+          bindCoverageReceipt({ ...honest, base: candidate, candidate }, candidate, {
+            baseSha: candidate,
+          }),
+        ).toThrow(/base equals the candidate/);
+        // A packet that ships FILES_TO_READ_WHOLE.txt forbids a receipt that
+        // omitted the whole-file list (X122 — the union must not shrink).
+        expect(() =>
+          bindCoverageReceipt({ ...honest, wholeFileList: null }, candidate, {
+            baseSha: base,
+            wholeFileListPath: join(dir, "FILES_TO_READ_WHOLE.txt"),
+          }),
+        ).toThrow(/omits the whole-file list/);
         // A receipt claiming ok:true over a pack that does NOT cover the
         // change → refused by RECOMPUTATION, not trusted.
         const stalePack = join(dir, "stale-prompt.md");

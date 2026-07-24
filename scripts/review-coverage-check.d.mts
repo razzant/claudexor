@@ -35,6 +35,7 @@ export function runCoverage(input: {
 export function bindCoverageReceipt(
   receipt: unknown,
   candidateSha: string,
+  authority?: { baseSha?: string; wholeFileListPath?: string | null },
 ): {
   base: string;
   candidate: string;

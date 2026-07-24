@@ -98,13 +98,25 @@ export function coverageNeedle(path, currentText) {
 export function fileCoverage(path, currentText, packContents) {
   const needle = coverageNeedle(path, currentText);
   for (const pack of packContents) {
-    if (pack.includes(needle)) return { covered: true, reason: null };
+    // Line-start boundary: a section header quoted mid-line inside another
+    // file's body must not count as coverage. (A verbatim full-section embed
+    // at line start inside another changed file's fenced body remains a
+    // contrived residual false-positive — flagged advisory in gate-5; a full
+    // fence-nesting parser was judged not worth the complexity yet.)
+    if (pack.startsWith(needle) || pack.includes(`\n${needle}`)) {
+      return { covered: true, reason: null };
+    }
   }
   // Not fully present — classify WHY for an actionable report.
   const header = touchedFileHeader(path);
-  const omissionEntry = `${TOUCHED_FILE_OMISSION_MARKER}`;
   for (const pack of packContents) {
-    if (pack.includes(omissionEntry) && pack.includes(`${path} (`)) {
+    // Entry-boundary match: omission entries are ", "-joined after the
+    // marker's ": " — a bare `path (` substring would misattribute a path
+    // that suffixes another omitted path (e.g. `a.ts` inside `b/a.ts (…)`).
+    if (
+      pack.includes(TOUCHED_FILE_OMISSION_MARKER) &&
+      (pack.includes(`, ${path} (`) || pack.includes(`: ${path} (`))
+    ) {
       return {
         covered: false,
         reason: "listed in a pack OMISSION NOTE (omitted past byte budget)",
@@ -158,7 +170,7 @@ export function checkCoverage({ files, readCurrentText, packContents, allowlist 
  * mismatch (a hand-authored ok:true cannot seal). Returns the payload piece
  * built ONLY from recomputed values.
  */
-export function bindCoverageReceipt(receipt, candidateSha) {
+export function bindCoverageReceipt(receipt, candidateSha, authority = {}) {
   if (receipt.schemaVersion !== 1) {
     throw new Error(`coverage receipt schemaVersion ${receipt.schemaVersion} is not 1`);
   }
@@ -167,11 +179,38 @@ export function bindCoverageReceipt(receipt, candidateSha) {
       `coverage receipt candidate ${receipt.candidate} is not the sealed candidate ${candidateSha}`,
     );
   }
+  // The review BASE comes from an independent authority (the sealed packet's
+  // FREEZE.json), never from the receipt: a hand-authored receipt with
+  // base≈candidate would make the changed set empty and the recomputation
+  // vacuously ok — caller honesty about base was the one leg X133 left open.
+  const base = authority.baseSha ?? receipt.base;
+  if (authority.baseSha && receipt.base !== authority.baseSha) {
+    throw new Error(
+      `coverage receipt base ${receipt.base} is not the sealed packet's frozen base ${authority.baseSha}`,
+    );
+  }
+  if (base === candidateSha) {
+    throw new Error(
+      "coverage receipt base equals the candidate — an empty changed set proves nothing",
+    );
+  }
+  // Same authority rule for the whole-file list: recompute with the PACKET's
+  // own FILES_TO_READ_WHOLE.txt when the packet ships one — a receipt that
+  // omits it must not shrink the required set (X122).
+  const wholeFileListPath =
+    authority.wholeFileListPath !== undefined
+      ? authority.wholeFileListPath
+      : (receipt.wholeFileList ?? null);
+  if (authority.wholeFileListPath && !receipt.wholeFileList) {
+    throw new Error(
+      "coverage receipt omits the whole-file list the sealed packet requires (FILES_TO_READ_WHOLE.txt)",
+    );
+  }
   const recomputed = runCoverage({
-    base: receipt.base,
+    base,
     candidate: candidateSha,
     packs: (receipt.packs ?? []).map((pack) => ({ subWave: pack.subWave, path: pack.path })),
-    wholeFileListPath: receipt.wholeFileList ?? null,
+    wholeFileListPath,
   });
   if (!recomputed.report.ok) {
     throw new Error(

@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
@@ -239,7 +247,21 @@ export class WorkspaceManager {
     });
     // Record the created-this-run fact keyed by envelope id, so diff() gates the
     // bridge exclusion on POSITIVE PROOF rather than on content bytes alone.
-    if (bridgeCreatedHere) this.bridgeCreatedEnvelopes.add(envelope.id);
+    // Persisted beside owner.json as well: the in-memory set dies with THIS
+    // manager instance (daemon restart mid-run), and losing the fact CAPTURES
+    // a pristine generated bridge into patch.diff — safe direction, but the
+    // captured bridge would then materialize on apply as if candidate-authored.
+    if (bridgeCreatedHere) {
+      this.bridgeCreatedEnvelopes.add(envelope.id);
+      try {
+        writeFileSync(
+          join(base, "bridge-created.json"),
+          JSON.stringify({ envelope_id: envelope.id, created_at: nowIso() }) + "\n",
+        );
+      } catch {
+        /* marker is an optimization over the in-memory set; never fail create */
+      }
+    }
     return envelope;
   }
 
@@ -454,16 +476,38 @@ export class WorkspaceManager {
     // byte-equality alone cannot tell our freshly written bridge from a candidate
     // that rewrote a PRE-EXISTING committed CLAUDE.md to exactly the bridge bytes,
     // and excluding the latter would silently drop the candidate's real edit. If
-    // the created fact is absent (pre-existing file, a prior run, or a daemon
-    // upgrade that lost the in-memory fact), we NEVER exclude — failing toward
-    // CAPTURE. Condition (2) keeps a candidate that EDITED the bridge we DID
-    // create in the diff. Same exact-path doctrine as the `.claudexor`
-    // artifact-dir exclusion.
+    // the created fact is absent (pre-existing file, or a prior run), we NEVER
+    // exclude — failing toward CAPTURE. Condition (2) keeps a candidate that
+    // EDITED the bridge we DID create in the diff. Same exact-path doctrine as
+    // the `.claudexor` artifact-dir exclusion. The fact survives a manager
+    // restart via the persisted bridge-created.json marker (envelope-id-bound),
+    // read only when the in-memory set lacks the id.
     const bridgeExcludes =
-      this.bridgeCreatedEnvelopes.has(env.id) && isGeneratedClaudeBridge(env.worktree_path)
+      this.bridgeCreatedFact(env) && isGeneratedClaudeBridge(env.worktree_path)
         ? [`:(exclude,top)${CLAUDE_BRIDGE_BASENAME}`]
         : [];
     return diffStaged(env.worktree_path, env.base_sha ?? undefined, bridgeExcludes);
+  }
+
+  /**
+   * The created-this-run bridge fact for diff(): the in-memory set first
+   * (same-instance fast path), else the persisted envelope-id-bound marker —
+   * a daemon restart mid-run must not turn our own pristine bridge into a
+   * captured candidate edit. A missing/foreign marker stays fail-toward-CAPTURE.
+   */
+  private bridgeCreatedFact(env: WorkspaceEnvelope): boolean {
+    if (this.bridgeCreatedEnvelopes.has(env.id)) return true;
+    try {
+      const marker = JSON.parse(
+        readFileSync(
+          join(this.envelopeBase(env.task_id, env.attempt_id), "bridge-created.json"),
+          "utf8",
+        ),
+      ) as { envelope_id?: unknown };
+      return marker.envelope_id === env.id;
+    } catch {
+      return false;
+    }
   }
 
   async dispose(env: WorkspaceEnvelope): Promise<void> {
