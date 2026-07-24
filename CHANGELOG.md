@@ -3,6 +3,128 @@
 Release history for Claudexor. The current version is declared in the root
 `package.json` (the version SSOT); tags `v*` correspond to GitHub Releases.
 
+- **v3.1.0** (2026-07-24) — a five-phase release: engine truth, machine
+  contracts, the macOS app, platform (engine-runtime auto-install + Codex
+  login), and release/meta. Engine: a shared typed attempt-finalizer replaces
+  the three divergent deliverable predicates (D-16, QA-031) — a clean process
+  whose model-authored, schema-validated WorkReport says `needs_input` or
+  `incomplete` stays a completed lifecycle with a typed outcome VETO (never
+  applyable, never a green "succeeded" banner; CLI exit follows the outcome),
+  while a real context-window death is `interrupted/context_capacity_exhausted`
+  and can never launder a partial diff into review, adoption, synthesis,
+  convergence, plan delivery, or an applyable product. Typed context signals
+  ride each adapter (Claude `terminal_reason`/`prompt_too_long` +
+  `compact_boundary` + rate-limit events, also fixing QA-015; Codex
+  `ContextWindowExceeded` only behind a recorded exec fixture; Cursor stays
+  honestly generic), with one-shot automatic continuation for the proven
+  Claude refill-exhaustion case (fresh session, count = 1, disclosed as a typed
+  `run.continuation` event, denial disclosed too). Deep scan gains a real
+  bounded synthesis reducer (a failed merge is honestly labelled a raw scout
+  bundle with `synthesisStatus=failed`, #27); a typed transient-failure
+  taxonomy at the adapter→orchestrator boundary feeds `transient_failures`,
+  retry policy, and `requiredActions`, with auth guidance only on real typed
+  auth failures (#31). Delivery is server truth end to end: replaying apply on
+  an already-delivered run is a typed idempotent no-op with an `already_applied`
+  receipt (#26), accept-risk on a final-verify-null blocked run actually
+  unlocks the gate, cancel reaps the descendant process tree with
+  kernel-identity proof before the terminal receipt (QA-027), and wall-clock
+  deadline / `stuck_no_progress` reasons survive to terminal artifacts
+  (QA-041). Routing and budget stop lying: subscription-entitlement billing
+  evidence, one traced economy-ranking comparator, a shared budget-denial
+  classifier across all modes (QA-050), deep-scan scout admission under
+  estimate floors with denied scouts disclosed (QA-019), and
+  quality-routing-without-tiers as a typed `config_error` at settings write AND
+  preflight (#22 server half). Isolated runs' produced outputs read the run's
+  own worktree, never the live project (QA-038); blocked Ask can no longer read
+  green (QA-036); malformed `events.jsonl` lines surface a typed incompleteness
+  marker (QA-074). AGENTS.md unification (D-14): Codex falls back to CLAUDE.md
+  via a stateless config override, and run prep can create a thin
+  Claudexor-owned CLAUDE.md importing `@AGENTS.md` (typed event, never
+  overwriting a hand-written file — a new enumerated live-tree mutation path,
+  CONCEPT-CHANGE INV-113); the generated bridge is excluded from `patch.diff`
+  only on byte-equality AND a created-this-run fact, so a candidate editing
+  CLAUDE.md is never dropped from the diff. Machine contracts: one central CLI
+  result/error projector emits exactly one JSON envelope per command path in
+  `--json` mode with a single category→exit-code table, typed codes surviving
+  projection, and structured field errors (#28); dropped-on-the-wire
+  projections are restored (plan hash + readiness audit, council roster +
+  valuation, ignored settings, session profile binding, `nesting[]`,
+  `problems[]`, `requiredActions` derived from real blocking findings, #29
+  partial); `--harness X` on a singleton pool infers the primary (#34) while a
+  multi-harness pool missing its configured primary returns a structured
+  ambiguity error (#25); `GET /v2/runs` honors limit/state/cursor, run SSE
+  re-checks the cursor before ending, titles truncate grapheme-safe, bodies
+  decode strict UTF-8, malformed percent escapes are a typed 400, the operation
+  catalog is honest (params, applicability, single-shot uploads,
+  idempotency), sensitive dotfile-class artifacts are refused typed before
+  bytes are read, and the semantic-text policy covers code/config/text
+  extensions with redaction gate-pinned to the Swift set; ACP session load
+  replays real history and no-project sessions get a loadable cwd (QA-020/068);
+  minimal project remove ships (CLI + DELETE route, typed fences,
+  archive-first partition handling); and a new `claudexor about` command (text
+  + `--json`) carries author/license/links. macOS: a transcript scroll
+  overhaul (D-13 A/B/C/E) removes the nested lazy stack — also closing the
+  tool-receipt layout loop that could grow memory into the gigabytes (#23),
+  with a bounded-memory regression guard, scoped text selection, and granular
+  invalidation (owner-dogfooded PASS without a List migration); theme switching
+  no longer jumps the toolbar (#21); GFM tables render as real tables via a
+  typed lookahead parser and a bounded non-lazy grid (#24); zero-tier quality
+  routing cannot be saved (macOS guard atop the daemon refusal, #22);
+  bubbles use a calibrated translucent material with AA-verified contrast in
+  both themes and a Reduce Transparency fallback (D-12); an About section +
+  standard panel show author, MIT license, links, and real app + engine
+  identity including the engine sha (D-11, QA-002); plus an honest-UI cluster
+  (running runs never show a terminal "No changes", no duplicated Activity
+  answer, per-harness Auto-pool model rows, real model-route queries, absent
+  optional API keys are not red failures, draft/project-switch resets, honest
+  gallery partial-failure disclosure with Retry, strict UTF-8 artifact
+  decoding, path-named diff failures, disclosed offline/lost-engine states) and
+  a tracked, hardened external-open handoff directory with a startup sweep
+  (QA-062). Codex login (D-17): the primary flow is the app-server typed device
+  code — a native AuthSheet shows the one-time code with Copy, Cancel, and
+  "Open private sign-in" via an ephemeral browser session (honest wording:
+  privacy is requested, not guaranteed by every browser), completion feeds the
+  existing doctor/smoke proof, and "Add & log in" is one action; an opt-in
+  browser-callback flow and a typed legacy Terminal fallback that the CLI
+  actually offers round it out, both CLI entries ride the durable setup job
+  with inline code display, and the code is never journaled or logged. Engine
+  runtime auto-install (D-2): the app can download, verify, and install an
+  engine-runtime update — sha256 + offline Ed25519 signed-manifest verification
+  against a dedicated runtime-update key pinned in app + CLI (fail-closed on
+  unsigned/unknown-key/tampered), full unpack + re-verify into
+  `runtime/versions/<v>`, probe handshake, a busy-gate that refuses while any
+  work is active, identity-proven daemon stop, atomic `current.json` swap,
+  relaunch + handshake verify, rollback to last-known-good on any failure, and
+  a lock-file around the critical section, with the bundled runtime as the
+  final fallback; the release side promotes the exact candidate artifact bytes
+  (gh attestation verify + byte identity, never a rebuild), binds the archive
+  URL into the signed manifest, and stamps a deterministic build-sha for
+  bundled and downloaded closures (QA-002's real gap). Review harness and
+  release tooling: deterministic full-text reviewer coverage via packet-split
+  sub-waves and a coverage checker that BLOCKS the seal unless every
+  hand-written changed file's complete bytes reached a reviewer; attestation
+  schema v4 (per-sub-wave full triad+scope panels, typed `--slot-record`
+  sealing with verdicts re-derived from digest-bound raw report bytes, a
+  sealer-verified packet manifest, and a signature-bound coverage receipt,
+  CONCEPT-CHANGE INV-125); and machine-derived packet narratives that
+  structurally close the stale-narrative failure class. Ships the merged
+  community PRs: doctor diagnoses broken installs behind "not found on PATH"
+  (#32, Andrei Gritsaev), declared JSON Schema dialects incl. draft 2020-12 in
+  structured output (#33, Alex Basis, closes #30), singleton-pool primary
+  inference (#34, Alex Basis), and truthful producer telemetry outcomes (#35,
+  Alex Basis). Meta: README author links, a daily SHA-pinned repo-metrics
+  workflow with honest "total downloads" (npm + an app DMG/ZIP asset allowlist)
+  and star-history charts from our own CSV ledger (D-15, a shared collector
+  reused by the CLI's release stats — no duplicate fetcher), a GitHub Pages
+  landing site + npm discovery improvements (#36/#37), package.json author
+  metadata, and `about --json` asserted in the npm install smoke. Deferred to
+  `docs/BACKLOG.md`: the full RunFacts projection layer (#29 remainder), the
+  visual quality-tier editor (#22 remainder), instruction-transcript hash
+  binding (QA-030), real resumable uploads (QA-039 — catalog wording is now
+  honestly single-shot), auto-continuation beyond the proven Claude case, the
+  transcript List migration for pathologically long threads, and settings
+  revision/etag (W-j).
+
 - **v3.0.4** (2026-07-22) — fixes GitHub #20: saving Per-Harness Defaults from
   the macOS app reported "Could not save settings: DecodingError.keyNotFound
   ('path')" even though the daemon had already written the config. The Swift
