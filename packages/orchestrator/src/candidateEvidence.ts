@@ -32,8 +32,10 @@ export interface CandidateRun {
  * (D-16 r7: terminal context exhaustion with NO completed WorkReport) are both
  * excluded from review: an interrupted candidate carries untrustworthy
  * half-finished work, so — like the empty-diff corpse — it must never be
- * reviewed/arbitrated/adopted as clean. */
-function isWorkingCandidate(run: CandidateRun): boolean {
+ * reviewed/arbitrated/adopted as clean. THE single owner of "may this candidate
+ * be reviewed/arbitrated/adopted?", shared by the race, convergence, and
+ * synthesis lanes (D-16 r8) so no sibling path re-derives the veto. */
+export function isWorkingCandidate(run: CandidateRun): boolean {
   return run.outcomeClass !== "interrupted" && (!run.errored || run.diff.length > 0);
 }
 
@@ -46,6 +48,12 @@ function isWorkingCandidate(run: CandidateRun): boolean {
  * D-16 finalizer (INV-116: lifecycle/outcome orthogonal); otherwise it is a
  * harness failure. `why` is honest per candidate: an interrupted attempt ran
  * out of context AFTER partial work, never "failed before producing work".
+ *
+ * `noChanges` is DIFF-AWARE (D-16 r8): an interrupted candidate that produced a
+ * REAL partial diff (or answer) is not "no changes" — the fallback facts must
+ * tell the truth about the retained partial work, never a blanket noChanges:true
+ * that contradicts an on-disk partial patch. It is no_changes only when EVERY
+ * candidate produced neither a diff nor an answer.
  */
 export function partitionCandidates(runs: CandidateRun[]): {
   working: CandidateRun[];
@@ -53,9 +61,10 @@ export function partitionCandidates(runs: CandidateRun[]): {
   why: string;
 } {
   const working = runs.filter(isWorkingCandidate);
+  const noChanges = runs.every((r) => r.diff.trim().length === 0 && !r.answerText);
   const facts = runs.some((r) => r.outcomeClass === "interrupted")
-    ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted", noChanges: true })
-    : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges: true });
+    ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted", noChanges })
+    : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges });
   const why = runs
     .map((r) => {
       const reason =
@@ -66,6 +75,20 @@ export function partitionCandidates(runs: CandidateRun[]): {
     })
     .join("; ");
   return { working, facts, why };
+}
+
+/** The telemetry-roster shape ({attemptId, harnessId, telemetry}) that
+ * `writeRunTelemetry` and the cancelled terminals consume. ONE owner so the
+ * race lane's several hand-offs don't each re-spell the same map (behavior-
+ * identical to the inline form). */
+export function candidateRoster(
+  runs: CandidateRun[],
+): { attemptId: string; harnessId: string; telemetry: AttemptTelemetry }[] {
+  return runs.map((r) => ({
+    attemptId: r.attemptId,
+    harnessId: r.harnessId,
+    telemetry: r.telemetry,
+  }));
 }
 
 export function toCandidateEvidence(
@@ -113,4 +136,27 @@ export function toCandidateEvidence(
     costUsd: run.cost,
     ...(run.telemetry.outcome?.workState ? { workState: run.telemetry.outcome.workState } : {}),
   };
+}
+
+/** Convergence-loop terminal facts, ONE precedence owner (D-16 r8):
+ * converged > interrupted (context exhausted, never arbitrated) >
+ * stuck_no_progress > operator cancel > budget_exhausted > not_converged. */
+export function convergenceOutcomeFacts(
+  state: {
+    converged: boolean;
+    interrupted: boolean;
+    stuckNoProgress: boolean;
+    aborted: boolean;
+    exhausted: boolean;
+  },
+  cancelFacts: () => RunOutcomeFacts,
+): RunOutcomeFacts {
+  if (state.converged) return makeOutcomeFacts("succeeded");
+  if (state.interrupted) {
+    return makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" });
+  }
+  if (state.stuckNoProgress) return makeOutcomeFacts("failed", { reason: "stuck_no_progress" });
+  if (state.aborted) return cancelFacts();
+  if (state.exhausted) return makeOutcomeFacts("failed", { reason: "budget_exhausted" });
+  return makeOutcomeFacts("failed", { reason: "not_converged" });
 }

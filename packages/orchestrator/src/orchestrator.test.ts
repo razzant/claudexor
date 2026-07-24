@@ -773,6 +773,31 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(true);
   }, 15000);
 
+  it("D-16 r8: the convergence loop never converges an interrupted attempt — it terminalizes interrupted", async () => {
+    // runConvergence read neither outcomeClass nor contextExhausted, so an
+    // interrupted attempt (errored===false) flowed into evaluateConvergence and
+    // could CONVERGE its partial diff as an applyable succeeded product.
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-context-exhausted", createFakeHarness("fake-context-exhausted")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "converge it",
+      mode: "agent",
+      harnesses: ["fake-context-exhausted"],
+      attempts: 3,
+    });
+    expect(res.lifecycle).toBe("interrupted");
+    expect(res.facts.reason).toBe("context_capacity_exhausted");
+    // Never converged-clean: no adopted product, no arbitration of the partial.
+    expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(false);
+    expect(existsSync(join(res.runDir, "arbitration", "decision.yaml"))).toBe(false);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).not.toContain('"type":"work_product.adopted"');
+  }, 15000);
+
   it("until-clean terminates on no-progress (bounded, not infinite)", async () => {
     const repo = await initRepo();
     const registry = new Map<string, HarnessAdapter>([

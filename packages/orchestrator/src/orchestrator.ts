@@ -19,6 +19,9 @@ import {
 import { processAttemptUsage } from "./attemptUsage.js";
 import {
   type CandidateRun,
+  candidateRoster,
+  convergenceOutcomeFacts,
+  isWorkingCandidate,
   partitionCandidates,
   toCandidateEvidence,
 } from "./candidateEvidence.js";
@@ -3509,11 +3512,7 @@ export class Orchestrator {
             runId,
             taskId,
             mode,
-            runs.map((r) => ({
-              attemptId: r.attemptId,
-              harnessId: r.harnessId,
-              telemetry: r.telemetry,
-            })),
+            candidateRoster(runs),
             null,
           ),
         ledger.spend(),
@@ -3622,11 +3621,7 @@ export class Orchestrator {
         runId,
         taskId,
         mode,
-        runs.map((r) => ({
-          attemptId: r.attemptId,
-          harnessId: r.harnessId,
-          telemetry: r.telemetry,
-        })),
+        candidateRoster(runs),
         null,
       );
       store.writeText(
@@ -3749,11 +3744,7 @@ export class Orchestrator {
             runId,
             taskId,
             mode,
-            runs.map((r) => ({
-              attemptId: r.attemptId,
-              harnessId: r.harnessId,
-              telemetry: r.telemetry,
-            })),
+            candidateRoster(runs),
             null,
           ),
         ledger.spend(),
@@ -3856,22 +3847,28 @@ export class Orchestrator {
           );
           reviewEnvelopes.push(envelope);
           envelope = undefined;
+          // D-16 r8: only a WORKING synth is reviewed/adopted (same veto owner
+          // as the race lane); `runs` still records it for telemetry.
+          runs.push(run);
           try {
-            const synthEvidence = await this.reviewRuns(
-              [run],
-              reviewers,
-              reviewVerified,
-              reviewDir,
-              input.repoRoot,
-              contract,
-              store,
-              paths,
-              log,
-              ledger,
-              taskId,
-              input.signal,
-            );
-            evidences.push(...synthEvidence);
+            if (isWorkingCandidate(run)) {
+              const synthEvidence = await this.reviewRuns(
+                [run],
+                reviewers,
+                reviewVerified,
+                reviewDir,
+                input.repoRoot,
+                contract,
+                store,
+                paths,
+                log,
+                ledger,
+                taskId,
+                input.signal,
+              );
+              evidences.push(...synthEvidence);
+              workingRuns.push(run);
+            }
             if (input.signal?.aborted) {
               return cancelledResult(
                 log,
@@ -3888,11 +3885,7 @@ export class Orchestrator {
                     runId,
                     taskId,
                     mode,
-                    runs.map((r) => ({
-                      attemptId: r.attemptId,
-                      harnessId: r.harnessId,
-                      telemetry: r.telemetry,
-                    })),
+                    candidateRoster(runs),
                     null,
                   ),
                 ledger.spend(),
@@ -3903,8 +3896,6 @@ export class Orchestrator {
           } finally {
             await disposeReviewEnvelopes();
           }
-          runs.push(run);
-          workingRuns.push(run);
         } catch (err) {
           ledger.settle(lease.lease?.lease_id ?? "", unknownCostSettlement("synthesis-error"));
           log.emit("harness.completed", {
@@ -3933,11 +3924,7 @@ export class Orchestrator {
             runId,
             taskId,
             mode,
-            runs.map((r) => ({
-              attemptId: r.attemptId,
-              harnessId: r.harnessId,
-              telemetry: r.telemetry,
-            })),
+            candidateRoster(runs),
             null,
           ),
         ledger.spend(),
@@ -4229,7 +4216,7 @@ export class Orchestrator {
       runId,
       taskId,
       mode,
-      runs.map((r) => ({ attemptId: r.attemptId, harnessId: r.harnessId, telemetry: r.telemetry })),
+      candidateRoster(runs),
       result.decision.facts.lifecycle === "succeeded"
         ? result.decision.winner
         : (winnerRun?.attemptId ?? null),
@@ -4829,6 +4816,8 @@ export class Orchestrator {
     let attempt = 0;
     let converged = false;
     let exhausted = false;
+    let interrupted = false; // D-16 r8: terminalizes the run interrupted
+
     let lastFindings: ReviewFinding[] = [];
     let lastRun: CandidateRun | null = null;
     let actualReviewVerified = false;
@@ -5025,6 +5014,12 @@ export class Orchestrator {
         }
         lastRun = run;
         attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry: run.telemetry });
+        // D-16 r8: interrupted (errored===false) would CONVERGE a partial diff
+        // as clean — break BEFORE review; a harness error still gate-retries.
+        if (run.outcomeClass === "interrupted") {
+          interrupted = true;
+          break;
+        }
         // Post-mutation fence for in-place: snapshot the live tree NOW (after the
         // harness mutated it, before this attempt's review). The last attempt's
         // value is the revert target persisted into work_product.yaml.
@@ -5319,17 +5314,19 @@ export class Orchestrator {
         reason:
           convAbortReason === "wall_clock_exceeded" ? "wall_clock_exceeded" : "user_cancelled",
       });
-    let facts: RunOutcomeFacts = converged
-      ? makeOutcomeFacts("succeeded")
-      : stuckNoProgress
-        ? makeOutcomeFacts("failed", { reason: "stuck_no_progress" })
-        : input.signal?.aborted
-          ? convCancelFacts()
-          : exhausted
-            ? makeOutcomeFacts("failed", { reason: "budget_exhausted" })
-            : makeOutcomeFacts("failed", { reason: "not_converged" });
+    let facts = convergenceOutcomeFacts(
+      {
+        converged,
+        interrupted,
+        stuckNoProgress,
+        aborted: Boolean(input.signal?.aborted),
+        exhausted,
+      },
+      convCancelFacts,
+    );
     let decision: ReturnType<typeof arbitrate>["decision"] | null = null;
-    if (lastRun) {
+    // D-16 r8: interrupted is never arbitrated; the partial stays diagnostic.
+    if (lastRun && !interrupted) {
       const arb = arbitrate(
         [
           toCandidateEvidence(
@@ -5420,8 +5417,11 @@ export class Orchestrator {
       lastRun?.attemptId ?? null,
     );
 
-    // Deliver the converged/last work to final/ so `apply` and `inspect` can use it.
-    if (lastRun) {
+    // Deliver the converged/last work to final/ so `apply` and `inspect` can
+    // use it. D-16 r8: an INTERRUPTED envelope run delivers no applyable
+    // work_product (its partial patch.diff stays diagnostic via attempts/);
+    // in-place keeps the product so the honest Revert offer survives.
+    if (lastRun && (!interrupted || input.inPlace === true)) {
       assertNoSecretLikeTokens("final patch diff", lastRun.diff);
       const patchSha256 = sha256(lastRun.diff);
       store.writeText(join(paths.finalDir, "patch.diff"), lastRun.diff);
@@ -6550,6 +6550,9 @@ export class Orchestrator {
        * belongs in the denominator/omissions but never ran the harness, so the
        * all-denied terminal still routes through the QA-050 budget classifier. */
       budgetDenied?: boolean;
+      /** D-16 r8: scout ran out of context — a failed omission, never reducer
+       * input; ALL-interrupted terminalizes interrupted. */
+      interrupted?: boolean;
     }
     const attempts: ReadonlyAttempt[] = [];
     const attemptTelemetries: {
@@ -7004,19 +7007,23 @@ export class Orchestrator {
         }
         return { status: "launched" };
       }
+      // D-16 r8: an interrupted scout is a FAILED omission, never reducer input;
+      // the sequential ask/audit winner folds at its own terminal (stays success).
+      const scoutInterrupted = opts.deepScan && roFinalized.outcomeClass === "interrupted";
       log.emit("harness.completed", {
         harness_id: adapter.id,
         attempt_id: attemptId,
-        status: "success",
+        status: scoutInterrupted ? "interrupted" : "success",
         ...telemetrySummary(telemetry),
       });
       attempts.push({
         attemptId,
         harnessId: adapter.id,
-        status: "success",
+        status: scoutInterrupted ? "failed" : "success",
         report: report || "(no output)",
-        error: null,
+        error: scoutInterrupted ? "context capacity exhausted before the scout completed" : null,
         telemetry,
+        ...(scoutInterrupted ? { interrupted: true } : {}),
       });
       if (opts.deepScan) {
         const warningNote = toolWarnings(telemetry).length
@@ -7024,9 +7031,12 @@ export class Orchestrator {
               .map((e) => `${e.tool}: ${e.summary}`)
               .join("; ")}\n`
           : "";
+        const scoutTag = scoutInterrupted
+          ? " interrupted (context capacity exhausted)"
+          : ` (${adapter.id})`;
         store.writeText(
-          join(paths.findingsDir, `${attemptId}.md`),
-          `# Explorer ${attemptId} (${adapter.id})\n\n${report || "(no output)"}${warningNote}\n`,
+          join(paths.findingsDir, `${attemptId}${scoutInterrupted ? "-interrupted" : ""}.md`),
+          `# Explorer ${attemptId}${scoutTag}\n\n${report || "(no output)"}${warningNote}\n`,
         );
       }
       return { status: "launched" };
@@ -7351,6 +7361,13 @@ export class Orchestrator {
         budgetStopped && !blocked && attempts.every((a) => a.budgetDenied === true)
           ? classifyBudgetFailure({ denial: budgetDenial, terminal: ledger.terminal() })
           : null;
+      // D-16 r8: ALL scouts out of context → the aggregate is interrupted.
+      const allInterrupted = attempts.length > 0 && attempts.every((a) => a.interrupted === true);
+      const scanFailFacts = allInterrupted
+        ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted" })
+        : makeOutcomeFacts("failed", {
+            reason: scanBudgetMapping ? scanBudgetMapping.reason : "harness_failed",
+          });
       const message = scanBudgetMapping
         ? scanBudgetMapping.safeMessage
         : attempts.map((a) => `${a.attemptId}/${a.harnessId}: ${a.error ?? "failed"}`).join("\n");
@@ -7398,12 +7415,9 @@ export class Orchestrator {
       // explorers were blocked or errored.
       store.writeText(
         join(paths.finalDir, "summary.md"),
-        `# Run ${runId} (${opts.mode})\n\n- Lifecycle: failed\n\n${message}\n`,
+        `# Run ${runId} (${opts.mode})\n\n- Lifecycle: ${scanFailFacts.lifecycle}${scanFailFacts.reason ? ` (${scanFailFacts.reason})` : ""}\n\n${message}\n`,
       );
       log.emit("output.ready", { kind: "summary", path: "final/summary.md", state: "diagnostic" });
-      const scanFailFacts = makeOutcomeFacts("failed", {
-        reason: scanBudgetMapping ? scanBudgetMapping.reason : "harness_failed",
-      });
       log.emit("run.failed", {
         lifecycle: scanFailFacts.lifecycle,
         facts: scanFailFacts,
