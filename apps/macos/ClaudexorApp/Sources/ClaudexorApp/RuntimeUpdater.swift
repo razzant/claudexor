@@ -66,6 +66,25 @@ public actor RuntimeUpdater {
     /// 304 reuse the prior verdict and lets a cheap chip read without a fetch.
     public var cachedDecision: RuntimeUpdateDecision? { lastDecision }
 
+    /// Record a handshake-VERIFIED freshly-installed engine version so the cached
+    /// decision can no longer advertise the just-installed update. Without this a
+    /// post-install re-check reuses the stale `.available` verdict on an HTTP 304
+    /// (and `resolvedRunningEngineVersion` still prefers the stale pre-install
+    /// engineIdentity), leaving the same Install action armed over an engine that
+    /// already IS the target. Recomputes the cached decision against the installed
+    /// version (target == running ⇒ `.upToDate`) and clears the stored ETag so the
+    /// next CHECK re-fetches instead of short-circuiting to the stale 304 verdict.
+    public func recordInstalledVersion(_ version: String, appVersion: String) {
+        storedETag = nil
+        switch lastDecision {
+        case let .available(manifest), let .appUpdateRequired(_, manifest):
+            lastDecision = decideRuntimeUpdate(
+                runningEngineVersion: version, appVersion: appVersion, manifest: manifest)
+        case .upToDate, .unknown, nil:
+            lastDecision = nil
+        }
+    }
+
     /// CHECK for an update. Sends `If-None-Match` with the stored ETag; a 304
     /// short-circuits to `.notModified` (no manifest download). Otherwise finds
     /// the `runtime-manifest.json` asset, downloads + parses it, and decides.

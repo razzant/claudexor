@@ -340,8 +340,16 @@ extension AppModel {
         do {
             let version = try await coordinator.install(manifest: manifest, assetURL: assetURL)
             runtimeInstallStatus = "Updated to engine v\(version)."
-            // The pointer + engine changed; re-check so the chip clears.
-            await checkForRuntimeUpdate()
+            // Post-install TRUTH: the coordinator only returns after a handshake-
+            // verified relaunch, so the running engine IS `version` and there is no
+            // newer closure than the one we just installed. A network re-check here
+            // would re-arm `.available` — `resolvedRunningEngineVersion` still
+            // prefers the stale pre-install engineIdentity and an HTTP 304 reuses
+            // the cached `.available` verdict. Instead, record the installed version
+            // (clears the cached decision + ETag) and assert Up-to-date directly so
+            // the chip clears honestly.
+            await runtimeUpdater?.recordInstalledVersion(version, appVersion: Self.appVersionString())
+            applyRuntimeDecision(.upToDate)
         } catch {
             runtimeInstallStatus =
                 (error as? RuntimeInstallError)?.errorDescription

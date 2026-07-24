@@ -133,6 +133,10 @@ public enum RuntimeInstallError: Error, LocalizedError, Equatable {
     case probeMismatch(expected: String, got: String?)
     case daemonBusy
     case handshakeMismatch(expected: String, got: String?)
+    /// A rollback could not be PROVEN: the named recovery step (pointer restore,
+    /// relaunch, or expected-version handshake) failed, so the engine may be in a
+    /// degraded state. Carries the exact step + user remediation.
+    case recoveryFailed(step: String, remediation: String)
     case lockHeld
     case io(String)
 
@@ -149,6 +153,8 @@ public enum RuntimeInstallError: Error, LocalizedError, Equatable {
         case .daemonBusy: return "The engine is busy running jobs; the update will retry when idle."
         case let .handshakeMismatch(e, g):
             return "After relaunch the engine reported \(g ?? "nil"), expected \(e); rolling back."
+        case let .recoveryFailed(step, remediation):
+            return "Recovery after a failed update did not complete: could not \(step). \(remediation)"
         case .lockHeld: return "Another runtime update is already in progress."
         case let .io(m): return "Runtime update file error: \(m)"
         }

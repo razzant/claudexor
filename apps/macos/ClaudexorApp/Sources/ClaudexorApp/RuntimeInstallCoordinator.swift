@@ -58,16 +58,26 @@ public actor RuntimeInstallCoordinator {
     private let transport: RuntimeReleaseTransport
     private let daemon: RuntimeDaemonControl
     private let onPhase: @Sendable (RuntimeInstallPhase) -> Void
+    /// Bounded-poll cadence for the post-relaunch handshake. A relaunched daemon
+    /// spawns DETACHED and needs seconds to bind its socket + rewrite
+    /// control-api.json, so the handshake is polled, never single-shot. Injectable
+    /// so tests run the poll fast.
+    private let handshakePollInterval: TimeInterval
+    private let handshakePollTimeout: TimeInterval
 
     public init(
         installer: RuntimeInstaller,
         transport: RuntimeReleaseTransport,
         daemon: RuntimeDaemonControl,
+        handshakePollInterval: TimeInterval = 0.5,
+        handshakePollTimeout: TimeInterval = 30,
         onPhase: @escaping @Sendable (RuntimeInstallPhase) -> Void = { _ in }
     ) {
         self.installer = installer
         self.transport = transport
         self.daemon = daemon
+        self.handshakePollInterval = handshakePollInterval
+        self.handshakePollTimeout = handshakePollTimeout
         self.onPhase = onPhase
     }
 
@@ -147,10 +157,12 @@ public actor RuntimeInstallCoordinator {
         do {
             try installer.writeCurrentAtomic(next)
         } catch {
-            // The pointer never changed — restart on the old one and bail.
-            try? daemon.start()
-            fail(.failed(reason: "pointer write failed"))
-            throw RuntimeInstallError.io("could not write current.json: \(error.localizedDescription)")
+            // The new pointer never landed. The daemon was stopped for the swap,
+            // so recover the OLD runtime and PROVE it (restart + expected-version
+            // handshake) before reporting — never claim safety over a dead engine.
+            throw await rollbackAndClassify(
+                to: previous, reason: "pointer write failed",
+                recoveredError: .io("could not write current.json: \(error.localizedDescription)"))
         }
 
         // 9. Relaunch against the new pointer. If the relaunch THROWS (audit 6),
@@ -161,39 +173,136 @@ public actor RuntimeInstallCoordinator {
         do {
             try daemon.start()
         } catch {
-            await rollback(to: previous, reason: "engine relaunch failed after swap")
-            throw RuntimeInstallError.io(
-                "engine relaunch failed after swap; rolled back to the previous runtime: \(error.localizedDescription)"
-            )
+            throw await rollbackAndClassify(
+                to: previous, reason: "engine relaunch failed after swap",
+                recoveredError: .io(
+                    "engine relaunch failed after swap; rolled back to the previous runtime: \(error.localizedDescription)"))
         }
 
-        // 10. Handshake-verify the new engine; rollback on ANY mismatch.
-        let running = await daemon.handshakeVersion()
-        guard running == manifest.version else {
-            await rollback(to: previous, reason: "post-relaunch handshake mismatch")
-            throw RuntimeInstallError.handshakeMismatch(expected: manifest.version, got: running)
+        // 10. Handshake-verify the new engine with a BOUNDED poll: the relaunched
+        // daemon boots detached and needs seconds to serve, so a single-shot probe
+        // reads nil on essentially every real install. Rollback ONLY on a genuine
+        // wrong-version handshake or a boot-window timeout — never on a not-yet-
+        // ready nil.
+        switch await pollHandshake(expected: manifest.version) {
+        case .matched:
+            onPhase(.done(version: manifest.version))
+            return manifest.version
+        case let .mismatch(got):
+            throw await rollbackAndClassify(
+                to: previous, reason: "post-relaunch handshake mismatch",
+                recoveredError: .handshakeMismatch(expected: manifest.version, got: got))
+        case .unreachable:
+            throw await rollbackAndClassify(
+                to: previous, reason: "post-relaunch handshake timed out",
+                recoveredError: .handshakeMismatch(expected: manifest.version, got: nil))
         }
+    }
 
-        onPhase(.done(version: manifest.version))
-        return manifest.version
+    // MARK: - Handshake poll
+
+    private enum HandshakeProbe: Sendable {
+        case matched(String)
+        case mismatch(String)
+        case unreachable
+    }
+
+    /// Bounded poll of the live handshake after a relaunch. Retries every
+    /// `handshakePollInterval` up to `handshakePollTimeout`, reloading discovery
+    /// each try (the production probe re-reads ControlApiDiscovery per call). A
+    /// `nil` handshake is "not serving YET" and keeps polling; a mismatch is
+    /// concluded ONLY on a non-nil WRONG version or a timeout. `expected == nil`
+    /// accepts ANY reachable version — the bundled-fallback rollback case, whose
+    /// version is not known here.
+    private func pollHandshake(expected: String?) async -> HandshakeProbe {
+        let deadline = Date().addingTimeInterval(handshakePollTimeout)
+        while true {
+            if let running = await daemon.handshakeVersion() {
+                guard let expected else { return .matched(running) }
+                return running == expected ? .matched(running) : .mismatch(running)
+            }
+            if Date() >= deadline { return .unreachable }
+            try? await Task.sleep(nanoseconds: UInt64(max(0, handshakePollInterval) * 1_000_000_000))
+        }
     }
 
     // MARK: - Rollback
 
-    /// Restore the previous pointer (last-known-good) and relaunch. If there was
-    /// no previous pointer, delete current.json so the launcher falls back to the
-    /// bundled runtime — the final fallback.
-    private func rollback(to previous: RuntimeCurrent?, reason: String) async {
+    private enum RollbackOutcome: Sendable {
+        case recovered
+        case failed(step: String, remediation: String)
+    }
+
+    /// Run the rollback and map its outcome to the error to throw: a PROVEN
+    /// recovery throws the caller's original failure (`recoveredError`); a failed
+    /// recovery throws `.recoveryFailed` with the exact step + remediation, so the
+    /// thrown error never claims a clean rollback over a broken engine.
+    private func rollbackAndClassify(
+        to previous: RuntimeCurrent?, reason: String, recoveredError: RuntimeInstallError
+    ) async -> RuntimeInstallError {
+        switch await rollback(to: previous, reason: reason) {
+        case .recovered:
+            return recoveredError
+        case let .failed(step, remediation):
+            return .recoveryFailed(step: step, remediation: remediation)
+        }
+    }
+
+    /// Restore the previous pointer (or delete it so the launcher falls back to
+    /// the bundled runtime), relaunch, and PROVE the recovery with the same
+    /// bounded handshake poll — the restored pointer wrote, the daemon relaunched,
+    /// and it reports the expected version (the previous version when we had one,
+    /// else any reachable engine). Only then is `.rolledBack` emitted. If any step
+    /// fails, `.failed` carries the exact step + remediation — never a green
+    /// "rolled back" over a dead daemon or a broken pointer.
+    private func rollback(to previous: RuntimeCurrent?, reason: String) async -> RollbackOutcome {
+        // Stop the wrong/broken daemon. A stop failure alone is not decisive — the
+        // restore + relaunch + handshake below is the real proof — so it is not
+        // treated as a recovery failure on its own.
         try? await daemon.stop()
+
+        // 1. Restore (or clear) the active pointer.
         if let previous {
-            try? installer.writeCurrentAtomic(previous)
+            do {
+                try installer.writeCurrentAtomic(previous)
+            } catch {
+                return rollbackFailed(
+                    reason, step: "restore the previous runtime pointer",
+                    remediation: "Quit and reopen Claudexor; if it does not recover, reinstall the app.")
+            }
         } else {
             installer.removeCurrentPointer()
         }
-        try? daemon.start()
-        // Best-effort confirm; the bundled runtime still serves even if this fails.
-        _ = await daemon.handshakeVersion()
-        onPhase(.rolledBack(reason: reason))
+
+        // 2. Relaunch on the restored pointer.
+        do {
+            try daemon.start()
+        } catch {
+            return rollbackFailed(
+                reason, step: "relaunch the engine on the previous runtime",
+                remediation: "Quit and reopen Claudexor to restart the engine.")
+        }
+
+        // 3. Prove the restored engine is actually serving, with the SAME bounded
+        // poll used after a forward relaunch.
+        switch await pollHandshake(expected: previous?.version) {
+        case .matched:
+            onPhase(.rolledBack(reason: reason))
+            return .recovered
+        case let .mismatch(got):
+            return rollbackFailed(
+                reason, step: "confirm the previous runtime is serving (engine reported \(got))",
+                remediation: "Quit and reopen Claudexor; if the wrong engine keeps serving, reinstall the app.")
+        case .unreachable:
+            return rollbackFailed(
+                reason, step: "reach the engine after relaunch",
+                remediation: "Quit and reopen Claudexor to restart the engine.")
+        }
+    }
+
+    private func rollbackFailed(_ reason: String, step: String, remediation: String) -> RollbackOutcome {
+        onPhase(.failed(reason: "\(reason); recovery failed: could not \(step). \(remediation)"))
+        return .failed(step: step, remediation: remediation)
     }
 
     // MARK: - Lock file (whole critical section)

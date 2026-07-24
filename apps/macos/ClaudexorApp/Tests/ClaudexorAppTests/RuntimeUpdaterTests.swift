@@ -138,6 +138,39 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
         #expect(model.updateAvailability?.version == "3.4.0")
     }
 
+    /// Fix 3 (post-install truth): after a verified install, recording the
+    /// installed version must recompute the cached decision to `.upToDate` AND
+    /// clear the stored ETag — otherwise the next check reuses the stale
+    /// `.available` verdict on an HTTP 304 and keeps advertising Install over an
+    /// engine that already IS the target.
+    @Test func recordingTheInstalledVersionClearsTheStaleAvailableDecision() async throws {
+        let transport = StubTransport()
+        let manifestURL = "https://example/runtime-manifest.json"
+        let releaseJSON = #"{"assets":[{"name":"runtime-manifest.json","browser_download_url":"\#(manifestURL)"}]}"#
+        let manifestData = try signedManifestData()  // signed vector, version 3.4.0
+        transport.assetData[manifestURL] = manifestData
+        transport.queuedFetches = [
+            ReleaseFetchResult(status: 200, etag: "\"etag-v1\"", data: Data(releaseJSON.utf8)),
+            ReleaseFetchResult(status: 304, etag: "\"etag-v1\"", data: nil),
+        ]
+        let updater = RuntimeUpdater(transport: transport, authority: try testAuthority())
+
+        // Pre-install: the running 3.1.0 engine sees 3.4.0 as available.
+        let first = try await updater.check(runningEngineVersion: "3.1.0", appVersion: "dev")
+        #expect(first == .decided(.available(RuntimeManifest.verified(manifestData, authority: try testAuthority())!)))
+
+        // Install completes and is handshake-verified as 3.4.0.
+        await updater.recordInstalledVersion("3.4.0", appVersion: "dev")
+        #expect(await updater.cachedDecision == .upToDate)
+
+        // The next check must NOT reuse the stale .available on a 304, and it must
+        // send NO If-None-Match (the ETag was cleared, forcing a fresh evaluation).
+        let second = try await updater.check(runningEngineVersion: "3.4.0", appVersion: "dev")
+        #expect(second == .notModified)
+        #expect(await updater.cachedDecision == .upToDate)
+        #expect(transport.receivedETags == [nil, nil])
+    }
+
     // MARK: - DaemonLauncher resolution (the pointer READ side that stays)
 
     @Test func daemonResolvesToVersionDirWhenCurrentValid() throws {
