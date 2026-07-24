@@ -97,17 +97,27 @@ enum ArtifactFetchError {
     }
 
     /// Human refusal for a server 409 (the `sensitive_file_refused` credential
-    /// fence or the patch secret-like-token fence). Prefers the typed
-    /// `sensitiveClass`, then the server `error` string, then a generic refusal —
-    /// never the raw JSON problem body.
+    /// fence or the patch secret-like-token fence).
+    ///
+    /// The body is the daemon's NORMALIZED `ControlProblem` (RFC-9457-style): the
+    /// daemon funnels every >=400 JSON body through `controlProblemError` /
+    /// `problemBody`, so the human string lands in `message` (NOT `error`) and the
+    /// refusal class rides in `context.sensitiveClass` (NOT a top-level key). This
+    /// decoder mirrors that real wire shape — proven by the server's own test in
+    /// `packages/control-api/src/control-api.test.ts` (`body.context?.sensitiveClass`).
+    /// Prefers the typed `context.sensitiveClass`, then the human `message`, then a
+    /// generic refusal — never the raw JSON problem body. A legacy/hostile body that
+    /// carries neither (e.g. an old top-level-`error`/`sensitiveClass` shape the real
+    /// daemon never emits) falls back generically.
     static func sensitiveRefusalMessage(body: String) -> String {
         struct Body: Decodable {
-            var error: String?
+            struct Context: Decodable { var sensitiveClass: String? }
+            var message: String?
             var code: String?
-            var sensitiveClass: String?
+            var context: Context?
         }
         let decoded = body.data(using: .utf8).flatMap { try? JSONDecoder().decode(Body.self, from: $0) }
-        if let cls = decoded?.sensitiveClass {
+        if let cls = decoded?.context?.sensitiveClass {
             let human: String
             switch cls {
             case "dotenv": human = "a dotenv (.env) file"
@@ -117,8 +127,8 @@ enum ArtifactFetchError {
             }
             return "Refused — Claudexor does not serve \(human)."
         }
-        if let err = decoded?.error, !err.isEmpty {
-            return "Refused — \(err)"
+        if let message = decoded?.message, !message.isEmpty {
+            return "Refused — \(message)"
         }
         return "The engine refused to serve this file."
     }

@@ -175,8 +175,13 @@ import ClaudexorKit
 /// QA-067: a server 409 sensitive-file refusal renders as its typed reason, not a
 /// generic offline blob or the raw JSON problem body.
 @Suite struct ArtifactFetchErrorTests {
+    // The fixtures below are the REAL normalized `ControlProblem` the daemon puts
+    // on the wire (proven by `control-api.test.ts`: the human string is `message`,
+    // NOT `error`, and the class rides in `context.sensitiveClass`, NOT a top-level
+    // key). The daemon funnels every >=400 JSON body through problemBody, so a
+    // top-level `error`/`sensitiveClass` body is one the real engine never emits.
     @Test func sensitiveClassBecomesAHumanRefusal() {
-        let body = #"{"error":"refusing to serve .env: credential-bearing dotenv file","code":"sensitive_file_refused","sensitiveClass":"dotenv"}"#
+        let body = #"{"code":"sensitive_file_refused","message":"refusing to serve .env: credential-bearing dotenv file","retryable":false,"context":{"sensitiveClass":"dotenv"}}"#
         let msg = ArtifactFetchError.sensitiveRefusalMessage(body: body)
         #expect(msg.contains("dotenv"))
         #expect(msg.hasPrefix("Refused"))
@@ -185,26 +190,38 @@ import ClaudexorKit
 
     @Test func credentialsAndRegistryClassesAreNamed() {
         #expect(ArtifactFetchError.sensitiveRefusalMessage(
-            body: #"{"sensitiveClass":"credentials_file"}"#).contains("credentials"))
+            body: #"{"code":"sensitive_file_refused","message":"x","context":{"sensitiveClass":"credentials_file"}}"#).contains("credentials"))
         #expect(ArtifactFetchError.sensitiveRefusalMessage(
-            body: #"{"sensitiveClass":"package_registry_credentials"}"#).contains("package-registry"))
+            body: #"{"code":"sensitive_file_refused","message":"x","context":{"sensitiveClass":"package_registry_credentials"}}"#).contains("package-registry"))
     }
 
-    @Test func patchSecretFenceFallsBackToServerErrorString() {
-        // The patch fence 409 has no sensitiveClass — the server error is shown.
-        let body = #"{"error":"artifact contains secret-like token; refusing to serve patch"}"#
+    @Test func patchSecretFenceFallsBackToMessageString() {
+        // The patch fence 409 has no sensitiveClass — the daemon-normalized human
+        // `message` (code http_409, empty context) is shown.
+        let body = #"{"code":"http_409","message":"artifact contains secret-like token; refusing to serve patch","retryable":false,"context":{}}"#
         let msg = ArtifactFetchError.sensitiveRefusalMessage(body: body)
         #expect(msg.contains("secret-like token"))
         #expect(msg.hasPrefix("Refused"))
+    }
+
+    @Test func legacyOrHostileTopLevelShapeFallsBackGenerically() {
+        // The OLD hand-authored shape the real daemon never emits (top-level
+        // `error`/`sensitiveClass`): with no `message` and no `context.sensitiveClass`
+        // it must fall back to the generic refusal — NOT resurrect the dead branches.
+        let body = #"{"error":"refusing to serve .env: credential-bearing dotenv file","code":"sensitive_file_refused","sensitiveClass":"dotenv"}"#
+        let msg = ArtifactFetchError.sensitiveRefusalMessage(body: body)
+        #expect(msg == "The engine refused to serve this file.")
+        #expect(!msg.contains("dotenv"))   // the top-level class is NOT trusted
     }
 
     @Test func statusMappingIsTypedAndCarriesThePath() {
         // Round-3 #2: EVERY projected failure names the artifact path so the failure
         // view + Retry never show a bare basename or a generic offline blob.
         let path = "final/report/.env"
-        // A 409 → typed notRenderable refusal, WITH the path visible.
+        // A 409 → typed notRenderable refusal, WITH the path visible. Body is the
+        // real normalized ControlProblem (class in `context`, not top-level).
         let refusal = ArtifactFetchError.payloadError(
-            from: GatewayError.http(status: 409, body: #"{"sensitiveClass":"dotenv"}"#), path: path)
+            from: GatewayError.http(status: 409, body: #"{"code":"sensitive_file_refused","message":"x","context":{"sensitiveClass":"dotenv"}}"#), path: path)
         if case .notRenderable(let m) = refusal { #expect(m.contains("dotenv")); #expect(m.contains(path)) }
         else { Issue.record("409 should map to .notRenderable") }
 
