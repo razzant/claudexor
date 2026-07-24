@@ -226,9 +226,44 @@ function loadFrozenPacket(candidateRoot, candidateSha, candidateTree, packetMani
     `is reproduced below; its own SHA-256 (the packet-manifest digest recorded in the panel ` +
     `lock and attestation) is ${sealed.manifestSha256}. Every packet file below hashed to its ` +
     `manifest entry, and DIFF.patch matched git diff base..candidate exactly.`;
+  // The PROMPT carries a READABLE diff view: binary blobs and
+  // diff-authoritative generated bulk (lockfile, generated schemas, image
+  // assets) are listed by path+status instead of base64 bodies — a 2MB
+  // asset-heavy release diff otherwise blows the 1M-token reviewer window
+  // while adding zero review value. The SEALED DIFF.patch (byte-identity
+  // verified above) remains the full truth; the omitted paths are named so
+  // nothing disappears silently, and their FULL TEXT (when text) still
+  // rides the touched-file pack under the A-8 coverage gate.
+  const reviewDiff = git([
+    "diff",
+    `${sealed.baseSha}..${candidateSha}`,
+    "--",
+    ".",
+    ":(exclude)site/assets",
+    ":(exclude)docs/assets",
+    ":(exclude)pnpm-lock.yaml",
+    ":(exclude)packages/schema/generated",
+  ]);
+  const omittedFromView = parseNameStatusZ(
+    git([
+      "diff",
+      "-z",
+      "--name-status",
+      `${sealed.baseSha}..${candidateSha}`,
+      "--",
+      "site/assets",
+      "docs/assets",
+      "pnpm-lock.yaml",
+      "packages/schema/generated",
+    ]),
+  );
+  const reviewDiffNote =
+    omittedFromView.length === 0
+      ? ""
+      : `\n\n## Diff view note\n\nThe following ${omittedFromView.length} binary/generated file(s) changed in this diff; their bodies are omitted from THIS readable view (full bytes are in the sealed DIFF.patch, byte-identity verified):\n${omittedFromView.map((entry) => `- ${entry.path}${entry.deleted ? " (deleted)" : ""}`).join("\n")}`;
   return {
     base: sealed.baseSha,
-    diff: sealed.diff,
+    diff: reviewDiff + reviewDiffNote,
     manifestSha256: sealed.manifestSha256,
     packet,
     prompt:
