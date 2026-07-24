@@ -51,8 +51,8 @@ for (const [label, pattern] of [
   [
     // validateReleaseAttestation rejects any non-v3 attestation, so the
     // workflow_dispatch input must document the schema owners actually sign.
-    "attestation input is documented as a schema-v3 owner-review attestation",
-    /review_attestation_b64:\s*\n\s*description:[^\n]*schema-v3 owner-review attestation/,
+    "attestation input is documented as a schema-v4 owner-review attestation",
+    /review_attestation_b64:\s*\n\s*description:[^\n]*schema-v4 owner-review attestation/,
   ],
   ["npm provenance is mandatory", /--provenance/],
   ["artifact provenance is emitted", /actions\/attest-build-provenance@[0-9a-f]{40}/],
@@ -199,7 +199,7 @@ for (const [label, pattern] of [
   ["unsigned release fallback is forbidden", /continue-on-error:\s*true/],
   ["runtime package downloads are forbidden", /\bnpx\b|@latest/],
   ["tag-push publication is forbidden", /^\s*push:\s*\n\s*tags:/m],
-  // The attestation is schema v3; the stale v2 wording must never return.
+  // The attestation is schema v4; stale v2/v3 wording must never return.
   ["stale schema-v2 attestation wording is forbidden", /schema-v2/],
 ]) {
   if (pattern.test(release)) errors.push(`release.yml: ${label}`);
