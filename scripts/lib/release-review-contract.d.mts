@@ -156,3 +156,7 @@ export function validateSlotRecord(
     waveId?: string | null;
   },
 ): string[];
+export function deriveSlotVerdict(
+  rawText: string,
+  panelSlot: "triad" | "scope",
+): "error" | "blocked" | "warn" | "pass";

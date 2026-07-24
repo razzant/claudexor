@@ -28,6 +28,7 @@ import {
   OWNER_REVIEW_PROTOCOL,
   RELEASE_REVIEW_ATTESTATION_ALGORITHM,
   releaseAttestationSigningBytes,
+  deriveSlotVerdict,
   validateReleaseAttestation,
   validateSlotRecord,
 } from "./lib/release-review-contract.mjs";
@@ -108,6 +109,7 @@ try {
     : null;
   const packetManifestSha256 = sealedPacket?.manifestSha256 ?? null;
   let waveId = null;
+  let maxRound = 0;
   for (const recordPath of options.slotRecord) {
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     const where = `slot record ${recordPath}`;
@@ -121,12 +123,26 @@ try {
       throw new Error(`${where}: ${reasons.join("; ")}`);
     }
     if (waveId === null) waveId = record.reviewWaveId;
-    const reportDigest = sha256File(join(dirname(recordPath), record.raw_file));
+    const rawBytes = readFileSync(join(dirname(recordPath), record.raw_file));
+    const reportDigest = createHash("sha256").update(rawBytes).digest("hex");
     if (reportDigest !== record.report_sha256) {
       throw new Error(
         `${where}: raw report bytes (${reportDigest.slice(0, 12)}…) do not match the recorded digest`,
       );
     }
+    // Verdict is RE-DERIVED from the digest-bound raw bytes (gate-8): a
+    // mutated record cannot upgrade a blocked/warn report to pass.
+    const derived = deriveSlotVerdict(rawBytes.toString("utf8"), record.panel_slot);
+    if (derived !== record.verdict) {
+      throw new Error(
+        `${where}: recorded verdict "${record.verdict}" does not match the raw report's derived "${derived}"`,
+      );
+    }
+    // The round count seals from the records, never CLI prose (gate-8).
+    if (!Number.isInteger(record.round) || record.round < 1) {
+      throw new Error(`${where}: slot record carries no valid round number`);
+    }
+    maxRound = Math.max(maxRound, record.round);
     const review = {
       reviewer: `${record.panel_slot}${record.sub_wave ? `@${record.sub_wave}` : ""}:${record.model_id}`,
       reportSha256: record.report_sha256,
@@ -138,13 +154,18 @@ try {
     reviews.push(review);
   }
 
+  if (maxRound > 0 && Number(options.rounds) !== maxRound) {
+    throw new Error(
+      `--rounds ${options.rounds} does not match the slot records' max round ${maxRound} — the round count seals from the wave records`,
+    );
+  }
   const authority = JSON.parse(readFileSync(options.authority, "utf8"));
   const payload = {
     contract: `owner-review-v${OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION}`,
     reviewProtocol: OWNER_REVIEW_PROTOCOL,
     candidateSha,
     candidateTree,
-    rounds: Number(options.rounds),
+    rounds: maxRound > 0 ? maxRound : Number(options.rounds),
     fullGate,
     reviews,
     sealedAt: new Date().toISOString(),

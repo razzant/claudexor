@@ -193,6 +193,10 @@ export function revertRefusedProblem(
       : "Revert could not be applied to the current project tree.";
   let detail = redactSecrets(raw);
   if (Buffer.byteLength(detail, "utf8") > REVERT_DETAIL_MAX_BYTES) {
+    // Prefix-slice FIRST (code units >= bytes wanted), then trim at most a few
+    // trailing code units for multi-byte alignment — a character-by-character
+    // loop over megabytes of git stderr is O(N²) on the daemon's event loop.
+    detail = detail.slice(0, REVERT_DETAIL_MAX_BYTES);
     while (Buffer.byteLength(detail, "utf8") > REVERT_DETAIL_MAX_BYTES && detail.length > 0) {
       detail = detail.slice(0, -1);
     }

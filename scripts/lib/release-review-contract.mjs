@@ -132,6 +132,25 @@ export function validateReviewPanelCoverage(reviews) {
 }
 
 /**
+ * Re-derive a slot's verdict from its RAW report text (gate-8): the sealer
+ * must never trust the record's mutable verdict claim — the raw bytes are
+ * digest-bound, so parsing THEM is tamper-evident. Returns the same ladder
+ * the wave transport derives: error (unparseable/incomplete), blocked (any
+ * critical FAIL), warn (any FAIL), pass.
+ */
+export function deriveSlotVerdict(rawText, panelSlot) {
+  const items = panelSlot === "scope" ? SCOPE_ITEMS : TRIAD_ITEMS;
+  const arr = parseChecklistJson(rawText);
+  if (arr === null) return "error";
+  const validation = validateChecklistResponse(arr, "(seal-recheck)", items);
+  if (validation.status !== "responded") return "error";
+  const findings = validation.findings;
+  if (findings.some((f) => f.verdict === "FAIL" && f.severity === "critical")) return "blocked";
+  if (findings.some((f) => f.verdict === "FAIL")) return "warn";
+  return "pass";
+}
+
+/**
  * Typed slot-attestation record validation (gate-6): the sealer derives panel
  * identity from the wave transport's metadata records and REFUSES anything a
  * caller could forge — status/liveness, derived verdict, candidate/tree
