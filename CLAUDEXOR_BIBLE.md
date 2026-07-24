@@ -633,10 +633,19 @@ invariant or owner decision before proceeding.
   longer suffices; off-panel reports can ride along as extra critics but
   never satisfy coverage). Substituting or skipping the panel without an
   explicit owner override is a hard error; an override is a distinct recorded
-  fact, never a reviewer PASS. The retired schemaVersion-2 (six-slot)
-  attestation is REJECTED as publish input; already-sealed older-schema
-  attestations stay verifiable only for their own archived releases. A
-  whole-tree immune scan (docs-vs-code, dead surface,
+  fact, never a reviewer PASS. When one sealed packet exceeds a single
+  reviewable full-text pack, the wave is PACKET-SPLIT — CONCEPT-CHANGE(INV-125)
+  — into named sub-waves: every sub-wave reads the SAME sealed packet and
+  full diff with a partitioned full-text pack, EACH binds its own full
+  triad+scope panel (slot `triad@<subwave>=model`), and the attestation
+  additionally binds the union-coverage receipt — RECOMPUTED by the sealer
+  from disk bytes, never trusted from a caller — mapping every sub-wave to
+  its exact pack digest, with the union proven to cover every changed file
+  (`scripts/review-coverage-check.mjs`); a seal naming ANY sub-wave without
+  that receipt, or whose receipt labels differ from the panel's sub-waves,
+  is refused. Older-schema attestations are REJECTED as publish input;
+  already-sealed ones stay verifiable only for their own archived releases.
+  A whole-tree immune scan (docs-vs-code, dead surface,
   invariants-vs-tree) is a mandatory pre-release checklist step.
   verify: `scripts/seal-owner-review-attestation.mjs` (panel + round
   constraints); `verify-release-input.mjs`; CHECKLISTS Release + Review

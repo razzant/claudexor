@@ -1,3 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildTouchedFilePack,
@@ -5,6 +10,7 @@ import {
 } from "../../../scripts/lib/release-review-contract.mjs";
 import {
   GENERATED_ARTIFACT_ALLOWLIST,
+  bindCoverageReceipt,
   checkCoverage,
   coverageReceiptBody,
   diffAuthoritativeRule,
@@ -180,16 +186,91 @@ describe("review-coverage-check", () => {
     const body = coverageReceiptBody(report, {
       base: "9".repeat(40),
       candidate: "a".repeat(40),
-      packs: ["/tmp/wave/triad-prompt.md"],
+      packs: [{ subWave: "engine", path: "/tmp/wave/triad-prompt.md" }],
       packContents: [pack],
       wholeFileList: null,
     });
     expect(body.ok).toBe(true);
     expect(body.candidate).toBe("a".repeat(40));
-    expect(body.packs).toHaveLength(1);
-    expect(body.packs[0].sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.packs).toEqual([
+      {
+        subWave: "engine",
+        path: "/tmp/wave/triad-prompt.md",
+        sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    ]);
     expect(body.covered).toBe(2);
     expect(body.uncovered).toEqual([]);
+  });
+
+  it("bindCoverageReceipt recomputes from disk and refuses a forged receipt (E-C3)", () => {
+    // Real git fixture: one repo, one changed file, one honest pack.
+    const dir = mkdtempSync(join(tmpdir(), "coverage-bind-"));
+    try {
+      const g = (...args: string[]) =>
+        execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
+      g("init", "-q");
+      g("config", "user.email", "t@t");
+      g("config", "user.name", "t");
+      writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+      g("add", "a.ts");
+      g("commit", "-qm", "base");
+      const base = g("rev-parse", "HEAD");
+      writeFileSync(join(dir, "a.ts"), "export const a = 2;\n");
+      g("add", "a.ts");
+      g("commit", "-qm", "change");
+      const candidate = g("rev-parse", "HEAD");
+      const packPath = join(dir, "triad-prompt.md");
+      writeFileSync(packPath, packOf({ "a.ts": "export const a = 2;\n" }));
+      const packSha = createHash("sha256")
+        .update(packOf({ "a.ts": "export const a = 2;\n" }))
+        .digest("hex");
+      const honest = {
+        schemaVersion: 1,
+        ok: true,
+        base,
+        candidate,
+        packs: [{ subWave: "engine", path: packPath, sha256: packSha }],
+        wholeFileList: null,
+      };
+      const cwd = process.cwd();
+      process.chdir(dir);
+      try {
+        // Honest receipt binds; the result carries only recomputed values.
+        const bound = bindCoverageReceipt(honest, candidate);
+        expect(bound.ok).toBe(true);
+        expect(bound.packs).toEqual([{ subWave: "engine", sha256: packSha }]);
+        // Forged pack digest → refused (disk bytes win).
+        expect(() =>
+          bindCoverageReceipt(
+            { ...honest, packs: [{ ...honest.packs[0], sha256: "0".repeat(64) }] },
+            candidate,
+          ),
+        ).toThrow(/digest mismatch/);
+        // Wrong candidate → refused.
+        expect(() => bindCoverageReceipt(honest, base)).toThrow(/not the sealed candidate/);
+        // A receipt claiming ok:true over a pack that does NOT cover the
+        // change → refused by RECOMPUTATION, not trusted.
+        const stalePack = join(dir, "stale-prompt.md");
+        writeFileSync(stalePack, packOf({ "a.ts": "export const a = 1;\n" }));
+        const staleSha = createHash("sha256")
+          .update(packOf({ "a.ts": "export const a = 1;\n" }))
+          .digest("hex");
+        expect(() =>
+          bindCoverageReceipt(
+            {
+              ...honest,
+              packs: [{ subWave: "engine", path: stalePack, sha256: staleSha }],
+            },
+            candidate,
+          ),
+        ).toThrow(/coverage recomputation FAILED/);
+      } finally {
+        process.chdir(cwd);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("covers a file when any one of several packs contains it (union of sub-waves)", () => {

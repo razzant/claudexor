@@ -138,7 +138,7 @@ export function validateReviewPanelCoverage(reviews) {
  * the only artifact proving the UNION of the sub-wave packs covered every
  * changed file, so a seal listing one sub-wave cannot silently omit the rest.
  */
-export function validateCoverageReceipt(receipt, expected, { required }) {
+export function validateCoverageReceipt(receipt, expected, { required, namedSubWaves = [] }) {
   const reasons = [];
   if (receipt === undefined || receipt === null) {
     if (required) {
@@ -161,9 +161,31 @@ export function validateCoverageReceipt(receipt, expected, { required }) {
   if (!SHA256.test(receipt.receiptSha256 ?? "")) {
     reasons.push("owner review coverageReceipt is missing the receipt file digest");
   }
-  const packs = Array.isArray(receipt.packSha256) ? receipt.packSha256 : [];
-  if (packs.length === 0 || packs.some((digest) => !SHA256.test(digest ?? ""))) {
-    reasons.push("owner review coverageReceipt must list the SHA-256 of every reviewed pack");
+  const packs = Array.isArray(receipt.packs) ? receipt.packs : [];
+  if (
+    packs.length === 0 ||
+    packs.some((pack) => !SHA256.test(pack?.sha256 ?? "") || typeof pack?.subWave !== "string")
+  ) {
+    reasons.push(
+      "owner review coverageReceipt must map every reviewed pack's sub-wave name to its SHA-256",
+    );
+  }
+  // The receipt's sub-wave labels must EQUAL the panel's named sub-waves in
+  // both directions: a slot reviewing an unlisted pack, or a listed pack no
+  // slot reviewed, means reviewer reports and coverage proof describe
+  // DIFFERENT prompts (the report/receipt swap sol flagged).
+  if (namedSubWaves.length > 0 && packs.length > 0) {
+    const receiptWaves = new Set(packs.map((pack) => pack.subWave));
+    for (const name of namedSubWaves) {
+      if (!receiptWaves.has(name)) {
+        reasons.push(`owner review coverageReceipt lists no pack for panel sub-wave "${name}"`);
+      }
+    }
+    for (const name of receiptWaves) {
+      if (!namedSubWaves.includes(name)) {
+        reasons.push(`owner review coverageReceipt pack sub-wave "${name}" has no panel slots`);
+      }
+    }
   }
   return reasons;
 }
@@ -390,10 +412,14 @@ export function validateOwnerReviewAttestationPayload(payload, expected) {
   // A packet-split seal must additionally prove the union of its sub-wave
   // packs covered every changed file (audit A-8): the coverage receipt is
   // signature-bound so one sub-wave's report can never stand in for all.
+  // ANY named sub-wave forces the receipt — by construction a named
+  // sub-wave's pack covers only a SUBSET, so even a single-named seal
+  // without union proof is the exact evasion X115 closed.
   const namedSubWaves = [...panelSubWaves(reviews)].filter((key) => key !== "");
   reasons.push(
     ...validateCoverageReceipt(payload.coverageReceipt, expected, {
-      required: namedSubWaves.length > 1,
+      required: namedSubWaves.length > 0,
+      namedSubWaves,
     }),
   );
   return { ok: reasons.length === 0, reasons };

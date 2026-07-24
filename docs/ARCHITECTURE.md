@@ -1562,10 +1562,12 @@ detail as `candidates` from attempt/review/decision artifacts.
 Repository release review is cumulative and SHA-bound. The panel reviews the
 exact clean committed candidate against the checklists and docs; any tracked
 mutation invalidates every result and starts a new freeze, and the signed
-schemaVersion-3 attestation binds the candidate SHA/tree, gate receipt digest,
-and reviewer report digests + verdicts. (The retired six-slot triad/scope
-panel's schemaVersion-2 attestations stay verifiable for already-sealed
-releases.) The operational protocol — panel composition, wave discipline,
+schemaVersion-4 attestation binds the candidate SHA/tree, gate receipt digest,
+reviewer report digests + verdicts, and — for a packet-split wave — one full
+triad+scope panel per named sub-wave plus the sealer-recomputed union-coverage
+receipt mapping each sub-wave to its exact pack digest (INV-125). (Older
+schemas are archival only: already-sealed attestations stay verifiable for
+their own releases, never as new publish input.) The operational protocol — panel composition, wave discipline,
 structural floors, and round bound — is defined ONCE in `docs/CHECKLISTS.md`
 (Release review protocol); this map does not restate it. The old per-commit
 staged-diff hook, bypass log, and installer are removed so they cannot compete

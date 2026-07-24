@@ -150,6 +150,53 @@ export function checkCoverage({ files, readCurrentText, packContents, allowlist 
   return { ok: uncovered.length === 0, covered, uncovered, skipped, deleted };
 }
 
+/**
+ * Recompute-and-bind a coverage receipt for the attestation sealer (E-C3):
+ * NEVER trust the caller's receipt — re-run the coverage computation over the
+ * receipt's referenced packs against the receipt's base and the SEALED
+ * candidate, recompute every pack digest from disk bytes, and throw on any
+ * mismatch (a hand-authored ok:true cannot seal). Returns the payload piece
+ * built ONLY from recomputed values.
+ */
+export function bindCoverageReceipt(receipt, candidateSha) {
+  if (receipt.schemaVersion !== 1) {
+    throw new Error(`coverage receipt schemaVersion ${receipt.schemaVersion} is not 1`);
+  }
+  if (receipt.candidate !== candidateSha) {
+    throw new Error(
+      `coverage receipt candidate ${receipt.candidate} is not the sealed candidate ${candidateSha}`,
+    );
+  }
+  const recomputed = runCoverage({
+    base: receipt.base,
+    candidate: candidateSha,
+    packs: (receipt.packs ?? []).map((pack) => ({ subWave: pack.subWave, path: pack.path })),
+    wholeFileListPath: receipt.wholeFileList ?? null,
+  });
+  if (!recomputed.report.ok) {
+    throw new Error(
+      `coverage recomputation FAILED: uncovered ${recomputed.report.uncovered.map((entry) => entry.path).join(", ")}`,
+    );
+  }
+  for (const [index, pack] of recomputed.receiptBody.packs.entries()) {
+    const claimed = receipt.packs?.[index]?.sha256;
+    if (pack.sha256 !== claimed) {
+      throw new Error(
+        `coverage receipt pack digest mismatch for ${pack.subWave || "(unsplit)"}: receipt claims ${claimed}, disk bytes are ${pack.sha256}`,
+      );
+    }
+  }
+  return {
+    base: recomputed.receiptBody.base,
+    candidate: recomputed.receiptBody.candidate,
+    ok: recomputed.report.ok,
+    packs: recomputed.receiptBody.packs.map((pack) => ({
+      subWave: pack.subWave,
+      sha256: pack.sha256,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -163,8 +210,18 @@ function parseArgs(argv) {
   let receipt = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--pack") packs.push(argv[++i]);
-    else if (a === "--base") base = argv[++i];
+    if (a === "--pack") {
+      // `--pack <subwave>=<path>` labels a packet-split sub-wave's pack so the
+      // receipt can bind panel slots to exact pack bytes; a bare `--pack
+      // <path>` is the single unsplit wave (label "").
+      const value = argv[++i] ?? "";
+      const eq = value.indexOf("=");
+      if (eq > 0 && /^[a-z0-9][a-z0-9-]{0,31}$/.test(value.slice(0, eq))) {
+        packs.push({ subWave: value.slice(0, eq), path: value.slice(eq + 1) });
+      } else {
+        packs.push({ subWave: "", path: value });
+      }
+    } else if (a === "--base") base = argv[++i];
     else if (a === "--candidate") candidate = argv[++i];
     else if (a === "--json") json = true;
     else if (a === "--whole-file-list") wholeFileList = argv[++i];
@@ -176,8 +233,8 @@ function parseArgs(argv) {
   if (!candidate || !SHA1.test(candidate)) {
     return { error: "--candidate must be a full lowercase 40-char commit SHA" };
   }
-  if (packs.length === 0 || packs.some((p) => !p))
-    return { error: "at least one --pack <file> is required" };
+  if (packs.length === 0 || packs.some((p) => !p.path))
+    return { error: "at least one --pack [subwave=]<file> is required" };
   return { base, candidate, packs, json, wholeFileList, receipt };
 }
 
@@ -249,7 +306,9 @@ export function unionWithWholeFileList(files, listText) {
 /**
  * Candidate-bound machine receipt for the seal (audit A-8): the sealed
  * attestation embeds this body's file digest, so the union-coverage proof is
- * signature-bound rather than a claim in prose.
+ * signature-bound rather than a claim in prose. Each pack carries its
+ * SUB-WAVE label so the seal can bind panel slots to the exact pack bytes
+ * their reviewers consumed (an unlabeled single-wave pack uses "").
  */
 export function coverageReceiptBody(
   report,
@@ -260,8 +319,9 @@ export function coverageReceiptBody(
     ok: report.ok,
     base,
     candidate,
-    packs: packs.map((path, index) => ({
-      path,
+    packs: packs.map((pack, index) => ({
+      subWave: pack.subWave,
+      path: pack.path,
       sha256: createHash("sha256").update(packContents[index]).digest("hex"),
     })),
     wholeFileList: wholeFileList ?? null,
@@ -272,6 +332,36 @@ export function coverageReceiptBody(
   };
 }
 
+/**
+ * The ONE coverage computation both the CLI and the attestation sealer run:
+ * enumerate base..candidate (-z), union the packet's whole-file list, check
+ * byte-exact coverage across the pack files, and return the report plus the
+ * receipt body derived from the SAME bytes. The sealer calls this instead of
+ * trusting a caller-supplied receipt (a hand-authored ok:true must not seal).
+ */
+export function runCoverage({ base, candidate, packs, wholeFileListPath }) {
+  const packContents = packs.map((pack) => readFileSync(pack.path, "utf8"));
+  const files = unionWithWholeFileList(
+    changedFiles(base, candidate),
+    wholeFileListPath ? readFileSync(wholeFileListPath, "utf8") : null,
+  );
+  const report = checkCoverage({
+    files,
+    readCurrentText: (path) => git(["show", `${candidate}:${path}`]),
+    packContents,
+  });
+  return {
+    report,
+    receiptBody: coverageReceiptBody(report, {
+      base,
+      candidate,
+      packs,
+      packContents,
+      wholeFileList: wholeFileListPath ?? null,
+    }),
+  };
+}
+
 function main() {
   const parsed = parseArgs(process.argv.slice(2));
   if (parsed.error) {
@@ -279,21 +369,14 @@ function main() {
     process.exit(2);
   }
   const { base, candidate, packs, json, wholeFileList, receipt } = parsed;
-  const packContents = packs.map((p) => readFileSync(p, "utf8"));
-  const files = unionWithWholeFileList(
-    changedFiles(base, candidate),
-    wholeFileList ? readFileSync(wholeFileList, "utf8") : null,
-  );
-  const report = checkCoverage({
-    files,
-    readCurrentText: (path) => git(["show", `${candidate}:${path}`]),
-    packContents,
+  const { report, receiptBody } = runCoverage({
+    base,
+    candidate,
+    packs,
+    wholeFileListPath: wholeFileList,
   });
   if (receipt) {
-    writeFileSync(
-      receipt,
-      `${JSON.stringify(coverageReceiptBody(report, { base, candidate, packs, packContents, wholeFileList }), null, 2)}\n`,
-    );
+    writeFileSync(receipt, `${JSON.stringify(receiptBody, null, 2)}\n`);
   }
 
   if (json) {

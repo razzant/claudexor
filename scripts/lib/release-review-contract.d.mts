@@ -45,7 +45,7 @@ export function validateReviewPanelCoverage(
 export function validateCoverageReceipt(
   receipt: unknown,
   expected: { candidateSha: string },
-  options: { required: boolean },
+  options: { required: boolean; namedSubWaves?: readonly string[] },
 ): string[];
 export interface PanelLockBinding {
   candidateSha: string;

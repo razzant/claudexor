@@ -1,21 +1,25 @@
 #!/usr/bin/env node
 /**
- * Seal the OWNER-REVIEW release attestation (schemaVersion 3): the owner's
+ * Seal the OWNER-REVIEW release attestation (schemaVersion 4): the owner's
  * offline Ed25519 authority signs the exact candidate identity, the full
- * deterministic gate receipt, and >=2 fable reviewer reports with
- * non-blocking verdicts. This REPLACES the retired six-slot panel sealer for
- * new releases; verify-release-input.mjs accepts either schema.
+ * deterministic gate receipt, the panel reviewer report digests with
+ * non-blocking verdicts, and — for packet-split panels — the RECOMPUTED
+ * union-coverage receipt (one full triad+scope panel per named sub-wave).
+ * Older schemas are archival only; the verifier accepts exactly the current
+ * schema for new seals.
  *
  * usage:
  *   seal-owner-review-attestation.mjs \
  *     --full-gate-receipt FILE --rounds N \
- *     --review reviewer=FILE:verdict --review reviewer=FILE:verdict [...] \
+ *     --review reviewer=FILE:verdict[:triad|scope[@subwave]=model] [...] \
+ *     [--coverage-receipt FILE   # required when slots name sub-waves] \
  *     --private-key FILE --authority FILE --out FILE [--base64-out FILE]
  */
 import { createHash, createPrivateKey, sign } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { bindCoverageReceipt } from "./review-coverage-check.mjs";
 import {
   OWNER_REVIEW_ATTESTATION_SCHEMA_VERSION,
   OWNER_REVIEW_PROTOCOL,
@@ -100,16 +104,18 @@ try {
     sealedAt: new Date().toISOString(),
   };
   if (options["coverage-receipt"]) {
-    // The union-coverage proof for a packet-split panel (audit A-8): embed
-    // the checker's receipt digest-bound so the signature covers it. The
-    // verifier REQUIRES this whenever the slots name >1 sub-wave.
+    // The union-coverage proof for a packet-split panel (audit A-8). The
+    // sealer NEVER trusts the caller's receipt: it re-runs the coverage
+    // computation over the receipt's referenced packs against the receipt's
+    // base and THIS candidate, recomputes every pack digest from disk, and
+    // refuses on any mismatch — a hand-authored ok:true cannot seal. Only
+    // the RECOMPUTED result is embedded (signature-bound). Trust boundary:
+    // the verifier (no pack files at publish time) checks the signature and
+    // structure; the recomputation lives here, before signing.
     const receipt = JSON.parse(readFileSync(options["coverage-receipt"], "utf8"));
     payload.coverageReceipt = {
       receiptSha256: sha256File(options["coverage-receipt"]),
-      base: receipt.base,
-      candidate: receipt.candidate,
-      ok: receipt.ok === true,
-      packSha256: (receipt.packs ?? []).map((pack) => pack.sha256),
+      ...bindCoverageReceipt(receipt, candidateSha),
     };
   }
   const attestation = {

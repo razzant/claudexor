@@ -23,12 +23,30 @@ export function unionWithWholeFileList(
   files: Array<{ path: string; deleted: boolean }>,
   listText: string | null,
 ): Array<{ path: string; deleted: boolean }>;
+export function runCoverage(input: {
+  base: string;
+  candidate: string;
+  packs: ReadonlyArray<{ subWave: string; path: string }>;
+  wholeFileListPath?: string | null;
+}): {
+  report: ReturnType<typeof checkCoverage>;
+  receiptBody: ReturnType<typeof coverageReceiptBody>;
+};
+export function bindCoverageReceipt(
+  receipt: unknown,
+  candidateSha: string,
+): {
+  base: string;
+  candidate: string;
+  ok: boolean;
+  packs: Array<{ subWave: string; sha256: string }>;
+};
 export function coverageReceiptBody(
   report: ReturnType<typeof checkCoverage>,
   input: {
     base: string;
     candidate: string;
-    packs: readonly string[];
+    packs: ReadonlyArray<{ subWave: string; path: string }>;
     packContents: readonly string[];
     wholeFileList?: string | null;
   },
@@ -37,7 +55,7 @@ export function coverageReceiptBody(
   ok: boolean;
   base: string;
   candidate: string;
-  packs: Array<{ path: string; sha256: string }>;
+  packs: Array<{ subWave: string; path: string; sha256: string }>;
   wholeFileList: string | null;
   covered: number;
   uncovered: Array<{ path: string; reason: string }>;

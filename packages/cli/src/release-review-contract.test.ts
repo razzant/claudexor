@@ -571,12 +571,15 @@ describe("owner-review attestation (current schema, owner protocol)", () => {
       reviewer: `${review.reviewer}-${name}`,
       panel: { ...review.panel, subWave: name },
     }));
-  const coverageReceipt = (candidateSha: string) => ({
+  const coverageReceipt = (candidateSha: string, subWaves: string[] = ["macos", "engine"]) => ({
     receiptSha256: "f".repeat(64),
     base: "9".repeat(40),
     candidate: candidateSha,
     ok: true,
-    packSha256: ["a".repeat(64), "b".repeat(64)],
+    packs: subWaves.map((subWave, index) => ({
+      subWave,
+      sha256: String.fromCharCode(97 + index).repeat(64),
+    })),
   });
 
   it("accepts a packet-split panel: a full triad+scope per named sub-wave plus a coverage receipt (A-8)", () => {
@@ -678,8 +681,63 @@ describe("owner-review attestation (current schema, owner protocol)", () => {
       validateReleaseAttestation(splitWith({ ...good, ok: false }), authority, expected).ok,
     ).toBe(false);
     expect(
-      validateReleaseAttestation(splitWith({ ...good, packSha256: [] }), authority, expected).ok,
+      validateReleaseAttestation(splitWith({ ...good, packs: [] }), authority, expected).ok,
     ).toBe(false);
+  });
+
+  it("rejects a SINGLE-named-sub-wave seal without a coverage receipt — a named pack is a subset by construction (X115 evasion)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const oneNamed = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: asSubWave(attestation.payload.reviews, "macos"),
+      },
+    });
+    const verdict = validateReleaseAttestation(oneNamed, authority, expected);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toContain("coverageReceipt");
+    // With a receipt whose labels match, it seals.
+    const withReceipt = resign({
+      ...attestation,
+      payload: {
+        ...attestation.payload,
+        reviews: asSubWave(attestation.payload.reviews, "macos"),
+        coverageReceipt: coverageReceipt(expected.candidateSha, ["macos"]),
+      },
+    });
+    expect(validateReleaseAttestation(withReceipt, authority, expected)).toEqual({
+      ok: true,
+      reasons: [],
+    });
+  });
+
+  it("rejects a receipt whose pack labels do not EQUAL the panel's named sub-waves (report/receipt swap)", () => {
+    const { attestation, authority, resign, expected } = ownerAttestation();
+    const mismatched = (subWaves: string[]) =>
+      resign({
+        ...attestation,
+        payload: {
+          ...attestation.payload,
+          reviews: [
+            ...asSubWave(attestation.payload.reviews, "macos"),
+            ...asSubWave(attestation.payload.reviews, "engine"),
+          ],
+          coverageReceipt: coverageReceipt(expected.candidateSha, subWaves),
+        },
+      });
+    // Receipt covers packs no slot reviewed.
+    const extra = validateReleaseAttestation(
+      mismatched(["macos", "engine", "docs"]),
+      authority,
+      expected,
+    );
+    expect(extra.ok).toBe(false);
+    expect(extra.reasons.join(" ")).toContain("no panel slots");
+    // A panel sub-wave with no pack in the receipt.
+    const missing = validateReleaseAttestation(mismatched(["macos"]), authority, expected);
+    expect(missing.ok).toBe(false);
+    expect(missing.reasons.join(" ")).toContain('no pack for panel sub-wave "engine"');
   });
 
   it("a single anonymous wave still needs no coverage receipt (unsplit pack is whole by construction)", () => {
