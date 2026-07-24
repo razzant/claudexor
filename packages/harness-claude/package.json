@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-claude",
-  "version": "3.0.4",
+  "version": "3.1.0",
   "license": "MIT",
   "description": "Claude Code adapter (claude -p --output-format stream-json).",
   "type": "module",

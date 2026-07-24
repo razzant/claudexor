@@ -1,6 +1,6 @@
 {
   "name": "@claudexor/harness-codex",
-  "version": "3.0.4",
+  "version": "3.1.0",
   "license": "MIT",
   "description": "Codex CLI adapter (codex exec --json).",
   "type": "module",

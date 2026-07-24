@@ -1,5 +1,19 @@
 # claudexor
 
+## 3.1.0
+
+### Patch Changes
+
+- 3b01d90: Treat one explicitly selected harness as the effective primary when no
+  `--primary-harness` is supplied, so configured routing defaults cannot override
+  an explicit singleton pool.
+- 8df552b: Record truthful planner deliverable outcomes, report the actual council member
+  count, and preserve independent check and review facts when a terminal decision
+  is blocked.
+- 756b40d: Lead npm search metadata and the package README with quota-aware rotation across multiple Claude Code and Codex subscriptions, multi-harness workflows, and the product landing page.
+- Updated dependencies [c3b7ece]
+  - @claudexor/cli@3.1.0
+
 ## 3.0.3
 
 ### Patch Changes

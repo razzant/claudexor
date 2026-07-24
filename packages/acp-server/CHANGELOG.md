@@ -1,5 +1,13 @@
 # @claudexor/acp-server
 
+## 3.1.0
+
+### Patch Changes
+
+- Updated dependencies [c3b7ece]
+  - @claudexor/schema@3.1.0
+  - @claudexor/util@3.1.0
+
 ## 3.0.3
 
 ### Patch Changes

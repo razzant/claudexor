@@ -1,6 +1,6 @@
 {
   "name": "claudexor",
-  "version": "3.0.4",
+  "version": "3.1.0",
   "description": "Local-first multi-harness control plane for Claude Code, Codex, Cursor, and OpenCode with quota-aware rotation across multiple Claude Code and Codex subscriptions.",
   "type": "module",
   "bin": {

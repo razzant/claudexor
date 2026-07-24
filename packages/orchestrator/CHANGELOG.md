@@ -1,5 +1,31 @@
 # @claudexor/orchestrator
 
+## 3.1.0
+
+### Minor Changes
+
+- c3b7ece: Support declared JSON Schema draft-07 and draft 2020-12 output contracts, publish the supported dialect catalog, and record the selected dialect plus stable schema hash in structured-output receipts. Local JSON Pointer references are inlined only for native provider transport while the original schema remains the validation authority.
+
+### Patch Changes
+
+- Updated dependencies [c3b7ece]
+- Updated dependencies [6e36993]
+  - @claudexor/schema@3.1.0
+  - @claudexor/core@3.1.0
+  - @claudexor/arbitration@3.1.0
+  - @claudexor/budget@3.1.0
+  - @claudexor/config@3.1.0
+  - @claudexor/context@3.1.0
+  - @claudexor/delivery@3.1.0
+  - @claudexor/event-log@3.1.0
+  - @claudexor/gateway@3.1.0
+  - @claudexor/policy@3.1.0
+  - @claudexor/review@3.1.0
+  - @claudexor/workspace@3.1.0
+  - @claudexor/synthesis@3.1.0
+  - @claudexor/artifact-store@3.1.0
+  - @claudexor/util@3.1.0
+
 ## 3.0.3
 
 ### Patch Changes

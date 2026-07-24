@@ -1,5 +1,15 @@
 # @claudexor/schema
 
+## 3.1.0
+
+### Minor Changes
+
+- c3b7ece: Support declared JSON Schema draft-07 and draft 2020-12 output contracts, publish the supported dialect catalog, and record the selected dialect plus stable schema hash in structured-output receipts. Local JSON Pointer references are inlined only for native provider transport while the original schema remains the validation authority.
+
+### Patch Changes
+
+- @claudexor/util@3.1.0
+
 ## 3.0.3
 
 ### Patch Changes

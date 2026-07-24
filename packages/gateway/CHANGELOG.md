@@ -1,5 +1,14 @@
 # @claudexor/gateway
 
+## 3.1.0
+
+### Patch Changes
+
+- Updated dependencies [c3b7ece]
+- Updated dependencies [6e36993]
+  - @claudexor/schema@3.1.0
+  - @claudexor/core@3.1.0
+
 ## 3.0.3
 
 ### Patch Changes
