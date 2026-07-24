@@ -66,6 +66,43 @@ const constrainedMode: WorkReportEnvelopeMode = {
   instruction: null,
 };
 
+/** A schema-free (inactive-transport) reducer route — the report passes through
+ * untouched, so a plain final message would OTHERWISE be a clean success. */
+const inactiveMode: WorkReportEnvelopeMode = {
+  active: false,
+  source: "absent",
+  hasCallerSchema: false,
+  channel: "constrained_json",
+  instruction: null,
+};
+
+/** An adapter that emits a clean final message and then aborts `outer` mid-stream
+ * (after the message, before completion) — the cancel-during-reducer race. */
+function abortingReducerAdapter(finalText: string, outer: AbortController): HarnessAdapter {
+  async function* run(spec: HarnessRunSpec): AsyncIterable<HarnessEvent> {
+    const s = spec.session_id;
+    yield { type: "started", session_id: s, ts: nowIso() };
+    yield {
+      type: "message",
+      session_id: s,
+      ts: nowIso(),
+      text: finalText,
+      final: true,
+      payload: { final_source: "test" },
+    };
+    outer.abort(); // the run was cancelled WHILE the synthesis streamed
+    yield { type: "completed", session_id: s, ts: nowIso() };
+  }
+  return {
+    id: "fake-reducer",
+    discover: () => Promise.reject(new Error("unused")),
+    doctor: () => Promise.reject(new Error("unused")),
+    run,
+    review: run,
+    cancel: () => Promise.resolve(),
+  } as unknown as HarnessAdapter;
+}
+
 function makeDeps(mode: WorkReportEnvelopeMode): DeepScanReducerDeps {
   return {
     newReadOnlyHome: () => ({ env: {}, dispose: () => {} }),
@@ -159,17 +196,43 @@ describe("runDeepScanReducer WorkReport contract parity (D-16)", () => {
   });
 
   it("an INACTIVE transport passes the report through untouched (schema-free reducer route)", async () => {
-    const inactive: WorkReportEnvelopeMode = {
-      active: false,
-      source: "absent",
-      hasCallerSchema: false,
-      channel: "constrained_json",
-      instruction: null,
-    };
-    const result = await runWith(inactive, "Plain merged synthesis with no envelope.");
+    const result = await runWith(inactiveMode, "Plain merged synthesis with no envelope.");
     expect(result.status).toBe("success");
     if (result.status === "success") {
       expect(result.report).toContain("Plain merged synthesis");
+    }
+  });
+
+  it("a cancel on the OUTER run signal mid-reducer is a typed cancellation, never a laundered success (INV-116)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "claudexor-deepscan-"));
+    __dirs.push(root);
+    const store = new ArtifactStore(root, { claudexorDir: join(root, "runtime") });
+    const paths = store.createRun("run-reducer");
+    const log = new EventLog(paths.eventsPath, "run-reducer", "task-reducer");
+    const ledger = new BudgetLedger({ kind: "unlimited" });
+    const outer = new AbortController();
+    // A CLEAN merged synthesis that would otherwise succeed on the inactive route
+    // — the mid-stream cancel must win over it, and the report must be discarded.
+    const routed = {
+      adapter: abortingReducerAdapter("Plain merged synthesis with no envelope.", outer),
+    } as unknown as RoutedAdapter;
+    try {
+      const result = await runDeepScanReducer(makeDeps(inactiveMode), {
+        taskId: "task-reducer",
+        goal: "merge the scout reports",
+        routed,
+        scoutReports: [],
+        ledger,
+        log,
+        paths,
+        signal: outer.signal,
+        attemptTelemetries: [],
+      });
+      expect(result.status).toBe("cancelled");
+      // The (partial) synthesis output is discarded — never surfaced as a report.
+      expect(result).not.toHaveProperty("report");
+    } finally {
+      log.dispose();
     }
   });
 });

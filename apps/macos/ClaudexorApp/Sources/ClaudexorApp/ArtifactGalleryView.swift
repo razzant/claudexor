@@ -28,6 +28,11 @@ struct ArtifactGalleryView: View {
     /// D15: identity-keyed load slot — switching the run set shows loading/empty,
     /// never the previous set's artifact list.
     @State private var slot = PayloadSlot<[RunArtifact]>()
+    /// Bounded-evidence disclosure: run ids whose artifact listing FAILED while
+    /// others in the set loaded. A nonempty list under a loaded snapshot renders
+    /// the partial-results warning (with Retry) so a run's outputs are never
+    /// silently omitted from the aggregated view.
+    @State private var failedRunIds: [String] = []
 
     /// Single-run gallery (the run's own tree, or its produced outputs).
     init(runId: String, produced: Bool = false) {
@@ -119,6 +124,12 @@ struct ArtifactGalleryView: View {
                 .padding(Theme.Spacing.md)
                 Divider()
             }
+            // Bounded-evidence disclosure: some runs loaded, at least one failed.
+            // Keep the successful snapshot visible AND name the failed runs with a
+            // Retry, so an aggregated view never silently omits a run's outputs.
+            if !failedRunIds.isEmpty, slot.state.value != nil {
+                partialFailureBanner
+            }
             if case .failed(let error) = slot.state {
                 VStack(spacing: Theme.Spacing.sm) {
                     Text(error.message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -151,6 +162,31 @@ struct ArtifactGalleryView: View {
         // identity keying (D15) drops the previous run's list the instant `runId`
         // changes, so a stale artifact list can never render under a new run.
         .task(id: identity) { await load() }
+    }
+
+    /// Partial-results warning: the successful snapshot stays visible above/below,
+    /// while this names the runs whose listing failed and offers a Retry that
+    /// re-fetches the whole set (a recovered run then rejoins the aggregate).
+    private var partialFailureBanner: some View {
+        HStack(alignment: .top, spacing: Theme.Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                Text("Some runs' artifacts couldn't be loaded — showing partial results.")
+                    .font(.caption.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Failed to load: \(failedRunIds.joined(separator: ", "))")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button("Retry") { Task { await load() } }
+                .buttonStyle(.bordered).controlSize(.small)
+        }
+        .padding(Theme.Spacing.sm)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, Theme.Spacing.md)
+        .padding(.top, Theme.Spacing.sm)
     }
 
     /// Images: large thumbnail cards in an adaptive grid.
@@ -192,25 +228,41 @@ struct ArtifactGalleryView: View {
         // produced-endpoint round-trips. Results are reassembled in runIds order
         // and de-duplicated by (runId, path), so the list stays deterministic.
         let byRun = await Self.fetchListings(runIds: runIds, produced: produced, client: model.client)
-        var combined: [RunArtifact] = []
-        var seen = Set<String>()
-        var anyFailed = false
-        for runId in runIds {
-            guard let list = byRun[runId] ?? nil else { anyFailed = true; continue }
-            for art in list where seen.insert("\(runId)|\(art.path)").inserted {
-                combined.append(RunArtifact(runId: runId, art: art))
-            }
-        }
+        let (combined, failed) = Self.aggregate(runIds: runIds, byRun: byRun)
         // All runs failed and we have no content: the typed error state (never a
         // silent "no artifacts" over a real transport failure).
-        if combined.isEmpty && anyFailed && (slot.state.value?.isEmpty ?? true) {
+        if combined.isEmpty && !failed.isEmpty && (slot.state.value?.isEmpty ?? true) {
             slot.commit(.failed(.offline), for: id)
             return
         }
         // Keep last-known on a transient empty ONLY when we already have content
         // for THIS identity (a live run still producing) — never across a switch.
         if combined.isEmpty, let existing = slot.state.value, !existing.isEmpty { return }
-        slot.commit(combined.isEmpty ? .empty : .loaded(combined), for: id)
+        // Commit under the slot's identity guard; only when the snapshot actually
+        // painted do we adopt its failed-run disclosure (a raced late result that
+        // the slot dropped must not leave a stale partial-failure banner).
+        if slot.commit(combined.isEmpty ? .empty : .loaded(combined), for: id) {
+            failedRunIds = failed
+        }
+    }
+
+    /// Pure aggregation (unit-tested): reassemble the per-run listings in runIds
+    /// order, de-duplicated by (runId, path), and report which runs' listings
+    /// FAILED (a nil entry) so the caller discloses a partial result — one run's
+    /// outputs are never silently omitted from the aggregated view.
+    static func aggregate(
+        runIds: [String], byRun: [String: [ArtifactInfo]?]
+    ) -> (combined: [RunArtifact], failed: [String]) {
+        var combined: [RunArtifact] = []
+        var seen = Set<String>()
+        var failed: [String] = []
+        for runId in runIds {
+            guard let list = byRun[runId] ?? nil else { failed.append(runId); continue }
+            for art in list where seen.insert("\(runId)|\(art.path)").inserted {
+                combined.append(RunArtifact(runId: runId, art: art))
+            }
+        }
+        return (combined, failed)
     }
 
     /// Fetch every run's artifact listing CONCURRENTLY over the Sendable client

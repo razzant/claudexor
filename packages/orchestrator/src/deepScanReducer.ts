@@ -150,7 +150,11 @@ export interface DeepScanReducerArgs {
 export type DeepScanReducerResult =
   | { status: "success"; report: string }
   | { status: "failed"; error: string }
-  | { status: "budget_denied"; denial: BudgetDenial };
+  | { status: "budget_denied"; denial: BudgetDenial }
+  // INV-116: the OUTER run signal aborted mid-reducer. A cancellation is NOT a
+  // failed synthesis — no error is manufactured and any partial output is
+  // discarded; the caller degrades honestly and the run terminalizes cancelled.
+  | { status: "cancelled" };
 
 /**
  * #27 / D-6: the deep-scan bounded synthesis reducer. After the scouts finish,
@@ -316,15 +320,29 @@ export async function runDeepScanReducer(
   }
   const reportPresent = finalized.deliverablePresent && report.trim().length > 0;
   if (!harnessError && !reportPresent) harnessError = "deep-scan reducer produced no synthesis";
+  // INV-116: a cancel on the OUTER run signal that landed WHILE this bounded
+  // reducer streamed is a cancellation — not a clean synthesis and not a typed
+  // failure. Any partial output is discarded (deliverablePresent forced false)
+  // so it can never be accepted as a merge, and the run terminalizes cancelled.
+  const runCancelled = args.signal?.aborted === true;
   setAttemptOutcome(telemetry, {
-    deliverablePresent: reportPresent,
+    deliverablePresent: reportPresent && !runCancelled,
     gatesPassed: null,
-    harnessErrored: harnessError !== null,
+    harnessErrored: harnessError !== null || runCancelled,
     webRequiredUnsatisfied: false,
     workState: finalized.workState,
   });
   // Roster/cost visible: the reducer is a normal attempt in run telemetry.
   args.attemptTelemetries.push({ attemptId, harnessId: adapter.id, telemetry });
+  if (runCancelled) {
+    log.emit("harness.completed", {
+      harness_id: adapter.id,
+      attempt_id: attemptId,
+      status: "cancelled",
+      ...telemetrySummary(telemetry),
+    });
+    return { status: "cancelled" };
+  }
   if (harnessError) {
     log.emit("harness.completed", {
       harness_id: adapter.id,
@@ -437,6 +455,20 @@ export async function resolveDeepScanSynthesis(
         reason: null,
       },
       reducedReport: reduced.report,
+    };
+  }
+  // INV-116: a mid-reducer cancellation degrades with NO merged report (the
+  // partial output is discarded). The schema status has no `cancelled` member,
+  // so it is disclosed as a failed synthesis whose reason names the cancel; the
+  // run's own terminal is routed to `cancelled` by the caller's re-check.
+  if (reduced.status === "cancelled") {
+    return {
+      deepScanSynthesis: {
+        status: "failed",
+        reducer_attempt_id: DEEP_SCAN_REDUCER_ATTEMPT_ID,
+        reason: "run cancelled during synthesis",
+      },
+      reducedReport: null,
     };
   }
   const reason =

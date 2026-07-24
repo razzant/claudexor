@@ -1,4 +1,6 @@
 import Testing
+import Foundation
+import ClaudexorKit
 @testable import ClaudexorApp
 
 /// M9-UX item 8b: artifacts split into IMAGE cards vs. compact TEXT rows (with a
@@ -64,5 +66,61 @@ import Testing
         #expect(artifactSizeText(nil) == nil)
         #expect(artifactSizeText(0) != nil)
         #expect(artifactSizeText(2048) != nil)
+    }
+}
+
+/// Bounded-evidence disclosure: the thread-aggregated gallery must never silently
+/// omit a run whose artifact listing failed. The pure aggregation reports the
+/// failed run ids alongside the successful snapshot, which the view renders as a
+/// partial-results warning WITH a Retry (the successful artifacts stay visible).
+@Suite struct ArtifactGalleryAggregateTests {
+    /// Build a listing via the public Codable path (no init-visibility coupling).
+    private func listing(_ paths: [String]) -> [ArtifactInfo] {
+        let objs = paths.map { #"{"path":"\#($0)","kind":"file","mime":"text/markdown"}"# }
+        let json = "[\(objs.joined(separator: ","))]"
+        return try! JSONDecoder().decode([ArtifactInfo].self, from: Data(json.utf8))
+    }
+
+    @Test func oneRunFailsWhileAnotherLoadsShowsPartialAndDisclosesFailure() {
+        // run-A returns artifacts; run-B's listing threw (a present key with a nil
+        // value, exactly as `fetchListings` records a per-run transport failure).
+        var byRun: [String: [ArtifactInfo]?] = ["run-A": listing(["final/report.md"])]
+        byRun.updateValue(nil, forKey: "run-B")
+        let (combined, failed) = ArtifactGalleryView.aggregate(
+            runIds: ["run-A", "run-B"], byRun: byRun)
+        // The successful run's outputs stay visible...
+        #expect(combined.count == 1)
+        #expect(combined.first?.runId == "run-A")
+        #expect(combined.first?.art.path == "final/report.md")
+        // ...AND the failed run is disclosed (drives the banner + Retry), not dropped.
+        #expect(failed == ["run-B"])
+    }
+
+    @Test func allRunsSucceedDiscloseNoFailure() {
+        let byRun: [String: [ArtifactInfo]?] = [
+            "run-A": listing(["a.md"]),
+            "run-B": listing(["b.md"]),
+        ]
+        let (combined, failed) = ArtifactGalleryView.aggregate(
+            runIds: ["run-A", "run-B"], byRun: byRun)
+        #expect(combined.count == 2)
+        #expect(failed.isEmpty)
+    }
+
+    @Test func duplicatePathsWithinARunAreDeDuplicated() {
+        let byRun: [String: [ArtifactInfo]?] = ["run-A": listing(["x.md", "x.md", "y.md"])]
+        let (combined, failed) = ArtifactGalleryView.aggregate(runIds: ["run-A"], byRun: byRun)
+        #expect(combined.count == 2)
+        #expect(failed.isEmpty)
+    }
+
+    @Test func aMissingRunEntryCountsAsFailedNotSilentlyEmpty() {
+        // A run id with NO entry (e.g. an offline client returned `[:]`) must also
+        // be disclosed as failed rather than treated as a clean empty result.
+        let byRun: [String: [ArtifactInfo]?] = ["run-A": listing(["a.md"])]
+        let (combined, failed) = ArtifactGalleryView.aggregate(
+            runIds: ["run-A", "run-missing"], byRun: byRun)
+        #expect(combined.count == 1)
+        #expect(failed == ["run-missing"])
     }
 }

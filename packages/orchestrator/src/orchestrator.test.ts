@@ -4336,7 +4336,13 @@ describe("Orchestrator", () => {
   // (reducer) intent, either merges or errors — driving the reducer stories.
   function reducerAdapter(
     id: string,
-    opts: { synthOutcome: "merge" | "error"; scoutCostUsd?: number },
+    opts: {
+      synthOutcome: "merge" | "error";
+      scoutCostUsd?: number;
+      /** Abort the run's OUTER signal MID-reducer (after the merge message, before
+       * completion) — the cancel-during-synthesis race (INV-116). */
+      abortMidSynth?: AbortController;
+    },
   ): HarnessAdapter {
     return {
       id,
@@ -4382,6 +4388,10 @@ describe("Orchestrator", () => {
               text: "MERGED-SYNTHESIS: deduped scout findings, attributed disagreements, kept omissions.",
               credential_route: "managed_api_key",
             } as never;
+            // The run is cancelled WHILE the reducer streams: the scouts already
+            // finished, so the pre-synthesis abort check passed and only the
+            // post-synthesis re-check can catch this (INV-116).
+            opts.abortMidSynth?.abort();
           }
           yield { type: "completed", session_id: spec.session_id, ts } as never;
           return;
@@ -4437,6 +4447,38 @@ describe("Orchestrator", () => {
     expect(telemetry).toContain("status: succeeded");
     expect(telemetry).toContain("reducer_attempt_id: synth");
     expect(telemetry).toMatch(/attempt_id: synth/);
+  });
+
+  it("INV-116: a cancel that lands WHILE the deep-scan reducer runs is a cancelled terminal, never a laundered success", async () => {
+    const repo = await initRepo();
+    const ac = new AbortController();
+    // The scouts finish while the signal is live (pre-synthesis abort check
+    // passes); the reducer then aborts the OUTER signal mid-merge, so only the
+    // post-synthesis re-check can catch it.
+    const registry = new Map<string, HarnessAdapter>([
+      [
+        "synth-cancel",
+        reducerAdapter("synth-cancel", { synthOutcome: "merge", abortMidSynth: ac }),
+      ],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "map auth and run storage",
+      mode: "ask",
+      deepScan: true,
+      harnesses: ["synth-cancel"],
+      n: 2,
+      signal: ac.signal,
+    });
+    // The run terminalizes CANCELLED — not the succeeded read-only report path.
+    expect(legacyOutcome(res)).toBe("cancelled");
+    expect(res.lifecycle).toBe("cancelled");
+    // No success artifact: the merged report.md is never written on the cancel.
+    expect(existsSync(join(res.runDir, "final", "report.md"))).toBe(false);
+    const summary = readFileSync(join(res.runDir, "final", "summary.md"), "utf8");
+    expect(summary).toContain("Lifecycle: cancelled");
+    expect(summary).not.toContain("Merged synthesis");
   });
 
   it("#27: a failed reducer degrades to an HONEST raw scout bundle, never a fake synthesis", async () => {

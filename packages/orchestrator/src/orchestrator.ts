@@ -7181,18 +7181,19 @@ export class Orchestrator {
       roHome.dispose();
     }
 
-    if (input.signal?.aborted) {
-      return cancelledResult(
+    const candidateSummaries = attempts.map((a) => ({
+      attemptId: a.attemptId,
+      harnessId: a.harnessId,
+      status: a.status,
+    }));
+    const cancelledTerminal = () =>
+      cancelledResult(
         log,
         runId,
         taskId,
         opts.mode,
         paths.root,
-        attempts.map((a) => ({
-          attemptId: a.attemptId,
-          harnessId: a.harnessId,
-          status: a.status,
-        })),
+        candidateSummaries,
         () =>
           this.writeRunTelemetry(
             store,
@@ -7208,7 +7209,7 @@ export class Orchestrator {
         input.signal,
         store,
       );
-    }
+    if (input.signal?.aborted) return cancelledTerminal();
 
     const succeededReadonly = attempts.filter((a) => a.status === "success");
     if (!opts.deepScan && succeededReadonly.length === 0) {
@@ -7456,6 +7457,9 @@ export class Orchestrator {
         },
       ));
     }
+    // INV-116: a cancel that landed WHILE the bounded reducer ran (scouts done,
+    // synthesis in flight) is a cancelled terminal — never a laundered success.
+    if (input.signal?.aborted) return cancelledTerminal();
     const report = !opts.deepScan
       ? (succeeded[0]?.report ?? "(no output)")
       : reducedReport !== null
@@ -7613,11 +7617,7 @@ export class Orchestrator {
       winner: null,
       runDir: paths.root,
       summary: redactSecrets(report).slice(0, 400),
-      candidates: attempts.map((a) => ({
-        attemptId: a.attemptId,
-        harnessId: a.harnessId,
-        status: a.status,
-      })),
+      candidates: candidateSummaries,
     };
   }
 }
