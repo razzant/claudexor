@@ -127,11 +127,35 @@ final class AppModel {
     /// M7 last check result (verbatim in Check-for-Updates) + in-flight flag.
     var runtimeUpdateStatus: String?
     var runtimeUpdateChecking = false
-    /// The M7 update CHECKER (actor, off the observable graph) + an injectable
+    /// D-2 auto-INSTALL state: in-flight flag + honest per-phase status text
+    /// (driven by RuntimeInstallPhase) so the update chip shows real progress and
+    /// failure, never a fake "done".
+    var runtimeInstalling = false
+    var runtimeInstallStatus: String?
+    /// Injectable daemon-control factory so tests drive the install coordinator
+    /// with a stub; production builds the real port over the bundled Node +
+    /// GatewayClient.
+    @ObservationIgnored var makeDaemonControl: @Sendable () -> RuntimeDaemonControl = {
+        AppRuntimeDaemonControl(
+            isBusyProbe: {
+                // Fail-closed (audit 5): count ALL active runs via state-filtered
+                // queries (not just the newest 200-row page) AND any active
+                // setup/login job. Any transport error → nil → treated as busy.
+                guard let client = try? ControlApiDiscovery.load().makeClient() else { return nil }
+                do { return try await client.engineHasActiveWork() } catch { return nil }
+            },
+            handshakeProbe: {
+                guard let client = try? ControlApiDiscovery.load().makeClient(),
+                    let outcome = try? await client.handshake(), outcome.ok
+                else { return nil }
+                return outcome.engine?.version
+            })
+    }
+    /// The update CHECKER (actor, off the observable graph) + an injectable
     /// transport factory so tests drive a stub without the network. One auto
-    /// foreground check per session; the menu command forces a re-check. 3.0 is
-    /// check-only — the chip links to the GitHub release for a manual download;
-    /// one-click in-app auto-install is deferred to 3.1 (D1).
+    /// foreground check per session; the menu command forces a re-check. The chip
+    /// offers a one-click in-place Install (D-2) that verifies the signed
+    /// manifest, then runs the RuntimeInstallCoordinator sequence.
     @ObservationIgnored var runtimeUpdater: RuntimeUpdater?
     @ObservationIgnored var makeRuntimeTransport: @Sendable () -> RuntimeReleaseTransport = { GitHubRuntimeReleaseTransport() }
     @ObservationIgnored var didAutoCheckRuntime = false

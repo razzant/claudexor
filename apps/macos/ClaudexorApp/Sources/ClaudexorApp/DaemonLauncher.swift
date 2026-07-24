@@ -20,13 +20,14 @@ enum DaemonLauncher {
     /// `claudexord.bundle.cjs`, else the app-bundled script (first-run / fallback).
     /// Nil only when there is no bundled script (dev/SwiftPM).
     static func resolvedDaemon(installer: RuntimeInstaller = RuntimeInstaller()) -> URL? {
-        if let current = installer.readCurrent() {
-            let candidate = installer.root
-                .appendingPathComponent(current.path, isDirectory: true)
-                .appendingPathComponent("claudexord.bundle.cjs")
-            if FileManager.default.fileExists(atPath: candidate.path) {
-                return candidate
-            }
+        // QA-073: the pointer's script is resolved through the containment guard
+        // — a pointer whose path escapes runtime/versions/<v>, points at a
+        // symlink, or names a non-regular file falls back to the bundled runtime
+        // instead of launching an attacker-planted script.
+        if let current = installer.readCurrent(),
+            let script = installer.containedDaemonScript(current)
+        {
+            return script
         }
         return bundledDaemon
     }

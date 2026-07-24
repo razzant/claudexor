@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "version": "3.4.0",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "minAppVersion": "2.1.0",
+  "archiveName": "claudexor-runtime-3.4.0.tar.gz",
+  "archiveUrl": "https://github.com/razzant/claudexor/releases/download/v3.4.0/claudexor-runtime-3.4.0.tar.gz",
+  "buildSha": "0123456789abcdef0123456789abcdef01234567",
+  "notes": "runtime-update signing test vector — never shipped",
+  "keyId": "claudexor-runtime-update-TESTVECTOR-ed25519",
+  "algorithm": "Ed25519",
+  "signature": "FREERzhFeIWAUsAZjs34+gvqpW454xzGUCiKIUydBhp9BHYuMqyhGc2Zh9ji77zTU2S/ccTi/nBySDBf4skhDg=="
+}

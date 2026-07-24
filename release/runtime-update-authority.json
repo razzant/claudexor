@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "keyId": "claudexor-runtime-update-v3.1.0-ed25519-ce7f15e6187e137d",
+  "algorithm": "Ed25519",
+  "role": "runtime-update",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA0AKwkzFo7g4oHTXn2hCyhNIWNV8wBqK4aGX8+Y6mfN0=\n-----END PUBLIC KEY-----\n",
+  "rationale": "The PINNED public half of the dedicated OFFLINE Ed25519 runtime-update signing key (D-2). This authority is SEPARATE from release/review-attestation-authority.json: it signs ONLY runtime-update manifests (claudexor-runtime-<v>.tar.gz), never release attestations, and the two keys never cross. Both the macOS updater and `claudexor release check` pin this key and refuse any runtime manifest that is unsigned, signed by an unknown key, tampered, or a version regression. The private half lives offline at ~/.claudexor/keys/runtime-update-ed25519.pem (0600) and is used only during the owner's offline signing ceremony (scripts/sign-runtime-manifest.mjs). Rotate by minting a new keypair, bumping keyId, and shipping the new public half in a signed DMG."
+}

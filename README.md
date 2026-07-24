@@ -102,20 +102,26 @@ Settings → Privacy & Security → Open Anyway.)
 
 - **macOS app** — each release publishes a `claudexor-runtime-<version>.tar.gz`
   closure (the bundled daemon, setup-login runner, Browser MCP, and native
-  process-identity helper — everything except Node) plus a `runtime-manifest.json`
-  describing it. On foreground and from the bottom-left update chip / **Check for
-  Updates**, the app reads that manifest and, if a newer runtime is offered,
-  surfaces "Update available → vX.Y.Z" — an informational chip that links to the
-  GitHub release for a manual download. **3.0 ships this update CHECK only;
-  one-click in-app auto-install of the engine runtime in place (no new DMG)
-  arrives in 3.1.** Node stays app-owned, so a Node bump ships a new signed DMG
-  regardless. There is no background update timer; the check runs only when you
-  open the app or click Check for Updates. The manifest's `minAppVersion` floor
-  means an app that is too old is told to update the app itself rather than
-  offered an incompatible engine.
+  process-identity helper — everything except Node) plus a **signed**
+  `runtime-manifest.json` describing it. On foreground and from the bottom-left
+  update chip / **Check for Updates**, the app reads that manifest and, if a
+  newer runtime is offered, surfaces "Update available → vX.Y.Z". One click
+  installs it **in place, no new DMG**: the app downloads the closure, verifies
+  its SHA-256 against the signed manifest, unpacks it under
+  `~/.claudexor/runtime/versions/<version>/`, probe-starts it, waits until the
+  engine is idle (it never interrupts running jobs), stops the daemon, swaps the
+  active pointer atomically, relaunches, and re-checks the version — rolling back
+  to the last-known-good runtime on any failure. The manifest is signed by a
+  dedicated offline key the app pins; an unsigned, unknown-key, tampered, or
+  downgraded manifest is refused. Node stays app-owned, so a Node bump still
+  ships a new signed DMG. There is no background update timer; the check runs
+  only when you open the app or click Check for Updates. The manifest's
+  `minAppVersion` floor means an app that is too old is told to update the app
+  itself rather than offered an incompatible engine.
 - **npm** — CLI/daemon installs update the ordinary way:
   `npm install -g claudexor@latest`. `claudexor release check` reports whether a
-  newer engine runtime is published (npm users update via npm).
+  newer engine runtime is published, verifying the same signed manifest
+  fail-closed (npm users update via npm).
 
 ## Quickstart
 
@@ -694,8 +700,14 @@ Claudexor owns these locations:
 - `~/.claudexor/v3/` — the active global config (`config.yaml`), per-repo trust
   grants (`trust/`), the file-only secret store (`secrets.json`), daemon global
   journal and process state (`daemon/`: token, socket, log), local harness
-  metrics (`telemetry/`), host-plugin ownership state (`plugins/`), the installed
-  engine runtime (`runtime/`), and user-level runs for no-project asks.
+  metrics (`telemetry/`), host-plugin ownership state (`plugins/`), and
+  user-level runs for no-project asks.
+- `~/.claudexor/runtime/` — the installed engine-runtime closures the macOS app
+  updates in place (QA-071): `versions/<version>/` holds each unpacked closure,
+  `current.json` names the active one, and `last-known-good.json` is the rollback
+  target. This sits directly under `~/.claudexor/` (NOT under `v3/`); Node stays
+  app-owned in the .app bundle. Deleting it just makes the app fall back to its
+  bundled runtime on next launch.
 - `~/.claudexor/v2/` is the ARCHIVED prior root. v3 boots on its own fresh root
   and never imports or mutates v2; keep it if you want the old run history,
   otherwise it is safe to delete. Files directly under `~/.claudexor/` (and any

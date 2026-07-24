@@ -1741,35 +1741,99 @@ update unit is a `claudexor-runtime-<version>.tar.gz` — everything the DMG sta
 into `Contents/Resources` EXCEPT Node (the bundled daemon, the setup-login
 runner, the Browser MCP deployment, and the native process-identity helper).
 Node stays app-owned, so a Node bump ships a new signed DMG. Each release also
-publishes `runtime-manifest.json` (`{version, sha256, minAppVersion, signature:
-null (reserved), notes}`) built straight from the signed app bundle by
-`scripts/build-runtime-closure.mjs`, so the shipped closure is byte-identical to
-the one the release gates smoke-tested. `release/runtime-min-app-version.json`
-is the tracked `minAppVersion` floor (validated `<=` the release version by
-`scripts/verify-version-parity.mjs`), the app-vs-engine skew guard.
+publishes a **signed** `runtime-manifest.json` built straight from the signed
+app bundle by `scripts/build-runtime-closure.mjs`, so the shipped closure is
+byte-identical to the one the release gates smoke-tested.
+`release/runtime-min-app-version.json` is the tracked `minAppVersion` floor
+(validated `<=` the release version by `scripts/verify-version-parity.mjs`), the
+app-vs-engine skew guard.
 
-**3.0 ships the update CHECK only** (owner-locked D1). The one-click
-auto-INSTALL — download → sha256-verify → unpack → probe-start → stop the idle
-daemon → atomic `current.json` swap → relaunch → handshake-verify → rollback — is
-DEFERRED to 3.1: that path signals a running daemon process, so it ships whole
-and reviewed in 3.1 rather than half-wired in 3.0. The release pipeline, the
-manifest/closure assets, and the pointer READ below are all forward-compatible
-with that installer.
+**Signed-manifest authority (D-2).** The manifest is signed by a DEDICATED
+offline Ed25519 runtime-update key, SEPARATE from the review-attestation key and
+pinned in `release/runtime-update-authority.json`. There is ONE canonical
+manifest contract — the release-tooling mirror
+`scripts/lib/runtime-manifest-contract.mjs` and the in-package TS contract
+`@claudexor/util` (`runtime-manifest.ts`) emit byte-identical canonical signed
+bytes (bound by a parity test), and the Swift updater
+(`ClaudexorKit/RuntimeUpdate.swift`) verifies the same bytes with CryptoKit,
+locked by cross-language fixtures (`Fixtures/runtime-update/`, TS signs → Swift
+verifies). The signed bytes cover `{schemaVersion, version, sha256,
+minAppVersion, archiveName AND archiveUrl (both bound to version), buildSha,
+notes, keyId, algorithm}` — the URL binding (D-2) means the installer refuses to
+download unless the release asset URL it resolves EQUALS the signed `archiveUrl`,
+so a tampered release listing cannot redirect the download even though the
+sha256 would still be checked. Anti-replay is the signed `version` plus the
+installer's strict monotonic check (never install a version ≤ current or
+last-known-good). Both the
+Swift updater AND `claudexor release check` verify FAIL-CLOSED: an unsigned,
+unknown-key, tampered, or version-regressed manifest is refused, never surfaced
+as an available update. Exact-artifact promotion (A-5): the candidate release
+workflow builds the closure + an UNSIGNED manifest and uploads them as an
+immutable run artifact; the owner signs the manifest OFFLINE against that exact
+digest (`scripts/sign-runtime-manifest.mjs`, external 0600 key, refuses unstamped
+fields); the publish workflow takes the candidate `run id` + the signed manifest
+as inputs, `download-artifact`s the candidate run's EXACT closure bytes (never a
+publish rebuild), verifies their build provenance, and `scripts/verify-signed-
+runtime-manifest.mjs` refuses to ship unless the signature verifies against the
+pinned key, its `sha256` byte-matches the promoted tarball, and its non-secret
+fields equal the candidate's unsigned manifest — so the shipped closure is
+byte-for-byte the reviewed one. A wrong or expired (14-day retention)
+`candidate_run_id` fails the download. `scripts/release-workflow-check.mjs`
+enforces this wiring; the two authority files (review vs runtime-update) can
+never be the same key.
 
-- **Layout.** Runtimes live under `~/.claudexor/runtime/versions/<version>/`; the
-  active one is named by `runtime/current.json` (version + path + sha256), and
-  `runtime/last-known-good.json` is the 3.1 rollback target. `DaemonLauncher`
-  resolves the daemon script through `current.json` when it points at a valid
-  version dir, else the bundled `Contents/Resources` path (the 3.0 norm — nothing
-  writes `current.json` until the 3.1 installer does). Node is ALWAYS the
+**Install flow.** One click (bottom-left chip → Install) runs
+`RuntimeInstallCoordinator` (`apps/macos/ClaudexorApp`): verify monotonic →
+download the closure from the release CDN asset URL → sha256-verify against the
+signed manifest → FULL unpack to `versions/<version>/` → re-verify → strip
+`com.apple.quarantine` (after hash verification) → probe-start the unpacked
+daemon with the app-bundled Node via `claudexord --probe` (prints
+`{version,buildSha}` and exits without binding a socket or opening the journal) →
+idle-gate (ask the daemon for active jobs; refuse while any run — an unknown
+state is treated as busy) → identity-proven daemon stop (`claudexord --stop`
+reuses the socket `claudexor.shutdown` + termination confirmation, never a raw
+kill) → ATOMIC `current.json`
+swap (write a temp file + a single rename, inside a `flock` over the whole
+check-then-swap critical section) → relaunch → handshake-verify the new engine
+version → rollback to `last-known-good.json` on ANY failure. The bundled runtime
+stays the final fallback (the launcher already falls back on an invalid/absent
+pointer). The daemon-lifecycle side effects are behind a `RuntimeDaemonControl`
+port so the whole sequence, including rollback, is exercised offline against a
+locally-served fixture closure.
+
+**Native addons & entitlements.** The bundled Node ships
+`NodeRuntime.entitlements` with `com.apple.security.cs.disable-library-validation`
+and `allow-unsigned-executable-memory` (V8 JIT, mirroring Apple's notarized
+Node). That means a `.node` C++ addon dlopen'd into the bundled Node would load
+even though the runtime-update closure is not part of the app's code signature —
+so the integrity of any closure-carried native code would rest ENTIRELY on the
+signed-manifest sha256. As defense-in-depth the closure is kept pure JS + the
+standalone process-identity helper (a SEPARATE spawned executable, not a dlopen
+target — quarantine-stripped after verification, so library validation never
+gates it), and `build-runtime-closure.mjs` FAILS if any `.node` file appears in
+the closure.
+
+- **Layout.** Runtimes live under `~/.claudexor/runtime/versions/<version>/`
+  (directly under `~/.claudexor/`, NOT under `v3/`); the active one is named by
+  `runtime/current.json` (version + path + sha256 + engineSha), and
+  `runtime/last-known-good.json` is the rollback target. `DaemonLauncher`
+  resolves the daemon script through `current.json` ONLY when it passes the
+  QA-073 containment guard (`RuntimeInstaller`'s `containedDaemonScript`): the
+  pointer path must be exactly `versions/<version>`, resolve with no `..` and no
+  symlink escape out of `versions/`, and name a REGULAR file — otherwise it
+  falls back to the bundled `Contents/Resources` path. Node is ALWAYS the
   app-bundled binary; because the whole closure unpacks together, the Browser MCP
   resolves adjacent to the daemon inside the same version dir.
 - **Check flow** (foreground / bottom-left chip / Check for Updates — no timer):
-  GET the latest release manifest (`api.github.com`, ETag-cached) → compare
-  `version` to the running engine and gate on `minAppVersion` → surface an
-  informational "Update available → vX.Y.Z" chip that links to the GitHub release
-  for a manual download. No download, unpack, or daemon signalling happens in 3.0;
-  the auto-install flow lands in 3.1.
+  GET the latest release manifest (`api.github.com`, ETag-cached) → verify the
+  signature fail-closed → compare `version` to the running engine and gate on
+  `minAppVersion` → surface "Update available → vX.Y.Z" with an Install action.
+  There is no background update timer.
+- **Build-sha stamping (QA-002).** `build-app.sh` stamps `CLAUDEXOR_BUILD_SHA`
+  into the esbuild daemon bundle via `--define`, and `build-runtime-closure.mjs`
+  embeds the SAME sha in the manifest and refuses to ship an unstamped bundle, so
+  the daemon handshake discloses a real `engine.sha` in packaged builds (bundled
+  and downloaded closures are stamped identically) instead of "unknown".
 - **Engine side.** `claudexor release check` handshakes the running daemon for
   its authoritative engine version and compares THAT to the manifest (no daemon
   reachable → the engine is reported unknown and the CLI package version is

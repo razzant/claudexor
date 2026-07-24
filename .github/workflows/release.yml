@@ -16,6 +16,14 @@ on:
         description: Base64 signed schema-v3 owner-review attestation; required only for publish
         required: false
         type: string
+      runtime_manifest_b64:
+        description: Base64 owner-signed runtime-update manifest (D-2); required only for publish
+        required: false
+        type: string
+      candidate_run_id:
+        description: The candidate workflow run id whose exact artifact bytes publish promotes (A-5); required only for publish
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -24,6 +32,8 @@ env:
   RELEASE_MODE_INPUT: ${{ inputs.mode }}
   RELEASE_REF_INPUT: ${{ inputs.ref }}
   REVIEW_ATTESTATION_B64_INPUT: ${{ inputs.review_attestation_b64 }}
+  RUNTIME_MANIFEST_B64_INPUT: ${{ inputs.runtime_manifest_b64 }}
+  CANDIDATE_RUN_ID_INPUT: ${{ inputs.candidate_run_id }}
 
 concurrency:
   group: claudexor-release-v2
@@ -38,6 +48,7 @@ jobs:
       tree: ${{ steps.release.outputs.tree }}
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
+      candidate_run_id: ${{ steps.candidate.outputs.candidate_run_id }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -61,6 +72,23 @@ jobs:
         id: release
         run: node scripts/verify-release-input.mjs
 
+      - name: Validate the promoted candidate run id (publish only, A-5)
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            case "$CANDIDATE_RUN_ID_INPUT" in
+              ''|*[!0-9]*)
+                echo "::error::publish requires candidate_run_id (the candidate run whose exact artifact bytes are promoted, A-5)"
+                exit 1
+                ;;
+            esac
+            echo "candidate_run_id=$CANDIDATE_RUN_ID_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate_run_id=" >> "$GITHUB_OUTPUT"
+          fi
+
   package-macos:
     name: Build signed, notarized and attested macOS artifacts
     needs: prepare
@@ -69,6 +97,7 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+      actions: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -209,7 +238,16 @@ jobs:
           test -s "$zipstage/Claudexor.app/Contents/Resources/setup-login-runner.cjs"
           test -s "$zipstage/Claudexor.app/Contents/Resources/browser-mcp-runtime/dist/browser-mcp-launcher.js"
 
-      - name: Build engine runtime update closure
+      - name: Promote the exact candidate release artifact (publish, A-5)
+        if: needs.prepare.outputs.mode == 'publish'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: Claudexor-${{ needs.prepare.outputs.version }}-release-assets
+          path: candidate-assets
+          run-id: ${{ needs.prepare.outputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Build (candidate) or promote (publish) the engine runtime closure
         shell: bash
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -217,14 +255,29 @@ jobs:
           set -euo pipefail
           closure="$RUNNER_TEMP/runtime-closure"
           rm -rf "$closure"
-          # Built straight from the signed+verified app bundle, so the M7 update
-          # unit is byte-identical to the closure the gates above smoke-tested.
-          node scripts/build-runtime-closure.mjs \
-            --app-bundle apps/macos/dist/Claudexor.app \
-            --version "$VERSION" \
-            --out "$closure"
+          mkdir -p "$closure"
           tarball="$closure/claudexor-runtime-$VERSION.tar.gz"
           manifest="$closure/runtime-manifest.json"
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            # A-5 EXACT-ARTIFACT PROMOTION: ship the CANDIDATE run's exact closure
+            # bytes, never a publish-time rebuild. The owner signed THIS digest
+            # offline; a rebuild could never be byte-identical and would defeat
+            # the signature binding. The candidate artifact carries the closure +
+            # its UNSIGNED manifest; the signed manifest is verified against these
+            # promoted bytes in the assemble step below.
+            cand="candidate-assets/claudexor-runtime-$VERSION.tar.gz"
+            test -s "$cand" || { echo "::error::promoted candidate closure missing (wrong or expired candidate_run_id? release-asset artifacts retain 14 days)"; exit 1; }
+            test -s "candidate-assets/runtime-manifest.json" || { echo "::error::promoted candidate manifest missing"; exit 1; }
+            cp "$cand" "$tarball"
+            cp "candidate-assets/runtime-manifest.json" "$manifest"
+          else
+            # Candidate builds straight from the signed+verified app bundle, so the
+            # update unit is byte-identical to the closure the gates smoke-tested.
+            node scripts/build-runtime-closure.mjs \
+              --app-bundle apps/macos/dist/Claudexor.app \
+              --version "$VERSION" \
+              --out "$closure"
+          fi
           test -s "$tarball" || { echo "::error::runtime closure tarball missing"; exit 1; }
           test -s "$manifest" || { echo "::error::runtime manifest missing"; exit 1; }
           # The manifest must never claim a digest the shipped tarball does not
@@ -232,6 +285,18 @@ jobs:
           declared="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).sha256)' "$manifest")"
           actual="$(shasum -a 256 "$tarball" | awk '{print $1}')"
           test "$declared" = "$actual" || { echo "::error::runtime manifest sha256 does not match the tarball"; exit 1; }
+
+      - name: Verify promoted candidate closure provenance (publish, A-5)
+        if: needs.prepare.outputs.mode == 'publish'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The promoted closure bytes must carry the CANDIDATE run's build
+          # provenance (digest-keyed, repo-scoped) before they are trusted.
+          gh attestation verify "candidate-assets/claudexor-runtime-$VERSION.tar.gz" \
+            --repo "$GITHUB_REPOSITORY"
 
       - name: Assemble checksums, SBOM and review evidence
         shell: bash
@@ -244,7 +309,23 @@ jobs:
           cp "apps/macos/dist/Claudexor-$VERSION.dmg" "$assets/"
           cp "apps/macos/dist/Claudexor-$VERSION.zip" "$assets/"
           cp "$RUNNER_TEMP/runtime-closure/claudexor-runtime-$VERSION.tar.gz" "$assets/"
-          cp "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" "$assets/"
+          # D-2/A-5: candidate ships the UNSIGNED manifest (owner signs it
+          # offline); publish ships only the OWNER-SIGNED manifest after
+          # fail-closed verification against the PROMOTED candidate closure
+          # (pinned-authority signature + byte-identity of the promoted tarball
+          # + field match with the candidate's unsigned manifest).
+          if [ "$RELEASE_MODE_INPUT" = publish ]; then
+            signed="$RUNNER_TEMP/runtime-manifest.signed.json"
+            printf '%s' "$RUNTIME_MANIFEST_B64_INPUT" | base64 -d > "$signed"
+            node scripts/verify-signed-runtime-manifest.mjs \
+              --signed "$signed" \
+              --unsigned "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" \
+              --tarball "$RUNNER_TEMP/runtime-closure/claudexor-runtime-$VERSION.tar.gz" \
+              --version "$VERSION"
+            cp "$signed" "$assets/runtime-manifest.json"
+          else
+            cp "$RUNNER_TEMP/runtime-closure/runtime-manifest.json" "$assets/"
+          fi
           pnpm licenses list --prod --json | node scripts/generate-release-sbom.mjs \
             --app-bundle apps/macos/dist/Claudexor.app \
             > "$assets/Claudexor-$VERSION.spdx.json"

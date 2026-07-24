@@ -1,16 +1,15 @@
 import Foundation
 import ClaudexorKit
 
-// MARK: - Runtime updater orchestrator (M7 — 3.0 CHECK-only)
+// MARK: - Runtime updater orchestrator (M7 / D-2 CHECK)
 //
-// Wires the release transport into the single user-invokable operation 3.0
-// ships: CHECK (foreground / Check-for-Updates). It fetches the latest release
-// manifest, compares versions, and decides — no download, no unpack, no daemon
-// signalling, no pointer swap. The one-click in-app auto-INSTALL (download →
-// sha-verify → unpack → probe → swap → handshake → rollback) is deferred to 3.1
-// per owner-locked D1: process-killing install code stays out of 3.0 entirely
-// rather than shipping half-wired. Every side-effect goes through an injected
-// port so the check flow is tested offline with a stub transport.
+// Wires the release transport into the CHECK operation (foreground /
+// Check-for-Updates): fetch the latest release manifest, verify its signature
+// fail-closed against the pinned runtime-update authority, compare versions, and
+// decide. The one-click in-app auto-INSTALL that acts on an `.available`
+// decision lives in RuntimeInstallCoordinator (D-2). Every side-effect goes
+// through an injected port so the check flow is tested offline with a stub
+// transport.
 
 public let runtimeManifestAssetName = "runtime-manifest.json"
 
@@ -51,12 +50,16 @@ public enum RuntimeCheckOutcome: Sendable, Equatable {
 /// decision are mutated safely from the check path without a lock.
 public actor RuntimeUpdater {
     private let transport: RuntimeReleaseTransport
+    /// The pinned runtime-update authority the CHECK verifies against. Production
+    /// uses `.pinned`; tests inject a fixture authority for the signed vectors.
+    private let authority: RuntimeUpdateAuthority
 
     private var storedETag: String?
     private var lastDecision: RuntimeUpdateDecision?
 
-    public init(transport: RuntimeReleaseTransport) {
+    public init(transport: RuntimeReleaseTransport, authority: RuntimeUpdateAuthority = .pinned) {
         self.transport = transport
+        self.authority = authority
     }
 
     /// The most recent decision (nil before the first successful check). Lets a
@@ -83,7 +86,11 @@ public actor RuntimeUpdater {
             throw RuntimeUpdateError.transport("manifest asset has an invalid download URL")
         }
         let manifestData = try await transport.downloadAsset(from: assetURL)
-        guard let manifest = RuntimeManifest.parse(manifestData) else {
+        // FAIL-CLOSED (D-2): the CHECK trusts a manifest only when its Ed25519
+        // signature verifies against the pinned runtime-update authority. An
+        // unsigned / unknown-key / tampered manifest is refused, never surfaced
+        // as an available update.
+        guard let manifest = RuntimeManifest.verified(manifestData, authority: authority) else {
             throw RuntimeUpdateError.manifestMalformed
         }
         let decision = decideRuntimeUpdate(

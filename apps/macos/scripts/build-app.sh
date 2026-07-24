@@ -42,6 +42,13 @@ ROOT_VERSION="$(sed -nE 's/.*"version": "([^"]+)".*/\1/p' "$REPO_ROOT/package.js
 VERSION="${CLAUDEXOR_VERSION:-${DERIVED_VERSION:-${ROOT_VERSION:-}}}"
 [ -n "$VERSION" ] || { echo "ERROR: unable to derive Claudexor version" >&2; exit 1; }
 BUILD="${CLAUDEXOR_BUILD:-$(date +%Y%m%d%H%M)}"
+# Deterministic engine build sha (QA-002): stamped into the esbuild bundle below
+# so the daemon handshake discloses a real engine.sha in packaged builds instead
+# of "unknown". CI sets CLAUDEXOR_BUILD_SHA; local builds derive it from git. The
+# SAME value must reach build-runtime-closure.mjs so the bundled and downloaded
+# closures carry an identical stamp — export it for any child closure build.
+BUILD_SHA="${CLAUDEXOR_BUILD_SHA:-$(cd "$REPO_ROOT" && git rev-parse HEAD 2>/dev/null || echo unknown)}"
+export CLAUDEXOR_BUILD_SHA="$BUILD_SHA"
 
 # On macOS, Homebrew's ad-hoc-signed Node can be killed by the OS code-signing
 # monitor during bundling. Prefer a notarized Node under ~/.claudexor/node/bin
@@ -155,10 +162,15 @@ if [ "${CLAUDEXOR_NO_ENGINE_BUNDLE:-0}" != "1" ]; then
   # output, which crashes createRequire(import.meta.url) at load (the v1.0.0
   # DMG shipped that crash). Define it to a banner-computed file URL so the
   # bundle behaves like the real ESM module.
+  # `--define:process.env.CLAUDEXOR_BUILD_SHA` inlines the build sha as a string
+  # literal so engineBuildIdentity() reports a real sha in the packaged daemon
+  # (QA-002). build-runtime-closure.mjs re-tars THIS stamped bundle and asserts
+  # the same sha, so the bundled and downloaded closures are stamped identically.
   if ( cd "$REPO_ROOT" && pnpm exec esbuild packages/cli/dist/claudexord.js \
         --bundle --platform=node --format=cjs --target=node22 \
         --banner:js="const CLAUDEXOR_BUNDLE_URL = require('node:url').pathToFileURL(__filename).href;" \
         --define:import.meta.url=CLAUDEXOR_BUNDLE_URL \
+        --define:process.env.CLAUDEXOR_BUILD_SHA="\"$BUILD_SHA\"" \
         --outfile="$ENGINE_JS" >/dev/null ); then
     echo "    claudexord.bundle.cjs $(wc -c < "$ENGINE_JS" | tr -d ' ') bytes"
   else

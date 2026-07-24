@@ -40,6 +40,30 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
 // MARK: - Fixtures
 
 @Suite(.serialized) struct RuntimeUpdaterTests {
+    /// The Kit's signed cross-language test vectors (read by repo path — the App
+    /// test bundle has no copy of the Kit fixtures).
+    private static let fixtureDir = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // ClaudexorAppTests
+        .deletingLastPathComponent()  // Tests
+        .deletingLastPathComponent()  // ClaudexorApp
+        .deletingLastPathComponent()  // macos
+        .deletingLastPathComponent()  // apps
+        .deletingLastPathComponent()  // repo root
+        .appendingPathComponent(
+            "apps/macos/ClaudexorKit/Tests/ClaudexorKitTests/Fixtures/runtime-update")
+
+    private func signedManifestData() throws -> Data {
+        try Data(contentsOf: Self.fixtureDir.appendingPathComponent("valid-manifest.json"))
+    }
+
+    private func testAuthority() throws -> RuntimeUpdateAuthority {
+        struct A: Decodable { let keyId: String; let algorithm: String; let publicKeyPem: String }
+        let a = try JSONDecoder().decode(
+            A.self, from: Data(contentsOf: Self.fixtureDir.appendingPathComponent("authority.json")))
+        return RuntimeUpdateAuthority(
+            keyId: a.keyId, algorithm: a.algorithm, publicKeyPem: a.publicKeyPem)
+    }
+
     /// A scratch `runtime/` root that is cleaned up.
     private func tempRoot() -> URL {
         let url = FileManager.default.temporaryDirectory
@@ -62,17 +86,18 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
 
         let manifestURL = "https://example/runtime-manifest.json"
         let releaseJSON = #"{"assets":[{"name":"runtime-manifest.json","browser_download_url":"\#(manifestURL)"}]}"#
-        let manifestJSON = #"{"version":"3.2.0","sha256":"\#(String(repeating: "a", count: 64))","minAppVersion":"0.0.1"}"#
-        transport.assetData[manifestURL] = Data(manifestJSON.utf8)
+        // The CHECK is fail-closed (D-2): a SIGNED manifest is required.
+        let manifestData = try signedManifestData()
+        transport.assetData[manifestURL] = manifestData
         // First fetch: 200 with an ETag + release body. Second: 304 (not modified).
         transport.queuedFetches = [
             ReleaseFetchResult(status: 200, etag: "\"etag-v1\"", data: Data(releaseJSON.utf8)),
             ReleaseFetchResult(status: 304, etag: "\"etag-v1\"", data: nil),
         ]
-        let updater = RuntimeUpdater(transport: transport)
+        let updater = RuntimeUpdater(transport: transport, authority: try testAuthority())
 
         let first = try await updater.check(runningEngineVersion: "3.1.0", appVersion: "dev")
-        #expect(first == .decided(.available(RuntimeManifest.parse(Data(manifestJSON.utf8))!)))
+        #expect(first == .decided(.available(RuntimeManifest.verified(manifestData, authority: try testAuthority())!)))
         let downloadsAfterFirst = transport.downloadCount
         #expect(downloadsAfterFirst == 1)  // manifest downloaded once
 
@@ -146,6 +171,74 @@ private final class StubTransport: RuntimeReleaseTransport, @unchecked Sendable 
             version: "9.9.9", path: "versions/9.9.9",
             sha256: String(repeating: "a", count: 64), installedAt: "x", engineSha: nil),
             to: installer)
+        #expect(DaemonLauncher.resolvedDaemon(installer: installer) == DaemonLauncher.bundledDaemon)
+    }
+
+    // MARK: - QA-073 containment (read side)
+
+    /// A pointer whose `path` does not match `versions/<version>` (e.g. it points
+    /// outside the versions dir) resolves to the bundled runtime, never the
+    /// escaped path.
+    @Test func pointerPathMustMatchVersionsVersion() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        // Plant a script OUTSIDE versions/ and try to point at it via traversal.
+        let outside = root.appendingPathComponent("evil", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("// evil".utf8).write(to: outside.appendingPathComponent("claudexord.bundle.cjs"))
+        try writePointer(
+            RuntimeCurrent(
+                version: "3.2.0", path: "../evil",
+                sha256: String(repeating: "a", count: 64), installedAt: "x", engineSha: nil),
+            to: installer)
+        #expect(installer.containedVersionDir(installer.readCurrent()!) == nil)
+        #expect(DaemonLauncher.resolvedDaemon(installer: installer) == DaemonLauncher.bundledDaemon)
+    }
+
+    /// A version dir that is a SYMLINK pointing outside versions/ is refused
+    /// (symlink-escape guard).
+    @Test func symlinkedVersionDirIsRefused() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        let versions = root.appendingPathComponent("versions", isDirectory: true)
+        try FileManager.default.createDirectory(at: versions, withIntermediateDirectories: true)
+        // Real closure outside versions/, then versions/3.2.0 -> that dir.
+        let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data("// planted".utf8).write(
+            to: elsewhere.appendingPathComponent("claudexord.bundle.cjs"))
+        try FileManager.default.createSymbolicLink(
+            at: versions.appendingPathComponent("3.2.0"), withDestinationURL: elsewhere)
+        try writePointer(
+            RuntimeCurrent(
+                version: "3.2.0", path: "versions/3.2.0",
+                sha256: String(repeating: "a", count: 64), installedAt: "x", engineSha: nil),
+            to: installer)
+        #expect(installer.containedVersionDir(installer.readCurrent()!) == nil)
+        #expect(DaemonLauncher.resolvedDaemon(installer: installer) == DaemonLauncher.bundledDaemon)
+    }
+
+    /// A daemon SCRIPT that is a symlink (even to a file inside the version dir)
+    /// is refused — only a REGULAR file launches.
+    @Test func symlinkedDaemonScriptIsRefused() throws {
+        let root = tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let installer = RuntimeInstaller(root: root)
+        let versionDir = root.appendingPathComponent("versions/3.2.0", isDirectory: true)
+        try FileManager.default.createDirectory(at: versionDir, withIntermediateDirectories: true)
+        let realTarget = versionDir.appendingPathComponent("real.cjs")
+        try Data("// real".utf8).write(to: realTarget)
+        try FileManager.default.createSymbolicLink(
+            at: versionDir.appendingPathComponent("claudexord.bundle.cjs"),
+            withDestinationURL: realTarget)
+        try writePointer(
+            RuntimeCurrent(
+                version: "3.2.0", path: "versions/3.2.0",
+                sha256: String(repeating: "a", count: 64), installedAt: "x", engineSha: nil),
+            to: installer)
+        #expect(installer.containedDaemonScript(installer.readCurrent()!) == nil)
         #expect(DaemonLauncher.resolvedDaemon(installer: installer) == DaemonLauncher.bundledDaemon)
     }
 }

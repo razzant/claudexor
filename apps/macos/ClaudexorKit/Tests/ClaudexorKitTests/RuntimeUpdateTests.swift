@@ -6,34 +6,106 @@ import Testing
 // (including the app-vs-engine skew guard), and current.json round-trip.
 
 @Suite struct RuntimeUpdateTests {
-    // MARK: - Manifest parse
+    // MARK: - Manifest shape parse
 
     private let goodSHA = String(repeating: "a", count: 64)
 
-    @Test func parsesWellFormedManifest() {
+    @Test func parsesWellFormedManifestShape() {
         let json = """
-        {"version":"3.1.0","sha256":"\(goodSHA)","minAppVersion":"3.0.0","signature":null,"notes":"hi"}
+        {"schemaVersion":1,"version":"3.1.0","sha256":"\(goodSHA)","minAppVersion":"3.0.0","notes":"hi"}
         """
         let m = RuntimeManifest.parse(Data(json.utf8))
         #expect(m?.version == "3.1.0")
         #expect(m?.sha256 == goodSHA)
         #expect(m?.minAppVersion == "3.0.0")
-        #expect(m?.signature == nil)
         #expect(m?.notes == "hi")
-    }
-
-    @Test func signatureIsIgnoredNeverRequired() {
-        // Missing signature key must not fail parse; a present non-null one is
-        // ignored (reserved) and scrubbed to nil.
-        let noKey = #"{"version":"3.1.0","sha256":"\#(goodSHA)","minAppVersion":"3.0.0"}"#
-        #expect(RuntimeManifest.parse(Data(noKey.utf8))?.signature == nil)
-        let present = #"{"version":"3.1.0","sha256":"\#(goodSHA)","minAppVersion":"3.0.0","signature":"deadbeef"}"#
-        #expect(RuntimeManifest.parse(Data(present.utf8))?.signature == nil)
     }
 
     @Test func notesDefaultsToEmptyWhenAbsent() {
         let json = #"{"version":"3.1.0","sha256":"\#(goodSHA)","minAppVersion":"3.0.0"}"#
         #expect(RuntimeManifest.parse(Data(json.utf8))?.notes == "")
+    }
+
+    // MARK: - Signed manifest verification (D-2, fail-closed, cross-language)
+
+    private func fixture(_ name: String) throws -> Data {
+        let url = try #require(
+            Bundle.module.url(
+                forResource: name, withExtension: "json", subdirectory: "Fixtures/runtime-update"))
+        return try Data(contentsOf: url)
+    }
+
+    private func testAuthority() throws -> RuntimeUpdateAuthority {
+        struct A: Decodable { let keyId: String; let algorithm: String; let publicKeyPem: String }
+        let a = try JSONDecoder().decode(A.self, from: fixture("authority"))
+        return RuntimeUpdateAuthority(
+            keyId: a.keyId, algorithm: a.algorithm, publicKeyPem: a.publicKeyPem)
+    }
+
+    @Test func verifiesTheValidCrossLanguageVector() throws {
+        // The TS/mjs signer produced this vector; Swift verifies the exact bytes.
+        let m = RuntimeManifest.verified(try fixture("valid-manifest"), authority: try testAuthority())
+        #expect(m?.version == "3.4.0")
+        #expect(m?.buildSha.count == 40)
+        #expect(m?.archiveName == "claudexor-runtime-3.4.0.tar.gz")
+    }
+
+    @Test func refusesATamperedManifest() throws {
+        // Flip one byte of the signed sha256 → signature no longer matches.
+        var obj =
+            try JSONSerialization.jsonObject(with: fixture("valid-manifest")) as! [String: Any]
+        obj["sha256"] = String(repeating: "b", count: 64)
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        #expect(RuntimeManifest.verified(data, authority: try testAuthority()) == nil)
+    }
+
+    @Test func refusesAnUnknownSigningKey() throws {
+        // The fixture is signed by the TEST key; verifying against the PINNED
+        // production authority must refuse it (keyId mismatch).
+        #expect(RuntimeManifest.verified(try fixture("valid-manifest"), authority: .pinned) == nil)
+    }
+
+    @Test func refusesAMissingSignature() throws {
+        var obj =
+            try JSONSerialization.jsonObject(with: fixture("valid-manifest")) as! [String: Any]
+        obj.removeValue(forKey: "signature")
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        #expect(RuntimeManifest.verified(data, authority: try testAuthority()) == nil)
+    }
+
+    @Test func refusesARetargetedArchiveName() throws {
+        var obj =
+            try JSONSerialization.jsonObject(with: fixture("valid-manifest")) as! [String: Any]
+        obj["archiveName"] = "claudexor-runtime-9.9.9.tar.gz"
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        #expect(RuntimeManifest.verified(data, authority: try testAuthority()) == nil)
+    }
+
+    @Test func refusesARedirectedArchiveUrl() throws {
+        // D-2 name+URL binding: a manifest pointing the signed archiveUrl at a
+        // different host is refused (shape binding + broken signature).
+        var obj =
+            try JSONSerialization.jsonObject(with: fixture("valid-manifest")) as! [String: Any]
+        obj["archiveUrl"] = "https://evil.example/claudexor-runtime-3.4.0.tar.gz"
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        #expect(RuntimeManifest.verified(data, authority: try testAuthority()) == nil)
+    }
+
+    @Test func pinnedAuthorityMatchesTheTrackedReleaseFile() throws {
+        // The embedded pinned key must equal release/runtime-update-authority.json.
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // ClaudexorKitTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // ClaudexorKit
+            .deletingLastPathComponent()  // macos
+            .deletingLastPathComponent()  // apps
+            .deletingLastPathComponent()  // repo root
+        let file = repoRoot.appendingPathComponent("release/runtime-update-authority.json")
+        struct A: Decodable { let keyId: String; let algorithm: String; let publicKeyPem: String }
+        let a = try JSONDecoder().decode(A.self, from: Data(contentsOf: file))
+        #expect(RuntimeUpdateAuthority.pinned.keyId == a.keyId)
+        #expect(RuntimeUpdateAuthority.pinned.algorithm == a.algorithm)
+        #expect(RuntimeUpdateAuthority.pinned.publicKeyPem == a.publicKeyPem)
     }
 
     @Test func rejectsEmptyOrMalformedVersion() {
@@ -47,8 +119,10 @@ import Testing
         let shortSHA = #"{"version":"3.1.0","sha256":"abc","minAppVersion":"3.0.0"}"#
         #expect(RuntimeManifest.parse(Data(shortSHA.utf8)) == nil)
         let upper = #"{"version":"3.1.0","sha256":"\#(String(repeating: "A", count: 64))","minAppVersion":"3.0.0"}"#
-        // Uppercase is normalized to lowercase, so this is accepted.
-        #expect(RuntimeManifest.parse(Data(upper.utf8))?.sha256 == String(repeating: "a", count: 64))
+        // STRICT: uppercase is REFUSED, never coerced — the signed contract's
+        // canonical sha256 is lowercase, so coercion would diverge from the
+        // bytes the signature covers.
+        #expect(RuntimeManifest.parse(Data(upper.utf8)) == nil)
         let nonHex = #"{"version":"3.1.0","sha256":"\#(String(repeating: "g", count: 64))","minAppVersion":"3.0.0"}"#
         #expect(RuntimeManifest.parse(Data(nonHex.utf8)) == nil)
     }
