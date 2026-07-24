@@ -15,6 +15,7 @@ import type {
   DaemonRunRecord,
 } from "./daemon-server.js";
 import { recordTurnEnqueueFailure } from "./thread-turn-routes.js";
+import { TERMINAL_STATES } from "./sse-shared.js";
 import * as runStart from "./run-start.js";
 
 type RetryServices = Pick<
@@ -127,6 +128,19 @@ async function exactRetry(
     return ctx.requestError(res, error);
   }
   const accepted = await ctx.waitForRunStart(job.id);
+  if (!accepted.runId && TERMINAL_STATES.has(accepted.state)) {
+    // The replayed job died BEFORE it bound a run (e.g. the trust gate's typed
+    // 403). A 202 here would hand the caller a durable handle for a run that
+    // will never exist, and `claudexor retry` would exit 0 on a refusal. POST
+    // /runs and POST /threads/:id/turns already project a pre-start terminal
+    // as its typed failure; Exact Retry was the one surface that did not.
+    const { status, body } = runStart.unboundRunStartResponse(accepted, true);
+    return ctx.json(res, status, {
+      ...body,
+      retryOf: sourceRunId,
+      ...(retryTurnId ? { turnId: retryTurnId } : {}),
+    });
+  }
   ctx.json(
     res,
     accepted.runId ? 200 : 202,
