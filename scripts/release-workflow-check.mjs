@@ -1,7 +1,15 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
-const files = [".github/workflows/ci.yml", ".github/workflows/release.yml"];
+// Generic hygiene (SHA-pinned action refs, no GitHub-expression injection into
+// shell) is enforced across EVERY workflow, not just ci.yml/release.yml (audit
+// A-7: pages.yml and the repo-metrics writer must be pinned too). The
+// release-specific semantic assertions below still read release.yml directly.
+const workflowDir = ".github/workflows";
+const files = readdirSync(workflowDir)
+  .filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
+  .sort()
+  .map((name) => `${workflowDir}/${name}`);
 const errors = [];
 for (const file of files) {
   const text = readFileSync(file, "utf8");
