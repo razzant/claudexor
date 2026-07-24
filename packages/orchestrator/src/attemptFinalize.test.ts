@@ -190,6 +190,47 @@ describe("unwrapWorkReportEnvelope", () => {
     expect(r.workReport).toEqual(completed);
   });
 
+  // A no-caller-schema route promises `output` is the deliverable STRING. A
+  // non-string (or missing) output is a broken envelope, NOT something to coerce
+  // to "[object Object]" and finalize clean (constrained_json + instructed_fence).
+  const fenceEnvelope = (envelope: unknown): string =>
+    ["prefatory prose", "```json", JSON.stringify(envelope), "```"].join("\n");
+  const nonStringOutputs: Array<[string, unknown]> = [
+    ["object", {}],
+    ["array", []],
+    ["null", null],
+  ];
+  for (const [label, badOutput] of nonStringOutputs) {
+    it(`constrained_json: ${label} output is a work_report contract violation (never "[object Object]")`, () => {
+      const text = JSON.stringify({ work_report: completed, output: badOutput });
+      const r = unwrapWorkReportEnvelope(text, ACTIVE);
+      expect(r.contractViolation).toMatch(/output must be a string/);
+      expect(r.workReport).toBeNull();
+      expect(r.deliverable).not.toContain("[object Object]");
+    });
+    it(`instructed_fence: ${label} output is a work_report contract violation`, () => {
+      const r = unwrapWorkReportEnvelope(
+        fenceEnvelope({ work_report: completed, output: badOutput }),
+        FENCE,
+      );
+      expect(r.contractViolation).toMatch(/output must be a string/);
+      expect(r.workReport).toBeNull();
+      expect(r.deliverable).not.toContain("[object Object]");
+    });
+  }
+
+  it("constrained_json: a missing output slot is a work_report contract violation", () => {
+    const r = unwrapWorkReportEnvelope(JSON.stringify({ work_report: completed }), ACTIVE);
+    expect(r.contractViolation).toMatch(/output must be a string/);
+    expect(r.workReport).toBeNull();
+  });
+
+  it("instructed_fence: a missing output slot is a work_report contract violation", () => {
+    const r = unwrapWorkReportEnvelope(fenceEnvelope({ work_report: completed }), FENCE);
+    expect(r.contractViolation).toMatch(/output must be a string/);
+    expect(r.workReport).toBeNull();
+  });
+
   it("flags non-JSON on an active route as a contract violation", () => {
     const r = unwrapWorkReportEnvelope("not json at all", ACTIVE);
     expect(r.contractViolation).toMatch(/not the JSON work_report envelope/);

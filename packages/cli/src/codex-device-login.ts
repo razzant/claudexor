@@ -182,7 +182,25 @@ export async function startCodexDeviceLogin(
   });
   connection.send({ method: "initialized", params: null });
 
+  // Register a completion BUFFER before sending account/login/start. A
+  // connection that delivers the start RESPONSE and a matching
+  // `account/login/completed` notification synchronously in ONE input turn would
+  // otherwise drop the completion: the real completion handler cannot be
+  // installed until loginId is known, which is only AFTER this response resolves
+  // (a later microtask). The buffer captures any notification that arrives
+  // during the handshake; it is replayed through the classifier once loginId is
+  // known, so awaitCompletion() can never hang past a vendor success.
+  const bufferedNotifications: Array<{ method: string; params: unknown }> = [];
+  const bufferHandler = (method: string, params: unknown): void => {
+    bufferedNotifications.push({ method, params });
+  };
+  notificationHandlers.add(bufferHandler);
+
   const startFrame = await request(2, "account/login/start", { type: flow });
+  // No `await` runs between here and where the real completion handler replaces
+  // the buffer below, so no notification can arrive unbuffered/unhandled in the
+  // gap; stop buffering now that the handshake response has been consumed.
+  notificationHandlers.delete(bufferHandler);
   if (startFrame.error) {
     if (startFrame.error.code === METHOD_NOT_FOUND) {
       return {
@@ -227,10 +245,19 @@ export async function startCodexDeviceLogin(
   connection.onClose((error) =>
     settle({ kind: "failed", detail: (error ?? new Error("codex app-server closed")).message }),
   );
-  notificationHandlers.add((method, params) => {
+  const completionHandler = (method: string, params: unknown): void => {
     const outcome = classifyCompletion(method, params, loginId);
     if (outcome) settle(outcome);
-  });
+  };
+  notificationHandlers.add(completionHandler);
+  // Replay any notification buffered DURING the start handshake (e.g. a
+  // completion delivered synchronously with the start response, before loginId
+  // was known). settle() is idempotent, so a racing live notification and a
+  // replayed one cannot double-settle.
+  for (const buffered of bufferedNotifications) {
+    const outcome = classifyCompletion(buffered.method, buffered.params, loginId);
+    if (outcome) settle(outcome);
+  }
   if (options.signal?.aborted) onAbort();
   else options.signal?.addEventListener("abort", onAbort, { once: true });
   const pendingError = readTransportError();

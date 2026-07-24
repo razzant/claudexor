@@ -181,14 +181,31 @@ export interface UnwrappedAnswer {
   contractViolation: string | null;
 }
 
-function extractOutput(obj: Record<string, unknown>, mode: WorkReportEnvelopeMode): string {
+/** The `output` slot of a `{work_report, output}` envelope, resolved to the
+ * deliverable string, or a typed contract violation when the slot is malformed
+ * for the route's schema mode. */
+type ExtractedOutput = { deliverable: string } | { violation: string };
+
+function extractOutput(
+  obj: Record<string, unknown>,
+  mode: WorkReportEnvelopeMode,
+): ExtractedOutput {
   const output = obj["output"];
   if (mode.hasCallerSchema) {
     // Re-serialize the S-conformant object so finalizeStructuredOutput can
-    // JSON.parse + validate it against the caller schema.
-    return output === undefined ? "" : JSON.stringify(output);
+    // JSON.parse + validate it against the caller schema (the caller schema is
+    // the conformance authority for `output`, so any shape rides through here).
+    return { deliverable: output === undefined ? "" : JSON.stringify(output) };
   }
-  return typeof output === "string" ? output : output === undefined ? "" : String(output);
+  // No caller schema: `output` MUST be a string deliverable. A non-string
+  // (object/array/null/number/bool) or missing `output` is a BROKEN envelope —
+  // coercing it (String({...}) => "[object Object]") would let a bogus payload
+  // like {"work_report":{"state":"completed"},"output":{}} finalize CLEAN
+  // instead of failing the WorkReport contract. Fail it here (D-16 §2).
+  if (typeof output !== "string") {
+    return { violation: "work_report envelope output must be a string" };
+  }
+  return { deliverable: output };
 }
 
 /** Extract the LAST fenced ```…``` block's body (its optional language tag
@@ -292,8 +309,16 @@ export function unwrapWorkReportEnvelope(
     };
   }
   const obj = parsed as Record<string, unknown>;
-  const deliverable = extractOutput(obj, mode);
-  return validateWorkReport(deliverable, obj["work_report"], mode.source);
+  const extracted = extractOutput(obj, mode);
+  if ("violation" in extracted) {
+    return {
+      deliverable: answerText,
+      workReport: null,
+      source: mode.source,
+      contractViolation: extracted.violation,
+    };
+  }
+  return validateWorkReport(extracted.deliverable, obj["work_report"], mode.source);
 }
 
 /** Parse + cross-field-validate a raw work_report value against a resolved

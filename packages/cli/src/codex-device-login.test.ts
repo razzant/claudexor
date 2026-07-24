@@ -49,6 +49,42 @@ class FakeAppServer implements CodexAppServerConnection {
   }
 }
 
+/**
+ * A connection that delivers the account/login/start RESPONSE and a matching
+ * `account/login/completed` notification BACK-TO-BACK, synchronously, inside a
+ * single send() call. This reproduces a real app-server that flushes both
+ * frames in one input turn — the completion arrives before the driver's start
+ * `await` has resolved and before the completion handler could be installed.
+ */
+class SyncCompletionRaceServer implements CodexAppServerConnection {
+  readonly sent: JsonRpcFrame[] = [];
+  private frameHandler: ((frame: JsonRpcFrame) => void) | null = null;
+  constructor(
+    private readonly startResult: { loginId: string; verificationUrl: string; userCode: string },
+  ) {}
+
+  send(frame: JsonRpcFrame): void {
+    this.sent.push(frame);
+    if (frame.method === "initialize") {
+      this.frameHandler?.({ id: frame.id, result: {} });
+      return;
+    }
+    if (frame.method === "account/login/start") {
+      // Response, then completion — both synchronous, before send() returns.
+      this.frameHandler?.({ id: frame.id, result: this.startResult });
+      this.frameHandler?.({
+        method: "account/login/completed",
+        params: { loginId: this.startResult.loginId },
+      });
+    }
+  }
+  onFrame(handler: (frame: JsonRpcFrame) => void): void {
+    this.frameHandler = handler;
+  }
+  onClose(): void {}
+  close(): void {}
+}
+
 function okHandshake(server: FakeAppServer, startResult: unknown): void {
   server.autoRespond = (frame) => {
     if (frame.method === "initialize") return { id: frame.id, result: {} };
@@ -134,6 +170,23 @@ describe("codex device-login transport core (D-17)", () => {
     server.notify("account/login/completed", { loginId: "other" });
     server.notify("account/login/completed", { loginId: "login-9" });
     expect(await done).toEqual({ kind: "completed" });
+  });
+
+  it("does not lose a completion delivered synchronously with the start response", async () => {
+    const server = new SyncCompletionRaceServer({
+      loginId: "login-sync",
+      verificationUrl: "https://chatgpt.com/device",
+      userCode: "SY-77",
+    });
+    // The completion notification already fired synchronously with the start
+    // response — before awaitCompletion() is ever called and before the
+    // completion handler was installable (loginId was still unknown). The buffer
+    // must have captured it so this still resolves rather than hanging to
+    // timeout despite the vendor's success.
+    const start = await startCodexDeviceLogin(server);
+    expect(start.kind).toBe("started");
+    if (start.kind !== "started") throw new Error("unreachable");
+    expect(await start.awaitCompletion()).toEqual({ kind: "completed" });
   });
 
   it("cancels the vendor login and reports cancelled on abort", async () => {
