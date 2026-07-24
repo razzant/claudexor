@@ -6957,6 +6957,45 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("Exact Retry projects a pre-start terminal as its typed refusal, not a 202 handle", async () => {
+    const { daemon, record } = fakeDaemon();
+    // The replay is queued, but the job dies BEFORE it binds a run: the trust
+    // gate refuses with a typed 403. A 202 durable handle here would promise a
+    // run that never appears (and `claudexor retry` would exit 0 on it).
+    const refusing: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-retry-refused", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return {
+          id: "job-retry-refused",
+          state: "failed",
+          error: "full access is required for this project",
+          errorCode: "trust_full_access_required",
+          errorStatus: 403,
+        };
+      },
+    };
+    await withDaemonServer(refusing, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "refused-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        code: "trust_full_access_required",
+        message: "full access is required for this project",
+        retryable: false,
+        // The retry's own identity rides as bounded context, so a client knows
+        // WHICH replay was refused.
+        context: { jobId: "job-retry-refused", state: "failed", retryOf: "run-d1" },
+      });
+    });
+  });
+
   it("QA-035: Exact Retry replays the model+effort frozen in the source contract despite a settings change", async () => {
     const { daemon, record } = fakeDaemon();
     // The source run FROZE its config-derived route into the immutable contract.
