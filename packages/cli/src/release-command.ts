@@ -82,7 +82,8 @@ export async function releaseCommand(args: ParsedArgs, json: boolean): Promise<n
       print("install counter (owner-facing; no telemetry):");
       print(`  GitHub: ${stats.github.detail}`);
       for (const asset of stats.github.perAsset) {
-        print(`    ${asset.downloads}\t${asset.name}`);
+        const tag = asset.appInstaller ? "install" : "tooling";
+        print(`    ${asset.downloads}\t${asset.name}\t(${tag})`);
       }
       print(`  npm: ${stats.npm.detail}`);
     }

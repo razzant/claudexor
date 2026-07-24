@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif" role="img" aria-label="GitHub stars">
+<text x="64" y="26" font-size="15" font-weight="600" fill="#c7cdd4">GitHub stars</text>
+<line x1="64" y1="260" x2="736" y2="260" stroke="#242a35" stroke-width="1"/><line x1="64" y1="153" x2="736" y2="153" stroke="#242a35" stroke-width="1"/><line x1="64" y1="46" x2="736" y2="46" stroke="#242a35" stroke-width="1"/>
+<line x1="64" y1="260" x2="736" y2="260" stroke="#3a4150" stroke-width="1"/>
+<line x1="400" y1="66.54" x2="400" y2="260" stroke="#6366f1" stroke-opacity="0.20" stroke-width="26" stroke-linecap="round"/>
+
+<circle cx="400" cy="66.54" r="4" fill="#6366f1"/>
+<text x="54" y="264" text-anchor="end" font-size="12" fill="#c7cdd4">0</text><text x="54" y="157" text-anchor="end" font-size="12" fill="#c7cdd4">125</text><text x="54" y="50" text-anchor="end" font-size="12" fill="#c7cdd4">250</text>
+<text x="400" y="280" text-anchor="middle" font-size="12" fill="#c7cdd4">07-23</text>
+<text x="400" y="54.540000000000006" text-anchor="middle" font-size="13" font-weight="600" fill="#6366f1">226</text>
+</svg>
