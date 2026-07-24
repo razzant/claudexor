@@ -134,6 +134,14 @@ async function exactRetry(
     // will never exist, and `claudexor retry` would exit 0 on a refusal. POST
     // /runs and POST /threads/:id/turns already project a pre-start terminal
     // as its typed failure; Exact Retry was the one surface that did not.
+    //
+    // The status mapping deliberately follows POST /runs
+    // (`runStart.unboundRunStartResponse`): the persisted `errorStatus`
+    // verbatim, otherwise 500. The sibling turn surface
+    // (`preStartRefusalStatus` in thread-turn-routes.ts) additionally maps a
+    // status-less `trust_full_access_required` to 403, so a trust refusal
+    // recorded WITHOUT an errorStatus is mapped differently by the two
+    // surfaces. Unifying them is out of scope here.
     const { status, body } = runStart.unboundRunStartResponse(accepted, true);
     return ctx.json(res, status, {
       ...body,

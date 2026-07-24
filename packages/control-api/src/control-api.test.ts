@@ -6996,6 +6996,104 @@ describe("DaemonControlApiServer", () => {
     });
   });
 
+  it("Exact Retry fails an UNTYPED pre-start terminal as 500, not a 202 handle", async () => {
+    const { daemon, record } = fakeDaemon();
+    // No errorCode and no errorStatus: an infra terminal (cancelled/killed
+    // before a run bound) that proves nothing about retryability. It still
+    // never binds a run, so a 202 durable handle would be a lie; without a
+    // typed refusal to key a status on, it is the generic 500 that POST /runs
+    // already returns for the same record.
+    const untyped: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-retry-untyped", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return {
+          id: "job-retry-untyped",
+          state: "cancelled",
+          error: "job was cancelled before it bound a run",
+        };
+      },
+    };
+    await withDaemonServer(untyped, async (base) => {
+      const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "untyped-retry" },
+        body: "{}",
+      });
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body).toMatchObject({
+        // No typed refusal code to serve, so the problem projection's generic
+        // status code stands in — the retry never claims a product taxonomy it
+        // was not given.
+        code: "http_500",
+        message: "job was cancelled before it bound a run",
+        context: { jobId: "job-retry-untyped", state: "cancelled", retryOf: "run-d1" },
+      });
+      // The 202 shape carried `runId: null` as a durable handle. A refusal has
+      // no handle at all.
+      expect(body).not.toHaveProperty("runId");
+    });
+  });
+
+  it("Exact Retry of a THREAD turn carries the new turnId into the refusal context", async () => {
+    const { daemon, record } = fakeDaemon();
+    record.params = {
+      ...(record.params as Record<string, unknown>),
+      threadId: "th-source",
+      turnId: "tn-source",
+    };
+    // The thread-scoped retry pre-creates its replacement turn BEFORE the
+    // enqueue, so the refusal must disclose WHICH turn is now stranded —
+    // otherwise the client cannot bind the failure to the turn it just made.
+    const refusing: DaemonFacadeClient = {
+      ...daemon,
+      async enqueue() {
+        return { id: "job-retry-thread", state: "queued" };
+      },
+      async status(id: string) {
+        if (id === record.id) return record;
+        return {
+          id: "job-retry-thread",
+          state: "failed",
+          error: "journal recovery is required for this project",
+          errorCode: "journal_recovery_required",
+          errorStatus: 409,
+        };
+      },
+    };
+    const services: DaemonControlApiOptions["services"] = {
+      createThreadTurn: async () => ({ id: "tn-retry" }),
+    };
+    await withDaemonServer(
+      refusing,
+      async (base) => {
+        const response = await apiFetch(`${base}/runs/run-d1/retry`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "Idempotency-Key": "thread-retry-refused" },
+          body: "{}",
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({
+          code: "journal_recovery_required",
+          message: "journal recovery is required for this project",
+          retryable: false,
+          context: {
+            jobId: "job-retry-thread",
+            state: "failed",
+            retryOf: "run-d1",
+            turnId: "tn-retry",
+          },
+        });
+      },
+      undefined,
+      services,
+    );
+  });
+
   it("QA-035: Exact Retry replays the model+effort frozen in the source contract despite a settings change", async () => {
     const { daemon, record } = fakeDaemon();
     // The source run FROZE its config-derived route into the immutable contract.
