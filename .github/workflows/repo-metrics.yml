@@ -12,10 +12,15 @@ name: Repo metrics
 # those triggers and could loop.
 
 on:
-  schedule:
-    # 06:17 UTC daily. Off the top of the hour to dodge cron congestion; the
-    # npm point range and GitHub cumulative counts do not care about the minute.
-    - cron: "17 6 * * *"
+  # PAUSED for the v3.1.0 release freeze: the daily 06:17 UTC commit pushes to
+  # the default branch, and a mid-signing push would advance origin/main while
+  # the release tag is being cut. RE-ENABLE the schedule below AFTER the v3.1.0
+  # release is published and the metrics writer is un-paused (release runbook
+  # final step). workflow_dispatch stays available for a manual seed/refresh.
+  # schedule:
+  #   # 06:17 UTC daily. Off the top of the hour to dodge cron congestion; the
+  #   # npm point range and GitHub cumulative counts do not care about the minute.
+  #   - cron: "17 6 * * *"
   workflow_dispatch: {}
 
 # Serialize runs so a slow fetch cannot race a later scheduled run into a
