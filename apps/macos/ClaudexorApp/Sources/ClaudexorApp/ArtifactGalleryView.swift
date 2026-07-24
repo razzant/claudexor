@@ -33,6 +33,11 @@ struct ArtifactGalleryView: View {
     /// the partial-results warning (with Retry) so a run's outputs are never
     /// silently omitted from the aggregated view.
     @State private var failedRunIds: [String] = []
+    /// Set when a whole-set refresh FAILED (every listing errored) while a nonempty
+    /// snapshot is already shown: we keep last-known bytes but MUST disclose they
+    /// could not be refreshed — distinct from a partial failure, and never rendered
+    /// as if freshly confirmed.
+    @State private var refreshFailed = false
 
     /// Single-run gallery (the run's own tree, or its produced outputs).
     init(runId: String, produced: Bool = false) {
@@ -124,11 +129,19 @@ struct ArtifactGalleryView: View {
                 .padding(Theme.Spacing.md)
                 Divider()
             }
-            // Bounded-evidence disclosure: some runs loaded, at least one failed.
-            // Keep the successful snapshot visible AND name the failed runs with a
-            // Retry, so an aggregated view never silently omits a run's outputs.
-            if !failedRunIds.isEmpty, slot.state.value != nil {
-                partialFailureBanner
+            // Bounded-evidence disclosure over the shown snapshot. A whole-set
+            // refresh FAILURE (every listing errored) keeps last-known bytes on
+            // screen — it must say "could not refresh" rather than render stale
+            // artifacts as freshly confirmed. Otherwise a PARTIAL failure (some
+            // runs loaded, some errored) names the omitted runs. Both offer a
+            // Retry that re-fetches the whole set.
+            if refreshFailed, slot.state.value != nil {
+                evidenceBanner("Could not refresh — showing last-known results.",
+                               detail: failedRunIds.isEmpty ? nil
+                                   : "Failed to load: \(failedRunIds.joined(separator: ", "))")
+            } else if !failedRunIds.isEmpty, slot.state.value != nil {
+                evidenceBanner("Some runs' artifacts couldn't be loaded — showing partial results.",
+                               detail: "Failed to load: \(failedRunIds.joined(separator: ", "))")
             }
             if case .failed(let error) = slot.state {
                 VStack(spacing: Theme.Spacing.sm) {
@@ -164,21 +177,24 @@ struct ArtifactGalleryView: View {
         .task(id: identity) { await load() }
     }
 
-    /// Partial-results warning: the successful snapshot stays visible above/below,
-    /// while this names the runs whose listing failed and offers a Retry that
-    /// re-fetches the whole set (a recovered run then rejoins the aggregate).
-    private var partialFailureBanner: some View {
+    /// A disclosure banner over the shown snapshot: an orange warning with a title,
+    /// an optional detail line, and a Retry that re-fetches the whole set (a
+    /// recovered run then rejoins the aggregate). Shared by the partial-result and
+    /// the failed-refresh (stale last-known) disclosures.
+    private func evidenceBanner(_ title: String, detail: String?) -> some View {
         HStack(alignment: .top, spacing: Theme.Spacing.sm) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-                Text("Some runs' artifacts couldn't be loaded — showing partial results.")
+                Text(title)
                     .font(.caption.weight(.medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Failed to load: \(failedRunIds.joined(separator: ", "))")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let detail {
+                    Text(detail)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             Button("Retry") { Task { await load() } }
                 .buttonStyle(.bordered).controlSize(.small)
@@ -229,21 +245,44 @@ struct ArtifactGalleryView: View {
         // and de-duplicated by (runId, path), so the list stays deterministic.
         let byRun = await Self.fetchListings(runIds: runIds, produced: produced, client: model.client)
         let (combined, failed) = Self.aggregate(runIds: runIds, byRun: byRun)
-        // All runs failed and we have no content: the typed error state (never a
-        // silent "no artifacts" over a real transport failure).
-        if combined.isEmpty && !failed.isEmpty && (slot.state.value?.isEmpty ?? true) {
+        // Identity-guarded: a value only counts as "already shown" when it belongs
+        // to THIS still-current identity (a raced newer `begin` reset the slot).
+        let existingNonEmpty = slot.identity == id && !(slot.state.value?.isEmpty ?? true)
+        switch Self.loadDecision(combinedIsEmpty: combined.isEmpty, failed: failed,
+                                 existingNonEmpty: existingNonEmpty) {
+        case .fail:
+            // Nothing loaded anywhere over a real transport failure: the typed
+            // error state (never a silent "no artifacts").
             slot.commit(.failed(.offline), for: id)
-            return
+        case .keepStale(let failedRuns):
+            // A whole-set refresh FAILED while a nonempty snapshot is shown — keep
+            // last-known bytes but disclose they could not be refreshed. A benign
+            // transient empty (a live run still producing, no failed runs) keeps
+            // the snapshot silently. All state writes are synchronous after the
+            // awaits, under the identity guard baked into `existingNonEmpty`.
+            refreshFailed = !failedRuns.isEmpty
+            if !failedRuns.isEmpty { failedRunIds = failedRuns }
+        case .commit(let failedRuns):
+            // Commit under the slot's identity guard; only when the snapshot
+            // actually painted do we adopt its failed-run disclosure (a raced late
+            // result that the slot dropped must not leave a stale banner).
+            if slot.commit(combined.isEmpty ? .empty : .loaded(combined), for: id) {
+                failedRunIds = failedRuns
+                refreshFailed = false
+            }
         }
-        // Keep last-known on a transient empty ONLY when we already have content
-        // for THIS identity (a live run still producing) — never across a switch.
-        if combined.isEmpty, let existing = slot.state.value, !existing.isEmpty { return }
-        // Commit under the slot's identity guard; only when the snapshot actually
-        // painted do we adopt its failed-run disclosure (a raced late result that
-        // the slot dropped must not leave a stale partial-failure banner).
-        if slot.commit(combined.isEmpty ? .empty : .loaded(combined), for: id) {
-            failedRunIds = failed
-        }
+    }
+
+    /// The pure retain-vs-disclose decision (unit-tested), preserving the exact
+    /// original branch semantics: fail only when nothing is shown AND the refresh
+    /// errored; keep+disclose a nonempty snapshot on an empty refresh; otherwise
+    /// commit the fresh aggregate.
+    static func loadDecision(
+        combinedIsEmpty: Bool, failed: [String], existingNonEmpty: Bool
+    ) -> GalleryLoadDecision {
+        if combinedIsEmpty && !failed.isEmpty && !existingNonEmpty { return .fail }
+        if combinedIsEmpty && existingNonEmpty { return .keepStale(failed: failed) }
+        return .commit(failed: failed)
     }
 
     /// Pure aggregation (unit-tested): reassemble the per-run listings in runIds
@@ -288,67 +327,6 @@ struct ArtifactGalleryView: View {
             return out
         }
     }
-}
-
-/// The evidence category of one artifact — drives whether it renders as an image
-/// card, a compact text row (with a full text viewer), or an open-externally row.
-/// Pure so the mapping is unit-tested (mime first, filename extension fallback).
-enum ArtifactCategory {
-    case image, text, other
-
-    static func of(mime: String?, path: String) -> ArtifactCategory {
-        let m = mime ?? ""
-        if m.hasPrefix("image/") && m != "image/svg+xml" { return .image }
-        if m.hasPrefix("text/") || m == "application/json"
-            || m == "application/x-yaml" || m == "application/yaml" { return .text }
-        // Generic/absent mime: fall back to the extension.
-        let ext = (path as NSString).pathExtension.lowercased()
-        if semanticTextExtensions.contains(ext) { return .text }
-        return .other
-    }
-
-    /// QA-067 (issue-067) PARITY: the App's text set MUST match the server's
-    /// `SEMANTIC_TEXT_EXTENSIONS` (`packages/control-api/src/artifact-serve-routes.ts`),
-    /// which grew in Ф2 to cover source code + config/markup. The server now
-    /// routes these through the redacting, 4-MiB-capped TEXT path; the App must
-    /// agree so an eager preview treats them as (redaction-aware) text in the
-    /// in-app viewer instead of sending them down the raw-binary "open
-    /// externally" path. Truly-binary types (images, PDFs, archives) stay
-    /// `.other`. Keep this in lockstep with the server set.
-    static let semanticTextExtensions: Set<String> = [
-        // markup / structured data (server text/* MIME or semantic-text)
-        "md", "markdown", "txt", "text", "yaml", "yml", "json", "log",
-        "csv", "xml", "svg", "json5", "toml", "ini", "cfg", "conf", "css",
-        // source code
-        "js", "mjs", "cjs", "ts", "tsx", "jsx", "sh", "py", "rb", "go",
-        "rs", "java", "c", "h", "cpp", "sql",
-    ]
-}
-
-/// Human file-size for a row's metadata line, or nil when the size is unknown.
-func artifactSizeText(_ bytes: Int?) -> String? {
-    guard let bytes else { return nil }
-    return ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
-}
-
-/// Write bytes to a fresh unpredictable 0700 dir and hand them to the system
-/// opener (pdf, binaries, oversize images). Shared by the image card and the
-/// document row. Release-wave sol #4: the artifact name is agent-controlled, so
-/// a basename-only name under a fresh private dir + `.atomic` write closes the
-/// symlink-overwrite primitive. QA-062: the copy now lives under the single
-/// TRACKED handoff root (`ExternalArtifactHandoff`) so a bounded-age startup
-/// sweep can reclaim it — the write-side hardening is unchanged.
-@MainActor
-func openArtifactExternally(model: AppModel, runId: String, path: String, produced: Bool) async {
-    let data = produced
-        ? await model.producedBytes(runId: runId, path: path)
-        : await model.artifactBytes(runId: runId, path: path)
-    guard let data else { return }
-    do {
-        let url = try ExternalArtifactHandoff.standard()
-            .stage(data: data, suggestedName: (path as NSString).lastPathComponent)
-        NSWorkspace.shared.open(url)
-    } catch { /* opening a preview is best-effort */ }
 }
 
 // MARK: - Image card (large thumbnail)

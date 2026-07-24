@@ -124,3 +124,54 @@ import ClaudexorKit
         #expect(failed == ["run-missing"])
     }
 }
+
+/// Ф3 r7 critical #1 (follow-on edge of the round-6 disclosure fix): a refresh
+/// over an EXISTING nonempty snapshot where EVERY run's listing fails must retain
+/// the last-known snapshot AND disclose the failure (a "could not refresh" banner
+/// with Retry) — it must never take the silent keep-last-known path that renders
+/// stale artifacts as freshly confirmed. The retain-vs-disclose branch is a pure
+/// decision so the regression is nailed down without a live view.
+@Suite struct ArtifactGalleryLoadDecisionTests {
+    @Test func failedRefreshOverNonemptySnapshotIsDisclosedNotSilent() {
+        // The defect class: nonempty snapshot on screen, refresh aggregates to
+        // nothing because every listing errored. The old code silently returned;
+        // the fix keeps the snapshot AND records the failed runs for disclosure.
+        let decision = ArtifactGalleryView.loadDecision(
+            combinedIsEmpty: true, failed: ["run-A", "run-B"], existingNonEmpty: true)
+        #expect(decision == .keepStale(failed: ["run-A", "run-B"]))
+    }
+
+    @Test func benignTransientEmptyOverSnapshotKeepsSilently() {
+        // A live run still producing returns empty with NO failures — keep the
+        // last-known snapshot silently (no banner), exactly as before.
+        let decision = ArtifactGalleryView.loadDecision(
+            combinedIsEmpty: true, failed: [], existingNonEmpty: true)
+        #expect(decision == .keepStale(failed: []))
+    }
+
+    @Test func allFailWithNothingShownIsTheTypedError() {
+        // No snapshot yet + a real transport failure → the typed error state,
+        // never a silent empty.
+        let decision = ArtifactGalleryView.loadDecision(
+            combinedIsEmpty: true, failed: ["run-A"], existingNonEmpty: false)
+        #expect(decision == .fail)
+    }
+
+    @Test func freshContentCommits() {
+        // Content aggregated → commit it (carrying any partial-failure disclosure).
+        #expect(ArtifactGalleryView.loadDecision(
+            combinedIsEmpty: false, failed: ["run-B"], existingNonEmpty: true)
+            == .commit(failed: ["run-B"]))
+        #expect(ArtifactGalleryView.loadDecision(
+            combinedIsEmpty: false, failed: [], existingNonEmpty: false)
+            == .commit(failed: []))
+    }
+
+    @Test func emptyRefreshWithNoPriorContentCommitsEmpty() {
+        // Nothing shown, refresh reports a clean empty (no failures) → commit the
+        // empty state (a real "no artifacts"), not a fail and not a keep.
+        #expect(ArtifactGalleryView.loadDecision(
+            combinedIsEmpty: true, failed: [], existingNonEmpty: false)
+            == .commit(failed: []))
+    }
+}

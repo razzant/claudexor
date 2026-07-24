@@ -79,8 +79,13 @@ struct RunDiffSection: View {
         }
         // Lifecycle phase is part of the invalidation (QA-069): an active run with
         // no captured final patch is PENDING, and must transition to a terminal
-        // state once the run finishes even if `hasPatchArtifact` stays false.
-        .task(id: "\(runId):\(run?.hasPatchArtifact == true):\(run?.phase.isTerminal == true)") { await loadDiff() }
+        // state once the run finishes even if `hasPatchArtifact` stays false. The
+        // key carries the FULL `phase.rawValue`, not just `isTerminal`: a lost
+        // stream `running → unknown` leaves BOTH non-terminal, so keying on
+        // terminality alone never re-runs the loader and strands the slot in
+        // `.loading` (an indefinite bare spinner with no reason, no Retry).
+        .task(id: Self.diffLoadKey(runId: runId, hasPatchArtifact: run?.hasPatchArtifact == true,
+                                   phase: run?.phase)) { await loadDiff() }
         // A scoped run needs its detail (eligibility/revertable) to gate apply.
         .task(id: showActions ? runId : "") {
             if showActions, let run, run.applyEligibility == nil || run.isLive { await model.loadRunDetail(runId) }
@@ -180,26 +185,68 @@ struct RunDiffSection: View {
     private func loadDiff() async {
         let id = PayloadIdentity(runId: runId, plane: .diff)
         diffSlot.begin(id)
-        guard let run = model.task(runId) else {
+        let run = model.task(runId)
+        switch Self.diffLoadStep(runExists: run != nil, diffIsEmpty: run?.diff.isEmpty ?? true,
+                                 phase: run?.phase, hasPatchArtifact: run?.hasPatchArtifact == true) {
+        case .noRun, .noPatch:
             diffSlot.commit(.empty, for: id)
-            return
-        }
-        if !run.diff.isEmpty { diffSlot.commit(.loaded(run.diff), for: id); return }
-        // QA-069: an ACTIVE run whose final patch has not been captured yet is
-        // PENDING, not empty — keep the slot in `.loading` (honest pending copy).
-        // When the run reaches terminal the task-id change re-runs this loader.
-        if run.phase.isActive && !run.hasPatchArtifact {
+        case .hydrated:
+            diffSlot.commit(.loaded(run?.diff ?? []), for: id)
+        case .pending:
+            // QA-069: an ACTIVE run whose final patch has not been captured yet is
+            // PENDING, not empty — keep the slot in `.loading` (honest pending
+            // copy). The task-id change re-runs this loader once the run advances.
             diffSlot.commit(.loading, for: id)
-            return
-        }
-        guard run.hasPatchArtifact else {
-            diffSlot.commit(.empty, for: id)
-            return
-        }
-        switch await model.loadRunDiff(runId) {
-        case .loaded: diffSlot.commit(.loaded(model.task(runId)?.diff ?? []), for: id)
-        case .unavailable, .empty: diffSlot.commit(.empty, for: id)
-        case .failed(let message): diffSlot.commit(.failed(.transport(message)), for: id)
+        case .lostEngineState:
+            // Lost stream: `.unknown` with no captured patch is NOT a clean "no
+            // changes" — the engine lifecycle state was lost, so we cannot know
+            // whether the run produced a patch. Surface it as a typed failure with
+            // Retry (the diffBody `.failed` case) rather than a bare spinner or a
+            // dishonest "No changes in this run."
+            diffSlot.commit(.failed(.transport(
+                "Lost the engine connection before this run's changes were captured — retry to reload.")),
+                for: id)
+        case .fetch:
+            switch await model.loadRunDiff(runId) {
+            case .loaded: diffSlot.commit(.loaded(model.task(runId)?.diff ?? []), for: id)
+            case .unavailable, .empty: diffSlot.commit(.empty, for: id)
+            case .failed(let message): diffSlot.commit(.failed(.transport(message)), for: id)
+            }
         }
     }
+
+    /// The diff loader's invalidation key. It MUST include the full lifecycle
+    /// `phase` (not just terminality): `running` and `unknown` are BOTH
+    /// non-terminal, so a lost-stream `running → unknown` regression would never
+    /// change a terminality-only key and the loader would never re-run.
+    static func diffLoadKey(runId: String, hasPatchArtifact: Bool, phase: RunPhase?) -> String {
+        "\(runId):\(hasPatchArtifact):\(phase?.rawValue ?? "nil")"
+    }
+
+    /// The pure pre-fetch decision the diff loader makes (unit-tested). Ordered so
+    /// a hydrated patch wins first, an active run stays PENDING, a lost-stream
+    /// `.unknown` with no patch becomes a disclosed FAILURE (not a false empty),
+    /// and only a captured patch proceeds to the async fetch.
+    static func diffLoadStep(
+        runExists: Bool, diffIsEmpty: Bool, phase: RunPhase?, hasPatchArtifact: Bool
+    ) -> DiffLoadStep {
+        if !runExists { return .noRun }
+        if !diffIsEmpty { return .hydrated }
+        if let phase, phase.isActive, !hasPatchArtifact { return .pending }
+        if phase == .unknown, !hasPatchArtifact { return .lostEngineState }
+        if !hasPatchArtifact { return .noPatch }
+        return .fetch
+    }
+}
+
+/// The pre-fetch outcomes of `RunDiffSection.diffLoadStep` — separated from the
+/// slot mutation so the lost-stream mapping (`.unknown` + no patch → disclosed
+/// failure, never a false "no changes") is unit-tested.
+enum DiffLoadStep: Equatable {
+    case noRun            // no such run in the model → empty
+    case hydrated         // the run's diff is already present → loaded
+    case pending          // active, no captured patch yet → keep loading
+    case lostEngineState  // `.unknown` with no captured patch → disclosed failure
+    case noPatch          // terminal, no patch artifact → empty (a real no-change)
+    case fetch            // a captured patch exists → fetch it
 }
