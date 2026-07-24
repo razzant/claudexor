@@ -1139,25 +1139,46 @@ requires a resnapshot.
 after the daemon proves the recorded process group empty. Unknown or nonempty
 state remains a typed refusal and cannot be bypassed by creating another job.
 
-Native login specs are a shared `{binary,args,displayCommand}` contract for
-Codex (`codex -c cli_auth_credentials_store=file login --device-auth` in its
-dedicated `CODEX_HOME`, the device-auth default; the request `loginFlow`
-selects `browser_redirect` for the explicit localhost-callback opt-in), Claude
+Native login specs are a shared `{binary,args,displayCommand,loginMode}`
+contract. **Codex's primary flow is typed device-code over the official codex
+app-server, with NO Terminal (D-17):** the sealed manifest carries
+`loginMode: "device_code"` + `appServerFlow: "chatgptDeviceCode"` and the args
+`codex -c cli_auth_credentials_store=file app-server --stdio` in its dedicated
+`CODEX_HOME`. The runner hosts that app-server inside the SAME detached process
+group the Terminal flow uses, drives `initialize → account/login/start
+{chatgptDeviceCode}`, and surfaces `{userCode, verificationUrl}` on the JOB
+SNAPSHOT via a read-time projection (see below), then waits for
+`account/login/completed` before exit 0 → the unchanged native verification
+runs. The request `loginFlow` selects the secondary app-server
+`browser_callback` (`account/login/start {chatgptDeviceCode}` → `chatgpt`
+authUrl) or the legacy Terminal `browser_redirect` (localhost callback). Claude
 (`claude auth login`, the claude.ai subscription route with no version-varying
-flag), and Cursor (`cursor-agent login`). The setup runner probes
-`codex login --help` before spawning — `--device-auth` exists only on recent
-codex, so an older CLI yields a typed `not_supported` outcome with the upgrade
-or `--browser-redirect` remedy, never an opaque argv error, and the probe fails
-open. The runner tees codex login output so the operator still sees the URL and
-one-time code, and persists a bounded ANSI-stripped tail on the result so the
-daemon can disclose the real failure cause (e.g. the ChatGPT "Allow device code
-login" toggle being off) instead of a bare exit code. The daemon writes a
-private runner manifest; Terminal
-starts the bundled absolute Node + runner; the runner executes the absolute
-vendor binary without a shell, inherits the TTY, scrubs provider credentials,
-and atomically records PID/kernel-start/process-group and result sidecars. It
-never receives or persists a vendor token or credential file. Apart from the bounded, ANSI-stripped, secret-redacted diagnostic tail a
-FAILED codex login persists, vendor output is not copied into durable logs, and Terminal stays open on the result until the
+flag) and Cursor (`cursor-agent login`) keep the Terminal flow.
+
+**Typed capability probe, no stdout regex:** if the installed app-server lacks
+the auth methods it answers a JSON-RPC method-not-found; the runner maps that to
+the typed `device_auth_unsupported` result, so the daemon offers the legacy
+Terminal `browser_redirect` fallback (never an opaque argv error). The legacy
+Terminal flow is DEMOTED to this fallback: it still probes `codex login --help`,
+tees output so the operator sees the URL/one-time code, and persists a bounded
+ANSI-stripped tail so the daemon can disclose the real failure cause (e.g. the
+ChatGPT "Allow device code login" toggle being off).
+
+**Transient device-code disclosure (journal-is-authority, INV-062):** the
+one-time `userCode` rides ONLY a transient `runner-devicecode.json` sidecar the
+runner writes and a read-time overlay on `ControlSetupJobSnapshot` /
+`ControlSetupJobEvent`; it is NEVER a field of the journaled `ControlSetupJob`,
+never logged, and never written to the durable result receipt (the journal
+records only THAT a code was disclosed, via the `awaiting_user` transition). The
+sidecar is removed on terminalization so the code stops projecting.
+
+The daemon writes a private runner manifest; the device-code runner is launched
+DETACHED (no Terminal, not macOS-gated), the Terminal fallback via
+`open -a Terminal`. In both the runner executes the absolute vendor binary
+without a shell, scrubs provider credentials, and atomically records
+PID/kernel-start/process-group and result sidecars. It never receives or
+persists a vendor token or credential file. Apart from the bounded, ANSI-stripped, secret-redacted diagnostic tail a
+FAILED codex login persists, vendor output is not copied into durable logs, and the Terminal fallback stays open on the result until the
 operator presses Return. The daemon fsyncs an immutable executable/argv
 authorization and one-use permit before the detached runner may spawn. The
 runner's hash-bound result is journaled before verification. For a

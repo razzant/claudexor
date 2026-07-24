@@ -185,14 +185,18 @@ assertion. Raw secrets never become artifacts — prompts included.
 
 Login is run through Claudexor rather than the bare vendor CLI so the session
 lands in the Claudexor-scoped store the runs actually read. Codex login
-defaults to device-auth (a URL and one-time code in the Terminal), and the
-prompt carries an isolation instruction: complete the link in a private
-browser context, because a browser-based OAuth completed alongside another
-session of the same vendor can invalidate that sibling session server-side —
-vendor backend behavior Claudexor discloses and mitigates (device-auth
-default, isolation guidance) but never claims to prevent. An interactive login
-survives an ordinary daemon restart; an explicit cancel or the login's own
-15-minute deadline (extendable) are what end a pending login.
+defaults to a typed device-code flow driven over the official codex app-server
+with no Terminal: the one-time code and verification URL appear directly in the
+app (and the CLI), and Claudexor waits for the app-server to report completion.
+The disclosure carries an isolation instruction — complete the link in a
+private browser context — because a browser-based OAuth completed alongside
+another session of the same vendor can invalidate that sibling session
+server-side, vendor backend behavior Claudexor discloses and mitigates
+(device-code default, ephemeral-session request, isolation guidance) but never
+claims to prevent. Only the official app-server touches OAuth; Claudexor never
+brokers callbacks or reads the one-time code into anything durable. An
+interactive login survives an ordinary daemon restart; an explicit cancel or
+the login's own 15-minute deadline (extendable) are what end a pending login.
 
 ## Workspace Semantics
 

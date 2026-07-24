@@ -132,14 +132,20 @@ read Claude credential or session files. See the official
 Native login commands are server allowlisted and run as setup jobs with
 typed phase/deadline/outcome. An awaiting-user login SURVIVES an ordinary
 daemon restart — the successor adopts the identity-proven runner; only an
-explicit cancel or the deadline timeout signals it. Codex login defaults to device-auth (a URL plus
-one-time code shown in the Terminal), with the older localhost-callback flow
-selectable through the request `loginFlow` (`--browser-redirect` on the CLI,
-codex only); an older codex CLI without device-auth support yields a typed
-`not_supported` outcome, never a silent fallback. The Terminal wrapper prints
-the isolation instruction — complete the link in a private window or a profile
-signed into no other OpenAI account, because an in-browser account switch can
-revoke sibling OpenAI sessions server-side. The lifecycle streams over a
+explicit cancel or the deadline timeout signals it. Codex login defaults to
+typed device-code over the official codex app-server with NO Terminal (D-17): a
+one-time code plus verification URL are surfaced on the job snapshot (and the
+CLI/AuthSheet render them inline), and the daemon waits for the app-server's
+completion. The request `loginFlow` selects the secondary app-server
+browser-callback flow or the legacy Terminal localhost-callback
+(`--browser-redirect` on the CLI, codex only). If the installed app-server lacks
+the typed auth methods the daemon returns a typed `not_supported` outcome
+(offer the Terminal `--browser-redirect` fallback) — never a silent fallback,
+never stdout parsing. The one-time code is a transient disclosure: it rides the
+job snapshot/SSE overlay only and is never journaled, logged, or persisted. The
+isolation instruction still applies — complete the link in a private window or a
+profile signed into no other OpenAI account, because an in-browser account
+switch can revoke sibling OpenAI sessions server-side. The lifecycle streams over a
 polling-backed SSE channel
 (`/v2/setup/jobs/:id/events`) that carries the complete job snapshot,
 heartbeats, and closes on every terminal state including `timed_out` and
@@ -151,7 +157,7 @@ changes the server-owned outcome. `GET /v2/setup/jobs` optionally filters by
 `harness`, `action`, `active`, and `limit`. `POST /v2/setup/jobs/:id/extend`
 adds the fixed 15-minute login extension. Cancel is asynchronous and
 resolves only after termination is proved; duplicate create returns the same
-active login instead of opening another Terminal.
+active login instead of launching a second runner.
 `POST /v2/setup/jobs/:id/reconcile` is the sole replacement-fence recovery
 path. The execution mechanics behind these jobs — the bundled runner, the
 journal authority, process-identity fences, and the same-harness capability

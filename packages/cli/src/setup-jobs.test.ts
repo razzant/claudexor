@@ -41,7 +41,20 @@ let root: string;
 let codexBinary: string;
 let oldCodexBin: string | undefined;
 
-const LOGIN_REQUEST = { harness: "codex", action: "login", authRequest: "subscription" } as const;
+// The shared setup state machine is exercised over the Terminal (browser_redirect)
+// flow; the D-17 device-code launch has its own focused suite below. Default
+// codex (loginFlow absent) now takes the app-server device-code path.
+const LOGIN_REQUEST = {
+  harness: "codex",
+  action: "login",
+  authRequest: "subscription",
+  loginFlow: "browser_redirect",
+} as const;
+const DEVICE_CODE_REQUEST = {
+  harness: "codex",
+  action: "login",
+  authRequest: "subscription",
+} as const;
 
 function fakeOpener(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
@@ -1703,13 +1716,16 @@ describe("setup jobs", () => {
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
       openTerminal: fakeOpener,
+      // The device-code flow launches the runner via spawn (no Terminal); the
+      // fake stays alive so the state machine is driven by the sidecars below.
+      spawn: (() => fakeOpener()) as unknown as typeof import("node:child_process").spawn,
       monitorPollMs: 1,
       processGroups: group.service,
       authCapabilityVerifier: capability.verifier,
       probeAuthSource: async () => nativeReadiness(true),
     });
     await manager.start();
-    const job = manager.create(LOGIN_REQUEST);
+    const job = manager.create(DEVICE_CODE_REQUEST);
     const observedAt = new Date().toISOString();
     writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
     await waitForPhase(manager, job.jobId, "awaiting_user");
@@ -1725,25 +1741,26 @@ describe("setup jobs", () => {
     await manager.shutdown();
   });
 
-  it("a browser-redirect create refuses (409) while a device-auth login is active", () => {
+  it("a browser-redirect create refuses (409) while a device-code login is active", () => {
     const manager = createSetupJobManager({
       rootDir: join(root, "flow-conflict"),
       platform: "darwin",
       runnerPath: "/tmp/setup-login-runner.js",
       openTerminal: fakeOpener,
+      spawn: (() => fakeOpener()) as unknown as typeof import("node:child_process").spawn,
     });
-    // The default codex login seals the device-auth flow into its authorization
-    // synchronously at create. A --browser-redirect request for the same target
-    // must refuse loudly rather than be answered with the active device-auth job.
-    manager.create(LOGIN_REQUEST);
+    // The default codex login seals the device-code (app-server) flow into its
+    // authorization synchronously at create. A --browser-redirect request for the
+    // same target must refuse loudly rather than be answered with the active job.
+    manager.create(DEVICE_CODE_REQUEST);
     let thrown: (Error & { status?: number }) | undefined;
     try {
-      manager.create({ ...LOGIN_REQUEST, loginFlow: "browser_redirect" });
+      manager.create({ ...DEVICE_CODE_REQUEST, loginFlow: "browser_redirect" });
     } catch (error) {
       thrown = error as Error & { status?: number };
     }
     expect(thrown).toBeInstanceOf(Error);
-    expect(thrown?.message).toMatch(/browser-redirect|device-auth/);
+    expect(thrown?.message).toMatch(/browser-redirect|device-code/);
     expect(thrown?.status).toBe(409);
   });
 
@@ -1983,6 +2000,164 @@ describe("setup jobs for credential profiles (INV-135)", () => {
     expect(done.outcome?.reason).toBe("auth_not_ready");
     expect(done.message).toContain('profile "work"');
     expect(capability.runs).toHaveLength(0);
+    await manager.shutdown();
+  });
+});
+
+describe("D-17 codex device-code login", () => {
+  function writeDeviceCodeSidecar(
+    manager: SetupManager,
+    jobId: string,
+    disclosure: {
+      flow?: "chatgptDeviceCode" | "chatgpt";
+      verificationUrl?: string;
+      userCode?: string;
+    } = {},
+  ): void {
+    const manifest = readLoginManifest(manager._store.paths(jobId).manifest);
+    atomicPrivateJson(manager._store.paths(jobId).runnerDeviceCode, {
+      version: SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId,
+      executionId: manifest.executionId,
+      flow: disclosure.flow ?? "chatgptDeviceCode",
+      verificationUrl: disclosure.verificationUrl ?? "https://chatgpt.com/device",
+      userCode: disclosure.userCode ?? "WXYZ-7788",
+      disclosedAt: new Date().toISOString(),
+    });
+  }
+
+  it("launches the runner detached (never Terminal) and seals the device-code flow", async () => {
+    const group = processGroupFixture();
+    let terminalOpened = 0;
+    let runnerSpawned = 0;
+    const manager = createSetupJobManager({
+      rootDir: join(root, "device-launch"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: () => {
+        terminalOpened += 1;
+        return fakeOpener();
+      },
+      spawn: ((..._args: unknown[]) => {
+        runnerSpawned += 1;
+        return fakeOpener();
+      }) as unknown as typeof import("node:child_process").spawn,
+      monitorPollMs: 1,
+      processGroups: group.service,
+    });
+    await manager.start();
+    const job = manager.create(DEVICE_CODE_REQUEST);
+    // The app-server flow is sealed into the authorization argv, and the runner
+    // is launched with spawn — never the Terminal opener.
+    expect(job.authorization?.args).toContain("app-server");
+    expect(terminalOpened).toBe(0);
+    expect(runnerSpawned).toBe(1);
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit");
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    const awaiting = manager.status({ jobId: job.jobId });
+    expect(awaiting.message).toMatch(/one-time code/);
+    expect(awaiting.message).not.toMatch(/Terminal/);
+    await manager.shutdown();
+  });
+
+  it("projects the transient code on the snapshot but never in the journaled job", async () => {
+    const group = processGroupFixture();
+    const manager = createSetupJobManager({
+      rootDir: join(root, "device-projection"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      spawn: (() => fakeOpener()) as unknown as typeof import("node:child_process").spawn,
+      monitorPollMs: 1,
+      processGroups: group.service,
+    });
+    await manager.start();
+    const job = manager.create(DEVICE_CODE_REQUEST);
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit");
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    writeDeviceCodeSidecar(manager, job.jobId, { userCode: "SECRET-CODE-42" });
+
+    const snapshot = manager.snapshot({ jobId: job.jobId });
+    expect(snapshot.deviceCode).toEqual({
+      flow: "chatgptDeviceCode",
+      verificationUrl: "https://chatgpt.com/device",
+      userCode: "SECRET-CODE-42",
+    });
+    // The journaled job carries NO device-code field.
+    expect((snapshot.job as unknown as Record<string, unknown>).deviceCode).toBeUndefined();
+    expect(JSON.stringify(snapshot.job)).not.toContain("SECRET-CODE-42");
+
+    // The one-time code must never appear anywhere in the durable journal.
+    const journalDump = [...manager._store.journal.records()]
+      .map((record) => JSON.stringify(record))
+      .join("\n");
+    expect(journalDump).not.toContain("SECRET-CODE-42");
+    await manager.shutdown();
+  });
+
+  it("stops projecting the code once the login is terminal (sidecar removed)", async () => {
+    const group = processGroupFixture();
+    const capability = capabilityVerifier();
+    const manager = createSetupJobManager({
+      rootDir: join(root, "device-terminal"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      spawn: (() => fakeOpener()) as unknown as typeof import("node:child_process").spawn,
+      monitorPollMs: 1,
+      processGroups: group.service,
+      authCapabilityVerifier: capability.verifier,
+      probeAuthSource: async () => nativeReadiness(true),
+    });
+    await manager.start();
+    const job = manager.create(DEVICE_CODE_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    writeDeviceCodeSidecar(manager, job.jobId);
+    expect(manager.snapshot({ jobId: job.jobId }).deviceCode).toBeDefined();
+    writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+    writeRunnerResultV2(manager, job.jobId, { commandStarted: true, exitCode: 0 });
+    expect(await waitForTerminal(manager, job.jobId)).toBe("succeeded");
+    // The transient sidecar was removed on terminalization → no projection.
+    expect(manager.snapshot({ jobId: job.jobId }).deviceCode).toBeUndefined();
+    await manager.shutdown();
+  });
+
+  it("a capability-probe miss finishes not_supported (typed Terminal fallback)", async () => {
+    const group = processGroupFixture();
+    const manager = createSetupJobManager({
+      rootDir: join(root, "device-unsupported"),
+      platform: "darwin",
+      runnerPath: "/tmp/setup-login-runner.js",
+      openTerminal: fakeOpener,
+      spawn: (() => fakeOpener()) as unknown as typeof import("node:child_process").spawn,
+      monitorPollMs: 1,
+      processGroups: group.service,
+    });
+    await manager.start();
+    const job = manager.create(DEVICE_CODE_REQUEST);
+    const observedAt = new Date().toISOString();
+    writeRunnerStateV2(manager, job.jobId, group.leader, "awaiting_permit", observedAt);
+    await waitForPhase(manager, job.jobId, "awaiting_user");
+    writeRunnerStateV2(manager, job.jobId, group.leader, "running", observedAt);
+    // The runner reports the app-server lacked the auth methods. Like the real
+    // runner, it carries the durable permit timestamp it ran under.
+    writeRunnerResultV2(manager, job.jobId, {
+      commandStarted: false,
+      exitCode: null,
+      errorCode: "device_auth_unsupported",
+      permitIssuedAt: manager.status({ jobId: job.jobId }).execution?.permitIssuedAt ?? null,
+    });
+    expect(await waitForTerminal(manager, job.jobId)).toBe("not_supported");
+    const done = manager.status({ jobId: job.jobId });
+    expect(done.outcome?.reason).toBe("not_supported");
+    expect(done.message).toMatch(/browser-redirect/);
+    // Audit point 8: the specific typed code rides the native-command receipt
+    // consistently (runner result → journaled receipt → control DTO → Swift/CLI
+    // read it), while the coarse outcome stays not_supported.
+    expect(done.nativeCommand?.errorCode).toBe("device_auth_unsupported");
+    expect(done.nativeCommand?.commandStarted).toBe(false);
     await manager.shutdown();
   });
 });

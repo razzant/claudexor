@@ -864,6 +864,34 @@
           "minimum": -9007199254740991,
           "maximum": 9007199254740991,
           "description": "Global partition sequence fenced by the snapshot."
+        },
+        "deviceCode": {
+          "type": "object",
+          "properties": {
+            "flow": {
+              "type": "string",
+              "enum": [
+                "chatgptDeviceCode",
+                "chatgpt"
+              ]
+            },
+            "verificationUrl": {
+              "type": "string",
+              "format": "uri",
+              "description": "Where the operator completes the sign-in."
+            },
+            "userCode": {
+              "type": "string",
+              "description": "Transient one-time code (empty for the browser-callback flow); never journaled."
+            }
+          },
+          "required": [
+            "flow",
+            "verificationUrl",
+            "userCode"
+          ],
+          "additionalProperties": false,
+          "description": "Transient device-code disclosure overlaid at read time from the runner sidecar; never part of the journaled job."
         }
       },
       "required": [

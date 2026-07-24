@@ -1494,6 +1494,69 @@ import Testing
         #expect(gateway.calls.prefix(3) == ["list", "get:login", "stream:login"])
     }
 
+    // MARK: - D-17 device-code disclosure
+
+    @Test func createRequestEmitsLoginFlowOnlyWhenSet() throws {
+        let encoder = JSONEncoder()
+        let plain = try encoder.encode(SetupJobCreateRequest(harness: .codex, action: .login))
+        #expect(!(String(data: plain, encoding: .utf8) ?? "").contains("loginFlow"))
+        let selected = try encoder.encode(
+            SetupJobCreateRequest(harness: .codex, action: .login, loginFlow: .browserCallback))
+        let json = try #require(JSONSerialization.jsonObject(with: selected) as? [String: Any])
+        #expect(json["loginFlow"] as? String == "browser_callback")
+    }
+
+    @Test func snapshotAndEventCarryTheTransientDeviceCode() throws {
+        let awaiting = makeSetupJob(id: "dc", state: "waiting_for_input", phase: .awaitingUser)
+        let disclosure = SetupDeviceCodeDisclosure(
+            flow: .chatgptDeviceCode, verificationUrl: "https://chatgpt.com/device", userCode: "ABCD-1234")
+        let snapshot = SetupJobSnapshot(job: awaiting, cursor: "c", sequence: 1, deviceCode: disclosure)
+        let event = SetupJobEvent(jobId: "dc", cursor: "c2", previousCursor: "c1", sequence: 2,
+                                  time: "t", state: .waitingForInput, message: awaiting.message,
+                                  job: awaiting, deviceCode: disclosure)
+        let encoder = JSONEncoder(); let decoder = JSONDecoder()
+        let roundSnap = try decoder.decode(SetupJobSnapshot.self, from: encoder.encode(snapshot))
+        let roundEvent = try decoder.decode(SetupJobEvent.self, from: encoder.encode(event))
+        #expect(roundSnap.deviceCode == disclosure)
+        #expect(roundEvent.deviceCode == disclosure)
+        #expect(roundSnap.deviceCode?.hasUserCode == true)
+        // A snapshot without the overlay decodes with a nil disclosure (backward compat).
+        let bare = SetupJobSnapshot(job: awaiting, cursor: "c", sequence: 1)
+        #expect(try decoder.decode(SetupJobSnapshot.self, from: encoder.encode(bare)).deviceCode == nil)
+    }
+
+    @Test func browserCallbackDisclosureHasNoUserCode() {
+        let disclosure = SetupDeviceCodeDisclosure(
+            flow: .chatgpt, verificationUrl: "https://auth.openai.com/cb", userCode: "")
+        #expect(!disclosure.hasUserCode)
+    }
+
+    @Test func controllerThreadsDeviceCodeWhileAwaitingAndClearsOnTerminal() async {
+        let awaiting = makeSetupJob(id: "login", state: "waiting_for_input", phase: .awaitingUser)
+        let done = makeSetupJob(id: "login", state: "succeeded", phase: .completed,
+                                outcome: SetupJobOutcome(reason: .completed))
+        let disclosure = SetupDeviceCodeDisclosure(
+            flow: .chatgptDeviceCode, verificationUrl: "https://chatgpt.com/device", userCode: "WXYZ-9")
+        let gateway = FakeSetupGateway(
+            listResult: [awaiting], snapshots: [awaiting],
+            streams: [.events([
+                SetupJobEvent(jobId: "login", cursor: "cursor-event-1", previousCursor: "cursor-snapshot-1",
+                              sequence: 2, time: "t", state: .succeeded, message: done.message, job: done)
+            ])],
+            deviceCode: disclosure)
+        let controller = SetupLifecycleController(gateway: gateway, reconnectDelays: [.zero])
+        let updates = await controller.updates()
+        // makeSetupJob builds claude jobs; the harness must match so recovery
+        // adopts and observes (the disclosure threading is harness-agnostic).
+        await controller.recoverActiveJob(harness: "claude")
+        // The awaiting snapshot surfaces the transient code…
+        let awaitingSnap = await firstSnapshot(in: updates) { $0.deviceCode != nil }
+        #expect(awaitingSnap?.deviceCode == disclosure)
+        // …and the terminal transition clears it.
+        let terminal = await firstSnapshot(in: updates) { $0.connection == .terminal }
+        #expect(terminal?.deviceCode == nil)
+    }
+
     @Test func controllerAcceptsSparseSequencesOnlyWhenTheCursorChainIsExact() async {
         let active = makeSetupJob(id: "sparse", state: "running", phase: .verifying)
         let progress = makeSetupJob(id: "sparse", state: "running", phase: .verifying)
@@ -2272,14 +2335,18 @@ private final class FakeSetupGateway: SetupJobGateway, @unchecked Sendable {
     private var cancelCountStorage = 0
     private var createFailuresRemaining: Int
     private var listFailuresRemaining: Int
+    /// D-17: transient device-code disclosure overlaid on every snapshot GET.
+    private let deviceCode: SetupDeviceCodeDisclosure?
 
     init(listResult: [SetupJob], snapshots: [SetupJob], streams: [FakeStreamResult],
-         createFailures: Int = 0, listFailures: Int = 0) {
+         createFailures: Int = 0, listFailures: Int = 0,
+         deviceCode: SetupDeviceCodeDisclosure? = nil) {
         self.listResultStorage = listResult
         self.snapshots = snapshots
         self.streams = streams
         self.createFailuresRemaining = createFailures
         self.listFailuresRemaining = listFailures
+        self.deviceCode = deviceCode
     }
 
     var calls: [String] { lock.withLock { callsStorage } }
@@ -2327,7 +2394,11 @@ private final class FakeSetupGateway: SetupJobGateway, @unchecked Sendable {
 
     func setupJobSnapshot(jobId: String) async throws -> SetupJobSnapshot {
         let job = try nextSetupJob(jobId: jobId)
-        return SetupJobSnapshot(job: job, cursor: "cursor-snapshot-\(getCount)", sequence: 1)
+        // The transient disclosure is overlaid only while the login awaits the
+        // user — mirrors the daemon's read-time projection (removed once terminal).
+        let overlay = job.phase == .awaitingUser ? deviceCode : nil
+        return SetupJobSnapshot(job: job, cursor: "cursor-snapshot-\(getCount)", sequence: 1,
+                                deviceCode: overlay)
     }
 
     func cancelSetupJob(jobId: String) async throws -> SetupJob {

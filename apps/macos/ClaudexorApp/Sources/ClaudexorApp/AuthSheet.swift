@@ -9,6 +9,9 @@ struct AuthSheet: View {
     /// Target credential profile (INV-135). nil = the engine-default login; a
     /// profile id routes the native login setup job at that profile's store.
     var profileId: String? = nil
+    /// D-17 one-action flow: start the native login as soon as the sheet opens
+    /// (the "Add & log in" / account-row single click). Consumed once.
+    var autoStartLogin: Bool = false
 
     @State private var secretValue = ""
     @State private var status = ""
@@ -18,6 +21,7 @@ struct AuthSheet: View {
     @State private var showCloseConfirmation = false
     @State private var closeAfterCancellation = false
     @State private var lastRefreshedTerminalJobId: String?
+    @State private var didAutoStartLogin = false
 
     private var secretName: String? {
         switch family {
@@ -112,10 +116,19 @@ struct AuthSheet: View {
                                     Task { await runLogin() }
                                 } else {
                                     model.authSheetTarget = AuthSheetTarget(
-                                        family: row.family, profileId: row.profileId)
+                                        family: row.family, profileId: row.profileId, autoStartLogin: true)
                                 }
                             },
                             recheck: { Task { await recheck() } }
+                        )
+                    }
+                    if let disclosure = lifecycle.deviceCode, job?.phase == .awaitingUser {
+                        AuthSheetDeviceCodeCard(
+                            disclosure: disclosure,
+                            waiting: true,
+                            actionInFlight: actionInFlight,
+                            cancel: { Task { await cancelJob() } },
+                            useBrowserCallback: { Task { await switchToBrowserCallback() } }
                         )
                     }
                     if let job { setupJobPanel(job) }
@@ -238,7 +251,11 @@ struct AuthSheet: View {
                     .tint(Theme.accentSolid)
                     .controlSize(.large)
                     .disabled(newSetupDisabled)
-                    .help(targetVerified ? "Open the native \(family.label) login flow to manage the verified session." : "Start the native \(family.label) login flow — a Terminal window opens automatically.")
+                    .help(targetVerified
+                          ? "Open the native \(family.label) login flow to manage the verified session."
+                          : family.setupHarnessId == "codex"
+                            ? "Start the native \(family.label) device-code login — a one-time code appears here, no Terminal."
+                            : "Start the native \(family.label) login flow — a Terminal window opens automatically.")
 
                     Button { Task { await recheck() } } label: {
                         Label("Recheck", systemImage: "arrow.clockwise")
@@ -272,7 +289,9 @@ struct AuthSheet: View {
             extendDeadline: { Task { await extendDeadline() } },
             cancelJob: { Task { await cancelJob() } },
             retryJob: { Task { await retryJob() } },
-            reconnect: { Task { await reconnectSetupState() } }
+            reconnect: { Task { await reconnectSetupState() } },
+            deviceAuthFallback: AuthSheetPresentation.deviceAuthFallback(job: job),
+            startTerminalFallback: { Task { await startTerminalFallback() } }
         )
     }
 
@@ -336,6 +355,14 @@ struct AuthSheet: View {
         lifecycle = SetupLifecycleSnapshot(connection: .recovering)
         await lifecycleController.recoverActiveJob(harness: family.setupHarnessId)
         lifecycle = await lifecycleController.snapshot()
+        // D-17 one-action flow: if the sheet was opened with autoStartLogin and
+        // there is no active job to adopt (and the target is not already
+        // verified), start the login now — so "Add & log in" / an account-row
+        // click is a single action. Consumed once.
+        if autoStartLogin, !didAutoStartLogin, lifecycle.job?.isActive != true, !targetVerified {
+            didAutoStartLogin = true
+            await runLogin()
+        }
         // Subscribe after recovery: updates() immediately yields the current
         // snapshot, avoiding replay of the initial idle/recovering states after
         // an active job has already been found.
@@ -383,6 +410,39 @@ struct AuthSheet: View {
         actionInFlight = true
         defer { actionInFlight = false }
         await controller.start(harness: family.setupHarnessId, action: "login", profileId: profileId)
+    }
+
+    /// D-17 audit point 8: the first-class Terminal fallback for the codex
+    /// device-code `not_supported` (device_auth_unsupported) state. A real
+    /// transition — starts a fresh browser_redirect login — not a text hint. The
+    /// prior job is terminal, so no cancel is needed.
+    private func startTerminalFallback() async {
+        guard let controller else { return }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        await controller.start(harness: family.setupHarnessId, action: "login",
+                               profileId: profileId, loginFlow: .browserRedirect)
+    }
+
+    /// D-17 explicit browser-callback opt-in (device-auth-disabled orgs). The
+    /// device-code and browser-callback flows share the app-server "device-code"
+    /// conflict bucket, so a live job must be cancelled before the switch — this
+    /// is never a silent fallback.
+    private func switchToBrowserCallback() async {
+        guard let controller else { return }
+        actionInFlight = true
+        defer { actionInFlight = false }
+        if job?.isActive == true {
+            await controller.cancel()
+            // Wait (bounded) for the cancellation to terminalize so the new
+            // create is not refused by the active-job guard.
+            for _ in 0..<40 {
+                if await controller.snapshot().job?.isActive != true { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        await controller.start(harness: family.setupHarnessId, action: "login",
+                               profileId: profileId, loginFlow: .browserCallback)
     }
 
     private func extendDeadline() async {

@@ -31,16 +31,29 @@ describe("native login specs", () => {
     const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
     for (const name of names) delete process.env[name];
     try {
+      // D-17 default: codex logs in over the app-server device-code flow (no
+      // Terminal), NOT the legacy `codex login --device-auth`.
       expect(nativeLoginSpec("codex", resolver)).toEqual({
         binary: "/normalized/bin/codex",
-        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "login", "--device-auth"],
-        displayCommand: "codex login --device-auth (isolated Claudexor profile)",
+        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "app-server", "--stdio"],
+        displayCommand: "codex app-server device-code login (isolated Claudexor profile)",
+        loginMode: "device_code",
+        appServerFlow: "chatgptDeviceCode",
       });
-      // Explicit opt-in localhost-redirect flow (codex only).
+      // Secondary app-server browser-callback flow (codex only).
+      expect(nativeLoginSpec("codex", resolver, "browser_callback")).toEqual({
+        binary: "/normalized/bin/codex",
+        args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "app-server", "--stdio"],
+        displayCommand: "codex app-server browser-callback login (isolated Claudexor profile)",
+        loginMode: "device_code",
+        appServerFlow: "chatgpt",
+      });
+      // Explicit opt-in legacy Terminal localhost-redirect flow (codex only).
       expect(nativeLoginSpec("codex", resolver, "browser_redirect")).toEqual({
         binary: "/normalized/bin/codex",
         args: ["-c", CODEX_FILE_AUTH_OVERRIDE, "login"],
         displayCommand: "codex login (browser redirect, isolated Claudexor profile)",
+        loginMode: "terminal",
       });
       // A flow hint never changes non-codex harnesses.
       expect(nativeLoginSpec("claude", resolver, "browser_redirect")?.args).toEqual([
@@ -51,11 +64,13 @@ describe("native login specs", () => {
         binary: "/normalized/bin/claude",
         args: ["auth", "login"],
         displayCommand: "claude auth login",
+        loginMode: "terminal",
       });
       expect(nativeLoginSpec("cursor", resolver)).toEqual({
         binary: "/normalized/bin/cursor-agent",
         args: ["login"],
         displayCommand: "cursor-agent login",
+        loginMode: "terminal",
       });
       for (const harness of ["codex", "claude", "cursor"]) {
         expect(isAbsolute(nativeLoginSpec(harness, resolver)?.binary ?? "")).toBe(true);
@@ -74,7 +89,7 @@ describe("native login specs", () => {
     expect(nativeLoginSpec("codex", () => "codex")).toBeNull();
     expect(nativeLoginSpec("opencode", resolver)).toBeNull();
     expect(nativeLoginDisplayCommand("codex")).toBe(
-      "codex login --device-auth (isolated Claudexor profile)",
+      "codex app-server device-code login (isolated Claudexor profile)",
     );
   });
 

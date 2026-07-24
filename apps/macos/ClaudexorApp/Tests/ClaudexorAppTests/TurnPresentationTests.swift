@@ -239,4 +239,43 @@ import ClaudexorKit
             outcomeReason: "termination_unconfirmed", exitCode: nil
         ) == "Process termination is unconfirmed")
     }
+
+    // D-17 audit point 8: the codex device-code `not_supported` state is a
+    // first-class native ACTION, not a dead-end label — keyed on the consistent
+    // typed code `device_auth_unsupported` on the native-command receipt.
+    private func fallbackJob(
+        harness: SetupHarness, state: SetupJobState, errorCode: SetupNativeCommandErrorCode?
+    ) -> SetupJob {
+        let receipt: SetupNativeCommandReceipt? = errorCode.map {
+            SetupNativeCommandReceipt(
+                executionId: "exec-1", commandDigest: String(repeating: "a", count: 64),
+                manifestDigest: String(repeating: "b", count: 64), permitIssuedAt: nil,
+                commandStarted: false, exitCode: nil, signal: nil, errorCode: $0,
+                finishedAt: "2026-07-23T00:00:00Z")
+        }
+        return SetupJob(
+            jobId: "j", harness: harness, action: .login, state: state, phase: .completed,
+            outcome: SetupJobOutcome(reason: state == .notSupported ? .notSupported : .commandFailed),
+            message: "m", createdAt: "2026-07-23T00:00:00Z", nativeCommand: receipt)
+    }
+
+    @Test func deviceAuthUnsupportedExposesTheTerminalFallbackAction() {
+        let job = fallbackJob(harness: .codex, state: .notSupported, errorCode: .deviceAuthUnsupported)
+        // Not a dead-end label: the state yields a first-class native action.
+        #expect(AuthSheetPresentation.deviceAuthFallback(job: job) == .terminalLogin)
+    }
+
+    @Test func notSupportedWithoutTheTypedCodeHasNoFallbackAction() {
+        // e.g. vendor not installed — no device_auth_unsupported receipt, so the
+        // Terminal-fallback action is not claimed.
+        let job = fallbackJob(harness: .codex, state: .notSupported, errorCode: nil)
+        #expect(AuthSheetPresentation.deviceAuthFallback(job: job) == nil)
+    }
+
+    @Test func deviceAuthFallbackIsCodexOnlyAndNotSupportedOnly() {
+        #expect(AuthSheetPresentation.deviceAuthFallback(
+            job: fallbackJob(harness: .claude, state: .notSupported, errorCode: .deviceAuthUnsupported)) == nil)
+        #expect(AuthSheetPresentation.deviceAuthFallback(
+            job: fallbackJob(harness: .codex, state: .failed, errorCode: .deviceAuthUnsupported)) == nil)
+    }
 }

@@ -8,22 +8,34 @@ export interface NativeLoginSpec {
   binary: string;
   args: string[];
   displayCommand: string;
+  /** D-17: "device_code" = the primary flow hosted by the runner over
+   * `codex app-server --stdio` (no Terminal). Absent/"terminal" = the legacy
+   * Terminal-hosted vendor login. */
+  loginMode?: "terminal" | "device_code";
+  /** Which app-server auth flow the device_code runner requests (device_code only). */
+  appServerFlow?: "chatgptDeviceCode" | "chatgpt";
 }
 
 type LoginDefinition = Omit<NativeLoginSpec, "binary"> & { binaryName: () => string };
 
-export type CodexLoginFlow = "device_auth" | "browser_redirect";
+/** device_auth = app-server device-code (primary, no Terminal); browser_callback
+ * = app-server browser-callback (secondary); browser_redirect = legacy Terminal
+ * localhost callback (the typed fallback). */
+export type CodexLoginFlow = "device_auth" | "browser_callback" | "browser_redirect";
 
 const NATIVE_LOGIN_DEFINITIONS: Record<string, LoginDefinition> = {
   codex: {
     binaryName: () => process.env.CLAUDEXOR_CODEX_BIN || "codex",
-    // Device-code auth is the DEFAULT interactive flow (v3.0.3 S6,
-    // live-verified 2026-07-21): completed in an ISOLATED browser context it
-    // avoids the session-invalidation trigger the localhost-redirect flow
-    // carries (an in-browser account switch revokes sibling sessions
-    // server-side). Vendor-side invalidation can never be fully prevented.
-    args: [...CODEX_FILE_AUTH_ARGS, "login", "--device-auth"],
-    displayCommand: "codex login --device-auth (isolated Claudexor profile)",
+    // D-17: device-code auth is the DEFAULT flow, now driven over the codex
+    // app-server (`account/login/start {chatgptDeviceCode}`) with NO Terminal.
+    // Completed in an ISOLATED browser context it avoids the
+    // session-invalidation trigger the localhost-redirect flow carries (an
+    // in-browser account switch revokes sibling sessions server-side).
+    // Vendor-side invalidation can never be fully prevented. The real spec is
+    // built by nativeLoginSpec (loginMode "device_code"); these fields feed the
+    // display-only helper.
+    args: [...CODEX_FILE_AUTH_ARGS, "app-server", "--stdio"],
+    displayCommand: "codex app-server device-code login (isolated Claudexor profile)",
   },
   claude: {
     binaryName: () => process.env.CLAUDEXOR_CLAUDE_BIN || "claude",
@@ -56,17 +68,37 @@ export function nativeLoginSpec(
   if (!definition) return null;
   const resolved = resolver(definition.binaryName());
   if (!resolved || !isAbsolute(resolved)) return null;
-  if (harness === "codex" && loginFlow === "browser_redirect") {
+  if (harness === "codex") {
+    // D-17: the legacy Terminal localhost-callback flow is the explicit opt-in
+    // fallback; everything else on codex is the app-server device-code primary.
+    if (loginFlow === "browser_redirect") {
+      return {
+        binary: resolved,
+        args: [...CODEX_FILE_AUTH_ARGS, "login"],
+        displayCommand: "codex login (browser redirect, isolated Claudexor profile)",
+        loginMode: "terminal",
+      };
+    }
+    // Default (absent) and device_auth → device-code; browser_callback → chatgpt.
+    const appServerFlow = loginFlow === "browser_callback" ? "chatgpt" : "chatgptDeviceCode";
     return {
       binary: resolved,
-      args: [...CODEX_FILE_AUTH_ARGS, "login"],
-      displayCommand: "codex login (browser redirect, isolated Claudexor profile)",
+      // The runner hosts the app-server; the same file-auth args + app-server
+      // transport the codex quota source uses (codex-quota-source.ts).
+      args: [...CODEX_FILE_AUTH_ARGS, "app-server", "--stdio"],
+      displayCommand:
+        appServerFlow === "chatgpt"
+          ? "codex app-server browser-callback login (isolated Claudexor profile)"
+          : "codex app-server device-code login (isolated Claudexor profile)",
+      loginMode: "device_code",
+      appServerFlow,
     };
   }
   return {
     binary: resolved,
     args: [...definition.args],
     displayCommand: definition.displayCommand,
+    loginMode: "terminal",
   };
 }
 

@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
@@ -30,6 +31,7 @@ import {
   captureExecutableEvidence,
   commandDigest,
   readLoginManifest,
+  readRunnerDeviceCode,
   readRunnerResult,
   readRunnerState,
   sealLoginManifest,
@@ -633,5 +635,168 @@ describe("device-auth capability probe + output tee (v3.0.3 S6)", () => {
     // The secret is redacted, not passed through.
     expect(tail).not.toContain(token);
     expect(tail).toContain("[redacted]");
+  });
+});
+
+describe("D-17 device-code runner worker", () => {
+  /** Fake `codex app-server --stdio` child: answers initialize + login/start
+   * over line-delimited JSON-RPC and then emits the completed notification. */
+  function fakeAppServer(disclosure: {
+    loginId: string;
+    verificationUrl: string;
+    userCode: string;
+  }): { child: ChildProcess; startCalls: number } {
+    const emitter = new EventEmitter();
+    const stdout = new PassThrough();
+    const state = { startCalls: 0 };
+    const push = (frame: unknown) => stdout.write(`${JSON.stringify(frame)}\n`);
+    const stdin = new Writable({
+      write(chunk, _enc, cb) {
+        for (const line of chunk.toString().split("\n")) {
+          if (!line.trim()) continue;
+          const frame = JSON.parse(line) as { id?: number; method?: string };
+          if (frame.method === "initialize") push({ id: frame.id, result: {} });
+          else if (frame.method === "account/login/start") {
+            state.startCalls += 1;
+            push({ id: frame.id, result: disclosure });
+            setImmediate(() =>
+              push({ method: "account/login/completed", params: { loginId: disclosure.loginId } }),
+            );
+          }
+        }
+        cb();
+      },
+    });
+    const child = Object.assign(emitter, {
+      stdout,
+      stdin,
+      stderr: new PassThrough(),
+      kill: () => {
+        setImmediate(() => emitter.emit("exit", 0, null));
+        return true;
+      },
+    }) as unknown as ChildProcess;
+    return { child, startCalls: state.startCalls };
+  }
+
+  function prepareDeviceCode() {
+    const jobDir = join(root, "device-code");
+    mkdirSync(jobDir, { mode: 0o700 });
+    const binary = join(jobDir, "codex");
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    chmodSync(binary, 0o700);
+    const executable = captureExecutableEvidence(binary);
+    const args = ["app-server", "--stdio"];
+    const spec = sealLoginManifest({
+      version: SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId: "setup-devicecode",
+      executionId: "execution-dc",
+      harness: "codex",
+      jobDir,
+      binary,
+      args,
+      cwd: jobDir,
+      loginMode: "device_code",
+      appServerFlow: "chatgptDeviceCode",
+      deviceCodePath: join(jobDir, "runner-devicecode.json"),
+      statePath: join(jobDir, "runner-state.json"),
+      resultPath: join(jobDir, "runner-result.json"),
+      permitPath: join(jobDir, "runner-permit.json"),
+      permitDeadlineAt: new Date(Date.now() + 5_000).toISOString(),
+      executable,
+      commandDigest: commandDigest(executable, args),
+    });
+    const manifestPath = join(jobDir, "runner-manifest.json");
+    atomicPrivateJson(manifestPath, spec);
+    return { manifestPath, spec };
+  }
+
+  it("discloses the code via the transient sidecar and keeps it OUT of the durable result", async () => {
+    const { manifestPath, spec } = prepareDeviceCode();
+    const issuedAt = new Date().toISOString();
+    atomicPrivateJson(spec.permitPath, {
+      version: SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId: spec.jobId,
+      executionId: spec.executionId,
+      issuedAt,
+      commandDigest: spec.commandDigest,
+      manifestDigest: spec.manifestDigest,
+    });
+    const disclosure = {
+      loginId: "L-1",
+      verificationUrl: "https://chatgpt.com/device",
+      userCode: "SECR-ET99",
+    };
+
+    const exit = await runSetupLoginWorker(manifestPath, {
+      processGroupService: processGroups(),
+      selfPid: 4242,
+      spawnProcess: (() => fakeAppServer(disclosure).child) as never,
+    });
+    expect(exit).toBe(0);
+
+    // The one-time code rides ONLY the transient sidecar.
+    const sidecar = readRunnerDeviceCode(spec.deviceCodePath!);
+    expect(sidecar?.userCode).toBe("SECR-ET99");
+    expect(sidecar?.verificationUrl).toBe("https://chatgpt.com/device");
+
+    // The durable result receipt records success WITHOUT the code.
+    const result = readRunnerResult(spec.resultPath);
+    expect(result?.commandStarted).toBe(true);
+    expect(result?.exitCode).toBe(0);
+    expect(JSON.stringify(result)).not.toContain("SECR-ET99");
+    // Neither does the runner state.
+    expect(JSON.stringify(readRunnerState(spec.statePath))).not.toContain("SECR-ET99");
+  });
+
+  it("maps a capability-probe miss to the typed device_auth_unsupported result", async () => {
+    const { manifestPath, spec } = prepareDeviceCode();
+    atomicPrivateJson(spec.permitPath, {
+      version: SETUP_LOGIN_PROTOCOL_VERSION,
+      jobId: spec.jobId,
+      executionId: spec.executionId,
+      issuedAt: new Date().toISOString(),
+      commandDigest: spec.commandDigest,
+      manifestDigest: spec.manifestDigest,
+    });
+    // An app-server that returns JSON-RPC method-not-found on login/start.
+    const unsupported = (): ChildProcess => {
+      const emitter = new EventEmitter();
+      const stdout = new PassThrough();
+      const stdin = new Writable({
+        write(chunk, _enc, cb) {
+          for (const line of chunk.toString().split("\n")) {
+            if (!line.trim()) continue;
+            const frame = JSON.parse(line) as { id?: number; method?: string };
+            if (frame.method === "initialize")
+              stdout.write(`${JSON.stringify({ id: frame.id, result: {} })}\n`);
+            else if (frame.method === "account/login/start")
+              stdout.write(
+                `${JSON.stringify({ id: frame.id, error: { code: -32601, message: "method not found" } })}\n`,
+              );
+          }
+          cb();
+        },
+      });
+      return Object.assign(emitter, {
+        stdout,
+        stdin,
+        stderr: new PassThrough(),
+        kill: () => {
+          setImmediate(() => emitter.emit("exit", 0, null));
+          return true;
+        },
+      }) as unknown as ChildProcess;
+    };
+
+    const exit = await runSetupLoginWorker(manifestPath, {
+      processGroupService: processGroups(),
+      selfPid: 4242,
+      spawnProcess: (() => unsupported()) as never,
+    });
+    expect(exit).toBe(1);
+    const result = readRunnerResult(spec.resultPath);
+    expect(result?.errorCode).toBe("device_auth_unsupported");
+    expect(result?.commandStarted).toBe(false);
   });
 });

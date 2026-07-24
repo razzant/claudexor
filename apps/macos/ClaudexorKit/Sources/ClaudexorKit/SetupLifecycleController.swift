@@ -29,13 +29,18 @@ public struct SetupLifecycleSnapshot: Sendable, Equatable {
     public let connection: SetupLifecycleConnection
     public let reconnectAttempt: Int
     public let lastError: String?
+    /// D-17 transient device-code disclosure from the latest snapshot/SSE
+    /// overlay; nil unless a device-code login is awaiting the user.
+    public let deviceCode: SetupDeviceCodeDisclosure?
 
     public init(job: SetupJob? = nil, connection: SetupLifecycleConnection = .idle,
-                reconnectAttempt: Int = 0, lastError: String? = nil) {
+                reconnectAttempt: Int = 0, lastError: String? = nil,
+                deviceCode: SetupDeviceCodeDisclosure? = nil) {
         self.job = job
         self.connection = connection
         self.reconnectAttempt = reconnectAttempt
         self.lastError = lastError
+        self.deviceCode = deviceCode
     }
 }
 
@@ -118,7 +123,8 @@ public actor SetupLifecycleController {
         }
     }
 
-    public func start(harness: String, action: String, profileId: String? = nil) async {
+    public func start(harness: String, action: String, profileId: String? = nil,
+                      loginFlow: SetupCodexLoginFlow? = nil) async {
         guard let typedHarness = SetupHarness(rawValue: harness),
               let typedAction = SetupJobAction(rawValue: action) else {
             publish(job: current.job, connection: .streamLost, reconnectAttempt: 0,
@@ -131,7 +137,8 @@ public actor SetupLifecycleController {
         publish(job: previous.job, connection: .recovering, reconnectAttempt: 0, error: nil)
         do {
             let job = try await gateway.createSetupJob(
-                SetupJobCreateRequest(harness: typedHarness, action: typedAction, profileId: profileId))
+                SetupJobCreateRequest(harness: typedHarness, action: typedAction,
+                                      profileId: profileId, loginFlow: loginFlow))
             guard generation == requestGeneration, !Task.isCancelled else { return }
             adoptAndObserve(job)
         } catch let GatewayError.http(status, body) where status == 409 {
@@ -254,7 +261,8 @@ public actor SetupLifecycleController {
                 guard generation == observedGeneration, !Task.isCancelled else { return }
                 publish(job: snapshot,
                         connection: snapshot.isTerminal ? .terminal : (reconnects == 0 ? .connected : .reconnecting),
-                        reconnectAttempt: reconnects, error: nil)
+                        reconnectAttempt: reconnects, error: nil,
+                        deviceCode: snapshot.isTerminal ? nil : fenced.deviceCode)
                 if snapshot.isTerminal { return }
 
                 for try await event in gateway.setupJobEvents(jobId: jobId, lastEventId: cursor) {
@@ -272,7 +280,8 @@ public actor SetupLifecycleController {
                     let next = event.job
                     guard generation == observedGeneration, !Task.isCancelled else { return }
                     publish(job: next, connection: next.isTerminal ? .terminal : .connected,
-                            reconnectAttempt: reconnects, error: nil)
+                            reconnectAttempt: reconnects, error: nil,
+                            deviceCode: next.isTerminal ? nil : (event.deviceCode ?? current.deviceCode))
                     if next.isTerminal { return }
                 }
             } catch {
@@ -284,7 +293,8 @@ public actor SetupLifecycleController {
                 }
                 reconnects += 1
                 publish(job: current.job, connection: .reconnecting,
-                        reconnectAttempt: reconnects, error: String(describing: error))
+                        reconnectAttempt: reconnects, error: String(describing: error),
+                        deviceCode: current.deviceCode)
                 await waitBeforeReconnect(reconnects)
                 continue
             }
@@ -299,7 +309,7 @@ public actor SetupLifecycleController {
             }
             reconnects += 1
             publish(job: current.job, connection: .reconnecting,
-                    reconnectAttempt: reconnects, error: nil)
+                    reconnectAttempt: reconnects, error: nil, deviceCode: current.deviceCode)
             await waitBeforeReconnect(reconnects)
         }
     }
@@ -316,14 +326,17 @@ public actor SetupLifecycleController {
         observationTask = nil
         if markDetached {
             publish(job: current.job, connection: .detached,
-                    reconnectAttempt: current.reconnectAttempt, error: nil)
+                    reconnectAttempt: current.reconnectAttempt, error: nil,
+                    deviceCode: current.deviceCode)
         }
     }
 
     private func publish(job: SetupJob?, connection: SetupLifecycleConnection,
-                         reconnectAttempt: Int, error: String?) {
+                         reconnectAttempt: Int, error: String?,
+                         deviceCode: SetupDeviceCodeDisclosure? = nil) {
         current = SetupLifecycleSnapshot(job: job, connection: connection,
-                                         reconnectAttempt: reconnectAttempt, lastError: error)
+                                         reconnectAttempt: reconnectAttempt, lastError: error,
+                                         deviceCode: deviceCode)
         for continuation in subscribers.values { continuation.yield(current) }
     }
 

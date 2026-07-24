@@ -31,9 +31,10 @@
           "type": "string",
           "enum": [
             "device_auth",
+            "browser_callback",
             "browser_redirect"
           ],
-          "description": "Codex-only: device_auth (default; complete it in an isolated browser window) or browser_redirect (explicit opt-in localhost callback)."
+          "description": "Codex-only: device_auth (default; app-server device-code, isolated browser window), browser_callback (app-server browser-callback opt-in), or browser_redirect (legacy Terminal localhost callback / fallback)."
         }
       },
       "required": [
