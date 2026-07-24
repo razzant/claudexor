@@ -1,13 +1,5 @@
 import { execFileSync } from "node:child_process";
-import {
-  cpSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import type { AccessProfile, DirtyPolicy, WorkspaceEnvelope } from "@claudexor/schema";
@@ -17,8 +9,10 @@ import { ensureDir, newId, nowIso, projectRuntimeDir } from "@claudexor/util";
 import { ensureLaneHomeEnv, type LaneHomeEnv } from "./lanes.js";
 import {
   CLAUDE_BRIDGE_BASENAME,
+  bridgeCreatedMarkerMatches,
   ensureClaudeBridge,
   isGeneratedClaudeBridge,
+  writeBridgeCreatedMarker,
 } from "./claude-bridge.js";
 import {
   branchDelete,
@@ -247,20 +241,12 @@ export class WorkspaceManager {
     });
     // Record the created-this-run fact keyed by envelope id, so diff() gates the
     // bridge exclusion on POSITIVE PROOF rather than on content bytes alone.
-    // Persisted beside owner.json as well: the in-memory set dies with THIS
-    // manager instance (daemon restart mid-run), and losing the fact CAPTURES
-    // a pristine generated bridge into patch.diff — safe direction, but the
-    // captured bridge would then materialize on apply as if candidate-authored.
+    // Persisted beside owner.json as well (bridge-created.json): the in-memory
+    // set dies with THIS manager instance (daemon restart mid-run), and losing
+    // the fact CAPTURES a pristine generated bridge into patch.diff.
     if (bridgeCreatedHere) {
       this.bridgeCreatedEnvelopes.add(envelope.id);
-      try {
-        writeFileSync(
-          join(base, "bridge-created.json"),
-          JSON.stringify({ envelope_id: envelope.id, created_at: nowIso() }) + "\n",
-        );
-      } catch {
-        /* marker is an optimization over the in-memory set; never fail create */
-      }
+      writeBridgeCreatedMarker(base, envelope.id);
     }
     return envelope;
   }
@@ -489,25 +475,11 @@ export class WorkspaceManager {
     return diffStaged(env.worktree_path, env.base_sha ?? undefined, bridgeExcludes);
   }
 
-  /**
-   * The created-this-run bridge fact for diff(): the in-memory set first
-   * (same-instance fast path), else the persisted envelope-id-bound marker —
-   * a daemon restart mid-run must not turn our own pristine bridge into a
-   * captured candidate edit. A missing/foreign marker stays fail-toward-CAPTURE.
-   */
+  /** The created-this-run bridge fact for diff(): in-memory set first, else
+   *  the persisted envelope-id-bound marker (survives manager recreation). */
   private bridgeCreatedFact(env: WorkspaceEnvelope): boolean {
     if (this.bridgeCreatedEnvelopes.has(env.id)) return true;
-    try {
-      const marker = JSON.parse(
-        readFileSync(
-          join(this.envelopeBase(env.task_id, env.attempt_id), "bridge-created.json"),
-          "utf8",
-        ),
-      ) as { envelope_id?: unknown };
-      return marker.envelope_id === env.id;
-    } catch {
-      return false;
-    }
+    return bridgeCreatedMarkerMatches(this.envelopeBase(env.task_id, env.attempt_id), env.id);
   }
 
   async dispose(env: WorkspaceEnvelope): Promise<void> {

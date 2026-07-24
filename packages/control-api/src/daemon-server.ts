@@ -80,6 +80,7 @@ import {
   controlProblemError,
   normalizeRequestValidationError,
   revertRefusedProblem,
+  thrownProblemCode,
 } from "./problem-response.js";
 import { handleSecurityRoute } from "./security-routes.js";
 import {
@@ -379,21 +380,6 @@ function finiteHttpStatus(error: unknown, fallback: number): number {
   if (!error || typeof error !== "object" || !("status" in error)) return fallback;
   const value = Number((error as { status: unknown }).status);
   return Number.isInteger(value) && value >= 400 && value <= 599 ? value : fallback;
-}
-
-/**
- * The problem `code` for a THROWN service error: a typed code the service
- * chose (e.g. settings-service `config_error`) reaches the wire verbatim so
- * clients can key remediation on it; only an untyped throw is the generic
- * `internal_error` (BACKLOG N1 — the catch paths used to stamp every throw
- * `internal_error`, erasing the typed taxonomy the same body carried).
- */
-function thrownProblemCode(error: unknown): string {
-  if (error && typeof error === "object" && "code" in error) {
-    const value = (error as { code: unknown }).code;
-    if (typeof value === "string" && /^[a-z][a-z0-9_]{2,63}$/.test(value)) return value;
-  }
-  return "internal_error";
 }
 
 function stringArrayProperty(error: unknown, key: "requiredActions" | "evidenceRefs"): string[] {
@@ -702,8 +688,7 @@ export class DaemonControlApiServer {
   }
 
   private onRequest(req: IncomingMessage, res: ServerResponse): void {
-    let tracked: Promise<void>;
-    tracked = this.handle(req, res)
+    const tracked: Promise<void> = this.handle(req, res)
       .catch((err) => {
         try {
           if (!res.headersSent) {

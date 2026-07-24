@@ -1,4 +1,12 @@
-import { closeSync, existsSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -127,6 +135,34 @@ export function isGeneratedClaudeBridge(worktreeRoot: string): boolean {
   try {
     if (lstatSync(claudePath).isSymbolicLink()) return false;
     return readFileSync(claudePath).equals(CLAUDE_BRIDGE_CONTENT_BYTES);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persistence of the created-this-run bridge fact (envelope-id-bound): the
+ * WorkspaceManager's in-memory set dies with its instance, and a daemon
+ * restart mid-run must not turn our own pristine bridge into a captured
+ * candidate edit. A missing/foreign marker stays fail-toward-CAPTURE.
+ */
+export function writeBridgeCreatedMarker(envelopeBase: string, envelopeId: string): void {
+  try {
+    writeFileSync(
+      join(envelopeBase, "bridge-created.json"),
+      JSON.stringify({ envelope_id: envelopeId, created_at: new Date().toISOString() }) + "\n",
+    );
+  } catch {
+    /* marker is an optimization over the in-memory set; never fail create */
+  }
+}
+
+export function bridgeCreatedMarkerMatches(envelopeBase: string, envelopeId: string): boolean {
+  try {
+    const marker = JSON.parse(readFileSync(join(envelopeBase, "bridge-created.json"), "utf8")) as {
+      envelope_id?: unknown;
+    };
+    return marker.envelope_id === envelopeId;
   } catch {
     return false;
   }
