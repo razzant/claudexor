@@ -1,5 +1,21 @@
+/**
+ * `claudexor retry` / `claudexor run-again`.
+ *
+ * Both refusals go through the SAME projector the rest of the CLI uses
+ * (`controlProblemError` → `renderCliFailure`), because the daemon does not
+ * serve the field these commands used to read. Every `>= 400` reply from the
+ * control API is re-projected into a strict `ControlProblem` before it reaches
+ * the wire, so the human text arrives in `message` and there is no `error` key
+ * at all — reading `data["error"]` therefore always fell through to a bare
+ * `HTTP <status>` and threw away the actionable refusal. The projector reads
+ * `message` first and still salvages a legacy `error` body, so a sender that
+ * has not moved to problem+json does not regress, and the typed fields
+ * (`code`/`retryable`/`requiredActions`/`context`) survive instead of being
+ * flattened into one string.
+ */
 import type { ParsedArgs } from "./args.js";
 import { print, printJson, printUsageError } from "./cli-io.js";
+import { controlProblemError, renderCliFailure } from "./cli-error.js";
 import { ensureDaemon } from "./daemon-run.js";
 import { controlApiFetch } from "./live.js";
 
@@ -14,16 +30,15 @@ export async function retryCommand(args: ParsedArgs, json: boolean): Promise<num
       body: "{}",
     });
     const data = (await response.json()) as Record<string, unknown>;
-    if (!response.ok) throw new Error(String(data["error"] ?? `HTTP ${response.status}`));
+    // A pre-start terminal (the trust gate's typed 403, a requirements refusal)
+    // answers here — its message is what the operator has to act on.
+    if (!response.ok) throw controlProblemError(response.status, data, `HTTP ${response.status}`);
     if (json) printJson(data);
     else
       print(`retry ${runId}: ${String(data["state"])} (${String(data["runId"] ?? data["jobId"])})`);
     return 0;
   } catch (error) {
-    return printUsageError(
-      json,
-      `claudexor retry: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    return renderCliFailure(json, error, { messagePrefix: "claudexor retry:" });
   }
 }
 
@@ -36,7 +51,7 @@ export async function runAgainCommand(args: ParsedArgs, json: boolean): Promise<
       headers: { Authorization: `Bearer ${addr.token}` },
     });
     const data = (await response.json()) as Record<string, unknown>;
-    if (!response.ok) throw new Error(String(data["error"] ?? `HTTP ${response.status}`));
+    if (!response.ok) throw controlProblemError(response.status, data, `HTTP ${response.status}`);
     if (json) printJson(data);
     else {
       print(`editable Run Again draft from ${runId}:`);
@@ -49,9 +64,6 @@ export async function runAgainCommand(args: ParsedArgs, json: boolean): Promise<
     }
     return 0;
   } catch (error) {
-    return printUsageError(
-      json,
-      `claudexor run-again: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    return renderCliFailure(json, error, { messagePrefix: "claudexor run-again:" });
   }
 }
