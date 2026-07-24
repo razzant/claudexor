@@ -627,6 +627,75 @@ describe("Orchestrator", () => {
     expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(true);
   });
 
+  it("D-16 r7: a context-exhausted candidate (partial diff, no completed report) terminalizes interrupted and is NEVER adopted", async () => {
+    // The D-16 work-state veto hole: finalizeAttempt returns outcomeClass
+    // "interrupted" for a capacity-exhausted attempt with a partial diff and no
+    // completed WorkReport, but the candidate race path only elevated
+    // "contract_failure" — so the partial candidate laundered into
+    // review/arbitration/adoption as a clean succeeded run.
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-context-exhausted", createFakeHarness("fake-context-exhausted")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: ["fake-context-exhausted"],
+    });
+    // The finalizer's interrupted outcome now reaches the run terminal (INV-116).
+    expect(res.lifecycle).toBe("interrupted");
+    expect(res.facts.reason).toBe("context_capacity_exhausted");
+    expect(legacyOutcome(res)).toBe("interrupted_unknown");
+    // A REAL partial diff was produced by the attempt...
+    const producedPartialDiff = res.candidates.some((c) => {
+      const patch = join(res.runDir, "attempts", c.attemptId, "patch.diff");
+      return existsSync(patch) && readFileSync(patch, "utf8").includes("FAKE_CHANGE.txt");
+    });
+    expect(producedPartialDiff).toBe(true);
+    // ...yet it was NEVER adopted, reviewed, arbitrated, or terminalized clean.
+    expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(false);
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    expect(events).toContain('"type":"run.failed"');
+    expect(events).not.toContain('"type":"work_product.adopted"');
+    expect(events).not.toContain('"type":"run.completed"');
+    expect(events).not.toContain('"type":"arbitration.completed"');
+    expect(events).not.toContain('"type":"reviewer.started"');
+    // The failure record is HONEST about the partial work (never "failed before producing work").
+    const failure = readFileSync(join(res.runDir, "final", "failure.yaml"), "utf8");
+    expect(failure).toContain("context capacity exhausted");
+    expect(failure).not.toContain("failed before producing work");
+  }, 20000);
+
+  it("D-16 r7: a FAILED repeated_refill continuation retains the interrupted original — still interrupted, never adopted", async () => {
+    // The second live face of the hole: the eligible one-shot continuation
+    // launches but FAILS, so the original context-exhausted candidate is
+    // retained. That retained interrupted candidate must terminalize the run
+    // interrupted, not launder into adoption because the continuation "ran".
+    const repo = await initRepo();
+    const registry = new Map<string, HarnessAdapter>([
+      ["fake-context-then-error", createFakeHarness("fake-context-then-error")],
+    ]);
+    const orch = new Orchestrator({ registry, reviewers: reviewers() });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "do it",
+      mode: "agent",
+      harnesses: ["fake-context-then-error"],
+    });
+    expect(res.lifecycle).toBe("interrupted");
+    expect(res.facts.reason).toBe("context_capacity_exhausted");
+    const events = readFileSync(join(res.runDir, "events.jsonl"), "utf8");
+    // The one-shot continuation was launched (and then failed).
+    expect(events).toContain('"type":"run.continuation"');
+    // The retained interrupted candidate is never adopted or terminalized clean.
+    expect(existsSync(join(res.runDir, "final", "work_product.yaml"))).toBe(false);
+    expect(events).toContain('"type":"run.failed"');
+    expect(events).not.toContain('"type":"work_product.adopted"');
+    expect(events).not.toContain('"type":"run.completed"');
+  }, 20000);
+
   it("a CREATE run's per-run test command is a runnable trust-free gate (QA-010)", async () => {
     // A fresh project has NO .claudexor trust file. Explicit per-run operator
     // test commands (run input `tests`) are `trust_required:false` and run

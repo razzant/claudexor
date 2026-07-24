@@ -86,6 +86,21 @@ describe("D-16 WorkReport + work_state canaries", () => {
     expect(out.status).toBe("interrupted");
   });
 
+  it("[INV-116:agent-context-interrupted] a context-exhausted agent candidate (partial diff, no completed report) ⇒ interrupted, exit non-zero, NEVER adopted", () => {
+    // Write-path parity with the read-only story above (D-16 r7). The veto hole
+    // let a PARTIAL context-exhausted candidate launder into review/arbitration
+    // and adoption as a clean success; the candidate path now terminalizes it
+    // interrupted, and the partial diff is never adopted.
+    const r = cli(sb, ["agent", "do the thing", "--harness", "fake-context-exhausted", "--json"]);
+    expect(r.code, r.stdout + r.stderr).not.toBe(0);
+    const out = r.json() as { runDir: string; status: string };
+    expect(out.status).toBe("interrupted");
+    const events = readEvents(out.runDir);
+    expect(events.some((e) => e["type"] === "work_product.adopted")).toBe(false);
+    expect(events.some((e) => e["type"] === "run.completed")).toBe(false);
+    expect(events.some((e) => e["type"] === "run.failed")).toBe(true);
+  });
+
   it("[INV-116:continuation] an eligible context exhaustion triggers a one-shot continuation that completes ⇒ succeeded, exit 0", () => {
     const r = cli(sb, ["ask", "do the thing", "--harness", "fake-context-then-complete", "--json"]);
     // The first turn exhausts (repeated_refill); the engine launches ONE

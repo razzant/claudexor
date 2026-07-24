@@ -27,7 +27,8 @@ export type FakeKind =
   | "fake-work-incomplete"
   | "fake-work-malformed"
   | "fake-context-exhausted"
-  | "fake-context-then-complete";
+  | "fake-context-then-complete"
+  | "fake-context-then-error";
 
 export const FAKE_KINDS: FakeKind[] = [
   "fake-success",
@@ -45,6 +46,7 @@ export const FAKE_KINDS: FakeKind[] = [
   "fake-work-malformed",
   "fake-context-exhausted",
   "fake-context-then-complete",
+  "fake-context-then-error",
 ];
 
 /** The D-16 kinds that declare a schema-constrained WorkReport transport and
@@ -56,6 +58,7 @@ const WORK_REPORT_KINDS = new Set<FakeKind>([
   "fake-work-malformed",
   "fake-context-exhausted",
   "fake-context-then-complete",
+  "fake-context-then-error",
 ]);
 
 /**
@@ -303,12 +306,41 @@ async function* runFake(
       // Terminal capacity exhaustion with NO completed WorkReport: the finalizer
       // maps this to interrupted / context_capacity_exhausted. The eligible
       // `repeated_refill` cause is what a future one-shot continuation keys on.
+      // A producing intent writes a REAL partial diff first, so the agent path is
+      // exercised too — a PARTIAL candidate (diff + no completed report) must
+      // never launder into review/adoption as clean (D-16 r7).
+      maybeWriteFakeChange(spec);
       yield ev(s, "message", { text: "Partial progress before running out of room." });
       yield ev(s, "context", {
         context: {
           kind: "capacity_exhausted",
           cause: "repeated_refill",
           native_code: "prompt_too_long",
+          trigger: "auto",
+          pre_tokens: 190000,
+        },
+      });
+      yield ev(s, "completed", { observed_model: observedModel });
+      return;
+    }
+    case "fake-context-then-error": {
+      // D-16 r7 fixture: the FIRST turn exhausts context (eligible repeated_refill)
+      // after writing a partial diff; the one-shot CONTINUATION then FAILS with a
+      // harness error. The continuation never supersedes, so the original
+      // interrupted candidate is retained — it must terminalize the run
+      // `interrupted`, never launder into review/arbitration/adoption as clean.
+      maybeWriteFakeChange(spec);
+      if (spec.prompt.includes(CONTINUATION_SENTINEL)) {
+        yield ev(s, "error", { error: "continuation crashed before completing" });
+        yield ev(s, "completed", { observed_model: observedModel });
+        return;
+      }
+      yield ev(s, "message", { text: "Partial progress before running out of room." });
+      yield ev(s, "context", {
+        context: {
+          kind: "capacity_exhausted",
+          cause: "repeated_refill",
+          native_code: "rapid_refill_breaker",
           trigger: "auto",
           pre_tokens: 190000,
         },

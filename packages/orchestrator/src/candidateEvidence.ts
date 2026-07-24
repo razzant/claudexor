@@ -1,5 +1,7 @@
-import type { GateResult, ReviewFinding, TaskContract } from "@claudexor/schema";
+import { makeOutcomeFacts } from "@claudexor/schema";
+import type { GateResult, ReviewFinding, RunOutcomeFacts, TaskContract } from "@claudexor/schema";
 import type { CandidateEvidence } from "@claudexor/arbitration";
+import type { AttemptOutcomeClass } from "./attemptFinalize.js";
 import type { AttemptTelemetry } from "./attemptTelemetry.js";
 import { toolWarnings } from "./attemptTelemetry.js";
 
@@ -19,6 +21,51 @@ export interface CandidateRun {
   errors: string[];
   telemetry: AttemptTelemetry;
   infraPhase?: "workspace" | "harness";
+  /** D-16 r7: the finalizer's outcome class for THIS attempt. An `interrupted`
+   * candidate (terminal context exhaustion with NO completed WorkReport) is
+   * never reviewed/arbitrated/adopted as clean — it terminalizes the run
+   * `interrupted` unless a CLEAN continuation superseded it upstream. */
+  outcomeClass?: AttemptOutcomeClass;
+}
+
+/** A pre-work corpse (harness error, no diff) AND an `interrupted` partial
+ * (D-16 r7: terminal context exhaustion with NO completed WorkReport) are both
+ * excluded from review: an interrupted candidate carries untrustworthy
+ * half-finished work, so — like the empty-diff corpse — it must never be
+ * reviewed/arbitrated/adopted as clean. */
+function isWorkingCandidate(run: CandidateRun): boolean {
+  return run.outcomeClass !== "interrupted" && (!run.errored || run.diff.length > 0);
+}
+
+/**
+ * Split the produced candidates into the set the reviewer panel / arbiter may
+ * see, plus the terminal to fall back on when that set is EMPTY. When nothing
+ * survives BECAUSE a candidate was interrupted (context exhaustion, no clean
+ * continuation), the run terminalizes lifecycle `interrupted` /
+ * `context_capacity_exhausted` — parity with the read-only terminal and the
+ * D-16 finalizer (INV-116: lifecycle/outcome orthogonal); otherwise it is a
+ * harness failure. `why` is honest per candidate: an interrupted attempt ran
+ * out of context AFTER partial work, never "failed before producing work".
+ */
+export function partitionCandidates(runs: CandidateRun[]): {
+  working: CandidateRun[];
+  facts: RunOutcomeFacts;
+  why: string;
+} {
+  const working = runs.filter(isWorkingCandidate);
+  const facts = runs.some((r) => r.outcomeClass === "interrupted")
+    ? makeOutcomeFacts("interrupted", { reason: "context_capacity_exhausted", noChanges: true })
+    : makeOutcomeFacts("failed", { reason: "harness_failed", noChanges: true });
+  const why = runs
+    .map((r) => {
+      const reason =
+        r.outcomeClass === "interrupted"
+          ? "context capacity exhausted before the work completed"
+          : (r.errors[0] ?? "failed before producing work");
+      return `${r.attemptId}/${r.harnessId}: ${reason}`;
+    })
+    .join("; ");
+  return { working, facts, why };
 }
 
 export function toCandidateEvidence(

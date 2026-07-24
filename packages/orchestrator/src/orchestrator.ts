@@ -17,7 +17,11 @@ import {
   writeCandidateAttemptArtifacts,
 } from "./candidateOutputs.js";
 import { processAttemptUsage } from "./attemptUsage.js";
-import { type CandidateRun, toCandidateEvidence } from "./candidateEvidence.js";
+import {
+  type CandidateRun,
+  partitionCandidates,
+  toCandidateEvidence,
+} from "./candidateEvidence.js";
 import { capabilityIntents } from "@claudexor/gateway";
 import { policyFindings } from "./policyFindings.js";
 
@@ -2738,6 +2742,7 @@ export class Orchestrator {
       costEstimated,
       errors: errors.slice(0, 8),
       telemetry,
+      outcomeClass: finalized.outcomeClass,
     };
   }
 
@@ -3589,17 +3594,12 @@ export class Orchestrator {
     // producing anything are corpses: reviewing "(empty diff)" spends real
     // reviewer money on nothing and buries the root cause behind an
     // arbitration scoring string.
-    const workingRuns = runs.filter((r) => !r.errored || r.diff.length > 0);
+    const workingRuns = partitionCandidates(runs).working;
     if (workingRuns.length === 0) {
       await disposeReviewEnvelopes();
       const first = runs[0] as CandidateRun;
       const phase = first.infraPhase ?? "harness";
-      const rootCause = runs
-        .map(
-          (r) => `${r.attemptId}/${r.harnessId}: ${r.errors[0] ?? "failed before producing work"}`,
-        )
-        .join("; ");
-      const facts = makeOutcomeFacts("failed", { reason: "harness_failed", noChanges: true });
+      const { facts, why: rootCause } = partitionCandidates(runs);
       store.writeYaml(join(paths.arbitrationDir, "decision.yaml"), {
         winner: null,
         facts,
