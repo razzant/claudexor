@@ -31,6 +31,8 @@ export interface AcpServerOptions {
   transport: { read: NodeReadableStream; write: NodeWritableStream };
   name?: string;
   version?: string;
+  /** Experimental methods are emitted only when the client opts into their type. */
+  authMethods?: acp.AuthMethod[];
 }
 
 type AcpSessionRecord = {
@@ -76,7 +78,12 @@ export class AcpServer {
           promptCapabilities: { image: true, audio: false, embeddedContext: true },
           sessionCapabilities: { list: {}, resume: {}, close: {} },
         },
-        authMethods: [],
+        authMethods:
+          params.clientCapabilities?.auth?.terminal === true
+            ? (this.opts.authMethods ?? []).filter(
+                (method) => "type" in method && method.type === "terminal",
+              )
+            : [],
       }))
       .onRequest(acp.methods.agent.session.new, async ({ params }) => {
         this.assertProjectRoot(params.cwd);

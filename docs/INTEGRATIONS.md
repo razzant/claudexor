@@ -360,6 +360,15 @@ For Zed, register Claudexor as an agent server in `settings.json`:
 ```
 
 The server uses `@agentclientprotocol/sdk` and stable ACP protocol version 1.
+ACP Terminal Auth is **experimental**. When a client explicitly advertises the
+experimental terminal-auth capability, Claudexor currently offers Codex
+subscription login on macOS and Linux. The client runs
+`claudexor acp serve auth login codex` in its interactive terminal; that exact
+suffix is allowlisted and routed to the existing durable device-code login.
+Clients without the capability receive no terminal auth methods. Claude and
+Cursor are not advertised yet because their current macOS setup flow opens a
+second Terminal and cannot prove completion inside the ACP client's terminal.
+
 `session/new` creates a daemon thread (default `in_place`) and returns that
 thread id. `session/list`, `session/load`, `session/resume`, `session/close`,
 `session/prompt`, and `session/cancel` all resolve through the same `/v2`

@@ -27,6 +27,7 @@ function project(): string {
 async function withClient<T>(
   runner: RunnerFn,
   op: (agent: acp.ClientContext, updates: acp.SessionNotification[]) => Promise<T>,
+  options: Pick<ConstructorParameters<typeof AcpServer>[0], "authMethods"> = {},
 ): Promise<T> {
   const clientToAgent = new PassThrough();
   const agentToClient = new PassThrough();
@@ -34,6 +35,7 @@ async function withClient<T>(
     runner,
     transport: { read: clientToAgent, write: agentToClient },
     version: "2.0.0-test",
+    ...options,
   });
   const serving = server.serve();
   const updates: acp.SessionNotification[] = [];
@@ -58,6 +60,37 @@ async function withClient<T>(
 }
 
 describe("AcpServer official SDK projection", () => {
+  it("emits experimental terminal auth methods only after client opt-in", async () => {
+    const method: acp.AuthMethod = {
+      type: "terminal",
+      id: "codex",
+      name: "Sign in to Codex",
+      args: ["auth", "login", "codex"],
+    };
+    await withClient(
+      async () => ({}),
+      async (agent) => {
+        const unsupported = await agent.request(acp.methods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: {},
+        });
+        expect(unsupported.authMethods).toEqual([]);
+      },
+      { authMethods: [method] },
+    );
+    await withClient(
+      async () => ({}),
+      async (agent) => {
+        const supported = await agent.request(acp.methods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: { auth: { terminal: true } },
+        });
+        expect(supported.authMethods).toEqual([method]);
+      },
+      { authMethods: [method] },
+    );
+  });
+
   it("negotiates stable ACP and projects new/list/load/resume/close to daemon sessions", async () => {
     const cwd = project();
     const calls: any[] = [];

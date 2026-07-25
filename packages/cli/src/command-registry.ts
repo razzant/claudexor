@@ -249,8 +249,8 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "acp",
-    usageArgs: "serve",
-    summary: "Expose Claudexor as an ACP agent (stdio)",
+    usageArgs: "serve [auth login codex]",
+    summary: "Expose Claudexor as an ACP agent (stdio; Terminal Auth is experimental)",
     flags: [],
     mutability: "ops",
     stability: "stable",

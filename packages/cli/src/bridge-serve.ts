@@ -13,6 +13,7 @@ import {
 } from "@claudexor/mcp-server";
 import { AcpServer } from "@claudexor/acp-server";
 import { CLAUDEXOR_VERSION } from "@claudexor/util";
+import { acpTerminalAuthMethods } from "./acp-auth.js";
 import { mcpSurfaceRunner } from "./mcp-runner.js";
 
 function armBridgeWatchdog(label: string): void {
@@ -61,6 +62,7 @@ export async function serveAcpBridge(): Promise<number> {
     version: CLAUDEXOR_VERSION,
     runner: mcpSurfaceRunner(),
     transport: { read: process.stdin, write: process.stdout },
+    authMethods: acpTerminalAuthMethods(process.platform),
   }).serve();
   return 0;
 }
