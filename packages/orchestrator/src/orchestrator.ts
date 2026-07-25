@@ -434,10 +434,10 @@ export interface RunInput {
    */
   inPlace?: boolean;
   /**
-   * Per-run globs no candidate may touch at all (create/modify/delete) —
-   * stricter than protected paths, which gate only tampering with existing
-   * files. Envelope/isolated runs only: the engine's post-diff policy gate is
-   * the authoritative enforcement (violation → blocking finding → blocked,
+   * Per-run globs no candidate may touch (create/modify/delete/rename). Unlike
+   * project protected paths, these produce a deny-path violation; both require
+   * a human decision before delivery. The engine's post-diff policy gate is the
+   * authoritative enforcement (violation → blocking finding → blocked,
    * patch undelivered). An in-place run with denyPaths is refused at preflight:
    * a live tree offers no pre-delivery containment, and silent non-enforcement
    * is never acceptable. accept_risk MAY still deliver (INV-111).
@@ -1847,7 +1847,7 @@ export class Orchestrator {
       projectCommands: cfg.tests?.commands ?? [],
     });
     const commands = resolvedGates.commands;
-    const protectedPaths: string[] = [];
+    const protectedPaths = [...new Set(cfg.constraints.protected_paths)];
     const autoProtectedPaths = resolvedGates.autoProtectedPaths;
     const protectedPathApprovals = [
       ...new Map(

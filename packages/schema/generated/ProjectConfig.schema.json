@@ -112,6 +112,32 @@
           "additionalProperties": false,
           "default": {},
           "description": "Safe project routing preference; paid fallback remains user-global."
+        },
+        "constraints": {
+          "type": "object",
+          "properties": {
+            "protected_paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "allOf": [
+                  {
+                    "pattern": "\\S"
+                  },
+                  {
+                    "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!.*\\0)(?!.*\\/\\/)(?!.*\\/$)(?!.*(?:^|\\/)\\.\\.?(?:\\/|$))\\S(?:.*\\S)?$"
+                  }
+                ],
+                "description": "Canonical repo-relative glob whose matching changes require human approval before apply."
+              },
+              "default": [],
+              "description": "Restriction-only repo-relative globs whose matching changes require a human decision before apply; empty by default."
+            }
+          },
+          "additionalProperties": false,
+          "default": {},
+          "description": "Safe project restrictions that can only narrow what an unattended run may apply."
         }
       },
       "additionalProperties": false,

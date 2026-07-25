@@ -79,18 +79,19 @@ export type ProtectedPathApproval = z.infer<typeof ProtectedPathApproval>;
 export const TaskConstraints = z
   .object({
     /** Globs whose changes escalate risk to a human-approval gate (wired into
-     * classifyRisk/requireHuman). These are spec/config-owned and cannot be
-     * suppressed by per-run protected-path approvals. The other constraint kinds
-     * were unwired and removed. */
+     * classifyRisk/requireHuman). These are project-config-owned, cover every
+     * touched path (create/modify/delete/both rename sides), and cannot be
+     * suppressed by per-run protected-path approvals. */
     protected_paths: z
       .array(z.string())
       .default([])
       .describe(
-        "Approval globs — path globs (e.g. `migrations/**`, `**/*.env`) whose changes escalate a run to a human-approval gate before it can be applied. Spec/config-owned and never suppressed by per-run protected-path approvals.",
+        "Approval globs — path globs (e.g. `migrations/**`, `**/*.env`) whose matching create, modify, delete, or rename changes escalate a run to a human-approval gate before it can be applied. Project-config-owned and never suppressed by per-run protected-path approvals.",
       ),
-    /** Per-run globs no candidate may touch AT ALL (create, modify, or delete —
-     * stricter than protected_paths, which gates only tampering with existing
-     * files). Enforced by the engine's post-diff policy gate on envelope runs;
+    /** Per-run globs no candidate may touch AT ALL (create, modify, delete, or
+     * rename). Unlike protected_paths, these produce a deny-path violation;
+     * both still require an explicit human decision before delivery. Enforced
+     * by the engine's post-diff policy gate on envelope runs;
      * an in-place run with deny_paths is refused at preflight. An operator
      * accept_risk decision MAY still deliver a violating patch (INV-111: the
      * human is the final authority). */
@@ -101,7 +102,7 @@ export const TaskConstraints = z
         "Per-run globs no candidate may touch at all; enforced by the engine post-diff gate on envelope runs (in-place runs with deny_paths are refused). accept_risk may still deliver (INV-111).",
       ),
     /** Engine-derived gate/test path protections. Per-run approvals can narrow
-     * only this auto-protected set, never spec/config-owned protected_paths. */
+     * only this auto-protected set, never project-config-owned protected_paths. */
     auto_protected_paths: z
       .array(z.string())
       .default([])

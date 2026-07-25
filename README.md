@@ -165,10 +165,20 @@ Two power knobs shape review:
   `--reviewers "claude=claude-opus-4-8:max,cursor=gemini-3.1-pro"`. Omitted, the
   engine chooses a cross-family panel automatically.
 - **Approvals** — mark paths that must clear a human before a change touching
-  them can be applied. Set **approval globs** in project/spec config
-  (`TaskContract.constraints.protected_paths`) as path globs, e.g.
-  `migrations/**` or `**/*.env`. A run that changes a matching path escalates to
-  a human-approval gate and is never auto-applied.
+  them can be applied. Set canonical repo-relative globs in the versioned
+  `.claudexor/config.yaml` (empty by default):
+
+  ```yaml
+  version: 1
+  constraints:
+    protected_paths:
+      - migrations/**
+      - "**/*.env"
+  ```
+
+  Creating, modifying, deleting, or renaming a matching path completes the run
+  but pauses apply for a human decision. `--allow-protected-path` applies only
+  to engine-derived gate/test paths and cannot suppress these project rules.
 
 ## Modes
 

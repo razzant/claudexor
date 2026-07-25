@@ -253,6 +253,25 @@ describe("Control API schemas", () => {
     expect(() => GlobalConfig.parse({ default_portfolio: "daily-rich" })).toThrow();
   });
 
+  it("accepts only repo-relative project protected-path globs", () => {
+    expect(
+      ProjectConfig.parse({
+        constraints: { protected_paths: ["migrations/**", "**/*.env"] },
+      }).constraints.protected_paths,
+    ).toEqual(["migrations/**", "**/*.env"]);
+    expect(ProjectConfig.parse({}).constraints.protected_paths).toEqual([]);
+
+    for (const invalid of [
+      "/etc/**",
+      "../outside/**",
+      "safe/../outside/**",
+      "C:/temp/**",
+      "dir\\**",
+    ]) {
+      expect(() => ProjectConfig.parse({ constraints: { protected_paths: [invalid] } })).toThrow();
+    }
+  });
+
   it("bounds maxSeconds to avoid a setTimeout 32-bit-ms overflow (W6/G10)", () => {
     expect(ControlRunStartRequest.parse({ prompt: "x", maxSeconds: 604_800 }).maxSeconds).toBe(
       604_800,

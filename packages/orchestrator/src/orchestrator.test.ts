@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -1930,6 +1931,121 @@ describe("Orchestrator", () => {
     expect(legacyOutcome(res)).not.toBe("blocked");
     const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
     expect(review).not.toContain("candidate changed protected gate/test path");
+  });
+
+  it("flows project protected paths into policy for every diff operation and ignores run approvals", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    mkdirSync(join(repo, "protected"), { recursive: true });
+    mkdirSync(join(repo, "public"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    writeFileSync(join(repo, "protected", "modify.txt"), "before\n");
+    writeFileSync(join(repo, "protected", "delete.txt"), "delete me\n");
+    writeFileSync(join(repo, "protected", "rename-out.txt"), "move out\n");
+    writeFileSync(join(repo, "public", "rename-in.txt"), "move in\n");
+    await runCapture("git", ["-C", repo, "add", "-A"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add protected-path fixtures",
+    ]);
+
+    const adapter: HarnessAdapter = {
+      ...diffImplementer("project-protected-impl"),
+      async *run(spec) {
+        const ts = new Date().toISOString();
+        yield {
+          type: "started",
+          session_id: spec.session_id,
+          ts,
+          observed_model: "project-protected-model",
+        };
+        writeFileSync(join(spec.cwd, "protected", "create.txt"), "created\n");
+        writeFileSync(join(spec.cwd, "protected", "modify.txt"), "after\n");
+        unlinkSync(join(spec.cwd, "protected", "delete.txt"));
+        renameSync(
+          join(spec.cwd, "protected", "rename-out.txt"),
+          join(spec.cwd, "public", "renamed-out.txt"),
+        );
+        renameSync(
+          join(spec.cwd, "public", "rename-in.txt"),
+          join(spec.cwd, "protected", "renamed-in.txt"),
+        );
+        yield { type: "message", session_id: spec.session_id, ts, text: "changed files" };
+        yield { type: "completed", session_id: spec.session_id, ts };
+      },
+    };
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "exercise protected-path operations",
+      mode: "agent",
+      harnesses: [adapter.id],
+      protectedPathApprovals: [
+        { path: "protected/**", reason: "approval must narrow only auto-protected paths" },
+      ],
+      n: 1,
+    });
+
+    expect(legacyOutcome(res)).toBe("blocked");
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("protected_paths:\n    - protected/**");
+    const review = readFileSync(join(res.runDir, "reviews", "a01.yaml"), "utf8");
+    for (const path of [
+      "protected/create.txt",
+      "protected/modify.txt",
+      "protected/delete.txt",
+      "protected/rename-out.txt",
+      "protected/renamed-in.txt",
+    ]) {
+      expect(review).toContain(path);
+    }
+    expect(review).toContain("protected-path change requires human approval");
+  });
+
+  it("does not gate a candidate that misses project protected-path globs", async () => {
+    const repo = await initRepo();
+    mkdirSync(join(repo, ".claudexor"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claudexor", "config.yaml"),
+      "version: 1\nconstraints:\n  protected_paths:\n    - protected/**\n",
+    );
+    await runCapture("git", ["-C", repo, "add", "-A"]);
+    await runCapture("git", [
+      "-C",
+      repo,
+      "-c",
+      "user.email=t@t.dev",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-m",
+      "add protected-path config",
+    ]);
+    const adapter = diffImplementer("project-protected-nonmatch");
+    const registry = new Map<string, HarnessAdapter>([[adapter.id, adapter]]);
+    const orch = new Orchestrator({ registry, reviewers: [] });
+    const res = await orch.run({
+      repoRoot: repo,
+      prompt: "change an unrelated file",
+      mode: "agent",
+      harnesses: [adapter.id],
+      n: 1,
+    });
+
+    expect(legacyOutcome(res)).not.toBe("blocked");
+    const taskYaml = readFileSync(join(res.runDir, "context", "task.yaml"), "utf8");
+    expect(taskYaml).toContain("protected_paths:\n    - protected/**");
   });
 
   it("blocks renaming an existing protected gate path out of the protected glob", async () => {
@@ -7102,7 +7218,7 @@ describe("Orchestrator", () => {
       tests: [shellGate("true")],
       n: 1,
       // fake-implement creates FAKE_CHANGE.txt: creating a denied file is a
-      // violation (stricter than protected paths, which gate existing files).
+      // violation (distinct from protected paths, which produce a human gate).
       denyPaths: ["FAKE_*.txt"],
     });
     expect(legacyOutcome(res)).toBe("blocked");

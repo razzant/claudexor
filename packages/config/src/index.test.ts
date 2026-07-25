@@ -89,6 +89,19 @@ describe("loadConfig", () => {
     });
   });
 
+  it("loads versioned project protected-path restrictions", () => {
+    withTempConfig(({ repo }) => {
+      writeFileSync(
+        join(repo, ".claudexor", "config.yaml"),
+        "version: 1\nconstraints:\n  protected_paths:\n    - migrations/**\n    - '**/*.env'\n",
+      );
+      expect(loadConfig(repo).project.constraints.protected_paths).toEqual([
+        "migrations/**",
+        "**/*.env",
+      ]);
+    });
+  });
+
   it("fails loudly on malformed global YAML", () => {
     withTempConfig(({ repo, configDir }) => {
       const configPath = join(configDir, "config.yaml");

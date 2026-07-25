@@ -1,9 +1,21 @@
 import { z } from "zod";
-import { AccessProfile, AuthPreference, ExternalContextPolicy } from "./primitives.js";
+import {
+  AccessProfile,
+  AuthPreference,
+  ExternalContextPolicy,
+  NonBlankString,
+} from "./primitives.js";
 import { EffortHint } from "./harness.js";
 import { CredentialProfile } from "./credential-profile.js";
 import { PaidBudget, PaidFallback, QualityTierSet, RoutingGoal } from "./budget.js";
 import { TestCommandGrant, TestCommandInvocation } from "./task.js";
+
+const ProjectProtectedPathGlob = NonBlankString.regex(
+  /^(?!\/)(?![A-Za-z]:)(?!.*\\)(?!.*\0)(?!.*\/\/)(?!.*\/$)(?!.*(?:^|\/)\.\.?(?:\/|$))\S(?:.*\S)?$/,
+  "must be a canonical repo-relative glob using forward slashes, without absolute roots, empty/dot segments, or '..' traversal",
+).describe(
+  "Canonical repo-relative glob whose matching changes require human approval before apply.",
+);
 
 // All retired v1 portfolio ids are rejected; v2 routing uses the explicit
 // auto, quality, and economy goals instead.
@@ -45,6 +57,18 @@ export const ProjectConfig = z
       .strict()
       .default({})
       .describe("Safe project routing preference; paid fallback remains user-global."),
+    constraints: z
+      .object({
+        protected_paths: z
+          .array(ProjectProtectedPathGlob)
+          .default([])
+          .describe(
+            "Restriction-only repo-relative globs whose matching changes require a human decision before apply; empty by default.",
+          ),
+      })
+      .strict()
+      .default({})
+      .describe("Safe project restrictions that can only narrow what an unattended run may apply."),
   })
   .strict()
   .describe(
