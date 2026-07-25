@@ -1,5 +1,4 @@
 import { RETRY_COMMAND_SPECS } from "./retry-command-specs.js";
-import { ACP_SERVE_USAGE } from "./acp-auth.js";
 import {
   CLI_FLAGS,
   FROZEN_REVIEW_FLAG_NAMES,
@@ -250,7 +249,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   },
   {
     id: "acp",
-    usageArgs: ACP_SERVE_USAGE,
+    usageArgs: "serve [auth login codex]",
     summary: "Expose Claudexor as an ACP agent (stdio; Terminal Auth is experimental)",
     flags: [],
     mutability: "ops",

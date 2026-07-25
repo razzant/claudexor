@@ -15,6 +15,7 @@ import {
   type AcpPlanQuestion,
 } from "./prompt.js";
 import { validateRunControls } from "./validate.js";
+import { terminalAuth, type AcpAuthOptions } from "./auth.js";
 
 export const ACP_PROTOCOL_VERSION = acp.PROTOCOL_VERSION;
 
@@ -26,13 +27,11 @@ export interface RunnerHooks {
 
 export type RunnerFn = (params: any, hooks?: RunnerHooks) => Promise<unknown>;
 
-export interface AcpServerOptions {
+export interface AcpServerOptions extends AcpAuthOptions {
   runner: RunnerFn;
   transport: { read: NodeReadableStream; write: NodeWritableStream };
   name?: string;
   version?: string;
-  /** Experimental terminal methods are emitted only when the client opts in. */
-  terminalAuthMethods?: Array<acp.AuthMethodTerminal & { type: "terminal" }>;
 }
 
 type AcpSessionRecord = {
@@ -49,16 +48,9 @@ type AcpSessionRecord = {
   }>;
 };
 
-/** The ACP Registry still sends the pre-draft _meta signal; accept both explicit opt-ins. */
-function clientSupportsTerminalAuth(capabilities: acp.ClientCapabilities | undefined): boolean {
-  return capabilities?.auth?.terminal === true || capabilities?._meta?.["terminal-auth"] === true;
-}
-
-/**
- * Official ACP SDK projection over Claudexor's daemon-owned threads. The SDK
+/** Official ACP SDK projection over Claudexor's daemon-owned threads. The SDK
  * owns parsing, protocol negotiation, cancellation, and JSON-RPC framing; this
- * class only translates stable ACP session methods to the injected /v2 runner.
- */
+ * class only translates stable ACP session methods to the injected /v2 runner. */
 export class AcpServer {
   private readonly activeRuns = new Map<string, AbortController>();
   private readonly openToolCalls = new Map<string, string[]>();
@@ -83,9 +75,7 @@ export class AcpServer {
           promptCapabilities: { image: true, audio: false, embeddedContext: true },
           sessionCapabilities: { list: {}, resume: {}, close: {} },
         },
-        authMethods: clientSupportsTerminalAuth(params.clientCapabilities)
-          ? (this.opts.terminalAuthMethods ?? [])
-          : [],
+        authMethods: terminalAuth(params.clientCapabilities, this.opts.terminalAuthMethods),
       }))
       .onRequest(acp.methods.agent.session.new, async ({ params }) => {
         this.assertProjectRoot(params.cwd);

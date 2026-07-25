@@ -7,8 +7,8 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { ArtifactStore } from "@claudexor/artifact-store";
 import { CLAUDEXOR_VERSION, noProjectRepoRoot, readTextSafe, userConfigDir } from "@claudexor/util";
 import { releaseCommand } from "./release-command.js";
-import { serveAcpBridge, serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
-import { ACP_SERVE_USAGE, resolveAcpServeAuthHarness } from "./acp-auth.js";
+import { serveBeltBridge, serveMcpBridge } from "./bridge-serve.js";
+import { dispatchAcpCommand } from "./acp-auth-command.js";
 import { initProjectConfig } from "@claudexor/config";
 import {
   DecisionRecord,
@@ -52,7 +52,7 @@ import {
 } from "./command-registry.js";
 import { buildAgentCapabilityCatalog } from "./capabilities.js";
 import { aboutJson, renderAbout } from "./about-command.js";
-import { authCommand, dispatchOpsCommand } from "./ops-commands.js";
+import { dispatchOpsCommand } from "./ops-commands.js";
 import { reviewCommand } from "./review-command.js";
 import { controlApiFetch, followRun } from "./live.js";
 import { retryCommand, runAgainCommand } from "./retry-command.js";
@@ -1077,17 +1077,7 @@ async function dispatch(args: ParsedArgs, json: boolean): Promise<number> {
     }
 
     case "acp": {
-      if (args._[1] !== "serve") {
-        return printUsageError(json, `usage: claudexor acp ${ACP_SERVE_USAGE}`);
-      }
-      if (args._.length === 2) return serveAcpBridge();
-      const authHarness = resolveAcpServeAuthHarness(args._, process.platform);
-      if (authHarness) {
-        return authCommand(parseArgs(["auth", "login", authHarness]), false, {
-          acpTerminal: true,
-        });
-      }
-      return printUsageError(json, `usage: claudexor acp ${ACP_SERVE_USAGE}`);
+      return dispatchAcpCommand(args, json);
     }
 
     case "follow": {
