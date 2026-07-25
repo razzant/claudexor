@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "claudexor": {
+      "command": "claudexor",
+      "args": ["mcp", "serve"]
+    }
+  }
+}

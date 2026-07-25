@@ -1,0 +1,34 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.razzant/claudexor",
+  "description": "Route coding work across Claude Code, Codex, Cursor, and OpenCode with shared context.",
+  "title": "Claudexor",
+  "repository": {
+    "url": "https://github.com/razzant/claudexor",
+    "source": "github",
+    "id": "1259999244"
+  },
+  "websiteUrl": "https://razzant.github.io/claudexor/",
+  "version": "3.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "claudexor",
+      "version": "3.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        },
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ]
+    }
+  ]
+}

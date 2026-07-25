@@ -2,7 +2,8 @@
 /**
  * Version-parity bar for the release workflow: the ROOT manifest (the version
  * SSOT), every workspace manifest, and the generated runtime version must
- * carry one identical version,
+ * carry one identical version. The portable Copilot manifest and MCP Registry
+ * server/package descriptors carry that version too,
  * and that version must equal the expected one (the release tag).
  *
  * Usage: node scripts/verify-version-parity.mjs <expected-version>
@@ -34,9 +35,15 @@ const generated = readFileSync("packages/util/src/version.ts", "utf8").match(
   /CLAUDEXOR_VERSION = "([^"]+)"/,
 )?.[1];
 record("packages/util/src/version.ts", generated);
+const server = read("server.json");
+record("server.json", server.version);
+for (const [index, pkg] of (server.packages ?? []).entries()) {
+  record(`server.json packages[${index}]`, pkg.version);
+}
+record("plugins/copilot/plugin.json", read("plugins/copilot/plugin.json").version);
 
 if (versions.size !== 1) {
-  console.error("version drift across root + workspaces + generated runtime:");
+  console.error("version drift across root + workspaces + generated distribution surfaces:");
   for (const [version, paths] of versions) {
     console.error(`  ${version}: ${paths.join(", ")}`);
   }
@@ -80,5 +87,5 @@ if (cmp(minParsed, semver(expected)) > 0) {
 }
 
 console.log(
-  `version parity OK: root + workspaces + generated runtime all at ${actual} (runtime minAppVersion floor ${minAppVersion})`,
+  `version parity OK: root + workspaces + generated distribution surfaces all at ${actual} (runtime minAppVersion floor ${minAppVersion})`,
 );

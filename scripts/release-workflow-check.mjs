@@ -41,6 +41,7 @@ for (const file of files) {
 }
 
 const release = readFileSync(".github/workflows/release.yml", "utf8");
+const publishMcp = readFileSync(".github/workflows/publish-mcp.yml", "utf8");
 const prepareJob = jobBody(release, "prepare");
 const publishNpmJob = jobBody(release, "publish-npm");
 const publishReleaseJob = jobBody(release, "publish-release");
@@ -145,9 +146,15 @@ if (!String(coreManifest.scripts?.prepack ?? "").includes("verify-npm-darwin-pac
 }
 const npmPublisher = readFileSync("scripts/publish-npm-release.mjs", "utf8");
 const verifyDarwinPackage = npmPublisher.indexOf("verify-npm-darwin-package.mjs");
+const verifyClaudexorPackage = npmPublisher.indexOf("verify-npm-claudexor-package.mjs");
 const publishTarball = npmPublisher.indexOf('"publish"');
 if (verifyDarwinPackage < 0 || publishTarball < 0 || verifyDarwinPackage > publishTarball) {
   errors.push("publish-npm-release.mjs: Darwin package verification must precede npm publish");
+}
+if (verifyClaudexorPackage < 0 || publishTarball < 0 || verifyClaudexorPackage > publishTarball) {
+  errors.push(
+    "publish-npm-release.mjs: Claudexor MCP package verification must precede npm publish",
+  );
 }
 for (const [label, pattern] of [
   ["published provenance is bound to source identity", /validatePublishedProvenance/],
@@ -203,6 +210,59 @@ for (const [label, pattern] of [
   ["stale schema-v2 attestation wording is forbidden", /schema-v2/],
 ]) {
   if (pattern.test(release)) errors.push(`release.yml: ${label}`);
+}
+
+for (const [label, pattern] of [
+  ["manual tag input is required", /workflow_dispatch:[\s\S]*?tag:[\s\S]*?required:\s*true/],
+  ["GitHub OIDC permission is required", /id-token:\s*write/],
+  ["tag dispatch is bound to GITHUB_REF", /GITHUB_REF[\s\S]*refs\/tags\/\$MCP_TAG_INPUT/],
+  ["annotated release tag is required", /git cat-file -e "\$MCP_TAG_INPUT\^\{tag\}"/],
+  ["tag commit must be on origin main", /git merge-base --is-ancestor/],
+  ["npm MCP metadata is verified", /mcp-registry-check\.mjs --npm/],
+  [
+    "publisher download is version pinned",
+    /releases\/download\/v1\.8\.0\/mcp-publisher_linux_amd64\.tar\.gz/,
+  ],
+  [
+    "publisher archive checksum is pinned",
+    /1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf/,
+  ],
+  ["publisher validates server metadata", /\.\/mcp-publisher validate/],
+  ["registry preflight is idempotent", /mcp-registry-check\.mjs --registry before/],
+  ["registry uses GitHub OIDC", /\.\/mcp-publisher login github-oidc/],
+  ["registry publishes metadata", /\.\/mcp-publisher publish/],
+  ["registry publication is confirmed", /mcp-registry-check\.mjs --registry after/],
+]) {
+  if (!pattern.test(publishMcp)) errors.push(`publish-mcp.yml: ${label}`);
+}
+for (const [label, pattern] of [
+  ["tag-push trigger is forbidden", /^\s*push:\s*$/m],
+  ["floating publisher download is forbidden", /releases\/latest|@latest/],
+  [
+    "long-lived registry tokens are forbidden",
+    /MCP_GITHUB_TOKEN|MCP_REGISTRY_TOKEN|\$\{\{\s*secrets\./,
+  ],
+  ["failure bypass is forbidden", /continue-on-error:\s*true/],
+]) {
+  if (pattern.test(publishMcp)) errors.push(`publish-mcp.yml: ${label}`);
+}
+
+const mcpPackage = JSON.parse(readFileSync("packages/claudexor/package.json", "utf8"));
+const mcpServer = JSON.parse(readFileSync("server.json", "utf8"));
+if (mcpPackage.mcpName !== "io.github.razzant/claudexor") {
+  errors.push("packages/claudexor/package.json: unexpected mcpName");
+}
+if (
+  mcpServer.name !== mcpPackage.mcpName ||
+  mcpServer.packages?.length !== 1 ||
+  mcpServer.packages[0]?.identifier !== "claudexor" ||
+  JSON.stringify(mcpServer.packages[0]?.packageArguments) !==
+    JSON.stringify([
+      { type: "positional", value: "mcp" },
+      { type: "positional", value: "serve" },
+    ])
+) {
+  errors.push("server.json: executable npm MCP identity or package arguments drifted");
 }
 
 const directInputs = [...release.matchAll(/\$\{\{\s*inputs\.[^}]+\}\}/g)].map((match) => match[0]);

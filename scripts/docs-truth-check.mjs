@@ -277,6 +277,19 @@ if (!constMatch) {
       );
     }
   }
+  const server = JSON.parse(readFileSync("server.json", "utf8"));
+  const portable = JSON.parse(readFileSync("plugins/copilot/plugin.json", "utf8"));
+  for (const [path, version] of [
+    ["server.json", server.version],
+    ...(server.packages ?? []).map((pkg, index) => [`server.json packages[${index}]`, pkg.version]),
+    ["plugins/copilot/plugin.json", portable.version],
+  ]) {
+    if (version !== constant) {
+      failures.push(
+        `${path} version (${version}) != CLAUDEXOR_VERSION (${constant}); run \`pnpm gen:version\``,
+      );
+    }
+  }
 }
 
 // --------------------------------------------------------------------------

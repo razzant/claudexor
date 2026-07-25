@@ -1,0 +1,98 @@
+name: Publish to MCP Registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable Claudexor tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  MCP_TAG_INPUT: ${{ inputs.tag }}
+
+concurrency:
+  group: claudexor-mcp-registry
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind publication to the immutable published release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$MCP_TAG_INPUT" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::tag must be stable vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          test "$GITHUB_REF" = "refs/tags/$MCP_TAG_INPUT" || {
+            echo "::error::dispatch this workflow from the exact tag ref"; exit 1;
+          }
+          git cat-file -e "$MCP_TAG_INPUT^{tag}" || {
+            echo "::error::MCP publication requires an annotated tag"; exit 1;
+          }
+          tag_sha="$(git rev-parse "$MCP_TAG_INPUT^{commit}")"
+          test "$tag_sha" = "$GITHUB_SHA" || {
+            echo "::error::workflow SHA does not match the tag commit"; exit 1;
+          }
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git merge-base --is-ancestor "$tag_sha" refs/remotes/origin/main || {
+            echo "::error::tag commit is not on origin/main"; exit 1;
+          }
+          gh release view "$MCP_TAG_INPUT" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,tagName > "$RUNNER_TEMP/mcp-release.json"
+          node -e '
+            const r=require(process.argv[1]);
+            if(r.tagName!==process.env.MCP_TAG_INPUT||r.isDraft||r.isPrerelease) process.exit(1)
+          ' "$RUNNER_TEMP/mcp-release.json" || {
+            echo "::error::GitHub Release must exist, be public, and be stable"; exit 1;
+          }
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Verify local descriptors and the already-published npm package
+        run: node scripts/mcp-registry-check.mjs --npm
+
+      - name: Install checksum-pinned MCP publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/mcp-publisher.tar.gz"
+          curl --fail --location --retry 3 --retry-all-errors --proto '=https' --tlsv1.2 \
+            --output "$archive" \
+            'https://github.com/modelcontextprotocol/registry/releases/download/v1.8.0/mcp-publisher_linux_amd64.tar.gz'
+          echo '1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf  '"$archive" | sha256sum --check --strict
+          tar -xzf "$archive" mcp-publisher
+          test -x ./mcp-publisher
+          ./mcp-publisher validate
+
+      - name: Check for an idempotent retry
+        id: registry
+        run: node scripts/mcp-registry-check.mjs --registry before
+
+      - name: Authenticate with GitHub OIDC
+        if: steps.registry.outputs.already_published != 'true'
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish metadata
+        if: steps.registry.outputs.already_published != 'true'
+        run: ./mcp-publisher publish
+
+      - name: Confirm the exact registry record
+        run: node scripts/mcp-registry-check.mjs --registry after

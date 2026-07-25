@@ -38,6 +38,13 @@ async function main() {
         root,
       );
     }
+    if (pkg.name === "claudexor") {
+      run(
+        process.execPath,
+        [resolve(root, "scripts/verify-npm-claudexor-package.mjs"), "--tarball", tarball],
+        root,
+      );
+    }
   }
   for (const { pkg, tarball } of packed) {
     const bytes = readFileSync(tarball);

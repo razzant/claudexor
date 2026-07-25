@@ -554,6 +554,21 @@ Then follow the Install And Login sequence in docs/AGENT_ONBOARDING.md
 in only via `claudexor auth login <harness>` — never a bare vendor login).
 ```
 
+GitHub Copilot uses the portable plugin in this repository rather than the
+managed host installer:
+
+```bash
+npm install -g claudexor
+copilot plugin install razzant/claudexor:plugins/copilot
+```
+
+The portable plugin supports macOS and Linux and requires the `claudexor`
+command on `PATH`; Windows is not currently supported. It bundles one Agent
+Skill plus MCP wiring and never collects credentials or bypasses Claudexor's
+typed apply and human-decision gates. See
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md#portable-agent-skill-and-copilot-plugin)
+for lifecycle and precedence details.
+
 The explicit Claude install also enables the official subscription-quota
 status-line source. If `~/.claude/settings.json` already has a `statusLine`
 command, Claudexor composes with it and restores it on uninstall; later user

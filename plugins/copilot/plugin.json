@@ -1,0 +1,15 @@
+{
+  "name": "claudexor",
+  "description": "Use the local Claudexor control plane from GitHub Copilot for multi-harness planning, execution, and review.",
+  "version": "3.1.0",
+  "author": {
+    "name": "Anton Razzhigaev",
+    "url": "https://github.com/razzant"
+  },
+  "homepage": "https://razzant.github.io/claudexor/",
+  "repository": "https://github.com/razzant/claudexor",
+  "license": "MIT",
+  "keywords": ["claude-code", "codex", "cursor", "multi-agent", "mcp"],
+  "skills": "skills/",
+  "mcpServers": ".mcp.json"
+}
