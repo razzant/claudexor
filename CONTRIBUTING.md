@@ -38,26 +38,16 @@ literally.
 
 ## Before you commit
 
-Run the full local gate (all of it runs in CI too):
+Run the Node/schema/documentation gate. The package script is the command
+source of truth, so this contributor guide does not duplicate its individual
+steps:
 
 ```bash
-pnpm build
-pnpm typecheck && pnpm typecheck:tests
-pnpm test
-pnpm schema:gen && git diff --exit-code packages/schema/generated
-node scripts/validate-generated-schemas.mjs
-pnpm docs:check
-pnpm staged:check
-pnpm sensitive:check
-pnpm knip
-node scripts/complexity-ratchet.mjs
-pnpm format:check
-pnpm canary
-node scripts/concept-gate.mjs             # Bible edits need a CONCEPT-CHANGE(INV-xxx) marker
-node scripts/model-hints-freshness.mjs    # curated model hints stay fresh against adapter inventories
-node scripts/mcp-cli-parity-check.mjs     # MCP tools stay in lockstep with CLI verbs
-node scripts/fixture-freshness-check.mjs  # recorded fixtures carry provenance + sanitization
+pnpm release:verify:node
 ```
+
+On macOS, `pnpm release:verify` additionally runs the Swift and local app
+packaging checks. CI remains authoritative for signed/notarized artifacts.
 
 Review authority is the cumulative diff on an exact, clean, committed and
 frozen candidate SHA, reviewed under the Owner-review release protocol in

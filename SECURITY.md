@@ -42,8 +42,11 @@ What Claudexor already does, so you can calibrate reports:
   `0600` file; secret material is redacted from event logs, job records,
   thread stores, and reviewer artifacts.
 - No telemetry, analytics, or crash reporting is collected (see the Privacy
-  section of the README). The only outbound network traffic is to the model
-  and harness endpoints you configure.
+  section of the README). Outbound traffic is limited to the model and harness
+  endpoints you configure plus explicitly user-invoked public GitHub/npm
+  lookups for release-name checks, updates, and download statistics. Local
+  files named `telemetry` contain only on-device run evidence and are never
+  transmitted.
 
 In scope: the CLI, daemon, control API, MCP/ACP servers, the macOS app, and
 the host-integration plugin writers. Out of scope: vulnerabilities in the

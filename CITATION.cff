@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use Claudexor in published work, please cite the software using this metadata."
+title: "Claudexor"
+type: software
+authors:
+  - family-names: "Razzhigaev"
+    given-names: "Anton"
+repository-code: "https://github.com/razzant/claudexor"
+url: "https://razzant.github.io/claudexor/"
+license: MIT

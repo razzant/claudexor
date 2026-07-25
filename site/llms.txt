@@ -1,0 +1,20 @@
+# Claudexor
+
+> Local-first control plane for quota-aware work across Claude Code, Codex, Cursor, and OpenCode.
+
+Claudexor runs locally and keeps one coding thread across harness and account lanes. Multiple Claude Code and Codex subscriptions can use isolated profiles with typed quota-aware rotation; Cursor and OpenCode participate in the multi-harness pool. Continuation uses bounded Claudexor context packets, not transfer of a vendor-native session between credentials.
+
+## Documentation
+
+- [README and quickstart](https://github.com/razzant/claudexor#readme)
+- [Credential profiles and quota](https://github.com/razzant/claudexor#credential-profiles-and-quota)
+- [Integrations](https://github.com/razzant/claudexor#integrations)
+- [Architecture](https://github.com/razzant/claudexor/blob/main/docs/ARCHITECTURE.md)
+- [External-agent onboarding](https://github.com/razzant/claudexor/blob/main/docs/AGENT_ONBOARDING.md)
+- [Security policy](https://github.com/razzant/claudexor/blob/main/SECURITY.md)
+- [Releases](https://github.com/razzant/claudexor/releases)
+
+## Source and packages
+
+- [GitHub repository](https://github.com/razzant/claudexor)
+- [npm package](https://www.npmjs.com/package/claudexor)
