@@ -404,6 +404,11 @@ suffix is allowlisted and routed to the existing durable device-code login.
 Clients without the capability receive no terminal auth methods. Claude and
 Cursor are not advertised yet because their current macOS setup flow opens a
 second Terminal and cannot prove completion inside the ACP client's terminal.
+The current experimental surface is proactive: clients may present the method
+from `initialize`; Claudexor does not yet emit auth_required or implement the
+legacy authenticate request. Cancelling the ACP-owned terminal and an
+unsupported Codex device flow both exit non-zero and never launch a second
+Terminal window.
 
 `session/new` creates a daemon thread (default `in_place`) and returns that
 thread id. `session/list`, `session/load`, `session/resume`, `session/close`,

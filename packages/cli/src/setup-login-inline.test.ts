@@ -324,4 +324,32 @@ describe("D-17 audit 8: streamDurableCodexLogin one-action fallback", () => {
     expect(transport.calls()).toBe(2);
     expect(transport.posts).toHaveLength(0);
   });
+
+  it("ACP terminal mode never reports a detached login as success", async () => {
+    const fetchImpl = async () => {
+      process.emit("SIGINT");
+      return jsonResponse(snapshot(activeJob()));
+    };
+    const code = await streamDurableCodexLogin(ADDR, "setup-inline-1", {
+      label: "codex",
+      detachExitCode: 130,
+      sleep: async () => {},
+      fetchImpl,
+    });
+    expect(code).toBe(130);
+    expect(out.join(" ")).toContain("Detached");
+  });
+
+  it("ACP terminal mode refuses unsupported device auth without starting a second Terminal", async () => {
+    const { fetchImpl, posts } = makeTransport([snapshot(unsupportedJob())]);
+    const code = await streamDurableCodexLogin(ADDR, "setup-inline-1", {
+      label: "codex",
+      detachExitCode: 130,
+      sleep: async () => {},
+      fetchImpl,
+    });
+    expect(code).toBe(1);
+    expect(posts).toHaveLength(0);
+    expect(out.join(" ")).toContain("device_auth_unsupported");
+  });
 });

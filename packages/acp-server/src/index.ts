@@ -31,8 +31,8 @@ export interface AcpServerOptions {
   transport: { read: NodeReadableStream; write: NodeWritableStream };
   name?: string;
   version?: string;
-  /** Experimental methods are emitted only when the client opts into their type. */
-  authMethods?: acp.AuthMethod[];
+  /** Experimental terminal methods are emitted only when the client opts in. */
+  terminalAuthMethods?: Array<acp.AuthMethodTerminal & { type: "terminal" }>;
 }
 
 type AcpSessionRecord = {
@@ -48,6 +48,11 @@ type AcpSessionRecord = {
     output?: { kind?: string; text?: string; truncated?: boolean } | null;
   }>;
 };
+
+/** The ACP Registry still sends the pre-draft _meta signal; accept both explicit opt-ins. */
+function clientSupportsTerminalAuth(capabilities: acp.ClientCapabilities | undefined): boolean {
+  return capabilities?.auth?.terminal === true || capabilities?._meta?.["terminal-auth"] === true;
+}
 
 /**
  * Official ACP SDK projection over Claudexor's daemon-owned threads. The SDK
@@ -78,12 +83,9 @@ export class AcpServer {
           promptCapabilities: { image: true, audio: false, embeddedContext: true },
           sessionCapabilities: { list: {}, resume: {}, close: {} },
         },
-        authMethods:
-          params.clientCapabilities?.auth?.terminal === true
-            ? (this.opts.authMethods ?? []).filter(
-                (method) => "type" in method && method.type === "terminal",
-              )
-            : [],
+        authMethods: clientSupportsTerminalAuth(params.clientCapabilities)
+          ? (this.opts.terminalAuthMethods ?? [])
+          : [],
       }))
       .onRequest(acp.methods.agent.session.new, async ({ params }) => {
         this.assertProjectRoot(params.cwd);

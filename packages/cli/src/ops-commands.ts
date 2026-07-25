@@ -335,7 +335,16 @@ export async function modelsCommand(args: ParsedArgs, json: boolean): Promise<nu
   return 0;
 }
 
-export async function authCommand(args: ParsedArgs, json: boolean): Promise<number> {
+export interface AuthCommandOptions {
+  /** ACP owns the interactive terminal: never detach successfully or open a second terminal. */
+  acpTerminal?: boolean;
+}
+
+export async function authCommand(
+  args: ParsedArgs,
+  json: boolean,
+  options: AuthCommandOptions = {},
+): Promise<number> {
   const sub = args._[1] ?? "status";
   const harness = args._[2];
   if (sub === "status") {
@@ -417,7 +426,9 @@ export async function authCommand(args: ParsedArgs, json: boolean): Promise<numb
       return streamDurableCodexLogin(addr, job.jobId, {
         label: harness,
         json,
-        fallback: { harness: "codex" },
+        ...(options.acpTerminal
+          ? { detachExitCode: 130 }
+          : { fallback: { harness: "codex" as const } }),
       });
     }
     if (json) {

@@ -221,9 +221,11 @@ describe("surface canaries (MCP + plugins over the built CLI)", () => {
       });
       const init = await waitFor((m) => m.id === 1, 15_000);
       expect(init.result?.protocolVersion).toBe(1);
-      expect(init.result?.authMethods).toEqual([
-        expect.objectContaining({ type: "terminal", id: "codex" }),
-      ]);
+      expect(init.result?.authMethods).toEqual(
+        process.platform === "darwin" || process.platform === "linux"
+          ? [expect.objectContaining({ type: "terminal", id: "codex" })]
+          : [],
+      );
       send({
         jsonrpc: "2.0",
         id: 2,

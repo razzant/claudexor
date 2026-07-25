@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acpTerminalAuthMethods, resolveAcpTerminalAuthHarness } from "./acp-auth.js";
+import { ACP_SERVE_USAGE, acpTerminalAuthMethods, resolveAcpServeAuthHarness } from "./acp-auth.js";
 
 describe("experimental ACP Terminal Auth", () => {
   it.each(["darwin", "linux"] as const)("advertises the proven Codex flow on %s", (platform) => {
@@ -14,13 +14,24 @@ describe("experimental ACP Terminal Auth", () => {
 
   it("does not claim support on an unproven platform", () => {
     expect(acpTerminalAuthMethods("win32")).toEqual([]);
-    expect(resolveAcpTerminalAuthHarness(["auth", "login", "codex"], "win32")).toBeNull();
+    expect(
+      resolveAcpServeAuthHarness(["acp", "serve", "auth", "login", "codex"], "win32"),
+    ).toBeNull();
   });
 
-  it("decodes only the exact allowlisted suffix", () => {
-    expect(resolveAcpTerminalAuthHarness(["auth", "login", "codex"], "darwin")).toBe("codex");
-    expect(resolveAcpTerminalAuthHarness(["auth", "login", "claude"], "darwin")).toBeNull();
-    expect(resolveAcpTerminalAuthHarness(["auth", "login", "codex", "extra"], "linux")).toBeNull();
-    expect(resolveAcpTerminalAuthHarness(["auth", "logout", "codex"], "linux")).toBeNull();
+  it("decodes only the exact full allowlisted command", () => {
+    expect(resolveAcpServeAuthHarness(["acp", "serve", "auth", "login", "codex"], "darwin")).toBe(
+      "codex",
+    );
+    expect(
+      resolveAcpServeAuthHarness(["acp", "serve", "auth", "login", "claude"], "darwin"),
+    ).toBeNull();
+    expect(
+      resolveAcpServeAuthHarness(["acp", "serve", "auth", "login", "codex", "extra"], "linux"),
+    ).toBeNull();
+    expect(
+      resolveAcpServeAuthHarness(["acp", "serve", "auth", "logout", "codex"], "linux"),
+    ).toBeNull();
+    expect(ACP_SERVE_USAGE).toBe("serve [auth login codex]");
   });
 });

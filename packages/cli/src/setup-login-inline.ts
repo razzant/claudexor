@@ -158,6 +158,8 @@ export interface StreamDurableCodexLoginOptions {
   /** Enables the one-action Terminal fallback on a device_auth_unsupported
    * miss (a y/N prompt on a TTY; a typed `nextAction` in `--json`). */
   fallback?: TerminalLoginFallbackTarget;
+  /** Ordinary CLI detach is success; ACP terminal auth must report cancellation as non-success. */
+  detachExitCode?: number;
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
   promptYesNo?: (question: string) => Promise<boolean>;
@@ -194,15 +196,16 @@ export async function streamDurableCodexLogin(
   try {
     for (;;) {
       if (detached) {
+        const detachExitCode = opts.detachExitCode ?? 0;
         if (json) {
-          printJson({ ok: true, detached: true, jobId });
-          return 0;
+          printJson({ ok: detachExitCode === 0, detached: true, jobId });
+          return detachExitCode;
         }
         print(
           `Detached. ${label} login keeps running as ${jobId}; ` +
             `re-attach with \`claudexor auth status\` or finish it in the browser.`,
         );
-        return 0;
+        return detachExitCode;
       }
       const response = await fetchImpl(`/setup/jobs/${encodeURIComponent(jobId)}/snapshot`);
       if (!response.ok) {

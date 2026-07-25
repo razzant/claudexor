@@ -1,4 +1,5 @@
 export type AcpAuthHarness = "codex";
+export const ACP_SERVE_USAGE = "serve [auth login codex]";
 
 export interface AcpTerminalAuthMethod {
   type: "terminal";
@@ -12,7 +13,7 @@ interface AcpTerminalAuthDefinition {
   harness: AcpAuthHarness;
   name: string;
   description: string;
-  platforms: readonly NodeJS.Platform[] | "all";
+  platforms: readonly NodeJS.Platform[];
 }
 
 /**
@@ -35,7 +36,7 @@ const ACP_TERMINAL_AUTH: readonly AcpTerminalAuthDefinition[] = [
 ];
 
 function supportedOn(definition: AcpTerminalAuthDefinition, platform: NodeJS.Platform): boolean {
-  return definition.platforms === "all" || definition.platforms.includes(platform);
+  return definition.platforms.includes(platform);
 }
 
 export function acpTerminalAuthMethods(platform: NodeJS.Platform): AcpTerminalAuthMethod[] {
@@ -52,13 +53,21 @@ export function acpTerminalAuthMethods(platform: NodeJS.Platform): AcpTerminalAu
   );
 }
 
-/** Strictly decode the arguments an ACP client appends to `acp serve`. */
-export function resolveAcpTerminalAuthHarness(
-  suffix: readonly string[],
+/** Strictly decode the complete positional argv after the shared CLI parser. */
+export function resolveAcpServeAuthHarness(
+  positionals: readonly string[],
   platform: NodeJS.Platform,
 ): AcpAuthHarness | null {
-  if (suffix.length !== 3 || suffix[0] !== "auth" || suffix[1] !== "login") return null;
-  const harness = suffix[2];
+  if (
+    positionals.length !== 5 ||
+    positionals[0] !== "acp" ||
+    positionals[1] !== "serve" ||
+    positionals[2] !== "auth" ||
+    positionals[3] !== "login"
+  ) {
+    return null;
+  }
+  const harness = positionals[4];
   const definition = ACP_TERMINAL_AUTH.find(
     (candidate) => candidate.harness === harness && supportedOn(candidate, platform),
   );

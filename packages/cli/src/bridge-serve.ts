@@ -62,7 +62,7 @@ export async function serveAcpBridge(): Promise<number> {
     version: CLAUDEXOR_VERSION,
     runner: mcpSurfaceRunner(),
     transport: { read: process.stdin, write: process.stdout },
-    authMethods: acpTerminalAuthMethods(process.platform),
+    terminalAuthMethods: acpTerminalAuthMethods(process.platform),
   }).serve();
   return 0;
 }

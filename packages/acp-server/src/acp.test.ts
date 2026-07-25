@@ -27,7 +27,7 @@ function project(): string {
 async function withClient<T>(
   runner: RunnerFn,
   op: (agent: acp.ClientContext, updates: acp.SessionNotification[]) => Promise<T>,
-  options: Pick<ConstructorParameters<typeof AcpServer>[0], "authMethods"> = {},
+  options: Pick<ConstructorParameters<typeof AcpServer>[0], "terminalAuthMethods"> = {},
 ): Promise<T> {
   const clientToAgent = new PassThrough();
   const agentToClient = new PassThrough();
@@ -61,7 +61,7 @@ async function withClient<T>(
 
 describe("AcpServer official SDK projection", () => {
   it("emits experimental terminal auth methods only after client opt-in", async () => {
-    const method: acp.AuthMethod = {
+    const method: acp.AuthMethodTerminal & { type: "terminal" } = {
       type: "terminal",
       id: "codex",
       name: "Sign in to Codex",
@@ -76,7 +76,7 @@ describe("AcpServer official SDK projection", () => {
         });
         expect(unsupported.authMethods).toEqual([]);
       },
-      { authMethods: [method] },
+      { terminalAuthMethods: [method] },
     );
     await withClient(
       async () => ({}),
@@ -87,7 +87,18 @@ describe("AcpServer official SDK projection", () => {
         });
         expect(supported.authMethods).toEqual([method]);
       },
-      { authMethods: [method] },
+      { terminalAuthMethods: [method] },
+    );
+    await withClient(
+      async () => ({}),
+      async (agent) => {
+        const registryCompatible = await agent.request(acp.methods.agent.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: { _meta: { "terminal-auth": true } },
+        });
+        expect(registryCompatible.authMethods).toEqual([method]);
+      },
+      { terminalAuthMethods: [method] },
     );
   });
 
