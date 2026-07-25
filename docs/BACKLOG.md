@@ -6,7 +6,7 @@ Silent drops are the failure mode this file exists to prevent — the 2.1.0
 audit found ten F2.5 leftovers that were neither shipped nor consciously
 deferred; they are recorded here now.
 
-## Discovery/distribution review advisories (3.2 wave; X243-X253)
+## Discovery/distribution review advisories (3.2 wave; X243-X261)
 
 - X243: add the experimental ACP Terminal Auth rationale to the WHITEPAPER if
   the conceptual model expands beyond the current thin, capability-gated
@@ -34,6 +34,18 @@ deferred; they are recorded here now.
 - X253: ACP Terminal Auth currently calls the default Codex login but describes
   it as a named subscription profile. Use neutral copy such as "Sign in to
   Codex for Claudexor" when the experimental surface next changes.
+- X256: if a project first accumulates uncommitted or untracked live-tree work
+  and only then enables `protected_paths`, the one-way thread promotion starts
+  from repository state rather than explicitly proving that every live byte is
+  present in the persistent worktree. Add a package-boundary migration test and
+  either transfer the complete dirty delta or refuse with a typed remedy.
+- X260: a legacy or hand-edited no-project thread journal could declare an
+  isolated workspace and reach worktree setup for the synthetic no-project
+  root. Add an explicit `NO_PROJECT_ROOT` short-circuit when that legacy state
+  is worth supporting.
+- X261: `threadWorktreeMutation` currently infers promotion from an `in_place`
+  workspace. Make promotion an explicit parameter before adding any future
+  `setThreadWorktree` caller that might only intend to update delivery state.
 
 ## v3.0.0 review wave 1 deferrals (adjudication; ledgered `backlog`)
 

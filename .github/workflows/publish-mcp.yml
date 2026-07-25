@@ -39,6 +39,11 @@ jobs:
             echo "::error::tag must be stable vMAJOR.MINOR.PATCH"
             exit 1
           fi
+          root_version="$(node -e 'process.stdout.write(require("./package.json").version)')"
+          expected_tag="v$root_version"
+          test "$MCP_TAG_INPUT" = "$expected_tag" || {
+            echo "::error::tag $MCP_TAG_INPUT does not match package version $root_version"; exit 1;
+          }
           test "$GITHUB_REF" = "refs/tags/$MCP_TAG_INPUT" || {
             echo "::error::dispatch this workflow from the exact tag ref"; exit 1;
           }

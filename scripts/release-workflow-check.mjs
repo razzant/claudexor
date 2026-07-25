@@ -215,6 +215,10 @@ for (const [label, pattern] of [
 for (const [label, pattern] of [
   ["manual tag input is required", /workflow_dispatch:[\s\S]*?tag:[\s\S]*?required:\s*true/],
   ["GitHub OIDC permission is required", /id-token:\s*write/],
+  [
+    "tag input is bound to the root package version",
+    /root_version=.*package\.json[\s\S]*expected_tag="v\$root_version"[\s\S]*test "\$MCP_TAG_INPUT" = "\$expected_tag"/,
+  ],
   ["tag dispatch is bound to GITHUB_REF", /GITHUB_REF[\s\S]*refs\/tags\/\$MCP_TAG_INPUT/],
   ["annotated release tag is required", /git cat-file -e "\$MCP_TAG_INPUT\^\{tag\}"/],
   ["tag commit must be on origin main", /git merge-base --is-ancestor/],
