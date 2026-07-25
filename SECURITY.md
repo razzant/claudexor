@@ -43,8 +43,10 @@ What Claudexor already does, so you can calibrate reports:
   thread stores, and reviewer artifacts.
 - No telemetry, analytics, or crash reporting is collected (see the Privacy
   section of the README). Outbound traffic is limited to the model and harness
-  endpoints you configure plus explicitly user-invoked public GitHub/npm
-  lookups for release-name checks, updates, and download statistics. Local
+  endpoints you configure plus public GitHub/npm lookups for release-name
+  checks, updates, and download statistics — each either explicitly
+  user-invoked or, for the app's update check, triggered only on app
+  foreground (there is no background update timer). Local
   files named `telemetry` contain only on-device run evidence and are never
   transmitted.
 

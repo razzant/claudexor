@@ -513,9 +513,18 @@ export function codexEffortIgnoredEvent(
   if (!spec.effort_hint) return null;
   if (codexEffortFor(catalog, spec.model_hint, spec.effort_hint) !== null) return null;
   const target = spec.model_hint ?? catalog.defaultModel;
+  // An EMPTY catalog is the version-gated snapshot distrust case
+  // (`codexCatalogForRun`): the live probe could not answer and the recorded
+  // snapshot belongs to a different CLI version, so the honest statement is
+  // "unverifiable", not "not accepted".
   const detail =
-    `effort=${spec.effort_hint} (not accepted by the codex catalog resolved for this run's ` +
-    `environment${target ? ` on model ${target}` : ""}; the run used the vendor default)`;
+    Object.keys(catalog.models).length > 0
+      ? `effort=${spec.effort_hint} (not accepted by the codex catalog resolved for this run's ` +
+        `environment${target ? ` on model ${target}` : ""}; the run used the vendor default)`
+      : `effort=${spec.effort_hint} (could not be verified against the installed codex CLI: ` +
+        "the live model/list probe could not answer, and the recorded snapshot was captured " +
+        `from CLI ${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}, a different version, ` +
+        "so no effort flag was sent; the run used the vendor default)";
   return {
     type: "message",
     session_id: spec.session_id,

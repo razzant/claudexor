@@ -8,7 +8,13 @@ import { resolveEffort } from "@claudexor/core";
 import { clearCodexEffortCache, createCodexAdapter } from "./index.js";
 import { codexExecArgs } from "./index.js";
 import {
+  codexCatalogForRun,
+  codexRunEffortResolution,
+  codexSnapshotTrustedForVersion,
+} from "./effort-gate.js";
+import {
   CODEX_EFFORT_SNAPSHOT,
+  CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
   codexEffortCacheSize,
   codexEffortClampedEvent,
   codexEffortCapability,
@@ -747,6 +753,197 @@ describe("an effort dropped AFTER preflight is disclosed on the run (INV-105)", 
     ]);
     // ...and the child was really spawned WITHOUT any effort flag.
     expect(cliArgs?.some((a) => a.startsWith("model_reasoning_effort="))).toBe(false);
+    clearCodexEffortCache();
+  });
+});
+
+describe("the snapshot fallback drives arg emission ONLY on the version it was captured from (INV-105)", () => {
+  it("snapshot trust is exact-version, and an unknown/unparseable version never vouches", () => {
+    expect(codexSnapshotTrustedForVersion("0.144.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("codex-cli 0.144.1")).toBe(true);
+    expect(codexSnapshotTrustedForVersion("codex-cli 0.98.0")).toBe(false);
+    // A LONGER dotted token is a different version, not a prefix match.
+    expect(codexSnapshotTrustedForVersion("0.144.1.1")).toBe(false);
+    expect(codexSnapshotTrustedForVersion("0.144.10")).toBe(false);
+    expect(codexSnapshotTrustedForVersion(null)).toBe(false);
+    expect(codexSnapshotTrustedForVersion("codex (version unknown)")).toBe(false);
+  });
+
+  it("a same-version fallback keeps the catalog; a MISMATCHED one yields an EMPTY catalog", () => {
+    const fallback = { catalog: CODEX_EFFORT_SNAPSHOT, live: false };
+    expect(
+      codexCatalogForRun(fallback, `codex-cli ${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}`),
+    ).toBe(CODEX_EFFORT_SNAPSHOT);
+    // The C3 defect shape: the run's live probe failed on some OTHER installed
+    // version — the snapshot's levels must not become that binary's run args.
+    expect(codexCatalogForRun(fallback, "codex-cli 0.98.0")).toEqual({
+      models: {},
+      defaultModel: null,
+    });
+    expect(codexCatalogForRun(fallback, null)).toEqual({ models: {}, defaultModel: null });
+  });
+
+  it("a LIVE model/list answer is the binary's own truth — trusted on any version, no gate", () => {
+    const live = {
+      catalog: {
+        models: { "gpt-9": { levels: ["low", "high"], default: "high" } },
+        defaultModel: "gpt-9",
+      } satisfies CodexEffortCatalog,
+      live: true,
+    };
+    expect(codexCatalogForRun(live, "codex-cli 9.9.9")).toBe(live.catalog);
+    expect(codexCatalogForRun(live, null)).toBe(live.catalog);
+  });
+
+  /** Adapter whose live probe FAILED (snapshot fallback) on `installedVersion`. */
+  const snapshotFallbackAdapter = (installedVersion: string, capture: (args: string[]) => void) =>
+    createCodexAdapter({
+      detectVersion: async () => installedVersion,
+      probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
+      hasApiKey: () => false,
+      probeEfforts: async () => null,
+      runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
+        capture(options.args);
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
+      },
+    });
+
+  const ultraSpec = (sessionId: string) =>
+    HarnessRunSpec.parse({
+      session_id: sessionId,
+      intent: "implement",
+      prompt: "do it",
+      cwd: "/repo",
+      // The snapshot advertises this level on gpt-5.6-sol — the exact bait.
+      model_hint: "gpt-5.6-sol",
+      effort_hint: "ultra",
+      auth_preference: "auto",
+    });
+
+  it("a MISMATCHED-version snapshot fallback sends NO effort flag and discloses the drop", async () => {
+    // The confirmed C3 defect: installed codex != 0.144.1, model/list probe
+    // failed, the 0.144.1 snapshot filled in, and model_reasoning_effort went
+    // to a binary that may reject it. The version gate must drop the flag and
+    // say so through the existing INV-105 drop seam.
+    clearCodexEffortCache();
+    let cliArgs: string[] | undefined;
+    const adapter = snapshotFallbackAdapter("codex-cli 0.98.0", (args) => {
+      cliArgs = args;
+    });
+    const events: HarnessEvent[] = [];
+    for await (const ev of adapter.run(ultraSpec("codex-effort-snapshot-mismatch")))
+      events.push(ev);
+    expect(cliArgs).toBeDefined();
+    expect(cliArgs?.some((a) => a.startsWith("model_reasoning_effort="))).toBe(false);
+    const disclosure = events.find((ev) => Array.isArray(ev.payload?.["ignored_settings"]));
+    expect(disclosure?.payload?.["ignored_settings"]).toEqual([
+      expect.stringContaining("effort=ultra"),
+    ]);
+    expect(disclosure?.payload?.["ignored_settings"]).toEqual([
+      expect.stringContaining(CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST),
+    ]);
+    clearCodexEffortCache();
+  });
+
+  it("a SAME-version snapshot fallback keeps trusting the snapshot: the flag rides, nothing is disclosed", async () => {
+    clearCodexEffortCache();
+    let cliArgs: string[] | undefined;
+    const adapter = snapshotFallbackAdapter(
+      `codex-cli ${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}`,
+      (args) => {
+        cliArgs = args;
+      },
+    );
+    const events: HarnessEvent[] = [];
+    for await (const ev of adapter.run(ultraSpec("codex-effort-snapshot-same-version")))
+      events.push(ev);
+    expect(cliArgs).toBeDefined();
+    expect(cliArgs?.some((a) => a === 'model_reasoning_effort="ultra"')).toBe(true);
+    expect(events.find((ev) => Array.isArray(ev.payload?.["ignored_settings"]))).toBeUndefined();
+    clearCodexEffortCache();
+  });
+
+  it("a LIVE probe drives the run untouched on any installed version", async () => {
+    clearCodexEffortCache();
+    let cliArgs: string[] | undefined;
+    const adapter = createCodexAdapter({
+      detectVersion: async () => "codex-cli 9.9.9",
+      probeLogin: async () => ({ authed: true, method: "chatgpt", probeError: null }),
+      hasApiKey: () => false,
+      probeEfforts: async () => ({
+        models: { "gpt-9": { levels: ["low", "high"], default: "high" } },
+        defaultModel: "gpt-9",
+      }),
+      runCliHarness: async function* (options): AsyncGenerator<HarnessEvent> {
+        cliArgs = options.args;
+        yield {
+          type: "completed",
+          session_id: options.spec.session_id,
+          ts: "2026-01-01T00:00:00.000Z",
+        };
+      },
+    });
+    const spec = HarnessRunSpec.parse({
+      session_id: "codex-effort-live-any-version",
+      intent: "implement",
+      prompt: "do it",
+      cwd: "/repo",
+      model_hint: "gpt-9",
+      effort_hint: "high",
+      auth_preference: "auto",
+    });
+    const events: HarnessEvent[] = [];
+    for await (const ev of adapter.run(spec)) events.push(ev);
+    expect(cliArgs?.some((a) => a === 'model_reasoning_effort="high"')).toBe(true);
+    expect(events.find((ev) => Array.isArray(ev.payload?.["ignored_settings"]))).toBeUndefined();
+    clearCodexEffortCache();
+  });
+
+  it("the gate holds on a PROFILE-resolved CODEX_HOME too, probing and versioning THAT env", async () => {
+    // A credential profile's run resolves its own CODEX_HOME; the version gate
+    // must ride that same env: the probe AND the --version check both see the
+    // profile home, and a failed probe on a mismatched CLI drops the flag.
+    clearCodexEffortCache();
+    const probedHomes: Array<string | undefined> = [];
+    const versionEnvs: Array<string | null | undefined> = [];
+    const resolution = await codexRunEffortResolution(
+      { session_id: "s-profile", model_hint: "gpt-5.6-sol", effort_hint: "ultra" },
+      {
+        probeEfforts: async (_bin, env) => {
+          probedHomes.push(env?.["CODEX_HOME"]);
+          return null;
+        },
+        nowMs: () => 0,
+        detectVersion: async (_signal, env) => {
+          versionEnvs.push(env?.["CODEX_HOME"]);
+          return "codex-cli 0.98.0";
+        },
+      },
+      { CODEX_HOME: "/tmp/claudexor-profile-gate" },
+    );
+    expect(probedHomes).toEqual(["/tmp/claudexor-profile-gate"]);
+    expect(versionEnvs).toEqual(["/tmp/claudexor-profile-gate"]);
+    expect(resolution.catalog).toEqual({ models: {}, defaultModel: null });
+    expect(resolution.disclosure?.payload?.["ignored_settings"]).toEqual([
+      expect.stringContaining("effort=ultra"),
+    ]);
+    // The same profile env on the SAME-version CLI keeps the snapshot usable.
+    clearCodexEffortCache();
+    const trusted = await codexRunEffortResolution(
+      { session_id: "s-profile-2", model_hint: "gpt-5.6-sol", effort_hint: "ultra" },
+      {
+        probeEfforts: async () => null,
+        nowMs: () => 0,
+        detectVersion: async () => `codex-cli ${CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST}`,
+      },
+      { CODEX_HOME: "/tmp/claudexor-profile-gate" },
+    );
+    expect(trusted.catalog).toBe(CODEX_EFFORT_SNAPSHOT);
+    expect(trusted.disclosure).toBeNull();
     clearCodexEffortCache();
   });
 });

@@ -20,7 +20,6 @@ import {
 import {
   CODEX_EFFORT_SNAPSHOT,
   CODEX_EFFORT_SNAPSHOT_VERIFIED_AGAINST,
-  codexEffortDisclosureEvent,
   codexEffortFor,
   codexEffortsForEnv,
   probeCodexEfforts,
@@ -28,6 +27,7 @@ import {
   type CodexEffortCatalog,
   type CodexEffortProbe,
 } from "./effort-probe.js";
+import { codexRunEffortResolution } from "./effort-gate.js";
 import { tomlBasicString } from "./toml.js";
 export { CODEX_EFFORT_SNAPSHOT, clearCodexEffortCache, unionEffortLevels } from "./effort-probe.js";
 import type { DoctorSpec, HarnessAdapter } from "@claudexor/core";
@@ -753,16 +753,17 @@ async function* runCodex(
   }
   // Probed in THIS run's resolved env, so a credential profile or API-key route
   // gets its OWN account's catalog, not whichever one landed in the cache first.
-  const efforts = await codexEffortsForEnv(runtime, env);
-  // INV-105 rides the RUN too: preflight passed this level against the DEFAULT
-  // account's manifest, but THIS env's catalog may DROP it or CLAMP it onto the
-  // routed model's ceiling — disclosed either way, never a silent divergence.
-  const effortDisclosure = codexEffortDisclosureEvent(efforts.catalog, spec);
-  if (effortDisclosure) yield effortDisclosure;
+  // INV-105 on the RUN: version-gate snapshot-fallback trust (an installed
+  // codex that is not 0.144.1 is never sent the snapshot's levels), and
+  // disclose a DROP/CLAMP on the same catalog the args resolve with — preflight
+  // passed this level against the DEFAULT account's manifest, but THIS env's
+  // catalog may drop it or clamp it onto the routed model's ceiling.
+  const effort = await codexRunEffortResolution(spec, runtime, env, abortSignalFromSpec(spec));
+  if (effort.disclosure) yield effort.disclosure;
   const args = codexExecArgs(spec, {
     suppressNodeRepl: codexConfigHasNodeRepl(env["CODEX_HOME"]),
     outputSchemaPath,
-    effortCatalog: efforts.catalog,
+    effortCatalog: effort.catalog,
   });
   // Route evidence: the auth mode this child ACTUALLY runs under, read from
   // the same auth.json codex loads (typed `auth_mode` field — chatgpt vs
